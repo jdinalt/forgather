@@ -3900,19 +3900,34 @@ li.config.selected button.link:hover {
   font-size: 12px;
 }
 
-.cj-new-btn {
+.cj-hint {
   margin-left: auto;
   font-size: 11px;
-  padding: 3px 10px;
-  cursor: pointer;
-  background: rgba(110, 200, 130, 0.15);
-  color: #6ec882;
-  border: 1px solid rgba(110, 200, 130, 0.3);
-  border-radius: 3px;
+  font-style: italic;
 }
 
-.cj-new-btn:hover {
-  background: rgba(110, 200, 130, 0.25);
+.multinode-panel {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+  padding: 8px 10px 4px;
+  margin-bottom: 12px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.multinode-panel .multinode-members {
+  margin-top: 6px;
+}
+
+.multinode-panel .modal-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.multinode-panel .submit-help {
+  margin-top: 8px;
+  font-size: 11px;
 }
 
 .cj-empty {

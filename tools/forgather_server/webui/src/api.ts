@@ -450,9 +450,33 @@ export interface DynamicArg {
   max: number | null;
 }
 
+/** Last-used multi-node submit settings. The webui owns this shape;
+ *  the server stores it as an opaque blob alongside the dynamic-args
+ *  overrides so a config "opens where you left off" for cluster
+ *  submits the same way it does for single-node ones. */
+export interface MultinodeOverrides {
+  rdzv_port: number;
+  /** Ordered list of node ids the operator opted in. Empty implies
+   *  "single-node submit" — no cluster fanout, even when the cluster
+   *  is active. */
+  selected_node_ids: string[];
+  /** node_id → desired nproc per peer. */
+  per_node_nproc: Record<string, number>;
+  /** node_id → NCCL/Gloo/TP iface name; empty string means "auto"
+   *  and the server derives it from the member's advertised IP. */
+  per_node_iface: Record<string, string>;
+  /** Which member hosts the rendezvous TCPStore. Defaults to master
+   *  when null. */
+  rdzv_node_id: string | null;
+  /** Whether the user has acknowledged any version mismatch warnings
+   *  the server returned on the previous submit attempt. */
+  allow_version_mismatch: boolean;
+}
+
 export interface OverridesData {
   values: Record<string, unknown>;
   requested_gpus: number | null;
+  multinode: MultinodeOverrides | null;
   updated_at: number | null;
 }
 
@@ -1169,6 +1193,7 @@ export const api = {
     config: string,
     values: Record<string, unknown>,
     requested_gpus?: number | null,
+    multinode?: MultinodeOverrides | null,
   ): Promise<OverridesData> => {
     const r = await fetch("/api/config/overrides", {
       method: "POST",
@@ -1178,6 +1203,7 @@ export const api = {
         config,
         values,
         requested_gpus: requested_gpus ?? null,
+        multinode: multinode ?? null,
       }),
     });
     if (!r.ok) {

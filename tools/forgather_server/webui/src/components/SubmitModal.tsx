@@ -1,6 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
-import { api, ConfigInfo, ProjectInfo } from "../api";
+import {
+  api,
+  ClusterJobSubmitRequest,
+  ClusterMembersResponse,
+  ConfigInfo,
+  ProjectInfo,
+} from "../api";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import {
   coerceArgs,
@@ -9,6 +15,13 @@ import {
   listOutOfBounds,
 } from "./DynamicArgsForm";
 import { ModalBackdrop } from "./ModalBackdrop";
+import {
+  emptyMultiNodeState,
+  MultiNodePanelState,
+  multiNodeStateFromOverrides,
+  multiNodeStateToOverrides,
+  MultiNodeSubmitPanel,
+} from "./MultiNodeSubmitPanel";
 
 interface Props {
   project: ProjectInfo;
@@ -45,6 +58,17 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     queryFn: () => api.getOverrides(project.project_dir, config.name),
   });
 
+  // Cluster membership — drives the multi-node panel inside this
+  // modal. The query returns null cluster_name when the server isn't
+  // running in cluster mode, in which case we render the modal in
+  // its single-node form.
+  const membersQ = useQuery<ClusterMembersResponse>({
+    queryKey: ["cluster", "members"],
+    queryFn: api.getClusterMembers,
+    refetchInterval: 5000,
+  });
+  const clusterActive = !!membersQ.data?.cluster_name;
+
   // Map of dest -> current value; strings only, coerced on submit
   const [values, setValues] = useState<Record<string, string>>({});
   const [requestedGpus, setRequestedGpus] = useState<number>(1);
@@ -53,6 +77,12 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   // Track whether we've already seeded the form from the cache so we
   // don't overwrite edits the user has already made.
   const [overrideSeeded, setOverrideSeeded] = useState<boolean>(false);
+
+  // Multi-node panel state. Only consulted when ``clusterActive`` and
+  // the user has more than the local node selected — otherwise the
+  // submit takes the regular single-node path.
+  const [mnState, setMnState] = useState<MultiNodePanelState>(emptyMultiNodeState);
+  const [mnSeeded, setMnSeeded] = useState<boolean>(false);
 
   const maxGpus = Math.max(1, gpusQ.data?.length ?? 1);
   const idleGpuCount = useMemo(() => {
@@ -123,6 +153,56 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     setOverrideSeeded(true);
   }, [argsQ.data, overridesQ.data, overrideSeeded]);
 
+  // Seed multi-node panel state from (in priority order):
+  //   1. cached multinode overrides for this (project, config)
+  //   2. cluster active + no cache → just-this-node default, with
+  //      master designated rdzv host
+  //   3. cluster inactive → empty state, panel hidden
+  // Re-seeding is gated by ``mnSeeded`` so subsequent renders don't
+  // clobber the operator's in-flight edits.
+  useEffect(() => {
+    if (mnSeeded) return;
+    if (!membersQ.data) return;
+    if (!overridesQ.data) return;
+    const cached = overridesQ.data.multinode;
+    if (cached) {
+      setMnState(multiNodeStateFromOverrides(cached));
+    } else if (clusterActive) {
+      const selfId = membersQ.data.self_node_id;
+      const masterId = membersQ.data.master_node_id;
+      // Default = local node only, "Use" pre-checked. The user
+      // explicitly opts other nodes in; we never auto-tick remote
+      // peers because the multi-node submit triggers a fanout the
+      // user might not expect.
+      setMnState({
+        rdzvPort: 29400,
+        selected: selfId ? new Set([selfId]) : new Set(),
+        perNodeNproc: {},
+        perNodeIface: {},
+        rdzvNodeId: selfId ?? masterId ?? null,
+        allowMismatch: false,
+      });
+    }
+    setMnSeeded(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [membersQ.data, overridesQ.data, clusterActive]);
+
+  // True when the operator has opted in more than just the local
+  // node. Drives whether Submit goes via the cluster fanout or the
+  // existing single-node enqueue. A single-node selection that
+  // happens to match the local node is intentionally treated as
+  // single-node — there's no value in spinning up a one-rank
+  // rendezvous on a single host.
+  const useClusterFanout = useMemo(() => {
+    if (!clusterActive) return false;
+    if (mnState.selected.size === 0) return false;
+    if (mnState.selected.size > 1) return true;
+    // Exactly one node selected: cluster path only when it's
+    // *not* the local node (e.g. the operator wants to remote-launch).
+    const onlyId = Array.from(mnState.selected)[0];
+    return onlyId !== membersQ.data?.self_node_id;
+  }, [clusterActive, mnState.selected, membersQ.data?.self_node_id]);
+
   const enqueue = useMutation({
     mutationFn: api.enqueue,
     onSuccess: (item) => {
@@ -131,6 +211,24 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
       onClose();
     },
   });
+
+  const submitCluster = useMutation({
+    mutationFn: (req: ClusterJobSubmitRequest) => api.submitClusterJob(req),
+    onSuccess: (resp) => {
+      qc.invalidateQueries({ queryKey: ["cluster", "jobs"] });
+      qc.invalidateQueries({ queryKey: ["queue"] });
+      onSubmitted?.(resp.cluster_job.cluster_job_id);
+      if (resp.warnings.length > 0) {
+        // Server didn't block — surface what it did notice so the
+        // operator gets one last chance to spot a divergence.
+        alert("Submitted with warnings:\n\n" + resp.warnings.join("\n"));
+      }
+      onClose();
+    },
+  });
+
+  const submitting = enqueue.isPending || submitCluster.isPending;
+  const submitError = enqueue.error || submitCluster.error;
 
   // Required-arg enforcement: block Submit until every ``required: true``
   // field has a value. Recomputed every render so the button state tracks
@@ -163,6 +261,12 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
       setPriority(0);
       setGpusTouched(false);
       setRequestedGpus(fixedWorkerCount !== null ? Math.max(1, Math.min(maxGpus, fixedWorkerCount)) : 1);
+      // Also reset cluster panel state — "Reset to defaults" now
+      // means "drop everything we cached for this config", including
+      // the multi-node selection. Re-seeded by the seeding effect on
+      // the next render.
+      setMnState(emptyMultiNodeState());
+      setMnSeeded(false);
       qc.invalidateQueries({
         queryKey: ["overrides", project.project_dir, config.name],
       });
@@ -185,19 +289,23 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   const submit = () => {
     const schema = argsQ.data ?? [];
     const dyn = coerceArgs(values, schema);
-    enqueue.mutate({
-      project_dir: project.project_dir,
-      config: config.name,
-      dynamic_args: dyn,
-      requested_gpus: requestedGpus,
-      priority,
-    });
-    // Best-effort: save overrides after enqueue so next open is pre-filled.
-    // Don't block the submit on the result. The GPU count rides in the same
-    // payload so it's scoped to (project, config) and survives across
-    // browsers / server restarts the same way the dynamic args do.
+    const members = membersQ.data?.members ?? [];
+
+    // Persist last-used settings *before* submitting so a failed
+    // submit still re-opens with the same form state. The cluster
+    // panel state only gets persisted when cluster is active (no
+    // point caching mn settings the user can't see in the next open).
+    const mnPayload = clusterActive
+      ? multiNodeStateToOverrides(mnState, members)
+      : null;
     api
-      .setOverrides(project.project_dir, config.name, dyn, requestedGpus)
+      .setOverrides(
+        project.project_dir,
+        config.name,
+        dyn,
+        requestedGpus,
+        mnPayload,
+      )
       .then(() => {
         qc.invalidateQueries({
           queryKey: ["overrides", project.project_dir, config.name],
@@ -212,6 +320,41 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
       .catch(() => {
         // best-effort; ignore failures
       });
+
+    if (useClusterFanout) {
+      // Cluster fanout path. The master figures out rdzv args + the
+      // per-peer NCCL/Gloo/TP iface (auto-derives from the peer's
+      // advertised address when the operator left iface on "auto").
+      // The same dynamic_args + priority ride along to every peer.
+      const orderedSelected = members
+        .filter((m) => mnState.selected.has(m.node_id))
+        .map((m) => m.node_id);
+      const req: ClusterJobSubmitRequest = {
+        project_dir: project.project_dir,
+        config: config.name,
+        dynamic_args: dyn,
+        priority,
+        members: orderedSelected.map((id) => ({
+          node_id: id,
+          nproc_per_node: Math.max(1, mnState.perNodeNproc[id] ?? 1),
+          nccl_socket_ifname:
+            (mnState.perNodeIface[id] || "").trim() || null,
+        })),
+        rdzv_node_id: mnState.rdzvNodeId ?? undefined,
+        rdzv_port: mnState.rdzvPort,
+        allow_version_mismatch: mnState.allowMismatch,
+      };
+      submitCluster.mutate(req);
+      return;
+    }
+
+    enqueue.mutate({
+      project_dir: project.project_dir,
+      config: config.name,
+      dynamic_args: dyn,
+      requested_gpus: requestedGpus,
+      priority,
+    });
   };
 
   return (
@@ -317,6 +460,25 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
             </div>
           )}
 
+          {clusterActive && membersQ.data && mnSeeded && (
+            <>
+              <h4 className="dyn-heading">
+                Multi-node{" "}
+                <span className="muted">
+                  (cluster <code>{membersQ.data.cluster_name}</code> —{" "}
+                  {membersQ.data.members.length} member
+                  {membersQ.data.members.length === 1 ? "" : "s"})
+                </span>
+              </h4>
+              <MultiNodeSubmitPanel
+                members={membersQ.data}
+                state={mnState}
+                onChange={setMnState}
+                defaultNproc={requestedGpus}
+              />
+            </>
+          )}
+
           <h4 className="dyn-heading">
             Dynamic arguments
             {argsQ.data && argsQ.data.length === 0 && (
@@ -351,14 +513,14 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
 
         <footer className="modal-footer">
           <div className="muted current-path">
-            {enqueue.error ? String(enqueue.error) : ""}
+            {submitError ? String(submitError) : ""}
           </div>
           <div className="btn-row">
             <AutoWatchTtyToggle />
             <button
               className="secondary"
               onClick={handleReset}
-              disabled={clearOverridesMut.isPending || enqueue.isPending}
+              disabled={clearOverridesMut.isPending || submitting}
               title="Drop saved overrides for this config and reset the form"
             >
               {clearOverridesMut.isPending ? "Resetting…" : "Reset to defaults"}
@@ -369,14 +531,18 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
             <button
               onClick={submit}
               disabled={
-                enqueue.isPending ||
+                submitting ||
                 argsQ.isLoading ||
                 missingRequired.length > 0 ||
                 outOfBounds.length > 0
               }
               title={submitBlockedReason}
             >
-              {enqueue.isPending ? "Submitting…" : "Submit"}
+              {submitting
+                ? "Submitting…"
+                : useClusterFanout
+                  ? `Submit to ${mnState.selected.size} nodes`
+                  : "Submit"}
             </button>
           </div>
         </footer>

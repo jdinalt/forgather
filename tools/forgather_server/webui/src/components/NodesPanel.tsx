@@ -1,5 +1,4 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
 import {
   api,
   ClusterBandwidthEntry,
@@ -14,7 +13,6 @@ import {
   Job,
 } from "../api";
 import { GpuPanel, GpuCard } from "./GpuPanel";
-import { MultiNodeSubmitModal } from "./MultiNodeSubmitModal";
 
 /** Cluster-aware Nodes view (Phase 2).
  *
@@ -287,7 +285,6 @@ function BandwidthPanel({
 
 function ClusterJobsPanel() {
   const qc = useQueryClient();
-  const [submitOpen, setSubmitOpen] = useState(false);
   const jobsQ = useQuery<ClusterJob[]>({
     queryKey: ["cluster", "jobs"],
     queryFn: api.listClusterJobs,
@@ -319,15 +316,10 @@ function ClusterJobsPanel() {
             : ""}
           )
         </span>
-        <button
-          className="cj-new-btn"
-          onClick={(e) => {
-            e.preventDefault();
-            setSubmitOpen(true);
-          }}
-        >
-          + Multi-node training…
-        </button>
+        <span className="muted cj-hint">
+          Submit via the config's <strong>Run…</strong> action — the
+          cluster panel appears at the top of the dialog.
+        </span>
       </summary>
       {jobs.length === 0 ? (
         <div className="muted cj-empty">
@@ -400,9 +392,6 @@ function ClusterJobsPanel() {
             })}
           </tbody>
         </table>
-      )}
-      {submitOpen && (
-        <MultiNodeSubmitModal onClose={() => setSubmitOpen(false)} />
       )}
     </details>
   );

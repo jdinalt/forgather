@@ -73,3 +73,41 @@ class TestGetOverridesPayload:
         p = overrides_store.get_overrides_payload("/proj", "cfg.yaml")
         assert p["values"] == {"x": 5}
         assert isinstance(p["updated_at"], float)
+        # Cluster panel state is None until the user opens the
+        # multi-node panel for this config.
+        assert p["multinode"] is None
+
+
+class TestMultinodePassthrough:
+    """The ``multinode`` field is opaque to the backend — it carries
+    the cluster submit panel's last-used participants/rdzv settings
+    so a config "opens where you left off" for both single-node and
+    multi-node submits. The store treats it as a passthrough dict and
+    must round-trip it intact alongside the regular dynamic-args."""
+
+    def test_persists_alongside_values(self):
+        mn = {
+            "rdzv_port": 29400,
+            "selected_node_ids": ["n1", "n2"],
+            "per_node_nproc": {"n1": 1, "n2": 2},
+            "rdzv_node_id": "n1",
+        }
+        overrides_store.set_overrides(
+            "/proj", "cfg.yaml", {"x": 1}, requested_gpus=2, multinode=mn
+        )
+        p = overrides_store.get_overrides_payload("/proj", "cfg.yaml")
+        assert p["values"] == {"x": 1}
+        assert p["requested_gpus"] == 2
+        assert p["multinode"] == mn
+
+    def test_overwriting_without_multinode_clears_it(self):
+        # Save with multinode, then save again without — the second
+        # write replaces the file. We don't merge under the hood; the
+        # webui is responsible for re-sending the multinode block on
+        # every save it wants to keep.
+        overrides_store.set_overrides(
+            "/proj", "cfg.yaml", {}, multinode={"rdzv_port": 29400}
+        )
+        overrides_store.set_overrides("/proj", "cfg.yaml", {"a": 1})
+        p = overrides_store.get_overrides_payload("/proj", "cfg.yaml")
+        assert p["multinode"] is None
