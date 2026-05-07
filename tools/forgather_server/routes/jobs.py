@@ -454,27 +454,94 @@ async def tty_stream(ws: WebSocket, job_id: str, follow: bool = True):
 
 @router.delete("/jobs/{job_id}")
 def remove_job(job_id: str):
-    """Remove a JobRecord (terminal only). Externally-discovered endpoints
-    aren't ours to delete — use the existing CLI ``forgather control
-    cleanup`` for those.
+    """Remove a job entry from the list.
 
-    If the record's TTY file is still under the central jobs_tty_dir
-    (i.e. it was never relocated into a run's logs/ — typically a
-    non-training job) we unlink it here too. TTYs that have already
-    been moved into a run dir are left alone; they're part of the run's
-    artifacts now.
+    Two paths depending on what backs the entry:
+
+    * **JobRecord** — must be in a terminal status. We unlink the
+      central TTY (if not already relocated into a run's logs/ dir)
+      and drop the JobRecord.
+    * **Endpoint-only** (``source="endpoint"`` in the merged list,
+      no JobRecord) — must be a *dead* endpoint (PID gone, zombie,
+      or recycled). We rmtree the trainer-control directory so the
+      stale ``endpoint.json`` and ``status.json`` files stop
+      surfacing in the Jobs list. Live endpoint-only entries are
+      refused: they belong to an actively-running trainer that
+      isn't ours to evict.
+
+    The endpoint-cleanup branch is what closes the "phantom running
+    job from a previous server instance" loop the operator hit on
+    muthur — without it, killing the zombie process did nothing
+    visible, and the Forgather control CLI on each peer was the
+    only escape.
     """
     rec = job_records.get_record(job_id)
-    if rec is None:
+    if rec is not None:
+        if rec.status not in job_records.TERMINAL_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"cannot remove an active record (status={rec.status})",
+            )
+        _gc.delete_central_tty_for(rec)
+        job_records.remove_record(job_id)
+        return {"removed": job_id, "source": "record"}
+
+    # Endpoint-only path. Look up the trainer-control entry, refuse
+    # to evict a live one, otherwise rmtree its directory.
+    ep = _find_endpoint_by_id(job_id)
+    if ep is None:
         raise HTTPException(status_code=404, detail=f"no record for {job_id}")
-    if rec.status not in job_records.TERMINAL_STATUSES:
+    if _pid_alive(ep.pid):
         raise HTTPException(
             status_code=409,
-            detail=f"cannot remove an active record (status={rec.status})",
+            detail=(
+                f"endpoint {job_id} (pid={ep.pid}) is still alive. "
+                "Refusing to remove a running trainer's endpoint dir."
+            ),
         )
-    _gc.delete_central_tty_for(rec)
-    job_records.remove_record(job_id)
-    return {"removed": job_id}
+    removed_dir = _remove_endpoint_dir(job_id)
+    if not removed_dir:
+        raise HTTPException(
+            status_code=500,
+            detail=f"could not remove endpoint directory for {job_id}",
+        )
+    return {"removed": job_id, "source": "endpoint"}
+
+
+def _find_endpoint_by_id(job_id: str) -> Optional[trainer_control.JobInfo]:
+    """Locate a TrainerControl endpoint entry by its job_id."""
+    try:
+        eps = trainer_control.list_jobs()
+    except Exception as e:
+        log.warning("endpoint enumeration failed during remove: %s", e)
+        return None
+    for ep in eps:
+        if ep.job_id == job_id:
+            return ep
+    return None
+
+
+def _remove_endpoint_dir(job_id: str) -> bool:
+    """Delete the trainer-control directory for ``job_id``.
+
+    Mirrors the directory layout the trainer's HTTP control endpoint
+    writes into (``~/.forgather/jobs/<job_id>/``). Returns True on
+    successful removal, False if the directory is missing or
+    rmtree raises. Errors are logged but swallowed so a partial
+    removal still produces a usable response.
+    """
+    import shutil
+    from pathlib import Path
+
+    job_dir = Path.home() / ".forgather" / "jobs" / job_id
+    if not job_dir.exists():
+        return False
+    try:
+        shutil.rmtree(job_dir)
+        return True
+    except OSError as e:
+        log.warning("failed to rmtree %s: %s", job_dir, e)
+        return False
 
 
 @router.post("/jobs/cleanup")
