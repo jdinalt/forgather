@@ -214,7 +214,19 @@ create_container() {
 
     # Detached, no --rm. PID 1 is sleep infinity so the container
     # survives across `docker exec` sessions and shell logouts.
+    #
+    # ``--init`` puts Docker's bundled tini in front of the entrypoint
+    # so PID 1 properly reaps orphan grandchildren. Without it, when
+    # torchrun gets killed and its worker subprocesses get re-parented
+    # to PID 1 (= sleep), nobody calls wait() on them and they pile up
+    # as zombies. Operators ran into exactly this on the multi-node
+    # cluster after a hung save-stop. tini intercepts SIGCHLD and
+    # waitpid()s for any orphan, regardless of whether it's a child
+    # of a tracked process — solving the problem at the layer that
+    # can actually see those orphans (the Forgather server itself
+    # cannot, because the orphans are no longer its children).
     docker run -d \
+        --init \
         --name "${NAME}" \
         "${HOSTNAME_ARGS[@]}" \
         "${GPU_ARGS[@]}" \
