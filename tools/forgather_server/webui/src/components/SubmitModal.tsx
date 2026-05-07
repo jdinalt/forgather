@@ -68,6 +68,16 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     refetchInterval: 5000,
   });
   const clusterActive = !!membersQ.data?.cluster_name;
+  // Per-node GPU snapshot for the multi-node panel: we cap each
+  // peer's GPUs spinner by that node's actual hardware and show
+  // idle counts. The 5s refresh keeps "(N idle of M)" approximately
+  // live without saturating the master proxy.
+  const clusterGpusQ = useQuery({
+    queryKey: ["cluster", "gpus"],
+    queryFn: api.getClusterGpus,
+    refetchInterval: 5000,
+    enabled: clusterActive,
+  });
 
   // Map of dest -> current value; strings only, coerced on submit
   const [values, setValues] = useState<Record<string, string>>({});
@@ -497,54 +507,68 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
           )}
 
           {clusterActive && membersQ.data && mnSeeded && (
-            <>
-              <h4 className="dyn-heading">
-                Multi-node{" "}
-                <span className="muted">
-                  (cluster <code>{membersQ.data.cluster_name}</code> —{" "}
-                  {membersQ.data.members.length} member
-                  {membersQ.data.members.length === 1 ? "" : "s"})
-                </span>
-              </h4>
+            // Collapsible section. Default open so the panel is
+            // discoverable on first use; the operator can collapse
+            // it on a small viewport so the dialog fits without
+            // scrolling. When both this and the Dynamic args
+            // sections are open, the CSS clamps each to half the
+            // available body height and the inner table scrolls
+            // independently.
+            <details className="submit-section" open>
+              <summary>
+                <h4 className="dyn-heading">
+                  Multi-node{" "}
+                  <span className="muted">
+                    (cluster <code>{membersQ.data.cluster_name}</code> —{" "}
+                    {membersQ.data.members.length} member
+                    {membersQ.data.members.length === 1 ? "" : "s"})
+                  </span>
+                </h4>
+              </summary>
               <MultiNodeSubmitPanel
                 members={membersQ.data}
+                clusterGpus={clusterGpusQ.data}
                 state={mnState}
                 onChange={setMnState}
-                defaultNproc={requestedGpus}
+                defaultGpus={requestedGpus}
               />
-            </>
+            </details>
           )}
 
-          <h4 className="dyn-heading">
-            Dynamic arguments
-            {argsQ.data && argsQ.data.length === 0 && (
-              <span className="muted"> (this config declares none)</span>
+          <details className="submit-section" open>
+            <summary>
+              <h4 className="dyn-heading">
+                Dynamic arguments
+                {argsQ.data && argsQ.data.length === 0 && (
+                  <span className="muted"> (this config declares none)</span>
+                )}
+              </h4>
+            </summary>
+
+            {argsQ.isLoading && <div className="muted pad">Loading…</div>}
+            {argsQ.error && (
+              <div className="err pad">
+                <pre>{String(argsQ.error)}</pre>
+              </div>
             )}
-          </h4>
-
-          {argsQ.isLoading && <div className="muted pad">Loading…</div>}
-          {argsQ.error && (
-            <div className="err pad">
-              <pre>{String(argsQ.error)}</pre>
-            </div>
-          )}
-          {argsQ.data && argsQ.data.length > 0 && overrideSeeded && (
-            // Seeding waits for both schema and cached overrides to land
-            // so the form mounts with its true initial values. That
-            // matters because DynArgGroupNode captures the initial
-            // expansion state on first render — if we mount before
-            // seeding, a required arg whose value was already cached
-            // would still look "missing" briefly and force the group
-            // open every time the modal reopens.
-            <DynamicArgsForm
-              schema={argsQ.data}
-              values={values}
-              onChange={(dest, v) =>
-                setValues((prev) => ({ ...prev, [dest]: v }))
-              }
-              enforceRequired
-            />
-          )}
+            {argsQ.data && argsQ.data.length > 0 && overrideSeeded && (
+              // Seeding waits for both schema and cached overrides to
+              // land so the form mounts with its true initial values.
+              // That matters because DynArgGroupNode captures the
+              // initial expansion state on first render — if we mount
+              // before seeding, a required arg whose value was already
+              // cached would still look "missing" briefly and force the
+              // group open every time the modal reopens.
+              <DynamicArgsForm
+                schema={argsQ.data}
+                values={values}
+                onChange={(dest, v) =>
+                  setValues((prev) => ({ ...prev, [dest]: v }))
+                }
+                enforceRequired
+              />
+            )}
+          </details>
         </div>
 
         <footer className="modal-footer">

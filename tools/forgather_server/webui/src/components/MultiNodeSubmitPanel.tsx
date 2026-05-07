@@ -1,4 +1,5 @@
 import {
+  ClusterGpusResponse,
   ClusterMember,
   ClusterMembersResponse,
   MultinodeOverrides,
@@ -74,23 +75,45 @@ export function multiNodeStateToOverrides(
 
 interface Props {
   members: ClusterMembersResponse;
+  /** Cluster-wide GPU snapshot — used to cap each peer's GPUs spinner
+   *  by the actual hardware on that node, and to show the idle count
+   *  next to the input. May be undefined while the query is loading
+   *  (the panel still renders, just without caps/idle counts). */
+  clusterGpus?: ClusterGpusResponse;
   state: MultiNodePanelState;
   onChange: (next: MultiNodePanelState) => void;
-  /** Default nproc to seed for newly-selected peers. Picked up from
-   *  the parent's GPUs spinner so a config that asks for "2 GPUs"
-   *  starts every selected node at 2. */
-  defaultNproc: number;
+  /** Default GPU count to seed for newly-selected peers when we
+   *  don't yet know the node's hardware. Picked up from the parent
+   *  modal so a config that asks for "2 GPUs" starts every node at
+   *  2 (clamped down per-peer once the GPU snapshot arrives). */
+  defaultGpus: number;
 }
 
 export function MultiNodeSubmitPanel({
   members: membersData,
+  clusterGpus,
   state,
   onChange,
-  defaultNproc,
+  defaultGpus,
 }: Props) {
   const members = membersData.members;
   const selfId = membersData.self_node_id;
   const masterId = membersData.master_node_id;
+  // Map: node_id → { max, idle } so per-node bounds and the
+  // "(N idle of M)" hint are O(1) lookups while we render the
+  // participants table. Idle uses the same gate as the single-node
+  // Submit dialog: not excluded *and* not runtime-disabled — i.e.
+  // GPUs the scheduler is willing to assign right now.
+  const gpuStats = new Map<string, { max: number; idle: number }>();
+  if (clusterGpus) {
+    for (const node of clusterGpus.nodes) {
+      const max = node.gpus.length;
+      const idle = node.gpus.filter(
+        (g) => !g.excluded && !g.disabled,
+      ).length;
+      gpuStats.set(node.node_id, { max, idle });
+    }
+  }
 
   const update = (patch: Partial<MultiNodePanelState>) =>
     onChange({ ...state, ...patch });
@@ -103,7 +126,13 @@ export function MultiNodeSubmitPanel({
     } else {
       next.add(m.node_id);
       if (nproc[m.node_id] == null) {
-        nproc[m.node_id] = defaultNproc;
+        // Seed at min(defaultGpus, this node's max) so we never start
+        // selected with a value the node can't honour. Falls back to
+        // defaultGpus when GPU stats haven't loaded yet.
+        const stats = gpuStats.get(m.node_id);
+        nproc[m.node_id] = stats
+          ? Math.max(1, Math.min(defaultGpus, stats.max))
+          : defaultGpus;
       }
     }
     // If the rdzv host gets unselected, fall back to master so the
@@ -115,13 +144,16 @@ export function MultiNodeSubmitPanel({
     update({ selected: next, perNodeNproc: nproc, rdzvNodeId });
   };
 
-  const setNproc = (id: string, n: number) =>
+  const setGpus = (id: string, n: number) => {
+    const stats = gpuStats.get(id);
+    const cap = stats?.max ?? Number.POSITIVE_INFINITY;
     update({
       perNodeNproc: {
         ...state.perNodeNproc,
-        [id]: Math.max(1, Math.floor(n) || 1),
+        [id]: Math.max(1, Math.min(cap, Math.floor(n) || 1)),
       },
     });
+  };
 
   const setIface = (id: string, name: string) =>
     update({ perNodeIface: { ...state.perNodeIface, [id]: name } });
@@ -148,100 +180,114 @@ export function MultiNodeSubmitPanel({
         </span>
       </div>
 
-      <table className="multinode-members">
-        <thead>
-          <tr>
-            <th>Use</th>
-            <th>Node</th>
-            <th>nproc</th>
-            <th>NCCL iface</th>
-            <th>rdzv host</th>
-          </tr>
-        </thead>
-        <tbody>
-          {members.map((m) => {
-            const ifaces = (m.probe?.interfaces ?? []).filter(
-              (i) => i.is_up && !i.address.startsWith("127."),
-            );
-            const sel = state.selected.has(m.node_id);
-            const nproc = state.perNodeNproc[m.node_id] ?? defaultNproc;
-            const iface = state.perNodeIface[m.node_id] ?? "";
-            return (
-              <tr
-                key={m.node_id}
-                className={m.reachable ? "" : "unreachable"}
-              >
-                <td>
-                  <input
-                    type="checkbox"
-                    checked={sel}
-                    disabled={!m.reachable}
-                    onChange={() => toggleSelected(m)}
-                  />
-                </td>
-                <td>
-                  <strong>{m.hostname}</strong>{" "}
-                  <code>
-                    {m.address}:{m.port}
-                  </code>
-                  {m.node_id === selfId && (
-                    <span className="node-tag node-tag-ok">this node</span>
-                  )}
-                  {m.node_id === masterId && (
-                    <span className="node-tag node-tag-ok">master</span>
-                  )}
-                  {!m.reachable && (
-                    <span className="node-tag node-tag-err">unreachable</span>
-                  )}
-                </td>
-                <td>
-                  <input
-                    type="number"
-                    min={1}
-                    value={nproc}
-                    disabled={!sel}
-                    onChange={(e) => setNproc(m.node_id, Number(e.target.value))}
-                    style={{ width: 60 }}
-                  />
-                </td>
-                <td>
-                  {ifaces.length > 0 ? (
-                    <select
-                      value={iface}
-                      disabled={!sel}
-                      onChange={(e) => setIface(m.node_id, e.target.value)}
-                    >
-                      <option value="">(auto)</option>
-                      {ifaces.map((i) => (
-                        <option key={i.name} value={i.name}>
-                          {i.name} — {i.address}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
+      <div className="multinode-members-scroll">
+        <table className="multinode-members">
+          <thead>
+            <tr>
+              <th>Use</th>
+              <th>Node</th>
+              <th>GPUs</th>
+              <th>NCCL iface</th>
+              <th>rdzv host</th>
+            </tr>
+          </thead>
+          <tbody>
+            {members.map((m) => {
+              const ifaces = (m.probe?.interfaces ?? []).filter(
+                (i) => i.is_up && !i.address.startsWith("127."),
+              );
+              const sel = state.selected.has(m.node_id);
+              const stats = gpuStats.get(m.node_id);
+              const gpus = state.perNodeNproc[m.node_id] ?? defaultGpus;
+              const iface = state.perNodeIface[m.node_id] ?? "";
+              return (
+                <tr
+                  key={m.node_id}
+                  className={m.reachable ? "" : "unreachable"}
+                >
+                  <td>
                     <input
-                      type="text"
-                      value={iface}
-                      placeholder="eth0"
-                      disabled={!sel}
-                      onChange={(e) => setIface(m.node_id, e.target.value)}
+                      type="checkbox"
+                      checked={sel}
+                      disabled={!m.reachable}
+                      onChange={() => toggleSelected(m)}
                     />
-                  )}
-                </td>
-                <td>
-                  <input
-                    type="radio"
-                    name="rdzv-host"
-                    checked={state.rdzvNodeId === m.node_id}
-                    disabled={!m.reachable || !sel}
-                    onChange={() => update({ rdzvNodeId: m.node_id })}
-                  />
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                  </td>
+                  <td>
+                    <strong>{m.hostname}</strong>{" "}
+                    <code>
+                      {m.address}:{m.port}
+                    </code>
+                    {m.node_id === selfId && (
+                      <span className="node-tag node-tag-ok">this node</span>
+                    )}
+                    {m.node_id === masterId && (
+                      <span className="node-tag node-tag-ok">master</span>
+                    )}
+                    {!m.reachable && (
+                      <span className="node-tag node-tag-err">
+                        unreachable
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    <input
+                      type="number"
+                      min={1}
+                      max={stats?.max ?? undefined}
+                      value={gpus}
+                      disabled={!sel}
+                      onChange={(e) =>
+                        setGpus(m.node_id, Number(e.target.value))
+                      }
+                      style={{ width: 56 }}
+                    />
+                    {stats && (
+                      <span className="muted">
+                        {" "}
+                        ({stats.idle} idle of {stats.max})
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    {ifaces.length > 0 ? (
+                      <select
+                        value={iface}
+                        disabled={!sel}
+                        onChange={(e) => setIface(m.node_id, e.target.value)}
+                      >
+                        <option value="">(auto)</option>
+                        {ifaces.map((i) => (
+                          <option key={i.name} value={i.name}>
+                            {i.name} — {i.address}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={iface}
+                        placeholder="eth0"
+                        disabled={!sel}
+                        onChange={(e) => setIface(m.node_id, e.target.value)}
+                      />
+                    )}
+                  </td>
+                  <td>
+                    <input
+                      type="radio"
+                      name="rdzv-host"
+                      checked={state.rdzvNodeId === m.node_id}
+                      disabled={!m.reachable || !sel}
+                      onChange={() => update({ rdzvNodeId: m.node_id })}
+                    />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
 
       {versionWarnings.length > 0 && (
         <div className="modal-warning">
