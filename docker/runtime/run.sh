@@ -28,6 +28,14 @@
 #   docker/runtime/run.sh --stop          # stop (but keep) the container
 #   docker/runtime/run.sh --rm            # stop + remove the container
 #   docker/runtime/run.sh --recreate      # remove and recreate
+#   docker/runtime/run.sh --dev [PATH] --recreate
+#                                         # debug only: bind-mount a
+#                                         # host clone over the image's
+#                                         # baked-in /opt/forgather/repo
+#                                         # so host-side edits go live
+#                                         # without rebuilding the image.
+#                                         # PATH defaults to this script's
+#                                         # repo root. See README.
 #
 # Environment overrides (applied at container CREATE time only):
 #   IMAGE=forgather:my-tag                # default: forgather:latest
@@ -80,6 +88,23 @@
 #                                         #   interface IP advertised over
 #                                         #   mDNS). Only meaningful when
 #                                         #   CLUSTER is also set.
+#   DEV=1                                 # default: unset. DEBUG-ONLY.
+#   DEV=/path/to/forgather                #   When set, bind-mounts a host-
+#                                         #   side forgather clone over
+#                                         #   /opt/forgather/repo so an
+#                                         #   operator can hot-fix the
+#                                         #   image without rebuilding.
+#                                         #   DEV=1 uses the script's own
+#                                         #   repo root; DEV=/path uses
+#                                         #   that path. The runtime image
+#                                         #   is intended to be IMMUTABLE
+#                                         #   AND IDENTICAL across a
+#                                         #   distribution — this option
+#                                         #   exists to test fixes without
+#                                         #   rebuilding, NOT to deploy
+#                                         #   live edits to production.
+#                                         #   The flag --dev [PATH] is
+#                                         #   equivalent to DEV=...
 #
 # Persistent overrides: if $XDG_CONFIG_HOME/forgather/docker.env (or
 # ~/.config/forgather/docker.env) exists it is sourced before defaults
@@ -88,6 +113,8 @@
 # `VAR=... run.sh` still wins.
 
 set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # Shared scaffold (config-file load, container_state, ensure_running,
 # common subcommand dispatch). See docker/_lib.sh for the contract.
@@ -124,6 +151,11 @@ EXTRA_PORTS="${EXTRA_PORTS:-}"
 # `--cluster-address <ip>`.
 CLUSTER="${CLUSTER:-}"
 CLUSTER_ADDRESS="${CLUSTER_ADDRESS:-}"
+# DEV opts in to bind-mounting a host-side forgather clone over the
+# image's baked-in /opt/forgather/repo. Empty = production mode (default).
+# "1" or unset-but-flag-passed = use ${REPO_ROOT}. Any other value
+# is treated as an explicit host path.
+DEV="${DEV:-}"
 
 # Poll the in-container state volume for the auth-token file the
 # server writes on first start. Echoes the token on stdout if found,
@@ -184,6 +216,25 @@ do_create_container() {
         VOLUME_ARGS+=(-v "${STATE_VOLUME}:/home/forgather/.forgather")
     fi
 
+    # ---- DEV bind-mount (debug only) ---------------------------------
+    # Bind-mount a host-side forgather clone over the image's baked-in
+    # /opt/forgather/repo. The image is installed editable from that
+    # path, so mounting over it makes any host-side edit go live without
+    # rebuilding the image.
+    DEV_PATH=""
+    if [[ -n "${DEV}" ]]; then
+        if [[ "${DEV}" == "1" ]]; then
+            DEV_PATH="${REPO_ROOT}"
+        else
+            DEV_PATH="${DEV}"
+        fi
+        if [[ ! -f "${DEV_PATH}/pyproject.toml" ]]; then
+            echo "[run.sh] error: --dev path '${DEV_PATH}' does not look like a Forgather checkout (no pyproject.toml)" >&2
+            exit 2
+        fi
+        VOLUME_ARGS+=(-v "${DEV_PATH}:/opt/forgather/repo")
+    fi
+
     echo "[run.sh] creating container ${NAME} from ${IMAGE}" >&2
     echo "[run.sh]   PUID=$(id -u)  PGID=$(id -g)" >&2
     if [[ "${NETWORK}" == "host" ]]; then
@@ -203,6 +254,22 @@ do_create_container() {
     fi
     if [[ -n "${EXTRA_MOUNTS}" ]]; then
         echo "[run.sh]   extra:   ${EXTRA_MOUNTS}" >&2
+    fi
+    if [[ -n "${DEV_PATH}" ]]; then
+        cat >&2 <<EOF
+
+[run.sh] *** WARNING: DEV mode is enabled ***
+[run.sh]   bind-mount: ${DEV_PATH} -> /opt/forgather/repo
+[run.sh]
+[run.sh]   The runtime image is intended to be IMMUTABLE and IDENTICAL
+[run.sh]   across a distribution. The supported deployment model is
+[run.sh]   "build once, distribute, run on N nodes" — host-side edits
+[run.sh]   bypass that model entirely.
+[run.sh]
+[run.sh]   Use --dev / DEV= to test a fix WITHOUT rebuilding the image.
+[run.sh]   For production, rebuild and redistribute the image instead.
+
+EOF
     fi
     if [[ -n "${CLUSTER}" ]]; then
         if [[ -n "${CLUSTER_ADDRESS}" ]]; then
@@ -321,6 +388,32 @@ EOF
     fi
 }
 
+# ---------- pre-parse: --dev [PATH] -------------------------------
+# Recognized anywhere in the argv (typical positions: before
+# `--recreate` or alone). Sets DEV; the rest of the dispatch logic
+# operates on the unchanged subcommand position (--recreate, --shell,
+# etc.). DEV may also have come from the env or the docker.env config
+# file — the flag just provides a CLI shortcut.
+PARSED_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dev)
+            shift
+            if [[ $# -gt 0 && "$1" != --* ]]; then
+                DEV="$1"
+                shift
+            else
+                DEV=1
+            fi
+            ;;
+        *)
+            PARSED_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- "${PARSED_ARGS[@]}"
+
 # ---------- subcommand dispatch -----------------------------------
 # Common subcommands (--status, --stop, --rm) are handled by the
 # shared lib; image-specific ones live below.
@@ -357,7 +450,7 @@ case "${1:-}" in
         do_create_container
         ;;
     -h|--help)
-        sed -n '2,89p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,113p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         ;;
     "")
         lib_ensure_running

@@ -244,6 +244,39 @@ docker stop forgather-server
 docker exec -u forgather -ti forgather-server bash
 ```
 
+## Debug: testing fixes without rebuilding (`--dev`)
+
+The runtime image is intended to be **immutable and identical
+across a distribution** — build once, distribute, run on N nodes.
+That's the supported deployment model and the right one for
+production.
+
+For the case where you've found a bug in a deployed runtime image
+and want to test a fix without going through a full rebuild +
+redistribute cycle, `docker/runtime/run.sh` accepts a `--dev` flag
+(or `DEV=1` env var) that bind-mounts a host-side forgather clone
+over the image's baked-in `/opt/forgather/repo`. Because the image
+installs forgather editable from that path, host-side edits go
+live the next time the container restarts.
+
+```bash
+# Use the script's own repo root (works when you run from the
+# clone you want to test):
+docker/runtime/run.sh --dev --recreate
+
+# Or point at a specific clone:
+docker/runtime/run.sh --dev /home/me/forgather-fork --recreate
+
+# Equivalent via env var (useful in docker.env or one-shot calls):
+DEV=1 docker/runtime/run.sh --recreate
+DEV=/home/me/forgather-fork docker/runtime/run.sh --recreate
+```
+
+The script prints a prominent warning when `--dev` is active so it's
+obvious in the operator's terminal that the container is off the
+golden path. **Please rebuild the image for production deployment;
+do not ship a runtime image that depends on a host-side clone.**
+
 ## Healthcheck
 
 The image declares a Docker `HEALTHCHECK` that probes
