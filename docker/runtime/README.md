@@ -26,6 +26,25 @@ fork, or iterate on an unmerged branch:
 FORGATHER_GIT_REF=feature/my-change docker/runtime/build.sh
 ```
 
+### Air-gapped builds
+
+If the build host has no network access to the git remote (offline
+CI, isolated lab, etc.), pass `FORGATHER_SOURCE_DIR=<path>` as a
+build arg, where `<path>` is relative to the docker build context
+(repo root). The Dockerfile will `cp` the source from there
+instead of running `git clone`:
+
+```bash
+docker build -t forgather:offline \
+    --build-arg FORGATHER_SOURCE_DIR=. \
+    -f Dockerfile.runtime .
+```
+
+`docker/runtime/build.sh` does not currently thread this arg through;
+invoke `docker build` directly when you need it. The default
+(`FORGATHER_SOURCE_DIR=` empty) still git-clones, so existing builds
+are unaffected.
+
 The dev image remains the recommended path for active development. The
 runtime image is the artifact to publish, ship to a server, or hand to
 a colleague who just wants to *run* Forgather.

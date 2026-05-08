@@ -32,6 +32,12 @@ ARG USER_GID=1000
 # FORGATHER_GIT_REF to pin a release tag or commit sha.
 ARG FORGATHER_GIT_URL=https://github.com/jdinalt/forgather.git
 ARG FORGATHER_GIT_REF=dev
+# Air-gap escape hatch: when FORGATHER_SOURCE_DIR is set to a path
+# *inside the build context*, the source tree is copied from there
+# instead of being cloned from git. Useful for offline / CI builds
+# or to bake a working-tree-with-uncommitted-changes for testing.
+# Default empty = git-clone path (the recommended reproducible flow).
+ARG FORGATHER_SOURCE_DIR=
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -147,15 +153,42 @@ RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sh
 # tools/forgather_server/server.py, and the FastAPI app resolves
 # webui/dist/ relative to its own __file__ — both work because we
 # install editable from this baked-in tree.
-# `git clone --depth 1 --branch <ref>` only works when <ref> is a
-# branch or tag name. Fall back to a full clone + checkout so that
-# FORGATHER_GIT_REF can also be a commit SHA. Parens group the
-# fallback so the checkout doesn't run on the fast path.
-RUN git clone --depth 1 --branch "${FORGATHER_GIT_REF}" \
-        "${FORGATHER_GIT_URL}" "${REPO_DIR}" 2>/dev/null \
-    || ( rm -rf "${REPO_DIR}" \
-        && git clone "${FORGATHER_GIT_URL}" "${REPO_DIR}" \
-        && cd "${REPO_DIR}" && git checkout "${FORGATHER_GIT_REF}" )
+# Two source acquisition modes, selected by FORGATHER_SOURCE_DIR:
+#
+#   - empty (default): git-clone from FORGATHER_GIT_URL @ FORGATHER_GIT_REF.
+#     `git clone --depth 1 --branch <ref>` only works when <ref> is a
+#     branch or tag name; fall back to a full clone + checkout so the
+#     ref can also be a commit SHA.
+#
+#   - non-empty: cp -a from that path inside the build context (mounted
+#     read-only at /build-context) into ${REPO_DIR}. Lets operators
+#     build offline / from a vendored snapshot without internet access
+#     to a git remote. The build-context bind mount is used the same
+#     way the dev image's pyproject install does (Dockerfile:166-171),
+#     so behavior is consistent.
+RUN --mount=type=bind,target=/build-context \
+    set -eux; \
+    if [ -n "${FORGATHER_SOURCE_DIR}" ]; then \
+        src="/build-context/${FORGATHER_SOURCE_DIR}"; \
+        if [ ! -d "${src}" ]; then \
+            echo "FORGATHER_SOURCE_DIR=${FORGATHER_SOURCE_DIR} not found in build context" >&2; \
+            exit 1; \
+        fi; \
+        echo "[Dockerfile.runtime] copying source from build context: ${FORGATHER_SOURCE_DIR}"; \
+        mkdir -p "${REPO_DIR}"; \
+        # `cp -r` (not `cp -a`) so the destination files are owned by
+        # the current build user (forgather) rather than whatever
+        # uid the build context happens to expose. Mode/timestamps
+        # are not load-bearing for installed source.
+        cp -r "${src}/." "${REPO_DIR}/"; \
+    else \
+        echo "[Dockerfile.runtime] cloning ${FORGATHER_GIT_URL} @ ${FORGATHER_GIT_REF}"; \
+        git clone --depth 1 --branch "${FORGATHER_GIT_REF}" \
+                "${FORGATHER_GIT_URL}" "${REPO_DIR}" 2>/dev/null \
+            || ( rm -rf "${REPO_DIR}" \
+                && git clone "${FORGATHER_GIT_URL}" "${REPO_DIR}" \
+                && cd "${REPO_DIR}" && git checkout "${FORGATHER_GIT_REF}" ); \
+    fi
 
 # Install Forgather (editable) from the cloned tree. Editable mode
 # is required so that the file-walk in `forgather server` resolves
