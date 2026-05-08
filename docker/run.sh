@@ -43,6 +43,14 @@
 #   EXTRA_PORTS='-p 5173:5173'         # bridge mode only
 #   EXTRA_MOUNTS='-v /scratch:/scratch'
 #
+# Sharing ~/.forgather state with the runtime image:
+# The dev image bind-mounts $HOME wholesale, so ~/.forgather inside
+# the container is the same on-disk directory as ~/.forgather on the
+# host. To make the runtime image see that same state directory,
+# launch it with `STATE_VOLUME=$HOME/.forgather docker/runtime/run.sh`
+# — both containers will then read/write the same auth token, queue
+# index, generation configs, and hardware FLOPS cache.
+#
 # Persistent overrides: if $XDG_CONFIG_HOME/forgather/docker.env (or
 # ~/.config/forgather/docker.env) exists it is sourced before defaults
 # are applied. Use `:= ` so a command-line `VAR=... docker/run.sh`
@@ -269,7 +277,7 @@ case "${1:-}" in
         attach_shell bash -l "$@"
         ;;
     -h|--help)
-        sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,52p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
     "")

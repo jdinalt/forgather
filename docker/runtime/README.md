@@ -131,6 +131,27 @@ restart. To opt out entirely (ephemeral state, fresh token on every
 recreate) set `STATE_VOLUME=` (empty string). To bind-mount a host
 path instead of the named volume, set `STATE_VOLUME=/host/path/...`.
 
+### Sharing state with the dev image
+
+The canonical state path is `~/.forgather` *inside the container*
+for both images. The dev image bind-mounts `$HOME` wholesale, so
+its `~/.forgather` is automatically the host's `~/.forgather`. To
+make the runtime image read/write the same on-disk state directory
+(useful when you want to query a job submitted by the dev image,
+or vice versa), point `STATE_VOLUME` at the host path:
+
+```bash
+STATE_VOLUME=$HOME/.forgather docker/runtime/run.sh
+```
+
+Both containers will then share the auth token, queue index,
+generation configs, and hardware FLOPS cache. The default
+(`STATE_VOLUME=forgather-state`) keeps state in a docker-managed
+named volume isolated from the host filesystem — preferred for
+release deployments and shared-host scenarios — and is the right
+default for the runtime image's "build once, distribute, run on N
+nodes" use case.
+
 ## Networking
 
 By default `docker/runtime/run.sh` uses bridge networking with an

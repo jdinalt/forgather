@@ -108,6 +108,13 @@ GPUS="${GPUS:-all}"
 HF_CACHE_HOST="${HF_CACHE_HOST:-}"
 # STATE_VOLUME defaults to a docker-managed named volume (not a host mapping).
 # Set to empty string to disable, or a host path for a bind-mount.
+#
+# Tip: to share state with the dev image (forgather control list,
+# trainer logs, queue, auth token, ...), set STATE_VOLUME=$HOME/.forgather
+# so both images bind-mount the same host directory at
+# /home/forgather/.forgather. The dev image lands ~/.forgather there
+# transparently because it bind-mounts $HOME wholesale; the runtime
+# image opts in via this env var.
 STATE_VOLUME="${STATE_VOLUME-forgather-state}"
 EXTRA_MOUNTS="${EXTRA_MOUNTS:-}"
 EXTRA_PORTS="${EXTRA_PORTS:-}"
