@@ -62,6 +62,24 @@
 #                                         # Set to /host/path for a bind-mount.
 #   EXTRA_MOUNTS='-v /scratch:/scratch'   # additional volume args
 #   EXTRA_PORTS='-p 6006:6006'            # forward additional ports (e.g. tensorboard)
+#   CLUSTER=my-cluster                    # default: unset. When set, the
+#                                         #   container's CMD is
+#                                         #   `forgather server -H 0.0.0.0
+#                                         #   -p 8765 --cluster <name>`
+#                                         #   (instead of just the server
+#                                         #   invocation). For multi-node
+#                                         #   operation NETWORK=host is
+#                                         #   strongly recommended — mDNS
+#                                         #   discovery doesn't traverse
+#                                         #   docker bridge networks.
+#                                         #   See docs/guides/multi-node-training.md.
+#   CLUSTER_ADDRESS=10.0.0.5              # default: unset. When set,
+#                                         #   appends `--cluster-address
+#                                         #   <ip>` to the server args
+#                                         #   (overrides the auto-detected
+#                                         #   interface IP advertised over
+#                                         #   mDNS). Only meaningful when
+#                                         #   CLUSTER is also set.
 #
 # Persistent overrides: if $XDG_CONFIG_HOME/forgather/docker.env (or
 # ~/.config/forgather/docker.env) exists it is sourced before defaults
@@ -93,6 +111,12 @@ HF_CACHE_HOST="${HF_CACHE_HOST:-}"
 STATE_VOLUME="${STATE_VOLUME-forgather-state}"
 EXTRA_MOUNTS="${EXTRA_MOUNTS:-}"
 EXTRA_PORTS="${EXTRA_PORTS:-}"
+# Multi-node opt-in. When CLUSTER is set, the container's CMD becomes
+# `forgather server -H 0.0.0.0 -p 8765 --cluster <name>` instead of
+# just the server invocation. CLUSTER_ADDRESS, when set, appends
+# `--cluster-address <ip>`.
+CLUSTER="${CLUSTER:-}"
+CLUSTER_ADDRESS="${CLUSTER_ADDRESS:-}"
 
 # Poll the in-container state volume for the auth-token file the
 # server writes on first start. Echoes the token on stdout if found,
@@ -173,6 +197,22 @@ do_create_container() {
     if [[ -n "${EXTRA_MOUNTS}" ]]; then
         echo "[run.sh]   extra:   ${EXTRA_MOUNTS}" >&2
     fi
+    if [[ -n "${CLUSTER}" ]]; then
+        if [[ -n "${CLUSTER_ADDRESS}" ]]; then
+            echo "[run.sh]   cluster: ${CLUSTER} +address ${CLUSTER_ADDRESS}" >&2
+        else
+            echo "[run.sh]   cluster: ${CLUSTER}" >&2
+        fi
+        if [[ "${NETWORK}" != "host" ]]; then
+            cat >&2 <<EOF
+[run.sh] warning: CLUSTER is set but NETWORK=${NETWORK}. Forgather's
+[run.sh]   cluster discovery uses mDNS / multicast, which doesn't
+[run.sh]   traverse docker bridge networks. Peers on other nodes
+[run.sh]   will not see this server. Use NETWORK=host for multi-node.
+[run.sh]   See docs/guides/multi-node-training.md.
+EOF
+        fi
+    fi
 
     # --hostname is incompatible with --network host (docker rejects
     # the combination), so only set it under bridge networking.
@@ -186,6 +226,18 @@ do_create_container() {
     EXTRA_PORTS_FINAL="${EXTRA_PORTS}"
     if [[ "${NETWORK}" == "host" ]]; then
         EXTRA_PORTS_FINAL=""
+    fi
+
+    # When CLUSTER is set, override the image's default CMD so the
+    # server starts in cluster mode. We replicate the default
+    # arguments (-H 0.0.0.0 -p 8765) so operators don't have to think
+    # about the base CMD; they only care about --cluster / address.
+    CMD_ARGS=()
+    if [[ -n "${CLUSTER}" ]]; then
+        CMD_ARGS=(forgather server -H 0.0.0.0 -p 8765 --cluster "${CLUSTER}")
+        if [[ -n "${CLUSTER_ADDRESS}" ]]; then
+            CMD_ARGS+=(--cluster-address "${CLUSTER_ADDRESS}")
+        fi
     fi
 
     # ``--init`` puts Docker's bundled tini in front of the entrypoint
@@ -211,7 +263,8 @@ do_create_container() {
         "${VOLUME_ARGS[@]}" \
         ${EXTRA_PORTS_FINAL} \
         ${EXTRA_MOUNTS} \
-        "${IMAGE}" > /dev/null
+        "${IMAGE}" \
+        "${CMD_ARGS[@]}" > /dev/null
 
     echo "[run.sh] container started; waiting for auth token..." >&2
 
@@ -297,7 +350,7 @@ case "${1:-}" in
         do_create_container
         ;;
     -h|--help)
-        sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,89p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         ;;
     "")
         lib_ensure_running
