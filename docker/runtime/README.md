@@ -112,6 +112,36 @@ restart. To opt out entirely (ephemeral state, fresh token on every
 recreate) set `STATE_VOLUME=` (empty string). To bind-mount a host
 path instead of the named volume, set `STATE_VOLUME=/host/path/...`.
 
+## Networking
+
+By default `docker/runtime/run.sh` uses bridge networking with an
+explicit `-p ${HOST_BIND}:${PORT}:8765` forward (default
+`127.0.0.1:8765`). This is portable and isolates the container's
+network namespace from the host.
+
+Set `NETWORK=host` to use host networking instead. This is required
+for multi-node operation: Forgather's cluster discovery uses mDNS,
+which depends on multicast traffic that does not traverse Docker's
+bridge networks. Under `NETWORK=host`:
+
+- The container shares the host's network namespace; the server
+  binds `0.0.0.0:8765` directly on the host.
+- `PORT`, `HOST_BIND`, and `EXTRA_PORTS` are ignored (with a warning
+  for `EXTRA_PORTS`).
+- `--hostname` is omitted (incompatible with host networking).
+
+```bash
+# Single-node (default — bridge with port forward):
+docker/runtime/run.sh
+
+# Multi-node — required for the cluster's mDNS discovery to work:
+NETWORK=host docker/runtime/run.sh
+```
+
+For the broader multi-node setup (cluster naming, peer discovery,
+launching distributed jobs), see
+`docs/guides/multi-node-training.md`.
+
 ## Common overrides
 
 ```bash
@@ -126,6 +156,9 @@ HOST_BIND=0.0.0.0 docker/runtime/run.sh
 
 # Use a different port on the host (in case 8765 is taken):
 PORT=8888 docker/runtime/run.sh
+
+# Host networking (multi-node mDNS / multicast discovery):
+NETWORK=host docker/runtime/run.sh
 
 # Share the host's HF cache (opt-in; not mounted by default):
 HF_CACHE_HOST=$HOME/.cache/huggingface docker/runtime/run.sh

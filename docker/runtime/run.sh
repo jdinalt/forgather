@@ -32,8 +32,23 @@
 # Environment overrides (applied at container CREATE time only):
 #   IMAGE=forgather:my-tag                # default: forgather:latest
 #   NAME=my-server                        # default: forgather-server
-#   PORT=8765                             # default: 8765
-#   HOST_BIND=0.0.0.0                     # default: 127.0.0.1 (loopback only)
+#   NETWORK=host                          # default: bridge (with -p
+#                                         #   forwards). Use 'host' for
+#                                         #   multi-node operation —
+#                                         #   the cluster's mDNS
+#                                         #   discovery uses multicast,
+#                                         #   which doesn't traverse
+#                                         #   docker bridge networks.
+#                                         #   Under host networking,
+#                                         #   PORT and HOST_BIND are
+#                                         #   ignored (the server binds
+#                                         #   directly on the host's
+#                                         #   network namespace) and
+#                                         #   EXTRA_PORTS is warned
+#                                         #   about + ignored.
+#   PORT=8765                             # default: 8765 (bridge only)
+#   HOST_BIND=0.0.0.0                     # default: 127.0.0.1 (loopback only;
+#                                         #   bridge only)
 #   GPUS=none                             # default: all
 #   GPUS='"device=0,1"'                   # specific GPUs
 #   HF_CACHE_HOST=$HOME/.cache/huggingface
@@ -52,6 +67,10 @@ set -euo pipefail
 
 IMAGE="${IMAGE:-forgather:latest}"
 NAME="${NAME:-forgather-server}"
+# Default to bridge networking (portable). Set NETWORK=host for
+# multi-node operation where mDNS discovery needs unrestricted
+# multicast access to the host network namespace.
+NETWORK="${NETWORK:-bridge}"
 PORT="${PORT:-8765}"
 HOST_BIND="${HOST_BIND:-127.0.0.1}"
 GPUS="${GPUS:-all}"
@@ -95,6 +114,27 @@ create_container() {
         GPU_ARGS=(--gpus "${GPUS}")
     fi
 
+    # Networking mode: bridge (default, with -p forwards) or host
+    # (for multi-node mDNS / multicast discovery).
+    NET_ARGS=()
+    PORT_ARGS=()
+    case "${NETWORK}" in
+        host)
+            NET_ARGS=(--network host)
+            if [[ -n "${EXTRA_PORTS}" ]]; then
+                echo "[run.sh] warning: EXTRA_PORTS is ignored under NETWORK=host" >&2
+            fi
+            echo "[run.sh] networking: host (multi-node-friendly; PORT/HOST_BIND/EXTRA_PORTS ignored)" >&2
+            ;;
+        bridge)
+            PORT_ARGS=(-p "${HOST_BIND}:${PORT}:8765")
+            ;;
+        *)
+            echo "error: unknown NETWORK=${NETWORK} (expected 'host' or 'bridge')" >&2
+            exit 2
+            ;;
+    esac
+
     # Build the volume args explicitly. Nothing is mounted unless the
     # user opted in via env var.
     VOLUME_ARGS=()
@@ -113,7 +153,11 @@ create_container() {
 
     echo "[run.sh] creating container ${NAME} from ${IMAGE}" >&2
     echo "[run.sh]   PUID=$(id -u)  PGID=$(id -g)" >&2
-    echo "[run.sh]   port:    ${HOST_BIND}:${PORT} -> 8765" >&2
+    if [[ "${NETWORK}" == "host" ]]; then
+        echo "[run.sh]   port:    host networking (server binds 0.0.0.0:8765 on host)" >&2
+    else
+        echo "[run.sh]   port:    ${HOST_BIND}:${PORT} -> 8765" >&2
+    fi
     if [[ -n "${HF_CACHE_HOST}" ]]; then
         echo "[run.sh]   hf cache: ${HF_CACHE_HOST} -> /home/forgather/.cache/huggingface" >&2
     else
@@ -128,17 +172,32 @@ create_container() {
         echo "[run.sh]   extra:   ${EXTRA_MOUNTS}" >&2
     fi
 
+    # --hostname is incompatible with --network host (docker rejects
+    # the combination), so only set it under bridge networking.
+    HOSTNAME_ARGS=()
+    if [[ "${NETWORK}" != "host" ]]; then
+        HOSTNAME_ARGS=(--hostname "forgather")
+    fi
+
+    # Under host networking, EXTRA_PORTS was already warned about and
+    # is intentionally dropped from the docker run line.
+    EXTRA_PORTS_FINAL="${EXTRA_PORTS}"
+    if [[ "${NETWORK}" == "host" ]]; then
+        EXTRA_PORTS_FINAL=""
+    fi
+
     docker run -d \
         --name "${NAME}" \
-        --hostname "forgather" \
+        "${HOSTNAME_ARGS[@]}" \
         "${GPU_ARGS[@]}" \
+        "${NET_ARGS[@]}" \
         --shm-size=8g \
         --ipc=host \
-        -p "${HOST_BIND}:${PORT}:8765" \
+        "${PORT_ARGS[@]}" \
         -e "PUID=$(id -u)" \
         -e "PGID=$(id -g)" \
         "${VOLUME_ARGS[@]}" \
-        ${EXTRA_PORTS} \
+        ${EXTRA_PORTS_FINAL} \
         ${EXTRA_MOUNTS} \
         "${IMAGE}" > /dev/null
 
@@ -149,14 +208,28 @@ create_container() {
     # `--token` on first start. The token file is created by the
     # server on first request and persists in the state volume across
     # restarts, so subsequent re-attaches get the same value.
+    #
+    # Under host networking the server binds 0.0.0.0:8765 directly on
+    # the host, so the URL that will Just Work from this host is
+    # http://127.0.0.1:8765 (and the LAN IP if reachable) — not
+    # ${HOST_BIND}:${PORT}, which only apply under bridge networking.
+    local url_host url_port
+    if [[ "${NETWORK}" == "host" ]]; then
+        url_host="127.0.0.1"
+        url_port="8765"
+    else
+        url_host="${HOST_BIND}"
+        url_port="${PORT}"
+    fi
+
     local token=""
     if token="$(read_auth_token 30)"; then
         cat >&2 <<EOF
 
 [run.sh] forgather server is up.
 
-  url (clickable):  http://${HOST_BIND}:${PORT}/?token=${token}
-  url (plain):      http://${HOST_BIND}:${PORT}/
+  url (clickable):  http://${url_host}:${url_port}/?token=${token}
+  url (plain):      http://${url_host}:${url_port}/
   auth token:       ${token}
 
 Re-fetch later:   docker/runtime/run.sh --token
@@ -171,7 +244,7 @@ EOF
   docker/runtime/run.sh --token
   docker/runtime/run.sh --logs
 
-  url:    http://${HOST_BIND}:${PORT}/
+  url:    http://${url_host}:${url_port}/
 EOF
     fi
 }
