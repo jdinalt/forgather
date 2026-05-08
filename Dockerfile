@@ -7,21 +7,19 @@
 # base image — GPU access at runtime comes from the host driver via
 # nvidia-container-toolkit (`docker run --gpus all ...`).
 #
-# Build args USER_NAME / USER_UID / USER_GID let the image carry an
-# account that matches the host user, so a bind-mounted home keeps
-# correct ownership. Defaults match Ubuntu's first interactive user
-# (1000:1000); override at build time when your host user differs:
-#
-#   docker build \
-#     --build-arg USER_NAME=$(id -un) \
-#     --build-arg USER_UID=$(id -u) \
-#     --build-arg USER_GID=$(id -g) \
-#     -t forgather-dev .
+# The in-container user is fixed at uid/gid 1000 (`dev`). The
+# entrypoint remaps to PUID/PGID at container start (gosu drop —
+# same pattern as `Dockerfile.runtime`), so a single prebuilt image
+# works for any host user without rebuilding. Bind-mount your host
+# clone at $FORGATHER_REPO and the container will install it editable
+# on first start.
 #
 # See `docker/build.sh` and `docker/run.sh` for convenience wrappers.
 
 FROM ubuntu:24.04
 
+# In-container user identity is fixed at build time. The runtime
+# entrypoint remaps to PUID/PGID via gosu when the container starts.
 ARG USER_NAME=dev
 ARG USER_UID=1000
 ARG USER_GID=1000
@@ -62,6 +60,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         graphviz \
         nodejs \
         npm \
+        gosu \
         # Developer convenience (a step up from the stripped-down image)
         bash-completion \
         curl \
@@ -84,7 +83,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         gnupg \
         locales \
         tzdata \
-    && locale-gen en_US.UTF-8
+    && locale-gen en_US.UTF-8 \
+    && gosu nobody true
 
 # ---------------------------------------------------------------------------
 # Install uv (fast Python package manager) into /usr/local/bin so it's
@@ -97,12 +97,11 @@ RUN UV_INSTALL_DIR=/usr/local/bin /tmp/uv-install.sh \
     && uv --version
 
 # ---------------------------------------------------------------------------
-# Create the in-container user matching the host UID/GID *before* we
-# build the venv, so all venv files (~thousands, dominated by PyTorch)
-# are owned by the user from the start — no slow recursive chown after
-# the install. Ubuntu 24.04 already ships with a uid=1000 'ubuntu'
-# user; if the requested UID collides with it we delete the stock
-# account first so the build arg always wins.
+# Create the in-container user (fixed UID 1000 — the entrypoint remaps
+# at container start) *before* we build the venv, so all venv files
+# (~thousands, dominated by PyTorch) are owned by the user from the
+# start. Ubuntu 24.04 already ships with a uid=1000 'ubuntu' user;
+# if our UID collides with it we delete the stock account first.
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     if id -u ubuntu >/dev/null 2>&1 && [ "$(id -u ubuntu)" = "${USER_UID}" ]; then \

@@ -10,9 +10,11 @@
 #
 # Bind-mounts the host home directory at the same path used inside
 # the container so absolute paths in shell history, configs, and
-# project files keep resolving correctly. The image carries an
-# account matching your host UID/GID (set at build time), so file
-# ownership is preserved across the boundary.
+# project files keep resolving correctly. The image's in-container
+# user is fixed at uid 1000; the entrypoint remaps to PUID/PGID
+# (passed in by this script as the host user's uid/gid) at start
+# time via gosu, so file ownership is preserved across the boundary
+# regardless of who built the image.
 #
 # Networking: defaults to host networking (--network host) so the
 # container shares the host's network stack — every service inside
@@ -237,6 +239,8 @@ create_container() {
         -w "${REPO_ROOT}" \
         -e "FORGATHER_REPO=${REPO_ROOT}" \
         -e "HOME=${HOME}" \
+        -e "PUID=$(id -u)" \
+        -e "PGID=$(id -g)" \
         "${PORT_ARGS[@]}" \
         ${EXTRA_PORTS} \
         ${EXTRA_MOUNTS} \
