@@ -162,7 +162,14 @@ cleanup() {
     fi
     exit "${rc}"
 }
-trap cleanup EXIT
+# EXIT trap fires on any shell exit, including SIGINT/SIGTERM
+# (bash's default for those signals is to exit, which triggers
+# EXIT). Adding INT/TERM explicitly is belt-and-suspenders so an
+# operator's ctrl-C reliably tears down the containers we may have
+# started — easy to miss otherwise. The trap is registered up here,
+# *before* any docker action, so the cleanup runs even if step 1's
+# build is interrupted.
+trap cleanup EXIT INT TERM
 
 # ---- step 1: build runtime image locally ----
 if [[ "${NO_BUILD}" -eq 0 ]]; then

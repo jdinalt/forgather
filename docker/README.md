@@ -64,9 +64,9 @@ Topics that apply to both images.
 
 Both images ship with a fixed in-container user at UID/GID 1000. At
 container start, the entrypoint reads `PUID` / `PGID` env vars
-(defaulting to 1000:1000), `usermod`s the in-container user to match,
-chowns relevant in-image dirs, then drops privileges via `gosu`
-before exec'ing the real command.
+(defaulting to 1000:1000), `usermod`s the in-container **uid only**
+(see below), chowns the small in-image home, then drops privileges
+via `gosu` before exec'ing the real command.
 
 The run scripts forward `PUID=$(id -u)` and `PGID=$(id -g)` from the
 calling shell automatically, so files written from inside the
@@ -76,6 +76,30 @@ container land on bind-mounted host paths with host-correct ownership
 If you launch with `docker run --user $(id -u):$(id -g)` (rootless
 podman, container-with-no-root scenarios), the entrypoint detects it
 isn't running as root and skips the remap entirely.
+
+#### Why only the uid is remapped (and the gid stays at 1000)
+
+The in-image venv at `/opt/forgather/venv` is built with files
+owned by uid 1000 / gid 1000, with `chmod -R go+rwX` applied so
+group + other have read/write/execute on directories and
+read/write on files. At runtime the entrypoint changes the
+in-container user's **uid** to PUID but leaves the primary **gid**
+at 1000. That keeps the venv group-writable for the remapped user
+without any recursive chown — cold-start is ~2 seconds even when
+host UID != 1000 (an earlier version did `chown -R /opt/forgather`
+on every container start with a different UID, which ran over
+thousands of files and added tens of seconds).
+
+This implicitly assumes **gid 1000 inside the container has no
+load-bearing meaning on your host**. On a typical
+single-user Linux box the host's gid 1000 is just the first
+interactive user's primary group — files created in your
+bind-mounted home will land with gid 1000 on the host side, which
+is fine if you're the only user. On a shared host where gid 1000
+belongs to a different user / service, you may want to inspect
+ownership of files written from the container before assuming the
+default is right; ACLs or a different bind-mount strategy can fix
+it if needed.
 
 ### GPUs
 

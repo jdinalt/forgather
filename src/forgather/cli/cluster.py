@@ -256,6 +256,8 @@ def _parse_dynamic_args(specs):
 
 
 def _cmd_submit(client, args):
+    import os
+
     # ``-p`` / ``-t`` are GLOBAL forgather flags (consumed before the
     # subcommand parser). Validate here so the operator gets a clear
     # message rather than a downstream "project_dir = None" crash.
@@ -269,6 +271,21 @@ def _cmd_submit(client, args):
             "error: cluster submit needs an absolute project path. Pass "
             "``-p <abs-path>`` (a global forgather flag, before "
             "``cluster submit``).",
+            file=sys.stderr,
+        )
+        return 1
+    # Reject relative paths even if the operator passed something
+    # other than ".". A relative ``-p`` like ``./foo`` resolves
+    # against each peer's cwd, which is per-container and almost
+    # never the same on every node — silently produces a confusing
+    # "no such project" error from one or more peers, hours into
+    # debugging. The webui already enforces absolute paths via the
+    # config picker; mirror that here.
+    if not os.path.isabs(project_dir):
+        print(
+            f"error: cluster submit needs an absolute project path; got "
+            f"relative {project_dir!r}. Resolve with ``readlink -f`` and "
+            "pass the canonical path so every peer sees the same files.",
             file=sys.stderr,
         )
         return 1

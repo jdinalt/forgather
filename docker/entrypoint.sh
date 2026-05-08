@@ -117,14 +117,30 @@ if [[ "${FORGATHER_ENTRYPOINT_PHASE:-}" != "2" && "$(id -u)" == "0" ]]; then
     : "${HOME:=/home/${USER_NAME}}"
 
     export FORGATHER_ENTRYPOINT_PHASE=2
-    # Drop build-time env that points at root-owned paths so phase 2
-    # (the post-gosu-drop user) doesn't try to write there.
-    # ``UV_CACHE_DIR=/root/.cache/uv`` is set in the Dockerfile so the
-    # build-time uv install hits the BuildKit cache mount; at runtime
-    # the unprivileged user can't write to /root, so the editable
-    # reinstall fails with "Failed to initialize cache". Unsetting
-    # lets uv fall back to its XDG default (``~/.cache/uv``).
-    exec env -u UV_CACHE_DIR gosu "${USER_NAME}" env \
+    # Drop build-time env vars that point at root-owned paths or
+    # configure tooling for the build-time install context — they
+    # shouldn't carry into runtime where the unprivileged user
+    # can't write to ``/root/`` and shouldn't be inheriting build
+    # toolchain settings.
+    #
+    # Maintained as an explicit denylist (rather than ``env -i``)
+    # because ``env -i`` would also clear LANG / LC_ALL / TERM /
+    # TZ which we want passed through. New build-time-only env
+    # vars added to either Dockerfile must be added here too —
+    # this is the contract.
+    #
+    # Concrete payoff: ``UV_CACHE_DIR=/root/.cache/uv`` is set in
+    # the Dockerfile ENV so the build-time uv install hits the
+    # BuildKit cache mount; at runtime the unprivileged user
+    # can't write to ``/root``, so the editable reinstall fails
+    # with "Failed to initialize cache" without this scrub.
+    exec env \
+        -u UV_CACHE_DIR \
+        -u UV_LINK_MODE \
+        -u UV_INSTALL_DIR \
+        -u PIP_DISABLE_PIP_VERSION_CHECK \
+        -u BUILDKIT_PROGRESS \
+        gosu "${USER_NAME}" env \
         HOME="${HOME}" \
         VIRTUAL_ENV="${VENV_DIR}" \
         PATH="${VENV_DIR}/bin:${PATH}" \
