@@ -39,7 +39,9 @@ This makes PP well-suited for:
 - **Consumer GPUs** (RTX 3090, 4090, etc.) that lack NVLink and are often connected
   via PCIe risers that cannot run at full speed
 - **Multi-node training** over standard Ethernet, where other strategies are
-  bandwidth-starved
+  bandwidth-starved — see the [Multi-node Training guide](../guides/multi-node-training.md)
+  for the operator-facing setup, submit flow, and hang diagnosis when running PP
+  across more than one host
 - **Models too large for a single GPU** when you do not have high-bandwidth
   interconnects
 

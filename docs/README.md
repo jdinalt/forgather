@@ -28,6 +28,7 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 
 - **[Trainer Options Reference](trainers/trainer_options.md)** - Every training-argument field and constructor parameter across all built-in trainers
 - **[Pipeline Parallel](trainers/pipeline-parallel.md)** - Pipeline parallelism for consumer GPUs and limited interconnects
+- **[Multi-node Training](guides/multi-node-training.md)** - Practical setup, submit flow, and hang diagnosis for training across multiple machines on a LAN
 - **[Trainer Control](trainers/trainer-control.md)** - External control of running training jobs (save, stop, abort)
 - **[Training Performance Metrics](trainers/training-performance-metrics.md)** - Token throughput, FLOP tracking, and MFU
 - **[DiLoCo](trainers/diloco.md)** - Distributed Local-SGD training across heterogeneous machines on LAN
