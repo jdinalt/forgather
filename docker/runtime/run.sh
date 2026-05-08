@@ -62,8 +62,20 @@
 #                                         # Set to /host/path for a bind-mount.
 #   EXTRA_MOUNTS='-v /scratch:/scratch'   # additional volume args
 #   EXTRA_PORTS='-p 6006:6006'            # forward additional ports (e.g. tensorboard)
+#
+# Persistent overrides: if $XDG_CONFIG_HOME/forgather/docker.env (or
+# ~/.config/forgather/docker.env) exists it is sourced before defaults
+# are applied. Override the path with FORGATHER_DOCKER_CONFIG. Use the
+# `: "${VAR:=default}"` pattern in the file so command-line
+# `VAR=... run.sh` still wins.
 
 set -euo pipefail
+
+# Shared scaffold (config-file load, container_state, ensure_running,
+# common subcommand dispatch). See docker/_lib.sh for the contract.
+# shellcheck source=../_lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../_lib.sh"
+lib_load_config
 
 IMAGE="${IMAGE:-forgather:latest}"
 NAME="${NAME:-forgather-server}"
@@ -82,16 +94,6 @@ STATE_VOLUME="${STATE_VOLUME-forgather-state}"
 EXTRA_MOUNTS="${EXTRA_MOUNTS:-}"
 EXTRA_PORTS="${EXTRA_PORTS:-}"
 
-container_state() {
-    local s
-    s="$(docker inspect -f '{{.State.Status}}' "${NAME}" 2>/dev/null || true)"
-    case "${s}" in
-        running) echo running ;;
-        "") echo absent ;;
-        *) echo stopped ;;
-    esac
-}
-
 # Poll the in-container state volume for the auth-token file the
 # server writes on first start. Echoes the token on stdout if found,
 # returns non-zero on timeout. Tries up to ~${1:-10} seconds.
@@ -108,7 +110,7 @@ read_auth_token() {
     return 1
 }
 
-create_container() {
+do_create_container() {
     GPU_ARGS=()
     if [[ "${GPUS}" != "none" ]]; then
         GPU_ARGS=(--gpus "${GPUS}")
@@ -249,37 +251,21 @@ EOF
     fi
 }
 
-ensure_running() {
-    case "$(container_state)" in
-        running) ;;
-        stopped)
-            echo "[run.sh] starting existing container ${NAME}" >&2
-            docker start "${NAME}" > /dev/null
-            ;;
-        absent)
-            create_container
-            ;;
-    esac
-}
-
 # ---------- subcommand dispatch -----------------------------------
+# Common subcommands (--status, --stop, --rm) are handled by the
+# shared lib; image-specific ones live below.
+
+if lib_handle_common_subcommand "${1:-}"; then
+    exit 0
+fi
 
 case "${1:-}" in
-    --status)
-        echo "container: ${NAME}"
-        echo "state:     $(container_state)"
-        if [[ "$(container_state)" != "absent" ]]; then
-            docker inspect -f \
-                'image:     {{.Config.Image}}{{"\n"}}network:   {{.HostConfig.NetworkMode}}{{"\n"}}started:   {{.State.StartedAt}}' \
-                "${NAME}" 2>/dev/null || true
-        fi
-        ;;
     --logs)
-        ensure_running
+        lib_ensure_running
         exec docker logs -f "${NAME}"
         ;;
     --shell)
-        ensure_running
+        lib_ensure_running
         exec docker exec -it \
             -u forgather \
             -e "TERM=${TERM:-xterm-256color}" \
@@ -287,40 +273,24 @@ case "${1:-}" in
             bash -l
         ;;
     --token)
-        ensure_running
+        lib_ensure_running
         if ! read_auth_token 10; then
             echo "[run.sh] timed out waiting for auth token; check 'docker/runtime/run.sh --logs'" >&2
             exit 1
         fi
         ;;
-    --stop)
-        if [[ "$(container_state)" == "running" ]]; then
-            echo "[run.sh] stopping ${NAME}" >&2
-            docker stop "${NAME}" > /dev/null
-        else
-            echo "[run.sh] container ${NAME} is not running" >&2
-        fi
-        ;;
-    --rm)
-        if [[ "$(container_state)" != "absent" ]]; then
-            echo "[run.sh] removing ${NAME}" >&2
-            docker rm -f "${NAME}" > /dev/null
-        else
-            echo "[run.sh] container ${NAME} does not exist" >&2
-        fi
-        ;;
     --recreate)
-        if [[ "$(container_state)" != "absent" ]]; then
+        if [[ "$(lib_container_state)" != "absent" ]]; then
             echo "[run.sh] removing existing ${NAME}" >&2
             docker rm -f "${NAME}" > /dev/null
         fi
-        create_container
+        do_create_container
         ;;
     -h|--help)
         sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         ;;
     "")
-        ensure_running
+        lib_ensure_running
         ;;
     *)
         echo "unknown subcommand: $1 (try --help)" >&2

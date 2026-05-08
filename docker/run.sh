@@ -58,11 +58,11 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-CONFIG_FILE="${FORGATHER_DOCKER_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/forgather/docker.env}"
-if [[ -f "${CONFIG_FILE}" ]]; then
-    # shellcheck disable=SC1090
-    source "${CONFIG_FILE}"
-fi
+# Shared scaffold (config-file load, container_state, ensure_running,
+# common subcommand dispatch). See docker/_lib.sh for the contract.
+# shellcheck source=_lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
+lib_load_config
 
 IMAGE="${IMAGE:-forgather-dev:latest}"
 NAME="${NAME:-forgather-dev-${USER:-$(id -un)}}"
@@ -70,17 +70,6 @@ GPUS="${GPUS:-all}"
 NETWORK="${NETWORK:-host}"
 EXTRA_PORTS="${EXTRA_PORTS:-}"
 EXTRA_MOUNTS="${EXTRA_MOUNTS:-}"
-
-container_state() {
-    # Prints "running", "stopped", or "absent".
-    local s
-    s="$(docker inspect -f '{{.State.Status}}' "${NAME}" 2>/dev/null || true)"
-    case "${s}" in
-        running) echo running ;;
-        "") echo absent ;;
-        *) echo stopped ;;
-    esac
-}
 
 check_uncovered_symlinks() {
     # Two checks:
@@ -175,7 +164,7 @@ check_uncovered_symlinks() {
     } >&2
 }
 
-create_container() {
+do_create_container() {
     check_uncovered_symlinks
 
     GPU_ARGS=()
@@ -248,22 +237,6 @@ create_container() {
         sleep infinity > /dev/null
 }
 
-ensure_running() {
-    local state
-    state="$(container_state)"
-    case "${state}" in
-        running)
-            ;;
-        stopped)
-            echo "[run.sh] starting existing container ${NAME}" >&2
-            docker start "${NAME}" > /dev/null
-            ;;
-        absent)
-            create_container
-            ;;
-    esac
-}
-
 attach_shell() {
     # Pass current TERM through; default to a sane value if absent
     # (e.g. invoked from a non-interactive parent).
@@ -275,45 +248,23 @@ attach_shell() {
 }
 
 # ---------- subcommand dispatch -----------------------------------
+# Common subcommands (--status, --stop, --rm) are handled by the
+# shared lib; image-specific ones live below.
+
+if lib_handle_common_subcommand "${1:-}"; then
+    exit 0
+fi
 
 case "${1:-}" in
-    --status)
-        echo "container: ${NAME}"
-        echo "state:     $(container_state)"
-        if [[ "$(container_state)" != "absent" ]]; then
-            docker inspect -f \
-                'image:     {{.Config.Image}}{{"\n"}}network:   {{.HostConfig.NetworkMode}}{{"\n"}}started:   {{.State.StartedAt}}' \
-                "${NAME}" 2>/dev/null || true
-        fi
-        exit 0
-        ;;
-    --stop)
-        if [[ "$(container_state)" == "running" ]]; then
-            echo "[run.sh] stopping ${NAME}" >&2
-            docker stop "${NAME}" > /dev/null
-        else
-            echo "[run.sh] container ${NAME} is not running" >&2
-        fi
-        exit 0
-        ;;
-    --rm)
-        if [[ "$(container_state)" != "absent" ]]; then
-            echo "[run.sh] removing ${NAME}" >&2
-            docker rm -f "${NAME}" > /dev/null
-        else
-            echo "[run.sh] container ${NAME} does not exist" >&2
-        fi
-        exit 0
-        ;;
     --recreate)
         # Validate before destructive removal so a bad config doesn't
         # leave the user with no container at all.
         check_uncovered_symlinks
-        if [[ "$(container_state)" != "absent" ]]; then
+        if [[ "$(lib_container_state)" != "absent" ]]; then
             echo "[run.sh] removing existing ${NAME}" >&2
             docker rm -f "${NAME}" > /dev/null
         fi
-        create_container
+        do_create_container
         shift
         attach_shell bash -l "$@"
         ;;
@@ -322,11 +273,11 @@ case "${1:-}" in
         exit 0
         ;;
     "")
-        ensure_running
+        lib_ensure_running
         attach_shell bash -l
         ;;
     *)
-        ensure_running
+        lib_ensure_running
         attach_shell "$@"
         ;;
 esac
