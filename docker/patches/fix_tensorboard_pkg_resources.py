@@ -12,12 +12,17 @@ release contains the fix yet. This script applies the two-file
 diff in-place against the installed tensorboard package.
 
 Properties:
-    * Idempotent. Already-patched files are silently skipped.
-    * Loud on drift. If the expected pre-patch text is missing
-      (e.g. tensorboard was upgraded to a release containing the
-      fix, or a different unrelated change moved the relevant
-      code), the script raises `SystemExit` with a clear message
-      so the Docker build fails and the patch can be removed.
+    * Version-gated. If the installed tensorboard version is newer
+      than the highest known-broken release (`KNOWN_BROKEN_CEILING`),
+      the script exits non-zero so the Docker build fails — that's
+      the operator's signal to drop this patch from the Dockerfile.
+    * Idempotent on the broken range. Already-patched files within
+      a known-broken version are silently skipped (re-running the
+      build is fine).
+    * Loud on drift. If the expected pre-patch text is missing on
+      a known-broken version (e.g. an unrelated change moved the
+      relevant code), the script raises `SystemExit` with a clear
+      message so the Docker build fails.
     * Scope-limited. Touches only `default.py` and
       `data/server_ingester.py` inside the tensorboard package.
 
@@ -27,9 +32,17 @@ that contains the upstream fix.
 
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.util
 import sys
 from pathlib import Path
+
+# Highest tensorboard release known to still need this patch. Any
+# version > this should already contain the upstream fix; if such a
+# version is installed, exit non-zero to force the operator to remove
+# the patch from the Dockerfile rather than letting the build silently
+# no-op.
+KNOWN_BROKEN_CEILING = "2.20.0"
 
 # --------- replacement table (from upstream 29f809f4) -------------
 
@@ -94,6 +107,64 @@ ALREADY_PATCHED_MARKERS: dict[str, str] = {
 }
 
 
+def _parse_version(v: str) -> tuple:
+    """Parse a version string into a tuple for comparison.
+
+    Prefers `packaging.version.Version` if available; falls back to a
+    naive int-tuple split on '.' so this script works in stripped-down
+    environments (the dev image installs `packaging`, but the patch is
+    invoked early enough in the build that we don't want to depend on
+    its exact transitive deps).
+    """
+    try:
+        from packaging.version import Version
+
+        return ("packaging", Version(v))
+    except Exception:
+        parts: list[int] = []
+        for chunk in v.split("."):
+            digits = ""
+            for ch in chunk:
+                if ch.isdigit():
+                    digits += ch
+                else:
+                    break
+            if not digits:
+                break
+            parts.append(int(digits))
+        return ("naive", tuple(parts))
+
+
+def check_version_in_broken_range() -> str:
+    """Return the installed tensorboard version, exiting non-zero if
+    it's newer than the known-broken ceiling.
+    """
+    try:
+        installed = importlib.metadata.version("tensorboard")
+    except importlib.metadata.PackageNotFoundError:
+        raise SystemExit(
+            "tensorboard is not installed; cannot apply pkg_resources patch"
+        )
+    installed_key = _parse_version(installed)
+    ceiling_key = _parse_version(KNOWN_BROKEN_CEILING)
+    if installed_key[0] != ceiling_key[0]:
+        # Mismatched parser flavor — shouldn't happen, but bail safe.
+        raise SystemExit(
+            f"version-parse flavor mismatch ({installed_key[0]} vs "
+            f"{ceiling_key[0]}); refusing to compare"
+        )
+    if installed_key[1] > ceiling_key[1]:
+        raise SystemExit(
+            f"tensorboard {installed} > known-broken ceiling "
+            f"{KNOWN_BROKEN_CEILING}: upstream tensorboard now contains "
+            f"the pkg_resources fix; this patch is no longer needed and "
+            f"should be removed from the Dockerfile (drop the matching "
+            f"RUN step and delete docker/patches/"
+            f"fix_tensorboard_pkg_resources.py)."
+        )
+    return installed
+
+
 def tensorboard_root() -> Path:
     spec = importlib.util.find_spec("tensorboard")
     if spec is None or spec.origin is None:
@@ -122,6 +193,12 @@ def apply(file_path: Path, edits: list[tuple[str, str]]) -> bool:
 
 
 def main() -> int:
+    installed = check_version_in_broken_range()
+    print(
+        f"[fix_tb_pkg_resources] tensorboard {installed} (<= "
+        f"{KNOWN_BROKEN_CEILING}); applying patch",
+        file=sys.stderr,
+    )
     root = tensorboard_root()
     any_changed = False
     for rel, edits in PATCHES.items():
