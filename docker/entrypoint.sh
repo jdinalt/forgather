@@ -28,6 +28,42 @@ export VIRTUAL_ENV="${VENV_DIR}"
 export PATH="${VENV_DIR}/bin:${PATH}"
 
 # ----------------------------------------------------------------------
+# CUDA driver / wheel sanity probe.
+#
+# PyTorch wheels carry their own CUDA runtime, but if the host's NVIDIA
+# driver is older than what the wheel needs, you get an opaque CUDA
+# error tens of minutes into a training run. A 1-line nvidia-smi probe
+# at container start makes this fast to spot. The probe is non-fatal:
+# operators run CPU-only sometimes, the dev image's GPUS=none path is
+# supported, and the runtime image has no business refusing to boot
+# just because no GPU is visible.
+#
+# Runs in phase 1 (root) so PATH covers /usr/bin where nvidia-smi
+# normally lives. Runs only on the first entry — the gosu re-exec
+# sets FORGATHER_ENTRYPOINT_PHASE=2, which suppresses the second
+# print.
+# ----------------------------------------------------------------------
+if [[ "${FORGATHER_ENTRYPOINT_PHASE:-}" != "2" ]]; then
+    if ! command -v nvidia-smi >/dev/null 2>&1; then
+        echo "[forgather-entrypoint] nvidia-smi: not available; container cannot see a GPU (CPU-only mode)" >&2
+    elif ! _nv_out="$(nvidia-smi --query-gpu=driver_version,name --format=csv,noheader 2>&1)"; then
+        echo "[forgather-entrypoint] nvidia-smi: failed to run; container cannot see a GPU (CPU-only mode)" >&2
+        echo "[forgather-entrypoint]   ${_nv_out}" >&2
+    else
+        # Count non-empty lines = visible devices; first column of any
+        # row is the driver version. nvidia-smi prints one row per GPU.
+        _nv_count="$(printf '%s\n' "${_nv_out}" | grep -c .)"
+        if [[ "${_nv_count}" -eq 0 ]]; then
+            echo "[forgather-entrypoint] nvidia-smi: 0 CUDA devices visible (was --gpus passed?)" >&2
+        else
+            _nv_driver="$(printf '%s\n' "${_nv_out}" | head -1 | awk -F', ' '{print $1}')"
+            echo "[forgather-entrypoint] nvidia-smi: driver=${_nv_driver}, ${_nv_count} device(s) visible" >&2
+        fi
+    fi
+    unset _nv_out _nv_count _nv_driver
+fi
+
+# ----------------------------------------------------------------------
 # Phase 1 (root): optionally remap the in-container user, chown the
 # in-image state, drop privileges via gosu, re-exec ourselves under
 # FORGATHER_ENTRYPOINT_PHASE=2 so phase 2 runs in the same script.
