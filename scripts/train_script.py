@@ -1,6 +1,8 @@
 import argparse
+import faulthandler
 import logging
 import os
+import signal
 import sys
 from argparse import RawTextHelpFormatter
 
@@ -12,6 +14,46 @@ from torch.distributed.elastic.multiprocessing.errors import record
 import datasets
 
 logger = logging.getLogger(__name__)
+
+
+def _enable_faulthandler() -> None:
+    """Wire Python's faulthandler so a hung or crashed worker leaves a trace.
+
+    Two complementary behaviours, both essential for diagnosing
+    multi-node hangs that produce no Python traceback today:
+
+    * ``faulthandler.enable()`` — install C-level signal handlers
+      (SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL) that dump the Python
+      stack of every thread to stderr before the process dies. Without
+      this, a worker that hits a CUDA driver assertion or segfaults in
+      a background thread exits with just an exit code and no clue
+      where it died — exactly the silent-rank-death pattern we hit on
+      the 7B PP run.
+
+    * ``faulthandler.register(SIGUSR1)`` — on SIGUSR1, dump every
+      thread's Python stack to stderr but *don't* kill the process.
+      Lets us ``kill -USR1 <pid>`` against a hung rank to see where
+      it's stuck (most often blocked in a torch.distributed collective)
+      without disturbing it. Same idiom as ``py-spy dump``, but works
+      from inside a container that doesn't allow ptrace.
+
+    Idempotent — safe to call multiple times. The dump destination is
+    stderr, which torchrun routes to the per-rank TTY log, so the
+    output lands in the same place the operator is already looking.
+    """
+    faulthandler.enable()
+    # SIGUSR1 is reserved for application use on Linux and isn't
+    # claimed by torch / NCCL / huggingface internals at the time of
+    # writing, so it's safe to repurpose for our dump-on-demand. Keep
+    # ``chain=False`` so we don't fall through to the default action
+    # (which would terminate the process).
+    if hasattr(signal, "SIGUSR1"):
+        try:
+            faulthandler.register(signal.SIGUSR1, chain=False)
+        except (ValueError, OSError):
+            # Some environments (Windows, restricted containers) don't
+            # let us register; not fatal.
+            pass
 
 
 def init_logging(args):
@@ -107,6 +149,12 @@ def main():
     import json
 
     from forgather.project import Project
+
+    # Enable before anything heavy so a crash during model construction,
+    # NCCL init, or the first pipeline collective still produces a
+    # traceback. Goes ahead of init_logging so even errors during arg
+    # parsing benefit.
+    _enable_faulthandler()
 
     logging.basicConfig(level=logging.INFO)
     args = parse_args()

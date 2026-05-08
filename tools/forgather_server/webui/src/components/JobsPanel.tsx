@@ -428,6 +428,10 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
               control.mutate({ id: menuTarget.job.id, action });
               setMenuTarget(null);
             }}
+            onRemoveStaleEndpoint={() => {
+              removeJob.mutate(menuTarget.job.id);
+              setMenuTarget(null);
+            }}
           />
         </ContextMenu>
       )}
@@ -442,12 +446,20 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
 function JobContextMenuItems({
   job,
   onChoose,
+  onRemoveStaleEndpoint,
 }: {
   job: Job;
   onChoose: (action: ControlAction) => void;
+  onRemoveStaleEndpoint: () => void;
 }) {
   const isOurs = job.source !== "endpoint";
   const isActive = job.alive;
+  // Stale-endpoint case: a TrainerControlClient endpoint file is on
+  // disk but the PID is dead/zombie/reused. Without an action here
+  // the entry sticks in the Jobs list forever (the Forgather control
+  // CLI on each peer was the only escape hatch). Backend's
+  // DELETE /api/jobs/{id} now rmtrees the endpoint dir for these.
+  const isStaleEndpoint = !isOurs && !isActive;
   return (
     <>
       <div className="context-menu-header muted">
@@ -473,7 +485,26 @@ function JobContextMenuItems({
           ☠ Force kill (SIGKILL)
         </button>
       )}
-      {(!isOurs || !isActive) && (
+      {isStaleEndpoint && (
+        <button
+          className="context-menu-destructive"
+          onClick={() => {
+            if (
+              confirm(
+                `Remove stale endpoint ${job.id}?\n\nThis endpoint's ` +
+                  `process is gone (PID dead or zombie). The directory ` +
+                  `under ~/.forgather/jobs/ will be deleted so the entry ` +
+                  `stops appearing in the Jobs list. No process is killed.`,
+              )
+            ) {
+              onRemoveStaleEndpoint();
+            }
+          }}
+        >
+          ✕ Remove stale endpoint
+        </button>
+      )}
+      {!isOurs && isActive && (
         <div className="context-menu-empty muted">
           No actions for this job.
         </div>

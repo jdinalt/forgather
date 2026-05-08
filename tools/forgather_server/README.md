@@ -356,6 +356,389 @@ bearer token then traverses the network in cleartext. Run behind an
 SSH tunnel or a TLS-terminating reverse proxy for LAN access; native
 TLS support is on the roadmap.
 
+### Cluster mode (multi-node, prototype)
+
+The server can join a peer-to-peer cluster of other forgather servers
+on the same LAN. Cluster mode is **opt-in**: without `--cluster <name>`
+behavior is identical to the single-node prototype.
+
+```bash
+# Standalone (default — no LAN advertisement, no peer membership)
+forgather server
+
+# Multi-node: advertise on mDNS, peer with other servers using the
+# same cluster name. Bind to all interfaces so peers can reach the
+# API across the network.
+forgather server -H 0.0.0.0 --cluster lab
+```
+
+**Cluster name scoping.** Only servers started with the same
+`--cluster NAME` see each other. Two unrelated clusters on the same
+LAN will not auto-merge. The name is per-invocation (not persisted),
+so a host can move between clusters by restarting with a different
+flag.
+
+**Node identity.** Each host mints a stable UUID at first cluster
+startup, persisted at `~/.forgather/cluster/node_id` (mode 0600).
+The UUID survives hostname changes, NIC swaps, and cluster-name
+changes. Master is selected deterministically as the lowest UUID
+among reachable members; no election round-trip.
+
+**Discovery.** mDNS / Zeroconf, advertising `_forgather._tcp` with
+TXT records `cluster=<name>`, `node_id=<uuid>`, `version=<x.y.z>`,
+`hostname=<host>`. Peers without a matching cluster TXT are ignored.
+
+Address advertisement uses `psutil.net_if_addrs()` to enumerate real
+LAN IPs — `socket.gethostname()` is unreliable on Linux because of
+`/etc/hosts` artifacts like `127.0.1.1`. Common virtual interface
+prefixes (`docker*`, `br-*`, `veth*`, `tun*`, `tap*`, `wg*`, etc.)
+are filtered out because they share addresses across hosts and
+typically don't carry inter-host traffic.
+
+**When auto-detection fails:** if the server runs inside a container
+whose network namespace hides the host's real interfaces, psutil may
+see only loopback or only a container bridge. The auto-detector
+falls back to `127.0.0.1` and emits a WARNING; peers on other hosts
+will not be able to reach you in that state. Use `--cluster-address
+<ip>` (repeatable) to specify the address(es) you want advertised:
+
+```bash
+# Inside a container without --network host: tell forgather what
+# host-routable address to put in the mDNS record.
+forgather server -H 0.0.0.0 --cluster lab --cluster-address 192.168.1.27
+```
+
+To diagnose what's happening on a running cluster, the server logs
+which interface(s) it advertises at startup, and which local
+interface it inferred for each incoming peer (matched by subnet
+against the peer's advertised address). Look for
+`mDNS peer <hostname> at <addr>:<port> via local iface <iface>`
+in the log to confirm peers are showing up on the interface you
+expect.
+
+**Membership.** Every 5 s each node GETs `/api/cluster/members` from
+every other known peer, merges the returned member tables, and marks
+silent peers as unreachable after 30 s. Unreachable peers are kept
+in the table (union-of-ever-seen view) — the user agreed model is to
+flag, not delete.
+
+**Security.** Inter-node API calls are unauthenticated by design. The
+threat model assumes a trusted LAN, consistent with the
+torch.distributed assumption that already underpins multi-host
+training. The carve-out is narrow:
+
+- GET on a small allow-list of read-only cluster endpoints from a
+  source IP that matches a known cluster member.
+- POST on an even smaller allow-list of mutation endpoints (currently
+  only `/api/cluster/gpu_policy_local`) from the same.
+- Per-node webui auth (bearer token / browser session) is unchanged
+  — peer-call carve-out applies only to inter-node traffic, not to
+  browsers.
+
+If your LAN is not trusted, do not enable cluster mode.
+
+**Nodes view.** When cluster mode is active, the sidebar's "GPUs"
+entry is labelled "Nodes" and renders one bounded box per cluster
+member. The local node embeds the live single-host GpuPanel
+(WebSocket stream, kill, full context menu); peer nodes show the
+same rich GPU cards, polled at 5 s, with click-to-toggle wired
+through a master-side proxy. Peer right-click context menu (kill
+processes, set min-priority) is intentionally absent in v1 — those
+mutations route through future by-node proxy work.
+
+**Pre-flight probe (Phase 2).** Each member entry carries a
+``probe`` payload computed once at startup and propagated via
+peer-pull:
+
+- **Versions**: ``forgather``, ``torch`` + CUDA runtime + ``nccl``,
+  ``transformers``, ``python``, platform string. Surfaced inline in
+  every node's header as compact chips. When a node's value diverges
+  from the cluster majority for any headline key, the chip turns
+  yellow and tooltips with the divergence; the cluster header gets a
+  "version mismatch" tag. Multi-node training is exquisitely
+  sensitive to ``torch`` / ``nccl`` mismatches across hosts — the
+  Samantha tutorial spends pages on this — so seeing it at a glance
+  before launching anything matters.
+- **Network interfaces**: every IPv4 interface with address, netmask,
+  CIDR, link state, and link speed (when reported by the kernel).
+  Collapsible per-node panel. Useful when picking
+  ``NCCL_SOCKET_IFNAME`` for multi-node training, and as a quick
+  sanity check that cluster-internal traffic is on the interface
+  you expect.
+- **CPU / RAM summary**: logical + physical core count and total
+  RAM in GiB, shown in the node header next to the address.
+
+**Bandwidth probe (Phase 2).** A collapsible panel above the node
+list runs a single-stream HTTP throughput measurement from the
+local node to each reachable peer on demand. Triggered by a button
+("Refresh") to keep the network idle the rest of the time;
+sequential rather than parallel so co-tenant flows don't masquerade
+as bottlenecks. Results are cached for 1 hour.
+
+The endpoint at ``/api/cluster/bandwidth_local`` streams a
+deterministic byte blob (default 32 MiB, max 256 MiB) and is in the
+peer-allowed list — peers measure their own receive time and never
+hold the bytes in memory all at once. ``/api/cluster/bandwidth``
+returns the cached results; ``/api/cluster/bandwidth/refresh``
+runs a fresh measurement and updates the cache.
+
+**Multi-node training submit.** Multi-node submits are folded into
+the regular Run dialog — the same dialog that opens from a config's
+**▶ Run** action in the project tree or config viewer. When the
+server is in cluster mode, a collapsible **Multi-node** panel appears
+above the Dynamic arguments section. The local node is pre-checked
+as the only participant by default, so a cluster-mode webui that
+just clicks Submit gets identical single-node behaviour to a
+standalone server. Adding peers turns it into a fanout.
+
+In the panel, each row is a cluster member with five columns: a
+**Use** checkbox, the node's hostname/address, a **GPUs** spinner
+bounded by the node's actual hardware (with a `(N idle of M)` hint
+matching the single-node dialog — wire format stays
+``nproc_per_node`` because that's what torchrun expects, the local
+scheduler translates it into nproc + ``CUDA_VISIBLE_DEVICES``), an
+**NCCL iface** dropdown (or text field on nodes whose probe didn't
+report any interfaces), and a **rdzv host** radio. The participant
+table caps at ~9 rows then scrolls inside the panel so the
+rdzv-port row, version warnings, and help line stay anchored even
+with many cluster members.
+
+Project + config come from the dialog itself (the config you
+right-clicked Run on), and the dialog's existing dynamic-args + GPU
++ priority knobs flow through to every peer in the fanout. So
+per-config overrides — dataset paths, `max_steps`, `lr`, etc. —
+reach every node the same way they reach a single-node run.
+
+When cluster mode is active, the dialog's single-node "GPUs"
+spinner + nproc help text + gpuMismatch notice are **hidden**: the
+panel's per-node GPUs column is the only knob, and showing both
+got confusing. Priority stays visible because it applies to both
+submit paths.
+
+Last-used multi-node settings (participants, per-node GPUs, iface,
+rdzv host/port, mismatch acknowledgement) persist in the same
+per-config overrides cache as the dynamic-args, so a config "opens
+where you left off" for both submit modes. Reset to defaults
+clears multi-node state alongside the dynamic-args.
+
+The Cluster Jobs panel under **Nodes** lists the running and
+recently-finished bundles, with status, per-rank assignment, and a
+Cancel action. There is no longer a "+ Multi-node training" button
+on that panel — the submit flow is the regular Run dialog.
+
+On submit, the master:
+
+1. Validates participants are reachable and probe data shows
+   matching ``forgather`` / ``torch`` / ``nccl`` / ``transformers``
+   versions across the selected set; mismatches return HTTP 409
+   unless ``allow_version_mismatch=true`` is passed.
+2. Generates a unique ``rdzv_id`` and computes
+   ``rdzv_endpoint = <rdzv_node.address>:<rdzv_port>``
+   (default port ``29400``).
+3. Assigns ``node_rank`` by request order — the rdzv host typically
+   ends up rank 0 because the modal puts the master first.
+4. Fans out a ``POST /api/cluster/training_local`` to each
+   participant with that node's per-rank torchrun args
+   (``--nnodes``, ``--node-rank``, ``--rdzv-backend=c10d``,
+   ``--rdzv-endpoint``, ``--rdzv-id``, ``--nproc-per-node``,
+   ``--rdzv-conf is_host=true|false``). Each peer also gets
+   ``NCCL_SOCKET_IFNAME``, ``GLOO_SOCKET_IFNAME``, and
+   ``TP_SOCKET_IFNAME`` in ``extra_env``, all set to the same
+   interface (NCCL for CUDA collectives, Gloo for CPU collectives,
+   tensorpipe for RPC — each derives its advertised address
+   independently and they must all be pinned together). The
+   interface name comes from the operator's modal selection when
+   set; otherwise the server auto-derives it by matching the
+   member's advertised address against its probe's interface table
+   (``_derive_iface_from_member`` in ``routes/cluster.py``). If no
+   interface can be derived (probe missing, address mismatch) the
+   submit fails with HTTP 422 rather than spawning a job that will
+   deadlock in ``connectFullMesh``. The peer's local scheduler
+   picks up the queue item and spawns torchrun in rendezvous mode
+   (no ``--standalone``).
+   The two ``/etc/hosts`` workarounds we have to apply explicitly:
+   - ``is_host`` because torch's c10d backend autodetects "am I
+     the rendezvous host?" by resolving ``socket.gethostname()``
+     and comparing it to ``rdzv_endpoint``. On Debian/Ubuntu the
+     system hostname resolves to ``127.0.1.1`` via ``/etc/hosts``,
+     so the comparison silently fails on every node and *no* node
+     binds the TCPStore.
+   - ``GLOO_SOCKET_IFNAME`` (and ``TP_SOCKET_IFNAME``) because
+     once the rendezvous succeeds, Gloo's ``connectFullMesh`` has
+     each rank publish its own address — also via
+     ``socket.gethostname()`` — so peers receive ``127.0.1.1`` and
+     connect to their own loopback instead of each other.
+5. Records a ClusterJob bundle linking the per-node queue ids back
+   to a single ``cluster_job_id``. Listed via
+   ``GET /api/cluster/jobs``; cancel via
+   ``POST /api/cluster/jobs/{id}/cancel`` fans out a cancel to each
+   participant. Bundle creation and cancellation are journaled via
+   ``cluster_journal`` so Phase 4's replication seam covers
+   multi-node lifecycle.
+
+If a fanout step fails partway through, the master rolls back by
+issuing cancels to the participants it already enqueued on, then
+returns the original error. There's no half-submitted state.
+
+**Status rollup.** ``GET /api/cluster/jobs`` and
+``GET /api/cluster/jobs/{id}`` compute each bundle's live status by
+fanning out to every member's ``GET /api/cluster/training_status_local``
+(read-only; in the peer-allowed list). The master reads its own
+participant's status directly from local job_records, queries every
+remote peer in parallel, and rolls the per-rank statuses up via
+priority order: ``failed > running > cancelled > queued > done``.
+"done" requires *every* member to be terminal — partial completion
+is ambiguous, not done. Once the rollup reaches a terminal state
+the bundle's own ``status`` field is promoted in place
+(``done`` / ``failed`` / ``cancelled``) so subsequent reads
+short-circuit without fanning out. Slow or unreachable peers
+contribute ``current_status="unknown"`` for that rank rather than
+blocking the whole list.
+
+**Non-master proxying.** Bundle records live on the master only. To
+keep every webui in the cluster showing the same job list, non-master
+nodes proxy ``GET /api/cluster/jobs`` to the master (which is in the
+peer-allowed list, so no bearer is needed for the inter-node call).
+Master-unreachable falls through to the local empty list rather than
+erroring — the page must keep rendering during a master failover.
+
+**Asymmetric topologies.** The fanout itself doesn't care whether
+participants have matching ``nproc_per_node`` (the cluster of
+operators we tested with had a 1-GPU box and a 2-GPU box).
+Deeper, the trainer's per-node coordination groups (used by
+``main_process_first`` for cached dataset preprocessing) discover
+topology via an ``all_gather_object`` on hostnames rather than the
+old ``world_size // local_world_size`` integer math, so heterogeneous
+layouts produce correct local groups. Single-rank nodes skip
+local-group creation but still participate in peer nodes' group
+creation calls so the world-collective stays balanced.
+
+**Limitations to be aware of in v1:**
+
+- Project paths are assumed to resolve at the same location on every
+  participant. There is no automatic config staging.
+- Per-node TTY logs and job control still run through each peer's
+  own webui — there's no cross-node log aggregation. Open the peer's
+  webui in another tab to watch its rank's torchrun output.
+- ``TrainerControlCallback`` registers only on rank 0 and binds its
+  HTTP control endpoint to ``127.0.0.1`` — so live save/stop/abort
+  commands have to be issued from the webui or CLI on whichever node
+  hosts rank 0. The Cluster Jobs panel's Cancel button still works
+  from any node because it routes through the JobRecord-level
+  cancel-fanout, not the trainer-control HTTP layer.
+- The version check is advisory at the headline-key level
+  (``forgather`` / ``torch`` / ``nccl`` / ``transformers``). It
+  doesn't compare CUDA toolkit, transformers patch versions, etc.;
+  add those to ``cluster_probe.py`` if a real divergence bites.
+- ``peak_hardware_flops`` for MFU is auto-detected from rank 0's GPU
+  only and multiplied by world_size. For a homogeneous cluster this
+  is correct; for a heterogeneous cluster (e.g. mixed 3090 + 4090,
+  or pairing a Spark with a desktop GPU) the reported MFU is
+  meaningless. Workaround: set
+  ``peak_hardware_flops`` explicitly per-config, or stick to
+  homogeneous training clusters until probe-driven aggregation
+  lands.
+
+**Operational notes for multi-node operation:**
+
+- **Container PID 1 must reap orphan grandchildren.** Forgather's
+  Python server doesn't see the worker subprocesses spawned by
+  torchrun (those are torchrun's children, not ours), so when
+  torchrun gets killed the workers re-parent to PID 1 of the
+  container's pid namespace. If PID 1 is ``sleep infinity`` (the
+  pre-init default of ``docker/run.sh``) it doesn't call ``wait()``
+  and the workers pile up as zombies. ``docker/run.sh`` now passes
+  ``--init`` so Docker's bundled ``tini`` becomes PID 1 and reaps
+  orphans regardless of parentage. Existing containers need
+  recreation to pick this up: ``docker/run.sh --rm && docker/run.sh``.
+
+- **Diagnosing hangs with faulthandler.** ``train_script.py``
+  enables Python's ``faulthandler`` at startup and registers
+  ``SIGUSR1`` for live thread dumps:
+  - On a crash (SIGSEGV / SIGFPE / SIGABRT / SIGBUS / SIGILL), every
+    thread's Python stack is dumped to stderr — which torchrun
+    routes to the per-rank TTY log. Silent rank deaths (CUDA driver
+    assertions, OOM-kills, C++ exceptions in background threads)
+    leave a trace where they used to leave nothing.
+  - To inspect a hung rank live: ``kill -USR1 <pid>`` against the
+    rank's worker process. Faulthandler dumps every thread's stack
+    to the TTY log without killing the process. Same idiom as
+    ``py-spy dump``, but works inside containers that strip
+    ``CAP_SYS_PTRACE`` (which most production containers do, and our
+    forgather-dev container in particular). The dump in the TTY
+    log shows exactly which ``dist.*`` collective each rank is
+    blocked in; matching them up across ranks gives you the
+    deadlock site immediately.
+  - The per-rank ``DistributedEnvironment(...)`` line includes
+    ``host=<hostname>`` so you can correlate "rank N is hung" with
+    the actual node it lives on without cross-referencing
+    ``cluster_jobs``.
+
+- **Kill verifies process exit.** ``abort`` and ``force-kill`` poll
+  for the PID to actually exit (up to 2 s) after issuing the
+  signal. If the process is still alive (e.g. stuck in an
+  uninterruptible CUDA driver call), the JobRecord's ``error``
+  field is populated with a message pointing at the lingering PID
+  — the record stays visible in the UI instead of silently
+  disappearing while the GPU is still pinned.
+
+- **Stale endpoint cleanup.** A trainer-control endpoint file
+  (``~/.forgather/jobs/job_*/endpoint.json``) left behind by a
+  killed-and-restarted server can resurface as a phantom "running"
+  job in the Jobs list. The Jobs panel's right-click menu offers a
+  **Remove stale endpoint** action for entries whose PID is
+  dead/zombie/recycled — backend rmtree's the directory so the
+  entry stops surfacing. Toggle "include dead endpoints" on the
+  Jobs panel to see them; the default view filters them out.
+
+- **Single-writer checkpoints on shared FS.** When several ranks
+  share a filesystem (NFS, the typical multi-node setup), only one
+  rank globally writes the model shard files. The CheckpointManager
+  honours ``save_on_each_node=False`` (the documented default for
+  shared storage) by gating the shard-file save loop on
+  ``_should_save_common``, so concurrent writers can't race on the
+  same shard paths. Pipeline-parallel runs (``save_on_all_ranks=True``)
+  still have every rank write its own non-overlapping shards as
+  before — different stages own disjoint FQNs.
+
+**State.** Cluster runtime state lives at `~/.forgather/cluster/`:
+
+```
+~/.forgather/cluster/
+├── node_id              # persistent UUID (0600)
+└── journal/
+    └── events.jsonl     # append-only event log (Phase 4 seam)
+```
+
+The journal is a future-proofing seam: Phase 4 will route every
+global-state mutation (queue, GPU policy, cluster jobs) through
+append-only events so master/backup replication can be added later
+without restructuring storage. v1 emits no events to the journal yet.
+
+**Known limits in v1.**
+
+- No global scheduler — peer scheduling decisions are still
+  independent. Cluster job submits use a static fanout at submit
+  time; there is no live re-balancing or cross-node preemption.
+- No file/log streaming through a by-node proxy — to inspect a peer's
+  jobs / projects / files outside the Cluster Jobs panel, open that
+  peer's webui directly. The "any node sees the same cluster job
+  list" proxying covers `/api/cluster/jobs` only, not `/api/jobs` or
+  the file/project endpoints.
+- ``TrainerControlCallback`` registers only on rank 0 and binds its
+  HTTP control endpoint to ``127.0.0.1`` — see "Operational notes"
+  above.
+- No automatic master failover — the master is whichever reachable
+  member has the lowest UUID; if it goes down the cluster keeps
+  running with a new master, but in-flight global state (queue
+  mutations during the gap) is lost. Phase 4 + Phase 5 work.
+- No cross-architecture training (e.g. ARM Spark + x86_64 desktop):
+  the version probe surfaces a platform mismatch in the Nodes view
+  and the multi-node submit refuses unless the operator
+  acknowledges, but torch wheels and CUDA kernels won't actually
+  interoperate across architectures. The check is advisory; the
+  operator is on the hook for whether their cluster makes sense.
+
 ### Excluding misbehaving GPUs
 
 Set `CUDA_VISIBLE_DEVICES` when starting the server to keep specific
@@ -505,6 +888,12 @@ bottom:
   Projects view automatically. The **Edit** view is the tabbed
   Monaco editor (formerly named "Files"); it was renamed to free
   the "Files" name for the new sidebar filesystem tree (see below).
+  When the server is in cluster mode (`--cluster <name>` at startup),
+  the **GPUs** entry is labelled **Nodes**: the same view, scoped
+  to one bounded box per cluster member. The local node embeds the
+  full live GpuPanel inside its box (WS stream, kill, context menu);
+  peer boxes show the same GPU cards polled at 5 s with click-to-
+  toggle routed via the master proxy. See [Cluster mode (multi-node, prototype)](#cluster-mode-multi-node-prototype).
 - **Tools** (collapsible `<details>`) — global actions that don't
   belong to a specific config. Each tool persists its last-submitted
   settings to localStorage so the next open defaults to those values
@@ -930,9 +1319,32 @@ sets/clears them.
   store_true` / `store_false` (renders as a checkbox with concrete
   default), and `path` types (renders an inline file picker). The form
   pre-fills from the overrides cache.
+- The Multi-node panel and the Dynamic arguments form are each in
+  their own collapsible `<details>` block. With both open, neither
+  takes more than 50% of the dialog body so a long Multi-node panel
+  can't push the Dynamic args off-screen and vice versa. The
+  participants table inside the Multi-node panel caps at ~9 rows
+  and scrolls internally for the same reason.
 - The form shows what `nproc_per_node` the config declares (`"gpu"` /
   fixed integer / `"cpu"` / `"auto"`) and warns when the user's GPU
-  reservation count would mismatch a fixed worker count.
+  reservation count would mismatch a fixed worker count. These
+  single-node-mode controls are hidden when the server is in cluster
+  mode — the per-node GPUs column in the Multi-node panel takes their
+  place. Priority stays visible across both modes.
+- When cluster mode is active and the operator has only the local
+  node selected (the implicit default), Submit goes through the
+  regular single-node enqueue path and uses the panel's local-node
+  GPUs value as the reservation count. Adding a peer flips Submit
+  to the cluster fanout path; the button label changes to "Submit
+  to N nodes" so the choice is explicit. The dialog refuses to
+  submit if cluster mode is active and the operator has unselected
+  every node.
+- Last-used Multi-node settings (participants, per-node GPUs, iface,
+  rdzv host/port, mismatch acknowledgement) persist alongside the
+  dynamic-args overrides in the same per-config cache, so a config
+  "opens where you left off" for both submit modes. **Reset to
+  defaults** drops everything we cached for this config, including
+  the Multi-node selection.
 - The scheduler holds a JSON-backed queue + an in-memory dispatcher
   loop. **Enabled by default** so a freshly-restarted server resumes
   dispatch immediately. Pause anytime with the `▶`/`⏸` button in the
@@ -1078,6 +1490,17 @@ What the algorithm intentionally does **not** do:
   Jobs tab sweeps every terminal record (`done` / `failed` / `aborted`)
   via `POST /api/jobs/cleanup`. Captured TTY files are kept until the
   record is removed, so per-job `🗑` on a finished row still works too.
+- **Dead endpoint visibility**: by default the Jobs list filters out
+  endpoint-only entries whose PID is dead/zombie/recycled — those are
+  trainer-control directories left behind by an earlier Forgather
+  server instance. Toggle **Include dead endpoints** on the panel
+  header to see them; right-click → **✕ Remove stale endpoint**
+  rmtree's the directory under `~/.forgather/jobs/` so the entry
+  stops surfacing. Live endpoint-only entries (foreign trainers) are
+  still shown but offer no actions — those aren't ours to evict.
+  Zombie-PID detection respects ``STATUS_ZOMBIE`` properly; a
+  process that has exited but hasn't been reaped is treated as
+  dead, not running.
 - **Split-pane TTY**: toggle "⊞ Show TTY" to split the Jobs view; click
   a job to route its TTY output to the bottom pane. Draggable handle
   resizes (persisted to `localStorage`); double-click to reset to 45%.
@@ -1184,9 +1607,21 @@ you mean loopback.
     one of our jobs (`pid 12345 (config_name)`). Hits **every** process
     on the GPU, including ones we didn't launch. Proceeds through
     `POST /api/gpus/{index}/kill` which requires `{confirmed: true}`.
-- **Right-click a Job card** opens a context menu with **☠ Force kill
-  (SIGKILL)** for hung server-launched jobs that aren't responding to
-  SIGTERM — routes through a new `force-kill` control action.
+- **Right-click a Job card** opens a context menu:
+  - **☠ Force kill (SIGKILL)** for live server-launched jobs that
+    aren't responding to SIGTERM — routes through a `force-kill`
+    control action. Backend polls for the PID to actually exit
+    (up to 2 s) and stamps the JobRecord's ``error`` field if it's
+    still alive afterwards, so a stuck-in-CUDA process surfaces
+    instead of silently leaving a phantom GPU consumer.
+  - **✕ Remove stale endpoint** for endpoint-only entries whose
+    PID is dead/zombie/recycled — backend rmtree's
+    ``~/.forgather/jobs/job_<id>/`` so the entry stops showing up
+    in the Jobs list. Live endpoint-only entries (foreign trainers
+    we didn't launch) still show "No actions" — those aren't ours
+    to evict. Toggle "include dead endpoints" on the Jobs panel
+    header to see dead entries in the first place; the default
+    view filters them out.
 
 ### Filesystem helpers
 
@@ -1618,6 +2053,42 @@ Populates the project-tree sub-groups and detail panels:
 | `GET /api/gpus/policy`                                      | All per-GPU runtime policies (`{index: {disabled, min_priority}}`)               |
 | `POST /api/gpus/{index}/policy` `{disabled?, min_priority?}` | Upsert per-GPU policy; unset fields are left alone                              |
 | `POST /api/gpus/{index}/kill` `{confirmed: true}`           | SIGKILL every compute process on the GPU (returns `{pids, killed, failed}`)      |
+
+### Cluster (multi-node, opt-in via `--cluster`)
+
+Endpoints in this group return empty / null payloads when the server
+is in standalone mode (no `--cluster` flag), so a webui that polls
+them is safe to mount unconditionally.
+
+| Endpoint                                                           | Auth                       | Purpose                                                                    |
+| ------------------------------------------------------------------ | -------------------------- | -------------------------------------------------------------------------- |
+| `GET /api/cluster/self`                                            | bearer / peer              | This node's identity, or `null` if standalone                              |
+| `GET /api/cluster/members`                                         | bearer / peer              | Cluster name, master node_id, full member table                            |
+| `GET /api/cluster/master`                                          | bearer / peer              | Current master_node_id and `is_self_master`                                |
+| `GET /api/cluster/gpus_local`                                      | bearer / peer              | This node's GPU snapshot. Returns `X-Forgather-Node-Id` header for sanity-checking peer responses |
+| `GET /api/cluster/gpus`                                            | bearer                     | Aggregated `{nodes: [{node_id, hostname, address, reachable, gpus, error}]}` across the cluster (master fetches each peer's `gpus_local` in parallel) |
+| `POST /api/cluster/gpu_policy_local` `{gpu_index, disabled?, min_priority?}` | bearer / peer (only mutation path carved out for peers) | Apply a GPU policy update on this node |
+| `POST /api/cluster/nodes/{node_id}/gpus/{idx}/policy` `{disabled?, min_priority?}` | bearer | Master-side proxy: forward a GPU policy update to the named node (short-circuits self) |
+| `GET /api/cluster/bandwidth_local?bytes=N`                         | bearer / peer              | Stream `N` bytes back so the caller can time the receive (4 KiB ≤ N ≤ 256 MiB; default 32 MiB) |
+| `GET /api/cluster/bandwidth`                                       | bearer                     | Cached pairwise bandwidth measurements (1 h TTL)                          |
+| `POST /api/cluster/bandwidth/refresh?bytes=N`                      | bearer                     | Run a fresh bandwidth measurement against every reachable peer (sequential) and update the cache |
+| `POST /api/cluster/jobs/submit` `{project_dir, config, dynamic_args?, priority?, members:[{node_id,nproc_per_node,nccl_socket_ifname?}], rdzv_node_id?, rdzv_port?, allow_version_mismatch?}` | bearer | Submit a multi-node training bundle; master fans out per-rank queue items to each participant. Auto-derives the iface from each member's advertised IP when `nccl_socket_ifname` is omitted. Returns the bundle and any version-mismatch warnings. HTTP 422 if no iface can be matched, 409 on unacknowledged version mismatch. |
+| `GET /api/cluster/jobs`                                            | bearer / peer              | List multi-node bundles with rolled-up status. Non-master nodes proxy to master so every webui sees the same list. Peer-allowed because the response is read-only and cluster-wide by definition. |
+| `GET /api/cluster/jobs/{id}`                                       | bearer                     | Get one bundle (with rolled-up status, fanned out from master)            |
+| `POST /api/cluster/jobs/{id}/cancel`                               | bearer                     | Fan out cancel to every participant of the bundle                         |
+| `POST /api/cluster/training_local` `{project_dir, config, dynamic_args?, requested_gpus, priority, rdzv_args, extra_env, cluster_job_id?}` | bearer / peer (only mutation path carved out for peers) | Per-rank training enqueue used by the master fanout. The peer's scheduler picks up the queue item and spawns torchrun in rdzv mode. |
+| `POST /api/cluster/training_cancel_local` `{queue_id}`             | bearer / peer              | Per-rank cancel used by the master cancel-fanout                          |
+| `GET /api/cluster/training_status_local?queue_id=...`              | bearer / peer              | Per-rank job-status snapshot used by the master to roll up cluster-job status. Read-only, scoped to one queue_id. |
+
+The probe payload (versions + interfaces + CPU summary) is
+piggybacked on every member entry returned by `/api/cluster/members`
+under the ``probe`` field. There is no separate `/api/cluster/probe`
+endpoint — peer-pull already brings the data with no extra
+round-trip.
+
+The "peer" auth column means a known cluster member's source IP can
+call the endpoint without the bearer token; see [Cluster mode (multi-node, prototype)](#cluster-mode-multi-node-prototype)
+for the threat model.
 
 ### Queue / scheduler
 

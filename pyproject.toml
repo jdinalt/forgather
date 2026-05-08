@@ -38,6 +38,7 @@ dependencies = [
     "websockets",
     "fastapi",
     "httpx",
+    "zeroconf",
     "psutil",
     "nvidia-ml-py",
     "openai",

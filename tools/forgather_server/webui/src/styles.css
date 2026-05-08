@@ -1034,8 +1034,14 @@ button.jobs-tty-toggle.active {
   margin-top: 8px;
 }
 
-.submit-modal {
-  width: 640px;
+/* Two class selectors so this rule beats .modal's later
+   ``width: 560px`` declaration (tied specificity → source order →
+   .modal won). The Submit dialog is wider than other modals on
+   purpose: the multi-node participants table needs five columns
+   plus a checkbox and radio without wrapping. The 92vw cap pins
+   small viewports to the screen edges. */
+.modal.submit-modal {
+  width: 960px;
   max-width: 92vw;
 }
 
@@ -3519,4 +3525,599 @@ li.config.selected button.link:hover {
   background: var(--bg);
   padding: 1px 4px;
   border-radius: 2px;
+}
+
+/* ============================================================
+ * Cluster Nodes view (renders inside the "gpus" view-panel slot
+ * when the server is in cluster mode). Visual language follows
+ * the existing GpuPanel — cards with a header strip and a
+ * compact metric table — so the user does not need to learn a
+ * new layout when the standalone install joins a cluster.
+ * ============================================================ */
+
+.nodes-panel {
+  padding: 12px;
+}
+
+.nodes-panel-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.nodes-panel-header h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.nodes-panel-meta {
+  font-size: 12px;
+  color: var(--muted, #888);
+}
+
+.nodes-panel-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.node-row {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+  padding: 8px 10px;
+  background: var(--panel-bg, transparent);
+}
+
+.node-row.unreachable {
+  opacity: 0.65;
+  border-color: rgba(244, 135, 113, 0.4);
+}
+
+.node-row-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.node-hostname {
+  font-size: 14px;
+}
+
+.node-address,
+.node-version {
+  font-size: 11px;
+  color: var(--muted, #888);
+  font-family: monospace;
+}
+
+.node-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.node-tag-ok {
+  background: rgba(110, 200, 130, 0.15);
+  color: #6ec882;
+}
+
+.node-tag-warn {
+  background: rgba(220, 180, 80, 0.15);
+  color: #dcb450;
+}
+
+.node-tag-err {
+  background: rgba(244, 135, 113, 0.15);
+  color: #f48771;
+}
+
+.node-tag-muted {
+  background: rgba(140, 140, 140, 0.15);
+  color: var(--muted, #888);
+}
+
+.node-row-body {
+  font-size: 12px;
+}
+
+.node-gpu-empty,
+.node-gpu-loading,
+.node-gpu-error {
+  font-style: italic;
+  color: var(--muted, #888);
+  padding: 4px 0;
+}
+
+.node-gpu-error {
+  color: #f48771;
+  font-style: normal;
+}
+
+.node-gpu-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.node-gpu-table th,
+.node-gpu-table td {
+  text-align: left;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+}
+
+.node-gpu-table th {
+  color: var(--muted, #888);
+  font-weight: 500;
+}
+
+.node-gpu-table tr.disabled {
+  opacity: 0.5;
+}
+
+/* Cluster Nodes view: per-node bounded box wrapping the GpuPanel
+ * layout. Each box has its own header strip identifying the node;
+ * the GPU cards inside are the same component used in standalone
+ * mode so the visual language is consistent. */
+.node-group {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 6px;
+  margin: 0;
+  background: var(--panel-bg, transparent);
+}
+
+.node-group.unreachable {
+  opacity: 0.7;
+  border-color: rgba(244, 135, 113, 0.4);
+}
+
+.node-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 6px 6px 0 0;
+}
+
+.node-group-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.node-group-meta {
+  margin-left: auto;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.node-group-body {
+  padding: 8px;
+}
+
+.node-group-body .gpu-panel {
+  /* Embedded GpuPanel: the wrapping node box already provides the
+   * frame, so trim its own padding to keep the nested layout tight. */
+  padding: 0;
+}
+
+.node-group-body .gpu-panel-header {
+  /* The cluster header already names the node; the inner "N GPUs ·
+   * live" tag would be redundant. Hide it but keep it for the
+   * standalone case via the un-wrapped GpuPanel. */
+  display: none;
+}
+
+.node-group-error {
+  color: #f48771;
+  font-size: 12px;
+  padding: 8px 4px;
+}
+
+.gpu-card.readonly {
+  /* Slightly muted to signal that click-toggle is the only action;
+   * peer cards still respond to click but don't expose the right-
+   * click context menu. */
+  cursor: default;
+}
+
+/* Phase 2 — version row, interface list, bandwidth panel.
+ * The version chips share the visual idiom of the existing GPU
+ * badges so the Nodes view doesn't introduce yet another color
+ * vocabulary. */
+
+.node-group-versions {
+  padding: 4px 10px 0 10px;
+}
+
+.version-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.version-row-pending {
+  font-style: italic;
+  color: var(--muted, #888);
+  font-size: 11px;
+}
+
+.version-chip {
+  display: inline-flex;
+  gap: 4px;
+  align-items: baseline;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-family: monospace;
+  background: rgba(140, 140, 140, 0.1);
+}
+
+.version-chip-label {
+  color: var(--muted, #888);
+}
+
+.version-chip-value {
+  color: inherit;
+}
+
+.version-chip-muted .version-chip-value {
+  color: var(--muted, #888);
+}
+
+.version-chip-warn {
+  background: rgba(220, 180, 80, 0.18);
+  color: #dcb450;
+}
+
+.version-chip-warn .version-chip-label {
+  color: #dcb450;
+  opacity: 0.8;
+}
+
+.node-group-interfaces {
+  padding: 4px 10px;
+  border-top: 1px solid var(--border, #2a2a2a);
+}
+
+.node-group-interfaces summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted, #888);
+  padding: 2px 0;
+}
+
+.node-group-interfaces summary:hover {
+  color: inherit;
+}
+
+.iface-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.iface-table th,
+.iface-table td {
+  text-align: left;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+}
+
+.iface-table th {
+  color: var(--muted, #888);
+  font-weight: 500;
+}
+
+.iface-table tr.down {
+  opacity: 0.55;
+}
+
+.iface-empty {
+  font-size: 11px;
+  padding: 4px 0;
+}
+
+.bw-panel {
+  margin: 0 0 8px 0;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.bw-panel summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.bw-panel summary::-webkit-details-marker {
+  margin-right: 4px;
+}
+
+.bw-refresh {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.bw-refresh:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.bw-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  border-top: 1px solid var(--border, #2a2a2a);
+}
+
+.bw-table th,
+.bw-table td {
+  text-align: left;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+}
+
+.bw-table th {
+  color: var(--muted, #888);
+  font-weight: 500;
+}
+
+.bw-table tr.err td {
+  color: #f48771;
+}
+
+.bw-empty {
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+/* Phase 3: cluster jobs panel + multi-node submit modal. */
+
+.cluster-jobs-panel {
+  margin: 0 0 8px 0;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.cluster-jobs-panel summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.cj-hint {
+  margin-left: auto;
+  font-size: 11px;
+  font-style: italic;
+}
+
+.multinode-panel {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+  padding: 8px 10px 4px;
+  margin-bottom: 12px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.multinode-panel .multinode-members {
+  margin-top: 6px;
+}
+
+.multinode-panel .modal-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.multinode-panel .submit-help {
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+/* Internal scroll so the participants table caps at ~9 rows (~240
+   px) and any extras scroll within the panel rather than pushing
+   the rdzv port / warnings / help line off-screen. The submit-modal
+   already caps each <details> section at 50% of the modal body, so
+   together these bounds mean: panel never larger than half the
+   modal, and the table inside it scrolls when the cluster has many
+   members. */
+.multinode-members-scroll {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 3px;
+}
+
+/* Collapsible section inside the Submit dialog. The Multi-node
+   panel and the Dynamic arguments form are each wrapped in one of
+   these; opening both gives a 50/50 split, collapsing one lets the
+   other expand naturally. */
+.submit-section {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+  margin-bottom: 10px;
+}
+.submit-section[open] {
+  display: flex;
+  flex-direction: column;
+  max-height: 50%;
+  min-height: 0;
+}
+.submit-section > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 4px 8px;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 3px 3px 0 0;
+}
+.submit-section > summary::-webkit-details-marker {
+  display: none;
+}
+.submit-section > summary::before {
+  content: "▶";
+  display: inline-block;
+  width: 12px;
+  font-size: 9px;
+  color: var(--muted, #888);
+  margin-right: 4px;
+  transition: transform 0.15s;
+}
+.submit-section[open] > summary::before {
+  transform: rotate(90deg);
+}
+.submit-section > summary .dyn-heading {
+  display: inline;
+  margin: 0;
+}
+/* Open-section content area scrolls. Both the Multi-node panel
+   (single ``.multinode-panel`` root) and DynamicArgsForm render as
+   one wrapping element, so this selector grabs that single child. */
+.submit-section[open] > :not(summary) {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 6px 8px 8px;
+}
+
+.cj-empty {
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+.cj-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  border-top: 1px solid var(--border, #2a2a2a);
+}
+
+.cj-table th,
+.cj-table td {
+  text-align: left;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+  vertical-align: top;
+}
+
+.cj-table th {
+  color: var(--muted, #888);
+  font-weight: 500;
+}
+
+.cj-table tr.cancelled {
+  opacity: 0.6;
+}
+
+.cj-member {
+  font-family: monospace;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.cj-cancel-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+  background: rgba(244, 135, 113, 0.15);
+  color: #f48771;
+  border: 1px solid rgba(244, 135, 113, 0.3);
+  border-radius: 3px;
+}
+
+.cj-cancel-btn:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+.multinode-modal {
+  width: min(900px, 95vw);
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.multinode-members {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin: 6px 0;
+}
+
+.multinode-members th,
+.multinode-members td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+  vertical-align: middle;
+}
+
+.multinode-members th {
+  color: var(--muted, #888);
+  font-weight: 500;
+  text-align: left;
+}
+
+.multinode-members tr.unreachable {
+  opacity: 0.5;
+}
+
+.multinode-members input[type="text"],
+.multinode-members select {
+  width: 100%;
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.modal-section {
+  margin: 12px 0;
+}
+
+.modal-section h3 {
+  font-size: 13px;
+  margin: 0 0 6px 0;
+  color: var(--muted, #888);
+}
+
+.modal-warning {
+  margin: 12px 0;
+  padding: 8px 10px;
+  background: rgba(220, 180, 80, 0.10);
+  border-left: 3px solid #dcb450;
+  font-size: 12px;
+}
+
+.modal-warning ul {
+  margin: 4px 0 8px 16px;
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.modal-error pre {
+  background: rgba(244, 135, 113, 0.08);
+  border-left: 3px solid #f48771;
+  padding: 6px 8px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

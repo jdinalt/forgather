@@ -77,16 +77,26 @@ def get_overrides_payload(project_dir: str, config: str) -> Dict[str, Any]:
 
     Stub shape matches a successfully-read file: ``values`` is always a
     dict, ``requested_gpus`` is ``None`` when unset, ``updated_at`` is
-    ``None`` when no file exists.
+    ``None`` when no file exists. ``multinode`` is the cluster submit
+    panel's last-used settings (participants, rdzv host/port, etc.) —
+    None when the user has never opened the cluster panel for this
+    config.
     """
     with _lock:
         data = _read(_path(project_dir, config))
     if data is None:
-        return {"values": {}, "requested_gpus": None, "updated_at": None}
+        return {
+            "values": {},
+            "requested_gpus": None,
+            "multinode": None,
+            "updated_at": None,
+        }
     rg = data.get("requested_gpus")
+    mn = data.get("multinode")
     return {
         "values": data.get("values") if isinstance(data.get("values"), dict) else {},
         "requested_gpus": rg if isinstance(rg, int) else None,
+        "multinode": mn if isinstance(mn, dict) else None,
         "updated_at": data.get("updated_at"),
     }
 
@@ -96,8 +106,17 @@ def set_overrides(
     config: str,
     values: Dict[str, Any],
     requested_gpus: Optional[int] = None,
+    multinode: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Persist *values* (+ optional GPU count) and return the stored payload."""
+    """Persist *values* (+ optional GPU count + optional cluster settings)
+    and return the stored payload.
+
+    ``multinode`` is an opaque dict passed through verbatim — the webui
+    owns its shape (participants, rdzv host/port, per-node iface). We
+    keep it here rather than in a separate file so an "always opens
+    where you left off" experience is consistent across single-node
+    and multi-node submits.
+    """
     abs_dir = os.path.abspath(project_dir)
     now = time.time()
     payload: Dict[str, Any] = {
@@ -105,6 +124,7 @@ def set_overrides(
         "config": config,
         "values": dict(values),
         "requested_gpus": requested_gpus,
+        "multinode": dict(multinode) if multinode else None,
         "updated_at": now,
     }
     p = _path(project_dir, config)
@@ -113,6 +133,7 @@ def set_overrides(
     return {
         "values": dict(values),
         "requested_gpus": requested_gpus,
+        "multinode": dict(multinode) if multinode else None,
         "updated_at": now,
     }
 

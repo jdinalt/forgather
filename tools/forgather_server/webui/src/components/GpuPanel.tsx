@@ -282,7 +282,12 @@ function GpuContextMenuItems({
   );
 }
 
-function GpuCard({
+/** Single GPU card. Exported so the cluster Nodes view can reuse the
+ *  exact card layout per peer node (read-only — peer mutations are
+ *  not routed in Phase 1). When ``onContextRequest`` and
+ *  ``onToggleDisabled`` are omitted the card renders without click
+ *  affordances, which matches the read-only peer use case. */
+export function GpuCard({
   g,
   jobByPid,
   onContextRequest,
@@ -290,9 +295,10 @@ function GpuCard({
 }: {
   g: GpuInfo;
   jobByPid: Map<number, Job>;
-  onContextRequest: (e: React.MouseEvent) => void;
-  onToggleDisabled: () => void;
+  onContextRequest?: (e: React.MouseEvent) => void;
+  onToggleDisabled?: () => void;
 }) {
+  const interactive = !!onToggleDisabled;
   const memPct = g.total_mem_bytes
     ? (g.used_mem_bytes / g.total_mem_bytes) * 100
     : 0;
@@ -315,15 +321,22 @@ function GpuCard({
 
   return (
     <div
-      className={cardClass}
+      className={cardClass + (interactive ? "" : " readonly")}
       onContextMenu={onContextRequest}
-      onClick={(e) => {
-        // Don't fire on right-click or on child action elements.
-        if (e.button !== 0) return;
-        onToggleDisabled();
-      }}
-      title={!g.excluded ? disabledTitle : undefined}
-      style={{ cursor: g.excluded ? undefined : "pointer" }}
+      onClick={
+        interactive
+          ? (e) => {
+              if (e.button !== 0) return;
+              onToggleDisabled!();
+            }
+          : undefined
+      }
+      title={interactive && !g.excluded ? disabledTitle : undefined}
+      style={
+        interactive
+          ? { cursor: g.excluded ? undefined : "pointer" }
+          : undefined
+      }
     >
       <div className="gpu-header">
         <span className="gpu-idx">GPU{g.index}</span>

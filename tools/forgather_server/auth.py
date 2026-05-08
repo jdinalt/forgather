@@ -59,6 +59,68 @@ _OPEN_PATHS = frozenset(
     }
 )
 
+# Cluster API endpoints that may be called by a peer node without the
+# bearer token. The carve-out is gated on the source IP belonging to a
+# known cluster member — see ``_request_is_from_peer`` below — so it is
+# not equivalent to making these paths fully public.
+#
+# Limited to read-only GETs in v1. Anything that mutates state still
+# requires the regular auth credential, even from a peer.
+_PEER_ALLOWED_PATHS = frozenset(
+    {
+        "/api/cluster/members",
+        "/api/cluster/self",
+        "/api/cluster/master",
+        # Read-only local GPU snapshot used by the master's
+        # cluster-wide aggregator. Going through a cluster-scoped
+        # alias (rather than carving out the existing /api/gpus
+        # path) keeps the trusted-peer surface explicitly inside
+        # the cluster namespace.
+        "/api/cluster/gpus_local",
+        # Bandwidth self-test target — peer GETs this to time the
+        # transfer. Returns a deterministic in-memory blob; never
+        # touches state.
+        "/api/cluster/bandwidth_local",
+        # Per-rank job-status lookup. The master rolls up cluster-job
+        # status by GETting this on each peer with the queue_id of
+        # the assignment. Read-only — exposes a small status snapshot
+        # of one local queue item, nothing else.
+        "/api/cluster/training_status_local",
+        # Cluster jobs list — read-only view of the bundle records.
+        # Non-master nodes proxy to master via this path so every
+        # cluster-mode webui shows the same job list. Returning the
+        # bundle catalogue across the LAN is consistent with the
+        # trusted-peer security contract.
+        "/api/cluster/jobs",
+    }
+)
+
+# Peer-allowed mutating endpoints. POST is permitted from a known peer
+# IP for these specific paths only — this is a narrower exception than
+# the GET carve-out above. Each entry here represents a deliberate
+# decision that "another node may change my state without
+# authentication", which is consistent with the trusted-LAN security
+# contract for inter-node operation but should remain a very small set.
+_PEER_ALLOWED_MUTATIONS = frozenset(
+    {
+        # GPU enable/disable + priority gate. Lets the cluster Nodes
+        # view route the click-to-toggle action to the owning node.
+        "/api/cluster/gpu_policy_local",
+        # Cluster-coordinator submit (Phase 3). The master generates
+        # rdzv args and POSTs one of these to each participating
+        # peer to enqueue the per-rank training job. Narrower than
+        # carving out the entire /api/queue surface — the handler
+        # only constructs training items with caller-supplied rdzv
+        # args, never the other job_types.
+        "/api/cluster/training_local",
+        # Cluster-coordinator cancel: master DELETEs through this
+        # path on each peer to abort the local queue item. Modeled
+        # as POST so the carve-out (which only allows GET / POST)
+        # applies cleanly without widening it to DELETE.
+        "/api/cluster/training_cancel_local",
+    }
+)
+
 # Module-level state. Sessions intentionally do not survive process
 # restart — both the bearer token and the password still work, so a
 # restart only forces a re-login for already-open browser tabs.
@@ -272,6 +334,41 @@ def path_requires_auth(path: str) -> bool:
     return True
 
 
+def path_allows_peer(path: str) -> bool:
+    """True if a known cluster peer may GET ``path`` without auth.
+
+    See ``_PEER_ALLOWED_PATHS`` for the rationale.
+    """
+    return path in _PEER_ALLOWED_PATHS
+
+
+def path_allows_peer_mutation(path: str) -> bool:
+    """True if a known cluster peer may POST ``path`` without auth."""
+    return path in _PEER_ALLOWED_MUTATIONS
+
+
+def _request_is_from_peer(scope) -> bool:
+    """True if the request's source IP belongs to a known cluster peer.
+
+    The cluster module is imported lazily so this auth module remains
+    importable in environments where multi-node mode is not active
+    (and therefore zeroconf is not loaded).
+    """
+    client = scope.get("client")
+    if not client:
+        return False
+    address = client[0] if isinstance(client, (tuple, list)) else None
+    if not address:
+        return False
+    try:
+        from . import cluster
+    except Exception:
+        return False
+    if not cluster.is_active():
+        return False
+    return cluster.is_peer_address(address)
+
+
 # ---------------------------------------------------------------------------
 # ASGI middleware
 # ---------------------------------------------------------------------------
@@ -316,6 +413,21 @@ class AuthMiddleware:
         if authenticate(headers, query_flat, cookies):
             await self.app(scope, receive, send)
             return
+
+        # Cluster peer-call carve-out: GET on a read-only peer-allowed
+        # path, or POST on the very small set of explicitly mutation-
+        # allowed cluster endpoints, originating from a known peer
+        # IP, is treated as an inter-node call. Mutations have their
+        # own (smaller) allow-list because granting unauthenticated
+        # writes to peers is a deliberate decision per endpoint.
+        if scope_type == "http" and _request_is_from_peer(scope):
+            method = scope.get("method", "").upper()
+            if method == "GET" and path_allows_peer(path):
+                await self.app(scope, receive, send)
+                return
+            if method == "POST" and path_allows_peer_mutation(path):
+                await self.app(scope, receive, send)
+                return
 
         if scope_type == "websocket":
             # Accept then close with a policy-violation code so the

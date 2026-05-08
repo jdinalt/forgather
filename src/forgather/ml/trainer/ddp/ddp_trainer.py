@@ -35,7 +35,7 @@ from forgather.ml.trainer.trainer import Trainer, TrainingArguments, set_train
 from forgather.ml.trainer.trainer_types import FusedLossFactoryT
 
 logger = logging.getLogger(__name__)
-prefix_logger_rank(logger, lambda rank: True)
+prefix_logger_rank(logger, show_all_ranks=True)
 
 
 @dataclass(kw_only=True)

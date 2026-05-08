@@ -539,12 +539,20 @@ def _build_dataset(item, gpu_indices, tty_path):
 
 
 def _build_training(item, gpu_indices, tty_path):
+    # Multi-node training jobs (Phase 3 cluster-coordinator submit)
+    # carry their torchrun rendezvous args + NCCL env in
+    # ``job_params``. Single-node training jobs leave job_params empty
+    # and the launcher falls back to ``--standalone``.
+    rdzv_args = item.job_params.get("rdzv_args") or None
+    extra_env = item.job_params.get("extra_env") or None
     return launcher.spawn_training_process(
         project_dir=item.project_dir,
         config_name=item.config,
         dynamic_args=item.dynamic_args,
         gpu_indices=gpu_indices,
         tty_log_path=tty_path,
+        extra_env=extra_env,
+        rdzv_args=rdzv_args,
     )
 
 
@@ -755,6 +763,36 @@ def _kill_record(queue_id: str, sig: int) -> bool:
     )
     if record.pid:
         launcher.kill_process_group(record.pid, sig)
+        # Verify the process actually died before declaring success.
+        # Without this we silently leave orphan processes consuming
+        # GPUs while the JobRecord disappears from the UI — the
+        # operator hit exactly this on muthur+wopr after a hung
+        # save-stop. Workers stuck in a CUDA driver call (uninter-
+        # ruptible D state) won't die immediately even on SIGKILL,
+        # so we poll briefly and stamp the record's ``error`` field
+        # if it's still alive at the end. The CAS keeps the status
+        # at "aborted" but the error makes the orphan visible to the
+        # operator instead of silently disappearing.
+        if not _wait_for_pid_exit(record.pid, timeout=2.0):
+            log.warning(
+                "kill of %s (pid=%d, sig=%d) did not exit within "
+                "timeout — process may be stuck in a CUDA driver "
+                "call or torch.distributed deadlock",
+                queue_id,
+                record.pid,
+                sig,
+            )
+            job_records.update_record(
+                queue_id,
+                error=(
+                    f"PID {record.pid} did not exit within 2s of "
+                    f"signal {sig}. Process may be stuck in a CUDA "
+                    f"driver call (uninterruptible sleep). Check "
+                    f"GPU panel for the lingering PID; retry "
+                    f"force-kill, or kill from the host if the "
+                    f"container can't see the PID."
+                ),
+            )
     with _state._lock:
         _state.running.pop(queue_id, None)
     # Same TTY relocation as the reap path so an aborted run still ends
@@ -763,6 +801,28 @@ def _kill_record(queue_id: str, sig: int) -> bool:
         _gc.relocate_tty_to_logs(updated)
         _cleanup_inference_token(updated)
     return updated is not None
+
+
+def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
+    """Poll until ``pid`` is dead-or-zombie, or ``timeout`` seconds.
+
+    Treats zombies as exited — once the process has hit zombie state
+    its actual work is done and the parent will reap it momentarily
+    via Popen.poll(). Without this, a child that exits cleanly but
+    hasn't been waited on yet still passes ``psutil.pid_exists`` and
+    we'd spuriously time out on every successful kill.
+
+    Returns True on confirmed exit / zombie, False on timeout. We
+    don't escalate signals here — the caller already chose SIGTERM
+    vs SIGKILL based on whether the operator hit "abort" or
+    "force-kill".
+    """
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() < deadline:
+        if not _pid_is_alive(pid):
+            return True
+        time.sleep(0.05)
+    return not _pid_is_alive(pid)
 
 
 def _cleanup_inference_token(record: JobRecord) -> None:

@@ -52,6 +52,7 @@ def build_command(
     project_dir: str,
     config_name: str,
     dynamic_args: Dict[str, Any],
+    rdzv_args: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """Preprocess the config enough to build the ``torchrun`` command.
 
@@ -64,6 +65,25 @@ def build_command(
     one of the strings ``"gpu"`` / ``"cpu"`` / ``"auto"`` — the latter tell
     torchrun to auto-detect the worker count from CUDA_VISIBLE_DEVICES (or
     CPU count). Mirrors ``src/forgather/cli/train.py``'s behavior.
+
+    Multi-node mode: when ``rdzv_args`` is provided (cluster-coordinator
+    submit, see Phase 3), the ``--standalone`` flag is replaced by an
+    explicit rendezvous block — ``--nnodes``, ``--node-rank``,
+    ``--rdzv-backend``, ``--rdzv-endpoint``, ``--rdzv-id`` — and
+    ``nproc_per_node`` is overridden by the cluster-supplied value
+    (different peers may have different GPU counts). Single-node mode
+    (``rdzv_args=None``) retains the existing ``--standalone`` form
+    so non-cluster training is unaffected.
+
+    The c10d backend autodetects "am I the rendezvous host?" by
+    resolving ``socket.gethostname()`` and comparing the result to
+    ``rdzv_endpoint``. On Debian/Ubuntu the system hostname resolves
+    to ``127.0.1.1`` via ``/etc/hosts``, so the comparison silently
+    fails and *no* node binds the store — every peer sits as a client
+    and the rendezvous times out. To work around this we accept an
+    optional ``is_host`` boolean in ``rdzv_args``: when set, we emit
+    ``--rdzv-conf is_host=true|false`` so torch skips the broken
+    autodetection entirely.
     """
     meta = MetaConfig(project_dir)
     env = get_env(meta, project_dir)
@@ -75,15 +95,52 @@ def build_command(
     forgather_dir = config_meta["forgather_dir"]
     train_script_path = os.path.join(forgather_dir, "scripts", "train_script.py")
 
-    cmd: List[str] = [
-        "torchrun",
-        "--standalone",
-        "--nproc-per-node",
-        str(nproc_per_node),
-        os.path.normpath(train_script_path),
-        "-p",
-        os.path.normpath(project_dir),
-    ]
+    cmd: List[str] = ["torchrun"]
+    if rdzv_args:
+        # Cluster-coordinated rendezvous. The cluster-supplied
+        # nproc_per_node wins over the config's because each peer
+        # likely has a different GPU count and the master computed
+        # an explicit per-peer value at submit time.
+        cluster_nproc = rdzv_args.get("nproc_per_node", nproc_per_node)
+        cmd.extend(
+            [
+                "--nnodes",
+                str(rdzv_args["nnodes"]),
+                "--node-rank",
+                str(rdzv_args["node_rank"]),
+                "--rdzv-backend",
+                str(rdzv_args.get("rdzv_backend", "c10d")),
+                "--rdzv-endpoint",
+                str(rdzv_args["rdzv_endpoint"]),
+                "--rdzv-id",
+                str(rdzv_args["rdzv_id"]),
+                "--nproc-per-node",
+                str(cluster_nproc),
+            ]
+        )
+        is_host = rdzv_args.get("is_host")
+        if is_host is not None:
+            cmd.extend(
+                [
+                    "--rdzv-conf",
+                    f"is_host={'true' if is_host else 'false'}",
+                ]
+            )
+    else:
+        cmd.extend(
+            [
+                "--standalone",
+                "--nproc-per-node",
+                str(nproc_per_node),
+            ]
+        )
+    cmd.extend(
+        [
+            os.path.normpath(train_script_path),
+            "-p",
+            os.path.normpath(project_dir),
+        ]
+    )
     if meta.system_path is not None:
         cmd.extend(["-s", meta.system_path])
     if dynamic_args:
@@ -157,9 +214,17 @@ def spawn_training_process(
     gpu_indices: List[int],
     tty_log_path: Path,
     extra_env: Optional[Dict[str, str]] = None,
+    rdzv_args: Optional[Dict[str, Any]] = None,
 ) -> LaunchResult:
-    """Spawn a training run."""
-    cmd = build_command(project_dir, config_name, dynamic_args)
+    """Spawn a training run.
+
+    ``rdzv_args`` enables multi-node mode — see ``build_command``. When
+    a cluster job is fanned out, the master sets ``rdzv_args`` and
+    typically also passes ``NCCL_SOCKET_IFNAME`` through ``extra_env``
+    so the NCCL backend picks the right interface. Both default to
+    None so single-node submits are unchanged.
+    """
+    cmd = build_command(project_dir, config_name, dynamic_args, rdzv_args)
     return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
 
 

@@ -66,7 +66,7 @@ from forgather.ml.trainer.trainer import Trainer, TrainingArguments
 from forgather.ml.trainer.trainer_types import FusedLossFactoryT
 
 logger = logging.getLogger(__name__)
-prefix_logger_rank(logger, lambda rank: True)
+prefix_logger_rank(logger, show_all_ranks=True)
 
 
 _DTYPE_ALIASES: Dict[str, torch.dtype] = {

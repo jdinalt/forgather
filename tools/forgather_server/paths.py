@@ -92,6 +92,40 @@ def inference_token_file(queue_id: str) -> Path:
     return inference_tokens_dir() / f"{queue_id}.token"
 
 
+def cluster_state_dir() -> Path:
+    """Persistent directory for multi-node cluster state.
+
+    Lives at ``~/.forgather/cluster/`` (peer of ``server/``) so that the
+    cluster identity outlives any individual server instance and
+    multiple servers on the same host could in principle share one
+    node identity. Mode 0700 like the rest of the user state.
+    """
+    home = Path(forgather_home_dir())
+    d = home / "cluster"
+    d.mkdir(parents=True, exist_ok=True)
+    _tighten_dir(home, 0o700)
+    _tighten_dir(d, 0o700)
+    return d
+
+
+def cluster_node_id_file() -> Path:
+    """Persistent UUID identifying this node within any cluster.
+
+    Mode 0600. Generated lazily at first cluster-enabled startup. The
+    UUID is stable across restarts; rotating it effectively makes the
+    node look like a brand-new peer to the rest of the cluster.
+    """
+    return cluster_state_dir() / "node_id"
+
+
+def cluster_journal_dir() -> Path:
+    """Append-only journal of global-state mutations (Phase 4 seam)."""
+    d = cluster_state_dir() / "journal"
+    d.mkdir(parents=True, exist_ok=True)
+    _tighten_dir(d, 0o700)
+    return d
+
+
 def password_hash_file() -> Path:
     """Optional pbkdf2_sha256 password hash for browser logins.
 

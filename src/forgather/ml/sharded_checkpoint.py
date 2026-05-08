@@ -17,7 +17,14 @@ from safetensors.torch import save_file as safetensors_save
 from torch import Tensor, nn
 from torch.nn import Module
 
+from forgather.ml.distributed import prefix_logger_rank
+
 logger = logging.getLogger(__name__)
+# Show messages from every rank — this module's logs are the diagnostic
+# story for "who actually wrote which file" during multi-rank /
+# multi-node checkpointing, so the default rank-0-only filter would hide
+# exactly the rows that matter when something goes wrong.
+prefix_logger_rank(logger, show_all_ranks=True)
 
 """
 This implements loading and saving sharded checkpoints

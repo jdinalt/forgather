@@ -208,6 +208,157 @@ export interface GpuPolicy {
   min_priority: number;
 }
 
+/** This server's identity within an active cluster. ``null`` from the
+ *  /api/cluster/self endpoint means the server is in standalone mode
+ *  and the rest of the cluster API will return empty payloads. */
+export interface ClusterSelf {
+  node_id: string;
+  hostname: string;
+  cluster_name: string;
+  port: number;
+  forgather_version: string;
+  started_at: number;
+  is_master: boolean;
+}
+
+export interface ClusterProbeInterface {
+  name: string;
+  address: string;
+  netmask: string;
+  cidr: string;
+  is_up: boolean;
+  speed_mbps: number;
+}
+
+export interface ClusterProbe {
+  versions: Record<string, string>;
+  interfaces: ClusterProbeInterface[];
+  cpu: {
+    logical: number;
+    physical: number;
+    ram_gib: number;
+  };
+}
+
+export interface ClusterMember {
+  node_id: string;
+  hostname: string;
+  address: string;
+  port: number;
+  cluster_name: string;
+  forgather_version: string;
+  first_seen: number;
+  last_seen: number;
+  reachable: boolean;
+  /** "discovery" | "peer_pull" | "self" — debug aid for figuring out
+   *  which mechanism is keeping a stale entry alive. */
+  last_source: string;
+  /** Pre-flight probe payload — package versions, interfaces, CPU
+   *  summary. Null until the peer answers at least one peer-pull
+   *  with the new shape. */
+  probe: ClusterProbe | null;
+}
+
+export interface ClusterBandwidthEntry {
+  peer_node_id: string;
+  peer_hostname: string;
+  peer_address: string;
+  bytes_transferred: number;
+  elapsed_seconds: number;
+  mbps: number;
+  timestamp: number;
+  error: string | null;
+}
+
+export interface ClusterBandwidthResponse {
+  measurements: ClusterBandwidthEntry[];
+  server_time: number;
+}
+
+export interface ClusterJobMember {
+  node_id: string;
+  hostname: string;
+  address: string;
+  port: number;
+  queue_id: string;
+  nproc_per_node: number;
+  node_rank: number;
+  nccl_socket_ifname: string | null;
+  /** Live status of this rank's queue item, fetched at read time
+   *  via the master's per-peer status fanout. null when the master
+   *  could not reach the peer. */
+  current_status?: string | null;
+  exit_code?: number | null;
+  error?: string | null;
+}
+
+export interface ClusterJob {
+  cluster_job_id: string;
+  project_dir: string;
+  config: string;
+  submitted_at: number;
+  rdzv_endpoint: string;
+  rdzv_id: string;
+  rdzv_node_id: string;
+  members: ClusterJobMember[];
+  status: string;
+  cancelled_at: number | null;
+  /** Aggregated status across all members. The bundle's own
+   *  ``status`` only flips on cancel/done/failed promotions; this
+   *  field is always recomputed at read time. */
+  rolled_up_status?: string;
+}
+
+export interface ClusterJobMemberSpec {
+  node_id: string;
+  nproc_per_node: number;
+  nccl_socket_ifname?: string | null;
+}
+
+export interface ClusterJobSubmitRequest {
+  project_dir: string;
+  config: string;
+  dynamic_args?: Record<string, unknown>;
+  priority?: number;
+  members: ClusterJobMemberSpec[];
+  rdzv_node_id?: string;
+  rdzv_port?: number;
+  allow_version_mismatch?: boolean;
+}
+
+export interface ClusterJobSubmitResponse {
+  cluster_job: ClusterJob;
+  warnings: string[];
+}
+
+export interface ClusterJobCancelResponse {
+  cluster_job_id: string;
+  cancelled: boolean;
+  per_member: { node_id: string; queue_id: string; result: unknown }[];
+}
+
+export interface ClusterMembersResponse {
+  cluster_name: string | null;
+  self_node_id: string | null;
+  master_node_id: string | null;
+  members: ClusterMember[];
+  server_time: number;
+}
+
+export interface ClusterGpusEntry {
+  node_id: string;
+  hostname: string;
+  address: string;
+  reachable: boolean;
+  gpus: GpuInfo[];
+  error: string | null;
+}
+
+export interface ClusterGpusResponse {
+  nodes: ClusterGpusEntry[];
+  server_time: number;
+}
+
 /** Unified job model returned by /api/jobs.
  *
  *  ``id`` is the stable identifier the UI keys on. For server-launched jobs
@@ -299,9 +450,33 @@ export interface DynamicArg {
   max: number | null;
 }
 
+/** Last-used multi-node submit settings. The webui owns this shape;
+ *  the server stores it as an opaque blob alongside the dynamic-args
+ *  overrides so a config "opens where you left off" for cluster
+ *  submits the same way it does for single-node ones. */
+export interface MultinodeOverrides {
+  rdzv_port: number;
+  /** Ordered list of node ids the operator opted in. Empty implies
+   *  "single-node submit" — no cluster fanout, even when the cluster
+   *  is active. */
+  selected_node_ids: string[];
+  /** node_id → desired nproc per peer. */
+  per_node_nproc: Record<string, number>;
+  /** node_id → NCCL/Gloo/TP iface name; empty string means "auto"
+   *  and the server derives it from the member's advertised IP. */
+  per_node_iface: Record<string, string>;
+  /** Which member hosts the rendezvous TCPStore. Defaults to master
+   *  when null. */
+  rdzv_node_id: string | null;
+  /** Whether the user has acknowledged any version mismatch warnings
+   *  the server returned on the previous submit attempt. */
+  allow_version_mismatch: boolean;
+}
+
 export interface OverridesData {
   values: Record<string, unknown>;
   requested_gpus: number | null;
+  multinode: MultinodeOverrides | null;
   updated_at: number | null;
 }
 
@@ -832,6 +1007,74 @@ export const api = {
     return r.json();
   },
   listGpus: () => fetchJson<GpuInfo[]>("/api/gpus"),
+  /** Returns null when the server is in standalone mode. */
+  getClusterSelf: () => fetchJson<ClusterSelf | null>("/api/cluster/self"),
+  getClusterMembers: () =>
+    fetchJson<ClusterMembersResponse>("/api/cluster/members"),
+  getClusterGpus: () =>
+    fetchJson<ClusterGpusResponse>("/api/cluster/gpus"),
+  getClusterBandwidth: () =>
+    fetchJson<ClusterBandwidthResponse>("/api/cluster/bandwidth"),
+  listClusterJobs: () => fetchJson<ClusterJob[]>("/api/cluster/jobs"),
+  submitClusterJob: async (
+    req: ClusterJobSubmitRequest,
+  ): Promise<ClusterJobSubmitResponse> => {
+    const r = await fetch("/api/cluster/jobs/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<ClusterJobSubmitResponse>;
+  },
+  cancelClusterJob: async (
+    cluster_job_id: string,
+  ): Promise<ClusterJobCancelResponse> => {
+    const r = await fetch(
+      `/api/cluster/jobs/${encodeURIComponent(cluster_job_id)}/cancel`,
+      { method: "POST" },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<ClusterJobCancelResponse>;
+  },
+  refreshClusterBandwidth: async (): Promise<ClusterBandwidthResponse> => {
+    const r = await fetch("/api/cluster/bandwidth/refresh", {
+      method: "POST",
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<ClusterBandwidthResponse>;
+  },
+  /** Master-proxied GPU policy mutation. Routes to the named node's
+   *  /api/cluster/gpu_policy_local; short-circuits when the target is
+   *  the local node. Returns the updated policy from the owning node. */
+  setNodeGpuPolicy: async (
+    node_id: string,
+    gpu_index: number,
+    policy: { disabled?: boolean; min_priority?: number },
+  ): Promise<GpuPolicy> => {
+    const r = await fetch(
+      `/api/cluster/nodes/${encodeURIComponent(node_id)}/gpus/${gpu_index}/policy`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(policy),
+      },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<GpuPolicy>;
+  },
   gpuStreamUrl: (): string => {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     return `${proto}//${window.location.host}/api/gpus/stream`;
@@ -950,6 +1193,7 @@ export const api = {
     config: string,
     values: Record<string, unknown>,
     requested_gpus?: number | null,
+    multinode?: MultinodeOverrides | null,
   ): Promise<OverridesData> => {
     const r = await fetch("/api/config/overrides", {
       method: "POST",
@@ -959,6 +1203,7 @@ export const api = {
         config,
         values,
         requested_gpus: requested_gpus ?? null,
+        multinode: multinode ?? null,
       }),
     });
     if (!r.ok) {
