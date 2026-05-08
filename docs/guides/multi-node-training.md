@@ -81,6 +81,15 @@ every node. Less popular but workable: a synchronised local layout
 The submit flow assumes shared paths and does not stage anything for
 you. There is no automatic config replication or dataset proxy.
 
+**Beware host symlinks.** Local-host conveniences like
+`~/ai_assets/forgather → /mnt/rust/aiassets/forgather` resolve on
+the originating host but the symlink itself isn't visible inside
+container peers. Pass the **canonical** path (the symlink's
+target, not the symlink) to anything that flows verbatim to other
+peers — the webui's project_dir field, `forgather -p ...`,
+`PROJECT_DIR=` in the smoke test. `readlink -f <path>`
+canonicalises programmatically.
+
 ### Same Linux user / UID
 
 Files written by one node need to be readable by the others. The
@@ -157,6 +166,42 @@ Each node mints a stable UUID at first cluster startup (saved at
 deterministic — the lowest UUID among reachable members wins. No
 election round-trip; if the master goes down, the survivors keep
 running and a new master is selected within ~30 seconds.
+
+### Deployment options
+
+Three reasonable ways to get the server running on every node:
+
+**1. Host install** — install Forgather on every node directly,
+run `forgather server` from each. Right when you're iterating on
+Forgather itself or already have host venvs everywhere.
+
+**2. Dev image (`docker/run.sh`)** — long-lived dev container with
+the host source bind-mounted. Fine for testing on your own
+machine; awkward to deploy to N nodes because each needs a host
+clone.
+
+**3. Runtime image (`docker/runtime/run.sh`)** — pre-built,
+self-contained image baked from one commit. **The supported way
+to deploy a Forgather cluster**: build once, push or
+`docker save`/`load`, run identical copies on N nodes. The
+runtime image's `--cluster` plumbing is first-class — see
+`docker/README.md` for the full env-var surface. Quick start:
+
+```bash
+NETWORK=host CLUSTER=lab docker/runtime/run.sh
+# Or for testing on a trusted LAN with no token gate:
+NETWORK=host CLUSTER=lab NO_AUTH=1 docker/runtime/run.sh
+```
+
+`NETWORK=host` is **required** for multi-node — mDNS multicast
+doesn't traverse Docker bridge networks. `NO_AUTH=1` skips the
+bearer-token gate so cluster CLIs across N containers don't have
+to fetch tokens; trusted-LAN only.
+
+For an end-to-end script that builds, deploys, runs, verifies, and
+tears down a multi-node test against the runtime image, see
+[Smoke-testing multi-node end-to-end](#smoke-testing-multi-node-end-to-end)
+below.
 
 ### Verify cluster discovery
 
@@ -337,6 +382,88 @@ rdzv host/port, mismatch acknowledgement) persist alongside the
 config's dynamic-args overrides — so a config "opens where you left
 off" for both single- and multi-node submits. **Reset to defaults**
 in the dialog clears everything we cached for this config.
+
+---
+
+## Driving multi-node from the CLI
+
+Everything the webui submit dialog does has a corresponding
+terminal command — useful for shell-driven smoke tests, scripted
+deployments, and CI. The `forgather cluster` subcommand mirrors
+the existing `forgather sched` / `job` / `gpu` shape:
+
+```bash
+forgather cluster nodes                      # member table + GPU summary
+forgather cluster jobs                       # list bundles with rolled-up status
+forgather cluster jobs <bundle-id>           # bundle detail (per-rank status)
+forgather cluster cancel <bundle-id>         # fan out cancel to every participant
+
+# Submit (note that -p / -t are GLOBAL forgather flags, like train):
+forgather -p <project-dir> -t <config> cluster submit \
+    [--member host:gpus[:iface] ...]              # repeatable; default = every reachable peer's idle GPUs
+    [--rdzv-host hostname] [--rdzv-port 29400]
+    [--priority N] [--dynamic-arg KEY=VAL ...]
+    [--allow-version-mismatch] [--wait]
+```
+
+All commands accept `--server URL` or `$FORGATHER_SERVER_URL`
+(default `http://127.0.0.1:8765`).
+
+### Hostname-based topology
+
+Hostnames in `--member` resolve to UUIDs via the cluster's
+membership table — you never type a UUID. So:
+
+```bash
+forgather cluster submit \
+    --member wopr:2 --member muthur:1 \
+    --rdzv-host muthur
+```
+
+is much easier to read than the equivalent webui modal would be in
+JSON.
+
+### `--member` defaults
+
+Omit `--member` entirely and submit defaults to "every reachable
+peer with all of its idle GPUs." That's the right call for a
+smoke test or a "use everything you've got" run:
+
+```bash
+forgather -p <proj> -t <cfg> cluster submit --allow-version-mismatch
+```
+
+### `--wait` for shell scripts
+
+`--wait` polls the bundle until it terminates and exits 0 on
+`done`, non-zero on `failed`/`cancelled`/timeout — handy when
+scripting:
+
+```bash
+forgather -p <proj> -t <cfg> cluster submit --wait \
+    && echo "training succeeded" \
+    || echo "training failed"
+```
+
+### Path resolution gotcha
+
+The `-p <project-dir>` path is sent **verbatim** to every peer.
+If your local path goes through a host symlink (e.g.
+`~/ai_assets/forgather → /mnt/rust/aiassets/forgather`), the
+remote peer sees the host-side link target which may not exist
+inside its container. **Always pass the canonical path** that
+resolves identically on every peer:
+
+```bash
+# Wrong if ~/ai_assets/forgather is a symlink not visible inside containers:
+forgather -p ~/ai_assets/forgather/examples/foo cluster submit ...
+
+# Right — canonical NFS path that every peer mounts at the same location:
+forgather -p /mnt/rust/aiassets/forgather/examples/foo cluster submit ...
+```
+
+`readlink -f <path>` resolves a path to its canonical form if you
+need to compute it programmatically.
 
 ---
 
@@ -526,6 +653,95 @@ coherent output.
 
 ---
 
+## Smoke-testing multi-node end-to-end
+
+A pre-built shell script exercises the entire flow against the
+runtime image, with no manual steps:
+
+```bash
+scripts/smoke_runtime_multinode.sh                       # default: REMOTE=muthur, port 18765
+scripts/smoke_runtime_multinode.sh --no-build            # skip image rebuild + deploy (after first run)
+scripts/smoke_runtime_multinode.sh --keep                # leave containers running on success
+scripts/smoke_runtime_multinode.sh --remote box2         # alternate remote host
+SMOKE_PORT=28765 scripts/smoke_runtime_multinode.sh      # override the test port
+```
+
+What it does:
+
+1. Builds the runtime image locally (`Dockerfile.runtime` with
+   `FORGATHER_SOURCE_DIR=.` so it tests your working tree, not
+   whatever's on `dev`).
+2. Saves the image to a shared-FS tarball (default
+   `/mnt/rust/aiassets/.tmp/forgather_smoke.tar`) and `docker load`s
+   it on the remote via ssh.
+3. Starts a server container on each host with `--cluster <name>`,
+   `--no-auth`, and `--network host`.
+4. Waits up to 90 seconds for the cluster to form (both members
+   reachable in the membership table).
+5. Submits Tiny Llama v2 across every reachable GPU using
+   `forgather cluster submit` from inside one of the containers.
+6. Polls the bundle until terminal status; asserts `done`.
+7. Verifies a checkpoint landed on the shared FS with at least one
+   shard file.
+8. Tears the cluster down (unless `--keep` is passed).
+
+On any failure, the EXIT trap dumps a single triage file under
+`/mnt/rust/aiassets/.tmp/smoke-<cluster>-failure-<ts>.log`:
+`docker logs` from both hosts, cluster nodes/jobs JSON, the latest
+TTY log from each peer, and `nvidia-smi` output. One place to
+look.
+
+### Prerequisites
+
+- **Passwordless ssh** from the local host to the remote
+  (`ssh <REMOTE>` returns immediately with no password prompt).
+- **Same NFS path on both hosts** — the script bind-mounts
+  `/mnt/rust/aiassets` into both containers; the project_dir for
+  Tiny Llama lives there. If your shared mount is elsewhere, edit
+  the script's bind-mount lines (search for `/mnt/rust/aiassets`)
+  or set `PROJECT_DIR=` to the correct host path.
+- **Both hosts have docker** with `--gpus` support (NVIDIA
+  Container Toolkit installed).
+- **A non-default port available on both hosts** — defaults to
+  18765 to avoid colliding with `forgather-dev` containers that
+  may already be using 8765 under host networking. Override with
+  `SMOKE_PORT=` if even 18765 is taken.
+
+### What it tests
+
+The smoke test is the canonical end-to-end check that the
+runtime image's multi-node story works: image build, image
+distribution via shared FS, cluster discovery via mDNS, the
+trusted-LAN no-auth path, the cluster CLI's submit fanout, the
+trainer's per-rank coordination, the checkpoint coordinator's
+single-writer behaviour on shared FS, and cleanup. If you change
+anything in the runtime image, the cluster runtime, the cluster
+CLI, or the checkpoint code, run this first.
+
+The reference run on a 1+2 GPU cluster (1 RTX 3090 on the remote,
+2 RTX 3090s on the local) trains Tiny Llama v2 (4M params,
+TinyStories) in ~60 seconds of compute time, ~80 seconds total
+(cluster form + submit + train + verify) on a warm cache.
+
+### Using it as a template
+
+The script is meant to be copyable. To smoke-test a different
+config (e.g. a custom finetune), pass `--project-dir` and
+`--config`:
+
+```bash
+scripts/smoke_runtime_multinode.sh \
+    --project-dir /mnt/rust/aiassets/my-project \
+    --config train.yaml
+```
+
+For more elaborate tests (multi-step submit, mid-run cancel,
+checkpoint resume), copy the script and adapt — the helpers
+(`reachable_count`, the diagnostic dump trap, the bundle-polling
+loop) are independently useful.
+
+---
+
 ## Known limitations and caveats
 
 - **No global scheduler.** Per-peer scheduling decisions are
@@ -568,4 +784,10 @@ coherent output.
   — how MFU, tok/s, and FLOPs are computed.
 - **[Forgather Server CLI](server-cli.md)** — `--enqueue`,
   `forgather sched`, `forgather job`, `forgather gpu` from the
-  terminal.
+  terminal. The `forgather cluster` subcommand documented in
+  [Driving multi-node from the CLI](#driving-multi-node-from-the-cli)
+  is the multi-node counterpart.
+- **[Docker images](../../docker/README.md)** — full reference for
+  the dev and runtime images, including the multi-node
+  CLUSTER/NO_AUTH env-var surface on the runtime image and the
+  `--init` / HEALTHCHECK plumbing.
