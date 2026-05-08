@@ -194,10 +194,66 @@ forgather mkdocs -f mkdocs.yml [--enqueue] [--priority N]
 forgather sched status | list | pause | resume | cancel <id> | cleanup [<id>]
 forgather job status | save | stop | save-stop | abort | kill | force-kill | tail | dump <id>
 forgather gpu status | disable | enable | priority | kill <idx>
+forgather cluster nodes | jobs [<id>] | submit [opts] | cancel <id>
 # All accept --server URL or $FORGATHER_SERVER_URL (default: http://127.0.0.1:8765)
 ```
 
 All `--enqueue`-capable commands accept `--priority N` and `--server URL`; non-training enqueues (eval/tb/inf/convert/finalize/mkdocs) build `job_params` matching their webui submit modals.
+
+### Multi-node cluster CLI
+
+`forgather cluster` talks to a server running with `--cluster <name>`:
+
+```bash
+forgather cluster nodes                           # list members + GPUs + version status
+forgather cluster jobs                            # list multi-node bundles (rolled-up status)
+forgather cluster jobs <bundle-id>                # bundle detail with per-rank status
+forgather cluster cancel <bundle-id>              # fan out cancel to every participant
+# submit takes -p / -t globally (matches `forgather train` shape):
+forgather -p <proj> -t <cfg> cluster submit \
+    [--member host:gpus[:iface] ...]              # repeatable; default = every reachable peer's idle GPUs
+    [--rdzv-host hostname] [--rdzv-port 29400]
+    [--priority N] [--dynamic-arg KEY=VAL ...]
+    [--allow-version-mismatch] [--wait]
+```
+
+Hostnames in `--member` resolve to UUIDs via the membership table — no UUIDs in the CLI.
+
+### Multi-node smoke test for the runtime image
+
+Runnable end-to-end test of the runtime image's multi-node story: builds the runtime image locally, deploys to a remote host via NFS-shared `docker save`/`load`, starts a cluster on both, runs Tiny Llama v2 across all GPUs, verifies the checkpoint, and cleans up.
+
+```bash
+scripts/smoke_runtime_multinode.sh                       # default: REMOTE=muthur, port 18765
+scripts/smoke_runtime_multinode.sh --no-build            # skip image rebuild + deploy (after first run)
+scripts/smoke_runtime_multinode.sh --keep                # leave containers running on success
+scripts/smoke_runtime_multinode.sh --remote box2         # alternate remote host
+SMOKE_PORT=28765 scripts/smoke_runtime_multinode.sh      # override the test port
+```
+
+Prerequisites:
+- Passwordless `ssh <REMOTE>` from this host
+- Both hosts have docker (with `--gpus` / nvidia-container-toolkit)
+- `/mnt/rust/aiassets` mounted at the same path on both hosts (NFS or equivalent — needed because the project_dir must resolve identically on every peer)
+
+On any failure the script's EXIT trap dumps `docker logs` from both hosts, cluster JSON state, the latest TTY log from each peer, and `nvidia-smi` output to a single file under `/mnt/rust/aiassets/.tmp/smoke-<cluster>-failure-<ts>.log` — one place to look for triage.
+
+To smoke-test multi-node manually (without the script), the runtime image accepts:
+
+```bash
+docker run -d --init --gpus all --network host \
+    -v /mnt/rust/aiassets:/mnt/rust/aiassets \
+    forgather:latest \
+    forgather server -H 0.0.0.0 -p 8765 --cluster <name> --no-auth
+```
+
+Or via the helper:
+
+```bash
+NETWORK=host CLUSTER=<name> NO_AUTH=1 docker/runtime/run.sh
+```
+
+`NO_AUTH=1` disables the bearer-token gate — trusted-LAN only, used by the smoke test to avoid token-fetching across N containers.
 
 ### Inference
 

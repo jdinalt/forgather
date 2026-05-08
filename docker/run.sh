@@ -10,9 +10,11 @@
 #
 # Bind-mounts the host home directory at the same path used inside
 # the container so absolute paths in shell history, configs, and
-# project files keep resolving correctly. The image carries an
-# account matching your host UID/GID (set at build time), so file
-# ownership is preserved across the boundary.
+# project files keep resolving correctly. The image's in-container
+# user is fixed at uid 1000; the entrypoint remaps to PUID/PGID
+# (passed in by this script as the host user's uid/gid) at start
+# time via gosu, so file ownership is preserved across the boundary
+# regardless of who built the image.
 #
 # Networking: defaults to host networking (--network host) so the
 # container shares the host's network stack — every service inside
@@ -41,6 +43,14 @@
 #   EXTRA_PORTS='-p 5173:5173'         # bridge mode only
 #   EXTRA_MOUNTS='-v /scratch:/scratch'
 #
+# Sharing ~/.forgather state with the runtime image:
+# The dev image bind-mounts $HOME wholesale, so ~/.forgather inside
+# the container is the same on-disk directory as ~/.forgather on the
+# host. To make the runtime image see that same state directory,
+# launch it with `STATE_VOLUME=$HOME/.forgather docker/runtime/run.sh`
+# — both containers will then read/write the same auth token, queue
+# index, generation configs, and hardware FLOPS cache.
+#
 # Persistent overrides: if $XDG_CONFIG_HOME/forgather/docker.env (or
 # ~/.config/forgather/docker.env) exists it is sourced before defaults
 # are applied. Use `:= ` so a command-line `VAR=... docker/run.sh`
@@ -56,11 +66,11 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-CONFIG_FILE="${FORGATHER_DOCKER_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/forgather/docker.env}"
-if [[ -f "${CONFIG_FILE}" ]]; then
-    # shellcheck disable=SC1090
-    source "${CONFIG_FILE}"
-fi
+# Shared scaffold (config-file load, container_state, ensure_running,
+# common subcommand dispatch). See docker/_lib.sh for the contract.
+# shellcheck source=_lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
+lib_load_config
 
 IMAGE="${IMAGE:-forgather-dev:latest}"
 NAME="${NAME:-forgather-dev-${USER:-$(id -un)}}"
@@ -68,17 +78,6 @@ GPUS="${GPUS:-all}"
 NETWORK="${NETWORK:-host}"
 EXTRA_PORTS="${EXTRA_PORTS:-}"
 EXTRA_MOUNTS="${EXTRA_MOUNTS:-}"
-
-container_state() {
-    # Prints "running", "stopped", or "absent".
-    local s
-    s="$(docker inspect -f '{{.State.Status}}' "${NAME}" 2>/dev/null || true)"
-    case "${s}" in
-        running) echo running ;;
-        "") echo absent ;;
-        *) echo stopped ;;
-    esac
-}
 
 check_uncovered_symlinks() {
     # Two checks:
@@ -173,7 +172,7 @@ check_uncovered_symlinks() {
     } >&2
 }
 
-create_container() {
+do_create_container() {
     check_uncovered_symlinks
 
     GPU_ARGS=()
@@ -237,6 +236,8 @@ create_container() {
         -w "${REPO_ROOT}" \
         -e "FORGATHER_REPO=${REPO_ROOT}" \
         -e "HOME=${HOME}" \
+        -e "PUID=$(id -u)" \
+        -e "PGID=$(id -g)" \
         "${PORT_ARGS[@]}" \
         ${EXTRA_PORTS} \
         ${EXTRA_MOUNTS} \
@@ -244,26 +245,19 @@ create_container() {
         sleep infinity > /dev/null
 }
 
-ensure_running() {
-    local state
-    state="$(container_state)"
-    case "${state}" in
-        running)
-            ;;
-        stopped)
-            echo "[run.sh] starting existing container ${NAME}" >&2
-            docker start "${NAME}" > /dev/null
-            ;;
-        absent)
-            create_container
-            ;;
-    esac
-}
-
 attach_shell() {
     # Pass current TERM through; default to a sane value if absent
     # (e.g. invoked from a non-interactive parent).
+    #
+    # ``-u dev`` lands the exec as the in-container user. The Dockerfile
+    # ends with ``USER root`` so the entrypoint can do the PUID/PGID
+    # remap at container start; without ``-u`` here, ``docker exec``
+    # would default to root and the operator would land in a root
+    # shell. ``-u dev`` resolves the username at exec time, so after
+    # the entrypoint's ``usermod -u <PUID> dev`` ran, this lands at
+    # the host UID — matching what the bind-mounted home expects.
     exec docker exec -it \
+        -u dev \
         -w "${REPO_ROOT}" \
         -e "TERM=${TERM:-xterm-256color}" \
         "${NAME}" \
@@ -271,58 +265,36 @@ attach_shell() {
 }
 
 # ---------- subcommand dispatch -----------------------------------
+# Common subcommands (--status, --stop, --rm) are handled by the
+# shared lib; image-specific ones live below.
+
+if lib_handle_common_subcommand "${1:-}"; then
+    exit 0
+fi
 
 case "${1:-}" in
-    --status)
-        echo "container: ${NAME}"
-        echo "state:     $(container_state)"
-        if [[ "$(container_state)" != "absent" ]]; then
-            docker inspect -f \
-                'image:     {{.Config.Image}}{{"\n"}}network:   {{.HostConfig.NetworkMode}}{{"\n"}}started:   {{.State.StartedAt}}' \
-                "${NAME}" 2>/dev/null || true
-        fi
-        exit 0
-        ;;
-    --stop)
-        if [[ "$(container_state)" == "running" ]]; then
-            echo "[run.sh] stopping ${NAME}" >&2
-            docker stop "${NAME}" > /dev/null
-        else
-            echo "[run.sh] container ${NAME} is not running" >&2
-        fi
-        exit 0
-        ;;
-    --rm)
-        if [[ "$(container_state)" != "absent" ]]; then
-            echo "[run.sh] removing ${NAME}" >&2
-            docker rm -f "${NAME}" > /dev/null
-        else
-            echo "[run.sh] container ${NAME} does not exist" >&2
-        fi
-        exit 0
-        ;;
     --recreate)
         # Validate before destructive removal so a bad config doesn't
         # leave the user with no container at all.
         check_uncovered_symlinks
-        if [[ "$(container_state)" != "absent" ]]; then
+        if [[ "$(lib_container_state)" != "absent" ]]; then
             echo "[run.sh] removing existing ${NAME}" >&2
             docker rm -f "${NAME}" > /dev/null
         fi
-        create_container
+        do_create_container
         shift
         attach_shell bash -l "$@"
         ;;
     -h|--help)
-        sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,52p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
     "")
-        ensure_running
+        lib_ensure_running
         attach_shell bash -l
         ;;
     *)
-        ensure_running
+        lib_ensure_running
         attach_shell "$@"
         ;;
 esac

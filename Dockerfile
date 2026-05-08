@@ -7,25 +7,30 @@
 # base image — GPU access at runtime comes from the host driver via
 # nvidia-container-toolkit (`docker run --gpus all ...`).
 #
-# Build args USER_NAME / USER_UID / USER_GID let the image carry an
-# account that matches the host user, so a bind-mounted home keeps
-# correct ownership. Defaults match Ubuntu's first interactive user
-# (1000:1000); override at build time when your host user differs:
-#
-#   docker build \
-#     --build-arg USER_NAME=$(id -un) \
-#     --build-arg USER_UID=$(id -u) \
-#     --build-arg USER_GID=$(id -g) \
-#     -t forgather-dev .
+# The in-container user is fixed at uid/gid 1000 (`dev`). The
+# entrypoint remaps to PUID/PGID at container start (gosu drop —
+# same pattern as `Dockerfile.runtime`), so a single prebuilt image
+# works for any host user without rebuilding. Bind-mount your host
+# clone at $FORGATHER_REPO and the container will install it editable
+# on first start.
 #
 # See `docker/build.sh` and `docker/run.sh` for convenience wrappers.
 
 FROM ubuntu:24.04
 
+# In-container user identity is fixed at build time. The runtime
+# entrypoint remaps to PUID/PGID via gosu when the container starts.
 ARG USER_NAME=dev
 ARG USER_UID=1000
 ARG USER_GID=1000
 ARG VENV_DIR=/opt/forgather/venv
+# Set to 1 to install Claude Code (the CLI agent from Anthropic) into
+# the image at /usr/bin/claude. Off by default — opt in via
+# ``docker/build.sh --claude``. Tooling-only convenience for
+# developers who use Claude Code; production builds shouldn't need
+# it. The npm package is installed globally so all in-container
+# users (including the gosu-dropped one) can invoke ``claude``.
+ARG INSTALL_CLAUDE=0
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -35,6 +40,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy \
     UV_CACHE_DIR=/root/.cache/uv \
     VIRTUAL_ENV=${VENV_DIR} \
+    USER_NAME=${USER_NAME} \
+    VENV_DIR=${VENV_DIR} \
     PATH=${VENV_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # ---------------------------------------------------------------------------
@@ -62,6 +69,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         graphviz \
         nodejs \
         npm \
+        gosu \
         # Developer convenience (a step up from the stripped-down image)
         bash-completion \
         curl \
@@ -84,7 +92,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         gnupg \
         locales \
         tzdata \
-    && locale-gen en_US.UTF-8
+        gh \
+    && locale-gen en_US.UTF-8 \
+    && gosu nobody true
 
 # ---------------------------------------------------------------------------
 # Install uv (fast Python package manager) into /usr/local/bin so it's
@@ -97,12 +107,24 @@ RUN UV_INSTALL_DIR=/usr/local/bin /tmp/uv-install.sh \
     && uv --version
 
 # ---------------------------------------------------------------------------
-# Create the in-container user matching the host UID/GID *before* we
-# build the venv, so all venv files (~thousands, dominated by PyTorch)
-# are owned by the user from the start — no slow recursive chown after
-# the install. Ubuntu 24.04 already ships with a uid=1000 'ubuntu'
-# user; if the requested UID collides with it we delete the stock
-# account first so the build arg always wins.
+# Optionally install Claude Code (Anthropic's CLI agent) so developers
+# who use it don't have to re-install on every image rebuild. Off by
+# default; enable via ``docker/build.sh --claude`` (sets
+# ``--build-arg INSTALL_CLAUDE=1``). Lands at /usr/bin/claude (npm
+# global), world-executable so the gosu-dropped user can invoke it.
+# ---------------------------------------------------------------------------
+RUN if [ "${INSTALL_CLAUDE}" = "1" ]; then \
+        echo "[Dockerfile] installing Claude Code (npm global)" && \
+        npm install -g @anthropic-ai/claude-code && \
+        chmod -R go+rX /usr/lib/node_modules/@anthropic-ai 2>/dev/null || true; \
+    fi
+
+# ---------------------------------------------------------------------------
+# Create the in-container user (fixed UID 1000 — the entrypoint remaps
+# at container start) *before* we build the venv, so all venv files
+# (~thousands, dominated by PyTorch) are owned by the user from the
+# start. Ubuntu 24.04 already ships with a uid=1000 'ubuntu' user;
+# if our UID collides with it we delete the stock account first.
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     if id -u ubuntu >/dev/null 2>&1 && [ "$(id -u ubuntu)" = "${USER_UID}" ]; then \
@@ -194,6 +216,26 @@ RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sh
 RUN --mount=type=bind,source=docker/patches/fix_tensorboard_pkg_resources.py,target=/tmp/fix_tb.py \
     ${VENV_DIR}/bin/python /tmp/fix_tb.py
 
+# Make the venv readable + writable by *any* uid (group + world).
+# The whole venv was created as ${USER_UID}:${USER_GID} just above
+# (USER directive + ``uv venv`` as user), so we already followed the
+# "create files as the user who will own them" pattern at build
+# time. The remaining wrinkle: at runtime the in-image user is
+# remapped to PUID via ``usermod`` so files written from inside
+# the container land at the host's UID — but the venv files were
+# baked at uid 1000 and a different runtime uid can't write to
+# them under default 644 perms. A previous fix recursive-chowned
+# /opt/forgather on every container start where host UID != 1000;
+# that runs over thousands of venv files (PyTorch alone drops
+# several thousand) and adds tens of seconds to every cold start.
+#
+# Move the cost to build time (paid once, baked into the image
+# layer, BuildKit caches subsequent builds). Container is
+# single-tenant anyway — group/world write on internal venv dirs
+# is acceptable; any sensitive state lives under bind-mounted
+# $HOME, not in /opt.
+RUN chmod -R go+rwX /opt/forgather
+
 # Switch back to root for the system-wide /etc/profile.d edits and
 # the entrypoint COPY into /usr/local/bin.
 USER root
@@ -244,10 +286,18 @@ RUN printf '%s\n' \
 # Entrypoint: if FORGATHER_REPO points at a bind-mounted checkout,
 # re-install the package in editable mode against that path so the
 # user's host-side edits are picked up live.
+#
+# The entrypoint runs as root so it can usermod the in-image user
+# (PUID/PGID remap to match the host), then drops to that user via
+# gosu before exec'ing the real command. Without ``USER root`` here
+# the entrypoint inherits a non-root identity from the previous
+# USER directive, can't remap, and the in-container UID stays at
+# the baked-in 1000 — bind-mounted host home becomes unreadable
+# whenever the host UID isn't 1000.
+USER root
 COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/forgather-entrypoint
 ENTRYPOINT ["/usr/local/bin/forgather-entrypoint"]
 
-USER ${USER_NAME}
 WORKDIR /home/${USER_NAME}
 
 CMD ["bash", "-l"]

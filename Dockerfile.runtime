@@ -32,6 +32,12 @@ ARG USER_GID=1000
 # FORGATHER_GIT_REF to pin a release tag or commit sha.
 ARG FORGATHER_GIT_URL=https://github.com/jdinalt/forgather.git
 ARG FORGATHER_GIT_REF=dev
+# Air-gap escape hatch: when FORGATHER_SOURCE_DIR is set to a path
+# *inside the build context*, the source tree is copied from there
+# instead of being cloned from git. Useful for offline / CI builds
+# or to bake a working-tree-with-uncommitted-changes for testing.
+# Default empty = git-clone path (the recommended reproducible flow).
+ARG FORGATHER_SOURCE_DIR=
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -41,6 +47,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy \
     UV_CACHE_DIR=/root/.cache/uv \
     VIRTUAL_ENV=${VENV_DIR} \
+    USER_NAME=${USER_NAME} \
+    VENV_DIR=${VENV_DIR} \
     PATH=${VENV_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # ---------------------------------------------------------------------------
@@ -147,15 +155,42 @@ RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sh
 # tools/forgather_server/server.py, and the FastAPI app resolves
 # webui/dist/ relative to its own __file__ — both work because we
 # install editable from this baked-in tree.
-# `git clone --depth 1 --branch <ref>` only works when <ref> is a
-# branch or tag name. Fall back to a full clone + checkout so that
-# FORGATHER_GIT_REF can also be a commit SHA. Parens group the
-# fallback so the checkout doesn't run on the fast path.
-RUN git clone --depth 1 --branch "${FORGATHER_GIT_REF}" \
-        "${FORGATHER_GIT_URL}" "${REPO_DIR}" 2>/dev/null \
-    || ( rm -rf "${REPO_DIR}" \
-        && git clone "${FORGATHER_GIT_URL}" "${REPO_DIR}" \
-        && cd "${REPO_DIR}" && git checkout "${FORGATHER_GIT_REF}" )
+# Two source acquisition modes, selected by FORGATHER_SOURCE_DIR:
+#
+#   - empty (default): git-clone from FORGATHER_GIT_URL @ FORGATHER_GIT_REF.
+#     `git clone --depth 1 --branch <ref>` only works when <ref> is a
+#     branch or tag name; fall back to a full clone + checkout so the
+#     ref can also be a commit SHA.
+#
+#   - non-empty: cp -a from that path inside the build context (mounted
+#     read-only at /build-context) into ${REPO_DIR}. Lets operators
+#     build offline / from a vendored snapshot without internet access
+#     to a git remote. The build-context bind mount is used the same
+#     way the dev image's pyproject install does (Dockerfile:166-171),
+#     so behavior is consistent.
+RUN --mount=type=bind,target=/build-context \
+    set -eux; \
+    if [ -n "${FORGATHER_SOURCE_DIR}" ]; then \
+        src="/build-context/${FORGATHER_SOURCE_DIR}"; \
+        if [ ! -d "${src}" ]; then \
+            echo "FORGATHER_SOURCE_DIR=${FORGATHER_SOURCE_DIR} not found in build context" >&2; \
+            exit 1; \
+        fi; \
+        echo "[Dockerfile.runtime] copying source from build context: ${FORGATHER_SOURCE_DIR}"; \
+        mkdir -p "${REPO_DIR}"; \
+        # `cp -r` (not `cp -a`) so the destination files are owned by
+        # the current build user (forgather) rather than whatever
+        # uid the build context happens to expose. Mode/timestamps
+        # are not load-bearing for installed source.
+        cp -r "${src}/." "${REPO_DIR}/"; \
+    else \
+        echo "[Dockerfile.runtime] cloning ${FORGATHER_GIT_URL} @ ${FORGATHER_GIT_REF}"; \
+        git clone --depth 1 --branch "${FORGATHER_GIT_REF}" \
+                "${FORGATHER_GIT_URL}" "${REPO_DIR}" 2>/dev/null \
+            || ( rm -rf "${REPO_DIR}" \
+                && git clone "${FORGATHER_GIT_URL}" "${REPO_DIR}" \
+                && cd "${REPO_DIR}" && git checkout "${FORGATHER_GIT_REF}" ); \
+    fi
 
 # Install Forgather (editable) from the cloned tree. Editable mode
 # is required so that the file-walk in `forgather server` resolves
@@ -180,10 +215,22 @@ RUN ${VENV_DIR}/bin/python ${REPO_DIR}/docker/patches/fix_tensorboard_pkg_resour
 RUN cd ${REPO_DIR} && ./build-webui.sh \
     && rm -rf ${REPO_DIR}/tools/forgather_server/webui/node_modules
 
+# Make /opt/forgather (venv + cloned repo) readable + writable by
+# any uid. The build pattern already follows "switch user before
+# creating files" (USER ${USER_NAME} above), so files land owned
+# by uid 1000 from the start. At runtime the entrypoint may
+# usermod the in-image user to a different host UID; this chmod
+# at build time means no slow recursive chown is needed at
+# container start to hand the venv over. See the equivalent
+# ``RUN chmod`` block in the dev image's Dockerfile for the full
+# rationale.
+RUN chmod -R go+rwX /opt/forgather
+
 # ---------------------------------------------------------------------------
 # Back to root for the entrypoint setup. The entrypoint runs as root
-# so it can usermod/chown for UID/GID remap, then drops to the
-# forgather user via gosu before exec'ing the real command.
+# so it can usermod for UID remap then drops to the forgather user
+# via gosu before exec'ing the real command. Build-time chmod above
+# means no recursive chown is needed at container start.
 # ---------------------------------------------------------------------------
 USER root
 
@@ -199,17 +246,27 @@ RUN printf '%s\n' \
         >> /etc/bash.bashrc
 
 # Install the entrypoint from the cloned tree so the image build is
-# fully decoupled from the host build context. To iterate on the
-# entrypoint locally, push to a branch and rebuild with
-# FORGATHER_GIT_REF=<branch>.
+# fully decoupled from the host build context. The dev and runtime
+# images share a single entrypoint script (docker/entrypoint.sh) — it
+# branches internally on FORGATHER_REPO to decide whether to do the
+# editable-install dance. To iterate on the entrypoint locally, push
+# to a branch and rebuild with FORGATHER_GIT_REF=<branch>.
 RUN install -m 0755 -o root -g root \
-        ${REPO_DIR}/docker/runtime/entrypoint.sh \
+        ${REPO_DIR}/docker/entrypoint.sh \
         /usr/local/bin/forgather-runtime-entrypoint
 
 # Volumes (advisory — the run wrapper sets the actual mounts).
 VOLUME ["/home/forgather/.forgather", "/home/forgather/.cache/huggingface"]
 
 EXPOSE 8765
+
+# Healthcheck: probe the cluster-self endpoint, which returns 200 even
+# in standalone (non-cluster) mode and is cheap to serve. start-period
+# gives the server a beat to come up before failures count against the
+# retry budget. Orchestrators (compose, swarm, k8s readiness checks
+# via docker inspect) can use this to gate traffic / restarts.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8765/api/cluster/self > /dev/null || exit 1
 
 WORKDIR /home/forgather
 
