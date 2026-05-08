@@ -195,6 +195,26 @@ RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sh
 RUN --mount=type=bind,source=docker/patches/fix_tensorboard_pkg_resources.py,target=/tmp/fix_tb.py \
     ${VENV_DIR}/bin/python /tmp/fix_tb.py
 
+# Make the venv readable + writable by *any* uid (group + world).
+# The whole venv was created as ${USER_UID}:${USER_GID} just above
+# (USER directive + ``uv venv`` as user), so we already followed the
+# "create files as the user who will own them" pattern at build
+# time. The remaining wrinkle: at runtime the in-image user is
+# remapped to PUID via ``usermod`` so files written from inside
+# the container land at the host's UID — but the venv files were
+# baked at uid 1000 and a different runtime uid can't write to
+# them under default 644 perms. A previous fix recursive-chowned
+# /opt/forgather on every container start where host UID != 1000;
+# that runs over thousands of venv files (PyTorch alone drops
+# several thousand) and adds tens of seconds to every cold start.
+#
+# Move the cost to build time (paid once, baked into the image
+# layer, BuildKit caches subsequent builds). Container is
+# single-tenant anyway — group/world write on internal venv dirs
+# is acceptable; any sensitive state lives under bind-mounted
+# $HOME, not in /opt.
+RUN chmod -R go+rwX /opt/forgather
+
 # Switch back to root for the system-wide /etc/profile.d edits and
 # the entrypoint COPY into /usr/local/bin.
 USER root
@@ -245,10 +265,18 @@ RUN printf '%s\n' \
 # Entrypoint: if FORGATHER_REPO points at a bind-mounted checkout,
 # re-install the package in editable mode against that path so the
 # user's host-side edits are picked up live.
+#
+# The entrypoint runs as root so it can usermod the in-image user
+# (PUID/PGID remap to match the host), then drops to that user via
+# gosu before exec'ing the real command. Without ``USER root`` here
+# the entrypoint inherits a non-root identity from the previous
+# USER directive, can't remap, and the in-container UID stays at
+# the baked-in 1000 — bind-mounted host home becomes unreadable
+# whenever the host UID isn't 1000.
+USER root
 COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/forgather-entrypoint
 ENTRYPOINT ["/usr/local/bin/forgather-entrypoint"]
 
-USER ${USER_NAME}
 WORKDIR /home/${USER_NAME}
 
 CMD ["bash", "-l"]

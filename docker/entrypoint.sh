@@ -75,21 +75,29 @@ if [[ "${FORGATHER_ENTRYPOINT_PHASE:-}" != "2" && "$(id -u)" == "0" ]]; then
     current_uid="$(id -u "${USER_NAME}")"
     current_gid="$(id -g "${USER_NAME}")"
 
-    if [[ "${current_gid}" != "${PGID}" ]]; then
-        groupmod -o -g "${PGID}" "${USER_NAME}"
-    fi
+    # ONLY change the uid — keep the primary gid at the build-time
+    # value (gid 1000). The venv at /opt/forgather is owned by gid
+    # 1000 from the build, with mode g+rwX baked in by the
+    # Dockerfile, so leaving the user in gid 1000 keeps the venv
+    # accessible without any runtime chown. A previous version of
+    # this entrypoint changed the primary gid via ``groupmod`` (or
+    # ``usermod -g``) and then recursive-chowned /opt/forgather to
+    # the new gid; that runs over thousands of venv files (PyTorch
+    # alone drops several thousand) and adds tens of seconds to
+    # every container start when host UID != 1000. Files written by
+    # the user to bind-mounted host paths land as uid=PUID gid=1000;
+    # the host sees the uid (correct, accountable), and the gid is
+    # cosmetic for most operators.
     if [[ "${current_uid}" != "${PUID}" ]]; then
-        usermod -o -u "${PUID}" -g "${PGID}" "${USER_NAME}"
+        usermod -o -u "${PUID}" "${USER_NAME}"
     fi
 
-    # Fix ownership of in-image state IFF we actually remapped. Skipped
-    # on the common path (PUID/PGID == 1000) so cold start is fast.
-    # Only the in-image directories get chowned — never bind-mounted
-    # host paths (the remapped UID already matches the host owner, and
-    # chowning a populated host home recursively is both pointless and
-    # potentially huge).
-    if [[ "${current_uid}" != "${PUID}" || "${current_gid}" != "${PGID}" ]]; then
-        chown -R "${PUID}:${PGID}" "/home/${USER_NAME}" /opt/forgather
+    # Fix ownership of the in-image home only — small (just shell
+    # init files and the welcome banner state) so this stays cheap
+    # even when remapped. /opt/forgather is intentionally NOT
+    # touched here; see the chmod g+rwX in the Dockerfiles.
+    if [[ "${current_uid}" != "${PUID}" ]]; then
+        chown -R "${PUID}:${current_gid}" "/home/${USER_NAME}"
     fi
 
     # Pre-create the persistent state dirs so the server (runtime
@@ -109,7 +117,14 @@ if [[ "${FORGATHER_ENTRYPOINT_PHASE:-}" != "2" && "$(id -u)" == "0" ]]; then
     : "${HOME:=/home/${USER_NAME}}"
 
     export FORGATHER_ENTRYPOINT_PHASE=2
-    exec gosu "${USER_NAME}" env \
+    # Drop build-time env that points at root-owned paths so phase 2
+    # (the post-gosu-drop user) doesn't try to write there.
+    # ``UV_CACHE_DIR=/root/.cache/uv`` is set in the Dockerfile so the
+    # build-time uv install hits the BuildKit cache mount; at runtime
+    # the unprivileged user can't write to /root, so the editable
+    # reinstall fails with "Failed to initialize cache". Unsetting
+    # lets uv fall back to its XDG default (``~/.cache/uv``).
+    exec env -u UV_CACHE_DIR gosu "${USER_NAME}" env \
         HOME="${HOME}" \
         VIRTUAL_ENV="${VENV_DIR}" \
         PATH="${VENV_DIR}/bin:${PATH}" \

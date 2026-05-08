@@ -215,10 +215,22 @@ RUN ${VENV_DIR}/bin/python ${REPO_DIR}/docker/patches/fix_tensorboard_pkg_resour
 RUN cd ${REPO_DIR} && ./build-webui.sh \
     && rm -rf ${REPO_DIR}/tools/forgather_server/webui/node_modules
 
+# Make /opt/forgather (venv + cloned repo) readable + writable by
+# any uid. The build pattern already follows "switch user before
+# creating files" (USER ${USER_NAME} above), so files land owned
+# by uid 1000 from the start. At runtime the entrypoint may
+# usermod the in-image user to a different host UID; this chmod
+# at build time means no slow recursive chown is needed at
+# container start to hand the venv over. See the equivalent
+# ``RUN chmod`` block in the dev image's Dockerfile for the full
+# rationale.
+RUN chmod -R go+rwX /opt/forgather
+
 # ---------------------------------------------------------------------------
 # Back to root for the entrypoint setup. The entrypoint runs as root
-# so it can usermod/chown for UID/GID remap, then drops to the
-# forgather user via gosu before exec'ing the real command.
+# so it can usermod for UID remap then drops to the forgather user
+# via gosu before exec'ing the real command. Build-time chmod above
+# means no recursive chown is needed at container start.
 # ---------------------------------------------------------------------------
 USER root
 

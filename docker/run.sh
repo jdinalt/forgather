@@ -248,7 +248,16 @@ do_create_container() {
 attach_shell() {
     # Pass current TERM through; default to a sane value if absent
     # (e.g. invoked from a non-interactive parent).
+    #
+    # ``-u dev`` lands the exec as the in-container user. The Dockerfile
+    # ends with ``USER root`` so the entrypoint can do the PUID/PGID
+    # remap at container start; without ``-u`` here, ``docker exec``
+    # would default to root and the operator would land in a root
+    # shell. ``-u dev`` resolves the username at exec time, so after
+    # the entrypoint's ``usermod -u <PUID> dev`` ran, this lands at
+    # the host UID — matching what the bind-mounted home expects.
     exec docker exec -it \
+        -u dev \
         -w "${REPO_ROOT}" \
         -e "TERM=${TERM:-xterm-256color}" \
         "${NAME}" \
