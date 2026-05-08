@@ -248,6 +248,14 @@ VOLUME ["/home/forgather/.forgather", "/home/forgather/.cache/huggingface"]
 
 EXPOSE 8765
 
+# Healthcheck: probe the cluster-self endpoint, which returns 200 even
+# in standalone (non-cluster) mode and is cheap to serve. start-period
+# gives the server a beat to come up before failures count against the
+# retry budget. Orchestrators (compose, swarm, k8s readiness checks
+# via docker inspect) can use this to gate traffic / restarts.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8765/api/cluster/self > /dev/null || exit 1
+
 WORKDIR /home/forgather
 
 ENTRYPOINT ["/usr/local/bin/forgather-runtime-entrypoint"]

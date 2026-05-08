@@ -223,6 +223,23 @@ docker stop forgather-server
 docker exec -u forgather -ti forgather-server bash
 ```
 
+## Healthcheck
+
+The image declares a Docker `HEALTHCHECK` that probes
+`http://127.0.0.1:8765/api/cluster/self` every 30 seconds (5s
+timeout, 20s start-period grace, 3 retries). The endpoint returns
+200 in both standalone and clustered modes, so a passing check means
+the FastAPI app is up and serving. Inspect via:
+
+```bash
+docker inspect --format '{{.State.Health.Status}}' forgather-server
+```
+
+Orchestration layers (compose, swarm, k8s readiness probes) can use
+this to gate traffic or trigger restarts. The healthcheck runs
+inside the container against loopback, so it works the same under
+bridge networking and `NETWORK=host`.
+
 ## Troubleshooting
 
 **Server won't start, `docker logs` shows a permission error**
