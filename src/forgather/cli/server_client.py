@@ -283,3 +283,63 @@ class ServerClient:
 
     def kill_gpu_processes(self, idx):
         return self._post(f"/gpus/{idx}/kill", {"confirmed": True}).json()
+
+    # Cluster (multi-node, opt-in via the server's --cluster flag)
+
+    def cluster_self(self):
+        """This node's identity in the cluster, or null if standalone."""
+        return self._get("/cluster/self").json()
+
+    def cluster_members(self):
+        """Cluster name, master node_id, and the full member table."""
+        return self._get("/cluster/members").json()
+
+    def cluster_master(self):
+        """Master node_id and is_self_master."""
+        return self._get("/cluster/master").json()
+
+    def cluster_jobs_list(self):
+        """List multi-node bundles (newest first), with rolled-up status."""
+        return self._get("/cluster/jobs").json()
+
+    def cluster_job_get(self, cluster_job_id):
+        """Get one bundle (rolled-up status fanned out from master)."""
+        return self._get(f"/cluster/jobs/{cluster_job_id}").json()
+
+    def cluster_jobs_submit(
+        self,
+        *,
+        project_dir,
+        config,
+        members,
+        dynamic_args=None,
+        priority=0,
+        rdzv_node_id=None,
+        rdzv_port=None,
+        allow_version_mismatch=False,
+    ):
+        """Fan out a multi-node training submit.
+
+        ``members`` is a list of dicts with keys ``node_id``,
+        ``nproc_per_node``, and optional ``nccl_socket_ifname``. The
+        server matches each member to a known cluster peer, derives
+        the iface from the member's advertised IP when omitted, and
+        spawns torchrun with the right rdzv args on every peer.
+        """
+        body = {
+            "project_dir": project_dir,
+            "config": config,
+            "members": members,
+            "dynamic_args": dynamic_args or {},
+            "priority": priority,
+            "allow_version_mismatch": allow_version_mismatch,
+        }
+        if rdzv_node_id is not None:
+            body["rdzv_node_id"] = rdzv_node_id
+        if rdzv_port is not None:
+            body["rdzv_port"] = rdzv_port
+        return self._post("/cluster/jobs/submit", body).json()
+
+    def cluster_job_cancel(self, cluster_job_id):
+        """Fan out cancel to every participant of the bundle."""
+        return self._post(f"/cluster/jobs/{cluster_job_id}/cancel").json()

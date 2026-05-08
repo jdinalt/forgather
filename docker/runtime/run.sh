@@ -88,6 +88,15 @@
 #                                         #   interface IP advertised over
 #                                         #   mDNS). Only meaningful when
 #                                         #   CLUSTER is also set.
+#   NO_AUTH=1                             # default: unset. When set, the
+#                                         #   server starts with --no-auth
+#                                         #   (no bearer-token gate).
+#                                         #   TRUSTED-LAN ONLY — any host on
+#                                         #   the network can hit the API.
+#                                         #   Intended for smoke tests + the
+#                                         #   multi-node testing flow where
+#                                         #   token wrangling across N
+#                                         #   containers is friction.
 #   DEV=1                                 # default: unset. DEBUG-ONLY.
 #   DEV=/path/to/forgather                #   When set, bind-mounts a host-
 #                                         #   side forgather clone over
@@ -151,6 +160,13 @@ EXTRA_PORTS="${EXTRA_PORTS:-}"
 # `--cluster-address <ip>`.
 CLUSTER="${CLUSTER:-}"
 CLUSTER_ADDRESS="${CLUSTER_ADDRESS:-}"
+# NO_AUTH=1 starts the server with --no-auth, disabling the bearer-token
+# gate. Use ONLY on a trusted LAN: any user on the network can hit the
+# API and submit jobs / read state. Intended for smoke tests and
+# multi-node testing where token-fetching across N containers is
+# operational friction. Default off — production deployments leave the
+# token gate in place.
+NO_AUTH="${NO_AUTH:-}"
 # DEV opts in to bind-mounting a host-side forgather clone over the
 # image's baked-in /opt/forgather/repo. Empty = production mode (default).
 # "1" or unset-but-flag-passed = use ${REPO_ROOT}. Any other value
@@ -302,15 +318,23 @@ EOF
         EXTRA_PORTS_FINAL=""
     fi
 
-    # When CLUSTER is set, override the image's default CMD so the
-    # server starts in cluster mode. We replicate the default
-    # arguments (-H 0.0.0.0 -p 8765) so operators don't have to think
-    # about the base CMD; they only care about --cluster / address.
+    # When CLUSTER or NO_AUTH is set, override the image's default
+    # CMD so the server starts with the right flags. We replicate
+    # the default arguments (-H 0.0.0.0 -p 8765) so operators don't
+    # have to think about the base CMD; they only care about
+    # --cluster / address / auth.
     CMD_ARGS=()
-    if [[ -n "${CLUSTER}" ]]; then
-        CMD_ARGS=(forgather server -H 0.0.0.0 -p 8765 --cluster "${CLUSTER}")
-        if [[ -n "${CLUSTER_ADDRESS}" ]]; then
-            CMD_ARGS+=(--cluster-address "${CLUSTER_ADDRESS}")
+    if [[ -n "${CLUSTER}" || -n "${NO_AUTH}" ]]; then
+        CMD_ARGS=(forgather server -H 0.0.0.0 -p 8765)
+        if [[ -n "${CLUSTER}" ]]; then
+            CMD_ARGS+=(--cluster "${CLUSTER}")
+            if [[ -n "${CLUSTER_ADDRESS}" ]]; then
+                CMD_ARGS+=(--cluster-address "${CLUSTER_ADDRESS}")
+            fi
+        fi
+        if [[ -n "${NO_AUTH}" ]]; then
+            CMD_ARGS+=(--no-auth)
+            echo "[run.sh]   auth: DISABLED (NO_AUTH=${NO_AUTH}); trusted-LAN only" >&2
         fi
     fi
 

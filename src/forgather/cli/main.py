@@ -79,6 +79,7 @@ def get_subcommand_registry():
         create_tb_parser,
         create_tlist_parser,
     )
+    from .cluster_args import create_cluster_parser
     from .control_args import create_control_parser
     from .dataset_args import create_dataset_parser
     from .diloco_args import create_diloco_parser
@@ -133,6 +134,7 @@ def get_subcommand_registry():
         "sched": create_sched_parser,
         "job": create_job_parser,
         "gpu": create_gpu_parser,
+        "cluster": create_cluster_parser,
         "mkdocs": create_mkdocs_parser,
     }
 
@@ -483,6 +485,12 @@ def main():
                 from .gpu import gpu_cmd
 
                 gpu_cmd(args)
+            case "cluster":
+                from .cluster import cluster_cmd
+
+                rc = cluster_cmd(args)
+                if rc is not None and rc != 0:
+                    sys.exit(rc)
             case "mkdocs":
                 from .mkdocs import mkdocs_cmd
 
