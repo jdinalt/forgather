@@ -33,6 +33,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy \
     UV_CACHE_DIR=/root/.cache/uv \
     VIRTUAL_ENV=${VENV_DIR} \
+    USER_NAME=${USER_NAME} \
+    VENV_DIR=${VENV_DIR} \
     PATH=${VENV_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # ---------------------------------------------------------------------------

@@ -47,6 +47,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy \
     UV_CACHE_DIR=/root/.cache/uv \
     VIRTUAL_ENV=${VENV_DIR} \
+    USER_NAME=${USER_NAME} \
+    VENV_DIR=${VENV_DIR} \
     PATH=${VENV_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # ---------------------------------------------------------------------------
@@ -232,11 +234,13 @@ RUN printf '%s\n' \
         >> /etc/bash.bashrc
 
 # Install the entrypoint from the cloned tree so the image build is
-# fully decoupled from the host build context. To iterate on the
-# entrypoint locally, push to a branch and rebuild with
-# FORGATHER_GIT_REF=<branch>.
+# fully decoupled from the host build context. The dev and runtime
+# images share a single entrypoint script (docker/entrypoint.sh) — it
+# branches internally on FORGATHER_REPO to decide whether to do the
+# editable-install dance. To iterate on the entrypoint locally, push
+# to a branch and rebuild with FORGATHER_GIT_REF=<branch>.
 RUN install -m 0755 -o root -g root \
-        ${REPO_DIR}/docker/runtime/entrypoint.sh \
+        ${REPO_DIR}/docker/entrypoint.sh \
         /usr/local/bin/forgather-runtime-entrypoint
 
 # Volumes (advisory — the run wrapper sets the actual mounts).

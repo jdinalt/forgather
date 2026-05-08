@@ -1,45 +1,38 @@
 #!/bin/bash
-# Entrypoint for the Forgather development image.
+# Unified entrypoint for the Forgather dev and runtime images.
 #
-# Runs as root, optionally remaps the in-container user to PUID/PGID
-# (defaulting to 1000:1000 if unset), then drops privileges via gosu
-# and execs the real command. This mirrors the runtime image's
-# entrypoint pattern, so a single prebuilt dev image works for any
-# host user.
+# Both images share the same gosu-drop scaffolding (run as root,
+# optionally remap an in-container user to PUID/PGID, drop privileges
+# via gosu, exec the real command). They differ in two small ways:
 #
-# The image carries every Forgather dependency in its venv but NOT
-# the Forgather package itself — there is no in-image copy of the
-# repo. On container start (or whenever FORGATHER_REPO points at a
-# different tree than last time) the package is installed in editable
-# mode against the bind-mounted host clone, so host-side edits show
-# up live without rebuilding the image. The editable install runs
-# *after* the gosu drop, as the unprivileged user.
+#   - dev image: $FORGATHER_REPO points at a bind-mounted host clone.
+#     We re-install the package in editable mode against that path
+#     after the gosu drop, so host-side edits show up live.
+#
+#   - runtime image: source tree is baked in, $FORGATHER_REPO is
+#     unset, no editable install needed.
+#
+# The mode is selected purely by whether FORGATHER_REPO is set —
+# there's no `--mode runtime` flag. Both Dockerfiles install this one
+# script as the entrypoint.
 #
 # If the container was launched with `docker run --user uid:gid` (so
-# we're not root to begin with), the remap is skipped and we go
-# straight to the editable install + exec.
+# we're not root), the remap is skipped and we go straight to phase 2.
 
 set -e
 
-USER_NAME="${USER_NAME:-dev}"
+USER_NAME="${USER_NAME:-forgather}"
 VENV_DIR="${VENV_DIR:-/opt/forgather/venv}"
 
 export VIRTUAL_ENV="${VENV_DIR}"
 export PATH="${VENV_DIR}/bin:${PATH}"
 
 # ----------------------------------------------------------------------
-# Phase 1 (runs as root): optionally remap, chown the venv, gosu drop.
-# Phase 2 (runs as the unprivileged user): editable-install forgather
-#         against $FORGATHER_REPO, then exec "$@".
-#
-# We re-exec ourselves under gosu with FORGATHER_ENTRYPOINT_PHASE=2
-# so the same script runs both phases without splitting into two
-# files. The phase-2 path also handles the "caller used --user
-# uid:gid" case (we're not root, can't remap, just install + exec).
+# Phase 1 (root): optionally remap the in-container user, chown the
+# in-image state, drop privileges via gosu, re-exec ourselves under
+# FORGATHER_ENTRYPOINT_PHASE=2 so phase 2 runs in the same script.
 # ----------------------------------------------------------------------
-
 if [[ "${FORGATHER_ENTRYPOINT_PHASE:-}" != "2" && "$(id -u)" == "0" ]]; then
-    # ---- root branch: remap if needed, then re-exec under gosu ----
     PUID="${PUID:-1000}"
     PGID="${PGID:-1000}"
 
@@ -53,20 +46,30 @@ if [[ "${FORGATHER_ENTRYPOINT_PHASE:-}" != "2" && "$(id -u)" == "0" ]]; then
         usermod -o -u "${PUID}" -g "${PGID}" "${USER_NAME}"
     fi
 
-    # Fix ownership of the in-image venv IFF we actually remapped.
-    # Skipped on the common path (PUID/PGID == 1000) so cold start
-    # is fast — the venv already has correct ownership from build.
-    # Never chown the bind-mounted host home: the host user already
-    # owns it, the remapped UID matches that, and a recursive chown
-    # over a developer's $HOME is potentially huge and slow.
+    # Fix ownership of in-image state IFF we actually remapped. Skipped
+    # on the common path (PUID/PGID == 1000) so cold start is fast.
+    # Only the in-image directories get chowned — never bind-mounted
+    # host paths (the remapped UID already matches the host owner, and
+    # chowning a populated host home recursively is both pointless and
+    # potentially huge).
     if [[ "${current_uid}" != "${PUID}" || "${current_gid}" != "${PGID}" ]]; then
-        chown -R "${PUID}:${PGID}" /opt/forgather
+        chown -R "${PUID}:${PGID}" "/home/${USER_NAME}" /opt/forgather
     fi
 
+    # Pre-create the persistent state dirs so the server (runtime
+    # image) doesn't fail trying to mkdir into an empty named volume.
+    # Harmless in dev mode (touches the unused /home/dev tree); the
+    # dev image's HOME is bind-mounted from the host elsewhere.
+    install -d -o "${USER_NAME}" -g "${USER_NAME}" -m 0700 \
+        "/home/${USER_NAME}/.forgather" \
+        "/home/${USER_NAME}/.forgather/server" \
+        "/home/${USER_NAME}/.cache" \
+        "/home/${USER_NAME}/.cache/huggingface"
+
     # Make sure HOME is set for the dropped-privilege process — gosu
-    # does NOT set it (unlike `su -`). Default to the bind-mounted
-    # host home if the run wrapper passed it through; otherwise fall
-    # back to the in-image home for the remapped user.
+    # does NOT set it (unlike `su -`). Default to the in-image home
+    # for the remapped user; the dev image's run wrapper passes a
+    # bind-mounted host home via -e HOME=<host home>, which wins here.
     : "${HOME:=/home/${USER_NAME}}"
 
     export FORGATHER_ENTRYPOINT_PHASE=2
@@ -79,48 +82,50 @@ if [[ "${FORGATHER_ENTRYPOINT_PHASE:-}" != "2" && "$(id -u)" == "0" ]]; then
 fi
 
 # ----------------------------------------------------------------------
-# Phase 2: running as the unprivileged user (either from the gosu
-# re-exec above, or because the container was launched with
-# `--user uid:gid`). Do the editable install, then exec.
+# Phase 2: running unprivileged (either the gosu re-exec from phase 1,
+# or because the container was launched with --user uid:gid). Do the
+# dev-mode editable install if FORGATHER_REPO is set, then exec.
 # ----------------------------------------------------------------------
 
 if [[ -z "${HOME:-}" || ! -w "${HOME}" ]]; then
     export HOME=/tmp
 fi
 
-if [[ -z "${FORGATHER_REPO}" || ! -f "${FORGATHER_REPO}/pyproject.toml" ]]; then
-    echo "[forgather-entrypoint] WARNING: FORGATHER_REPO is unset or doesn't point" >&2
-    echo "[forgather-entrypoint]          at a Forgather checkout. The venv has all" >&2
-    echo "[forgather-entrypoint]          dependencies but NOT forgather itself; the" >&2
-    echo "[forgather-entrypoint]          \`forgather\` command will not be available." >&2
-    echo "[forgather-entrypoint]          Run via docker/run.sh, or pass" >&2
-    echo "[forgather-entrypoint]          -e FORGATHER_REPO=<path-to-clone>." >&2
-else
-    # Cheap idempotency check: the .pth/dist-info created by an
-    # editable install records the install location. Skip the
-    # reinstall when it already points at the right tree.
-    current="$(python -c '
+if [[ -n "${FORGATHER_REPO:-}" ]]; then
+    # Dev image flow: re-install editable against the bind-mounted host
+    # clone so host-side edits go live without rebuilding the image.
+    if [[ ! -f "${FORGATHER_REPO}/pyproject.toml" ]]; then
+        echo "[forgather-entrypoint] WARNING: FORGATHER_REPO=${FORGATHER_REPO} doesn't" >&2
+        echo "[forgather-entrypoint]          point at a Forgather checkout. The venv has" >&2
+        echo "[forgather-entrypoint]          all dependencies but NOT forgather itself;" >&2
+        echo "[forgather-entrypoint]          the \`forgather\` command will not be available." >&2
+    else
+        # Cheap idempotency check: the .pth/dist-info created by an
+        # editable install records the install location. Skip the
+        # reinstall when it already points at the right tree.
+        current="$(python -c '
 import importlib.util, pathlib
 spec = importlib.util.find_spec("forgather")
 if spec and spec.origin:
     print(pathlib.Path(spec.origin).resolve().parent.parent.parent)
 ' 2>/dev/null || true)"
 
-    target="$(readlink -f "${FORGATHER_REPO}")"
-    if [[ "${current}" != "${target}" ]]; then
-        echo "[forgather-entrypoint] Installing forgather (editable): ${target}" >&2
-        uv pip install --python "${VIRTUAL_ENV}/bin/python" \
-            --no-deps --quiet -e "${FORGATHER_REPO}" || \
-            echo "[forgather-entrypoint] WARNING: editable install failed" >&2
-    fi
+        target="$(readlink -f "${FORGATHER_REPO}")"
+        if [[ "${current}" != "${target}" ]]; then
+            echo "[forgather-entrypoint] Installing forgather (editable): ${target}" >&2
+            uv pip install --python "${VIRTUAL_ENV}/bin/python" \
+                --no-deps --quiet -e "${FORGATHER_REPO}" || \
+                echo "[forgather-entrypoint] WARNING: editable install failed" >&2
+        fi
 
-    # The webui dist/ is checkout-local — docker/build.sh runs
-    # ./build-webui.sh as a post-step against the host clone. If
-    # dist/ is still missing here (different checkout, manual
-    # build, etc.), warn so the user knows to run it themselves.
-    if [[ ! -d "${FORGATHER_REPO}/tools/forgather_server/webui/dist" ]]; then
-        echo "[forgather-entrypoint] NOTE: ${FORGATHER_REPO}/tools/forgather_server/webui/dist is missing." >&2
-        echo "[forgather-entrypoint]       Run './build-webui.sh' from \$FORGATHER_REPO before starting the web server." >&2
+        # The webui dist/ is checkout-local — docker/build.sh runs
+        # ./build-webui.sh as a post-step against the host clone. If
+        # dist/ is still missing here (different checkout, manual
+        # build, etc.), warn so the user knows to run it themselves.
+        if [[ ! -d "${FORGATHER_REPO}/tools/forgather_server/webui/dist" ]]; then
+            echo "[forgather-entrypoint] NOTE: ${FORGATHER_REPO}/tools/forgather_server/webui/dist is missing." >&2
+            echo "[forgather-entrypoint]       Run './build-webui.sh' from \$FORGATHER_REPO before starting the web server." >&2
+        fi
     fi
 fi
 
