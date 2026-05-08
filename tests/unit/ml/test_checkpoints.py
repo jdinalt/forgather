@@ -1043,6 +1043,36 @@ class TestShouldSaveCommonGating(unittest.TestCase):
                 f"expected {expected}",
             )
 
+    def test_ddp_shared_fs_ignores_save_on_local_rank(self):
+        # Shared-FS mode (the new contract) is hardcoded to global
+        # rank 0 regardless of save_on_local_rank. Pre-fix this
+        # compared global rank to a *local* rank index and produced
+        # nonsense for non-zero values (e.g. save_on_local_rank=1 +
+        # 2-node-2x2 routed writes to global rank 1, the second rank
+        # of the first node — not "the first node's local-rank-1"
+        # like a casual reader of the field name would assume).
+        for rank, local_rank, expected in [
+            (0, 0, True),  # global rank 0 — saves
+            (1, 0, False),  # any non-rank-0 — does not save
+            (1, 1, False),
+            (2, 0, False),
+            (3, 1, False),
+        ]:
+            cm = self._make_manager(
+                rank=rank,
+                local_rank=local_rank,
+                world_size=4,
+                save_on_all_ranks=False,
+                save_on_each_node=False,
+                save_on_local_rank=1,  # would matter pre-fix; ignored now
+            )
+            self.assertEqual(
+                cm._should_save_common(),
+                expected,
+                f"DDP shared-FS w/ save_on_local_rank=1, rank {rank} "
+                f"(local {local_rank}): expected {expected}",
+            )
+
 
 if __name__ == "__main__":
     # Run the tests

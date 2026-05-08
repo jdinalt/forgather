@@ -323,7 +323,14 @@ function ClusterJobsPanel() {
       </summary>
       {jobs.length === 0 ? (
         <div className="muted cj-empty">
-          No multi-node jobs submitted yet.
+          {jobsQ.isError
+            ? // The list-jobs endpoint is proxied to master from
+              // non-master nodes. A transport error here usually
+              // means master is unreachable — distinguish that from
+              // "the cluster has had no submits yet" so the operator
+              // doesn't think their submit silently disappeared.
+              `Cluster jobs unavailable: ${String(jobsQ.error)}`
+            : "No multi-node jobs submitted yet."}
         </div>
       ) : (
         <table className="cj-table">

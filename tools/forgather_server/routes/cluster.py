@@ -1515,11 +1515,34 @@ async def cancel_cluster_job(cluster_job_id: str):
                     "result": res or "fanout failed",
                 }
             )
-    cluster_jobs.mark_cancelled(cluster_job_id)
     cancelled = all(
         isinstance(p["result"], dict) and p["result"].get("cancelled")
         for p in per_member
     )
+    # Only stamp the bundle as cancelled when every peer actually
+    # cancelled. A partial fan-out leaves some queue items still
+    # running on peers; promoting the bundle to "cancelled" here
+    # would short-circuit the rollup's per-peer fanout (terminal
+    # statuses are sticky) and the operator would see a
+    # "cancelled" bundle while the underlying ranks are still
+    # consuming GPUs. Leave the bundle non-terminal so the rollup
+    # keeps reflecting reality; the response's per-member detail
+    # tells the operator which peers failed to cancel.
+    if cancelled:
+        cluster_jobs.mark_cancelled(cluster_job_id)
+    else:
+        log.warning(
+            "cluster job %s cancel was partial: %s",
+            cluster_job_id,
+            [
+                f"{p['node_id'][:8]}={p['result']}"
+                for p in per_member
+                if not (
+                    isinstance(p["result"], dict)
+                    and p["result"].get("cancelled")
+                )
+            ],
+        )
     return ClusterJobCancelResponse(
         cluster_job_id=cluster_job_id,
         cancelled=cancelled,

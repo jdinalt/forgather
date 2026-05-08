@@ -167,9 +167,14 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   //   1. cached multinode overrides for this (project, config)
   //   2. cluster active + no cache → just-this-node default, with
   //      master designated rdzv host
-  //   3. cluster inactive → empty state, panel hidden
-  // Re-seeding is gated by ``mnSeeded`` so subsequent renders don't
-  // clobber the operator's in-flight edits.
+  //   3. cluster inactive → don't mark seeded, so a late-discovered
+  //      cluster can still trigger seeding when it appears
+  //
+  // The flag must be set *only when we actually applied a seed*. An
+  // earlier version flipped ``mnSeeded`` unconditionally on first
+  // render, which left the panel empty if the cluster query
+  // resolved before clusterActive became true (modal opens during
+  // mDNS discovery, master appears a beat later).
   useEffect(() => {
     if (mnSeeded) return;
     if (!membersQ.data) return;
@@ -177,6 +182,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     const cached = overridesQ.data.multinode;
     if (cached) {
       setMnState(multiNodeStateFromOverrides(cached));
+      setMnSeeded(true);
     } else if (clusterActive) {
       const selfId = membersQ.data.self_node_id;
       const masterId = membersQ.data.master_node_id;
@@ -192,8 +198,12 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
         rdzvNodeId: selfId ?? masterId ?? null,
         allowMismatch: false,
       });
+      setMnSeeded(true);
     }
-    setMnSeeded(true);
+    // Standalone-mode case: leave mnSeeded=false. The panel is
+    // hidden when !clusterActive, and if cluster mode comes up
+    // mid-modal we want this effect to run again with clusterActive
+    // = true and seed properly.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [membersQ.data, overridesQ.data, clusterActive]);
 
@@ -253,6 +263,20 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     () => (argsQ.data ? listOutOfBounds(argsQ.data, values) : []),
     [argsQ.data, values],
   );
+  // Detect a multi-peer selection that would silently fall through
+  // to the single-node enqueue path because cluster mode is no
+  // longer active (e.g. the master went away mid-edit, mDNS lost
+  // the cluster). Submit must block rather than route a "submit to
+  // 3 nodes" click into a one-rank single-host job.
+  const peerSelectedButClusterDown =
+    !clusterActive &&
+    mnState.selected.size > 0 &&
+    membersQ.data !== undefined &&
+    !(
+      mnState.selected.size === 1 &&
+      Array.from(mnState.selected)[0] === membersQ.data?.self_node_id
+    );
+
   const submitBlockedReason: string | undefined =
     missingRequired.length > 0
       ? `Required arg(s) missing: ${missingRequired.map((a) => a.cli_name).join(", ")}`
@@ -260,7 +284,9 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
         ? `Out-of-range value(s): ${outOfBounds.map((a) => a.cli_name).join(", ")}`
         : clusterActive && mnSeeded && mnState.selected.size === 0
           ? "Pick at least one node in the multi-node panel"
-          : undefined;
+          : peerSelectedButClusterDown
+            ? "Cluster is no longer active — close and reopen this dialog"
+            : undefined;
 
   // Mirrors the OverridesModal Reset button: drop server-side cached
   // overrides for this config and zero out the in-form values so the
@@ -595,7 +621,8 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
                 argsQ.isLoading ||
                 missingRequired.length > 0 ||
                 outOfBounds.length > 0 ||
-                (clusterActive && mnSeeded && mnState.selected.size === 0)
+                (clusterActive && mnSeeded && mnState.selected.size === 0) ||
+                peerSelectedButClusterDown
               }
               title={submitBlockedReason}
             >

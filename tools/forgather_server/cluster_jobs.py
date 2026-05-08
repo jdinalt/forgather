@@ -16,11 +16,18 @@ State shape: in-memory dict keyed by ``cluster_job_id`` (UUID). Every
 mutation is journaled via ``cluster_journal`` so Phase 4's replication
 seam already covers cluster-job lifecycle without further changes here.
 
-Status field: "submitted" → "running" → terminal ("done", "cancelled",
-"failed"). For Phase 3 we infer the high-level status from per-peer
-queue/record state when the master assembles a list response, rather
-than tracking it explicitly here. The bundle record itself only stores
-"submitted" and "cancelled".
+Status field: "submitted" → terminal ("done", "cancelled", "failed").
+The bundle record's own ``status`` is the *sticky* terminal state —
+it starts at "submitted" and is promoted exactly once, by either the
+operator-driven cancel path (``mark_cancelled``) or the read-path
+rollup-promotion (``set_terminal_status`` for "done" / "failed").
+Once terminal, the field never changes again — readers short-circuit
+the per-peer fanout and trust the cached value.
+
+Live status (for in-flight bundles) is *not* stored here; instead it
+is computed at read time from each peer's local job_records via the
+master's per-peer fanout, then rolled up by priority. See
+``routes/cluster.py:_rollup_cluster_status``.
 """
 
 from __future__ import annotations
@@ -179,11 +186,18 @@ def set_terminal_status(
 
 
 def mark_cancelled(cluster_job_id: str) -> Optional[ClusterJob]:
+    """Stamp the bundle as cancelled — short-circuits if already terminal.
+
+    Idempotent on terminal status: a bundle that is already cancelled,
+    done, or failed is left alone. Calling cancel on a just-completed
+    run shouldn't reverse the success in the rollup, and calling cancel
+    twice shouldn't churn the journal.
+    """
     with _lock:
         job = _jobs.get(cluster_job_id)
         if job is None:
             return None
-        if job.status == "cancelled":
+        if job.status in ("done", "failed", "cancelled"):
             return job
         job.status = "cancelled"
         job.cancelled_at = time.time()

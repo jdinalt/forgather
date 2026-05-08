@@ -509,17 +509,28 @@ class CheckpointManager(CheckpointInterface):
         #   save_on_each_node=True (default-False)
         #     DDP across nodes that *don't* share a filesystem — every
         #     node's chosen local rank writes a full copy locally.
+        #     ``save_on_local_rank`` selects which local rank does that
+        #     (defaults to 0 — a non-zero value lets the operator route
+        #     the write to a non-rank-0 GPU per node, e.g. one with
+        #     more disk I/O headroom).
         #
         #   save_on_each_node=False (the documented default for shared
-        #     storage) — only the global writer should write, otherwise
-        #     every node's local-rank-0 stomps on the same shared files.
-        #     Before this gate, shared-FS multi-node DDP had two writers
-        #     racing on every shard file at every checkpoint.
+        #     storage) — only one global writer. Hardcoded to global
+        #     rank 0; ``save_on_local_rank`` is *not* consulted here
+        #     because that field describes a local-rank index and
+        #     comparing it to a global rank silently produces nonsense
+        #     for any non-zero value (e.g. setting save_on_local_rank=1
+        #     and running a 4-rank DDP would route writes to global
+        #     rank 1, which on a 2-node 2x2 layout is the second rank
+        #     of the first node, not "the first node's rank 1"). If a
+        #     future operator wants to pick a non-rank-0 global writer,
+        #     add a separate ``save_on_global_rank`` field rather than
+        #     overloading the local-rank knob.
         if self.config.save_on_all_ranks:
             return True
         if self.config.save_on_each_node:
             return self.dist.local_rank == self.config.save_on_local_rank
-        return self.dist.rank == self.config.save_on_local_rank
+        return self.dist.rank == 0
 
     def _validate_model_replication(self, model_component: StateComponent):
         """Validate that model weights are identical across all ranks.

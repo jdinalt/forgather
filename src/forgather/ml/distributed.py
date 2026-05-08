@@ -281,6 +281,28 @@ def get_global_process_group() -> ProcessGroup | None:
     return _global_process_group
 
 
+def reset_process_groups() -> None:
+    """Drop the cached local + global process groups.
+
+    Call this when re-initializing torch.distributed in the same
+    process — typical for unit tests and Jupyter notebooks that
+    init / destroy / re-init across cells. Without it, the next
+    ``get_local_process_group`` / ``get_global_process_group``
+    call returns the stale, now-invalid handle from the previous
+    init and any collective on it deadlocks or raises.
+
+    No-op when nothing has been cached yet. Does not call
+    ``torch.distributed.destroy_process_group`` itself — the caller
+    owns the destroy; this just clears Forgather's caches so the
+    next access rebuilds.
+    """
+    global _local_process_group, _local_process_group_discovered
+    global _global_process_group
+    _local_process_group = None
+    _local_process_group_discovered = False
+    _global_process_group = None
+
+
 @contextmanager
 def main_process_first(group: Optional[ProcessGroup] = None):
     """

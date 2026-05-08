@@ -1,3 +1,5 @@
+import { useMemo } from "react";
+
 import {
   ClusterGpusResponse,
   ClusterMember,
@@ -103,17 +105,23 @@ export function MultiNodeSubmitPanel({
   // "(N idle of M)" hint are O(1) lookups while we render the
   // participants table. Idle uses the same gate as the single-node
   // Submit dialog: not excluded *and* not runtime-disabled — i.e.
-  // GPUs the scheduler is willing to assign right now.
-  const gpuStats = new Map<string, { max: number; idle: number }>();
-  if (clusterGpus) {
-    for (const node of clusterGpus.nodes) {
-      const max = node.gpus.length;
-      const idle = node.gpus.filter(
-        (g) => !g.excluded && !g.disabled,
-      ).length;
-      gpuStats.set(node.node_id, { max, idle });
+  // GPUs the scheduler is willing to assign right now. Memoized
+  // because clusterGpus refreshes every 5 s and the table re-renders
+  // on every keystroke in the panel — rebuilding the map per render
+  // is cheap but pointless.
+  const gpuStats = useMemo(() => {
+    const m = new Map<string, { max: number; idle: number }>();
+    if (clusterGpus) {
+      for (const node of clusterGpus.nodes) {
+        const max = node.gpus.length;
+        const idle = node.gpus.filter(
+          (g) => !g.excluded && !g.disabled,
+        ).length;
+        m.set(node.node_id, { max, idle });
+      }
     }
-  }
+    return m;
+  }, [clusterGpus]);
 
   const update = (patch: Partial<MultiNodePanelState>) =>
     onChange({ ...state, ...patch });
