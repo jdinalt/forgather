@@ -188,7 +188,17 @@ do_create_container() {
         EXTRA_PORTS_FINAL=""
     fi
 
+    # ``--init`` puts Docker's bundled tini in front of the entrypoint
+    # so PID 1 properly reaps orphan grandchildren. The Forgather
+    # server spawns training subprocesses (torchrun + workers) that can
+    # outlive their immediate parent on a hung save-stop or crash; if
+    # they get re-parented to PID 1 and nobody waitpid()s them, they
+    # pile up as zombies. The dev image's run wrapper passes --init
+    # for the same reason. See docs/guides/multi-node-training.md for
+    # the full rationale (the multi-node hang debug session is where
+    # this shape of bug surfaces).
     docker run -d \
+        --init \
         --name "${NAME}" \
         "${HOSTNAME_ARGS[@]}" \
         "${GPU_ARGS[@]}" \
