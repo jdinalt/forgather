@@ -260,6 +260,40 @@ plan to use Vite hot-reload via `npm run dev` instead).
 The entrypoint prints a one-line reminder when `webui/dist/` is
 missing.
 
+### Bundled developer tools
+
+Beyond the venv + base CLI tools (vim, tmux, ripgrep, jq, htop, ssh,
+sudo, ...), the dev image bakes in:
+
+- `gh` (GitHub CLI) — for `gh pr`, `gh repo`, `gh auth login` from
+  inside the container without re-installing on every rebuild.
+
+Optional, opt-in at build time:
+
+- **Claude Code** (`@anthropic-ai/claude-code`) — pass `--claude`
+  to `docker/build.sh` to install it globally via npm. Lands at
+  `/usr/bin/claude`, world-executable so the gosu-dropped runtime
+  user can invoke it. Off by default; the average operator
+  doesn't need it baked in.
+
+  Note that if you already have Claude Code installed in your
+  host's `~/.local/bin/` or via npm under `~/`, the dev image's
+  bind-mounted `$HOME` makes that install available inside the
+  container — so most developers won't need `--claude` either.
+  It's a convenience for users who don't have a host install.
+
+```bash
+# Build without Claude Code (default):
+docker/build.sh
+
+# Build with Claude Code baked in:
+docker/build.sh --claude
+
+# Combine with a custom tag and docker passthrough:
+docker/build.sh forgather-dev:claude --claude
+docker/build.sh --claude -- --no-cache
+```
+
 ### Common overrides
 
 ```bash

@@ -24,6 +24,13 @@ ARG USER_NAME=dev
 ARG USER_UID=1000
 ARG USER_GID=1000
 ARG VENV_DIR=/opt/forgather/venv
+# Set to 1 to install Claude Code (the CLI agent from Anthropic) into
+# the image at /usr/bin/claude. Off by default — opt in via
+# ``docker/build.sh --claude``. Tooling-only convenience for
+# developers who use Claude Code; production builds shouldn't need
+# it. The npm package is installed globally so all in-container
+# users (including the gosu-dropped one) can invoke ``claude``.
+ARG INSTALL_CLAUDE=0
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -85,6 +92,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         gnupg \
         locales \
         tzdata \
+        gh \
     && locale-gen en_US.UTF-8 \
     && gosu nobody true
 
@@ -97,6 +105,19 @@ ADD --chmod=755 https://astral.sh/uv/install.sh /tmp/uv-install.sh
 RUN UV_INSTALL_DIR=/usr/local/bin /tmp/uv-install.sh \
     && rm -f /tmp/uv-install.sh \
     && uv --version
+
+# ---------------------------------------------------------------------------
+# Optionally install Claude Code (Anthropic's CLI agent) so developers
+# who use it don't have to re-install on every image rebuild. Off by
+# default; enable via ``docker/build.sh --claude`` (sets
+# ``--build-arg INSTALL_CLAUDE=1``). Lands at /usr/bin/claude (npm
+# global), world-executable so the gosu-dropped user can invoke it.
+# ---------------------------------------------------------------------------
+RUN if [ "${INSTALL_CLAUDE}" = "1" ]; then \
+        echo "[Dockerfile] installing Claude Code (npm global)" && \
+        npm install -g @anthropic-ai/claude-code && \
+        chmod -R go+rX /usr/lib/node_modules/@anthropic-ai 2>/dev/null || true; \
+    fi
 
 # ---------------------------------------------------------------------------
 # Create the in-container user (fixed UID 1000 — the entrypoint remaps
