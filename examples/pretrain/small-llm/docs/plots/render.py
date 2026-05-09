@@ -172,6 +172,80 @@ def render_eval_perplexity(runs, out_path, eval_smooth, x_max=None, ylim=None):
     print("wrote", out_path)
 
 
+def render_single_lr(label, path, out_path, train_smooth, eval_smooth=1, ylim=None):
+    """Single-run plot: train+eval loss on left axis, LR on right axis.
+
+    Mirrors `forgather logs plot --loss-curves` for one run, but with thin
+    lines and no markers on the eval series.
+    """
+    log = TrainingLog.from_file(str(ROOT / path))
+    fig, ax1 = plt.subplots(figsize=(12, 6))
+    ax2 = ax1.twinx()
+
+    loss_series = []
+
+    train = log.get_training_records()
+    if train:
+        steps = [r["global_step"] for r in train]
+        losses = [r["loss"] for r in train]
+        smooth = smooth_values(losses, train_smooth)
+        ax1.plot(
+            steps,
+            smooth,
+            label=f"{label} Train Loss",
+            linewidth=LINEWIDTH,
+            color="tab:blue",
+        )
+        loss_series.append(list(smooth))
+        lrs = [r.get("learning_rate") for r in train]
+        if any(v is not None for v in lrs):
+            ax2.plot(
+                steps,
+                lrs,
+                label=f"{label} LR",
+                linestyle="--",
+                alpha=0.8,
+                linewidth=1.0,
+                color="tab:orange",
+            )
+
+    evals = log.get_eval_records()
+    if evals:
+        steps = [r["global_step"] for r in evals]
+        losses = [r["eval_loss"] for r in evals]
+        smooth = smooth_values(losses, eval_smooth) if eval_smooth > 1 else losses
+        ax1.plot(
+            steps,
+            smooth,
+            label=f"{label} Eval Loss",
+            linewidth=LINEWIDTH,
+            color="tab:green",
+        )
+        loss_series.append(list(smooth))
+
+    if ylim:
+        ax1.set_ylim(*ylim)
+    else:
+        auto = percentile_ylim(loss_series)
+        if auto:
+            ax1.set_ylim(*auto)
+
+    ax1.set_xlabel("Global Step")
+    ax1.set_ylabel("Loss", color="tab:blue")
+    ax1.tick_params(axis="y", labelcolor="tab:blue")
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(loc="upper left")
+
+    ax2.set_ylabel("Learning Rate", color="tab:orange")
+    ax2.tick_params(axis="y", labelcolor="tab:orange")
+    ax2.legend(loc="upper right")
+
+    plt.title("Training Progress")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=120)
+    print("wrote", out_path)
+
+
 def main():
     render_train_eval(
         RUNS_10X,
@@ -196,6 +270,13 @@ def main():
         eval_smooth=3,
         x_max=36448,
         ylim=(13.5, 25.0),
+    )
+    render_single_lr(
+        "ten_chinchilla",
+        "output_models/ten_chinchilla/runs/log_2026-04-02T00-02-58/trainer_logs.json",
+        OUT / "10x_ten_chinchilla_lr.png",
+        train_smooth=1500,
+        ylim=(2.25, 3.10),
     )
 
 
