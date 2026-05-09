@@ -164,11 +164,13 @@ forgather ls
 | `bf16_adafactor.yaml` | Pure bf16 weights + SR, Adafactor. `lr = 1e-3`. |
 | `high_lr.yaml` | AMP at the highest non-diverging LR we could find (`3e-4`). |
 | `canon.yaml` | Custom Canon-A + NoPE variant from the `custom_canon/` sub-project. |
-| `tiny_x_small_lm.yaml` | Curriculum: Tiny Stories softly transitioning into SmolLM-corpus. |
+| `muon.yaml` | Muon optimizer (`torch.optim:Muon`) at `lr = 6e-4`, AdamW for non-matrix params. |
+| `deepone.yaml` | Old default - DeepOne medium with trainable ALiBi. |
+| `tiny_x_small_lm.yaml` | 10x Chinchilla curriculum: Tiny Stories softly transitioning into SmolLM-corpus, then annealed. |
 | `ten_chinchilla.yaml` | Baseline extended to 10x Chinchilla + 1x annealing. |
 | `long_cooldown.yaml` | 10x Chinchilla with `cooldown_p = 0.7`. |
-| `wsd.yaml` | Demonstrates the WSD-S scheduler from `forgather.ml.optim:WSDScheduler`. Not run yet. |
-| `deepone.yaml` | Old default - DeepOne medium with trainable ALiBi. Kept for comparison; not currently run. |
+| `wsd.yaml` | 10x Chinchilla with the WSD-S scheduler from `forgather.ml.optim:WSDScheduler`. |
+| `final.yaml` | 10x Chinchilla combining the most promising knobs: Tiny Stories x SmolLM curriculum, `lr = 3e-4`, WSD-S scheduler. |
 | `pp.yaml` | Pipeline Parallel trainer variant of the baseline. |
 
 Unless otherwise noted below, each of the 1x Chinchilla configs uses the
@@ -179,38 +181,52 @@ first 1x of the 10x runs.
 
 ### `custom_canon/` - custom model demonstrator
 
-[`custom_canon/`](custom_canon/README.md) shows how to build a custom model
-architecture *as a sub-project* of a training project, without forking the
-underlying model project. It extends `examples/models/llama_canon/` and:
+[`custom_canon/`](custom_canon/README.md) shows how to build a custom
+model architecture *as a sub-project* of a training project, without
+forking the underlying model project. It extends
+[`examples/models/llama_canon/`](../../models/llama_canon/) and defines
+a "Canon-A only + NoPE + QK-Norm" variant sized to match Llama medium
+exactly (`hidden_size=768`, `intermediate_size=2048`, 16 layers, 8
+heads) so the eval-loss comparison is head-to-head at matched compute.
+The sub-project README covers the four Canon insertion points
+(A/B/C/D from Allen-Zhu's
+[*Physics of Language Models: Part 4.1*](https://arxiv.org/abs/2512.17351),
+2025), why this specific subset was chosen (informed by the more
+thorough 4M ablation in
+[`tiny_experiments/canon`](../../tiny_experiments/canon/README.md)),
+and what to try next given the parent project's 1x result.
 
-- enables **Canon-A** (a depthwise causal convolution before attention, to
-  mix adjacent token representations and facilitate induction head
-  formation - see <https://arxiv.org/pdf/2512.17351>);
-- disables **Canon-C** (no-op for the pre-FFN position);
-- uses **NoPE** (no positional encoder);
-- adds **QK-Norm** (RMSNorm on Q and K, Qwen3-style);
-- keeps the model at roughly the same size as the baseline Llama medium
-  (`hidden_size=768`, `intermediate_size=2048`, 16 layers, 8 heads) so
-  training curves can be compared head-to-head.
-
-This sub-project is the intended pattern for adding a custom architecture
-to an experiment: treat the custom model as its own Forgather project, then
-point the training project at it via `--model-project` (or by committing a
-config like `canon.yaml` that sets `ns.model_project_dir`).
+This sub-project is the intended pattern for adding a custom
+architecture to an experiment: treat the custom model as its own
+Forgather project, then point the training project at it via
+`--model-project` (or by committing a config like `canon.yaml` that
+sets `ns.model_project_dir`).
 
 ### `tiny-stories_small-lm/` - curriculum dataset demonstrator
 
-[`tiny-stories_small-lm/`](tiny-stories_small-lm/) is a dataset sub-project
-that demonstrates a soft curriculum: it interleaves the `roneneldan/
-TinyStories` dataset with the default `HuggingFaceTB/smollm-corpus`
-interleaved-packed dataset using `forgather.ml.datasets.soft_sequential`,
-which smoothly transitions the sampling weight from the first dataset to
-the second over the course of training.
+[`tiny-stories_small-lm/`](tiny-stories_small-lm/README.md) is a
+dataset sub-project that demonstrates a soft curriculum: it
+interleaves `roneneldan/TinyStories` with the default
+`HuggingFaceTB/smollm-corpus` packed mix using
+`forgather.ml.datasets.soft_sequential`, which smoothly transitions
+the sampling weight from the first dataset to the second over the
+course of training. The geometric framing: each dataset is an
+attractor in parameter space, and a soft curriculum slides the
+attractor instead of jumping it.
 
-The `tiny_x_small_lm.yaml` config plugs this sub-project in as the training
-dataset. The pattern is the same as for models: the dataset lives in its
-own Forgather project, and the training config points at it via
-`ns.dataset_proj` / `ns.dataset_config`.
+The sub-project README documents the underlying maths (the
+two-dataset case collapses to exponential decay of the first
+dataset's draw probability with time-constant `N_TS`), the prior-work
+landscape (closest neighbour: Saffronwala et al.,
+[*Curriculum-Guided Layer Scaling*](https://arxiv.org/abs/2506.11389),
+2025; the smooth-vs-concat ablation appears to be an open gap in the
+literature), and a proposed experiment design that would fill that
+gap.
+
+The `tiny_x_small_lm.yaml` config plugs this sub-project in as the
+training dataset. The pattern is the same as for models: the dataset
+lives in its own Forgather project, and the training config points at
+it via `ns.dataset_proj` / `ns.dataset_config`.
 
 ## Experiments
 
@@ -221,8 +237,10 @@ generated with `forgather logs plot`.
 
 These are long runs at 10x Chinchilla (~22.7B tokens) followed by a 1x
 Chinchilla (~2.27B tokens) annealing phase. The LR schedule before the
-annealing phase is the same as the 1x baseline, so the first 10% of
-training is directly comparable to the 1x runs.
+annealing phase is the same as the 1x baseline (for the Infinite-LR runs),
+so the first 10% of training is directly comparable to the 1x runs. The
+WSD-based runs (`wsd`, `final`) use a different scheduler shape over the
+same total budget.
 
 The LR trace from the baseline `ten_chinchilla.yaml` run makes the Infinite
 LR schedule concrete: a short warmup ramp, a cosine cooldown from peak
@@ -233,22 +251,44 @@ drops visibly in the annealing region.
 
 ![10x ten_chinchilla - loss and LR](docs/plots/10x_ten_chinchilla_lr.png)
 
-Side-by-side comparison of the two 10x configs. The outlier-aware y-axis
-auto-scaling focuses on the tail, where the crossover is: `long_cooldown`
-stays *above* `ten_chinchilla` until around step 140K, at which point it
-overtakes and finishes with a notably lower eval loss. The rising train-loss
-noise band from ~step 100K onwards is the `constant_lr` phase - there is no
-more decay, so per-step variance stays high even while eval loss keeps
-improving.
+Side-by-side comparison of the five 10x configs. `final` (curriculum +
+`lr=3e-4` + WSD-S) ends with the lowest eval loss; `wds` (WSD-S on the
+default dataset and LR) is next; `long_cooldown` and `tiny_x_small_lm`
+finish in a near-tie behind that; `ten_chinchilla` is last. The rising
+train-loss noise band from ~step 100K onwards in the Infinite-LR runs is
+the `constant_lr` phase - there is no more decay, so per-step variance
+stays high even while eval loss keeps improving. The WSD-S runs show a
+similar plateau in the stable phase and a sharp drop during the decay
+window at the end.
 
 ![10x comparison - train and eval loss](docs/plots/10x_chinchilla_comparison.png)
 
 Same eval losses plotted as perplexity on a linear axis (outlier-clipped to
 the late-training tail). Perplexity on a linear scale is the natural view
 for this data - log-perplexity is just loss, so it would collapse back to
-the previous plot:
+the previous plot. The end-of-run separation between `final` and the rest
+is most visible here:
 
 ![10x eval perplexity](docs/plots/10x_eval_perplexity.png)
+
+All four non-`final` configs change exactly one variable from
+`ten_chinchilla`, so each row's `Δ` column is the marginal effect of
+that single change. `final` combines three changes at once and is not
+directly attributable.
+
+| Config | Single change vs baseline | Best eval loss | Best perplexity | Δ eval |
+|--------|---------------------------|----------------|-----------------|--------|
+| `ten_chinchilla.yaml` | (baseline: Infinite-LR, `cooldown_p=0.3`, default dataset, `lr=1.5e-4`) | 2.329 | 10.27 | — |
+| `long_cooldown.yaml` | `cooldown_p`: 0.3 → 0.7 | 2.308 | 10.05 | −0.021 |
+| `tiny_x_small_lm.yaml` | dataset: SmolLM → Tiny Stories × SmolLM curriculum | 2.309 | 10.06 | −0.020 |
+| `wsd.yaml` | LR scheduler: Infinite-LR → WSD-S | 2.274 | 9.72 | −0.055 |
+| `final.yaml` | curriculum + WSD-S + `lr` 1.5e-4 → 3e-4 (combined) | **2.244** | **9.43** | **−0.085** |
+
+The single-variable improvements all point in the same direction. Of
+the three knobs we've tested individually, **WSD-S is the largest
+single contributor** (−0.055), with the cooldown-shape and
+curriculum-dataset changes coming in roughly equal at about a third of
+that.
 
 #### `ten_chinchilla.yaml` - `output_models/ten_chinchilla`
 
@@ -284,10 +324,94 @@ with the intuition that stretching the high-LR phase helps late-training
 convergence when you have the compute budget to pay for the slower early
 progress.
 
-#### `wsd.yaml` - not yet run
+#### `tiny_x_small_lm.yaml` - `output_models/tiny_x_small_lm`
 
-Demonstrates the WSD-S protocol on top of the baseline. Listed here so the
-comparison slot is visible; a full run is on the TODO list.
+The curriculum-dataset run (Tiny Stories softly transitioning into
+SmolLM-corpus, see [`tiny-stories_small-lm/`](tiny-stories_small-lm/)),
+extended to 10x Chinchilla + a 1x annealing phase to match the rest of
+this group. Best eval loss **2.309** at step 400688. The eval-loss curve
+shows a faster early drop than the pure-SmolLM Infinite-LR runs - this is
+the Tiny Stories phase keeping the train loss artificially low - but the
+curve crosses back as the curriculum hands off to SmolLM, and the run
+finishes essentially tied with `long_cooldown` and ahead of
+`ten_chinchilla`.
+
+Compared against the matched `ten_chinchilla` baseline (only the
+dataset differs), the curriculum buys ~0.020 eval loss (2.309 vs
+2.329).
+
+Beyond the eval-loss number, the curriculum also produces qualitatively
+different early-training behaviour. Generation samples in the first
+half of training carry an obvious children's-story register that the
+pure-SmolLM runs don't have, and the model is producing coherent short
+narratives noticeably earlier. The eval split is SmolLM-only, so any
+Tiny Stories-specific patterns that don't transfer never show up in the
+eval-loss number - so the eval-loss delta is plausibly a lower bound on
+the actual benefit if you care about mid-training generation quality.
+
+The [dataset sub-project's README](tiny-stories_small-lm/README.md)
+documents the soft-sequential maths (exponential decay of the first
+dataset's draw probability), the prior-work landscape (the
+smooth-vs-concat head-to-head appears to be an open gap), and a
+proposed ablation that would isolate the schedule's contribution from
+the LR schedule it's run under.
+
+#### `wsd.yaml` - `output_models/wds`
+
+Replaces the Infinite-LR scheduler with WSD-S
+(`forgather.ml.optim:WSDScheduler`): linear warmup, then `base_lr` is
+held flat through the long stable phase, then a harmonic/rsqrt decay
+to `min_lr` over the final 1x budget. Same dataset and `base_lr = 1.5e-4`
+as the baseline. Best eval loss **2.274** at step 399485 - a **−0.055**
+improvement over `ten_chinchilla`, the largest single-knob effect of
+any 10x run.
+
+Both schedules share the *same* decay-phase math - small-llm overrides
+`annealing_type: "rsqrt"` in `project.yaml`, so the Infinite-LR runs in
+this project use the same harmonic/rsqrt decay formula that WSD-S uses
+(linear interpolation of inverse LR; see `wsd_scheduler.py` and
+`infinite_lr_scheduler.py`). The difference is what happens *before*
+the decay phase:
+
+- **Infinite-LR**: warmup → cosine cooldown from `base_lr` (~3e-4 at
+  the scaled global batch) down to `constant_lr` (~1e-4) over the first
+  ~30% of training (`cooldown_p = 0.3` for `ten_chinchilla`, 0.7 for
+  `long_cooldown`) → long stable plateau at `constant_lr` → rsqrt
+  annealing to `min_lr`.
+- **WSD-S**: warmup → long stable plateau at `base_lr` (no cosine
+  cooldown phase) → rsqrt decay to `min_lr`.
+
+So WSD-S keeps the LR at `base_lr` through the entire pre-decay portion
+instead of dropping it to `constant_lr`. The other scheduler-only
+change, `long_cooldown`, moves in the same direction by *delaying* when
+the cosine drop completes (cooldown over 70% instead of 30%), and gets
+a smaller win (−0.021). The pattern across all three is consistent:
+spending more of the pre-decay budget at higher LR helps eval loss,
+with WSD-S at the extreme end of "all of it at peak" winning by the
+largest margin.
+
+#### `final.yaml` - `output_models/final`
+
+The "best knobs we have so far" combination: curriculum dataset + `lr =
+3e-4` (matching `high_lr.yaml`) + WSD-S scheduler, run for the same 10x +
+1x budget. Best eval loss **2.244** at step 401042 - the best 10x result
+in this project so far, an improvement of **−0.085** over
+`ten_chinchilla`.
+
+How does that decompose? The single-knob deltas were curriculum −0.020
+and WSD-S −0.055; we have no isolated `lr=3e-4` 10x control, only the
+1x `high_lr.yaml` result (which beats default 1x by ~0.013, not
+necessarily extrapolable to 10x). Naively summing the two known knobs
+gives −0.075, leaving roughly −0.010 for the LR change plus any
+non-additive interaction. So most of `final`'s lead is the WSD-S
+scheduler and the curriculum stacking cleanly; the LR bump from 1.5e-4
+to 3e-4 is plausibly a smaller contributor.
+
+A `long_cooldown`-style cooldown shape was *not* combined with the
+other knobs here, so the next experiment in this direction would be a
+`final.yaml` variant with `cooldown_p = 0.7` (or its WSD-S analogue) to
+see whether stacking the cooldown change on top picks up roughly
+another −0.020.
 
 ### 1x Chinchilla runs
 
@@ -301,17 +425,22 @@ zero-cost stand-in for the baseline.
 
 ![1x comparison - train and eval loss](docs/plots/1x_chinchilla_comparison.png)
 
-The train-loss panel on the left makes the `tiny_x_small_lm` curriculum
-behaviour obvious - the early Tiny Stories phase pulls loss well below the
-other runs, and it climbs back up as the curriculum transitions to
-SmolLM-corpus. The eval panel on the right (which only uses the SmolLM
-eval split) shows the ranking: `high_lr` and `default` at the bottom, the
-two pure-bf16 runs next, `tiny_x_small_lm` a bit behind, and `canon` last.
+The standout in the train-loss panel is `muon` - it drops well below every
+AdamW-based run for most of training, only converging back into the bundle
+near the end. On the eval panel (right) the order tightens up: `high_lr`
+and `bf16` finish at the bottom, the AdamW `default` slice is just behind
+them, and `muon`, `bf16_adafactor`, `deepone`, `canon` all finish within a
+narrow band roughly 0.03-0.06 above the leaders. Despite the dramatic
+train-loss lead, Muon's eval loss does not beat the best AdamW run at this
+compute budget.
 
 Same eval losses plotted as perplexity on a linear axis. The 1x runs have
 fewer eval points than the 10x runs, so the outlier-clip percentile window
 is more permissive; `--y-max 25` is used here to force a comparable
-y-range to the 10x plot so the tail-end differentiation is legible:
+y-range to the 10x plot so the tail-end differentiation is legible. Muon's
+eval-perplexity curve is the most striking - it drops to the bottom of the
+plot well before any other run gets there, then plateaus while the AdamW
+runs catch up:
 
 ![1x eval perplexity](docs/plots/1x_eval_perplexity.png)
 
@@ -321,7 +450,8 @@ y-range to the 10x plot so the tail-end differentiation is legible:
 | `bf16.yaml` | 2.622 | Pure bf16 + SR, Forgather AdamW, `lr = 4e-4`. |
 | `default.yaml` | ~2.63 | Baseline. Shown via the first 1x slice of `ten_chinchilla`; not rerun separately. |
 | `bf16_adafactor.yaml` | 2.649 | Pure bf16 + SR, Adafactor, `lr = 1e-3`. |
-| `tiny_x_small_lm.yaml` | 2.660 | Curriculum dataset. |
+| `muon.yaml` | 2.650 | Muon optimizer (`match_rms_adamw`), `lr = 6e-4`. |
+| `deepone.yaml` | 2.668 | DeepOne medium with trainable ALiBi. |
 | `canon.yaml` | 2.678 | Custom Canon-A + NoPE variant. |
 
 #### `high_lr.yaml` - `output_models/high_lr`
@@ -354,32 +484,90 @@ this combination is a TODO.
 
 #### `canon.yaml` - `output_models/canon`
 
-The `custom_canon` model (Canon-A only, NoPE, QK-Norm) at comparable
-parameter count to the baseline Llama. Finished with a higher final eval
-loss than the vanilla Llama runs. Throughput was also noticeably lower,
-which is consistent with the sub-optimal causal-convolution implementation
-in the current Canon layer - there is room to revisit this with a better
-kernel. Given how well other Canon variants have performed in the
-`tiny_experiments/canon` project, this config is worth coming back to with
-different hyperparameters.
+The [`custom_canon`](../small-llm/custom_canon/README.md) model
+(Canon-A only, NoPE, QK-Norm) at *exact* parameter count to the
+baseline Llama medium. Finished with the highest eval loss of the 1x
+runs, and throughput was lower than the baseline (~39 vs ~45-49
+samp/s) - the opposite of what the 4M tiny-experiments ablation
+predicted, where Canon-A alone runs ~9% faster than plain Llama.
+Likely contributors: the causal-convolution kernel has not been
+re-tuned for ~162M-scale models, and the LR was inherited from the
+baseline rather than swept for this architecture.
 
-#### `tiny_x_small_lm.yaml` - `output_models/tiny_x_small_lm`
+The `tiny_experiments/canon` ablation also identifies stronger Canon
+subsets at 4M than Canon-A alone: **Canon-B** has the lowest eval
+loss of any subset (1.215, beating even full ABCD), and **Canon-AC**
+has the best quality-per-throughput. Either is a more obvious next
+variant to try at this scale than re-running Canon-A. See the
+[`custom_canon/` README](custom_canon/README.md) for design
+rationale and follow-up suggestions.
 
-The curriculum dataset run, using the `tiny-stories_small-lm` sub-project
-to softly transition from Tiny Stories to SmolLM corpus. The loss curves
-converge near the end of training, suggesting there is headroom for a
-follow-up run at a larger token budget. The influence of the Tiny Stories
-phase is visible in the text-generation-callback samples - the model
-produces noticeably more "children's story" flavoured completions in the
-early and middle of training than the baseline does.
+#### `muon.yaml` - `output_models/muon`
 
-#### `deepone.yaml` - not currently run
+Trains the baseline Llama medium with the Muon optimizer
+(`torch.optim:Muon`) on the matrix parameters and AdamW on everything
+else. `lr = 6e-4`, `adjust_lr_fn = "match_rms_adamw"` so the per-step RMS
+update size is matched to AdamW's. Other defaults unchanged. Best eval
+loss **2.650** at step 36460.
 
-Keeps the old default DeepOne-medium model around for comparison. It has
-historically been a strong performer with trainable ALiBi, but there is a
-current performance regression with `flex_attention + ALiBi` that makes it
-much slower than it used to be. Fixing the regression and running this
-config for comparison is on the TODO list.
+The result is a textbook example of Muon's training-vs-eval split at this
+scale: the train loss drops dramatically faster than any AdamW run (the
+Tiny Stories curriculum aside), and the eval-perplexity curve hits the
+bottom of the plot well before the others. But by the end of the 1x
+budget the AdamW runs have caught up, and `muon` finishes mid-pack rather
+than ahead. Worth rerunning at a longer budget and/or with a different LR
+schedule to see whether the early-training advantage extrapolates - Muon
+is a candidate to fold into a `final.yaml`-style combined run.
+
+This is consistent with the headline finding of Marek et al.,
+[*Small Batch Size Training for Language Models: When Vanilla SGD Works,
+and Why Gradient Accumulation Is
+Wasteful*](https://arxiv.org/abs/2507.07101) (NeurIPS 2025): the gap
+between optimizers *grows with batch size*. Their Figure 1a is a
+hyperparameter-tuned grid over SGD, Adam, Adafactor, and Muon on a 30M
+model trained for 600M tokens (Chinchilla-optimal), at batch sizes from
+1 to 4096 - at small batches all four optimizers cluster at nearly the
+same loss, and the spread only opens up at larger batches. This project
+runs Muon at an effective batch of 16 sequences (~65K tokens/step) on a
+~162M model for ~2.27B tokens, and lands in the same regime: Muon's
+final eval loss is within ~0.03 of the best AdamW configuration despite
+a clearly steeper train-loss trajectory.
+
+The [`examples/tiny_experiments/optimizers/`](../../tiny_experiments/optimizers/README.md)
+project explores this more thoroughly with a 30M Llama on FineWeb-Edu:
+Muon wins by ~0.06 eval loss at both batch=32 (16K tokens/step) and at
+8x grad-accumulation (131K tokens/step). The natural follow-up on this
+project is to plug Muon into the 10x Chinchilla bundle - longer training
+is the regime where Muon's lead over AdamW is reported to be more
+durable, and a `final.yaml`-style combined run with Muon as the
+optimizer is the obvious next experiment.
+
+#### `deepone.yaml` - `output_models/deepone`
+
+The previous default model: DeepOne-medium with trainable ALiBi. Best
+eval loss **2.668** at step 36460. The eval curve sits near the top of
+the bundle but is not far behind `bf16_adafactor` or `muon`.
+
+Throughput is the lowest of the 1x runs (~38.9 samp/s vs ~45-49 for the
+Llama variants). This is *after* the `flex_attention + ALiBi`
+performance regression was fixed and a best-effort optimization pass
+applied; with the regression in place the run was throughput-bound to
+single-digit samp/s, which is why the project's default switched to
+vanilla Llama. Most of the residual cost is the **trainable** ALiBi: the
+slope parameters receive gradients, so the bias term cannot be folded
+into the attention kernel as a constant and has to be carried through
+the backward pass. Freezing the ALiBi slopes recovers most of the
+throughput, but at this scale the eval-loss gap to Llama opens up
+notably without the trainable variant - so DeepOne stays slow as long
+as it stays competitive.
+
+#### `tiny_x_small_lm.yaml` - moved to the 10x group
+
+The curriculum-dataset config is now run at 10x Chinchilla + cooldown and
+appears in the 10x table above. The original 1x run finished at eval loss
+~2.66; extending the budget pulls the run into the 10x bundle (best eval
+**2.309**), and the curriculum's strongest contribution shows up when
+combined with WSD-S and `lr = 3e-4` in `final.yaml`.
 
 #### `pp.yaml` - not currently run end-to-end
 
@@ -391,10 +579,23 @@ head-to-head.
 
 ### Reproducing the plots
 
-The plots above are produced with `forgather logs plot`. The commands
-below are what was actually used - run them from this project directory
-(`examples/pretrain/small-llm/`). They double as a short tour of the more
-useful `forgather logs plot` flags.
+The four comparison plots above (`10x_chinchilla_comparison.png`,
+`10x_eval_perplexity.png`, `1x_chinchilla_comparison.png`,
+`1x_eval_perplexity.png`) are rendered by
+[`docs/plots/render.py`](docs/plots/render.py) - a small matplotlib
+script using the `forgather.ml.analysis.TrainingLog` API. The CLI
+`forgather logs plot` defaults are tuned for one or two runs; with the
+five 10x and seven 1x runs collected here, the default markers and
+linewidths obscure detail, so we render directly with thin lines, no
+markers, and heavier smoothing on the train-loss panel.
+
+```bash
+# Re-render all four comparison plots (run from this project directory)
+python docs/plots/render.py
+```
+
+The single-run LR trace still uses `forgather logs plot`, since one run
+fits the CLI defaults fine:
 
 ```bash
 # 10x ten_chinchilla alone, loss + LR on secondary axis.
@@ -404,59 +605,6 @@ forgather logs plot \
     output_models/ten_chinchilla/runs/log_2026-04-02T00-02-58/trainer_logs.json \
     --loss-curves --smooth 10 \
     --output docs/plots/10x_ten_chinchilla_lr.png
-
-# 10x comparison: ten_chinchilla vs long_cooldown.
-# --loss-curves in multi-run mode produces side-by-side train/eval panels.
-forgather logs plot \
-    --compare \
-        output_models/ten_chinchilla/runs/log_2026-04-02T00-02-58/trainer_logs.json \
-        output_models/long_cooldown/runs/log_2026-04-06T07-14-55/trainer_logs.json \
-    --loss-curves --smooth 10 \
-    --output docs/plots/10x_chinchilla_comparison.png
-
-# 10x eval perplexity (linear axis).
-# --perplexity transforms eval_loss to exp(eval_loss); omit --log-scale
-# because log-perplexity is just loss, so the log form would collapse back
-# to the previous plot.
-forgather logs plot \
-    --compare \
-        output_models/ten_chinchilla/runs/log_2026-04-02T00-02-58/trainer_logs.json \
-        output_models/long_cooldown/runs/log_2026-04-06T07-14-55/trainer_logs.json \
-    --metrics eval_loss --smooth 5 --perplexity \
-    --output docs/plots/10x_eval_perplexity.png
-
-# 1x comparison, with ten_chinchilla clipped to the 1x step budget to
-# serve as the "default" baseline (see note in the 1x section above).
-# --x-max clips the *data* before plotting, not just the view; --labels
-# reorders/renames the series so the clipped run shows up as "default".
-forgather logs plot \
-    --compare \
-        output_models/ten_chinchilla/runs/log_2026-04-02T00-02-58/trainer_logs.json \
-        output_models/bf16/runs/log_2026-04-05T00-51-49/trainer_logs.json \
-        output_models/bf16_adafactor/runs/log_2026-04-04T20-52-11/trainer_logs.json \
-        output_models/high_lr/runs/log_2026-04-08T14-47-03/trainer_logs.json \
-        output_models/canon/runs/log_2026-04-05T20-04-51/trainer_logs.json \
-        output_models/tiny_x_small_lm/runs/log_2026-04-06T00-55-02/trainer_logs.json \
-    --labels default bf16 bf16_adafactor high_lr canon tiny_x_small_lm \
-    --loss-curves --smooth 10 \
-    --x-max 36448 \
-    --output docs/plots/1x_chinchilla_comparison.png
-
-# 1x eval perplexity. --y-max forces a tight y-range matching the 10x
-# plot (the 1x runs have fewer eval points, so the outlier-clip window
-# would otherwise land too permissively).
-forgather logs plot \
-    --compare \
-        output_models/ten_chinchilla/runs/log_2026-04-02T00-02-58/trainer_logs.json \
-        output_models/bf16/runs/log_2026-04-05T00-51-49/trainer_logs.json \
-        output_models/bf16_adafactor/runs/log_2026-04-04T20-52-11/trainer_logs.json \
-        output_models/high_lr/runs/log_2026-04-08T14-47-03/trainer_logs.json \
-        output_models/canon/runs/log_2026-04-05T20-04-51/trainer_logs.json \
-        output_models/tiny_x_small_lm/runs/log_2026-04-06T00-55-02/trainer_logs.json \
-    --labels default bf16 bf16_adafactor high_lr canon tiny_x_small_lm \
-    --metrics eval_loss --smooth 3 --perplexity \
-    --x-max 36448 --y-max 25 \
-    --output docs/plots/1x_eval_perplexity.png
 ```
 
 Flags worth knowing (full reference in
@@ -528,5 +676,10 @@ annealing) uses the standard `forgather control` commands - see
   <https://arxiv.org/abs/2410.05192>
 - *Stochastic Rounding for LLM Training: Theory and Practice.* (2025)
   <https://arxiv.org/abs/2502.20566>
+- Marek et al. (2025) *Small Batch Size Training for Language Models:
+  When Vanilla SGD Works, and Why Gradient Accumulation Is Wasteful.*
+  (NeurIPS 2025.) <https://arxiv.org/abs/2507.07101>
+- Jordan et al. (2024) *Muon: An optimizer for hidden layers in neural
+  networks.* <https://kellerjordan.github.io/posts/muon/>
 - [SmolLM-Corpus](https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus)
 - [Tiny Stories](https://huggingface.co/datasets/roneneldan/TinyStories)
