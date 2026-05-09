@@ -255,6 +255,8 @@ NETWORK=host CLUSTER=<name> NO_AUTH=1 docker/runtime/run.sh
 
 `NO_AUTH=1` disables the bearer-token gate — trusted-LAN only, used by the smoke test to avoid token-fetching across N containers.
 
+For the full Docker reference (every CLI flag and env var on `docker/build.sh` / `docker/run.sh` / `docker/runtime/build.sh` / `docker/runtime/run.sh`, the PUID/PGID remap rationale, persistent overrides, and troubleshooting), see `docs/getting-started/docker.md`.
+
 ### Inference
 
 Forgather includes a basic OpenAPI compatible inference server and client.

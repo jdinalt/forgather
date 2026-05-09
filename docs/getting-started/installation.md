@@ -14,7 +14,7 @@ ssh -L 8765:localhost:8765 \
 # Install with Docker
 git clone https://github.com/jdinalt/forgather.git
 cd forgather
-docker/build.sh                  # auto-fills USER_NAME/UID/GID from host
+docker/build.sh                  # generic image; works for any host user
 docker/run.sh                    # interactive shell, --gpus all, ports forwarded
 
 # Inside the container:
@@ -175,6 +175,14 @@ current directory. You should see output listing the bundled example projects.
 
 ## Installing with Docker
 
+> **Looking for the full reference?** See [**Docker images**](docker.md)
+> for the comprehensive guide — every CLI flag and env var on the
+> `build.sh` / `run.sh` helpers, the runtime (distributable) image
+> for clusters, multi-node setup, persistent overrides, and
+> troubleshooting. The section below is the install quick-start; the
+> reference page is where to go to customize things or understand
+> how it works.
+
 The repo ships a `Dockerfile` (and matching helpers in `docker/`)
 that builds an Ubuntu 24.04 image with the full Forgather environment
 pre-provisioned: Python 3.12, PyTorch (CUDA wheels), all
@@ -187,6 +195,11 @@ useful in two ways:
 - **As a clean sandbox for release testing** — build the image with
   `--no-cache` and you get a reproducible from-scratch verification
   that the source tree builds and runs end-to-end.
+
+There's also a separate **runtime image** (`Dockerfile.runtime`)
+intended for distribution to a multi-node cluster — generic, no
+host-clone dependency, builds the SPA inside the image. The
+[Docker images](docker.md) reference covers both.
 
 ### Prerequisites
 
@@ -207,11 +220,15 @@ cd forgather
 docker/build.sh
 ```
 
-`docker/build.sh` reads your host UID, GID, and username (`id -u`,
-`id -g`, `id -un`) and passes them as build args, so the image
-carries an account that matches your host user. Files created
+`docker/build.sh` builds a single generic image — there are no
+per-user build args. The image carries a fixed in-container user at
+UID/GID 1000; at container start, the entrypoint reads `PUID`/`PGID`
+env vars (forwarded by `docker/run.sh` from your host's `id -u` /
+`id -g`) and remaps the in-container user via `gosu`. Files created
 inside the container on a bind-mounted home land with correct
-ownership on the host.
+ownership on the host, and the same image works for any operator
+without rebuilding. See [Docker images](docker.md) for the full
+PUID/PGID remap rationale.
 
 The first build pulls ~3 GB of dependencies and takes a few minutes;
 rebuilds reuse the layer cache. After the docker build, `build.sh`
@@ -340,9 +357,10 @@ docker/build.sh forgather-dev:experiment
 IMAGE=forgather-dev:experiment docker/run.sh
 ```
 
-For more detail — including the release-testing workflow against a
-freshly cloned tree — see the
-[Docker Development Image](../development/docker.md) page.
+For more detail — full CLI / env-var reference, the runtime
+(distributable) image, multi-node setup, and the release-testing
+workflow against a freshly cloned tree — see the [Docker images](docker.md)
+reference.
 
 ## Next: your first training run
 

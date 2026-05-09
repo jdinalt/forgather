@@ -2,8 +2,9 @@
 
 This guide walks you through training your first Forgather model
 from the CLI. It assumes Forgather is already installed — if not,
-start with **[Installation](installation.md)** (covers host venv via
-pip / uv and the Docker development image).
+start with **[Installation](installation.md)** (host venv via pip /
+uv, or the bundled Docker images — see [Docker images](docker.md)
+for the full reference).
 
 > **Prefer a web UI?** Forgather ships with a single-user web frontend
 > over the same APIs the CLI uses — project browsing, queued training,

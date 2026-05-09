@@ -30,6 +30,18 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# ``--help`` MUST short-circuit before any docker invocation — otherwise
+# it gets consumed as the positional TAG and the resulting ``docker
+# build -t --help ...`` call attempts a real build with a bogus tag.
+for tok in "$@"; do
+    case "${tok}" in
+        -h|--help)
+            sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            exit 0
+            ;;
+    esac
+done
+
 TAG="${1:-forgather:latest}"
 shift || true
 if [[ "${1:-}" == "--" ]]; then shift; fi

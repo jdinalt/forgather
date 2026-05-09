@@ -114,6 +114,7 @@ nav:
   - Getting Started:
     - Overview: getting-started/README.md
     - Installation: getting-started/installation.md
+    - Docker images: getting-started/docker.md
   - Core Concepts: core-concepts/README.md
   - Configuration:
     - Overview: configuration/README.md
@@ -187,5 +188,4 @@ nav:
     - Testing: development/testing.md
     - Integration Testing: development/integration-testing.md
     - Git Hooks: development/git-hooks.md
-    - Docker Development Image: development/docker.md
     - Known Bugs: development/bugs.md

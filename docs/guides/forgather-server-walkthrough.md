@@ -37,9 +37,14 @@ an RTX 4090, longer on smaller GPUs).
 
 ## 1. Install
 
-If you haven't already, follow [Installation](../getting-started/installation.md)
+If you haven't already, follow [Installation](../getting-started/installation.md).
 
-The Docker install is the recommended method.
+The **Docker install is the recommended method** — the image bundles
+Python 3.12, the right CUDA wheels, every Forgather dependency, and a
+prebuilt SPA bundle, so the steps below Just Work the moment you
+land in the container. See [Docker images](../getting-started/docker.md)
+for the full reference (CLI flags, env vars, runtime image for
+clusters, troubleshooting).
 
 ## 2. Start the server and connect
 

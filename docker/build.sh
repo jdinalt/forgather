@@ -29,6 +29,22 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# ``--help`` MUST short-circuit before the docker invocation. Without
+# this, ``--help`` falls through into the positional-argument logic
+# below: TAG="--help" gets reset to forgather-dev:latest but never
+# shifted off, then ``--help`` ends up in the ``docker build`` argv.
+# ``docker build --help`` succeeds with rc=0 (printing its own help),
+# which lets the rest of the script — including the post-build
+# ``./build-webui.sh`` step — keep running.
+for tok in "$@"; do
+    case "${tok}" in
+        -h|--help)
+            sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            exit 0
+            ;;
+    esac
+done
+
 # Pre-parse our own flags out of argv so they compose with the
 # positional TAG and the ``--`` passthrough cleanly.
 INSTALL_CLAUDE=0
