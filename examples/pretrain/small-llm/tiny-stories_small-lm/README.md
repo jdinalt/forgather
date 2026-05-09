@@ -259,6 +259,67 @@ compute, smooth `soft_sequential` interleave vs. naive concat vs.
 abrupt switch, with the LR schedule held fixed - would be a real
 addition to the literature rather than a duplication of existing work.
 
+### Proposed experiment
+
+A controlled ablation that would fill the gap above. Not yet run -
+recorded here so the design is preserved for whoever picks it up.
+
+**Three arms**, all using the same model, same total compute, same
+SmolLM-only eval split, and the same total TinyStories token budget
+(otherwise "abrupt switch at step k" sees a different amount of
+TinyStories than the smooth arm and the comparison is confounded):
+
+1. **`soft_sequential`** - the current default config. TinyStories
+   draw probability decays as `exp(-t / N_TS)`; SmolLM gets the
+   leftover weight. This is the smooth arm.
+2. **Naive concat** - TinyStories first to exhaustion, then SmolLM.
+   A hard boundary at the end of TinyStories with no overlap. Same
+   total TinyStories tokens as arm 1 by construction.
+3. **Abrupt switch** - flip from TinyStories to SmolLM at a single
+   step. The natural choice for matched TinyStories budget is to
+   switch at the same total TinyStories-tokens-consumed point as arm
+   2 reaches at TinyStories exhaustion; an alternative variant
+   switches at the `soft_sequential` half-life
+   (`t = 0.69 · N_TS` draws) so the *crossover point* matches the
+   smooth arm.
+
+**Hold the LR schedule fixed across arms.** Cui et al. found
+curriculum gains can collapse under standard LR decay (see above), so
+running all three under one LR schedule is what isolates the
+data-schedule effect. Ideally run the full set of three under *both*
+the project's default Infinite-LR-with-cooldown schedule and under
+WSD-S, so any LR × data-schedule interaction shows up rather than
+being conflated.
+
+**What to measure:**
+
+- **Final eval loss / perplexity** on the SmolLM split, as for the
+  10x runs in the parent project. The expected effect size, if any,
+  is small - on the order of the ~0.020 eval-loss benefit observed
+  for `soft_sequential` vs the pure-SmolLM baseline.
+- **Loss-spike behaviour at the dataset boundaries.** This is where
+  the attractor / smoothness argument actually predicts a difference:
+  naive concat and the abrupt-switch arm should show a visible train-
+  loss spike (and possibly a brief eval-loss bump) at the boundary;
+  `soft_sequential` should not. Ibrahim et al.'s LR-axis result
+  predicts exactly this pattern. Worth plotting train loss with light
+  smoothing in a window of ±5K steps around the boundary in each
+  arm.
+- **Mid-training generation quality.** The 10x `tiny_x_small_lm` run
+  showed a noticeable children's-story register in mid-training
+  generation samples that pure-SmolLM runs didn't have; the eval-loss
+  delta is plausibly a lower bound on the curriculum's actual
+  contribution to mid-training output. The three arms differ in
+  *when* TinyStories influence is present, so generation samples at
+  matched compute should differ qualitatively even where eval loss
+  doesn't separate.
+
+**Scaffolding.** The natural place to land this is two extra dataset
+configs alongside `default.yaml` in this sub-project (`concat.yaml`
+and `abrupt_switch.yaml`) plus matching training configs in the
+parent project. Both would reuse the same source-dataset machinery
+and only change the interleave policy.
+
 ## Empirical result in the parent project
 
 In the [`small-llm` 10x Chinchilla runs](../README.md#10x-chinchilla-runs),
