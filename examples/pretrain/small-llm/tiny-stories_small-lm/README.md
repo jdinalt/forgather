@@ -47,30 +47,45 @@ weight[i] = (remaining[i] / total[i])
           * product over j<i of (1 - remaining[j] / total[j])
 ```
 
-For the two-dataset case used here, this means:
+For the two-dataset case used here this collapses to a particularly
+simple form. Let `N_TS` be the number of (packed) examples in Tiny
+Stories and `r(t)` be the number remaining after `t` draws. The
+TinyStories draw probability at step `t` is just
 
-- **At step 0**, both datasets are untouched, so the *first* dataset
-  (Tiny Stories) gets ~100% probability and SmolLM gets ~0%. Effectively
-  all early samples are Tiny Stories.
-- **As Tiny Stories drains**, its weight falls and SmolLM's leftover
-  share rises. The transition is gradual, not a step function -
-  there's no point at which the model "switches" datasets, only a
-  smooth ramp.
-- **After Tiny Stories is exhausted**, all subsequent samples come from
-  SmolLM-corpus.
+```
+p_TS(t) = r(t) / N_TS
+```
 
-`stopping_strategy: "all_exhausted"` means the iterator continues until
-*both* sources are fully consumed; combined with the weighting rule
-above, this produces a single-pass curriculum where Tiny Stories
-dominates early and SmolLM dominates late, with a smooth handoff in
-between.
+and SmolLM gets all the leftover weight `1 - p_TS(t)` (its own
+remaining-fraction term is essentially 1.0 throughout, since
+SmolLM-Corpus is many orders of magnitude larger than TinyStories and
+is barely drained over a single training run). So *only the size of
+the first dataset matters* for the shape of the transition - the size
+of SmolLM doesn't, as long as it doesn't run out.
 
-The exact shape of the transition is determined by the *relative sizes*
-of the two source datasets: Tiny Stories is much smaller than
-SmolLM-Corpus, so it drains faster and the SmolLM ramp completes within
-a relatively small fraction of total training. There's no explicit
-"transition midpoint" parameter - if you want a different shape, change
-the size of one of the source datasets (e.g., subset SmolLM).
+Each draw decreases `E[r]` by `p_TS = r/N_TS`, which gives the ODE
+`dr/dt = -r/N_TS` and the exponential solution
+
+```
+E[r(t)] ≈ N_TS · exp(-t / N_TS)
+p_TS(t) ≈ exp(-t / N_TS)
+```
+
+So the TinyStories draw probability decays **exponentially** with a
+time-constant equal to `N_TS` (and a half-life of ≈ 0.69 · `N_TS`
+draws). The probability never becomes exactly zero - TinyStories
+samples can still show up late in training, just at vanishing
+frequency. `stopping_strategy: "all_exhausted"` means the iterator
+runs until both sources are fully consumed; in practice TinyStories
+will exhaust stochastically at some point well after its draw
+probability has become negligible, and after that all draws come from
+SmolLM-Corpus.
+
+If you want a different transition shape, change `N_TS` - either
+substitute a differently-sized "easy" dataset for TinyStories, or
+subset/repeat it. There is no explicit "transition midpoint"
+parameter; the curve's shape is fully determined by the size of the
+first dataset.
 
 ## Eval and test sets
 
