@@ -311,27 +311,23 @@ curve crosses back as the curriculum hands off to SmolLM, and the run
 finishes essentially tied with `long_cooldown` and ahead of
 `ten_chinchilla`.
 
-Holding all other knobs fixed, the curriculum **on its own** doesn't help
-the SmolLM eval loss at this budget: `tiny_x_small_lm` (2.309) is
-statistically indistinguishable from `long_cooldown` (2.308). The eval
-split is SmolLM-only, so any time the model spends learning Tiny
-Stories-specific patterns that don't transfer is effectively
-amortisation cost. What the curriculum does buy is qualitatively
-different early-training behaviour - generation samples in the first
+The matched control here is `ten_chinchilla`, not `long_cooldown` -
+both `tiny_x_small_lm` and `ten_chinchilla` use the default
+`cooldown_p = 0.3`; only the dataset differs. On that comparison the
+curriculum buys ~0.020 eval loss (2.309 vs 2.329). It happens to land
+near `long_cooldown` (2.308), but `long_cooldown` got there via an
+orthogonal LR-schedule change, so the two improvements are independent
+and there's no reason to expect them to be redundant - combining the
+curriculum with `cooldown_p = 0.7` would most likely stack.
+
+Beyond the eval-loss number, the curriculum also produces qualitatively
+different early-training behaviour. Generation samples in the first
 half of training carry an obvious children's-story register that the
 pure-SmolLM runs don't have, and the model is producing coherent short
-narratives much earlier in training. Whether that early-fluency benefit
-is worth the eval-loss tax depends on what you want to do with
-mid-training checkpoints.
-
-The interesting comparison is `final.yaml`, which combines this
-curriculum with WSD-S and `lr=3e-4`. We don't have a "WSD + lr=3e-4 +
-pure SmolLM" run to fully isolate the curriculum's contribution there,
-so we can't claim the curriculum is responsible for `final`'s lead. The
-honest read is: WSD-S alone gets you most of the way (`wsd.yaml`:
-2.274), and stacking the curriculum + higher LR on top picks up another
-~0.03 - some of which is probably the LR change rather than the
-dataset.
+narratives noticeably earlier. The eval split is SmolLM-only, so any
+Tiny Stories-specific patterns that don't transfer never show up in the
+eval-loss number - so the eval-loss delta is plausibly a lower bound on
+the actual benefit if you care about mid-training generation quality.
 
 #### `wsd.yaml` - `output_models/wds`
 
