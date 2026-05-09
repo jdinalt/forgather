@@ -143,6 +143,69 @@ and tokenises them. Subsequent runs hit the on-disk cache and load
 near-instantly. Downloads and cached tokenisations live under
 `datasets/` at the repo root.
 
+## Prior work
+
+This curriculum was built from the intuition that an abrupt
+distribution shift mid-training (e.g., concatenating datasets) can
+disrupt optimisation, and that a smooth handoff should help. The
+geometric framing: a dataset's distribution acts as an attractor that
+the optimiser is steadily pulled toward. Concatenating two datasets
+creates a discontinuity - the attractor jumps. Soft-sequential
+sampling instead *slides* the attractor: the model is always pulled
+toward an effective distribution that's a smoothly-varying mixture of
+the two sources, so the optimisation trajectory tracks a moving
+target rather than being yanked to a new one.
+
+This sub-project was not derived from a paper. The literature search
+since turns up several related lines of work, none using exactly this
+exponentially-decaying interleave probability, but all in the same
+neighbourhood:
+
+- **Closest conceptual precedent:** Saffronwala et al., *Curriculum-
+  Guided Layer Scaling for Language Model Pretraining*, 2025
+  ([arXiv:2506.11389](https://arxiv.org/abs/2506.11389)). At GPT-2
+  scale, training starts on TinyStories and gradually introduces
+  BookCorpus then DCLM web data via stage-varying mixture weights -
+  same "synthetic-first, transition smoothly to web" motivation as
+  this sub-project. Mechanism is staged/piecewise rather than
+  continuous exponential decay.
+- **Annealing / mid-training data schedules** (the mirror image of
+  this curriculum: ramp up high-quality data near the end rather than
+  ramp down synthetic data at the start). MiniCPM, Yi-Lightning, OLMo
+  all use linear or piecewise upweighting of curated mixtures in the
+  late phase of pretraining; Parmar et al., *Reuse, Don't Retrain*,
+  2024 ([arXiv:2407.07263](https://arxiv.org/abs/2407.07263)) is an
+  explicit recipe in this family.
+- **Time-varying / online mixture schedules.** Albalak et al.,
+  *Efficient Online Data Mixing*, 2023
+  ([arXiv:2312.02406](https://arxiv.org/abs/2312.02406)) uses a
+  multi-armed-bandit to adjust per-domain weights online; Wang et al.,
+  *TiKMiX*, 2025 ([arXiv:2508.17677](https://arxiv.org/abs/2508.17677))
+  uses data-influence-driven dynamic adjustment; Ye et al., *Data
+  Mixing Laws*, 2024
+  ([arXiv:2403.16952](https://arxiv.org/abs/2403.16952)) predicts
+  performance from a mixture and explicitly raises "dynamic data
+  schedules" as future work. These are scheduled or adaptive but not
+  shaped like an exponential drain.
+- **Synthetic-data evidence at this scale.** Theodoropoulos et al.,
+  *BERTtime Stories*, 2024
+  ([arXiv:2410.15365](https://arxiv.org/abs/2410.15365)) studies
+  TinyStories-style synthetic data as a pretraining ingredient at
+  small scale, supporting the "easy synthetic data first" intuition
+  but with fixed mixtures.
+- **Smoothness over abrupt switches.** Ibrahim et al., *Beyond Cosine
+  Decay*, 2025
+  ([arXiv:2503.02844](https://arxiv.org/abs/2503.02844)) explicitly
+  argues for smooth transitions when continually pre-training across
+  corpora to avoid loss spikes and forgetting - the same intuition
+  that motivated this dataset.
+
+The exact mechanism here - draw-probability proportional to remaining
+unseen examples in the first dataset, which collapses to exponential
+decay in the two-dataset case - does not appear to have a direct
+published precedent. Frame it as a continuous, drain-rate-driven point
+in the design space that CGLS occupies with staged piecewise weights.
+
 ## Empirical result in the parent project
 
 In the [`small-llm` 10x Chinchilla runs](../README.md#10x-chinchilla-runs),
