@@ -185,7 +185,8 @@ self-contained image baked from one commit. **The supported way
 to deploy a Forgather cluster**: build once, push or
 `docker save`/`load`, run identical copies on N nodes. The
 runtime image's `--cluster` plumbing is first-class — see
-`docker/README.md` for the full env-var surface. Quick start:
+[Docker images](../getting-started/docker.md) for the full env-var
+surface. Quick start:
 
 ```bash
 NETWORK=host CLUSTER=lab docker/runtime/run.sh
@@ -787,7 +788,7 @@ loop) are independently useful.
   terminal. The `forgather cluster` subcommand documented in
   [Driving multi-node from the CLI](#driving-multi-node-from-the-cli)
   is the multi-node counterpart.
-- **[Docker images](../../docker/README.md)** — full reference for
-  the dev and runtime images, including the multi-node
+- **[Docker images](../getting-started/docker.md)** — full reference
+  for the dev and runtime images, including the multi-node
   CLUSTER/NO_AUTH env-var surface on the runtime image and the
   `--init` / HEALTHCHECK plumbing.

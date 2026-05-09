@@ -93,7 +93,7 @@ ssh -L 8765:localhost:8765 \
 # Install with Docker
 git clone https://github.com/jdinalt/forgather.git
 cd forgather
-docker/build.sh                  # auto-fills USER_NAME/UID/GID from host
+docker/build.sh                  # generic image; works for any host user
 docker/run.sh                    # interactive shell, --gpus all, ports forwarded
 
 # Inside the container:
@@ -111,8 +111,10 @@ forgather -t v2.yaml train
 
 Requires Docker Engine 24+ and (for GPU training) the
 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
-See [`docker/README.md`](./docker/README.md) for the full breakdown,
-including the release-testing workflow.
+See [`docs/getting-started/docker.md`](./docs/getting-started/docker.md)
+for the full breakdown — every CLI flag and env var, the runtime
+(distributable) image, multi-node setup, and the release-testing
+workflow.
 
 See [`examples/tutorials/tiny_llama/README.md`](./examples/tutorials/tiny_llama/README.md)
 for the full "train → monitor → control → eval → inference → export"
