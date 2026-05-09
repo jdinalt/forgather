@@ -338,24 +338,36 @@ the actual benefit if you care about mid-training generation quality.
 #### `wsd.yaml` - `output_models/wds`
 
 Replaces the Infinite-LR scheduler with WSD-S
-(`forgather.ml.optim:WSDScheduler`): linear warmup, then `base_lr` is held
-flat through the long stable phase, then a harmonic decay to `min_lr` over
-the final 1x budget. Same dataset and `base_lr = 1.5e-4` as the baseline.
-Best eval loss **2.274** at step 399485 - a **−0.055** improvement over
-`ten_chinchilla`, the largest single-knob effect of any 10x run. The win
-shows up almost entirely in the decay phase: the stable-phase eval is
-roughly indistinguishable from the baseline, but the harmonic decay
-drops further than rsqrt annealing does.
+(`forgather.ml.optim:WSDScheduler`): linear warmup, then `base_lr` is
+held flat through the long stable phase, then a harmonic/rsqrt decay
+to `min_lr` over the final 1x budget. Same dataset and `base_lr = 1.5e-4`
+as the baseline. Best eval loss **2.274** at step 399485 - a **−0.055**
+improvement over `ten_chinchilla`, the largest single-knob effect of
+any 10x run.
 
-The other LR-schedule change in this group, `long_cooldown`, is also
-worth comparing here since both are scheduler-only modifications.
-`long_cooldown` extends the cosine cooldown to 70% of the initial 10x
-budget but keeps Infinite-LR + rsqrt annealing afterwards, and gets
-−0.021. WSD-S replaces the whole shape with a flat-stable-phase + sharp
-harmonic decay, and gets −0.055. The decay shape at the very end is
-where WSD-S pulls ahead - both runs are similar through the long stable
-plateau, and the final harmonic drop is what `long_cooldown`'s rsqrt
-phase doesn't match.
+Both schedules share the *same* decay-phase math - small-llm overrides
+`annealing_type: "rsqrt"` in `project.yaml`, so the Infinite-LR runs in
+this project use the same harmonic/rsqrt decay formula that WSD-S uses
+(linear interpolation of inverse LR; see `wsd_scheduler.py` and
+`infinite_lr_scheduler.py`). The difference is what happens *before*
+the decay phase:
+
+- **Infinite-LR**: warmup → cosine cooldown from `base_lr` (~3e-4 at
+  the scaled global batch) down to `constant_lr` (~1e-4) over the first
+  ~30% of training (`cooldown_p = 0.3` for `ten_chinchilla`, 0.7 for
+  `long_cooldown`) → long stable plateau at `constant_lr` → rsqrt
+  annealing to `min_lr`.
+- **WSD-S**: warmup → long stable plateau at `base_lr` (no cosine
+  cooldown phase) → rsqrt decay to `min_lr`.
+
+So WSD-S keeps the LR at `base_lr` through the entire pre-decay portion
+instead of dropping it to `constant_lr`. The other scheduler-only
+change, `long_cooldown`, moves in the same direction by *delaying* when
+the cosine drop completes (cooldown over 70% instead of 30%), and gets
+a smaller win (−0.021). The pattern across all three is consistent:
+spending more of the pre-decay budget at higher LR helps eval loss,
+with WSD-S at the extreme end of "all of it at peak" winning by the
+largest margin.
 
 #### `final.yaml` - `output_models/final`
 
