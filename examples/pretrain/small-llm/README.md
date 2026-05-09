@@ -309,9 +309,29 @@ shows a faster early drop than the pure-SmolLM Infinite-LR runs - this is
 the Tiny Stories phase keeping the train loss artificially low - but the
 curve crosses back as the curriculum hands off to SmolLM, and the run
 finishes essentially tied with `long_cooldown` and ahead of
-`ten_chinchilla`. Pairing the curriculum with a higher LR and the WSD-S
-schedule (in `final.yaml`) recovers the ranking and produces the
-best-of-group eval loss.
+`ten_chinchilla`.
+
+Holding all other knobs fixed, the curriculum **on its own** doesn't help
+the SmolLM eval loss at this budget: `tiny_x_small_lm` (2.309) is
+statistically indistinguishable from `long_cooldown` (2.308). The eval
+split is SmolLM-only, so any time the model spends learning Tiny
+Stories-specific patterns that don't transfer is effectively
+amortisation cost. What the curriculum does buy is qualitatively
+different early-training behaviour - generation samples in the first
+half of training carry an obvious children's-story register that the
+pure-SmolLM runs don't have, and the model is producing coherent short
+narratives much earlier in training. Whether that early-fluency benefit
+is worth the eval-loss tax depends on what you want to do with
+mid-training checkpoints.
+
+The interesting comparison is `final.yaml`, which combines this
+curriculum with WSD-S and `lr=3e-4`. We don't have a "WSD + lr=3e-4 +
+pure SmolLM" run to fully isolate the curriculum's contribution there,
+so we can't claim the curriculum is responsible for `final`'s lead. The
+honest read is: WSD-S alone gets you most of the way (`wsd.yaml`:
+2.274), and stacking the curriculum + higher LR on top picks up another
+~0.03 - some of which is probably the LR change rather than the
+dataset.
 
 #### `wsd.yaml` - `output_models/wds`
 
