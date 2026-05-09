@@ -181,38 +181,52 @@ first 1x of the 10x runs.
 
 ### `custom_canon/` - custom model demonstrator
 
-[`custom_canon/`](custom_canon/README.md) shows how to build a custom model
-architecture *as a sub-project* of a training project, without forking the
-underlying model project. It extends `examples/models/llama_canon/` and:
+[`custom_canon/`](custom_canon/README.md) shows how to build a custom
+model architecture *as a sub-project* of a training project, without
+forking the underlying model project. It extends
+[`examples/models/llama_canon/`](../../models/llama_canon/) and defines
+a "Canon-A only + NoPE + QK-Norm" variant sized to match Llama medium
+exactly (`hidden_size=768`, `intermediate_size=2048`, 16 layers, 8
+heads) so the eval-loss comparison is head-to-head at matched compute.
+The sub-project README covers the four Canon insertion points
+(A/B/C/D from Allen-Zhu's
+[*Physics of Language Models: Part 4.1*](https://arxiv.org/abs/2512.17351),
+2025), why this specific subset was chosen (informed by the more
+thorough 4M ablation in
+[`tiny_experiments/canon`](../../tiny_experiments/canon/README.md)),
+and what to try next given the parent project's 1x result.
 
-- enables **Canon-A** (a depthwise causal convolution before attention, to
-  mix adjacent token representations and facilitate induction head
-  formation - see <https://arxiv.org/pdf/2512.17351>);
-- disables **Canon-C** (no-op for the pre-FFN position);
-- uses **NoPE** (no positional encoder);
-- adds **QK-Norm** (RMSNorm on Q and K, Qwen3-style);
-- keeps the model at roughly the same size as the baseline Llama medium
-  (`hidden_size=768`, `intermediate_size=2048`, 16 layers, 8 heads) so
-  training curves can be compared head-to-head.
-
-This sub-project is the intended pattern for adding a custom architecture
-to an experiment: treat the custom model as its own Forgather project, then
-point the training project at it via `--model-project` (or by committing a
-config like `canon.yaml` that sets `ns.model_project_dir`).
+This sub-project is the intended pattern for adding a custom
+architecture to an experiment: treat the custom model as its own
+Forgather project, then point the training project at it via
+`--model-project` (or by committing a config like `canon.yaml` that
+sets `ns.model_project_dir`).
 
 ### `tiny-stories_small-lm/` - curriculum dataset demonstrator
 
-[`tiny-stories_small-lm/`](tiny-stories_small-lm/) is a dataset sub-project
-that demonstrates a soft curriculum: it interleaves the `roneneldan/
-TinyStories` dataset with the default `HuggingFaceTB/smollm-corpus`
-interleaved-packed dataset using `forgather.ml.datasets.soft_sequential`,
-which smoothly transitions the sampling weight from the first dataset to
-the second over the course of training.
+[`tiny-stories_small-lm/`](tiny-stories_small-lm/README.md) is a
+dataset sub-project that demonstrates a soft curriculum: it
+interleaves `roneneldan/TinyStories` with the default
+`HuggingFaceTB/smollm-corpus` packed mix using
+`forgather.ml.datasets.soft_sequential`, which smoothly transitions
+the sampling weight from the first dataset to the second over the
+course of training. The geometric framing: each dataset is an
+attractor in parameter space, and a soft curriculum slides the
+attractor instead of jumping it.
 
-The `tiny_x_small_lm.yaml` config plugs this sub-project in as the training
-dataset. The pattern is the same as for models: the dataset lives in its
-own Forgather project, and the training config points at it via
-`ns.dataset_proj` / `ns.dataset_config`.
+The sub-project README documents the underlying maths (the
+two-dataset case collapses to exponential decay of the first
+dataset's draw probability with time-constant `N_TS`), the prior-work
+landscape (closest neighbour: Saffronwala et al.,
+[*Curriculum-Guided Layer Scaling*](https://arxiv.org/abs/2506.11389),
+2025; the smooth-vs-concat ablation appears to be an open gap in the
+literature), and a proposed experiment design that would fill that
+gap.
+
+The `tiny_x_small_lm.yaml` config plugs this sub-project in as the
+training dataset. The pattern is the same as for models: the dataset
+lives in its own Forgather project, and the training config points at
+it via `ns.dataset_proj` / `ns.dataset_config`.
 
 ## Experiments
 
@@ -334,6 +348,13 @@ narratives noticeably earlier. The eval split is SmolLM-only, so any
 Tiny Stories-specific patterns that don't transfer never show up in the
 eval-loss number - so the eval-loss delta is plausibly a lower bound on
 the actual benefit if you care about mid-training generation quality.
+
+The [dataset sub-project's README](tiny-stories_small-lm/README.md)
+documents the soft-sequential maths (exponential decay of the first
+dataset's draw probability), the prior-work landscape (the
+smooth-vs-concat head-to-head appears to be an open gap), and a
+proposed ablation that would isolate the schedule's contribution from
+the LR schedule it's run under.
 
 #### `wsd.yaml` - `output_models/wds`
 
@@ -463,14 +484,23 @@ this combination is a TODO.
 
 #### `canon.yaml` - `output_models/canon`
 
-The `custom_canon` model (Canon-A only, NoPE, QK-Norm) at comparable
-parameter count to the baseline Llama. Finished with a higher final eval
-loss than the vanilla Llama runs. Throughput was also noticeably lower,
-which is consistent with the sub-optimal causal-convolution implementation
-in the current Canon layer - there is room to revisit this with a better
-kernel. Given how well other Canon variants have performed in the
-`tiny_experiments/canon` project, this config is worth coming back to with
-different hyperparameters.
+The [`custom_canon`](../small-llm/custom_canon/README.md) model
+(Canon-A only, NoPE, QK-Norm) at *exact* parameter count to the
+baseline Llama medium. Finished with the highest eval loss of the 1x
+runs, and throughput was lower than the baseline (~39 vs ~45-49
+samp/s) - the opposite of what the 4M tiny-experiments ablation
+predicted, where Canon-A alone runs ~9% faster than plain Llama.
+Likely contributors: the causal-convolution kernel has not been
+re-tuned for ~162M-scale models, and the LR was inherited from the
+baseline rather than swept for this architecture.
+
+The `tiny_experiments/canon` ablation also identifies stronger Canon
+subsets at 4M than Canon-A alone: **Canon-B** has the lowest eval
+loss of any subset (1.215, beating even full ABCD), and **Canon-AC**
+has the best quality-per-throughput. Either is a more obvious next
+variant to try at this scale than re-running Canon-A. See the
+[`custom_canon/` README](custom_canon/README.md) for design
+rationale and follow-up suggestions.
 
 #### `muon.yaml` - `output_models/muon`
 
