@@ -257,13 +257,24 @@ is most visible here:
 
 ![10x eval perplexity](docs/plots/10x_eval_perplexity.png)
 
-| Config | Best eval loss | Best perplexity | Notes |
-|--------|----------------|-----------------|-------|
-| `final.yaml` | **2.244** | **9.43** | Curriculum + `lr=3e-4` + WSD-S. Best 10x result so far. |
-| `wsd.yaml` | 2.274 | 9.72 | WSD-S scheduler on the default dataset and LR. |
-| `long_cooldown.yaml` | 2.308 | 10.05 | Infinite-LR with `cooldown_p = 0.7`. |
-| `tiny_x_small_lm.yaml` | 2.309 | 10.06 | Infinite-LR + Tiny Stories x SmolLM curriculum. |
-| `ten_chinchilla.yaml` | 2.329 | 10.27 | Infinite-LR baseline, `cooldown_p = 0.3`. |
+All four non-`final` configs change exactly one variable from
+`ten_chinchilla`, so each row's `Δ` column is the marginal effect of
+that single change. `final` combines three changes at once and is not
+directly attributable.
+
+| Config | Single change vs baseline | Best eval loss | Best perplexity | Δ eval |
+|--------|---------------------------|----------------|-----------------|--------|
+| `ten_chinchilla.yaml` | (baseline: Infinite-LR, `cooldown_p=0.3`, default dataset, `lr=1.5e-4`) | 2.329 | 10.27 | — |
+| `long_cooldown.yaml` | `cooldown_p`: 0.3 → 0.7 | 2.308 | 10.05 | −0.021 |
+| `tiny_x_small_lm.yaml` | dataset: SmolLM → Tiny Stories × SmolLM curriculum | 2.309 | 10.06 | −0.020 |
+| `wsd.yaml` | LR scheduler: Infinite-LR → WSD-S | 2.274 | 9.72 | −0.055 |
+| `final.yaml` | curriculum + WSD-S + `lr` 1.5e-4 → 3e-4 (combined) | **2.244** | **9.43** | **−0.085** |
+
+The single-variable improvements all point in the same direction. Of
+the three knobs we've tested individually, **WSD-S is the largest
+single contributor** (−0.055), with the cooldown-shape and
+curriculum-dataset changes coming in roughly equal at about a third of
+that.
 
 #### `ten_chinchilla.yaml` - `output_models/ten_chinchilla`
 
@@ -311,14 +322,9 @@ curve crosses back as the curriculum hands off to SmolLM, and the run
 finishes essentially tied with `long_cooldown` and ahead of
 `ten_chinchilla`.
 
-The matched control here is `ten_chinchilla`, not `long_cooldown` -
-both `tiny_x_small_lm` and `ten_chinchilla` use the default
-`cooldown_p = 0.3`; only the dataset differs. On that comparison the
-curriculum buys ~0.020 eval loss (2.309 vs 2.329). It happens to land
-near `long_cooldown` (2.308), but `long_cooldown` got there via an
-orthogonal LR-schedule change, so the two improvements are independent
-and there's no reason to expect them to be redundant - combining the
-curriculum with `cooldown_p = 0.7` would most likely stack.
+Compared against the matched `ten_chinchilla` baseline (only the
+dataset differs), the curriculum buys ~0.020 eval loss (2.309 vs
+2.329).
 
 Beyond the eval-loss number, the curriculum also produces qualitatively
 different early-training behaviour. Generation samples in the first
@@ -335,21 +341,44 @@ Replaces the Infinite-LR scheduler with WSD-S
 (`forgather.ml.optim:WSDScheduler`): linear warmup, then `base_lr` is held
 flat through the long stable phase, then a harmonic decay to `min_lr` over
 the final 1x budget. Same dataset and `base_lr = 1.5e-4` as the baseline.
-Best eval loss **2.274** at step 399485 - better than either Infinite-LR
-run at the same compute. The win shows up almost entirely in the decay
-phase: the stable-phase eval is roughly indistinguishable from the
-Infinite-LR runs, but the harmonic decay drops further than rsqrt
-annealing does.
+Best eval loss **2.274** at step 399485 - a **−0.055** improvement over
+`ten_chinchilla`, the largest single-knob effect of any 10x run. The win
+shows up almost entirely in the decay phase: the stable-phase eval is
+roughly indistinguishable from the baseline, but the harmonic decay
+drops further than rsqrt annealing does.
+
+The other LR-schedule change in this group, `long_cooldown`, is also
+worth comparing here since both are scheduler-only modifications.
+`long_cooldown` extends the cosine cooldown to 70% of the initial 10x
+budget but keeps Infinite-LR + rsqrt annealing afterwards, and gets
+−0.021. WSD-S replaces the whole shape with a flat-stable-phase + sharp
+harmonic decay, and gets −0.055. The decay shape at the very end is
+where WSD-S pulls ahead - both runs are similar through the long stable
+plateau, and the final harmonic drop is what `long_cooldown`'s rsqrt
+phase doesn't match.
 
 #### `final.yaml` - `output_models/final`
 
 The "best knobs we have so far" combination: curriculum dataset + `lr =
 3e-4` (matching `high_lr.yaml`) + WSD-S scheduler, run for the same 10x +
 1x budget. Best eval loss **2.244** at step 401042 - the best 10x result
-in this project so far, ~0.03 below the next-best (`wsd.yaml`) and ~0.06
-below `long_cooldown`. The curve in the perplexity plot stays at or near
-the bottom of the bundle for most of training and pulls clearly ahead in
-the decay phase.
+in this project so far, an improvement of **−0.085** over
+`ten_chinchilla`.
+
+How does that decompose? The single-knob deltas were curriculum −0.020
+and WSD-S −0.055; we have no isolated `lr=3e-4` 10x control, only the
+1x `high_lr.yaml` result (which beats default 1x by ~0.013, not
+necessarily extrapolable to 10x). Naively summing the two known knobs
+gives −0.075, leaving roughly −0.010 for the LR change plus any
+non-additive interaction. So most of `final`'s lead is the WSD-S
+scheduler and the curriculum stacking cleanly; the LR bump from 1.5e-4
+to 3e-4 is plausibly a smaller contributor.
+
+A `long_cooldown`-style cooldown shape was *not* combined with the
+other knobs here, so the next experiment in this direction would be a
+`final.yaml` variant with `cooldown_p = 0.7` (or its WSD-S analogue) to
+see whether stacking the cooldown change on top picks up roughly
+another −0.020.
 
 ### 1x Chinchilla runs
 
