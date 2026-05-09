@@ -206,6 +206,59 @@ decay in the two-dataset case - does not appear to have a direct
 published precedent. Frame it as a continuous, drain-rate-driven point
 in the design space that CGLS occupies with staged piecewise weights.
 
+### Does smooth scheduling actually beat concatenation?
+
+A clean head-to-head ablation - "same data, same compute, smooth
+schedule vs. hard concatenation vs. abrupt A→B switch, measure
+pretraining loss and downstream" - does **not** appear to exist in the
+published literature. Every adjacent paper tests something nearby but
+not the variable in isolation:
+
+- **CGLS** is the closest data-axis comparison: it ablates against a
+  "curricularised baseline" (sequential TinyStories → BookCorpus →
+  DCLM, effectively staged concatenation) and reports ~0.3 pts avg
+  accuracy at GPT-2-Small (36.46 vs 36.12) and ~1.7 pts at Llama-3.2-1B
+  (36.97 vs 35.25) in favour of the curriculum. But CGLS bundles the
+  data schedule with a layer-scaling change, so the schedule's
+  contribution isn't isolated. No loss-spike analysis at the staged
+  switch boundaries.
+- **"Reuse, Don't Retrain"** uses an *abrupt* two-phase switch (General
+  Blend → QA Blend) and ablates *when* to switch, not *how smoothly*.
+  No smooth-mixing arm in the comparison.
+- **Ibrahim et al., "Beyond Cosine Decay"** is the cleanest "smooth
+  wins, abrupt hurts" finding in this neighbourhood, but on the **LR**
+  axis: smooth Infinite-LR vs. repeated cosine re-warm gives
+  backward-transfer −1.37 vs −3.61 with replay, and the paper states
+  outright that re-warming the LR "causes instability and exacerbates
+  forgetting." This generalises the smoothness intuition to the LR
+  schedule, not directly to the data schedule.
+- **Online / scheduled mixture papers** (ODM, TiKMiX, Data Mixing
+  Laws) all benchmark dynamic mixtures against *fixed* mixtures, not
+  against concatenation or abrupt switching. No baseline of either
+  kind appears in their comparisons.
+
+A complication worth flagging: Cui et al., *How Learning Rate Decay
+Wastes Your Best Data in Curriculum-Based LLM Pretraining*
+([arXiv:2511.18903](https://arxiv.org/abs/2511.18903)) finds that
+curriculum-style data orderings beat random shuffling under *constant*
+LR, but the gap **collapses under standard LR decay**. Whether a smooth
+data schedule helps may be entangled with the LR schedule it's run
+under, so any future smooth-vs-concat ablation should hold the LR
+schedule fixed across arms.
+
+The catastrophic-forgetting literature (e.g.,
+[arXiv:2401.03129](https://arxiv.org/abs/2401.03129),
+[arXiv:2308.08747](https://arxiv.org/abs/2308.08747)) documents
+abrupt distribution shift causing forgetting, but in
+forgetting-of-prior-capability settings, not pretraining-loss-spike
+ablations on the data axis.
+
+**Bottom line:** the smooth-vs-concat ablation appears to be an open
+gap. A controlled experiment in this project - same dataset, same
+compute, smooth `soft_sequential` interleave vs. naive concat vs.
+abrupt switch, with the LR schedule held fixed - would be a real
+addition to the literature rather than a duplication of existing work.
+
 ## Empirical result in the parent project
 
 In the [`small-llm` 10x Chinchilla runs](../README.md#10x-chinchilla-runs),
