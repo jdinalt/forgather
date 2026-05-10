@@ -16,7 +16,7 @@ class InterleavedDataset(TorchIterableDataset):
 
     Works with any iterable dataset that supports the stateful checkpoint
     protocol (``state_dict`` / ``load_state_dict``), including
-    `SimpleArrowIterableDataset`. Designed for multi-dataset pre-training where
+    `ComposableIterableDataset`. Designed for multi-dataset pre-training where
     examples from several corpora need to be mixed in a single training loop.
 
     Parameters
@@ -481,7 +481,7 @@ def interleave_datasets(
 
     Convenience constructor for `InterleavedDataset`. Works with any iterable
     that optionally supports the ``state_dict`` / ``load_state_dict`` checkpoint
-    protocol (e.g. `SimpleArrowIterableDataset`).
+    protocol (e.g. `ComposableIterableDataset`).
 
     Parameters
     ----------

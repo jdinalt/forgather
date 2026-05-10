@@ -67,6 +67,7 @@ def parse_global_args(args=None):
 def get_subcommand_registry():
     """Registry of all available subcommands and their argument parsers."""
     from .checkpoint_args import create_checkpoint_parser
+    from .cluster_args import create_cluster_parser
     from .commands_args import (
         create_code_parser,
         create_construct_parser,
@@ -79,9 +80,9 @@ def get_subcommand_registry():
         create_tb_parser,
         create_tlist_parser,
     )
-    from .cluster_args import create_cluster_parser
     from .control_args import create_control_parser
     from .dataset_args import create_dataset_parser
+    from .dataset_server_args import create_dataset_server_parser
     from .diloco_args import create_diloco_parser
     from .eval_args import create_eval_parser
     from .gpu_args import create_gpu_parser
@@ -117,6 +118,7 @@ def get_subcommand_registry():
         "construct": create_construct_parser,
         "train": create_train_parser,
         "dataset": create_dataset_parser,
+        "dataset-server": create_dataset_server_parser,
         "ws": create_ws_parser,
         "control": create_control_parser,
         "model": create_model_parser,
@@ -185,6 +187,7 @@ def parse_args(args=None):
     finalize_t_workaround = False
     finalize_original_args = None  # Save original args for finalize command
     server_original_args = None  # Save original args for server command
+    dataset_server_original_args = None  # Save original args for dataset-server
     removed_flags = []
 
     # Handle 'inf' command with --interactive/-i
@@ -241,6 +244,21 @@ def parse_args(args=None):
         if srv_idx == 0 or args_list[srv_idx - 1] != "inf":
             server_original_args = args_list[srv_idx + 1 :]
             args_list = args_list[: srv_idx + 1]
+
+    # 'dataset-server start' uses REMAINDER passthrough so the
+    # underlying script's --port (-p) doesn't conflict with the global
+    # -p / --project-dir; --help and other server flags should also
+    # reach the script verbatim. The diagnostic actions (status, list,
+    # cache, local) are parsed normally — they have no flag conflicts.
+    if "dataset-server" in args_list:
+        ds_idx = args_list.index("dataset-server")
+        after_ds = args_list[ds_idx + 1 :]
+        if after_ds and after_ds[0] == "start":
+            # Capture everything after 'start' as the remainder; keep
+            # 'dataset-server start' visible to the global parser so
+            # the subcommand is still routed correctly.
+            dataset_server_original_args = after_ds[1:]
+            args_list = args_list[: ds_idx + 2]
 
     # Handle 'finalize' command with -t (same conflict as convert; -t is the
     # finalize chat-template-path flag)
@@ -317,7 +335,14 @@ def parse_args(args=None):
         # For convert, finalize, and server commands, pass all args as remainder
         # without parsing. Their flags conflict with global flags (e.g. server's
         # -p/--port vs global -p/--project-dir).
-        if subcommand in ["convert", "finalize", "server"]:
+        # `dataset-server start` is REMAINDER-passthrough; other
+        # `dataset-server` subactions parse normally.
+        ds_is_start = (
+            subcommand == "dataset-server"
+            and subcommand_args
+            and subcommand_args[0] == "start"
+        )
+        if subcommand in ["convert", "finalize", "server"] or ds_is_start:
             sub_args = argparse.Namespace()
             if subcommand == "convert":
                 sub_args.remainder = (
@@ -336,6 +361,13 @@ def parse_args(args=None):
                     server_original_args
                     if server_original_args is not None
                     else subcommand_args
+                )
+            elif ds_is_start:
+                sub_args.ds_subcommand = "start"
+                sub_args.remainder = (
+                    dataset_server_original_args
+                    if dataset_server_original_args is not None
+                    else subcommand_args[1:]
                 )
             else:
                 sub_args.remainder = subcommand_args
@@ -420,6 +452,12 @@ def main():
                 from .dataset import dataset_cmd
 
                 dataset_cmd(args)
+            case "dataset-server":
+                from .dataset_server import dataset_server_cmd
+
+                rc = dataset_server_cmd(args)
+                if rc is not None and rc != 0:
+                    sys.exit(rc)
             case "ws":
                 from .workspace import ws_cmd
 

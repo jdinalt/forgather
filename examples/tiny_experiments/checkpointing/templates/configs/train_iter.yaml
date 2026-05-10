@@ -6,4 +6,4 @@
     -- set ns.config_name = "Initial Training with Checkpoints -- Iterable"
     -- set ns.config_description = "Train a small model from scratch with optimizer/scheduler checkpointing enabled"
     -- set ns.model_name = "iterable"
-    -- set ns.dataset_config = dataset_config | default("tinystories-iter.yaml")
+    -- set ns.dataset_config = dataset_config | default("fast-iter.yaml")

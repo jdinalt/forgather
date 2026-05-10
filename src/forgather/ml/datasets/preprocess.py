@@ -12,7 +12,7 @@ from datasets import Dataset as HFDataset
 from datasets import IterableDataset as HFIterableDataset
 
 from ..distributed import get_rank, get_world_size, main_process_first
-from .fast_hf_loader import SimpleArrowIterableDataset
+from .composable_iterable_dataset import ComposableIterableDataset
 from .iterable_with_length import (
     IterableDatasetWithLength,
     to_iterable_dataset_with_length,
@@ -305,7 +305,7 @@ def preprocess_dataset(
                         dataset, "shard"
                     ), f"Dataset of type {type(dataset)} does not have shard method."
 
-                    if not isinstance(dataset, SimpleArrowIterableDataset):
+                    if not isinstance(dataset, ComposableIterableDataset):
                         logger.warning(
                             f"Attempting to shard unknown dataset of type '{type(dataset)}' API may not be compatible..."
                         )

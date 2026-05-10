@@ -1,0 +1,426 @@
+#!/usr/bin/env python3
+"""
+forgather dataset server — uvicorn-hosted FastAPI app.
+
+Entry point. Parses CLI arguments, configures logging, builds a
+:class:`ServerState` from the parsed flags, mints/loads a bearer
+token, and hands the FastAPI app to ``uvicorn.run``.
+
+Runs as:
+
+    tools/dataset_server/server.py [args...]      # standalone (chmod +x)
+    python tools/dataset_server/server.py [...]   # standalone via interpreter
+    python -m tools.dataset_server [...]          # module form
+    forgather dataset-server start [...]          # via the forgather CLI
+
+See ``--help`` for all options.
+"""
+
+from __future__ import annotations
+
+import argparse
+import atexit
+import logging
+import os
+import secrets
+import signal
+import sys
+from pathlib import Path
+from typing import Optional
+
+# Support both standalone (`./server.py …`, `python server.py …`) and
+# module (`python -m tools.dataset_server`, `from tools.dataset_server …`)
+# execution. When running as a script there's no parent package, so we
+# patch sys.path to make `dataset_server.*` importable. Mirrors the
+# pattern used by tools/inference_server/server.py.
+if __name__ == "__main__" and __package__ is None:
+    script_dir = Path(__file__).resolve().parent
+    parent_dir = script_dir.parent
+    if str(parent_dir) not in sys.path:
+        sys.path.insert(0, str(parent_dir))
+    from dataset_server.app import create_app
+    from dataset_server.auth import write_standalone_token
+    from dataset_server.state import ServerState
+else:
+    from .app import create_app
+    from .auth import write_standalone_token
+    from .state import ServerState
+
+import uvicorn
+
+_SERVICE_NAME = "dataset_server"
+
+
+class _HelpFormatter(
+    argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter
+):
+    """Combine raw-text wrapping with auto-appended (default: …) suffixes,
+    skipping boolean flags where the default tag is just noise."""
+
+    def _get_help_string(self, action):
+        if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+            return action.help or ""
+        return super()._get_help_string(action)
+
+
+def _parse_local(value: str) -> tuple[str, str]:
+    """``foo=/abs/path`` -> ``("foo", "/abs/path")``."""
+    if "=" not in value:
+        raise argparse.ArgumentTypeError(f"--local must be NAME=PATH (got {value!r})")
+    name, path = value.split("=", 1)
+    name = name.strip()
+    path = os.path.expanduser(path.strip())
+    if not name:
+        raise argparse.ArgumentTypeError(f"--local name is empty in {value!r}")
+    if "/" in name:
+        raise argparse.ArgumentTypeError(f"--local name {name!r} must not contain '/'")
+    if not path:
+        raise argparse.ArgumentTypeError(f"--local path is empty in {value!r}")
+    if not os.path.exists(path):
+        raise argparse.ArgumentTypeError(f"--local path does not exist: {path}")
+    return name, os.path.abspath(path)
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="dataset_server",
+        formatter_class=_HelpFormatter,
+        description=(
+            "forgather dataset server — serves HuggingFace datasets and\n"
+            "named local datasets to remote clients via the\n"
+            "FORGATHER_DATASET_SERVER env var (or directly via /v1/load).\n"
+        ),
+        epilog=(
+            "Examples:\n"
+            "\n"
+            "Cache-only HF + a couple of named locals:\n"
+            "  dataset_server --local stories=/data/tinystories \\\n"
+            "                 --local mycorpus=/data/saved_corpus\n"
+            "\n"
+            "Lock down to local mappings only (no HF, no path access):\n"
+            "  dataset_server --no-hf --local foo=/data/foo\n"
+            "\n"
+            "Trusted-LAN with auth disabled:\n"
+            "  dataset_server -H 0.0.0.0 --no-auth\n"
+        ),
+    )
+    parser.add_argument("-H", "--host", default="127.0.0.1", help="Bind address")
+    parser.add_argument("-p", "--port", type=int, default=8766, help="Bind port")
+    parser.add_argument(
+        "-l",
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging level",
+    )
+
+    # Auth
+    auth_group = parser.add_mutually_exclusive_group()
+    auth_group.add_argument(
+        "--auth-token",
+        default=None,
+        help=(
+            "Bearer token clients must present in 'Authorization: Bearer "
+            "<token>'. Auto-generated if neither this nor --auth-token-file "
+            "is given."
+        ),
+    )
+    auth_group.add_argument(
+        "--auth-token-file",
+        default=None,
+        type=os.path.expanduser,
+        help=(
+            "Read the bearer token from this file (mode 0600 expected). "
+            "Avoids exposing the token via argv (visible in 'ps')."
+        ),
+    )
+    parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        help=(
+            "Disable bearer-token auth. Any host able to reach the bind "
+            "port becomes able to query the server — only set this when "
+            "the network is already trusted."
+        ),
+    )
+
+    # Loading policy
+    parser.add_argument(
+        "--no-hf",
+        action="store_true",
+        help=(
+            "Disable HF cache loading entirely. Only datasets registered "
+            "via --local will be servable."
+        ),
+    )
+    parser.add_argument(
+        "--allow-paths",
+        action="store_true",
+        help=(
+            "Allow clients to request loading by absolute filesystem path. "
+            "Off by default — the preferred method is named --local "
+            "mappings, which avoid leaking server-side paths to clients."
+        ),
+    )
+    parser.add_argument(
+        "--allow-downloads",
+        action="store_true",
+        help=(
+            "Allow HF dataset downloads when the cache is missing the "
+            "requested dataset. Off by default — typical use is to serve "
+            "what's already cached."
+        ),
+    )
+    parser.add_argument(
+        "--local",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        type=_parse_local,
+        help=(
+            "Register a local dataset accessible as 'local/NAME'. PATH "
+            "must exist. Repeatable: --local foo=/p1 --local bar=/p2"
+        ),
+    )
+
+    parser.add_argument(
+        "--config",
+        default=None,
+        type=os.path.expanduser,
+        metavar="FILE",
+        help=(
+            "Optional YAML config file. Keys mirror the CLI flag names "
+            "with '-' replaced by '_' (e.g. 'no_auth: true', 'allow_paths: "
+            "true'). The 'local' key takes a mapping of NAME -> PATH. CLI "
+            "flags override file values. See the README's 'Configuration "
+            "file' section for an example."
+        ),
+    )
+
+    return parser
+
+
+def _load_yaml_config(path: str) -> dict:
+    """Load and validate a YAML config file."""
+    try:
+        import yaml
+    except ImportError as exc:
+        raise SystemExit(f"--config requires PyYAML; pip install pyyaml ({exc})")
+    try:
+        with open(path, "r") as f:
+            data = yaml.safe_load(f) or {}
+    except OSError as exc:
+        raise SystemExit(f"Could not read --config {path}: {exc}")
+    except yaml.YAMLError as exc:
+        raise SystemExit(f"Invalid YAML in --config {path}: {exc}")
+    if not isinstance(data, dict):
+        raise SystemExit(f"--config {path} must contain a YAML mapping at root")
+    return data
+
+
+def _merge_config(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    config: dict,
+) -> None:
+    """Apply ``config`` values to ``args`` for keys still at their default.
+
+    CLI flags always win — values that the user supplied on the command
+    line keep their value. The ``local`` key is special-cased: in the
+    YAML it is a mapping ``{name: path, ...}``; we translate it to the
+    same ``[(name, path), ...]`` shape that ``--local`` produces.
+    """
+    defaults = {a.dest: a.default for a in parser._actions if a.dest != "help"}
+    known_keys = set(defaults) - {"config"}
+
+    # Collect locals defined on the CLI so we can merge with file
+    # locals rather than overwrite (a user-supplied --local should
+    # add to, not replace, the file's local mappings).
+    cli_locals = list(args.local or [])
+
+    for raw_key, value in config.items():
+        key = raw_key.replace("-", "_")
+        if key not in known_keys:
+            raise SystemExit(
+                f"Unknown key in --config: {raw_key!r} "
+                f"(allowed: {sorted(known_keys)})"
+            )
+        if key == "local":
+            # YAML form: {name: path, ...} -> [(name, abspath), ...]
+            if not isinstance(value, dict):
+                raise SystemExit(
+                    f"--config 'local' must be a mapping (got {type(value).__name__})"
+                )
+            file_locals = []
+            for name, path in value.items():
+                if not isinstance(name, str) or "/" in name:
+                    raise SystemExit(
+                        f"--config local: invalid name {name!r} "
+                        "(must be string without '/')"
+                    )
+                if not isinstance(path, str):
+                    raise SystemExit(f"--config local[{name!r}]: path must be a string")
+                resolved = os.path.abspath(os.path.expanduser(path))
+                if not os.path.exists(resolved):
+                    raise SystemExit(
+                        f"--config local[{name!r}]: path does not exist: {resolved}"
+                    )
+                file_locals.append((name, resolved))
+            # Locals: union of file + CLI, with CLI winning on conflict
+            # (matches "CLI overrides config" precedence).
+            cli_names = {n for n, _ in cli_locals}
+            merged = [(n, p) for n, p in file_locals if n not in cli_names]
+            merged.extend(cli_locals)
+            args.local = merged
+            continue
+        # For non-local keys: only override if arg is still at its default.
+        if getattr(args, key) == defaults[key]:
+            setattr(args, key, value)
+
+
+def _resolve_auth_token(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> tuple[Optional[str], bool]:
+    """Resolve the effective bearer token from CLI args.
+
+    Returns ``(token, auto_generated)``. ``token`` is ``None`` for
+    ``--no-auth``; ``auto_generated`` is True when we minted the
+    token (so the entry point publishes it to the per-port file).
+    """
+    if args.no_auth:
+        return None, False
+    if args.auth_token:
+        return args.auth_token.strip(), False
+    if args.auth_token_file:
+        try:
+            text = Path(args.auth_token_file).read_text().strip()
+        except OSError as exc:
+            parser.error(f"could not read --auth-token-file: {exc}")
+        if not text:
+            parser.error(f"auth-token-file is empty: {args.auth_token_file}")
+        return text, False
+    return secrets.token_hex(32), True
+
+
+def _install_token_cleanup(token_path: Path) -> None:
+    """Remove the per-port token file at process exit (atexit + signal
+    handlers, mirroring inference_server)."""
+
+    def _unlink() -> None:
+        try:
+            os.unlink(token_path)
+        except OSError:
+            pass
+
+    atexit.register(_unlink)
+
+    def _signal_cleanup(signum, _frame):
+        _unlink()
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    for _sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(_sig, _signal_cleanup)
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+
+    if args.config:
+        config = _load_yaml_config(args.config)
+        _merge_config(parser, args, config)
+
+    log_level = getattr(logging, args.log_level.upper(), logging.INFO)
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[logging.StreamHandler()],
+        force=True,
+    )
+    logger = logging.getLogger(_SERVICE_NAME)
+    logger.setLevel(log_level)
+
+    # Build state from policy flags + local mappings.
+    state = ServerState(
+        hf_cache_enabled=not args.no_hf,
+        allow_paths=args.allow_paths,
+        allow_downloads=args.allow_downloads,
+    )
+    for name, path in args.local:
+        try:
+            state.add_local(name, path)
+        except (ValueError, FileNotFoundError) as exc:
+            parser.error(str(exc))
+
+    auth_token, auto_generated = _resolve_auth_token(parser, args)
+    state.auth_required = bool(auth_token)
+
+    if not auth_token:
+        print(
+            "!! dataset_server is running with --no-auth — any host that "
+            "can reach the bind port can query datasets",
+            file=sys.stderr,
+            flush=True,
+        )
+    else:
+        print(
+            f"dataset_server auth token: {auth_token}",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(
+            "clients must send 'Authorization: Bearer <token>'",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(
+            f'curl -H "Authorization: Bearer {auth_token}" '
+            f"http://{args.host}:{args.port}/v1/datasets",
+            file=sys.stderr,
+            flush=True,
+        )
+
+        if auto_generated:
+            try:
+                token_path = write_standalone_token(args.port, auth_token)
+            except OSError as exc:
+                logger.warning(
+                    "could not write standalone-server token file: %s "
+                    "(client auto-discovery disabled)",
+                    exc,
+                )
+            else:
+                print(
+                    f"shared token file: {token_path}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                _install_token_cleanup(token_path)
+
+    app = create_app(state, auth_token=auth_token)
+
+    logger.info(
+        "starting dataset_server on %s:%d (hf=%s, allow_paths=%s, "
+        "allow_downloads=%s, locals=%d, auth=%s)",
+        args.host,
+        args.port,
+        state.hf_cache_enabled,
+        state.allow_paths,
+        state.allow_downloads,
+        len(state.local_datasets),
+        "on" if auth_token else "off",
+    )
+
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level.lower(),
+        access_log=True,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

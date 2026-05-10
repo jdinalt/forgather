@@ -57,6 +57,7 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 - **[Model CLI Reference](guides/model-cli.md)** - `forgather model` command: construct, test, checkpoint, and use models
 - **[Creating a Dataset Project](guides/creating-a-dataset-project.md)** - Load, pack, and interleave HuggingFace datasets
 - **[Dataset CLI Reference](datasets/dataset-cli.md)** - `forgather dataset` command: inspect, sample, and histogram datasets
+- **[Dataset Server](tools/dataset_server/README.md)** - Multi-node training: serve HF cache + named local datasets via `FORGATHER_DATASET_SERVER`
 - **[Working with Tokenizer Projects](guides/working-with-tokenizer-projects.md)** - CLI commands for tokenizer projects
 - **[Debugging Configuration Errors](guides/debugging.md)** - Systematic troubleshooting and common error patterns
 - **[Interactive CLI](guides/interactive-cli.md)** - Interactive shell with tab completion and editor integration

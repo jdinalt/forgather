@@ -152,6 +152,7 @@ nav:
     - Document Boundaries: datasets/document-boundaries.md
     - Fast HF Loader: datasets/fast-hf-loader.md
     - Fast HF Loader Checkpoints: datasets/fast-hf-loader-checkpoints.md
+    - Dataset Server: tools/dataset_server/README.md
     - Dataset Projects: datasets/dataset-projects.md
     - Dataset CLI: datasets/dataset-cli.md
   - Fused Loss:
