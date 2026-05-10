@@ -594,6 +594,130 @@ def get_default_loader() -> FastDatasetLoaderSimple:
     return _default_loader
 
 
+#: Environment variable name. When set to a server URL
+#: (e.g. ``http://host:8765``) `fast_load_iterable_dataset` routes
+#: through that server instead of loading data locally. The server
+#: must be running with ``allow_load=True`` (CLI: ``--allow-load``).
+DATASET_SERVER_ENV_VAR = "FORGATHER_DATASET_SERVER"
+
+
+def _local_load_iterable_dataset(
+    path: str,
+    name: Optional[str] = None,
+    split: Optional[str] = None,
+    data_files: Optional[Union[str, list]] = None,
+    revision: Optional[str] = None,
+    force_reindex: bool = False,
+    num_proc: Optional[int] = None,
+    index_dir: Optional[str] = None,
+    length_estimate: str = "dynamic",
+    reset_length_on_iter: bool = False,
+    **load_dataset_kwargs,
+) -> ComposableIterableDataset:
+    """
+    Always load locally — bypasses the FORGATHER_DATASET_SERVER
+    environment variable check. Used by the dataset server itself
+    (`tools.dataset_server.DatasetServer.load_on_demand`) so the
+    server process can have the variable set in its own environment
+    without recursively dialing back into itself.
+
+    Public callers should use `fast_load_iterable_dataset` instead.
+    """
+    if index_dir is not None:
+        loader = FastDatasetLoaderSimple(index_dir=index_dir)
+    else:
+        loader = get_default_loader()
+    return loader.load_iterable(
+        path=path,
+        name=name,
+        split=split,
+        data_files=data_files,
+        revision=revision,
+        force_reindex=force_reindex,
+        num_proc=num_proc,
+        length_estimate=length_estimate,
+        reset_length_on_iter=reset_length_on_iter,
+        **load_dataset_kwargs,
+    )
+
+
+def _remote_load_iterable_dataset(
+    server_url: str,
+    *,
+    path: str,
+    name: Optional[str] = None,
+    split: Optional[str] = None,
+    data_files: Optional[Union[str, list]] = None,
+    revision: Optional[str] = None,
+    length_estimate: str = "dynamic",
+    reset_length_on_iter: bool = False,
+) -> ComposableIterableDataset:
+    """
+    Load via a remote `tools.dataset_server`. Sends a POST /v1/load
+    request with the load args, receives a handle, then constructs a
+    `RemoteBackend(handle)` wrapped in `ComposableIterableDataset`.
+
+    The split-notation slice (e.g. ``"train[10000:]"``) is parsed
+    client-side and applied as a wrapper-level `slice` after
+    construction — the server only loads the base split, exactly
+    matching the local-loader behavior.
+    """
+    import json
+    from urllib.error import HTTPError, URLError
+    from urllib.request import Request, urlopen
+
+    from .remote_backend import RemoteBackend
+
+    base_split, slice_start, slice_end = (
+        _parse_split_notation(split) if split else (split, None, None)
+    )
+
+    load_args = {
+        "path": path,
+        "name": name,
+        "split": base_split,
+        "data_files": data_files,
+        "revision": revision,
+    }
+    payload = json.dumps({k: v for k, v in load_args.items() if v is not None}).encode(
+        "utf-8"
+    )
+    url = server_url.rstrip("/") + "/v1/load"
+    req = Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urlopen(req, timeout=300.0) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as exc:
+        # Surface the server's error message for debuggability.
+        try:
+            err_body = exc.read().decode("utf-8")
+        except Exception:
+            err_body = ""
+        raise RuntimeError(
+            f"Dataset server load failed ({exc.code}): {err_body or exc.reason}"
+        ) from exc
+    except URLError as exc:
+        raise RuntimeError(
+            f"Could not reach dataset server at {server_url}: {exc.reason}"
+        ) from exc
+
+    handle = body["handle"]
+    backend = RemoteBackend(server_url, handle)
+    ds = ComposableIterableDataset(
+        backend,
+        length_estimate=length_estimate,
+        reset_length_on_iter=reset_length_on_iter,
+    )
+    if slice_start is not None or slice_end is not None:
+        ds = ds.slice(slice_start, slice_end)
+    return ds
+
+
 def fast_load_iterable_dataset(
     path: str,
     name: Optional[str] = None,
@@ -611,10 +735,19 @@ def fast_load_iterable_dataset(
     Load a HuggingFace dataset as a fast iterable with sharding and
     checkpoint support.
 
-    Convenience wrapper around `FastDatasetLoaderSimple.load_iterable`
-    using a process-global default loader. The first call for a given
-    dataset is slow (it builds an Arrow file index); all subsequent
-    calls are instant.
+    Routing
+    -------
+    - If the ``FORGATHER_DATASET_SERVER`` environment variable is set
+      to a URL (e.g. ``http://host:8765``), the load is routed
+      transparently through the dataset server and a
+      `RemoteBackend`-wrapped dataset is returned. The server must
+      have been started with ``--allow-load``. Server-only options
+      (``force_reindex``, ``num_proc``, ``index_dir``,
+      ``**load_dataset_kwargs``) are not forwarded over the wire and
+      take effect only on the local path.
+    - Otherwise, loads locally via `FastDatasetLoaderSimple`. The
+      first call for a given dataset is slow (it builds an Arrow
+      file index); all subsequent calls are instant.
 
     Parameters
     ----------
@@ -631,25 +764,27 @@ def fast_load_iterable_dataset(
     revision : str, optional
         Dataset revision or commit hash (forwarded to ``load_dataset``).
     force_reindex : bool, optional
-        Rebuild the Arrow file index from scratch.
+        Rebuild the Arrow file index from scratch (local path only).
     num_proc : int, optional
         Number of processes for the initial dataset download/indexing
-        step.
+        step (local path only).
     index_dir : str, optional
-        Directory where JSON index files are stored.
+        Directory where JSON index files are stored (local path only).
     length_estimate : {"dynamic", "static", "exact"}, optional
-        Length-estimation mode (see `FastDatasetLoaderSimple.load_iterable`).
+        Length-estimation mode for the wrapper.
     reset_length_on_iter : bool, optional
         Whether to reset length-estimation counters at the start of each
         new iteration pass.
     **load_dataset_kwargs
         Extra keyword arguments forwarded to ``datasets.load_dataset``
-        on the initial (slow-path) load.
+        on the initial (slow-path) local load. Not forwarded to the
+        remote server.
 
     Returns
     -------
     ComposableIterableDataset
-        Iterable dataset (wrapper over `ArrowBackend`) supporting:
+        Iterable dataset (wrapper over `ArrowBackend` locally or
+        `RemoteBackend` when routed through the server) supporting:
 
         - `.shuffle(seed)` for backend-level + buffer-level shuffling
         - `.shard(num_shards, index)` for DDP data partitioning
@@ -666,12 +801,26 @@ def fast_load_iterable_dataset(
     >>> for example in ds:
     ...     pass
     """
-    if index_dir is not None:
-        loader = FastDatasetLoaderSimple(index_dir=index_dir)
-    else:
-        loader = get_default_loader()
-
-    return loader.load_iterable(
+    server_url = os.environ.get(DATASET_SERVER_ENV_VAR)
+    if server_url:
+        if load_dataset_kwargs:
+            logger.warning(
+                "Ignoring load_dataset_kwargs %s when routing through "
+                "%s — server-only on the local path.",
+                list(load_dataset_kwargs.keys()),
+                DATASET_SERVER_ENV_VAR,
+            )
+        return _remote_load_iterable_dataset(
+            server_url,
+            path=path,
+            name=name,
+            split=split,
+            data_files=data_files,
+            revision=revision,
+            length_estimate=length_estimate,
+            reset_length_on_iter=reset_length_on_iter,
+        )
+    return _local_load_iterable_dataset(
         path=path,
         name=name,
         split=split,
@@ -679,6 +828,7 @@ def fast_load_iterable_dataset(
         revision=revision,
         force_reindex=force_reindex,
         num_proc=num_proc,
+        index_dir=index_dir,
         length_estimate=length_estimate,
         reset_length_on_iter=reset_length_on_iter,
         **load_dataset_kwargs,

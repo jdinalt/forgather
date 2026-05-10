@@ -259,3 +259,133 @@ class TestServerLifecycle:
         # After exit the server is stopped — further requests fail.
         with pytest.raises(Exception):
             len(RemoteBackend(srv.url, "ctx"))
+
+
+# ---------------------------------------------------------------------
+# Load-on-demand (POST /v1/load) and FORGATHER_DATASET_SERVER routing
+# ---------------------------------------------------------------------
+
+
+class TestLoadOnDemand:
+    def test_post_load_disabled_by_default(self, server):
+        """Without allow_load=True, /v1/load returns 403."""
+        import json
+        from urllib.error import HTTPError
+        from urllib.request import Request, urlopen
+
+        req = Request(
+            f"{server.url}/v1/load",
+            data=json.dumps({"path": "wikitext"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as ei:
+            urlopen(req, timeout=5).read()
+        assert ei.value.code == 403
+
+    def test_post_load_requires_path(self):
+        import json
+        from urllib.error import HTTPError
+        from urllib.request import Request, urlopen
+
+        srv = DatasetServer(host="127.0.0.1", port=0, allow_load=True)
+        with srv:
+            req = Request(
+                f"{srv.url}/v1/load",
+                data=json.dumps({}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with pytest.raises(HTTPError) as ei:
+                urlopen(req, timeout=5).read()
+            assert ei.value.code == 400
+
+    def test_load_on_demand_serves_local_dataset(self, tmp_path):
+        """End-to-end: server lazy-loads via _local_load_iterable_dataset
+        and returns a working handle."""
+        import json
+        from urllib.request import Request, urlopen
+
+        # Build a tiny on-disk dataset to avoid network in tests.
+        from datasets import Dataset
+
+        ds_path = tmp_path / "tiny"
+        Dataset.from_dict(
+            {"id": list(range(15)), "text": [f"row_{i}" for i in range(15)]}
+        ).save_to_disk(str(ds_path))
+
+        srv = DatasetServer(host="127.0.0.1", port=0, allow_load=True)
+        with srv:
+            req = Request(
+                f"{srv.url}/v1/load",
+                data=json.dumps({"path": str(ds_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            resp = json.loads(urlopen(req, timeout=10).read().decode("utf-8"))
+            assert resp["length"] == 15
+            handle = resp["handle"]
+
+            # Now read examples through the returned handle.
+            client = RemoteBackend(srv.url, handle)
+            assert len(client) == 15
+            assert [ex["id"] for ex in client] == list(range(15))
+
+    def test_env_var_routing(self, tmp_path, monkeypatch):
+        """fast_load_iterable_dataset routes through the server when
+        FORGATHER_DATASET_SERVER is set; output should match the
+        local-load result."""
+        from datasets import Dataset
+        from forgather.ml.datasets import fast_load_iterable_dataset
+        from forgather.ml.datasets.fast_hf_loader import (
+            DATASET_SERVER_ENV_VAR,
+            _local_load_iterable_dataset,
+        )
+
+        # Tiny on-disk dataset.
+        ds_path = tmp_path / "tiny"
+        Dataset.from_dict(
+            {"id": list(range(20)), "text": [f"r{i}" for i in range(20)]}
+        ).save_to_disk(str(ds_path))
+
+        # Reference: local load.
+        local_ds = _local_load_iterable_dataset(path=str(ds_path))
+        local_ids = [ex["id"] for ex in local_ds]
+
+        # Routed through server.
+        srv = DatasetServer(host="127.0.0.1", port=0, allow_load=True)
+        with srv:
+            monkeypatch.setenv(DATASET_SERVER_ENV_VAR, srv.url)
+            remote_ds = fast_load_iterable_dataset(path=str(ds_path))
+            from forgather.ml.datasets import (
+                ComposableIterableDataset,
+                RemoteBackend,
+            )
+
+            assert isinstance(remote_ds, ComposableIterableDataset)
+            assert isinstance(remote_ds.backend, RemoteBackend)
+            remote_ids = [ex["id"] for ex in remote_ds]
+
+        assert remote_ids == local_ids
+
+    def test_env_var_routing_with_split_notation(self, tmp_path, monkeypatch):
+        """Split-notation slice (e.g. 'train[5:15]') is parsed
+        client-side and applied as a wrapper-level slice over the
+        server's base-split backend."""
+        from datasets import Dataset
+        from forgather.ml.datasets import fast_load_iterable_dataset
+        from forgather.ml.datasets.fast_hf_loader import DATASET_SERVER_ENV_VAR
+
+        ds_path = tmp_path / "tiny"
+        Dataset.from_dict({"id": list(range(30))}).save_to_disk(str(ds_path / "train"))
+        # save_to_disk on a single Dataset writes to ds_path itself,
+        # not a subdir, so use the root.
+        ds_path2 = tmp_path / "tiny2"
+        Dataset.from_dict({"id": list(range(30))}).save_to_disk(str(ds_path2))
+
+        srv = DatasetServer(host="127.0.0.1", port=0, allow_load=True)
+        with srv:
+            monkeypatch.setenv(DATASET_SERVER_ENV_VAR, srv.url)
+            ds = fast_load_iterable_dataset(path=str(ds_path2), split="train[5:15]")
+            ids = [ex["id"] for ex in ds]
+        assert ids == list(range(5, 15))
