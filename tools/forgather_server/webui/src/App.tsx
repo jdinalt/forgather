@@ -11,6 +11,7 @@ import { EvalModal } from "./components/EvalModal";
 import { InferenceModal } from "./components/InferenceModal";
 import { DatasetServerModal } from "./components/DatasetServerModal";
 import { InferencePanel } from "./components/InferencePanel";
+import { DatasetsPanel } from "./components/DatasetsPanel";
 import { JobsPanel } from "./components/JobsPanel";
 import { QueuePanel } from "./components/QueuePanel";
 import { LogDetailPanel } from "./components/LogDetailPanel";
@@ -34,7 +35,8 @@ type View =
   | "gpus"
   | "jobs"
   | "queue"
-  | "inference";
+  | "inference"
+  | "datasets";
 export type ConfigTab = "info" | "pp" | "code" | "graph" | "templates" | "debug";
 
 // View metadata. The "gpus" entry is dual-labelled at render time:
@@ -49,6 +51,7 @@ const VIEWS: { id: View; label: string; icon: string }[] = [
   { id: "queue", label: "Queue", icon: "📋" },
   { id: "jobs", label: "Jobs", icon: "⚙" },
   { id: "inference", label: "Inference", icon: "🔮" },
+  { id: "datasets", label: "Datasets", icon: "🗂" },
 ];
 
 // A window glyph with a left-biased vertical divider — represents the
@@ -815,6 +818,12 @@ export default function App() {
           style={view === "inference" ? undefined : { display: "none" }}
         >
           <InferencePanel />
+        </div>
+        <div
+          className="view-panel"
+          style={view === "datasets" ? undefined : { display: "none" }}
+        >
+          <DatasetsPanel />
         </div>
       </div>
 

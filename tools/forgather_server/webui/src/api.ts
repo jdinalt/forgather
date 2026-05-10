@@ -669,6 +669,60 @@ async function fetchText(url: string): Promise<string> {
   return r.text();
 }
 
+/** Helper for dataset_server proxy GETs. Forwards the optional bearer
+ *  token via the side-channel header so the user's forgather-server
+ *  bearer (in Authorization) doesn't leak to the upstream. The proxy
+ *  itself falls back to JobRecord / registry auto-lookup when token is
+ *  blank — see ``routes/dataset_server.py::_auth_headers_for``. */
+async function datasetServerProxyGet<T>(
+  url: string,
+  base: string,
+  token: string,
+): Promise<T> {
+  const u = `${url}?base=${encodeURIComponent(base)}`;
+  const headers: Record<string, string> = {};
+  if (token) headers["x-dataset-auth-token"] = token;
+  const r = await fetch(u, { headers });
+  if (!r.ok) {
+    throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+  }
+  return r.json() as Promise<T>;
+}
+
+/** Dataset server registered as a user-added entry. */
+export interface DatasetServerUser {
+  id: string;
+  label: string;
+  base_url: string;
+  has_auth_token: boolean;
+}
+
+/** Dataset server spawned by the forgather_server itself. */
+export interface DatasetServerLocal {
+  queue_id: string;
+  label: string;
+  base_url: string;
+  host: string;
+  port: number;
+  alive: boolean;
+  has_auth_token: boolean;
+}
+
+export interface AddDatasetServerRequest {
+  label?: string;
+  base_url: string;
+  auth_token?: string;
+}
+
+/** One row from ``GET /v1/datasets``. Field set tracks what the
+ *  dataset_server's wire model exposes; we mirror only what we render. */
+export interface DatasetHandleEntry {
+  handle: string;
+  length?: number | null;
+  source?: string | null;
+  load_args?: Record<string, unknown> | null;
+}
+
 export const api = {
   listSearchRoots: () => fetchJson<SearchRoot[]>("/api/search-roots"),
   addSearchRoot: async (path: string, create = false) => {
@@ -1247,6 +1301,70 @@ export const api = {
     }
     return r.json();
   },
+
+  listLocalDatasetServers: () =>
+    fetchJson<DatasetServerLocal[]>("/api/dataset-servers/local"),
+  listUserDatasetServers: () =>
+    fetchJson<DatasetServerUser[]>("/api/dataset-servers/user"),
+  addUserDatasetServer: async (
+    req: AddDatasetServerRequest,
+  ): Promise<DatasetServerUser> => {
+    const r = await fetch("/api/dataset-servers/user", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+    return r.json();
+  },
+  deleteUserDatasetServer: async (id: string): Promise<void> => {
+    const r = await fetch(
+      `/api/dataset-servers/user/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+  },
+
+  // Proxy GETs. ``token`` is the upstream bearer that's forwarded via
+  // the X-Dataset-Auth-Token side-channel; empty string means no
+  // explicit token (the proxy then falls back to JobRecord auto-lookup
+  // for local servers, or registry lookup for saved user entries).
+  datasetServerHealth: (base: string, token: string) =>
+    datasetServerProxyGet<Record<string, unknown>>(
+      "/api/dataset-server/proxy/health",
+      base,
+      token,
+    ),
+  datasetServerAuthStatus: (base: string, token: string) =>
+    datasetServerProxyGet<{ auth_required: boolean }>(
+      "/api/dataset-server/proxy/auth-status",
+      base,
+      token,
+    ),
+  datasetServerDatasets: (base: string, token: string) =>
+    datasetServerProxyGet<DatasetHandleEntry[]>(
+      "/api/dataset-server/proxy/datasets",
+      base,
+      token,
+    ),
+  datasetServerCache: (base: string, token: string) =>
+    datasetServerProxyGet<Record<string, unknown>>(
+      "/api/dataset-server/proxy/cache",
+      base,
+      token,
+    ),
+  datasetServerLocal: (base: string, token: string) =>
+    datasetServerProxyGet<Record<string, unknown>>(
+      "/api/dataset-server/proxy/local",
+      base,
+      token,
+    ),
   docsFile: (path: string) =>
     fetchJson<DocsFile>(`/api/docs/file?path=${encodeURIComponent(path)}`),
   docsAssetUrl: (path: string): string =>

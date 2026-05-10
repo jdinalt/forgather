@@ -111,6 +111,16 @@ def dataset_server_token_file(queue_id: str) -> Path:
     return dataset_server_tokens_dir() / f"{queue_id}.token"
 
 
+def dataset_server_registry_file() -> Path:
+    """User-added dataset_server URLs + tokens.
+
+    Lives at ``<config>/server/dataset_server_registry.json``, mode 0600.
+    Entries are persistent across restarts; the per-job token files for
+    server-spawned instances are a separate concern.
+    """
+    return server_state_dir() / "dataset_server_registry.json"
+
+
 def cluster_state_dir() -> Path:
     """Persistent directory for multi-node cluster state.
 
