@@ -28,6 +28,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from forgather.preprocess import forgather_config_dir
+
 # Support both standalone (`./server.py …`, `python server.py …`) and
 # module (`python -m tools.dataset_server`, `from tools.dataset_server …`)
 # execution. When running as a script there's no parent package, so we
@@ -49,6 +51,19 @@ else:
 import uvicorn
 
 _SERVICE_NAME = "dataset_server"
+
+
+def default_config_file() -> Path:
+    """Path checked for a default YAML config when ``--config`` is omitted.
+
+    Lives next to the per-port token files at
+    ``<forgather_config_dir>/dataset_server/config.yaml`` (Linux:
+    ``~/.config/forgather/dataset_server/config.yaml``) so a user's
+    operator-managed dataset_server settings live alongside the rest of
+    that tool's state. Existence is checked at startup; if absent, the
+    server falls back to pure CLI defaults — no error.
+    """
+    return Path(forgather_config_dir()) / "dataset_server" / "config.yaml"
 
 
 class _HelpFormatter(
@@ -192,8 +207,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Optional YAML config file. Keys mirror the CLI flag names "
             "with '-' replaced by '_' (e.g. 'no_auth: true', 'allow_paths: "
             "true'). The 'local' key takes a mapping of NAME -> PATH. CLI "
-            "flags override file values. See the README's 'Configuration "
-            "file' section for an example."
+            "flags override file values. When omitted, the server looks "
+            "for a default at <forgather_config_dir>/dataset_server/"
+            "config.yaml (Linux: ~/.config/forgather/dataset_server/"
+            "config.yaml) and loads it if present. See the README's "
+            "'Configuration file' section for an example."
         ),
     )
 
@@ -327,9 +345,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
 
-    if args.config:
-        config = _load_yaml_config(args.config)
+    # If --config was not provided, fall back to the default location.
+    # Missing default is silently ignored so the server still starts
+    # cleanly on a fresh install; an explicit --config that points at a
+    # missing path still surfaces as a load error below.
+    config_path: Optional[str] = args.config
+    config_path_source: str = "cli"
+    if config_path is None:
+        default_path = default_config_file()
+        if default_path.is_file():
+            config_path = str(default_path)
+            config_path_source = "default"
+    if config_path:
+        config = _load_yaml_config(config_path)
         _merge_config(parser, args, config)
+        args.config = config_path
 
     log_level = getattr(logging, args.log_level.upper(), logging.INFO)
     logging.basicConfig(
@@ -340,6 +370,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     logger = logging.getLogger(_SERVICE_NAME)
     logger.setLevel(log_level)
+
+    if config_path and config_path_source == "default":
+        logger.info("loaded default config: %s", config_path)
+    elif config_path:
+        logger.info("loaded config: %s", config_path)
 
     # Build state from policy flags + local mappings.
     state = ServerState(

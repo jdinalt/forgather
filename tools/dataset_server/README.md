@@ -263,6 +263,24 @@ Then start it with:
 forgather dataset-server start --config ~/dataset_server.yaml
 ```
 
+### Default config path
+
+If you omit `--config`, the server looks for
+`<forgather_config_dir>/dataset_server/config.yaml` (on Linux,
+`~/.config/forgather/dataset_server/config.yaml`) and loads it
+when present. Missing default is silently ignored; an explicit
+`--config` that points at a missing path still errors out.
+
+The directory is the same one that already holds the per-port
+auth-token files (`<port>.token`), so a single `dataset_server/`
+directory under your forgather config dir contains all of the
+tool's persistent state.
+
+A startup line at INFO level (`loaded default config: …`) records
+which file the server picked up so it's obvious whether the
+default was applied. CLI-flag precedence is unchanged: anything
+you pass on the command line still overrides the file values.
+
 ### Precedence
 
 CLI flags always win. Anything you don't pass on the command
