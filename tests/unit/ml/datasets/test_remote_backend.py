@@ -77,6 +77,19 @@ class TestRemoteBackendConformance:
         assert ids == list(range(10))
         assert client.position() == 10
 
+    def test_iter_position_zero_is_repeatable(self, server):
+        """Regression: the server's shared backend instance has its
+        position cursor advanced after a /iter call; without an
+        unconditional seek, a second /iter?position=0 from a fresh
+        client would still see the cursor at end-of-iteration and
+        yield nothing. Common path in trainers that re-iterate the
+        eval split each evaluation step."""
+        server.register("toy", InMemoryBackend(_examples(10)))
+        first = list(_client(server, "toy"))
+        second = list(_client(server, "toy"))
+        assert [e["id"] for e in first] == list(range(10))
+        assert [e["id"] for e in second] == list(range(10))
+
     def test_iter_preserves_complex_values(self, server):
         server.register("toy", InMemoryBackend(_examples(3)))
         client = _client(server, "toy")

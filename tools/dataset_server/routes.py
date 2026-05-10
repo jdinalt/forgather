@@ -122,8 +122,13 @@ def build_router(state: ServerState, auth_token: Optional[str]) -> APIRouter:
         view = backend
         if seed is not None:
             view = view.shuffle(seed)
-        if position:
-            view = view.seek(position)
+        # Always seek — never short-circuit on position == 0. The
+        # registered backend is shared across clients and across
+        # successive requests; without an unconditional seek it would
+        # still be sitting at end-of-iteration after the previous
+        # caller exhausted it, and a fresh /iter?position=0 from a
+        # new caller would silently yield zero examples.
+        view = view.seek(position)
 
         return StreamingResponse(
             _stream_examples(view, handle, limit),
