@@ -29,8 +29,10 @@ ALLOWED_STATIC_MOUNT_PATHS = frozenset({"/", ""})
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
-    """Point FORGATHER_HOME at a tmp dir; reset auth module state."""
-    monkeypatch.setenv("FORGATHER_HOME", str(tmp_path))
+    """Redirect ``forgather_config_dir`` to a tmp dir; reset auth module state."""
+    monkeypatch.setattr(
+        "forgather_server.paths.forgather_config_dir", lambda: str(tmp_path)
+    )
     from forgather_server import auth
 
     auth._reset_sessions_for_tests()

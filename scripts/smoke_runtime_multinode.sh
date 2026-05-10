@@ -130,7 +130,7 @@ dump_diagnostics() {
                 fi
                 echo
                 echo "=== peer ${name}: latest tty.log ==="
-                ${runner} bash -lc 'ls -lt ~/.forgather/server/jobs/*.tty 2>/dev/null | head -3; for f in $(ls -t ~/.forgather/server/jobs/*.tty 2>/dev/null | head -1); do echo "--- $f ---"; tail -200 "$f"; done' 2>&1 || true
+                ${runner} bash -lc 'ls -lt ~/.config/forgather/server/jobs/*.tty 2>/dev/null | head -3; for f in $(ls -t ~/.config/forgather/server/jobs/*.tty 2>/dev/null | head -1); do echo "--- $f ---"; tail -200 "$f"; done' 2>&1 || true
             done
         fi
         echo

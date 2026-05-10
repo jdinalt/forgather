@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from urllib.parse import quote
 
+from forgather.preprocess import forgather_config_dir
+
 
 class ServerUnreachable(Exception):
     pass
@@ -26,15 +28,15 @@ def _load_auth_token():
     """Find the bearer token shared with the server.
 
     Order: ``$FORGATHER_SERVER_TOKEN`` overrides everything (handy for
-    multi-server setups), otherwise ``~/.forgather/server/auth_token``.
-    Returns ``None`` if neither is available — the client still issues
-    requests, and the server's 401 response surfaces a clear error.
+    multi-server setups), otherwise
+    ``<forgather_config_dir>/server/auth_token``. Returns ``None`` if
+    neither is available — the client still issues requests, and the
+    server's 401 response surfaces a clear error.
     """
     env = os.environ.get("FORGATHER_SERVER_TOKEN")
     if env:
         return env.strip()
-    home = os.environ.get("FORGATHER_HOME") or str(Path.home() / ".forgather")
-    token_path = Path(home) / "server" / "auth_token"
+    token_path = Path(forgather_config_dir()) / "server" / "auth_token"
     try:
         text = token_path.read_text().strip()
     except (FileNotFoundError, PermissionError):
@@ -88,13 +90,13 @@ class ServerClient:
             return (
                 f"forgather-server at {self.base} rejected the auth token. "
                 "If the server was restarted with --regen-token, re-read "
-                "~/.forgather/server/auth_token; otherwise check "
+                "~/.config/forgather/server/auth_token; otherwise check "
                 "$FORGATHER_SERVER_TOKEN."
             )
         return (
             f"forgather-server at {self.base} requires authentication. "
             "Start the server (it persists a token at "
-            "~/.forgather/server/auth_token) or set "
+            "~/.config/forgather/server/auth_token) or set "
             "$FORGATHER_SERVER_TOKEN."
         )
 

@@ -251,7 +251,7 @@ forgather gpu priority 0 10                  # only priority>=10 jobs get GPU 0
 forgather gpu priority 0 0                   # back to default
 ```
 
-Both settings persist across server restarts (`~/.forgather/server/gpu_policy.json`).
+Both settings persist across server restarts (`~/.config/forgather/server/gpu_policy.json`).
 
 ### Emergency: clear a wedged GPU
 
@@ -339,7 +339,7 @@ for the scheduler to find a free card whose `disabled=False` and whose
 
 `forgather control` (separate, older) talks directly to a trainer's
 HTTP control endpoint by discovering it from
-`~/.forgather/jobs/<job_id>/endpoint.json`. It works for any job that
+`~/.config/forgather/jobs/<job_id>/endpoint.json`. It works for any job that
 has the `TrainerControlCallback` enabled — including jobs you started
 yourself via `forgather train` (no server involved).
 

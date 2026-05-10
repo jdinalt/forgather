@@ -84,7 +84,7 @@
 ##   peak_hardware_flops    (float) Peak device FLOPS for MFU       Default: auto-detected
 ##                                  computation. Auto-detected from
 ##                                  the current GPU, or read from
-##                                  ~/.forgather/hardware.yaml.
+##                                  ~/.config/forgather/hardware.yaml.
 ##                                  See docs/trainers/training-performance-metrics.md
 ##
 ## Precision / Compilation

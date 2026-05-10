@@ -1,6 +1,6 @@
 """Persistent dispatch queue.
 
-State lives at ``~/.forgather/server/queue.json`` as a list of QueueItem
+State lives at ``~/.config/forgather/server/queue.json`` as a list of QueueItem
 dicts. Items here are *waiting* to dispatch — once the scheduler picks one
 up it's moved into :mod:`job_records` (and removed from this file). That
 keeps "queue" honest as the waiting list.

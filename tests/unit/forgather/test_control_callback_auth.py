@@ -3,7 +3,7 @@
 Covers:
 
 1. Token is generated on rank-0 ``on_train_begin`` and persisted at
-   ``~/.forgather/jobs/{job_id}/auth_token`` with mode 0o600.
+   ``<forgather_config_dir>/jobs/{job_id}/auth_token`` with mode 0o600.
 2. The aiohttp middleware accepts a valid bearer and rejects missing /
    wrong tokens with 401 + ``WWW-Authenticate: Bearer ...``.
 3. ``disable_auth=True`` lets unauthenticated requests through and emits
@@ -43,8 +43,19 @@ def _mode(path: Path) -> int:
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
-    """Redirect ``Path.home()`` for the duration of the test."""
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    """Redirect ``forgather_config_dir`` for the duration of the test.
+
+    Both the callback module and the client module import the helper
+    directly, so each binding has to be patched independently.
+    """
+    monkeypatch.setattr(
+        "forgather.ml.trainer.callbacks.control_callback.forgather_config_dir",
+        lambda: str(tmp_path),
+    )
+    monkeypatch.setattr(
+        "forgather.trainer_control.forgather_config_dir",
+        lambda: str(tmp_path),
+    )
     return tmp_path
 
 
@@ -74,7 +85,7 @@ def test_auth_token_written_at_0600(isolated_home):
     cb = TrainerControlCallback(job_id="test_token_perms", enable_http=False)
     cb.auth_token = "deadbeef" * 8
     cb._write_auth_token()
-    token_file = isolated_home / ".forgather" / "jobs" / cb.job_id / "auth_token"
+    token_file = isolated_home / "jobs" / cb.job_id / "auth_token"
     assert token_file.exists()
     assert _mode(token_file) == 0o600
     assert token_file.read_text() == cb.auth_token
@@ -88,7 +99,7 @@ def test_disabled_auth_does_not_write_token(isolated_home):
     )
     cb.auth_token = None
     cb._write_auth_token()
-    token_file = isolated_home / ".forgather" / "jobs" / cb.job_id / "auth_token"
+    token_file = isolated_home / "jobs" / cb.job_id / "auth_token"
     assert not token_file.exists()
 
 
@@ -98,7 +109,7 @@ def test_endpoint_json_records_bind_host(isolated_home):
         job_id="test_endpoint_host", enable_http=False, host="127.0.0.1"
     )
     cb._write_endpoint_file(port=12345)
-    ep_file = isolated_home / ".forgather" / "jobs" / cb.job_id / "endpoint.json"
+    ep_file = isolated_home / "jobs" / cb.job_id / "endpoint.json"
     data = json.loads(ep_file.read_text())
     assert data["host"] == "127.0.0.1"
     assert data["port"] == 12345
@@ -184,7 +195,7 @@ def test_on_train_begin_generates_token_and_persists(isolated_home, caplog):
         with caplog.at_level(logging.INFO):
             cb.on_train_begin(args, state, MagicMock())
         # Token persisted with 0o600.
-        token_file = isolated_home / ".forgather" / "jobs" / cb.job_id / "auth_token"
+        token_file = isolated_home / "jobs" / cb.job_id / "auth_token"
         assert token_file.exists()
         assert _mode(token_file) == 0o600
         assert cb.auth_token and len(cb.auth_token) == 64
@@ -226,7 +237,7 @@ def test_on_train_begin_logs_warning_when_auth_disabled(isolated_home, caplog):
             cb.on_train_begin(args, state, MagicMock())
         assert any("auth DISABLED" in rec.getMessage() for rec in caplog.records)
         # And no token file should be on disk.
-        token_file = isolated_home / ".forgather" / "jobs" / cb.job_id / "auth_token"
+        token_file = isolated_home / "jobs" / cb.job_id / "auth_token"
         assert not token_file.exists()
     finally:
         cb.on_train_end(args, state, MagicMock())
@@ -239,7 +250,7 @@ def test_http_client_loads_token_from_disk(isolated_home):
     from forgather.trainer_control import HTTPTrainerControlClient
 
     job_id = "test_client_picks_up"
-    job_dir = isolated_home / ".forgather" / "jobs" / job_id
+    job_dir = isolated_home / "jobs" / job_id
     job_dir.mkdir(parents=True)
     (job_dir / "auth_token").write_text("xxxxx")
     assert HTTPTrainerControlClient._load_auth_token(job_id) == "xxxxx"
@@ -260,7 +271,7 @@ def test_http_client_send_command_attaches_bearer(isolated_home, monkeypatch):
     from forgather.trainer_control import HTTPTrainerControlClient
 
     job_id = "test_send_attach"
-    job_dir = isolated_home / ".forgather" / "jobs" / job_id
+    job_dir = isolated_home / "jobs" / job_id
     job_dir.mkdir(parents=True)
     (job_dir / "auth_token").write_text("topsecret")
     # endpoint.json is required for _get_job_info to succeed.

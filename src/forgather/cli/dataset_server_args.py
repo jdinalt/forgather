@@ -38,7 +38,7 @@ def _add_client_args(p: argparse.ArgumentParser) -> None:
         help=(
             "Bearer token. If omitted, falls back to "
             "$FORGATHER_DATASET_SERVER_TOKEN, then to the per-port "
-            "token file under $FORGATHER_HOME/dataset_server/ for "
+            "token file under <forgather_config_dir>/dataset_server/ for "
             "localhost URLs."
         ),
     )

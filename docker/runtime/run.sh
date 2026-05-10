@@ -13,8 +13,8 @@
 #   - PUID/PGID forwarded from the calling host user (so files
 #     written to any volumes you DO mount get host-correct ownership)
 #   - --gpus all (set GPUS=none for CPU-only)
-#   - named docker volume `forgather-state` at ~/.forgather inside
-#     the container, for auth-token / queue / GPU-policy state
+#   - named docker volume `forgather-state` at ~/.config/forgather
+#     inside the container, for auth-token / queue / GPU-policy state
 #     persistence across `docker rm`. This is a docker-managed
 #     volume, not a host bind-mount — set STATE_VOLUME= (empty)
 #     to disable, or to a host path to bind-mount instead.
@@ -146,11 +146,12 @@ HF_CACHE_HOST="${HF_CACHE_HOST:-}"
 # Set to empty string to disable, or a host path for a bind-mount.
 #
 # Tip: to share state with the dev image (forgather control list,
-# trainer logs, queue, auth token, ...), set STATE_VOLUME=$HOME/.forgather
-# so both images bind-mount the same host directory at
-# /home/forgather/.forgather. The dev image lands ~/.forgather there
-# transparently because it bind-mounts $HOME wholesale; the runtime
-# image opts in via this env var.
+# trainer logs, queue, auth token, ...), set
+# STATE_VOLUME=$HOME/.config/forgather so both images bind-mount the
+# same host directory at /home/forgather/.config/forgather. The dev
+# image lands ~/.config/forgather there transparently because it
+# bind-mounts $HOME wholesale; the runtime image opts in via this
+# env var.
 STATE_VOLUME="${STATE_VOLUME-forgather-state}"
 EXTRA_MOUNTS="${EXTRA_MOUNTS:-}"
 EXTRA_PORTS="${EXTRA_PORTS:-}"
@@ -180,8 +181,8 @@ read_auth_token() {
     local attempts="${1:-10}"
     local i
     for ((i = 0; i < attempts; i++)); do
-        if docker exec "${NAME}" test -f /home/forgather/.forgather/server/auth_token 2>/dev/null; then
-            docker exec "${NAME}" cat /home/forgather/.forgather/server/auth_token
+        if docker exec "${NAME}" test -f /home/forgather/.config/forgather/server/auth_token 2>/dev/null; then
+            docker exec "${NAME}" cat /home/forgather/.config/forgather/server/auth_token
             return 0
         fi
         sleep 1
@@ -229,7 +230,7 @@ do_create_container() {
     if [[ -n "${STATE_VOLUME}" ]]; then
         # Docker's -v LHS accepts both a named-volume identifier and a
         # host path; no need to discriminate.
-        VOLUME_ARGS+=(-v "${STATE_VOLUME}:/home/forgather/.forgather")
+        VOLUME_ARGS+=(-v "${STATE_VOLUME}:/home/forgather/.config/forgather")
     fi
 
     # ---- DEV bind-mount (debug only) ---------------------------------
@@ -264,7 +265,7 @@ do_create_container() {
         echo "[run.sh]   hf cache: <not mounted; set HF_CACHE_HOST to share with host>" >&2
     fi
     if [[ -n "${STATE_VOLUME}" ]]; then
-        echo "[run.sh]   state:   ${STATE_VOLUME} -> /home/forgather/.forgather" >&2
+        echo "[run.sh]   state:   ${STATE_VOLUME} -> /home/forgather/.config/forgather" >&2
     else
         echo "[run.sh]   state:   <ephemeral; auth token will not persist across docker rm>" >&2
     fi

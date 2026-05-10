@@ -13,7 +13,7 @@ Lifecycle:
         -> cluster_membership.start() pulls peer member tables
     Both feed updates via update_member()/mark_unreachable().
 
-The node identity (UUID) persists at ``~/.forgather/cluster/node_id``
+The node identity (UUID) persists at ``~/.config/forgather/cluster/node_id``
 and is reused across restarts. A node's UUID survives hostname changes,
 NIC swaps, and IP renumbering — it is the only stable handle the rest
 of the cluster has on us. The cluster *name* is per-invocation (CLI
@@ -34,7 +34,8 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from typing import Any, Dict, List, Optional
 
 from . import paths
@@ -259,9 +260,7 @@ class _ClusterState:
             if probe is not None:
                 existing.probe = probe
             if not existing.reachable:
-                log.info(
-                    "cluster member back online: %s (%s)", hostname, node_id
-                )
+                log.info("cluster member back online: %s (%s)", hostname, node_id)
             existing.reachable = True
             return existing
 
@@ -278,9 +277,7 @@ class _ClusterState:
                 # failures from our own node.
                 return
             m.reachable = False
-            log.warning(
-                "cluster member unreachable: %s (%s)", m.hostname, m.node_id
-            )
+            log.warning("cluster member unreachable: %s (%s)", m.hostname, m.node_id)
 
     def sweep_unreachable(self, *, now: Optional[float] = None) -> List[str]:
         """Mark members unreachable if last_seen is older than the
@@ -365,9 +362,7 @@ class _ClusterState:
                 return
             entry = self._members.get(self_id.node_id)
             if entry is not None and entry.address != address:
-                log.info(
-                    "self address: %s -> %s", entry.address, address
-                )
+                log.info("self address: %s -> %s", entry.address, address)
                 entry.address = address
 
     def is_peer_address(self, address: str) -> bool:
@@ -418,9 +413,7 @@ def activate(
     *,
     advertise_addresses: tuple = (),
 ) -> NodeIdentity:
-    return _state.activate(
-        cluster_name, port, advertise_addresses=advertise_addresses
-    )
+    return _state.activate(cluster_name, port, advertise_addresses=advertise_addresses)
 
 
 def is_active() -> bool:
@@ -502,7 +495,7 @@ def _set_unreachable_after_for_tests(seconds: float) -> None:
 
 
 def _load_or_create_node_id() -> str:
-    """Read ``~/.forgather/cluster/node_id`` or generate one.
+    """Read ``~/.config/forgather/cluster/node_id`` or generate one.
 
     Mode 0600 like the auth token. The UUID has no privacy weight by
     itself, but the directory holds other secrets so we keep modes

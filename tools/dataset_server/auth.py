@@ -5,10 +5,11 @@ Mirrors ``tools/inference_server/auth_paths.py`` and
 ``tools/inference_server/routes.py:_make_verify_bearer``: when the
 server starts without ``--auth-token`` / ``--auth-token-file`` /
 ``--no-auth`` it auto-generates a 64-hex token and writes it to a
-per-port file under ``$FORGATHER_HOME/dataset_server/<port>.token``
-(default ``~/.forgather/dataset_server/<port>.token``). Local
-clients (CLI diagnostics, the loader-side `RemoteBackend`) discover
-the token by reading that file when their URL is loopback.
+per-port file under
+``<forgather_config_dir>/dataset_server/<port>.token`` (on Linux,
+``~/.config/forgather/dataset_server/<port>.token``). Local clients
+(CLI diagnostics, the loader-side `RemoteBackend`) discover the
+token by reading that file when their URL is loopback.
 
 Token files are mode 0600 in a directory mode 0700, and removed when
 the server exits.
@@ -25,6 +26,8 @@ from urllib.parse import urlparse
 
 from fastapi import Header, HTTPException
 
+from forgather.preprocess import forgather_config_dir
+
 logger = logging.getLogger(__name__)
 
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
@@ -33,16 +36,9 @@ _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
 SERVICE_REALM = "forgather-dataset"
 
 
-def _forgather_home() -> Path:
-    env = os.environ.get("FORGATHER_HOME")
-    if env:
-        return Path(env).expanduser()
-    return Path.home() / ".forgather"
-
-
 def dataset_server_tokens_dir() -> Path:
     """Directory holding per-port token files (mode 0700)."""
-    d = _forgather_home() / "dataset_server"
+    d = Path(forgather_config_dir()) / "dataset_server"
     d.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(d, 0o700)

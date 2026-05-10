@@ -21,6 +21,8 @@ try:
 except ImportError:
     REQUESTS_AVAILABLE = False
 
+from forgather.preprocess import forgather_config_dir
+
 logger = logging.getLogger(__name__)
 
 
@@ -137,8 +139,8 @@ class HTTPTrainerControlClient(TrainerControlClient):
 
     @staticmethod
     def _load_auth_token(job_id: str) -> Optional[str]:
-        """Read ~/.forgather/jobs/{job_id}/auth_token if present."""
-        token_file = Path.home() / ".forgather" / "jobs" / job_id / "auth_token"
+        """Read ``<forgather_config_dir>/jobs/{job_id}/auth_token`` if present."""
+        token_file = Path(forgather_config_dir()) / "jobs" / job_id / "auth_token"
         try:
             return token_file.read_text().strip() or None
         except (FileNotFoundError, OSError):
@@ -154,7 +156,7 @@ class HTTPTrainerControlClient(TrainerControlClient):
 
     def _get_job_info(self, job_id: str) -> JobInfo:
         """Get job information from discovery files."""
-        jobs_dir = Path.home() / ".forgather" / "jobs"
+        jobs_dir = Path(forgather_config_dir()) / "jobs"
         job_dir = jobs_dir / job_id
         endpoint_file = job_dir / "endpoint.json"
 
@@ -232,7 +234,7 @@ class HTTPTrainerControlClient(TrainerControlClient):
     def list_jobs(self) -> List[JobInfo]:
         """List jobs by scanning endpoint files, sorted by start time (newest first)."""
         jobs = []
-        jobs_dir = Path.home() / ".forgather" / "jobs"
+        jobs_dir = Path(forgather_config_dir()) / "jobs"
 
         if not jobs_dir.exists():
             return jobs
@@ -287,7 +289,7 @@ class FileBasedTrainerControlClient(TrainerControlClient):
 
     def __init__(self):
         """Initialize file-based client."""
-        self.control_dir = Path.home() / ".forgather" / "jobs"
+        self.control_dir = Path(forgather_config_dir()) / "jobs"
 
     def send_command(
         self, job_id: str, command: str, data: Optional[Dict[str, Any]] = None

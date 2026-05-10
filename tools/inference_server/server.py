@@ -274,7 +274,7 @@ def main():
         )
 
         # When the token was auto-generated, publish it to a per-port file
-        # under FORGATHER_HOME so the bundled CLI client (and other local
+        # under the per-user config dir so the bundled CLI client (and other local
         # tools) can pick it up automatically. Cleared on exit so a stale
         # file never outlives the server. Skipped when the user supplied
         # their own token: in that case the operator already controls token

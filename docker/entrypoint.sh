@@ -105,8 +105,9 @@ if [[ "${FORGATHER_ENTRYPOINT_PHASE:-}" != "2" && "$(id -u)" == "0" ]]; then
     # Harmless in dev mode (touches the unused /home/dev tree); the
     # dev image's HOME is bind-mounted from the host elsewhere.
     install -d -o "${USER_NAME}" -g "${USER_NAME}" -m 0700 \
-        "/home/${USER_NAME}/.forgather" \
-        "/home/${USER_NAME}/.forgather/server" \
+        "/home/${USER_NAME}/.config" \
+        "/home/${USER_NAME}/.config/forgather" \
+        "/home/${USER_NAME}/.config/forgather/server" \
         "/home/${USER_NAME}/.cache" \
         "/home/${USER_NAME}/.cache/huggingface"
 

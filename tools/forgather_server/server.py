@@ -7,7 +7,7 @@ Usage (typically via the CLI shim):
 
 The server is intended to be a single-user prototype. By default it
 binds to ``127.0.0.1`` and gates every ``/api/`` request behind a
-bearer token persisted under ``~/.forgather/server/auth_token``. CLI
+bearer token persisted under ``~/.config/forgather/server/auth_token``. CLI
 clients pick the token up automatically; the webui prompts for it on
 first connect (jupyter-style ``?token=…`` URL is printed at startup).
 
@@ -197,8 +197,7 @@ def _activate_cluster(args) -> None:
             "for the chosen interface(s)."
         )
     print(
-        "    Inter-node API is unauthenticated on the assumption of a "
-        "trusted LAN."
+        "    Inter-node API is unauthenticated on the assumption of a " "trusted LAN."
     )
     print()
 

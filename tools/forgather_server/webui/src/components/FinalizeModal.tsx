@@ -167,7 +167,7 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
   // Pull the merged bundled + user preset list. The finalize resolver
   // (forgather/ml/model_conversion/finalize.py:_resolve_preset_path)
   // checks both ``<repo>/generation_config/`` and
-  // ``~/.forgather/generation_config/``, so any name in this list is
+  // ``~/.config/forgather/generation_config/``, so any name in this list is
   // valid for finalize even though the CLI's --help text only mentions
   // the user directory.
   const presetsQ = useQuery({

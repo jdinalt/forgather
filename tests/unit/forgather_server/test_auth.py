@@ -10,8 +10,10 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
-    """Point ``forgather_home_dir`` at a fresh tmp path for the test."""
-    monkeypatch.setenv("FORGATHER_HOME", str(tmp_path))
+    """Redirect ``forgather_config_dir`` to a fresh tmp path for the test."""
+    monkeypatch.setattr(
+        "forgather_server.paths.forgather_config_dir", lambda: str(tmp_path)
+    )
     # Reset module-level state so prior tests don't leak in.
     from forgather_server import auth
 
@@ -388,7 +390,10 @@ class TestCliClientToken:
         from forgather.cli.server_client import _load_auth_token
 
         monkeypatch.delenv("FORGATHER_SERVER_TOKEN", raising=False)
-        monkeypatch.setenv("FORGATHER_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "forgather.cli.server_client.forgather_config_dir",
+            lambda: str(tmp_path),
+        )
         (tmp_path / "server").mkdir()
         (tmp_path / "server" / "auth_token").write_text("from-file\n")
         assert _load_auth_token() == "from-file"
@@ -397,14 +402,20 @@ class TestCliClientToken:
         from forgather.cli.server_client import _load_auth_token
 
         monkeypatch.delenv("FORGATHER_SERVER_TOKEN", raising=False)
-        monkeypatch.setenv("FORGATHER_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "forgather.cli.server_client.forgather_config_dir",
+            lambda: str(tmp_path),
+        )
         assert _load_auth_token() is None
 
     def test_env_overrides_file(self, tmp_path, monkeypatch):
         from forgather.cli.server_client import _load_auth_token
 
         monkeypatch.setenv("FORGATHER_SERVER_TOKEN", "winner")
-        monkeypatch.setenv("FORGATHER_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "forgather.cli.server_client.forgather_config_dir",
+            lambda: str(tmp_path),
+        )
         (tmp_path / "server").mkdir()
         (tmp_path / "server" / "auth_token").write_text("loser\n")
         assert _load_auth_token() == "winner"

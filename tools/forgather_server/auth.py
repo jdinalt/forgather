@@ -6,9 +6,9 @@ uid). This module raises the bar for cross-user access by gating every
 ``/api/`` request on a bearer token, an authenticated session cookie, or
 a query-string token (used for browser bootstrap and WebSocket auth).
 
-The token persists across server restarts in ``~/.forgather/server/auth_token``
+The token persists across server restarts in ``~/.config/forgather/server/auth_token``
 (mode 0600) so CLI clients can read it without user interaction. The
-optional password lives in ``~/.forgather/server/password_hash`` (also
+optional password lives in ``~/.config/forgather/server/password_hash`` (also
 mode 0600) and is used only for browser logins after the initial
 token-bootstrap.
 

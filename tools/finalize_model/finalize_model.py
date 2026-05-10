@@ -136,7 +136,7 @@ def parse_args(argv=None):
             "  none   - skip generation_config.json entirely\n"
             "  PATH   - path to a JSON file (Forgather inference-preset format:\n"
             "           keys like max_tokens, temperature, top_p, repetition_penalty)\n"
-            "  NAME   - bare name resolved against ~/.forgather/generation_config/\n"
+            "  NAME   - bare name resolved against ~/.config/forgather/generation_config/\n"
             "           NAME.json. No presets ship with this branch; populate that\n"
             "           directory yourself or pass an explicit PATH."
         ),

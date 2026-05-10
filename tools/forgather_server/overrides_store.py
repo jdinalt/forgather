@@ -1,7 +1,7 @@
 """Persistent per-config overrides cache.
 
 Each (project_dir, config_name) pair gets its own JSON file under
-``~/.forgather/server/overrides/``. Files are self-describing (they include
+``~/.config/forgather/server/overrides/``. Files are self-describing (they include
 the project_dir and config they belong to) so they can be inspected with
 ordinary tools.
 

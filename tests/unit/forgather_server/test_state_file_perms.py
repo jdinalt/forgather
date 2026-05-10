@@ -2,7 +2,7 @@
 land at 0600 and the surrounding directories at 0700.
 
 The auth_token / password_hash / queue / gpu_policy / overrides / search-roots
-files all sit in ``~/.forgather/server/``, which is reachable by any other
+files all sit in ``~/.config/forgather/server/``, which is reachable by any other
 local user with default umasks. These tests pin the chmod-on-write contract
 so a regression won't silently widen perms again.
 """
@@ -22,8 +22,10 @@ def _mode(path: Path) -> int:
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
-    """Point ``forgather_home_dir`` at a fresh tmp path for the test."""
-    monkeypatch.setenv("FORGATHER_HOME", str(tmp_path))
+    """Redirect ``forgather_config_dir`` to a fresh tmp path for the test."""
+    monkeypatch.setattr(
+        "forgather_server.paths.forgather_config_dir", lambda: str(tmp_path)
+    )
     from forgather_server import auth
 
     auth._reset_sessions_for_tests()
@@ -37,7 +39,7 @@ class TestDirPerms:
 
         d = paths.server_state_dir()
         assert _mode(d) == 0o700
-        # Parent ~/.forgather should also be tightened.
+        # Parent forgather_config_dir should also be tightened.
         assert _mode(Path(isolated_home)) == 0o700
 
     def test_overrides_dir_0700(self, isolated_home):
@@ -141,8 +143,11 @@ class TestLegacyMigration:
         assert _mode(server) == 0o700
 
     def test_tighten_existing_state_perms_no_server_dir(self, tmp_path, monkeypatch):
-        # Should not raise even if ~/.forgather/server/ doesn't exist yet.
-        monkeypatch.setenv("FORGATHER_HOME", str(tmp_path / "fresh"))
+        # Should not raise even if the server dir doesn't exist yet.
+        fresh = tmp_path / "fresh"
+        monkeypatch.setattr(
+            "forgather_server.paths.forgather_config_dir", lambda: str(fresh)
+        )
         from forgather_server import paths
 
         paths.tighten_existing_state_perms()
