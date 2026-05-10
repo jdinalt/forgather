@@ -1,5 +1,5 @@
 """
-Round-trip tests for RemoteIterableDataset against an in-process
+Round-trip tests for RemoteBackend against an in-process
 DatasetServer.
 
 We host an InMemoryBackend on a localhost server (OS-assigned port)
@@ -22,7 +22,7 @@ from forgather.ml.datasets import (
     ComposableIterableDataset,
     InMemoryBackend,
     IterableDatasetBackend,
-    RemoteIterableDataset,
+    RemoteBackend,
 )
 
 # tools/ isn't on sys.path; add it so we can import dataset_server.
@@ -46,8 +46,8 @@ def server():
         srv.stop()
 
 
-def _client(server: DatasetServer, handle: str, **kwargs) -> RemoteIterableDataset:
-    return RemoteIterableDataset(server.url, handle, **kwargs)
+def _client(server: DatasetServer, handle: str, **kwargs) -> RemoteBackend:
+    return RemoteBackend(server.url, handle, **kwargs)
 
 
 # ---------------------------------------------------------------------
@@ -254,8 +254,8 @@ class TestServerLifecycle:
         srv = DatasetServer(host="127.0.0.1", port=0)
         srv.register("ctx", InMemoryBackend(_examples(3)))
         with srv:
-            client = RemoteIterableDataset(srv.url, "ctx")
+            client = RemoteBackend(srv.url, "ctx")
             assert len(client) == 3
         # After exit the server is stopped — further requests fail.
         with pytest.raises(Exception):
-            len(RemoteIterableDataset(srv.url, "ctx"))
+            len(RemoteBackend(srv.url, "ctx"))

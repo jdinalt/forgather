@@ -1,5 +1,5 @@
 """
-RemoteIterableDataset — `IterableDatasetBackend` implementation that
+RemoteBackend — `IterableDatasetBackend` implementation that
 talks to a `tools.dataset_server` over HTTP.
 
 The client holds purely local state — ``(server_url, handle, seed,
@@ -45,7 +45,7 @@ def _from_jsonable(value):
     return value
 
 
-class RemoteIterableDataset(IterableDatasetBackend):
+class RemoteBackend(IterableDatasetBackend):
     """
     Network-proxy backend.
 
@@ -111,7 +111,7 @@ class RemoteIterableDataset(IterableDatasetBackend):
             self._cached_len = int(payload["length"])
         return self._cached_len
 
-    def shuffle(self, seed: Optional[int] = None) -> "RemoteIterableDataset":
+    def shuffle(self, seed: Optional[int] = None) -> "RemoteBackend":
         """
         Return a new client with the new seed; position resets to 0.
 
@@ -119,13 +119,13 @@ class RemoteIterableDataset(IterableDatasetBackend):
         request. The cached length is preserved (shuffling doesn't
         change the underlying example count).
         """
-        new = RemoteIterableDataset(
+        new = RemoteBackend(
             self._url, self._handle, seed=seed, position=0, timeout=self._timeout
         )
         new._cached_len = self._cached_len
         return new
 
-    def seek(self, position: int) -> "RemoteIterableDataset":
+    def seek(self, position: int) -> "RemoteBackend":
         """
         Return a new client positioned at the given flat example index.
 
@@ -134,7 +134,7 @@ class RemoteIterableDataset(IterableDatasetBackend):
         """
         if position < 0:
             raise ValueError(f"position must be non-negative, got {position}")
-        new = RemoteIterableDataset(
+        new = RemoteBackend(
             self._url,
             self._handle,
             seed=self._seed,
@@ -157,7 +157,7 @@ class RemoteIterableDataset(IterableDatasetBackend):
 
     def __repr__(self) -> str:
         return (
-            f"RemoteIterableDataset(url={self._url!r}, "
+            f"RemoteBackend(url={self._url!r}, "
             f"handle={self._handle!r}, seed={self._seed}, "
             f"position={self._position})"
         )

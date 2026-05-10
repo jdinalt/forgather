@@ -2,10 +2,10 @@
 Tests for ComposableIterableDataset and the abstract backend interface.
 
 The wrapper is exercised against an InMemoryBackend so the tests are
-fast and have no external dependencies. The same wrapper is also
-exercised against ArrowIterableDataset via fast_load_iterable_dataset
-when network / cache prerequisites are available, so we know the
-abstraction works for the real backend too.
+fast and have no external dependencies. The same wrapper (returned
+directly by `fast_load_iterable_dataset`) is also exercised against
+the real Arrow backend when cache prerequisites are available, so we
+know the abstraction works for the production backend too.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ from __future__ import annotations
 import pytest
 
 from forgather.ml.datasets import (
-    ArrowIterableDataset,
     ComposableIterableDataset,
     InMemoryBackend,
     IterableDatasetBackend,
@@ -386,13 +385,14 @@ SPLIT = "train[:100]"
 
 def _try_arrow_wrapper():
     try:
-        backend = fast_load_iterable_dataset(
+        ds = fast_load_iterable_dataset(
             "wikitext", name="wikitext-2-raw-v1", split="train[:200]"
         )
     except Exception as exc:  # pragma: no cover - network/cache absent
         pytest.skip(f"Arrow backend unavailable: {exc}")
-    assert isinstance(backend, ArrowIterableDataset)
-    return ComposableIterableDataset(backend)
+    # The loader now returns a ComposableIterableDataset directly.
+    assert isinstance(ds, ComposableIterableDataset)
+    return ds
 
 
 class TestWrapperOverArrowBackend:

@@ -1,3 +1,4 @@
+from .arrow_backend import ArrowBackend
 from .block_tokenizer import block_tokenize_fn
 from .composable_iterable_dataset import ComposableIterableDataset
 from .dataloader_utils import (
@@ -6,7 +7,6 @@ from .dataloader_utils import (
     sync_dataset_state_from_dataloader,
 )
 from .fast_hf_loader import (
-    ArrowIterableDataset,
     FastDatasetLoaderSimple,
     fast_load_iterable_dataset,
     get_default_loader,
@@ -27,7 +27,7 @@ from .preprocess import (
     default_tokenize_map_fn,
     preprocess_dataset,
 )
-from .remote_iterable_dataset import RemoteIterableDataset
+from .remote_backend import RemoteBackend
 from .soft_sequential import soft_sequential
 
 __all__ = [
@@ -40,13 +40,13 @@ __all__ = [
     # Fast HF loader
     "fast_load_iterable_dataset",
     "FastDatasetLoaderSimple",
-    "ArrowIterableDataset",
     "get_default_loader",
     # Backend abstraction
     "IterableDatasetBackend",
     "ComposableIterableDataset",
+    "ArrowBackend",
     "InMemoryBackend",
-    "RemoteIterableDataset",
+    "RemoteBackend",
     # Interleaving
     "interleave_datasets",
     "InterleavedDataset",

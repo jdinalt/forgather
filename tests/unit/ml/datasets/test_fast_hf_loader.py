@@ -312,8 +312,8 @@ def test_shuffle_buffer_with_shard():
 
     # Apply shuffle with buffer, then shard
     ids_shuffled = ids.shuffle(seed=42, buffer_size=10)
-    shard0 = ids_shuffled.shard(num_shards=2, index=0, mode="example")
-    shard1 = ids_shuffled.shard(num_shards=2, index=1, mode="example")
+    shard0 = ids_shuffled.shard(num_shards=2, index=0)
+    shard1 = ids_shuffled.shard(num_shards=2, index=1)
 
     # Count examples in each shard
     count0 = sum(1 for _ in shard0)
@@ -446,10 +446,7 @@ def test_example_level_sharding():
 
     # Shard into more shards than files (wikitext has only 1 file)
     num_shards = 4
-    shards = [
-        ids.shard(num_shards=num_shards, index=i, mode="example")
-        for i in range(num_shards)
-    ]
+    shards = [ids.shard(num_shards=num_shards, index=i) for i in range(num_shards)]
 
     # Verify all shards are iterable
     for i, shard in enumerate(shards):
@@ -485,8 +482,8 @@ def test_shard_auto_mode():
     )
 
     # With 1 file and 2 shards, auto should use example-level sharding
-    shard0 = ids.shard(num_shards=2, index=0, mode="auto")
-    shard1 = ids.shard(num_shards=2, index=1, mode="auto")
+    shard0 = ids.shard(num_shards=2, index=0)
+    shard1 = ids.shard(num_shards=2, index=1)
 
     # Both shards should have examples (not empty)
     count0 = sum(1 for _ in shard0)
@@ -514,10 +511,7 @@ def test_example_sharding_lengths():
 
     # Create shards
     num_shards = 3
-    shards = [
-        ids.shard(num_shards=num_shards, index=i, mode="example")
-        for i in range(num_shards)
-    ]
+    shards = [ids.shard(num_shards=num_shards, index=i) for i in range(num_shards)]
 
     # Check that reported lengths match actual iteration
     for i, shard in enumerate(shards):
@@ -545,7 +539,7 @@ def test_example_sharding_checkpoint(num_workers):
     )
 
     # Shard with example-level mode
-    ids_shard = ids.shard(num_shards=2, index=0, mode="example")
+    ids_shard = ids.shard(num_shards=2, index=0)
 
     # Create dataloader and iterate a few batches
     dataloader = StatefulDataLoader(
@@ -567,7 +561,7 @@ def test_example_sharding_checkpoint(num_workers):
     ids_fresh = fast_load_iterable_dataset(
         "wikitext", name="wikitext-2-raw-v1", split="train"
     )
-    ids_fresh_shard = ids_fresh.shard(num_shards=2, index=0, mode="example")
+    ids_fresh_shard = ids_fresh.shard(num_shards=2, index=0)
     dataloader_fresh = StatefulDataLoader(
         ids_fresh_shard,
         batch_size=4,
@@ -587,7 +581,7 @@ def test_example_sharding_checkpoint(num_workers):
     ids_restored = fast_load_iterable_dataset(
         "wikitext", name="wikitext-2-raw-v1", split="train"
     )
-    ids_restored_shard = ids_restored.shard(num_shards=2, index=0, mode="example")
+    ids_restored_shard = ids_restored.shard(num_shards=2, index=0)
     dataloader_restored = StatefulDataLoader(
         ids_restored_shard,
         batch_size=4,
@@ -683,8 +677,8 @@ def test_virtual_split_with_sharding():
     train_ds = ids.slice(None, 0.8)
     train_total = len(train_ds)
 
-    shard0 = train_ds.shard(num_shards=2, index=0, mode="example")
-    shard1 = train_ds.shard(num_shards=2, index=1, mode="example")
+    shard0 = train_ds.shard(num_shards=2, index=0)
+    shard1 = train_ds.shard(num_shards=2, index=1)
 
     # Verify shard sizes
     count0 = sum(1 for _ in shard0)
@@ -910,7 +904,7 @@ def test_split_notation_with_operations():
     assert hasattr(ids_shuffled, "__iter__"), "Should be iterable after shuffle"
 
     # Apply shard
-    ids_shard = ids.shard(num_shards=2, index=0, mode="example")
+    ids_shard = ids.shard(num_shards=2, index=0)
     assert hasattr(ids_shard, "__iter__"), "Should be iterable after shard"
 
     # Verify we can iterate
@@ -1048,7 +1042,7 @@ def test_metadata_with_operations():
     ), "n_shards should not change after slice"
 
     # After shard
-    ids_shard = ids.shard(num_shards=2, index=0, mode="example")
+    ids_shard = ids.shard(num_shards=2, index=0)
     assert (
         ids_shard.column_names == original_columns
     ), "column_names should not change after shard"
@@ -1238,7 +1232,7 @@ def test_native_map_with_operations():
         ids.shuffle(seed=42)
         .slice(None, 0.5)
         .map(uppercase)
-        .shard(num_shards=2, index=0, mode="example")
+        .shard(num_shards=2, index=0)
     )
 
     # Verify it's iterable and transformations work
@@ -1830,7 +1824,7 @@ def test_length_estimate_with_interleaved_and_batched_map():
     Test length estimation with InterleavedDataset and batched packing operations.
 
     This tests the user's scenario:
-    - Two ArrowIterableDataset with batched packing map
+    - Two ComposableIterableDataset with batched packing map
     - Combined with InterleavedDataset (all_exhausted strategy)
     - Length should update during iteration
     - Length should be cached after complete iteration
@@ -2009,7 +2003,7 @@ def test_batched_map_example_sharding_smaller_than_batch_size():
     )
 
     # Shard into 10 shards (each ~100 examples)
-    ds_shard = ds.shard(num_shards=10, index=0, mode="example")
+    ds_shard = ds.shard(num_shards=10, index=0)
 
     # Apply batched map with batch_size=500 (larger than shard)
     def tokenize_mock(batch):
@@ -2123,7 +2117,7 @@ def test_batched_map_partial_batches_at_boundaries():
     ds3 = fast_load_iterable_dataset(
         "wikitext", name="wikitext-2-raw-v1", split="train[:500]"
     )
-    ds3_shard = ds3.shard(num_shards=10, index=0, mode="example")  # ~50 examples
+    ds3_shard = ds3.shard(num_shards=10, index=0)  # ~50 examples
     ds3_mapped = ds3_shard.map(lambda b: b, batched=True, batch_size=100)
     count3 = sum(1 for _ in ds3_mapped)
     expected3 = len(ds3_shard)
@@ -2164,11 +2158,11 @@ def test_slice_then_shard_no_overlap():
     assert len(val_ds) == total_examples - split_point
 
     # Shard each for DDP (2 GPUs)
-    train_shard0 = train_ds.shard(num_shards=2, index=0, mode="example")
-    train_shard1 = train_ds.shard(num_shards=2, index=1, mode="example")
+    train_shard0 = train_ds.shard(num_shards=2, index=0)
+    train_shard1 = train_ds.shard(num_shards=2, index=1)
 
-    val_shard0 = val_ds.shard(num_shards=2, index=0, mode="example")
-    val_shard1 = val_ds.shard(num_shards=2, index=1, mode="example")
+    val_shard0 = val_ds.shard(num_shards=2, index=0)
+    val_shard1 = val_ds.shard(num_shards=2, index=1)
 
     # Verify shard lengths are reasonable
     expected_train_per_shard = len(train_ds) // 2
@@ -2204,35 +2198,19 @@ def test_slice_then_shard_no_overlap():
         abs(val0_count - val1_count) <= 1
     ), f"Val shards should be balanced: {val0_count} vs {val1_count}"
 
-    # CRITICAL TEST: Verify split boundaries are preserved by checking internal state
-    # If the bug exists, sharded datasets would have lost their split boundaries
-    assert (
-        train_shard0._split_start_idx == 0
-    ), f"Train shard 0 should preserve split_start_idx=0, got {train_shard0._split_start_idx}"
-    assert (
-        train_shard0._split_end_idx == split_point
-    ), f"Train shard 0 should preserve split_end_idx={split_point}, got {train_shard0._split_end_idx}"
+    # CRITICAL TEST: train shards must stay within the train slice
+    # and val shards within the val slice — no overlap.
+    # The new wrapper folds shard into slice, so each shard's bounds
+    # are a sub-range of its parent slice.
+    assert train_shard0._split_start_idx >= 0
+    assert train_shard0._split_end_idx <= split_point
+    assert train_shard1._split_start_idx >= 0
+    assert train_shard1._split_end_idx <= split_point
 
-    assert (
-        train_shard1._split_start_idx == 0
-    ), f"Train shard 1 should preserve split_start_idx=0, got {train_shard1._split_start_idx}"
-    assert (
-        train_shard1._split_end_idx == split_point
-    ), f"Train shard 1 should preserve split_end_idx={split_point}, got {train_shard1._split_end_idx}"
-
-    assert (
-        val_shard0._split_start_idx == split_point
-    ), f"Val shard 0 should preserve split_start_idx={split_point}, got {val_shard0._split_start_idx}"
-    assert (
-        val_shard0._split_end_idx == total_examples
-    ), f"Val shard 0 should preserve split_end_idx={total_examples}, got {val_shard0._split_end_idx}"
-
-    assert (
-        val_shard1._split_start_idx == split_point
-    ), f"Val shard 1 should preserve split_start_idx={split_point}, got {val_shard1._split_start_idx}"
-    assert (
-        val_shard1._split_end_idx == total_examples
-    ), f"Val shard 1 should preserve split_end_idx={total_examples}, got {val_shard1._split_end_idx}"
+    assert val_shard0._split_start_idx >= split_point
+    assert val_shard0._split_end_idx <= total_examples
+    assert val_shard1._split_start_idx >= split_point
+    assert val_shard1._split_end_idx <= total_examples
 
 
 def test_slice_composition():
@@ -2835,10 +2813,7 @@ def test_example_sharding_multi_file(tmp_path):
     assert len(ids) == expected_split_len
 
     num_shards = 4
-    shards = [
-        ids.shard(num_shards=num_shards, index=i, mode="example")
-        for i in range(num_shards)
-    ]
+    shards = [ids.shard(num_shards=num_shards, index=i) for i in range(num_shards)]
 
     # Raw iteration: counts per rank must be balanced and sum to the split.
     counts = [sum(1 for _ in s) for s in shards]
@@ -2898,10 +2873,7 @@ def test_example_sharding_multi_file_partial_file_at_end(tmp_path):
     assert len(ids) == split_end
 
     num_shards = 4
-    shards = [
-        ids.shard(num_shards=num_shards, index=i, mode="example")
-        for i in range(num_shards)
-    ]
+    shards = [ids.shard(num_shards=num_shards, index=i) for i in range(num_shards)]
     counts = [sum(1 for _ in s) for s in shards]
 
     assert (

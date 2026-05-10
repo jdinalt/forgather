@@ -9,8 +9,8 @@ over any backend.
 
 Concrete backends:
 
-- `ArrowIterableDataset` — local Arrow-file backend (today).
-- `RemoteIterableDataset` — network proxy talking to a dataset server
+- `ArrowBackend` — local Arrow-file backend (today).
+- `RemoteBackend` — network proxy talking to a dataset server
   (planned).
 
 Backend ops are immutable: `shuffle` and `seek` return a new backend

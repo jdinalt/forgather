@@ -4,7 +4,7 @@ In-memory implementation of `IterableDatasetBackend`.
 Used as a small reference backend for tests of the composing wrapper
 and as a sanity-check that the abstract interface is sufficient. Not
 intended for production use — large datasets should use
-`ArrowIterableDataset` (memory-mapped Arrow files).
+`ArrowBackend` (memory-mapped Arrow files).
 """
 
 from __future__ import annotations
