@@ -43,8 +43,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--port",
         type=int,
-        default=8765,
-        help="Port to listen on (default: 8765)",
+        default=8766,
+        help=(
+            "Port to listen on (default: 8766). NOTE: 8765 is the "
+            "forgather orchestration server's port — picked 8766 here "
+            "to avoid the collision."
+        ),
     )
     parser.add_argument(
         "--allow-load",

@@ -326,7 +326,13 @@ def _make_handler(server: DatasetServer):
             qs = parse_qs(query)
 
             if action == "length":
-                self._send_json(HTTPStatus.OK, {"length": len(backend)})
+                length = len(backend)
+                logger.info(
+                    "GET length handle=%s -> %d",
+                    handle,
+                    length,
+                )
+                self._send_json(HTTPStatus.OK, {"length": length})
                 return
 
             if action == "iter":
@@ -340,7 +346,14 @@ def _make_handler(server: DatasetServer):
                 except ValueError as exc:
                     self._send_error(HTTPStatus.BAD_REQUEST, f"Invalid query: {exc}")
                     return
-                self._stream_iter(backend, seed_v, pos_v, limit_v)
+                logger.info(
+                    "GET iter handle=%s seed=%s position=%d limit=%s",
+                    handle,
+                    seed_v,
+                    pos_v,
+                    limit_v,
+                )
+                self._stream_iter(backend, seed_v, pos_v, limit_v, handle)
                 return
 
             self._send_error(HTTPStatus.NOT_FOUND, f"Unknown action: {action}")
@@ -397,11 +410,18 @@ def _make_handler(server: DatasetServer):
                 return
 
             backend = server.get(handle)
+            length = len(backend) if backend is not None else 0
+            logger.info(
+                "POST load -> handle=%s length=%d args=%s",
+                handle,
+                length,
+                load_args,
+            )
             self._send_json(
                 HTTPStatus.OK,
                 {
                     "handle": handle,
-                    "length": len(backend) if backend is not None else 0,
+                    "length": length,
                     "load_args": server.load_args_for(handle) or {},
                 },
             )
@@ -414,6 +434,7 @@ def _make_handler(server: DatasetServer):
             seed: Optional[int],
             position: int,
             limit: Optional[int],
+            handle: str = "",
         ) -> None:
             view = backend
             if seed is not None:
@@ -427,6 +448,7 @@ def _make_handler(server: DatasetServer):
             self.end_headers()
 
             count = 0
+            disconnected = False
             try:
                 for example in view:
                     if limit is not None and count >= limit:
@@ -436,7 +458,20 @@ def _make_handler(server: DatasetServer):
                     count += 1
                 self._write_chunk(b"")
             except (BrokenPipeError, ConnectionResetError):
-                logger.debug("client disconnected after %d examples", count)
+                disconnected = True
+
+            if disconnected:
+                logger.info(
+                    "iter handle=%s done: client disconnected after %d examples",
+                    handle,
+                    count,
+                )
+            else:
+                logger.info(
+                    "iter handle=%s done: streamed %d examples",
+                    handle,
+                    count,
+                )
 
         def _write_chunk(self, data: bytes) -> None:
             """Write an HTTP chunked-transfer chunk."""
@@ -451,11 +486,15 @@ def _make_handler(server: DatasetServer):
 
 def run_server(
     host: str = "127.0.0.1",
-    port: int = 8765,
+    port: int = 8766,
     backends: Optional[dict[str, IterableDatasetBackend]] = None,
     allow_load: bool = False,
 ) -> None:
-    """Run a dataset server in the foreground (blocks)."""
+    """Run a dataset server in the foreground (blocks).
+
+    Default port is 8766 because 8765 is the forgather orchestration
+    server's port.
+    """
     srv = DatasetServer(host=host, port=port, allow_load=allow_load)
     for handle, backend in (backends or {}).items():
         srv.register(handle, backend)
