@@ -162,7 +162,7 @@ The cluster name is per-invocation (not persisted). Two unrelated
 clusters on the same LAN that use different names won't auto-merge.
 
 Each node mints a stable UUID at first cluster startup (saved at
-`~/.forgather/cluster/node_id`, mode 0600). Master selection is
+`~/.config/forgather/cluster/node_id`, mode 0600). Master selection is
 deterministic — the lowest UUID among reachable members wins. No
 election round-trip; if the master goes down, the survivors keep
 running and a new master is selected within ~30 seconds.
@@ -531,7 +531,7 @@ The `torchrun` parent and one or more worker python processes will
 be listed. SIGUSR1 the workers, not torchrun.
 
 After SIGUSR1, look at the rank's TTY log (`tail -200
-~/.forgather/server/jobs/q_*.tty`). Each thread's stack ends with
+~/.config/forgather/server/jobs/q_*.tty`). Each thread's stack ends with
 the most recent frame, so you can read the deadlock site directly.
 
 Common deadlock sites and what they mean:
@@ -589,7 +589,7 @@ consumer.
 
 If the Forgather server itself was restarted while a torchrun was
 running, the in-flight trainer's endpoint files (under
-`~/.forgather/jobs/job_*/`) can outlive their process. They surface
+`~/.config/forgather/jobs/job_*/`) can outlive their process. They surface
 as endpoint-only entries in the Jobs panel — entries with no
 `source: record` or `merged`, just `endpoint`.
 

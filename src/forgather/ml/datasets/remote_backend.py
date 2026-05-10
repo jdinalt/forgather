@@ -16,9 +16,10 @@ Auth: when the server is configured for bearer-token auth, the
 client must send ``Authorization: Bearer <token>``. Tokens are
 either passed explicitly via the ``token`` constructor argument, or
 auto-discovered for localhost URLs by reading the per-port file the
-server publishes under ``$FORGATHER_HOME/dataset_server/<port>.token``.
-The ``$FORGATHER_DATASET_SERVER_TOKEN`` environment variable wins
-over both.
+server publishes under
+``<forgather_config_dir>/dataset_server/<port>.token``. The
+``$FORGATHER_DATASET_SERVER_TOKEN`` environment variable wins over
+both.
 
 This is intentionally minimal: no retries, no compression, no
 connection pooling. Wrap it in a ``ComposableIterableDataset`` for
@@ -34,6 +35,8 @@ from pathlib import Path
 from typing import Iterator, Optional
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
+
+from forgather.preprocess import forgather_config_dir
 
 from .iterable_backend import IterableDatasetBackend
 
@@ -69,12 +72,7 @@ def _read_localhost_token_file(url: str) -> Optional[str]:
     port = parsed.port
     if port is None:
         return None
-    home_env = os.environ.get("FORGATHER_HOME")
-    if home_env:
-        home = Path(home_env).expanduser()
-    else:
-        home = Path.home() / ".forgather"
-    token_path = home / "dataset_server" / f"{int(port)}.token"
+    token_path = Path(forgather_config_dir()) / "dataset_server" / f"{int(port)}.token"
     try:
         text = token_path.read_text().strip()
     except OSError:
@@ -135,7 +133,7 @@ class RemoteBackend(IterableDatasetBackend):
     token : str, optional
         Explicit bearer token. If omitted, the constructor consults
         ``$FORGATHER_DATASET_SERVER_TOKEN`` and (for localhost URLs)
-        ``$FORGATHER_HOME/dataset_server/<port>.token``.
+        ``<forgather_config_dir>/dataset_server/<port>.token``.
     """
 
     def __init__(

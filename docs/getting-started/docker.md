@@ -263,7 +263,7 @@ clickable token URL.
 | `HOST_BIND` | `127.0.0.1` | Bridge only — host interface for the forward. `0.0.0.0` exposes on the LAN; the auth token still gates. |
 | `GPUS` | `all` | Passed to `--gpus`. `none` for CPU-only; `'"device=0,1"'` for a subset. |
 | `HF_CACHE_HOST` | _unset_ | Opt-in bind-mount of a host HuggingFace cache into `/home/forgather/.cache/huggingface`. Lazily creates the host directory. Useful when you want to share downloads with a host-side install. |
-| `STATE_VOLUME` | `forgather-state` (named volume) | Mounted at `/home/forgather/.forgather` for auth-token / queue / GPU policy. Set to a host path for a bind-mount (e.g. share state with the dev image), or empty (`STATE_VOLUME=`) for ephemeral state (token rotates on every recreate). |
+| `STATE_VOLUME` | `forgather-state` (named volume) | Mounted at `/home/forgather/.config/forgather` for auth-token / queue / GPU policy. Set to a host path for a bind-mount (e.g. share state with the dev image), or empty (`STATE_VOLUME=`) for ephemeral state (token rotates on every recreate). |
 | `EXTRA_MOUNTS` | _empty_ | Extra `-v` args. |
 | `EXTRA_PORTS` | _empty_ | Bridge mode only — extra `-p` mappings (e.g. `'-p 6006:6006'` for tensorboard). |
 | `CLUSTER` | _unset_ | When set, the server CMD becomes `forgather server -H 0.0.0.0 -p 8765 --cluster <name>`. **Use with `NETWORK=host`** — bridge networking breaks mDNS discovery. The script warns loudly when `CLUSTER` is set without `NETWORK=host`. |
@@ -292,7 +292,7 @@ NETWORK=host CLUSTER=lab CLUSTER_ADDRESS=192.168.1.27 \
 NETWORK=host NO_AUTH=1 docker/runtime/run.sh
 
 # Share state with the dev image (same auth token, queue, configs):
-STATE_VOLUME=$HOME/.forgather docker/runtime/run.sh
+STATE_VOLUME=$HOME/.config/forgather docker/runtime/run.sh
 
 # Debug-only: mount a fork over the baked-in source and recreate:
 docker/runtime/run.sh --dev /home/me/forgather-fork --recreate
@@ -323,7 +323,7 @@ command-line `VAR=... docker/run.sh` still wins:
 
 # Runtime-image specific (silently ignored by the dev image):
 : "${HF_CACHE_HOST:=$HOME/.cache/huggingface}"
-: "${STATE_VOLUME:=$HOME/.forgather}"
+: "${STATE_VOLUME:=$HOME/.config/forgather}"
 ```
 
 The file is shared between both run scripts, so any var that's
@@ -429,15 +429,15 @@ for the full multi-node setup.
 
 ### Persistent state
 
-Forgather's per-user state lives at `~/.forgather/` inside the
+Forgather's per-user state lives at `~/.config/forgather/` inside the
 container — auth token, queue index, GPU policy, generation configs,
 hardware FLOPS cache, cluster node id (if multi-node). The two
 images get there differently:
 
-- **Dev image** bind-mounts `$HOME` wholesale, so `~/.forgather/`
-  inside the container *is* the host's `~/.forgather/`.
+- **Dev image** bind-mounts `$HOME` wholesale, so `~/.config/forgather/`
+  inside the container *is* the host's `~/.config/forgather/`.
 - **Runtime image** mounts a docker-managed named volume
-  `forgather-state` at `/home/forgather/.forgather/`, isolated from
+  `forgather-state` at `/home/forgather/.config/forgather/`, isolated from
   the host filesystem (preferred for release deployments).
 
 To make the runtime image read/write the same on-disk state as the
@@ -445,7 +445,7 @@ dev image (useful when iterating between the two), point the
 runtime's `STATE_VOLUME` at the host path:
 
 ```bash
-STATE_VOLUME=$HOME/.forgather docker/runtime/run.sh
+STATE_VOLUME=$HOME/.config/forgather docker/runtime/run.sh
 ```
 
 To opt out of state persistence on the runtime image (ephemeral —
@@ -691,7 +691,7 @@ a docker-managed named volume — no host paths at all:
 
 | Source | Container | Purpose | Default? |
 | - | - | - | - |
-| `forgather-state` (named volume) | `/home/forgather/.forgather` | Server state (auth token, queue, GPU policy, ...) | ✓ enabled |
+| `forgather-state` (named volume) | `/home/forgather/.config/forgather` | Server state (auth token, queue, GPU policy, ...) | ✓ enabled |
 | `$HF_CACHE_HOST` (host path) | `/home/forgather/.cache/huggingface` | Bind-mount, share HF cache with host install | opt-in |
 | `$EXTRA_MOUNTS` (free-form) | wherever you say | scratch, data, output dirs, ... | opt-in |
 
@@ -704,7 +704,7 @@ to opt out entirely.
 HF_CACHE_HOST=$HOME/.cache/huggingface docker/runtime/run.sh
 
 # Share state with the dev image (see "Persistent state" above):
-STATE_VOLUME=$HOME/.forgather docker/runtime/run.sh
+STATE_VOLUME=$HOME/.config/forgather docker/runtime/run.sh
 ```
 
 ### Multi-node operation
@@ -825,7 +825,7 @@ On the dev image, run `./build-webui.sh` from your host clone (or
 inside the container against the bind-mounted repo).
 
 **Auth token rotates on every restart.**
-Runtime image: the token only persists if `~/.forgather/` is on a
+Runtime image: the token only persists if `~/.config/forgather/` is on a
 persistent volume. By default `docker/runtime/run.sh` mounts the
 named volume `forgather-state`; if you `docker volume rm` that
 volume between runs, the token is regenerated. Dev image: token

@@ -34,14 +34,15 @@ except ImportError:
 import torch
 import torch.distributed as dist
 
+from forgather.ml.distributed import prefix_logger_rank
+from forgather.preprocess import forgather_config_dir
+
 from ..trainer_types import (
     MinimalTrainingArguments,
     TrainerCallback,
     TrainerControl,
     TrainerState,
 )
-
-from forgather.ml.distributed import prefix_logger_rank
 
 logger = logging.getLogger(__name__)
 prefix_logger_rank(logger, show_all_ranks=True)
@@ -116,7 +117,7 @@ class TrainerControlCallback(TrainerCallback):
         auth_token : str, optional
             Pre-shared bearer token. Generated via ``secrets.token_hex(32)``
             when ``None`` (the common case). Persisted to
-            ``~/.forgather/jobs/{job_id}/auth_token`` at mode ``0o600`` so
+            ``<forgather_config_dir>/jobs/{job_id}/auth_token`` at mode ``0o600`` so
             local clients (CLI, server proxy) can read it back.
         disable_auth : bool, optional
             Skip bearer-token enforcement on /control, /status, /jobs.
@@ -135,7 +136,7 @@ class TrainerControlCallback(TrainerCallback):
         self.job_id = job_id or self._generate_job_id()
         self.port = port
         self.host = host if host is not None else "127.0.0.1"
-        self.control_dir = Path.home() / ".forgather" / "jobs" / self.job_id
+        self.control_dir = Path(forgather_config_dir()) / "jobs" / self.job_id
 
         # Auth state. Token is set lazily on rank 0 in on_train_begin so we
         # don't burn entropy in non-rank-0 processes that never serve.
@@ -435,7 +436,7 @@ class TrainerControlCallback(TrainerCallback):
     ) -> aiohttp.web.Response:
         """Handle job listing requests."""
         try:
-            jobs_dir = Path.home() / ".forgather" / "jobs"
+            jobs_dir = Path(forgather_config_dir()) / "jobs"
             jobs = []
 
             if jobs_dir.exists():
@@ -758,7 +759,7 @@ class TrainerControlCallback(TrainerCallback):
                     self.server_thread.join(timeout=10)
 
                 # Clean up endpoint file and the per-job directory so
-                # ~/.forgather/jobs/ doesn't accumulate empty job_* dirs
+                # the jobs dir doesn't accumulate empty job_* dirs
                 # over time. rmdir is best-effort — leave the dir behind
                 # if anything else is still in there (e.g. unread
                 # control/*.json command files from a flaky shutdown).

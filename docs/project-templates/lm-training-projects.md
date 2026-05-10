@@ -568,7 +568,7 @@ proportionally.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `peak_hardware_flops` | float | auto-detected | Peak device FLOPS for MFU computation. Auto-detected from the current GPU or `~/.forgather/hardware.yaml`. See [training-performance-metrics](../trainers/training-performance-metrics.md) |
+| `peak_hardware_flops` | float | auto-detected | Peak device FLOPS for MFU computation. Auto-detected from the current GPU or `~/.config/forgather/hardware.yaml`. See [training-performance-metrics](../trainers/training-performance-metrics.md) |
 
 ### Precision / Compilation
 

@@ -92,7 +92,9 @@ def isolated_auth(tmp_path, monkeypatch):
     """Point auth-token storage at a tmp dir and disable auth so the
     TestClient doesn't have to negotiate a bearer token for the proxy
     routes — we're testing proxy behaviour, not auth coverage."""
-    monkeypatch.setenv("FORGATHER_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "forgather_server.paths.forgather_config_dir", lambda: str(tmp_path)
+    )
     from forgather_server import auth
 
     auth._reset_sessions_for_tests()

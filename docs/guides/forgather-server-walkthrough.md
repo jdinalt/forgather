@@ -60,7 +60,7 @@ with a one-shot login URL:
         http://127.0.0.1:8765/?token=4c4febdc07830cdd…
         http://localhost:8765/?token=4c4febdc07830cdd…
 
-    CLI auth: token in /home/<user>/.forgather/server/auth_token (mode 0600)
+    CLI auth: token in /home/<user>/.config/forgather/server/auth_token (mode 0600)
     First successful token login will prompt to set a password for future browser logins.
 ```
 
@@ -76,8 +76,8 @@ the token again.
 
 Without the URL, the same page shows a login form that accepts either
 the token or the password. The token sits at
-`~/.forgather/server/auth_token` (mode 0600); print it with
-`cat ~/.forgather/server/auth_token` if you ever need it again.
+`~/.config/forgather/server/auth_token` (mode 0600); print it with
+`cat ~/.config/forgather/server/auth_token` if you ever need it again.
 
 > **Why a token?** A loopback-bound server is reachable by _any_
 > local user on the host, not just you. The token gates that
@@ -109,7 +109,7 @@ full URL) into the laptop's browser. If you also want to run
 server, point them at the remote token file:
 
 ```bash
-export FORGATHER_SERVER_TOKEN=$(ssh dev-host cat .forgather/server/auth_token)
+export FORGATHER_SERVER_TOKEN=$(ssh dev-host cat .config/forgather/server/auth_token)
 forgather sched status
 ```
 

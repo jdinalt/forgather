@@ -147,7 +147,7 @@ block, which is what `forgather eval list/show` uses to discover configs.
 
 ## User-level search paths
 
-Drop a file at `~/.forgather/config.yaml` to extend (or replace) the default
+Drop a file at `~/.config/forgather/config.yaml` to extend (or replace) the default
 search path:
 
 ```yaml

@@ -14,7 +14,7 @@ helpers to guarantee:
 
 The optional ``mode`` parameter chmods the tmp file *before* writing, so
 sensitive content (auth tokens, password hashes, anything in
-``~/.forgather/server/``) is never readable on disk during the write
+``~/.config/forgather/server/``) is never readable on disk during the write
 window. Without a mode argument the file inherits the process umask, which
 is what user-content writes (template editor saves) want.
 """

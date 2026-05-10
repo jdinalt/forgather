@@ -5,7 +5,7 @@ A "job" here is a training run we know about, from one of two sources:
     1. ``JobRecord`` — a run *we* dispatched via the queue. Carries config,
        dynamic_args, GPU assignment, captured TTY path, exit code, etc.
     2. ``TrainerControlClient.JobInfo`` — discovery from a
-       ``~/.forgather/jobs/{job_id}/endpoint.json`` file. Carries the
+       ``~/.config/forgather/jobs/{job_id}/endpoint.json`` file. Carries the
        trainer's host:port for control commands and (for newer callbacks)
        its ``logging_dir`` / ``output_dir``.
 
@@ -225,7 +225,7 @@ def list_jobs(include_dead_endpoints: bool = False):
     """List all known jobs.
 
     By default omits externally-discovered endpoint files whose process is
-    no longer alive (those accumulate as ``~/.forgather/jobs/`` cruft).
+    no longer alive (those accumulate as ``~/.config/forgather/jobs/`` cruft).
     JobRecords are always returned so users can see their own history.
     """
     return _build_unified_list(include_dead_endpoints=include_dead_endpoints)
@@ -383,7 +383,7 @@ async def tty_stream(ws: WebSocket, job_id: str, follow: bool = True):
 
     The TTY path is re-read from the JobRecord on every poll iteration so
     the stream survives a relocation (e.g. terminal-time relocation from
-    ``~/.forgather/server/jobs/q_*.tty`` into the run's ``logs/tty.log``).
+    ``~/.config/forgather/server/jobs/q_*.tty`` into the run's ``logs/tty.log``).
     The file content is preserved across the move, so the maintained byte
     ``offset`` remains valid against the new path.
     """
@@ -515,15 +515,17 @@ def _remove_endpoint_dir(job_id: str) -> bool:
     """Delete the trainer-control directory for ``job_id``.
 
     Mirrors the directory layout the trainer's HTTP control endpoint
-    writes into (``~/.forgather/jobs/<job_id>/``). Returns True on
-    successful removal, False if the directory is missing or
+    writes into (``<forgather_config_dir>/jobs/<job_id>/``). Returns
+    True on successful removal, False if the directory is missing or
     rmtree raises. Errors are logged but swallowed so a partial
     removal still produces a usable response.
     """
     import shutil
     from pathlib import Path
 
-    job_dir = Path.home() / ".forgather" / "jobs" / job_id
+    from forgather.preprocess import forgather_config_dir
+
+    job_dir = Path(forgather_config_dir()) / "jobs" / job_id
     if not job_dir.exists():
         return False
     try:

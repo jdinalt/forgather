@@ -11,15 +11,13 @@ from forgather_server import paths
 def isolated_state(tmp_path, monkeypatch):
     """Point cluster persistence at a tmp dir and reset module state.
 
-    Without this, every test would share the real ``~/.forgather/cluster/``
+    Without this, every test would share the real ``~/.config/forgather/cluster/``
     and clobber the developer's actual node identity.
     """
     cluster_dir = tmp_path / "cluster"
     cluster_dir.mkdir()
     monkeypatch.setattr(paths, "cluster_state_dir", lambda: cluster_dir)
-    monkeypatch.setattr(
-        paths, "cluster_node_id_file", lambda: cluster_dir / "node_id"
-    )
+    monkeypatch.setattr(paths, "cluster_node_id_file", lambda: cluster_dir / "node_id")
     cluster._reset_for_tests()
     yield cluster_dir
     cluster._reset_for_tests()
@@ -153,16 +151,12 @@ class TestMemberTable:
     def test_mark_self_unreachable_is_noop(self):
         ident = self._act()
         cluster.mark_unreachable(ident.node_id)
-        self_m = next(
-            x for x in cluster.members() if x.node_id == ident.node_id
-        )
+        self_m = next(x for x in cluster.members() if x.node_id == ident.node_id)
         assert self_m.reachable is True
 
     def test_self_member_has_probe_attached(self):
         ident = self._act()
-        self_m = next(
-            x for x in cluster.members() if x.node_id == ident.node_id
-        )
+        self_m = next(x for x in cluster.members() if x.node_id == ident.node_id)
         # local_probe() is real (no mocking); it never returns None
         # in practice. Just verify the wiring carried something
         # through.
@@ -257,9 +251,7 @@ class TestSweepUnreachable:
     def test_sweep_refreshes_self(self):
         ident = cluster.activate("c", port=8765)
         cluster.sweep_unreachable(now=999.0)
-        self_m = next(
-            x for x in cluster.members() if x.node_id == ident.node_id
-        )
+        self_m = next(x for x in cluster.members() if x.node_id == ident.node_id)
         assert self_m.last_seen == 999.0
         assert self_m.reachable is True
 

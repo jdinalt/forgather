@@ -24,20 +24,14 @@ logger = logging.getLogger(__name__)
 
 
 def forgather_config_dir():
-    return user_config_dir("forgather", getpass.getuser())
-
-
-def forgather_home_dir():
     """Root for all per-user Forgather state.
 
-    Honors ``$FORGATHER_HOME`` so tests (and unusual deployments) can
-    redirect every state file in one place; otherwise defaults to
-    ``~/.forgather``.
+    Resolved via ``platformdirs.user_config_dir`` -- on Linux this is
+    ``~/.config/forgather``; macOS/Windows pick the platform-appropriate
+    location. This is the single source of truth for the per-user
+    Forgather directory used by the CLI, the server, trainers, and tests.
     """
-    env = os.environ.get("FORGATHER_HOME")
-    if env:
-        return env
-    return str(Path.home() / ".forgather")
+    return user_config_dir("forgather", getpass.getuser())
 
 
 _HARDWARE_YAML = "hardware.yaml"
@@ -86,19 +80,19 @@ def get_peak_hardware_flops() -> float | None:
 
     Resolution order:
 
-    1. Read ``~/.forgather/hardware.yaml`` -- if it contains a
+    1. Read ``<forgather_config_dir>/hardware.yaml`` -- if it contains a
        ``peak_hardware_flops`` value, return it immediately.
     2. Detect the current GPU via ``torch.cuda.get_device_name(0)`` and
        look it up in the built-in reference table.
-    3. If found, write the result to ``~/.forgather/hardware.yaml`` so
-       subsequent calls (and other sessions) skip detection.
+    3. If found, write the result to ``<forgather_config_dir>/hardware.yaml``
+       so subsequent calls (and other sessions) skip detection.
 
     Returns ``None`` when no GPU is available or the GPU is not in the
     reference table. In that case the user can create
-    ``~/.forgather/hardware.yaml`` manually -- see
+    ``<forgather_config_dir>/hardware.yaml`` manually -- see
     ``docs/trainers/training-performance-metrics.md`` for values.
     """
-    home_dir = Path(forgather_home_dir())
+    home_dir = Path(forgather_config_dir())
     hardware_file = home_dir / _HARDWARE_YAML
 
     # 1. Check for a cached / manually specified value.
@@ -561,7 +555,6 @@ class PPEnvironment(SandboxedEnvironment):
         "user_home_dir": lambda: os.path.expanduser("~"),
         "getcwd": os.getcwd,
         "forgather_config_dir": forgather_config_dir,
-        "forgather_home_dir": forgather_home_dir,
         "get_peak_hardware_flops": get_peak_hardware_flops,
         # https://pypi.org/project/platformdirs/
         "user_data_dir": user_data_dir,

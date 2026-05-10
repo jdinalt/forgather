@@ -38,7 +38,7 @@ Two use cases this is built for:
 
    The token must be set explicitly here. The localhost
    auto-discovery would otherwise try to read
-   `~/.forgather/dataset_server/8766.token` on the WORKSTATION
+   `~/.config/forgather/dataset_server/8766.token` on the WORKSTATION
    (the loader sees a loopback URL — it can't tell that the
    tunnel terminates on a different host) — which either
    doesn't exist or holds a stale token from an unrelated local
@@ -51,7 +51,7 @@ Two use cases this is built for:
 
 ```bash
 # Terminal 1 — start the server. Token is auto-generated and
-# written to ~/.forgather/dataset_server/8766.token (mode 0600).
+# written to ~/.config/forgather/dataset_server/8766.token (mode 0600).
 forgather dataset-server start
 
 # Terminal 2 — point clients at it. The localhost token is
@@ -125,12 +125,11 @@ generates a random 64-hex-char token at startup and prints it on
 dataset_server auth token: 8f5b...
 clients must send 'Authorization: Bearer <token>'
 curl -H "Authorization: Bearer 8f5b..." http://127.0.0.1:8766/v1/datasets
-shared token file: /home/<you>/.forgather/dataset_server/8766.token
+shared token file: /home/<you>/.config/forgather/dataset_server/8766.token
 ```
 
 The auto-generated token is also written to a per-port file under
-`$FORGATHER_HOME/dataset_server/<port>.token` (default
-`~/.forgather/dataset_server/<port>.token`, mode 0600 in a 0700
+`~/.config/forgather/dataset_server/<port>.token` (mode 0600 in a 0700
 directory) and removed when the server exits (atexit + SIGINT /
 SIGTERM handlers).
 

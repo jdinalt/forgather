@@ -78,7 +78,7 @@ The control system has two sides:
 ### Job discovery
 
 When `TrainerControlCallback` starts, rank 0 writes an endpoint file to
-`~/.forgather/jobs/<job_id>/endpoint.json` containing the host, port, and PID.
+`~/.config/forgather/jobs/<job_id>/endpoint.json` containing the host, port, and PID.
 The `forgather control list` command scans this directory to find running jobs
 and checks whether each process is still alive.
 

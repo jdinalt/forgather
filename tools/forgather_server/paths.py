@@ -1,9 +1,10 @@
 """Filesystem locations used by the Forgather server for persistent state.
 
 All runtime state (search roots, queue, TB registry, captured TTY) lives under
-``~/.forgather/server/`` so that the server can crash, restart, or be upgraded
-without losing user data. Everything here is plain JSON or log files so the
-user can inspect or edit state with ordinary tools.
+``<forgather_config_dir>/server/`` (on Linux, ``~/.config/forgather/server/``)
+so that the server can crash, restart, or be upgraded without losing user
+data. Everything here is plain JSON or log files so the user can inspect or
+edit state with ordinary tools.
 
 Directories holding sensitive state (auth token, password hash, queue,
 overrides, captured TTYs) are chmod'd to ``0o700`` on every access. Other
@@ -17,7 +18,7 @@ import os
 import stat
 from pathlib import Path
 
-from forgather.preprocess import forgather_home_dir
+from forgather.preprocess import forgather_config_dir
 
 log = logging.getLogger("forgather_server.paths")
 
@@ -31,7 +32,7 @@ def _tighten_dir(path: Path, mode: int = 0o700) -> None:
 
 
 def server_state_dir() -> Path:
-    home = Path(forgather_home_dir())
+    home = Path(forgather_config_dir())
     d = home / "server"
     d.mkdir(parents=True, exist_ok=True)
     _tighten_dir(home, 0o700)
@@ -95,12 +96,12 @@ def inference_token_file(queue_id: str) -> Path:
 def cluster_state_dir() -> Path:
     """Persistent directory for multi-node cluster state.
 
-    Lives at ``~/.forgather/cluster/`` (peer of ``server/``) so that the
-    cluster identity outlives any individual server instance and
+    Lives at ``<forgather_config_dir>/cluster/`` (peer of ``server/``) so
+    that the cluster identity outlives any individual server instance and
     multiple servers on the same host could in principle share one
     node identity. Mode 0700 like the rest of the user state.
     """
-    home = Path(forgather_home_dir())
+    home = Path(forgather_config_dir())
     d = home / "cluster"
     d.mkdir(parents=True, exist_ok=True)
     _tighten_dir(home, 0o700)
@@ -134,8 +135,8 @@ def password_hash_file() -> Path:
     return server_state_dir() / "password_hash"
 
 
-# Files known to live directly under ``~/.forgather/server/`` that may
-# carry secrets or per-user job metadata. Anything looser than 0600 gets
+# Files known to live directly under ``<forgather_config_dir>/server/`` that
+# may carry secrets or per-user job metadata. Anything looser than 0600 gets
 # tightened on startup; legacy installs may have shipped 0644 here before
 # the chmod-on-write fix landed.
 _SENSITIVE_TOPLEVEL_FILES = (
@@ -157,7 +158,7 @@ def tighten_existing_state_perms() -> None:
     Walk the known set and tighten anything looser than 0600. Errors are
     logged at WARNING and never raised; this is opportunistic cleanup.
     """
-    home = Path(forgather_home_dir())
+    home = Path(forgather_config_dir())
     server = home / "server"
     for d in (home, server):
         if d.is_dir():

@@ -91,7 +91,7 @@ def test_inference_with_perplexity(spec, output_dir):
     # Use an explicit known token so the test exercises the real auth path
     # (default-on bearer auth) without relying on the on-disk shared-token
     # cache, which would race with concurrent test runs sharing the same
-    # FORGATHER_HOME.
+    # per-user config dir.
     auth_token = "test-" + secrets.token_hex(16)
     server_proc = subprocess.Popen(
         [

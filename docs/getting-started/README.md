@@ -221,7 +221,7 @@ in place those links resolve transparently.
 
 ### Persistent state
 
-Per-user state lives under `~/.forgather/server/`: search roots,
+Per-user state lives under `~/.config/forgather/server/`: search roots,
 queue, job records, captured TTY logs, dynamic-args overrides,
 GPU policy. All files are written crash-atomically (tmp + fsync +
 rename). Power-loss-mid-write never leaves a half-written canonical

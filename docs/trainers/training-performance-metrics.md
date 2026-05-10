@@ -317,12 +317,12 @@ The project templates (`lm_training_project.yaml`, `tiny.yaml`, etc.) use the
 `get_peak_hardware_flops()` preprocessor function to auto-detect the per-GPU
 peak BF16 FLOP/s. The function follows this resolution order:
 
-1. **Read `~/.forgather/hardware.yaml`** -- if the file exists and contains a
+1. **Read `~/.config/forgather/hardware.yaml`** -- if the file exists and contains a
    `peak_hardware_flops` value, use it immediately.
 2. **Detect the current GPU** via `torch.cuda.get_device_name()` and look it
    up in the built-in reference table (the same table shown below).
 3. **Cache the result** -- write the detected value to
-   `~/.forgather/hardware.yaml` so subsequent runs skip detection.
+   `~/.config/forgather/hardware.yaml` so subsequent runs skip detection.
 
 The multi-GPU templates (e.g. `lm_training_project.yaml`) multiply the per-GPU
 value by `world_size` automatically, so the auto-detected value is always
@@ -332,14 +332,14 @@ If the GPU is not in the reference table, the function returns `null` and MFU
 is disabled. In that case, create the file manually:
 
 ```yaml
-# ~/.forgather/hardware.yaml
+# ~/.config/forgather/hardware.yaml
 peak_hardware_flops: 165.2e12
 ```
 
 To re-trigger auto-detection, delete the file:
 
 ```bash
-rm ~/.forgather/hardware.yaml
+rm ~/.config/forgather/hardware.yaml
 ```
 
 The `--peak-hardware-flops` CLI argument still overrides everything -- the

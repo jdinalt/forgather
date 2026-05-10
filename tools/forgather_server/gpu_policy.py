@@ -1,6 +1,6 @@
 """Persistent runtime scheduling policy for individual GPUs.
 
-Stored at ``~/.forgather/server/gpu_policy.json``.  The file is a JSON
+Stored at ``~/.config/forgather/server/gpu_policy.json``.  The file is a JSON
 object with a single ``"gpus"`` key whose value is a dict keyed by GPU
 index (as a string) containing ``disabled`` and ``min_priority`` fields.
 

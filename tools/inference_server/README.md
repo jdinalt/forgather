@@ -35,12 +35,11 @@ generates a random 64-hex-char token at startup and prints it on **stderr**:
 inference_server auth token: 8f5b...
 clients must send 'Authorization: Bearer <token>'
 curl -H "Authorization: Bearer 8f5b..." http://127.0.0.1:8137/v1/models
-shared token file: /home/<you>/.forgather/inference/8137.token
+shared token file: /home/<you>/.config/forgather/inference/8137.token
 ```
 
 The auto-generated token is also written to a per-port file under
-`$FORGATHER_HOME/inference/<port>.token` (default
-`~/.forgather/inference/<port>.token`, mode 0600 in a 0700 directory) and
+`~/.config/forgather/inference/<port>.token` (mode 0600 in a 0700 directory) and
 removed when the server exits. The bundled CLI client picks it up
 automatically when its `--url` resolves to a loopback host (127.0.0.1, ::1,
 or localhost), so `forgather inf server` paired with `forgather inf
@@ -73,7 +72,7 @@ forgather inf server -m /path/to/model      # in one terminal
 forgather inf client --message "hi"         # in another
 
 # Auto-generated token consumed by curl / a custom client:
-TOKEN=$(cat ~/.forgather/inference/8137.token)
+TOKEN=$(cat ~/.config/forgather/inference/8137.token)
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8137/v1/models
 
 # Known token from a file (orchestrators, multi-host, scripts):
@@ -93,7 +92,7 @@ require the bearer.
 
 When the server is spawned by the forgather-server scheduler it
 auto-generates a per-job token under
-`~/.forgather/server/inference/<queue_id>.token` (mode 0600) and the same-
+`~/.config/forgather/server/inference/<queue_id>.token` (mode 0600) and the same-
 origin proxy adds the bearer for browser-initiated requests
 transparently.
 

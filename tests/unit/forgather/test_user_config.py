@@ -1,7 +1,7 @@
 """Unit tests for forgather.user_config.
 
 Covers both ``load_user_config`` and ``eval_search_paths`` with a mocked
-``Path.home()`` so the tests do not touch the real ``~/.forgather``.
+``forgather_config_dir`` so the tests do not touch the real user state.
 """
 
 import os
@@ -15,15 +15,16 @@ from forgather import user_config
 
 @pytest.fixture
 def fake_home(tmp_path):
-    """Patch Path.home() so user_config_path() points at tmp_path."""
-    with patch("forgather.user_config.Path.home", return_value=tmp_path):
+    """Patch ``forgather_config_dir`` so user_config_path() points at tmp_path."""
+    with patch(
+        "forgather.user_config.forgather_config_dir", return_value=str(tmp_path)
+    ):
         yield tmp_path
 
 
 def _write_user_config(home, body: str):
-    cfg_dir = home / ".forgather"
-    cfg_dir.mkdir(parents=True, exist_ok=True)
-    (cfg_dir / "config.yaml").write_text(body)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(body)
 
 
 class TestLoadUserConfig:

@@ -493,7 +493,7 @@ function JobContextMenuItems({
               confirm(
                 `Remove stale endpoint ${job.id}?\n\nThis endpoint's ` +
                   `process is gone (PID dead or zombie). The directory ` +
-                  `under ~/.forgather/jobs/ will be deleted so the entry ` +
+                  `under ~/.config/forgather/jobs/ will be deleted so the entry ` +
                   `stops appearing in the Jobs list. No process is killed.`,
               )
             ) {

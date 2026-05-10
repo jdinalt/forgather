@@ -77,7 +77,7 @@ modified -- only the generation config gets the merged list.
 | `--generation-config carry` | (Default) Copy source `generation_config.json` if present, else synthesize a minimal `{bos,pad,eos}` config. |
 | `--generation-config none` | Skip writing `generation_config.json` entirely. |
 | `--generation-config PATH` | Load directly from a JSON file in the Forgather inference-preset format (keys: `max_tokens`, `temperature`, `top_p`, `top_k`, `repetition_penalty`, `num_beams`, ...). |
-| `--generation-config NAME` | Bare name resolved against `~/.forgather/generation_config/NAME.json`. No presets ship with this branch -- populate that directory yourself, or pass an explicit `PATH`. |
+| `--generation-config NAME` | Bare name resolved against `~/.config/forgather/generation_config/NAME.json`. No presets ship with this branch -- populate that directory yourself, or pass an explicit `PATH`. |
 
 Forgather presets use `max_tokens` (matching chat-completion APIs); finalize
 translates this to HuggingFace's `max_new_tokens` and infers `do_sample`
