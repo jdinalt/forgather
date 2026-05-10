@@ -94,6 +94,13 @@ class ComposableIterableDataset(TorchIterableDataset):
             )
 
         self._backend = backend
+        # The "natural" backend for this wrapper: the state set_epoch(0)
+        # should restore. At construction it's just the input backend;
+        # after `shuffle(seed=...)` returns a new wrapper whose
+        # natural state is the seed-shuffled backend (so set_epoch(0)
+        # then re-derives effective_seed = base_seed + 0 = base_seed,
+        # matching the wrapper's intended baseline).
+        self._natural_backend = backend
 
         # Slice (virtual split) — absolute indices in backend space.
         self._split_start_idx: Optional[int] = None
@@ -132,6 +139,7 @@ class ComposableIterableDataset(TorchIterableDataset):
         """Return a shallow copy with overrides applied to instance attrs."""
         new = ComposableIterableDataset.__new__(ComposableIterableDataset)
         new._backend = overrides.get("backend", self._backend)
+        new._natural_backend = overrides.get("natural_backend", self._natural_backend)
         new._split_start_idx = overrides.get("slice_start", self._split_start_idx)
         new._split_end_idx = overrides.get("slice_end", self._split_end_idx)
         new._shard = overrides.get("shard", self._shard)
@@ -299,6 +307,11 @@ class ComposableIterableDataset(TorchIterableDataset):
         new_backend = self._backend.shuffle(seed)
         return self._clone(
             backend=new_backend,
+            # The seed-shuffled backend is the new "natural" baseline:
+            # subsequent set_epoch(0) should restore THIS state, not
+            # the original-order backend the wrapper was constructed
+            # with. set_epoch(N>0) re-derives base_seed+N from here.
+            natural_backend=new_backend,
             base_shuffle_seed=seed,
             epoch=0,
             shuffle_buffer_size=buffer_size,
@@ -312,15 +325,25 @@ class ComposableIterableDataset(TorchIterableDataset):
         """
         Set the current epoch and re-shuffle the backend if any seed
         is in play. Mutates in place.
+
+        ``set_epoch(0)`` always restores the wrapper's natural
+        backend state (the post-construction or post-``shuffle()``
+        baseline) — even if a previous ``set_epoch(N>0)`` left the
+        backend in an N-shuffled state. Without this, going back to
+        epoch 0 would silently reuse the stale epoch-N order.
         """
         self._epoch = epoch
+        if epoch == 0:
+            # Restore the baseline: either the post-construction
+            # backend, or the seed-shuffled backend that shuffle()
+            # set as the new natural state.
+            self._backend = self._natural_backend
+            return
         if self._base_shuffle_seed is not None:
             effective = self._base_shuffle_seed + epoch
-        elif epoch > 0:
-            effective = epoch
         else:
-            return
-        self._backend = self._backend.shuffle(effective)
+            effective = epoch
+        self._backend = self._natural_backend.shuffle(effective)
 
     # ----- slice / select / shard -----
 
@@ -524,6 +547,13 @@ class ComposableIterableDataset(TorchIterableDataset):
         # honored it.
         self._restored_from_checkpoint = False
 
+        # Index passed to map(with_indices=True): the actual position
+        # of the first example we're about to yield, NOT the static
+        # window start. Critical when resuming mid-window — otherwise
+        # `with_indices` indices restart at `start` regardless of
+        # where the saved cursor actually is.
+        first_idx = self._backend.position()
+
         gen = self._iter_window(self._backend, start, end)
         if self._shuffle_buffer_size:
             gen = self._reservoir_buffer(
@@ -531,9 +561,9 @@ class ComposableIterableDataset(TorchIterableDataset):
             )
         if self._maps:
             if self._maps[0]["batched"]:
-                gen = self._apply_batched_maps(gen, start)
+                gen = self._apply_batched_maps(gen, first_idx)
             else:
-                gen = self._apply_single_maps(gen, start)
+                gen = self._apply_single_maps(gen, first_idx)
         else:
             gen = self._track_passthrough(gen)
 

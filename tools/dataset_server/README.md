@@ -1,17 +1,49 @@
 # Forgather Dataset Server
 
 A Uvicorn + FastAPI server that exposes the Forgather
-`fast_load_iterable_dataset` machinery over HTTP. Designed for
-multi-node training: one node hosts the datasets (cache, named
-locals) and the other nodes consume them transparently by setting
-the `FORGATHER_DATASET_SERVER` environment variable. No client
-code or config-template change required.
+`fast_load_iterable_dataset` machinery over HTTP. The same
+`fast_load_iterable_dataset(...)` call routes locally when the
+`FORGATHER_DATASET_SERVER` env var is unset and through the
+server when it's set. What flows over the wire is a thin
+`RemoteBackend` wrapped in the usual `ComposableIterableDataset`,
+so client-side `.shuffle()`, `.shard()`, `.map()`, `.state_dict()`
+etc. all "just work." No template / config changes on the client.
 
-The same `fast_load_iterable_dataset(...)` call routes locally
-when the env var is unset and through the server when it's set.
-What flows over the wire is a thin `RemoteBackend` wrapped in the
-usual `ComposableIterableDataset`, so client-side `.shuffle()`,
-`.shard()`, `.map()`, `.state_dict()` etc. all "just work."
+Two use cases this is built for:
+
+1. **Multi-node training.** One node in the cluster hosts the
+   datasets (HF cache, named local datasets); every other node
+   consumes them remotely. Avoids each rank re-downloading a
+   multi-TB dataset just to start training.
+
+2. **Remote workstation, single-host data.** You have one machine
+   with all your large datasets (`HuggingFaceTB/smollm-corpus`,
+   `allenai/c4`, …) and you want to run training from a different
+   site that doesn't have them mirrored. Forward the server's
+   port over SSH and the loader on the remote workstation
+   transparently uses the data on the dataset host — without
+   exposing the dataset port on the public internet:
+
+   ```bash
+   # On the dataset host (one-time):
+   forgather dataset-server start
+   # → prints `dataset_server auth token: <hex>`; copy it.
+
+   # On the remote workstation:
+   ssh -N -L 8766:127.0.0.1:8766 datahost &
+   export FORGATHER_DATASET_SERVER=http://localhost:8766
+   export FORGATHER_DATASET_SERVER_TOKEN=<hex from above>
+   forgather train -t my_config.yaml
+   ```
+
+   The token must be set explicitly here. The localhost
+   auto-discovery would otherwise try to read
+   `~/.forgather/dataset_server/8766.token` on the WORKSTATION
+   (the loader sees a loopback URL — it can't tell that the
+   tunnel terminates on a different host) — which either
+   doesn't exist or holds a stale token from an unrelated local
+   run. Setting `FORGATHER_DATASET_SERVER_TOKEN` short-circuits
+   the file lookup. See [Authentication](#authentication).
 
 ## Quick start
 

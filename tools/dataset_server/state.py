@@ -92,7 +92,14 @@ class ServerState:
 
     # Loaded backends, keyed by canonical_handle(load_args).
     _handles: Dict[str, HandleEntry] = field(default_factory=dict)
+    # Single short-critical-section lock guarding the handle registry
+    # and the inflight-load table. We never hold this across an actual
+    # loader call — see ``load_on_demand`` for the per-handle dedup
+    # pattern that keeps loads of distinct handles parallel.
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    # ``handle -> Event`` for loads currently in flight. Deduplicates
+    # concurrent ``/v1/load`` requests for the same canonical args.
+    _inflight: Dict[str, threading.Event] = field(default_factory=dict)
 
     # Hook for tests: override the loader call so we don't need real
     # Arrow files. Production leaves this as the default
@@ -122,14 +129,16 @@ class ServerState:
         by load_on_demand."""
         if not handle or "/" in handle:
             raise ValueError(f"Invalid handle: {handle!r}")
-        self._handles[handle] = HandleEntry(
-            backend=backend,
-            load_args=dict(load_args or {}),
-            source=source,
-        )
+        with self._lock:
+            self._handles[handle] = HandleEntry(
+                backend=backend,
+                load_args=dict(load_args or {}),
+                source=source,
+            )
 
     def unregister(self, handle: str) -> None:
-        self._handles.pop(handle, None)
+        with self._lock:
+            self._handles.pop(handle, None)
 
     # ----- local mappings -----
 
@@ -150,70 +159,117 @@ class ServerState:
         return the handle. Raises ``PolicyError`` if the request is
         rejected (the route handler maps that to an HTTP status).
 
-        Concurrent loads of the same handle are deduplicated via
-        ``self._lock``.
+        Per-handle deduplication: concurrent requests for the SAME
+        canonical args wait for one shared load. Concurrent requests
+        for DIFFERENT handles run independently — the loader is
+        called outside ``self._lock``, so a long HF download does
+        not block /v1/load for any other dataset.
         """
         path = load_args.get("path")
         if not path:
             raise PolicyError(400, "Missing required field 'path'")
 
         # Resolve the request into (resolved_args, source) per the
-        # documented policy.
+        # documented policy. May raise PolicyError synchronously.
         resolved_args, source = self._resolve_request(load_args)
 
-        # Handle is computed from the ORIGINAL request so the same
-        # client request is always cached under the same key, even
-        # if the resolved path differs (e.g. local/foo -> /abs/path).
-        handle = canonical_handle(load_args)
+        # Canonical handle is computed from RESOLVED args so e.g.
+        # `local/stories` and `/data/tinystories` (same target after
+        # `--allow-paths`) hash to the same key — no duplicate loads.
+        handle = canonical_handle(resolved_args)
+
+        # Inflight coordination: short critical section to either
+        # find a cached entry, find a load already in progress and
+        # wait on its Event, or register ourselves as the loader.
         with self._lock:
             if handle in self._handles:
                 return handle
+            existing = self._inflight.get(handle)
+            if existing is not None:
+                event = existing
+                we_load = False
+            else:
+                event = threading.Event()
+                self._inflight[handle] = event
+                we_load = True
 
-            loader = self.loader or _default_loader
-            env_overrides: Dict[str, str] = {}
-            if source == "hf" and not self.allow_downloads:
-                env_overrides["HF_DATASETS_OFFLINE"] = "1"
+        if not we_load:
+            # Another thread is loading this exact handle — wait for
+            # it to finish, then re-check the registry.
+            event.wait()
+            with self._lock:
+                if handle in self._handles:
+                    return handle
+            raise PolicyError(
+                500,
+                f"Concurrent load of {path!r} failed; see server logs",
+            )
 
-            with _temp_env(env_overrides):
-                logger.info(
-                    "loading dataset on demand: source=%s args=%s",
-                    source,
-                    resolved_args,
-                )
-                try:
-                    ds = loader(**resolved_args)
-                except (FileNotFoundError, ConnectionError) as exc:
-                    # HF surfaces a missing-cache load as FileNotFoundError
-                    # / ConnectionError when offline. Map to 404.
-                    if source == "hf":
-                        raise PolicyError(
-                            404,
-                            f"HF dataset {path!r} not in cache "
-                            f"(downloads disabled): {exc}",
-                        ) from exc
-                    raise PolicyError(404, str(exc)) from exc
-                except Exception as exc:
-                    # OfflineModeIsEnabled and friends — match by name to
-                    # avoid hard import dependency on huggingface_hub.
-                    name = type(exc).__name__
-                    if source == "hf" and name in (
-                        "OfflineModeIsEnabled",
-                        "LocalEntryNotFoundError",
-                        "RepositoryNotFoundError",
-                    ):
-                        raise PolicyError(
-                            404,
-                            f"HF dataset {path!r} not available: {exc}",
-                        ) from exc
-                    raise
+        # We are the loader. Run OUTSIDE the lock so distinct-handle
+        # loads stay parallel.
+        try:
+            backend = self._do_load(path, source, resolved_args)
+        except BaseException:
+            # On any failure, signal waiters and remove the inflight
+            # marker so a future request can retry.
+            with self._lock:
+                self._inflight.pop(handle, None)
+            event.set()
+            raise
 
-            backend = getattr(ds, "backend", ds)
+        with self._lock:
             self._handles[handle] = HandleEntry(
                 backend=backend,
-                load_args=dict(load_args),
+                # Store the RESOLVED args so introspection
+                # (/v1/datasets/{handle}) tells the operator what
+                # was actually loaded, not what the client typed.
+                load_args=dict(resolved_args),
                 source=source,
             )
+            self._inflight.pop(handle, None)
+        event.set()
         return handle
+
+    def _do_load(
+        self, path: str, source: str, resolved_args: Dict[str, Any]
+    ) -> IterableDatasetBackend:
+        """Run the actual loader. Called WITHOUT ``self._lock`` held."""
+        loader = self.loader or _default_loader
+        env_overrides: Dict[str, str] = {}
+        if source == "hf" and not self.allow_downloads:
+            env_overrides["HF_DATASETS_OFFLINE"] = "1"
+
+        logger.info(
+            "loading dataset on demand: source=%s args=%s",
+            source,
+            resolved_args,
+        )
+        with _temp_env(env_overrides):
+            try:
+                ds = loader(**resolved_args)
+            except (FileNotFoundError, ConnectionError) as exc:
+                if source == "hf":
+                    raise PolicyError(
+                        404,
+                        f"HF dataset {path!r} not in cache "
+                        f"(downloads disabled): {exc}",
+                    ) from exc
+                raise PolicyError(404, str(exc)) from exc
+            except Exception as exc:
+                # OfflineModeIsEnabled and friends — match by name to
+                # avoid hard import dependency on huggingface_hub.
+                name = type(exc).__name__
+                if source == "hf" and name in (
+                    "OfflineModeIsEnabled",
+                    "LocalEntryNotFoundError",
+                    "RepositoryNotFoundError",
+                ):
+                    raise PolicyError(
+                        404,
+                        f"HF dataset {path!r} not available: {exc}",
+                    ) from exc
+                raise
+        return getattr(ds, "backend", ds)
 
     def _resolve_request(self, load_args: Dict[str, Any]) -> tuple[Dict[str, Any], str]:
         """Apply the loading policy. Returns (effective_load_args, source).

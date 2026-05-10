@@ -16,6 +16,7 @@ the connection closes.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Dict, Optional
@@ -149,7 +150,13 @@ def build_router(state: ServerState, auth_token: Optional[str]) -> APIRouter:
             raise HTTPException(400, "Missing required field 'path'")
 
         try:
-            handle = state.load_on_demand(load_args)
+            # Run the (potentially long, blocking) load in a worker
+            # thread so the event loop stays free to dispatch
+            # concurrent /v1/load requests for distinct datasets in
+            # parallel. The per-handle inflight Event in
+            # state.load_on_demand still ensures concurrent loads of
+            # the SAME handle dedup to one underlying call.
+            handle = await asyncio.to_thread(state.load_on_demand, load_args)
         except PolicyError as exc:
             logger.info(
                 "POST load denied (status=%d) args=%s msg=%s",

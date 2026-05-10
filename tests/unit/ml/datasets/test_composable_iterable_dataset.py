@@ -221,6 +221,36 @@ class TestWrapperShuffle:
         assert sorted(epoch0) == sorted(epoch1)
         assert epoch0 != epoch1
 
+    def test_set_epoch_zero_reverts_to_natural_after_nonzero(self):
+        """Regression: set_epoch(0) after set_epoch(N>0), with no
+        prior shuffle(), used to silently keep the epoch-N order."""
+        ds = _make_wrapper(20)
+        natural = [ex["id"] for ex in ds]
+
+        ds.set_epoch(5)
+        epoch5 = [ex["id"] for ex in ds]
+        assert epoch5 != natural  # epoch 5 reordered something
+
+        ds.set_epoch(0)
+        epoch0 = [ex["id"] for ex in ds]
+        assert epoch0 == natural
+
+    def test_set_epoch_zero_reverts_to_seeded_after_shuffle(self):
+        """When the wrapper was constructed via shuffle(seed=N),
+        set_epoch(0) should restore the seed-N order (not the
+        original-file order). set_epoch(K>0) goes to seed=N+K, and
+        set_epoch(0) again returns to seed=N."""
+        ds = _make_wrapper(20).shuffle(seed=42, buffer_size=0)
+        baseline = [ex["id"] for ex in ds]
+
+        ds.set_epoch(3)
+        epoch3 = [ex["id"] for ex in ds]
+        assert epoch3 != baseline
+
+        ds.set_epoch(0)
+        back_to_baseline = [ex["id"] for ex in ds]
+        assert back_to_baseline == baseline
+
 
 class TestWrapperMap:
     def test_map_single(self):
@@ -274,6 +304,27 @@ class TestWrapperMap:
         out = list(ds)
         # The slice starts at backend index 2; map indices begin there.
         assert [ex["global_idx"] for ex in out] == [2, 3, 4]
+
+    def test_map_with_indices_after_resume(self):
+        """Regression: with_indices map indices must continue from the
+        saved cursor on resume, not restart at the window start."""
+
+        def with_idx(ex, idx):
+            return {"global_idx": idx}
+
+        # Build the wrapper, partially iterate, save state.
+        ds = _make_wrapper(20).map(with_idx, with_indices=True)
+        it = iter(ds)
+        partial = [next(it) for _ in range(5)]
+        state = ds.state_dict()
+        assert [ex["global_idx"] for ex in partial] == [0, 1, 2, 3, 4]
+
+        # Resume on a fresh wrapper with the same map chain.
+        ds2 = _make_wrapper(20).map(with_idx, with_indices=True)
+        ds2.load_state_dict(state)
+        rest = list(ds2)
+        # After resume from position 5, the next index must be 5.
+        assert [ex["global_idx"] for ex in rest] == list(range(5, 20))
 
     def test_batched_map_n_to_n(self):
         def upper(batch):

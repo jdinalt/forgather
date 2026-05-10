@@ -332,6 +332,77 @@ class TestAuth:
             assert [e["id"] for e in be] == list(range(5))
 
 
+class TestSignalCleanup:
+    """Spawn a real subprocess and signal it to verify the per-port
+    token file is removed on SIGINT and SIGTERM. Both happy-path
+    operator commands (Ctrl-C, ``kill <pid>``) and orchestration
+    teardown (``forgather-server`` killing a job) hit these paths."""
+
+    def _run_signal(self, sig, port: int) -> tuple[int, bool]:
+        """Returns (exit_code, token_still_present)."""
+        import signal as _signal  # noqa: F401
+        import subprocess
+        import sys
+        import time
+        from pathlib import Path
+
+        from dataset_server.auth import standalone_token_file
+
+        token_path = standalone_token_file(port)
+        token_path.unlink(missing_ok=True)
+
+        repo_root = Path(__file__).resolve().parents[4]
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "tools.dataset_server",
+                "--port",
+                str(port),
+                "--log-level",
+                "ERROR",
+            ],
+            cwd=str(repo_root),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        # Wait until the server publishes the token.
+        for _ in range(80):
+            if token_path.exists():
+                break
+            time.sleep(0.1)
+        else:
+            proc.kill()
+            proc.wait()
+            raise AssertionError(
+                f"server did not publish token at {token_path} within 8s"
+            )
+        proc.send_signal(sig)
+        try:
+            proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            raise AssertionError(f"server did not exit within 8s of signal {sig}")
+        return proc.returncode, token_path.exists()
+
+    @pytest.mark.parametrize(
+        "signum,name,port",
+        [
+            # Use otherwise-unused ports so a parallel test run on the
+            # same machine doesn't collide.
+            (2, "SIGINT", 19998),
+            (15, "SIGTERM", 19997),
+        ],
+    )
+    def test_signal_removes_token_file(self, signum, name, port):
+        rc, token_present = self._run_signal(signum, port)
+        # We don't assert exit code (uvicorn vs our handler chain
+        # produce different codes across versions); we only require
+        # that the per-port token file is removed.
+        assert not token_present, f"{name}: token file survived shutdown (rc={rc})"
+
+
 # ---------------------------------------------------------------------
 # Loading policy: --no-hf, --allow-paths, local mappings
 # ---------------------------------------------------------------------
@@ -444,6 +515,149 @@ class TestLoadPolicy:
             with pytest.raises(HTTPError) as ei:
                 urlopen(req, timeout=5).read()
             assert ei.value.code == 403
+
+
+class TestLoadDeduplication:
+    def test_concurrent_load_same_handle_runs_once(self, tmp_path):
+        """The loader must be called exactly once when N threads hit
+        /v1/load for the same canonical args at the same time.
+        Pre-fix the outer lock serialized everything; this test would
+        also pass against that, but the next test wouldn't."""
+        from datasets import Dataset
+
+        ds_path = tmp_path / "tiny"
+        Dataset.from_dict({"id": list(range(5))}).save_to_disk(str(ds_path))
+
+        import threading
+        import time
+
+        # Wrap the real loader to count invocations and slow it down.
+        from forgather.ml.datasets.fast_hf_loader import (
+            _local_load_iterable_dataset,
+        )
+
+        call_count = 0
+        call_lock = threading.Lock()
+
+        def slow_loader(**kwargs):
+            nonlocal call_count
+            with call_lock:
+                call_count += 1
+            time.sleep(0.5)
+            return _local_load_iterable_dataset(**kwargs)
+
+        state = ServerState(allow_paths=True)
+        state.loader = slow_loader
+        srv = TestServer(host="127.0.0.1", port=0, auth_token=None, state=state)
+        results = []
+
+        def fire():
+            body = json.dumps({"path": str(ds_path)}).encode("utf-8")
+            req = Request(
+                f"{srv.url}/v1/load",
+                data=body,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            payload = json.loads(urlopen(req, timeout=10).read())
+            results.append(payload["handle"])
+
+        with srv:
+            threads = [threading.Thread(target=fire) for _ in range(8)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+
+        # All 8 callers got the same handle.
+        assert len(set(results)) == 1, results
+        # The expensive loader ran exactly once despite 8 concurrent
+        # callers — proves the inflight-event dedup works.
+        assert call_count == 1, f"loader ran {call_count} times"
+
+    def test_concurrent_load_distinct_handles_run_in_parallel(self, tmp_path):
+        """Loads of DISTINCT handles must run in parallel — pre-fix
+        the outer lock serialized them through a single mutex, which
+        would push the elapsed time to N * sleep instead of ~sleep."""
+        from datasets import Dataset
+
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        c = tmp_path / "c"
+        for p in (a, b, c):
+            Dataset.from_dict({"id": [0]}).save_to_disk(str(p))
+
+        import threading
+        import time
+
+        from forgather.ml.datasets.fast_hf_loader import (
+            _local_load_iterable_dataset,
+        )
+
+        SLEEP = 0.4
+
+        def slow_loader(**kwargs):
+            time.sleep(SLEEP)
+            return _local_load_iterable_dataset(**kwargs)
+
+        state = ServerState(allow_paths=True)
+        state.loader = slow_loader
+        srv = TestServer(host="127.0.0.1", port=0, auth_token=None, state=state)
+
+        def fire(path):
+            body = json.dumps({"path": str(path)}).encode("utf-8")
+            req = Request(
+                f"{srv.url}/v1/load",
+                data=body,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            urlopen(req, timeout=10).read()
+
+        with srv:
+            t0 = time.monotonic()
+            threads = [threading.Thread(target=fire, args=(p,)) for p in (a, b, c)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+            elapsed = time.monotonic() - t0
+
+        # If all three serialized, elapsed would be ~ 3 * SLEEP. With
+        # parallel loads it should be just over SLEEP. Allow a wide
+        # margin for the in-process test server's overhead.
+        assert elapsed < SLEEP * 2.0, (
+            f"distinct-handle loads serialized: elapsed={elapsed:.2f}s "
+            f"vs SLEEP={SLEEP}s; expected ~{SLEEP:.2f}s if parallel"
+        )
+
+    def test_local_and_path_with_same_target_share_handle(self, tmp_path):
+        """`local/foo` and the absolute path `foo` resolves to should
+        produce the same handle, since the canonical hash is taken
+        AFTER policy resolution."""
+        from datasets import Dataset
+
+        ds_path = tmp_path / "stories"
+        Dataset.from_dict({"id": list(range(5))}).save_to_disk(str(ds_path))
+
+        state = ServerState(allow_paths=True)
+        state.add_local("stories", str(ds_path))
+        srv = TestServer(host="127.0.0.1", port=0, auth_token=None, state=state)
+
+        def load(path):
+            body = json.dumps({"path": str(path)}).encode("utf-8")
+            req = Request(
+                f"{srv.url}/v1/load",
+                data=body,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            return json.loads(urlopen(req, timeout=10).read())["handle"]
+
+        with srv:
+            via_local = load("local/stories")
+            via_abs = load(str(ds_path))
+        assert via_local == via_abs
 
 
 # ---------------------------------------------------------------------
