@@ -4,6 +4,8 @@
 
 `fast_hf_loader_simple.py` provides instant dataset loading and efficient mid-epoch checkpointing for large HuggingFace datasets.
 
+> **Multi-node training?** See the [Dataset Server](../tools/dataset_server/README.md) — a Uvicorn + FastAPI service that serves what `fast_load_iterable_dataset` would load locally, so you don't have to download the same dataset on every node. Set `FORGATHER_DATASET_SERVER=http://host:8766` and existing call sites route through it transparently.
+
 ## Performance
 
 **Loading Speed:**
