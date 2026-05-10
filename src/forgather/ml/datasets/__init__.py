@@ -1,21 +1,24 @@
 from .block_tokenizer import block_tokenize_fn
+from .composable_iterable_dataset import ComposableIterableDataset
 from .dataloader_utils import (
     LengthSyncCallback,
     create_length_sync_callback,
     sync_dataset_state_from_dataloader,
 )
 from .fast_hf_loader import (
+    ArrowIterableDataset,
     FastDatasetLoaderSimple,
-    SimpleArrowIterableDataset,
     fast_load_iterable_dataset,
     get_default_loader,
 )
 from .histogram import plot_token_length_histogram
+from .in_memory_backend import InMemoryBackend
 from .interleaved import (
     InterleavedDataset,
     balance_remaining_examples,
     interleave_datasets,
 )
+from .iterable_backend import IterableDatasetBackend
 from .iterable_with_length import (
     IterableDatasetWithLength,
     to_iterable_dataset_with_length,
@@ -36,8 +39,12 @@ __all__ = [
     # Fast HF loader
     "fast_load_iterable_dataset",
     "FastDatasetLoaderSimple",
-    "SimpleArrowIterableDataset",
+    "ArrowIterableDataset",
     "get_default_loader",
+    # Backend abstraction
+    "IterableDatasetBackend",
+    "ComposableIterableDataset",
+    "InMemoryBackend",
     # Interleaving
     "interleave_datasets",
     "InterleavedDataset",

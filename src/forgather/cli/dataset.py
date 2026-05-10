@@ -6,8 +6,8 @@ from transformers import AutoTokenizer
 
 from forgather import Project
 from forgather.ml.datasets import (
+    ArrowIterableDataset,
     InterleavedDataset,
-    SimpleArrowIterableDataset,
     plot_token_length_histogram,
 )
 
@@ -207,7 +207,7 @@ def dataset_cmd(args):
                     header = f" {dataset_index} Tokens: {len(input_ids)}, Documents: {n_documents}, Features: {example.keys()}"
 
                     # Show estimated lengths, where relevant
-                    if isinstance(split, SimpleArrowIterableDataset):
+                    if isinstance(split, ArrowIterableDataset):
                         header += f", Estimated Len: {len(split)}"
                     elif isinstance(split, InterleavedDataset):
                         header += f", InterleavedDataset Lengths: {get_interleaved_lengths(split)}"
@@ -267,7 +267,7 @@ def dataset_cmd(args):
 def get_interleaved_lengths(dataset) -> str:
     s = str(len(dataset)) + " ["
     for ds in dataset.datasets:
-        if isinstance(ds, SimpleArrowIterableDataset):
+        if isinstance(ds, ArrowIterableDataset):
             s += str(len(ds))
         elif isinstance(ds, InterleavedDataset):
             s += get_interleaved_lengths(ds)

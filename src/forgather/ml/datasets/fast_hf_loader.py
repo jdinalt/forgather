@@ -22,6 +22,7 @@ from datasets import Dataset
 from datasets import IterableDataset as HFIterableDataset
 from datasets import load_dataset
 
+from .iterable_backend import IterableDatasetBackend
 from .iterable_with_length import IterableDatasetWithLength
 
 try:
@@ -103,7 +104,7 @@ def _parse_split_notation(split: str) -> Tuple[str, Optional[int], Optional[int]
     return base_split, start_idx, end_idx
 
 
-class SimpleArrowIterableDataset(TorchIterableDataset):
+class ArrowIterableDataset(TorchIterableDataset, IterableDatasetBackend):
     """
     An iterable dataset that reads Arrow files sequentially with checkpoint support.
 
@@ -111,6 +112,14 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
     `fast_load_iterable_dataset`. It provides a HuggingFace-compatible iterable
     dataset API built directly on top of Arrow files cached on disk, bypassing the
     overhead of HuggingFace's internal interleaved-dataset machinery.
+
+    Implements `IterableDatasetBackend` so it can be plugged into a composing
+    wrapper alongside other backends (e.g. a future network proxy). The backend
+    contract requires `__iter__`, `__len__`, `shuffle(seed)`, `seek(position)`,
+    and `position()`. The class additionally provides higher-level operations
+    (`map`, `select`, `slice`, `shard`, `state_dict`/`load_state_dict`,
+    `set_epoch`, an example-level shuffle buffer) directly so it can be used
+    standalone without the wrapper.
 
     Key capabilities:
 
@@ -206,7 +215,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
     def __repr__(self):
         return (
-            "SimpleArrowIterableDataset: "
+            "ArrowIterableDataset: "
             f"arrow_files={len(self.arrow_files)}, "
             f"examples={len(self)}, "
             f"current_file_index={self._current_file_index}, "
@@ -251,7 +260,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             rng.shuffle(shuffled_files)
             return shuffled_files, None
 
-    def _copy(self, **overrides) -> "SimpleArrowIterableDataset":
+    def _copy(self, **overrides) -> "ArrowIterableDataset":
         """
         Create a copy of this dataset with optional overrides.
 
@@ -264,15 +273,15 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
         Returns
         -------
-        SimpleArrowIterableDataset
-            New SimpleArrowIterableDataset with copied state.
+        ArrowIterableDataset
+            New ArrowIterableDataset with copied state.
 
         Examples
         --------
         >>> new_ds = ds._copy(shuffle_seed=42, epoch=1)
         """
         # Create new instance with same arrow files
-        new_dataset = SimpleArrowIterableDataset(self.arrow_files, self.file_lengths)
+        new_dataset = ArrowIterableDataset(self.arrow_files, self.file_lengths)
 
         # Copy all instance variables
         # Checkpoint state
@@ -389,7 +398,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
         Returns
         -------
-        SimpleArrowIterableDataset
+        ArrowIterableDataset
             New dataset instance with shuffling configured.
 
         Notes
@@ -512,6 +521,104 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             # No shuffle() or epoch == 0 - use fallback
             return fallback_seed
 
+    def position(self) -> int:
+        """
+        Return the flat example index where the next iteration would start.
+
+        This is the position in the (possibly shuffled) underlying file
+        sequence — it does not account for virtual splits, sharding, or
+        map-induced cardinality changes (those are wrapper-level concerns).
+        Computed from `_current_file_index` and `_current_example_index`
+        using the cached per-file lengths in O(num_files).
+
+        Implements the `IterableDatasetBackend` contract.
+        """
+        lengths = self._shuffled_lengths or self.file_lengths
+        if lengths is None:
+            # No cached lengths: must open files. Rare in practice
+            # because the loader populates file_lengths from the index.
+            files = self._shuffled_files or self.arrow_files
+            total = 0
+            for i in range(self._current_file_index):
+                total += len(Dataset.from_file(files[i]))
+            return total + self._current_example_index
+        return sum(lengths[: self._current_file_index]) + self._current_example_index
+
+    def seek(self, position: int) -> "ArrowIterableDataset":
+        """
+        Return a new dataset whose next iteration begins at the given
+        flat example index in the underlying (possibly shuffled) file
+        sequence.
+
+        The returned instance preserves shuffle, split, shard, and map
+        configuration; only the iteration cursor is updated.
+
+        Implements the `IterableDatasetBackend` contract.
+
+        Parameters
+        ----------
+        position : int
+            Non-negative flat example index. If it lies past the end of
+            the dataset, the returned instance is positioned at the end
+            (next iteration yields nothing).
+
+        Raises
+        ------
+        ValueError
+            If ``position`` is negative.
+        """
+        if position < 0:
+            raise ValueError(f"position must be non-negative, got {position}")
+
+        def _set_restored(ds: "ArrowIterableDataset") -> "ArrowIterableDataset":
+            # `_initialize_iteration_state` resets position to (0, 0) on
+            # fresh iteration. Mark this instance as "restored" so the
+            # next __iter__ honours the seeked position instead of
+            # zeroing it. This is the same flag `load_state_dict` sets.
+            ds._restored_from_checkpoint = True
+            return ds
+
+        lengths = self._shuffled_lengths or self.file_lengths
+        if lengths is None:
+            # Walk files reading lengths on demand.
+            files = self._shuffled_files or self.arrow_files
+            cumul = 0
+            for i, f in enumerate(files):
+                file_len = len(Dataset.from_file(f))
+                if cumul + file_len > position:
+                    return _set_restored(
+                        self._copy(
+                            current_file_index=i,
+                            current_example_index=position - cumul,
+                        )
+                    )
+                cumul += file_len
+            # Past the end: position at end-of-dataset.
+            return _set_restored(
+                self._copy(
+                    current_file_index=len(files),
+                    current_example_index=0,
+                )
+            )
+
+        cumul = 0
+        for i, file_len in enumerate(lengths):
+            if cumul + file_len > position:
+                return _set_restored(
+                    self._copy(
+                        current_file_index=i,
+                        current_example_index=position - cumul,
+                    )
+                )
+            cumul += file_len
+        # Past the end: position at end-of-dataset.
+        return _set_restored(
+            self._copy(
+                current_file_index=len(lengths),
+                current_example_index=0,
+            )
+        )
+
     def select(self, indices):
         """
         Select examples by index range, mirroring the HuggingFace datasets API.
@@ -527,7 +634,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
         Returns
         -------
-        SimpleArrowIterableDataset
+        ArrowIterableDataset
             New dataset containing only the selected examples.
 
         Raises
@@ -601,7 +708,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
         Returns
         -------
-        SimpleArrowIterableDataset
+        ArrowIterableDataset
             New dataset instance representing the sliced view.
 
         Raises
@@ -652,9 +759,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                 current_end = sum(self.file_lengths)
             else:
                 # Must iterate to compute - create temp dataset without split
-                temp_dataset = SimpleArrowIterableDataset(
-                    self.arrow_files, self.file_lengths
-                )
+                temp_dataset = ArrowIterableDataset(self.arrow_files, self.file_lengths)
                 temp_dataset._shuffled_files = self._shuffled_files
                 temp_dataset._shuffled_lengths = self._shuffled_lengths
                 current_end = len(temp_dataset)
@@ -730,7 +835,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
         Returns
         -------
-        SimpleArrowIterableDataset
+        ArrowIterableDataset
             New dataset instance for the requested shard.
 
         Raises
@@ -867,7 +972,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
         Returns
         -------
-        SimpleArrowIterableDataset
+        ArrowIterableDataset
             New dataset instance with the map configured.
 
         Raises
@@ -2396,7 +2501,7 @@ class FastDatasetLoaderSimple:
     downloads (or locates) the dataset via the HuggingFace ``datasets``
     library, records the paths and per-file example counts of the underlying
     Arrow cache files in a compact JSON index, and returns a
-    `SimpleArrowIterableDataset`. All subsequent calls for the same
+    `ArrowIterableDataset`. All subsequent calls for the same
     configuration load in milliseconds by reading the index directly —
     bypassing the 10-20 minute startup time that HuggingFace's
     ``to_iterable_dataset()`` imposes on large datasets such as C4.
@@ -2573,7 +2678,7 @@ class FastDatasetLoaderSimple:
         force_reindex: bool = False,
         length_estimate: str = "dynamic",
         reset_length_on_iter: bool = False,
-    ) -> Optional["SimpleArrowIterableDataset"]:
+    ) -> Optional["ArrowIterableDataset"]:
         """
         Load a saved dataset directly from disk, bypassing load_from_disk().
 
@@ -2592,8 +2697,8 @@ class FastDatasetLoaderSimple:
 
         Returns
         -------
-        SimpleArrowIterableDataset or None
-            SimpleArrowIterableDataset if successful, None otherwise.
+        ArrowIterableDataset or None
+            ArrowIterableDataset if successful, None otherwise.
         """
         dataset_path = Path(path)
 
@@ -2660,7 +2765,7 @@ class FastDatasetLoaderSimple:
                 if cached_files == arrow_files:
                     logger.info("Loading from cached index")
                     file_lengths = index_data.get("file_lengths")
-                    iterable_ds = SimpleArrowIterableDataset(arrow_files, file_lengths)
+                    iterable_ds = ArrowIterableDataset(arrow_files, file_lengths)
                     iterable_ds.length_estimate_mode = length_estimate
                     iterable_ds._reset_length_on_iter = reset_length_on_iter
                     return iterable_ds
@@ -2698,7 +2803,7 @@ class FastDatasetLoaderSimple:
         self._save_index(config_hash, arrow_files, file_lengths, metadata)
 
         # Create dataset
-        iterable_ds = SimpleArrowIterableDataset(arrow_files, file_lengths)
+        iterable_ds = ArrowIterableDataset(arrow_files, file_lengths)
         iterable_ds.length_estimate_mode = length_estimate
         iterable_ds._reset_length_on_iter = reset_length_on_iter
 
@@ -2756,7 +2861,7 @@ class FastDatasetLoaderSimple:
         **load_dataset_kwargs,
     ):
         """
-        Load a dataset as a `SimpleArrowIterableDataset`.
+        Load a dataset as a `ArrowIterableDataset`.
 
         The first call for a given ``(path, name, split)`` combination is slow
         (it triggers HuggingFace's normal dataset download and indexing pipeline).
@@ -2805,7 +2910,7 @@ class FastDatasetLoaderSimple:
 
         Returns
         -------
-        SimpleArrowIterableDataset
+        ArrowIterableDataset
             An iterable dataset backed directly by the Arrow cache files,
             ready for shuffling, sharding, mapping, and checkpointing.
         """
@@ -2862,7 +2967,7 @@ class FastDatasetLoaderSimple:
                     logger.debug(f"Split: {split}")
 
                 # Create simple iterable dataset (INSTANT!)
-                iterable_ds = SimpleArrowIterableDataset(arrow_files, file_lengths)
+                iterable_ds = ArrowIterableDataset(arrow_files, file_lengths)
 
                 # Set length estimation configuration
                 iterable_ds.length_estimate_mode = length_estimate
@@ -2957,7 +3062,7 @@ class FastDatasetLoaderSimple:
             )
 
             # Create dataset and apply slice if present
-            iterable_ds = SimpleArrowIterableDataset(arrow_files, file_lengths)
+            iterable_ds = ArrowIterableDataset(arrow_files, file_lengths)
 
             # Set length estimation configuration
             iterable_ds.length_estimate_mode = length_estimate
@@ -3046,7 +3151,7 @@ def fast_load_iterable_dataset(
 
     Returns
     -------
-    SimpleArrowIterableDataset
+    ArrowIterableDataset
         Iterable dataset backed by Arrow cache files that supports:
 
         - `.shuffle(seed)` for shard-level and example-level shuffling

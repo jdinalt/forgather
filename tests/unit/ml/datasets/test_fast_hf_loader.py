@@ -1830,7 +1830,7 @@ def test_length_estimate_with_interleaved_and_batched_map():
     Test length estimation with InterleavedDataset and batched packing operations.
 
     This tests the user's scenario:
-    - Two SimpleArrowIterableDataset with batched packing map
+    - Two ArrowIterableDataset with batched packing map
     - Combined with InterleavedDataset (all_exhausted strategy)
     - Length should update during iteration
     - Length should be cached after complete iteration
