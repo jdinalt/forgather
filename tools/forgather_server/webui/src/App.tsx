@@ -8,6 +8,7 @@ import { GpuPanel } from "./components/GpuPanel";
 import { NodesPanel } from "./components/NodesPanel";
 import { EvalModal } from "./components/EvalModal";
 import { InferenceModal } from "./components/InferenceModal";
+import { DatasetServerModal } from "./components/DatasetServerModal";
 import { InferencePanel } from "./components/InferencePanel";
 import { JobsPanel } from "./components/JobsPanel";
 import { QueuePanel } from "./components/QueuePanel";
@@ -132,6 +133,7 @@ export default function App() {
   const [filesOpen, setFilesOpen] = useState(false);
   const [viewsOpen, setViewsOpen] = useState(true);
   const [startServerOpen, setStartServerOpen] = useState(false);
+  const [datasetServerOpen, setDatasetServerOpen] = useState(false);
   const [tensorboardOpen, setTensorboardOpen] = useState(false);
   const [mkdocsOpen, setMkdocsOpen] = useState(false);
   const [convertOpen, setConvertOpen] = useState(false);
@@ -435,6 +437,13 @@ export default function App() {
               </button>
               <button
                 className="sidebar-tool-btn"
+                onClick={() => setDatasetServerOpen(true)}
+                title="Run the Forgather dataset server — clients route fast_load_iterable_dataset over HTTP via FORGATHER_DATASET_SERVER"
+              >
+                🗂 Start Dataset Server…
+              </button>
+              <button
+                className="sidebar-tool-btn"
                 onClick={() => setEvaluateOpen(true)}
                 title="Run loss/perplexity evaluation against any model directory"
               >
@@ -646,6 +655,12 @@ export default function App() {
         <InferenceModal
           checkpointPath={null}
           onClose={() => setStartServerOpen(false)}
+          onSubmitted={onJobSubmitted}
+        />
+      )}
+      {datasetServerOpen && (
+        <DatasetServerModal
+          onClose={() => setDatasetServerOpen(false)}
           onSubmitted={onJobSubmitted}
         />
       )}

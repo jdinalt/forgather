@@ -27,6 +27,7 @@ from forgather.meta_config import MetaConfig
 from . import (
     convert_ops,
     dataset_ops,
+    dataset_server_ops,
     eval_ops,
     finalize_ops,
     inference_ops,
@@ -598,6 +599,42 @@ def spawn_model_process(
         amp=amp,
     )
     return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
+
+
+def spawn_dataset_server_process(
+    *,
+    host: str,
+    port: int,
+    tty_log_path: Path,
+    log_level: str = "INFO",
+    no_hf: bool = False,
+    allow_paths: bool = False,
+    allow_downloads: bool = False,
+    locals_: Optional[List[tuple]] = None,
+    config_file: Optional[str] = None,
+    auth_token_file: Optional[str] = None,
+    no_auth: bool = False,
+    extra_env: Optional[Dict[str, str]] = None,
+) -> LaunchResult:
+    """Spawn a Forgather dataset server.
+
+    CPU-only (no GPUs reserved); long-lived like inference / tensorboard.
+    Token, when present, is passed via 0600 file rather than argv so it
+    isn't visible in ``ps``.
+    """
+    cmd = dataset_server_ops.build_dataset_server_command(
+        host=host,
+        port=port,
+        log_level=log_level,
+        no_hf=no_hf,
+        allow_paths=allow_paths,
+        allow_downloads=allow_downloads,
+        locals_=locals_,
+        config_file=config_file,
+        auth_token_file=auth_token_file,
+        no_auth=no_auth,
+    )
+    return _spawn_subprocess(cmd, [], tty_log_path, extra_env)
 
 
 def spawn_dataset_process(

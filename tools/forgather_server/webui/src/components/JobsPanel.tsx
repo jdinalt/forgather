@@ -24,6 +24,7 @@ const JOB_TYPE_CHIPS: Record<Job["job_type"], { label: string; className: string
   training: { label: "train", className: "type-train" },
   eval: { label: "eval", className: "type-eval" },
   inference: { label: "serve", className: "type-inference" },
+  dataset_server: { label: "dataset-srv", className: "type-inference" },
   tensorboard: { label: "tb", className: "type-tensorboard" },
   mkdocs: { label: "docs", className: "type-mkdocs" },
   convert: { label: "convert", className: "type-convert" },
@@ -546,6 +547,7 @@ function JobCard({
   const isOurs = job.source !== "endpoint";
   const isEval = job.job_type === "eval";
   const isInference = job.job_type === "inference";
+  const isDatasetServer = job.job_type === "dataset_server";
   const isTensorBoard = job.job_type === "tensorboard";
   const isMkDocs = job.job_type === "mkdocs";
   const isConvert = job.job_type === "convert";
@@ -578,6 +580,21 @@ function JobCard({
       : null;
   const inferenceUrl = inferencePort
     ? `http://${browserSafeHost(inferenceHost)}:${inferencePort}`
+    : null;
+
+  // Dataset server: same shape as inference — local HTTP service whose
+  // host/port the user picked. Render the URL so the operator can copy it
+  // into FORGATHER_DATASET_SERVER on the client side.
+  const dsHost =
+    isDatasetServer && typeof job.job_params?.host === "string"
+      ? (job.job_params.host as string)
+      : null;
+  const dsPort =
+    isDatasetServer && typeof job.job_params?.port === "number"
+      ? (job.job_params.port as number)
+      : null;
+  const dsUrl = dsPort
+    ? `http://${browserSafeHost(dsHost)}:${dsPort}`
     : null;
 
   // TensorBoard is the same idea: a local web server. ``bind_all`` →
@@ -724,6 +741,35 @@ function JobCard({
           )}
         </div>
       )}
+      {isDatasetServer && job.job_params && (
+        <div className="queue-dirs muted">
+          <div>
+            <span>url:</span>{" "}
+            <code>{dsUrl ?? "—"}</code>
+          </div>
+          {job.auth_token ? (
+            <div>
+              <span>token:</span>{" "}
+              <code>{job.auth_token}</code>
+            </div>
+          ) : (
+            <div>
+              <span>auth:</span> <em>--no-auth</em>
+            </div>
+          )}
+          {Array.isArray(job.job_params.locals) &&
+            (job.job_params.locals as unknown[]).length > 0 && (
+              <div>
+                <span>locals:</span>{" "}
+                <code>
+                  {(job.job_params.locals as Array<[string, string]>)
+                    .map(([n]) => n)
+                    .join(", ")}
+                </code>
+              </div>
+            )}
+        </div>
+      )}
       {isTensorBoard && job.job_params && (
         <div className="queue-dirs muted">
           <div>
@@ -852,7 +898,9 @@ function JobCard({
                 ? `Kill ${job.id}? Ends the evaluation subprocess.`
                 : isInference
                   ? `Stop inference server ${job.id}? The HTTP endpoint will drop.`
-                  : isTensorBoard
+                  : isDatasetServer
+                    ? `Stop dataset server ${job.id}? Active client streams will be cut.`
+                    : isTensorBoard
                     ? `Stop TensorBoard ${job.id}? The viewer at :${tbPort} will drop.`
                     : isMkDocs
                       ? `Stop MkDocs ${job.id}? The docs server at :${mkPort} will drop.`

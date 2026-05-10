@@ -97,6 +97,7 @@ _SUPPORTED_JOB_TYPES = {
     "training",
     "eval",
     "inference",
+    "dataset_server",
     "tensorboard",
     "mkdocs",
     "convert",
@@ -112,6 +113,7 @@ _SUPPORTED_JOB_TYPES = {
 _REQUIRED_PARAMS_BY_TYPE = {
     "eval": {"eval_project", "eval_template", "model_path"},
     "inference": {"model_path", "port"},
+    "dataset_server": {"port"},
     "tensorboard": {"logdir", "port"},
     "mkdocs": {"config_file", "port"},
     "convert": {"src_model_path", "dst_model_path"},
@@ -133,6 +135,7 @@ _ZERO_GPU_JOB_TYPES = {
     "update",
     "model",
     "dataset",
+    "dataset_server",
 }
 
 

@@ -93,6 +93,24 @@ def inference_token_file(queue_id: str) -> Path:
     return inference_tokens_dir() / f"{queue_id}.token"
 
 
+def dataset_server_tokens_dir() -> Path:
+    """Per-job bearer tokens for spawned dataset_server instances.
+
+    Mirrors ``inference_tokens_dir`` — one file per queue_id, mode 0600,
+    passed to the spawn via ``--auth-token-file`` so the token never
+    lands in argv.
+    """
+    d = server_state_dir() / "dataset_server"
+    d.mkdir(parents=True, exist_ok=True)
+    _tighten_dir(d, 0o700)
+    return d
+
+
+def dataset_server_token_file(queue_id: str) -> Path:
+    """Path to the per-job dataset_server auth token (0600)."""
+    return dataset_server_tokens_dir() / f"{queue_id}.token"
+
+
 def cluster_state_dir() -> Path:
     """Persistent directory for multi-node cluster state.
 
