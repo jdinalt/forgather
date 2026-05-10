@@ -188,6 +188,74 @@ Why is path-loading off by default? Two reasons:
   same path may not exist on every server. Named locals are an
   abstraction that keeps the client request stable.
 
+## Configuration file
+
+For repeated invocations or many local mappings it's often easier
+to load the server's options from a YAML file instead of typing
+flags. Pass it via `--config FILE`:
+
+```bash
+forgather dataset-server start --config ~/dataset_server.yaml
+```
+
+The YAML keys mirror the CLI flag names with `-` replaced by `_`.
+Boolean flags (`--no-auth`, `--no-hf`, `--allow-paths`,
+`--allow-downloads`) are written as YAML booleans. The `local`
+field uses a mapping (more idiomatic in YAML than the CLI's
+repeated `NAME=PATH` form):
+
+```yaml
+# ~/dataset_server.yaml
+host: 0.0.0.0
+port: 8766
+log_level: INFO
+
+# Auth (pick at most one)
+no_auth: false                   # default: bearer-token auth on
+# auth_token_file: ~/.fdss.token
+
+# Loading policy
+no_hf: false                     # default: HF cache enabled
+allow_paths: false               # default: path loading off
+allow_downloads: false           # default: cache-only HF
+
+# Named local datasets — mapping form.
+local:
+  stories: /data/tinystories
+  mycorpus: /data/saved_corpus
+  fineweb: /data/hf_caches/fineweb-edu/snapshots/abc123
+```
+
+Then start it with:
+
+```bash
+forgather dataset-server start --config ~/dataset_server.yaml
+```
+
+### Precedence
+
+CLI flags always win. Anything you don't pass on the command
+line falls back to the config-file value, and anything missing
+from both falls back to the script's built-in default.
+
+`--local` is the one merge case rather than override case: the
+file's `local:` mapping and any `--local NAME=PATH` flags on the
+command line are unioned (CLI wins on a name conflict). This
+matches the typical workflow of keeping permanent local mappings
+in a config file and adding a one-off `--local foo=/tmp/scratch`
+on the command line for an ad-hoc experiment.
+
+### What's allowed
+
+Every CLI flag is a legal config key, except `--config` itself
+(can't recurse) and `--help`. Unknown keys cause the server to
+exit with an error so typos surface immediately rather than being
+silently ignored.
+
+PyYAML is required to parse the file (the server imports it
+lazily); install via `pip install pyyaml` if it isn't already
+present from the rest of forgather's dependencies.
+
 ## Running
 
 ### Stand-alone executable

@@ -183,7 +183,99 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    parser.add_argument(
+        "--config",
+        default=None,
+        type=os.path.expanduser,
+        metavar="FILE",
+        help=(
+            "Optional YAML config file. Keys mirror the CLI flag names "
+            "with '-' replaced by '_' (e.g. 'no_auth: true', 'allow_paths: "
+            "true'). The 'local' key takes a mapping of NAME -> PATH. CLI "
+            "flags override file values. See the README's 'Configuration "
+            "file' section for an example."
+        ),
+    )
+
     return parser
+
+
+def _load_yaml_config(path: str) -> dict:
+    """Load and validate a YAML config file."""
+    try:
+        import yaml
+    except ImportError as exc:
+        raise SystemExit(f"--config requires PyYAML; pip install pyyaml ({exc})")
+    try:
+        with open(path, "r") as f:
+            data = yaml.safe_load(f) or {}
+    except OSError as exc:
+        raise SystemExit(f"Could not read --config {path}: {exc}")
+    except yaml.YAMLError as exc:
+        raise SystemExit(f"Invalid YAML in --config {path}: {exc}")
+    if not isinstance(data, dict):
+        raise SystemExit(f"--config {path} must contain a YAML mapping at root")
+    return data
+
+
+def _merge_config(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    config: dict,
+) -> None:
+    """Apply ``config`` values to ``args`` for keys still at their default.
+
+    CLI flags always win — values that the user supplied on the command
+    line keep their value. The ``local`` key is special-cased: in the
+    YAML it is a mapping ``{name: path, ...}``; we translate it to the
+    same ``[(name, path), ...]`` shape that ``--local`` produces.
+    """
+    defaults = {a.dest: a.default for a in parser._actions if a.dest != "help"}
+    known_keys = set(defaults) - {"config"}
+
+    # Collect locals defined on the CLI so we can merge with file
+    # locals rather than overwrite (a user-supplied --local should
+    # add to, not replace, the file's local mappings).
+    cli_locals = list(args.local or [])
+
+    for raw_key, value in config.items():
+        key = raw_key.replace("-", "_")
+        if key not in known_keys:
+            raise SystemExit(
+                f"Unknown key in --config: {raw_key!r} "
+                f"(allowed: {sorted(known_keys)})"
+            )
+        if key == "local":
+            # YAML form: {name: path, ...} -> [(name, abspath), ...]
+            if not isinstance(value, dict):
+                raise SystemExit(
+                    f"--config 'local' must be a mapping (got {type(value).__name__})"
+                )
+            file_locals = []
+            for name, path in value.items():
+                if not isinstance(name, str) or "/" in name:
+                    raise SystemExit(
+                        f"--config local: invalid name {name!r} "
+                        "(must be string without '/')"
+                    )
+                if not isinstance(path, str):
+                    raise SystemExit(f"--config local[{name!r}]: path must be a string")
+                resolved = os.path.abspath(os.path.expanduser(path))
+                if not os.path.exists(resolved):
+                    raise SystemExit(
+                        f"--config local[{name!r}]: path does not exist: {resolved}"
+                    )
+                file_locals.append((name, resolved))
+            # Locals: union of file + CLI, with CLI winning on conflict
+            # (matches "CLI overrides config" precedence).
+            cli_names = {n for n, _ in cli_locals}
+            merged = [(n, p) for n, p in file_locals if n not in cli_names]
+            merged.extend(cli_locals)
+            args.local = merged
+            continue
+        # For non-local keys: only override if arg is still at its default.
+        if getattr(args, key) == defaults[key]:
+            setattr(args, key, value)
 
 
 def _resolve_auth_token(
@@ -234,6 +326,10 @@ def _install_token_cleanup(token_path: Path) -> None:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
+
+    if args.config:
+        config = _load_yaml_config(args.config)
+        _merge_config(parser, args, config)
 
     log_level = getattr(logging, args.log_level.upper(), logging.INFO)
     logging.basicConfig(
