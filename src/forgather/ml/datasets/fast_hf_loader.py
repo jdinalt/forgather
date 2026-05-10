@@ -666,7 +666,7 @@ def _remote_load_iterable_dataset(
     from urllib.error import HTTPError, URLError
     from urllib.request import Request, urlopen
 
-    from .remote_backend import RemoteBackend
+    from .remote_backend import RemoteBackend, resolve_auth_token
 
     base_split, slice_start, slice_end = (
         _parse_split_notation(split) if split else (split, None, None)
@@ -683,12 +683,11 @@ def _remote_load_iterable_dataset(
         "utf-8"
     )
     url = server_url.rstrip("/") + "/v1/load"
-    req = Request(
-        url,
-        data=payload,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    token = resolve_auth_token(server_url, explicit=None)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = Request(url, data=payload, method="POST", headers=headers)
     try:
         with urlopen(req, timeout=300.0) as resp:
             body = json.loads(resp.read().decode("utf-8"))
@@ -707,7 +706,7 @@ def _remote_load_iterable_dataset(
         ) from exc
 
     handle = body["handle"]
-    backend = RemoteBackend(server_url, handle)
+    backend = RemoteBackend(server_url, handle, token=token)
     ds = ComposableIterableDataset(
         backend,
         length_estimate=length_estimate,

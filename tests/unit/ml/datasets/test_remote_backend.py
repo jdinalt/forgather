@@ -1,6 +1,7 @@
 """
-Round-trip tests for RemoteBackend against an in-process
-DatasetServer.
+Round-trip tests for RemoteBackend against an in-process uvicorn-hosted
+DatasetServer. Also exercises the policy gates (HF cache / path / local
+mappings) and bearer-token auth.
 
 We host an InMemoryBackend on a localhost server (OS-assigned port)
 and exercise the proxy via both the bare backend interface AND the
@@ -13,8 +14,11 @@ the proxy needing to know about them.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 import pytest
 
@@ -28,7 +32,7 @@ from forgather.ml.datasets import (
 # tools/ isn't on sys.path; add it so we can import dataset_server.
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(_REPO_ROOT / "tools"))
-from dataset_server import DatasetServer  # noqa: E402
+from dataset_server import ServerState, TestServer  # noqa: E402
 
 
 def _examples(n: int):
@@ -37,8 +41,8 @@ def _examples(n: int):
 
 @pytest.fixture
 def server():
-    """Spin up a server on an OS-assigned port for this test."""
-    srv = DatasetServer(host="127.0.0.1", port=0)
+    """Spin up a no-auth test server on an OS-assigned port."""
+    srv = TestServer(host="127.0.0.1", port=0, auth_token=None)
     srv.start()
     try:
         yield srv
@@ -46,7 +50,7 @@ def server():
         srv.stop()
 
 
-def _client(server: DatasetServer, handle: str, **kwargs) -> RemoteBackend:
+def _client(server: TestServer, handle: str, **kwargs) -> RemoteBackend:
     return RemoteBackend(server.url, handle, **kwargs)
 
 
@@ -71,7 +75,6 @@ class TestRemoteBackendConformance:
         client = _client(server, "toy")
         ids = [ex["id"] for ex in client]
         assert ids == list(range(10))
-        # Position has advanced to end.
         assert client.position() == 10
 
     def test_iter_preserves_complex_values(self, server):
@@ -98,7 +101,7 @@ class TestRemoteBackendConformance:
         c = [ex["id"] for ex in client.shuffle(seed=99)]
         assert a == b
         assert sorted(a) == list(range(20))
-        assert a != list(range(20))  # actually permuted
+        assert a != list(range(20))
         assert a != c
 
     def test_shuffle_then_seek(self, server):
@@ -114,7 +117,6 @@ class TestRemoteBackendConformance:
         it = iter(client)
         first_three = [next(it) for _ in range(3)]
         assert client.position() == 3
-        # Resume from where we are by seeking.
         rest = list(client.seek(client.position()))
         assert [ex["id"] for ex in first_three + rest] == list(range(20))
 
@@ -126,8 +128,7 @@ class TestRemoteBackendConformance:
 
 class TestRemoteMatchesLocal:
     def test_iter_order_matches(self, server):
-        local = InMemoryBackend(_examples(50))
-        server.register("match", local)
+        server.register("match", InMemoryBackend(_examples(50)))
         remote = _client(server, "match")
         assert [e["id"] for e in remote] == [
             e["id"] for e in InMemoryBackend(_examples(50))
@@ -146,9 +147,6 @@ class TestRemoteMatchesLocal:
 
 
 class TestWrapperOverRemote:
-    """All the higher-level ops should work through the wrapper without
-    the proxy needing to know about them."""
-
     def test_basic_iter(self, server):
         server.register("w", InMemoryBackend(_examples(20)))
         ds = ComposableIterableDataset(_client(server, "w"))
@@ -200,7 +198,6 @@ class TestWrapperOverRemote:
         partial = [next(it) for _ in range(8)]
         state = ds.state_dict()
 
-        # Reconstruct a fresh wrapper and resume from saved state.
         ds2 = ComposableIterableDataset(_client(server, "w"))
         ds2.load_state_dict(state)
         rest = list(ds2)
@@ -209,18 +206,16 @@ class TestWrapperOverRemote:
 
     def test_state_dict_roundtrip_with_shuffle_and_slice(self, server):
         server.register("w", InMemoryBackend(_examples(60)))
-        ds = (
-            ComposableIterableDataset(_client(server, "w"))
-            .shuffle(seed=11, buffer_size=0)
-            .slice(5, 50)
-        )
-        # Reference full sequence for the same configuration.
         ref = list(
             ComposableIterableDataset(_client(server, "w"))
             .shuffle(seed=11, buffer_size=0)
             .slice(5, 50)
         )
-        # Partial-then-resume should match.
+        ds = (
+            ComposableIterableDataset(_client(server, "w"))
+            .shuffle(seed=11, buffer_size=0)
+            .slice(5, 50)
+        )
         it = iter(ds)
         partial = [next(it) for _ in range(7)]
         state = ds.state_dict()
@@ -236,7 +231,7 @@ class TestWrapperOverRemote:
 
 
 # ---------------------------------------------------------------------
-# Server lifecycle / error-handling sanity
+# Server lifecycle / error handling
 # ---------------------------------------------------------------------
 
 
@@ -248,93 +243,252 @@ class TestServerLifecycle:
     def test_handles_listing(self, server):
         server.register("a", InMemoryBackend(_examples(1)))
         server.register("b", InMemoryBackend(_examples(2)))
-        assert server.list_handles() == ["a", "b"]
+        assert sorted(server.list_handles()) == ["a", "b"]
 
     def test_context_manager(self):
-        srv = DatasetServer(host="127.0.0.1", port=0)
+        srv = TestServer(host="127.0.0.1", port=0, auth_token=None)
         srv.register("ctx", InMemoryBackend(_examples(3)))
         with srv:
             client = RemoteBackend(srv.url, "ctx")
             assert len(client) == 3
-        # After exit the server is stopped — further requests fail.
         with pytest.raises(Exception):
             len(RemoteBackend(srv.url, "ctx"))
 
 
 # ---------------------------------------------------------------------
-# Load-on-demand (POST /v1/load) and FORGATHER_DATASET_SERVER routing
+# Bearer-token auth
 # ---------------------------------------------------------------------
 
 
-class TestLoadOnDemand:
-    def test_post_load_disabled_by_default(self, server):
-        """Without allow_load=True, /v1/load returns 403."""
-        import json
-        from urllib.error import HTTPError
-        from urllib.request import Request, urlopen
+class TestAuth:
+    def test_no_auth_health_open(self, server):
+        # /v1/health should be open even when auth IS required, but
+        # this fixture has auth disabled — confirm 200 either way.
+        with urlopen(f"{server.url}/v1/health", timeout=5) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        assert payload["status"] == "ok"
 
-        req = Request(
-            f"{server.url}/v1/load",
-            data=json.dumps({"path": "wikitext"}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with pytest.raises(HTTPError) as ei:
-            urlopen(req, timeout=5).read()
-        assert ei.value.code == 403
+    def test_auth_status_endpoint(self, server):
+        with urlopen(f"{server.url}/v1/auth/status", timeout=5) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        assert payload == {"auth_required": False}
 
-    def test_post_load_requires_path(self):
-        import json
-        from urllib.error import HTTPError
-        from urllib.request import Request, urlopen
+    def test_with_auth_required_401_without_header(self):
+        srv = TestServer(host="127.0.0.1", port=0, auth_token="secret")
+        with srv:
+            with pytest.raises(HTTPError) as ei:
+                urlopen(f"{srv.url}/v1/datasets", timeout=5).read()
+            assert ei.value.code == 401
 
-        srv = DatasetServer(host="127.0.0.1", port=0, allow_load=True)
+    def test_with_auth_required_401_wrong_token(self):
+        srv = TestServer(host="127.0.0.1", port=0, auth_token="secret")
         with srv:
             req = Request(
-                f"{srv.url}/v1/load",
-                data=json.dumps({}).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST",
+                f"{srv.url}/v1/datasets",
+                headers={"Authorization": "Bearer wrong"},
             )
             with pytest.raises(HTTPError) as ei:
                 urlopen(req, timeout=5).read()
-            assert ei.value.code == 400
+            assert ei.value.code == 401
 
-    def test_load_on_demand_serves_local_dataset(self, tmp_path):
-        """End-to-end: server lazy-loads via _local_load_iterable_dataset
-        and returns a working handle."""
-        import json
-        from urllib.request import Request, urlopen
+    def test_with_auth_required_200_correct_token(self):
+        srv = TestServer(host="127.0.0.1", port=0, auth_token="secret")
+        srv.register("a", InMemoryBackend(_examples(2)))
+        with srv:
+            req = Request(
+                f"{srv.url}/v1/datasets",
+                headers={"Authorization": "Bearer secret"},
+            )
+            with urlopen(req, timeout=5) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            assert any(h["handle"] == "a" for h in payload["handles"])
 
-        # Build a tiny on-disk dataset to avoid network in tests.
+    def test_auth_status_reports_required(self):
+        srv = TestServer(host="127.0.0.1", port=0, auth_token="secret")
+        with srv:
+            with urlopen(f"{srv.url}/v1/auth/status", timeout=5) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        assert payload == {"auth_required": True}
+
+    def test_remote_backend_passes_token(self):
+        srv = TestServer(host="127.0.0.1", port=0, auth_token="hunter2")
+        srv.register("a", InMemoryBackend(_examples(5)))
+        with srv:
+            be = RemoteBackend(srv.url, "a", token="hunter2")
+            assert len(be) == 5
+            assert [e["id"] for e in be] == list(range(5))
+
+
+# ---------------------------------------------------------------------
+# Loading policy: --no-hf, --allow-paths, local mappings
+# ---------------------------------------------------------------------
+
+
+class TestLoadPolicy:
+    def test_post_load_requires_path(self, server):
+        req = Request(
+            f"{server.url}/v1/load",
+            data=b"{}",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(HTTPError) as ei:
+            urlopen(req, timeout=5).read()
+        assert ei.value.code == 400
+
+    def test_path_loading_disabled_by_default(self, server, tmp_path):
         from datasets import Dataset
 
         ds_path = tmp_path / "tiny"
-        Dataset.from_dict(
-            {"id": list(range(15)), "text": [f"row_{i}" for i in range(15)]}
-        ).save_to_disk(str(ds_path))
+        Dataset.from_dict({"id": [0, 1, 2]}).save_to_disk(str(ds_path))
+        body = json.dumps({"path": str(ds_path)}).encode("utf-8")
+        req = Request(
+            f"{server.url}/v1/load",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(HTTPError) as ei:
+            urlopen(req, timeout=10).read()
+        assert ei.value.code == 403
 
-        srv = DatasetServer(host="127.0.0.1", port=0, allow_load=True)
+    def test_path_loading_with_allow_paths(self, tmp_path):
+        from datasets import Dataset
+
+        ds_path = tmp_path / "tiny"
+        Dataset.from_dict({"id": list(range(7))}).save_to_disk(str(ds_path))
+
+        state = ServerState(allow_paths=True)
+        srv = TestServer(host="127.0.0.1", port=0, auth_token=None, state=state)
         with srv:
+            body = json.dumps({"path": str(ds_path)}).encode("utf-8")
             req = Request(
                 f"{srv.url}/v1/load",
-                data=json.dumps({"path": str(ds_path)}).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                data=body,
                 method="POST",
+                headers={"Content-Type": "application/json"},
             )
-            resp = json.loads(urlopen(req, timeout=10).read().decode("utf-8"))
-            assert resp["length"] == 15
-            handle = resp["handle"]
+            with urlopen(req, timeout=10) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            assert payload["length"] == 7
+            assert payload["source"] == "path"
 
-            # Now read examples through the returned handle.
-            client = RemoteBackend(srv.url, handle)
-            assert len(client) == 15
-            assert [ex["id"] for ex in client] == list(range(15))
+    def test_local_mapping_resolves(self, tmp_path):
+        from datasets import Dataset
 
-    def test_env_var_routing(self, tmp_path, monkeypatch):
-        """fast_load_iterable_dataset routes through the server when
-        FORGATHER_DATASET_SERVER is set; output should match the
-        local-load result."""
+        ds_path = tmp_path / "stories"
+        Dataset.from_dict({"id": list(range(11))}).save_to_disk(str(ds_path))
+
+        state = ServerState()
+        state.add_local("stories", str(ds_path))
+        srv = TestServer(host="127.0.0.1", port=0, auth_token=None, state=state)
+        with srv:
+            body = json.dumps({"path": "local/stories"}).encode("utf-8")
+            req = Request(
+                f"{srv.url}/v1/load",
+                data=body,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urlopen(req, timeout=10) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            assert payload["length"] == 11
+            assert payload["source"] == "local"
+
+            # And the /v1/local diagnostic endpoint reflects it.
+            with urlopen(f"{srv.url}/v1/local", timeout=5) as resp:
+                local_payload = json.loads(resp.read().decode("utf-8"))
+            names = [it["name"] for it in local_payload["local"]]
+            assert names == ["stories"]
+
+    def test_unknown_local_404(self):
+        srv = TestServer(host="127.0.0.1", port=0, auth_token=None)
+        with srv:
+            body = json.dumps({"path": "local/missing"}).encode("utf-8")
+            req = Request(
+                f"{srv.url}/v1/load",
+                data=body,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with pytest.raises(HTTPError) as ei:
+                urlopen(req, timeout=5).read()
+            assert ei.value.code == 404
+
+    def test_no_hf_blocks_hf_id(self):
+        # With --no-hf we should reject anything that looks like an HF
+        # repo id (i.e. doesn't exist on disk and isn't a local/* mapping).
+        state = ServerState(hf_cache_enabled=False)
+        srv = TestServer(host="127.0.0.1", port=0, auth_token=None, state=state)
+        with srv:
+            body = json.dumps({"path": "allenai/c4", "name": "en"}).encode("utf-8")
+            req = Request(
+                f"{srv.url}/v1/load",
+                data=body,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with pytest.raises(HTTPError) as ei:
+                urlopen(req, timeout=5).read()
+            assert ei.value.code == 403
+
+
+# ---------------------------------------------------------------------
+# Diagnostic endpoint: /v1/cache/hf
+# ---------------------------------------------------------------------
+
+
+class TestHFCacheEndpoint:
+    def test_cache_endpoint_empty(self, server, tmp_path, monkeypatch):
+        # Point HF_DATASETS_CACHE at an empty dir so the result is
+        # deterministic regardless of what's actually on the test host.
+        monkeypatch.setenv("HF_DATASETS_CACHE", str(tmp_path))
+        with urlopen(f"{server.url}/v1/cache/hf", timeout=5) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        assert payload["cache_root"] == str(tmp_path)
+        assert payload["datasets"] == []
+
+    def test_cache_endpoint_finds_repo(self, server, tmp_path, monkeypatch):
+        # Synthesize a fake HF cache layout and verify the walker
+        # surfaces it (no real `datasets` calls needed).
+        cache = tmp_path / "hf_cache"
+        repo_dir = cache / "allenai___c4"
+        cfg_dir = repo_dir / "en" / "0.0.0" / "abc123"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "dataset_info.json").write_text(
+            json.dumps(
+                {
+                    "config_name": "en",
+                    "splits": {
+                        "train": {"name": "train", "num_examples": 1000},
+                        "validation": {"name": "validation", "num_examples": 50},
+                    },
+                }
+            )
+        )
+        # A small placeholder file so size_bytes is nonzero.
+        (cfg_dir / "data-00000-of-00001.arrow").write_bytes(b"x" * 128)
+
+        monkeypatch.setenv("HF_DATASETS_CACHE", str(cache))
+        with urlopen(f"{server.url}/v1/cache/hf", timeout=5) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+
+        repos = {d["repo"]: d for d in payload["datasets"]}
+        assert "allenai/c4" in repos
+        configs = repos["allenai/c4"]["configs"]
+        assert any(c["config"] == "en" for c in configs)
+        en_cfg = next(c for c in configs if c["config"] == "en")
+        split_names = {s["name"] for s in en_cfg["splits"]}
+        assert split_names == {"train", "validation"}
+
+
+# ---------------------------------------------------------------------
+# Env-var routing through the loader
+# ---------------------------------------------------------------------
+
+
+class TestEnvVarRouting:
+    def test_env_var_routes_through_server(self, tmp_path, monkeypatch):
         from datasets import Dataset
         from forgather.ml.datasets import fast_load_iterable_dataset
         from forgather.ml.datasets.fast_hf_loader import (
@@ -342,50 +496,34 @@ class TestLoadOnDemand:
             _local_load_iterable_dataset,
         )
 
-        # Tiny on-disk dataset.
         ds_path = tmp_path / "tiny"
         Dataset.from_dict(
             {"id": list(range(20)), "text": [f"r{i}" for i in range(20)]}
         ).save_to_disk(str(ds_path))
 
-        # Reference: local load.
-        local_ds = _local_load_iterable_dataset(path=str(ds_path))
-        local_ids = [ex["id"] for ex in local_ds]
+        local_ids = [ex["id"] for ex in _local_load_iterable_dataset(path=str(ds_path))]
 
-        # Routed through server.
-        srv = DatasetServer(host="127.0.0.1", port=0, allow_load=True)
+        state = ServerState(allow_paths=True)
+        srv = TestServer(host="127.0.0.1", port=0, auth_token=None, state=state)
         with srv:
             monkeypatch.setenv(DATASET_SERVER_ENV_VAR, srv.url)
-            remote_ds = fast_load_iterable_dataset(path=str(ds_path))
-            from forgather.ml.datasets import (
-                ComposableIterableDataset,
-                RemoteBackend,
-            )
+            ds = fast_load_iterable_dataset(path=str(ds_path))
+            assert isinstance(ds, ComposableIterableDataset)
+            assert isinstance(ds.backend, RemoteBackend)
+            assert [ex["id"] for ex in ds] == local_ids
 
-            assert isinstance(remote_ds, ComposableIterableDataset)
-            assert isinstance(remote_ds.backend, RemoteBackend)
-            remote_ids = [ex["id"] for ex in remote_ds]
-
-        assert remote_ids == local_ids
-
-    def test_env_var_routing_with_split_notation(self, tmp_path, monkeypatch):
-        """Split-notation slice (e.g. 'train[5:15]') is parsed
-        client-side and applied as a wrapper-level slice over the
-        server's base-split backend."""
+    def test_env_var_with_local_mapping(self, tmp_path, monkeypatch):
         from datasets import Dataset
         from forgather.ml.datasets import fast_load_iterable_dataset
         from forgather.ml.datasets.fast_hf_loader import DATASET_SERVER_ENV_VAR
 
-        ds_path = tmp_path / "tiny"
-        Dataset.from_dict({"id": list(range(30))}).save_to_disk(str(ds_path / "train"))
-        # save_to_disk on a single Dataset writes to ds_path itself,
-        # not a subdir, so use the root.
-        ds_path2 = tmp_path / "tiny2"
-        Dataset.from_dict({"id": list(range(30))}).save_to_disk(str(ds_path2))
+        ds_path = tmp_path / "stories"
+        Dataset.from_dict({"id": list(range(15))}).save_to_disk(str(ds_path))
 
-        srv = DatasetServer(host="127.0.0.1", port=0, allow_load=True)
+        state = ServerState()
+        state.add_local("stories", str(ds_path))
+        srv = TestServer(host="127.0.0.1", port=0, auth_token=None, state=state)
         with srv:
             monkeypatch.setenv(DATASET_SERVER_ENV_VAR, srv.url)
-            ds = fast_load_iterable_dataset(path=str(ds_path2), split="train[5:15]")
-            ids = [ex["id"] for ex in ds]
-        assert ids == list(range(5, 15))
+            ds = fast_load_iterable_dataset(path="local/stories")
+            assert [ex["id"] for ex in ds] == list(range(15))

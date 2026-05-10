@@ -12,9 +12,15 @@ handle without interfering with each other's iteration cursors.
 Wire format: newline-delimited JSON. See ``tools/dataset_server`` for
 the matching server side.
 
-This is a proof-of-concept implementation intended to validate that
-the backend interface is sufficient for remote consumption. It is
-deliberately minimal: no retries, no compression, no auth, no
+Auth: when the server is configured for bearer-token auth, the
+client must send ``Authorization: Bearer <token>``. Tokens are
+either passed explicitly via the ``token`` constructor argument, or
+auto-discovered for localhost URLs by reading the per-port file the
+server publishes under ``$FORGATHER_HOME/dataset_server/<port>.token``.
+The ``$FORGATHER_DATASET_SERVER_TOKEN`` environment variable wins
+over both.
+
+This is intentionally minimal: no retries, no compression, no
 connection pooling. Wrap it in a ``ComposableIterableDataset`` for
 map / filter / shard / state_dict semantics.
 """
@@ -23,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Iterator, Optional
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -30,6 +37,10 @@ from urllib.request import Request, urlopen
 from .iterable_backend import IterableDatasetBackend
 
 logger = logging.getLogger(__name__)
+
+
+#: Env var that overrides any auto-discovered or passed-in token.
+TOKEN_ENV_VAR = "FORGATHER_DATASET_SERVER_TOKEN"
 
 
 def _from_jsonable(value):
@@ -45,6 +56,35 @@ def _from_jsonable(value):
     return value
 
 
+def resolve_auth_token(url: str, explicit: Optional[str]) -> Optional[str]:
+    """Discover the bearer token for ``url``.
+
+    Order: explicit > ``$FORGATHER_DATASET_SERVER_TOKEN`` > localhost
+    per-port file. Returns ``None`` if no token is found — the server
+    might be running with ``--no-auth``, in which case requests are
+    accepted unauthenticated.
+    """
+    if explicit:
+        return explicit
+    env = os.environ.get(TOKEN_ENV_VAR)
+    if env:
+        return env.strip() or None
+    # Lazy import to avoid pulling FastAPI/uvicorn into the loader hot path.
+    try:
+        from tools.dataset_server.auth import read_standalone_token
+    except ImportError:
+        # tools/ not on sys.path — try the directly-installed name.
+        try:
+            from dataset_server.auth import read_standalone_token  # type: ignore
+        except ImportError:
+            return None
+    try:
+        return read_standalone_token(url)
+    except Exception as exc:
+        logger.debug("auth-token auto-discovery failed: %s", exc)
+        return None
+
+
 class RemoteBackend(IterableDatasetBackend):
     """
     Network-proxy backend.
@@ -52,7 +92,7 @@ class RemoteBackend(IterableDatasetBackend):
     Parameters
     ----------
     url : str
-        Base URL of the dataset server, e.g. ``"http://host:8765"``.
+        Base URL of the dataset server, e.g. ``"http://host:8766"``.
     handle : str
         Server-side identifier for the registered backend to consume.
     seed : int, optional
@@ -61,6 +101,10 @@ class RemoteBackend(IterableDatasetBackend):
         Initial flat example index. Default ``0``.
     timeout : float, optional
         Per-request HTTP timeout (seconds). Default ``60``.
+    token : str, optional
+        Explicit bearer token. If omitted, the constructor consults
+        ``$FORGATHER_DATASET_SERVER_TOKEN`` and (for localhost URLs)
+        ``$FORGATHER_HOME/dataset_server/<port>.token``.
     """
 
     def __init__(
@@ -70,6 +114,7 @@ class RemoteBackend(IterableDatasetBackend):
         seed: Optional[int] = None,
         position: int = 0,
         timeout: float = 60.0,
+        token: Optional[str] = None,
     ):
         if position < 0:
             raise ValueError(f"position must be non-negative, got {position}")
@@ -78,6 +123,9 @@ class RemoteBackend(IterableDatasetBackend):
         self._seed = seed
         self._position = position
         self._timeout = timeout
+        # Resolved once at construction; if you change tokens, build a
+        # new client. Most callers won't notice.
+        self._token = resolve_auth_token(self._url, token)
         self._cached_len: Optional[int] = None
 
     # ----- Backend interface -----
@@ -92,7 +140,7 @@ class RemoteBackend(IterableDatasetBackend):
         if self._seed is not None:
             params["seed"] = str(self._seed)
         url = f"{self._url}/v1/datasets/{self._handle}/iter?{urlencode(params)}"
-        req = Request(url, method="GET")
+        req = Request(url, method="GET", headers=self._headers())
         with urlopen(req, timeout=self._timeout) as resp:
             for raw in resp:
                 line = raw.rstrip(b"\n")
@@ -105,7 +153,7 @@ class RemoteBackend(IterableDatasetBackend):
     def __len__(self) -> int:
         if self._cached_len is None:
             url = f"{self._url}/v1/datasets/{self._handle}/length"
-            req = Request(url, method="GET")
+            req = Request(url, method="GET", headers=self._headers())
             with urlopen(req, timeout=self._timeout) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
             self._cached_len = int(payload["length"])
@@ -120,7 +168,12 @@ class RemoteBackend(IterableDatasetBackend):
         change the underlying example count).
         """
         new = RemoteBackend(
-            self._url, self._handle, seed=seed, position=0, timeout=self._timeout
+            self._url,
+            self._handle,
+            seed=seed,
+            position=0,
+            timeout=self._timeout,
+            token=self._token,
         )
         new._cached_len = self._cached_len
         return new
@@ -140,6 +193,7 @@ class RemoteBackend(IterableDatasetBackend):
             seed=self._seed,
             position=position,
             timeout=self._timeout,
+            token=self._token,
         )
         new._cached_len = self._cached_len
         return new
@@ -154,6 +208,13 @@ class RemoteBackend(IterableDatasetBackend):
         # The remote layer doesn't expose physical sharding info; the
         # server may have any number of files behind the handle.
         return 1
+
+    # ----- helpers -----
+
+    def _headers(self) -> dict[str, str]:
+        if not self._token:
+            return {}
+        return {"Authorization": f"Bearer {self._token}"}
 
     def __repr__(self) -> str:
         return (

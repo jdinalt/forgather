@@ -245,13 +245,20 @@ def parse_args(args=None):
             server_original_args = args_list[srv_idx + 1 :]
             args_list = args_list[: srv_idx + 1]
 
-    # Handle 'dataset-server' the same way as 'server' — its --port flag
-    # would otherwise be eaten by global -p, and its --help should reach
-    # the wrapped script.
+    # 'dataset-server start' uses REMAINDER passthrough so the
+    # underlying script's --port (-p) doesn't conflict with the global
+    # -p / --project-dir; --help and other server flags should also
+    # reach the script verbatim. The diagnostic actions (status, list,
+    # cache, local) are parsed normally — they have no flag conflicts.
     if "dataset-server" in args_list:
         ds_idx = args_list.index("dataset-server")
-        dataset_server_original_args = args_list[ds_idx + 1 :]
-        args_list = args_list[: ds_idx + 1]
+        after_ds = args_list[ds_idx + 1 :]
+        if after_ds and after_ds[0] == "start":
+            # Capture everything after 'start' as the remainder; keep
+            # 'dataset-server start' visible to the global parser so
+            # the subcommand is still routed correctly.
+            dataset_server_original_args = after_ds[1:]
+            args_list = args_list[: ds_idx + 2]
 
     # Handle 'finalize' command with -t (same conflict as convert; -t is the
     # finalize chat-template-path flag)
@@ -328,7 +335,14 @@ def parse_args(args=None):
         # For convert, finalize, and server commands, pass all args as remainder
         # without parsing. Their flags conflict with global flags (e.g. server's
         # -p/--port vs global -p/--project-dir).
-        if subcommand in ["convert", "finalize", "server", "dataset-server"]:
+        # `dataset-server start` is REMAINDER-passthrough; other
+        # `dataset-server` subactions parse normally.
+        ds_is_start = (
+            subcommand == "dataset-server"
+            and subcommand_args
+            and subcommand_args[0] == "start"
+        )
+        if subcommand in ["convert", "finalize", "server"] or ds_is_start:
             sub_args = argparse.Namespace()
             if subcommand == "convert":
                 sub_args.remainder = (
@@ -348,11 +362,12 @@ def parse_args(args=None):
                     if server_original_args is not None
                     else subcommand_args
                 )
-            elif subcommand == "dataset-server":
+            elif ds_is_start:
+                sub_args.ds_subcommand = "start"
                 sub_args.remainder = (
                     dataset_server_original_args
                     if dataset_server_original_args is not None
-                    else subcommand_args
+                    else subcommand_args[1:]
                 )
             else:
                 sub_args.remainder = subcommand_args
