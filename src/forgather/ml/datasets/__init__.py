@@ -27,6 +27,7 @@ from .preprocess import (
     default_tokenize_map_fn,
     preprocess_dataset,
 )
+from .remote_iterable_dataset import RemoteIterableDataset
 from .soft_sequential import soft_sequential
 
 __all__ = [
@@ -45,6 +46,7 @@ __all__ = [
     "IterableDatasetBackend",
     "ComposableIterableDataset",
     "InMemoryBackend",
+    "RemoteIterableDataset",
     # Interleaving
     "interleave_datasets",
     "InterleavedDataset",
