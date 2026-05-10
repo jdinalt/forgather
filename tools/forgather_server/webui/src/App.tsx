@@ -325,6 +325,14 @@ export default function App() {
   // its rendered page in a new tab instead of the built-in Docs view
   // (nicer rendering + search). All Tools entries share the same shape;
   // the per-tool variation is just the doc relpath and the mkdocs slug.
+  /** A single extra menu item, rendered above "Help…". Tool-specific
+   *  affordances (e.g. "Edit Configuration…" for the dataset server)
+   *  use this to attach lightweight one-shot actions without growing
+   *  the per-tool surface area further. */
+  interface ToolExtraMenuItem {
+    label: string;
+    onChoose: () => void | Promise<void>;
+  }
   interface ToolHelpMenu {
     x: number;
     y: number;
@@ -341,6 +349,8 @@ export default function App() {
     mkdocsSlug: string;
     /** Tool label used in the context menu header. */
     label: string;
+    /** Optional tool-specific items rendered above "Help…". */
+    extraItems?: ToolExtraMenuItem[];
   }
   const [toolHelpMenu, setToolHelpMenu] = useState<ToolHelpMenu | null>(null);
   // Repo root is server-resolved once; we cache so each Help click is
@@ -396,7 +406,10 @@ export default function App() {
   );
 
   // Per-tool button: standard click opens the modal; right-click opens
-  // the help menu seeded with the matching doc.
+  // the help menu seeded with the matching doc. ``extraItems`` lets a
+  // tool surface lightweight side-affordances (e.g. "Edit
+  // Configuration…") in the same context menu, without inventing a
+  // second menu type.
   interface ToolEntry {
     icon: string;
     label: string;
@@ -404,7 +417,30 @@ export default function App() {
     onOpen: () => void;
     docRelpath: string;
     mkdocsSlug: string;
+    extraItems?: ToolExtraMenuItem[];
   }
+
+  // Build "Edit Configuration…" for the dataset server. Creates the
+  // commented stub if it doesn't exist, then opens it in the editor.
+  // Errors surface via window.alert — same fallback the FilesTree's
+  // file-create path uses.
+  const onEditDatasetServerConfig = useCallback(async () => {
+    try {
+      const { path } = await api.ensureDatasetServerConfigStub();
+      openFileForEdit(path);
+    } catch (e) {
+      window.alert(
+        `Could not create / open dataset_server config: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
+    // openFileForEdit isn't memoized but is stable across renders in
+    // practice; we don't include it in deps to avoid recreating the
+    // callback on every render — and the closure captures the latest
+    // implementation via filesApi/setView regardless.
+  }, []);
+
   const TOOLS: ToolEntry[] = [
     {
       icon: "🔮",
@@ -423,6 +459,12 @@ export default function App() {
       onOpen: () => setDatasetServerOpen(true),
       docRelpath: "tools/dataset_server/README.md",
       mkdocsSlug: "tools/dataset_server/",
+      extraItems: [
+        {
+          label: "Edit Configuration…",
+          onChoose: onEditDatasetServerConfig,
+        },
+      ],
     },
     {
       icon: "📐",
@@ -598,6 +640,7 @@ export default function App() {
                       docRelpath: tool.docRelpath,
                       mkdocsSlug: tool.mkdocsSlug,
                       label: tool.label,
+                      extraItems: tool.extraItems,
                     });
                   }}
                   title={tool.title}
@@ -835,6 +878,18 @@ export default function App() {
           onClose={() => setToolHelpMenu(null)}
         >
           <div className="context-menu-header muted">{toolHelpMenu.label}</div>
+          {toolHelpMenu.extraItems?.map((item) => (
+            <button
+              key={item.label}
+              onClick={() => {
+                const fn = item.onChoose;
+                setToolHelpMenu(null);
+                void fn();
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
           <button
             onClick={() => {
               const t = toolHelpMenu;

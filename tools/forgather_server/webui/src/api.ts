@@ -1234,6 +1234,19 @@ export const api = {
     ),
   docsRoot: () => fetchJson<{ path: string | null }>("/api/docs/root"),
   docsRepoRoot: () => fetchJson<{ repo_root: string }>("/api/docs/repo-root"),
+  ensureDatasetServerConfigStub: async (): Promise<{
+    path: string;
+    created: boolean;
+  }> => {
+    const r = await fetch("/api/dataset-server/config/ensure-stub", {
+      method: "POST",
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+    return r.json();
+  },
   docsFile: (path: string) =>
     fetchJson<DocsFile>(`/api/docs/file?path=${encodeURIComponent(path)}`),
   docsAssetUrl: (path: string): string =>
