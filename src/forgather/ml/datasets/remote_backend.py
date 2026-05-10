@@ -30,8 +30,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Iterator, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from .iterable_backend import IterableDatasetBackend
@@ -41,6 +42,44 @@ logger = logging.getLogger(__name__)
 
 #: Env var that overrides any auto-discovered or passed-in token.
 TOKEN_ENV_VAR = "FORGATHER_DATASET_SERVER_TOKEN"
+
+#: Hostnames that count as "this machine" for token auto-discovery.
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+def _read_localhost_token_file(url: str) -> Optional[str]:
+    """Read the per-port token file the dataset server publishes for
+    localhost clients.
+
+    Mirrors `tools.dataset_server.auth.read_standalone_token` but is
+    inlined so the loader doesn't depend on the ``tools/`` package
+    being importable from arbitrary client processes (e.g. inside a
+    training script that imports forgather but never adds ``tools/``
+    to ``sys.path``).
+
+    Returns ``None`` if the URL isn't loopback, has no explicit port,
+    or the file doesn't exist / is empty.
+    """
+    try:
+        parsed = urlparse(url)
+    except (TypeError, ValueError):
+        return None
+    if parsed.hostname not in _LOOPBACK_HOSTS:
+        return None
+    port = parsed.port
+    if port is None:
+        return None
+    home_env = os.environ.get("FORGATHER_HOME")
+    if home_env:
+        home = Path(home_env).expanduser()
+    else:
+        home = Path.home() / ".forgather"
+    token_path = home / "dataset_server" / f"{int(port)}.token"
+    try:
+        text = token_path.read_text().strip()
+    except OSError:
+        return None
+    return text or None
 
 
 def _from_jsonable(value):
@@ -63,26 +102,18 @@ def resolve_auth_token(url: str, explicit: Optional[str]) -> Optional[str]:
     per-port file. Returns ``None`` if no token is found — the server
     might be running with ``--no-auth``, in which case requests are
     accepted unauthenticated.
+
+    Note: the localhost lookup uses an inlined reader rather than
+    importing from ``tools.dataset_server.auth`` because the loader
+    runs from arbitrary client processes that don't have the
+    ``tools/`` directory on ``sys.path``.
     """
     if explicit:
         return explicit
     env = os.environ.get(TOKEN_ENV_VAR)
     if env:
         return env.strip() or None
-    # Lazy import to avoid pulling FastAPI/uvicorn into the loader hot path.
-    try:
-        from tools.dataset_server.auth import read_standalone_token
-    except ImportError:
-        # tools/ not on sys.path — try the directly-installed name.
-        try:
-            from dataset_server.auth import read_standalone_token  # type: ignore
-        except ImportError:
-            return None
-    try:
-        return read_standalone_token(url)
-    except Exception as exc:
-        logger.debug("auth-token auto-discovery failed: %s", exc)
-        return None
+    return _read_localhost_token_file(url)
 
 
 class RemoteBackend(IterableDatasetBackend):
