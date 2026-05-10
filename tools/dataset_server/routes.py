@@ -90,6 +90,7 @@ def build_router(state: ServerState, auth_token: Optional[str]) -> APIRouter:
             "length": _safe_len(entry.backend),
             "load_args": entry.load_args,
             "source": entry.source,
+            "column_names": getattr(entry.backend, "column_names", None),
         }
 
     @router.get("/v1/datasets/{handle}/length", dependencies=deps)
@@ -155,11 +156,15 @@ def build_router(state: ServerState, auth_token: Optional[str]) -> APIRouter:
 
         entry = state.get_entry(handle)
         length = _safe_len(entry.backend) if entry is not None else 0
+        cols = (
+            getattr(entry.backend, "column_names", None) if entry is not None else None
+        )
         logger.info(
-            "POST load -> handle=%s length=%d source=%s args=%s",
+            "POST load -> handle=%s length=%d source=%s cols=%s args=%s",
             handle,
             length,
             entry.source if entry else "?",
+            cols,
             load_args,
         )
         return {
@@ -167,6 +172,7 @@ def build_router(state: ServerState, auth_token: Optional[str]) -> APIRouter:
             "length": length,
             "load_args": entry.load_args if entry else load_args,
             "source": entry.source if entry else None,
+            "column_names": cols,
         }
 
     @router.get("/v1/cache/hf", dependencies=deps)

@@ -13,6 +13,57 @@ What flows over the wire is a thin `RemoteBackend` wrapped in the
 usual `ComposableIterableDataset`, so client-side `.shuffle()`,
 `.shard()`, `.map()`, `.state_dict()` etc. all "just work."
 
+## Quick start
+
+### Same host (zero-config auth)
+
+```bash
+# Terminal 1 — start the server. Token is auto-generated and
+# written to ~/.forgather/dataset_server/8766.token (mode 0600).
+forgather dataset-server start
+
+# Terminal 2 — point clients at it. The localhost token is
+# auto-discovered by the loader and the diagnostic CLI; no token
+# env var needed.
+export FORGATHER_DATASET_SERVER=http://localhost:8766
+
+# Confirm it's reachable.
+forgather dataset-server status
+
+# Any forgather command that loads datasets now routes through
+# the server transparently.
+forgather train
+```
+
+### Cross-host (explicit token)
+
+```bash
+# Server (data host) — bind to a real interface; auto-token is
+# printed to stderr on startup. Distribute that token to the
+# clients via your usual secret channel (config-management,
+# secret store, scp, etc.) and write it to ~/.fdss.token there
+# with mode 0600.
+forgather dataset-server start --host 0.0.0.0 \
+    --local stories=/data/tinystories
+
+# Client (training nodes) — read the token from the file rather
+# than pasting it inline (keeps it out of shell history and `ps`
+# output).
+chmod 600 ~/.fdss.token
+export FORGATHER_DATASET_SERVER=http://datahost:8766
+export FORGATHER_DATASET_SERVER_TOKEN="$(cat ~/.fdss.token)"
+
+# Sanity check: status hits /v1/health + /v1/auth/status.
+forgather dataset-server status
+# Then your normal training command — datasets are now served
+# over the wire:
+forgather train
+```
+
+For the full token-resolution order (explicit kwarg →
+`FORGATHER_DATASET_SERVER_TOKEN` → per-port localhost file →
+none) see [Authentication](#authentication) below.
+
 ## Installation
 
 The base Forgather install is sufficient — `fastapi`, `uvicorn`,

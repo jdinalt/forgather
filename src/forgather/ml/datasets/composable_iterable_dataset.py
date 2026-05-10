@@ -17,7 +17,6 @@ gets `.map()` / `.shard()` / `state_dict` "for free."
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import math
 import random
@@ -806,7 +805,7 @@ class ComposableIterableDataset(TorchIterableDataset):
             "epoch": self._epoch,
             "shuffle_buffer_size": self._shuffle_buffer_size,
             "n_maps": len(self._maps),
-            "maps_fingerprint": self._maps_fingerprint(),
+            "maps_batched": (self._maps[0]["batched"] if self._maps else None),
             "length_estimate_mode": self.length_estimate_mode,
             "reset_length_on_iter": self._reset_length_on_iter,
             "input_count": self._input_count,
@@ -825,11 +824,29 @@ class ComposableIterableDataset(TorchIterableDataset):
         """
         if state.get("wrapper_version") != 1:
             raise ValueError(f"Unknown wrapper_version: {state.get('wrapper_version')}")
-        if state.get("maps_fingerprint") != self._maps_fingerprint():
+        # Cheap shape guard. We deliberately do NOT compare function
+        # identities or fingerprints — callable identity is not stable
+        # across pickle / fork / process boundaries (e.g.
+        # ``functools.partial.__repr__`` embeds the wrapped function's
+        # memory address, which differs per process). Trying to match
+        # those was producing false-positive failures in multi-worker
+        # DataLoader resume.
+        saved_n = state.get("n_maps")
+        cur_n = len(self._maps)
+        if saved_n is not None and saved_n != cur_n:
             raise ValueError(
-                "Map chain fingerprint mismatch — reconstruct the same "
-                "map chain (with the same number/order of maps) before "
+                f"Map chain length mismatch on load_state_dict: saved "
+                f"{saved_n} maps, current wrapper has {cur_n}. "
+                "Reconstruct the wrapper with the same map chain before "
                 "calling load_state_dict."
+            )
+        saved_batched = state.get("maps_batched")
+        cur_batched = self._maps[0]["batched"] if self._maps else None
+        if saved_batched is not None and saved_batched != cur_batched:
+            raise ValueError(
+                f"Map chain batched-mode mismatch on load_state_dict: "
+                f"saved batched={saved_batched}, current batched="
+                f"{cur_batched}."
             )
         self._split_start_idx = state.get("slice_start")
         self._split_end_idx = state.get("slice_end")
@@ -861,27 +878,6 @@ class ComposableIterableDataset(TorchIterableDataset):
 
         # Mark restored so the next iteration honors saved counts.
         self._restored_from_checkpoint = True
-
-    def _maps_fingerprint(self) -> str:
-        """
-        Cheap fingerprint of the map chain so load_state_dict can
-        catch the obvious "you added/removed maps" foot-gun. Uses
-        function qualnames and kwarg keys, not the function bodies.
-        """
-        h = hashlib.sha256()
-        for spec in self._maps:
-            fn = spec["fn"]
-            qual = getattr(fn, "__qualname__", repr(fn))
-            mod = getattr(fn, "__module__", "")
-            h.update(f"{mod}.{qual}|".encode())
-            h.update(f"batched={spec['batched']}|".encode())
-            h.update(f"with_indices={spec['with_indices']}|".encode())
-            ic = ",".join(spec["input_columns"] or [])
-            rc = ",".join(spec["remove_columns"] or [])
-            h.update(f"input={ic}|remove={rc}|".encode())
-            kwarg_keys = ",".join(sorted((spec["fn_kwargs"] or {}).keys()))
-            h.update(f"kw={kwarg_keys}|".encode())
-        return h.hexdigest()
 
     # ----- repr -----
 

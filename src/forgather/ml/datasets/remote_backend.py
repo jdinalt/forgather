@@ -115,6 +115,7 @@ class RemoteBackend(IterableDatasetBackend):
         position: int = 0,
         timeout: float = 60.0,
         token: Optional[str] = None,
+        column_names: Optional[list[str]] = None,
     ):
         if position < 0:
             raise ValueError(f"position must be non-negative, got {position}")
@@ -127,6 +128,14 @@ class RemoteBackend(IterableDatasetBackend):
         # new client. Most callers won't notice.
         self._token = resolve_auth_token(self._url, token)
         self._cached_len: Optional[int] = None
+        # Schema cache. The loader passes column_names from the
+        # /v1/load response so the client can answer column-aware
+        # APIs (e.g. preprocess_dataset's remove_columns) without an
+        # extra round trip; if not supplied here, we fetch it lazily
+        # from /v1/datasets/{handle} on first access.
+        self._column_names: Optional[list[str]] = (
+            list(column_names) if column_names is not None else None
+        )
 
     # ----- Backend interface -----
 
@@ -208,6 +217,30 @@ class RemoteBackend(IterableDatasetBackend):
         # The remote layer doesn't expose physical sharding info; the
         # server may have any number of files behind the handle.
         return 1
+
+    @property
+    def column_names(self) -> Optional[list[str]]:
+        """Column names of the underlying dataset.
+
+        Populated either from the `/v1/load` response (most common —
+        the loader passes them through) or by a lazy GET to
+        `/v1/datasets/{handle}` on first access. Returns ``None`` if
+        the server can't determine them.
+        """
+        if self._column_names is not None:
+            return self._column_names
+        url = f"{self._url}/v1/datasets/{self._handle}"
+        req = Request(url, method="GET", headers=self._headers())
+        try:
+            with urlopen(req, timeout=self._timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            logger.debug("column_names lookup failed: %s", exc)
+            return None
+        cols = payload.get("column_names")
+        if cols is not None:
+            self._column_names = list(cols)
+        return self._column_names
 
     # ----- helpers -----
 

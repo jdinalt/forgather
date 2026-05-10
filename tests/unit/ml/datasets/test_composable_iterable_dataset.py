@@ -342,11 +342,18 @@ class TestWrapperCheckpoint:
         rest = [ex["id"] for ex in ds3]
         assert partial + rest == full_seq
 
-    def test_checkpoint_map_chain_mismatch_raises(self):
+    def test_checkpoint_map_chain_length_mismatch_raises(self):
         ds = _make_wrapper(10).map(lambda ex: {"a": 1})
         state = ds.state_dict()
-        ds2 = _make_wrapper(10)  # No map.
-        with pytest.raises(ValueError, match="fingerprint"):
+        ds2 = _make_wrapper(10)  # No map — length mismatch.
+        with pytest.raises(ValueError, match="length mismatch"):
+            ds2.load_state_dict(state)
+
+    def test_checkpoint_map_batched_mismatch_raises(self):
+        ds = _make_wrapper(10).map(lambda b: b, batched=True, batch_size=2)
+        state = ds.state_dict()
+        ds2 = _make_wrapper(10).map(lambda ex: ex, batched=False)
+        with pytest.raises(ValueError, match="batched-mode mismatch"):
             ds2.load_state_dict(state)
 
 

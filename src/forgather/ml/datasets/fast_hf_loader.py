@@ -706,7 +706,12 @@ def _remote_load_iterable_dataset(
         ) from exc
 
     handle = body["handle"]
-    backend = RemoteBackend(server_url, handle, token=token)
+    backend = RemoteBackend(
+        server_url,
+        handle,
+        token=token,
+        column_names=body.get("column_names"),
+    )
     ds = ComposableIterableDataset(
         backend,
         length_estimate=length_estimate,
