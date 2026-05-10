@@ -291,6 +291,11 @@ input {
   background: var(--bg);
   border-color: var(--fg-muted);
 }
+.sidebar-tools-hint {
+  font-size: 11px;
+  padding: 4px 2px 0 2px;
+  font-style: italic;
+}
 
 .sidebar-projects {
   /* The sidebar itself scrolls now (see .sidebar-expanded-content),

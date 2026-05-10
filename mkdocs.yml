@@ -169,6 +169,8 @@ nav:
     - Interactive CLI: guides/interactive-cli.md
     - Evaluating Models: guides/evaluating-models.md
     - Log Analysis: guides/logs-analysis.md
+    - TensorBoard: guides/tensorboard.md
+    - MkDocs: guides/mkdocs.md
   - API Reference:
     - Overview: api/index.md
     - Project System: api/project.md

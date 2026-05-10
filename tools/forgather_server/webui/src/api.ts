@@ -1233,6 +1233,7 @@ export const api = {
       `/api/project/readme?project_dir=${encodeURIComponent(project_dir)}`,
     ),
   docsRoot: () => fetchJson<{ path: string | null }>("/api/docs/root"),
+  docsRepoRoot: () => fetchJson<{ repo_root: string }>("/api/docs/repo-root"),
   docsFile: (path: string) =>
     fetchJson<DocsFile>(`/api/docs/file?path=${encodeURIComponent(path)}`),
   docsAssetUrl: (path: string): string =>

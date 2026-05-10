@@ -63,6 +63,8 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 - **[Interactive CLI](guides/interactive-cli.md)** - Interactive shell with tab completion and editor integration
 - **[Evaluating Models](guides/evaluating-models.md)** - Loss/perplexity evaluation via `forgather eval`
 - **[Log Analysis](guides/logs-analysis.md)** - Training log summaries, plots, and heatmaps
+- **[TensorBoard](guides/tensorboard.md)** - Launch TensorBoard against a model's `runs/` directory from the webui or `forgather tb`
+- **[MkDocs](guides/mkdocs.md)** - Serve the bundled Forgather docs locally with live-reload via the Tools menu or `forgather mkdocs`
 
 ## Tutorials
 - **[Tiny Llama](tutorials/tiny_llama/README.md)** - Demonstration of basic usage
