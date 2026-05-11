@@ -334,9 +334,10 @@ class TestAuth:
 
 class TestSignalCleanup:
     """Spawn a real subprocess and signal it to verify the per-port
-    token file is removed on SIGINT and SIGTERM. Both happy-path
-    operator commands (Ctrl-C, ``kill <pid>``) and orchestration
-    teardown (``forgather-server`` killing a job) hit these paths."""
+    token file survives SIGINT and SIGTERM. The token is intentionally
+    persistent across restarts (mirrors ``forgather server``'s
+    ``auth_token`` model) so long-running peers keep working after the
+    operator restarts the server. Rotation requires ``--regen-token``."""
 
     def _run_signal(self, sig, port: int) -> tuple[int, bool]:
         """Returns (exit_code, token_still_present)."""
@@ -395,12 +396,16 @@ class TestSignalCleanup:
             (15, "SIGTERM", 19997),
         ],
     )
-    def test_signal_removes_token_file(self, signum, name, port):
+    def test_signal_preserves_token_file(self, signum, name, port):
         rc, token_present = self._run_signal(signum, port)
         # We don't assert exit code (uvicorn vs our handler chain
         # produce different codes across versions); we only require
-        # that the per-port token file is removed.
-        assert not token_present, f"{name}: token file survived shutdown (rc={rc})"
+        # that the per-port token file persists across the signal
+        # shutdown — the next startup must reuse the same token.
+        assert token_present, (
+            f"{name}: token file was removed on shutdown (rc={rc}); "
+            "persistent token is part of the design"
+        )
 
 
 # ---------------------------------------------------------------------

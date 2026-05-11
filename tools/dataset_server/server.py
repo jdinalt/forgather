@@ -355,6 +355,56 @@ def _resolve_auth_token(
     return secrets.token_hex(32), "generated"
 
 
+def _log_effective_config(
+    logger: logging.Logger,
+    args: argparse.Namespace,
+    config_path: Optional[str],
+    config_path_source: str,
+) -> None:
+    """Dump every effective setting at startup for postmortem visibility.
+
+    Renders one ``key=value`` per log line so grep + tail-of-log is
+    enough to answer "what did this instance start with?". Auth-token
+    *source* is included (cli / file / persisted / regenerated /
+    generated) so a token-rotation incident is reconstructible from
+    logs alone — the actual token never lands here.
+    """
+    if args.no_auth:
+        auth_mode = "disabled (--no-auth)"
+    elif args.auth_token:
+        auth_mode = "token via --auth-token"
+    elif args.auth_token_file:
+        auth_mode = f"token from file: {args.auth_token_file}"
+    elif args.regen_token:
+        auth_mode = "regenerated (persisted per-port)"
+    else:
+        auth_mode = "persisted per-port (auto-discover)"
+
+    if config_path:
+        cfg_line = f"{config_path} ({config_path_source})"
+    else:
+        cfg_line = "<none>"
+
+    locals_lines = (
+        [f"{name}={path}" for name, path in args.local]
+        if args.local
+        else ["<none>"]
+    )
+
+    logger.info("effective configuration:")
+    logger.info("  host             = %s", args.host)
+    logger.info("  port             = %d", int(args.port))
+    logger.info("  log_level        = %s", args.log_level)
+    logger.info("  config_file      = %s", cfg_line)
+    logger.info("  auth             = %s", auth_mode)
+    logger.info("  hf_cache_enabled = %s", not args.no_hf)
+    logger.info("  allow_paths      = %s", bool(args.allow_paths))
+    logger.info("  allow_downloads  = %s", bool(args.allow_downloads))
+    logger.info("  locals (%d):", len(args.local))
+    for line in locals_lines:
+        logger.info("    %s", line)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
@@ -389,6 +439,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.info("loaded default config: %s", config_path)
     elif config_path:
         logger.info("loaded config: %s", config_path)
+    else:
+        logger.info("no config file (CLI flags + built-in defaults only)")
+
+    # Effective-configuration dump: everything the operator could have
+    # influenced via flags or the YAML config, plus the auth-token
+    # source so a "why did the token change?" report has the data
+    # right next to the startup banner. Token *value* is logged
+    # separately on stderr below (one place to copy from); this dump
+    # never echoes the secret itself.
+    _log_effective_config(logger, args, config_path, config_path_source)
 
     # Build state from policy flags + local mappings.
     state = ServerState(
