@@ -36,10 +36,23 @@ Instead, the proxy uses the user registry itself as the SSRF allowlist:
   - Everything else returns 403 with a hint to register the URL first.
 
 A stolen forgather-server bearer can still proxy to anything in the
-registry — but the registry is auditable, and registering a fresh URL
-takes a separate, explicit API call. Compared to either "always allow"
-or the inference-style env-var gate, this gives the operator the same
-explicit control without an obscure flag they have to discover.
+registry — and, because ``POST /api/dataset-servers/user`` is gated by
+the same bearer, it can register a fresh URL first and then proxy to
+it. Concretely, that gives a stolen bearer "make GET / POST requests
+to any HTTP host the forgather-server can reach, with attacker-chosen
+Authorization header and JSON body, but only against the
+``/v1/{health,auth-status,datasets,cache,local,load,length,iter}``
+path set." That's bounded but not zero: paths like ``/v1/load`` accept
+an attacker-supplied body, so a stolen bearer is effectively
+LAN-wide-HTTP-POST capability against the targeted path set.
+
+The forgather-server bearer is already documented as a uid-level
+credential (see ``tools/forgather_server/README.md``), so this is a
+small amplification of an already-broad threat rather than a new
+class. The audit story: registry adds are durable, persisted in
+``<config>/server/dataset_server_registry.json``, and visible via
+``GET /api/dataset-servers/user`` — unfamiliar entries indicate
+compromise.
 
 Token resolution: explicit ``X-Dataset-Auth-Token`` header → JobRecord
 auto-lookup (for forgather_server-spawned instances) → registry lookup
@@ -52,7 +65,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -294,8 +307,6 @@ def local_server_bundle(queue_id: str):
         token = r.auth_token or ""
         # urlencode the token defensively — bearer tokens are hex today
         # but the URI shape shouldn't assume it.
-        from urllib.parse import quote
-
         bundle = (
             f"forgather-dataset://{bundle_host}:{port}"
             f"/?token={quote(token, safe='')}"
@@ -333,11 +344,14 @@ def add_user_entry(req: AddUserEntryRequest):
         )
     if not parsed.netloc:
         raise HTTPException(status_code=400, detail="bad base_url: missing host")
-    entry = dataset_server_registry.add_entry(
-        label=req.label,
-        base_url=base_url,
-        auth_token=(req.auth_token or "").strip(),
-    )
+    try:
+        entry = dataset_server_registry.add_entry(
+            label=req.label,
+            base_url=base_url,
+            auth_token=(req.auth_token or "").strip(),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return UserEntryModel(
         id=entry.id,
         label=entry.label,
@@ -552,7 +566,13 @@ async def proxy_load(base: str, request: Request):
 @router.get("/dataset-server/proxy/length")
 async def proxy_length(base: str, handle: str, request: Request):
     """Forward GET /v1/datasets/{handle}/length."""
-    return await _proxy_get(base, f"/v1/datasets/{handle}/length", request)
+    # URL-encode the handle so a malformed value (slashes, control
+    # chars) can't escape its path segment. Defense in depth — the
+    # upstream's own router would reject the malformed handle, but
+    # belt-and-suspenders is cheap.
+    return await _proxy_get(
+        base, f"/v1/datasets/{quote(handle, safe='')}/length", request
+    )
 
 
 @router.get("/dataset-server/proxy/iter")
@@ -582,7 +602,7 @@ async def proxy_iter(
     qs = f"?position={int(position)}&limit={int(limit)}"
     if seed is not None:
         qs += f"&seed={int(seed)}"
-    target = _validate_base(base) + f"/v1/datasets/{handle}/iter" + qs
+    target = _validate_base(base) + f"/v1/datasets/{quote(handle, safe='')}/iter" + qs
 
     headers = _auth_headers_for(base, request)
     rows: List[Any] = []
@@ -615,6 +635,14 @@ async def proxy_iter(
                         # surface as a string so the user can at least see
                         # something went wrong.
                         rows.append({"_parse_error": line})
+                    # Defensive cap: the upstream is asked for ``limit``
+                    # via the query string, but a misbehaving server
+                    # could ignore that and stream arbitrarily many
+                    # rows. Stop reading once we've buffered the
+                    # caller-requested cap so the proxy can't be
+                    # turned into a memory DoS by a hostile upstream.
+                    if len(rows) >= limit:
+                        break
         except httpx.RequestError as e:
             raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
     return JSONResponse({"rows": rows})

@@ -76,7 +76,16 @@ def _safe_repr(obj: Any) -> str:
 
 def to_jsonable(value: Any, _depth: int = 0) -> Any:
     if _depth >= _MAX_DEPTH:
-        return str(value)
+        # Emit the same envelope shape we use for any other type we
+        # can't reduce — so a deeply nested column shows up as a
+        # labelled placeholder in the webui rather than silently
+        # collapsing to a plain string the consumer can't distinguish
+        # from a legitimate stringified value.
+        return {
+            "__unserializable__": True,
+            "__type__": "<depth-limit>",
+            "__repr__": _safe_repr(value),
+        }
 
     # Fast paths for JSON-native scalars. Listed explicitly so that
     # ``bool`` doesn't fall through to the numpy branch (``bool`` is a

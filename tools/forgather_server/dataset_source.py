@@ -40,10 +40,19 @@ class DatasetSourceError(ValueError):
 def resolve_to_env(source: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
     """Return the env vars to add to ``extra_env``, or ``None`` for local.
 
-    ``source`` shape is webui-owned and validated here. Anything not
-    matching the documented shape returns ``None`` (treated as local)
-    so an older webui that doesn't send the field still works; only
-    *known* shapes with stale ids raise.
+    ``source`` shape is webui-owned and validated here. Two forward-
+    compat cases short-circuit to "local" (None env vars):
+
+    - ``source`` is None / not a dict — older webui omitting the field.
+    - ``source.kind`` is None or ``"local"`` — explicit local choice.
+
+    Any other ``kind`` value (or a stale id under ``"server"``) raises
+    ``DatasetSourceError`` so the operator sees a clear 400 rather
+    than a job that silently fell back. Earlier drafts of this code
+    treated unknown kinds as local for forward-compat, but that hid
+    operator typos and out-of-sync webui/server versions — the rest
+    of the resolver raises in equivalent "can't act on the choice"
+    cases, so this matches.
     """
     if not source or not isinstance(source, dict):
         return None
@@ -51,10 +60,9 @@ def resolve_to_env(source: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]
     if kind in (None, "local"):
         return None
     if kind != "server":
-        # Unknown kind — treat as local rather than refusing to submit.
-        # A future webui adding a new kind without a backend bump
-        # shouldn't break training submits.
-        return None
+        raise DatasetSourceError(
+            f"unknown dataset_source kind: {kind!r} " "(expected 'local' or 'server')"
+        )
 
     server_id = source.get("server_id")
     if not isinstance(server_id, str) or ":" not in server_id:
@@ -84,11 +92,14 @@ def resolve_to_env(source: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]
             host = params.get("host") or "127.0.0.1"
             # Server-spawned dataset_servers bind to loopback by default
             # (or to 0.0.0.0 when the operator picked that). Either way
-            # the training subprocess on this host reaches it via
-            # localhost, since it runs in the same machine as the
-            # forgather_server. Translate 0.0.0.0 → localhost; leave
-            # other binds (rare, e.g. a real LAN address) alone.
-            client_host = "localhost" if host == "0.0.0.0" else host
+            # the training subprocess on this host reaches it via the
+            # loopback alias, since it runs on the same machine as the
+            # forgather_server. Translate 0.0.0.0 → 127.0.0.1 rather
+            # than "localhost" — on IPv6-first hosts (some container
+            # setups, some /etc/hosts orderings) "localhost" can resolve
+            # to ::1 first, which fails against an IPv4-only wildcard
+            # bind. 127.0.0.1 always matches the IPv4 wildcard.
+            client_host = "127.0.0.1" if host == "0.0.0.0" else host
             env: Dict[str, str] = {
                 "FORGATHER_DATASET_SERVER": f"http://{client_host}:{int(port)}",
             }
