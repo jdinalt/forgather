@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .auth import make_verify_bearer
-from .hf_cache import list_hf_cache
+from .hf_cache import inspect_local_path, list_hf_cache
 from .state import LOAD_FIELDS, PolicyError, ServerState
 from .wire import to_jsonable
 
@@ -193,12 +193,22 @@ def build_router(state: ServerState, auth_token: Optional[str]) -> APIRouter:
 
     @router.get("/v1/local", dependencies=deps)
     async def list_local():
-        return {
-            "local": [
-                {"name": name, "path": path}
-                for name, path in sorted(state.local_datasets.items())
-            ]
-        }
+        # Inspect each registered local dataset to surface split / row /
+        # size / feature info — same shape the HF cache endpoint exposes,
+        # so the webui can render a uniform tree across both sources.
+        # The inspection is cheap (a few JSON files per dataset); we
+        # serialize it per-request rather than caching for now. If this
+        # becomes hot on filesystems with high stat-latency we'll add
+        # a TTL cache.
+        from pathlib import Path as _Path
+
+        entries = []
+        for name, path in sorted(state.local_datasets.items()):
+            info = inspect_local_path(_Path(path))
+            entry = {"name": name, "path": path}
+            entry.update({k: v for k, v in info.items() if k not in ("path",)})
+            entries.append(entry)
+        return {"local": entries}
 
     return router
 

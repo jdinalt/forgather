@@ -165,6 +165,99 @@ def _extract_splits(info: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
+def inspect_local_path(path: Path) -> Dict[str, Any]:
+    """Scan a registered ``local/`` dataset path and return a summary.
+
+    Recognized layouts:
+
+    - **DatasetDict** (the ``save_to_disk()`` default for multi-split
+      datasets): a ``dataset_dict.json`` listing splits at the root,
+      with a ``<split>/dataset_info.json`` under each. We read the
+      first split's info file to get the full ``splits`` dict (it
+      contains entries for *every* split) plus the dataset-level
+      ``features`` / ``config_name`` / ``dataset_name``.
+    - **Flat Dataset**: a single ``dataset_info.json`` at the root.
+      Same as the HF-cache flat layout — reuse ``_extract_splits``.
+    - **Unknown**: anything else (raw parquet, jsonl, an arrow file).
+      The caller can still load it on demand, but split metadata isn't
+      available until ``POST /v1/load`` reports it.
+
+    Returns a JSON-friendly dict with at least ``layout``, ``splits``,
+    and ``size_bytes``. Missing fields (no features etc.) are simply
+    absent — the webui's tree degrades gracefully.
+    """
+    out: Dict[str, Any] = {"path": str(path)}
+
+    if not path.exists() or not path.is_dir():
+        out["layout"] = "missing"
+        out["splits"] = []
+        out["size_bytes"] = 0
+        return out
+
+    dict_json = path / "dataset_dict.json"
+    flat_info = path / "dataset_info.json"
+
+    if dict_json.is_file():
+        try:
+            ddict = json.loads(dict_json.read_text())
+            split_names = list(ddict.get("splits") or [])
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.debug("could not read %s: %s", dict_json, exc)
+            split_names = []
+
+        splits_out: List[Dict[str, Any]] = []
+        features_seen: Optional[List[str]] = None
+        config_name: Optional[str] = None
+        dataset_name: Optional[str] = None
+        for split_name in split_names:
+            split_info = _read_info(path / split_name / "dataset_info.json")
+            # Per-split dataset_info.json carries a ``splits`` mapping
+            # for the WHOLE dataset; grab our own entry's metadata.
+            entry = (split_info.get("splits") or {}).get(split_name, {})
+            if isinstance(entry, dict):
+                splits_out.append(
+                    {
+                        "name": split_name,
+                        "num_examples": entry.get("num_examples"),
+                        "num_bytes": entry.get("num_bytes"),
+                    }
+                )
+            else:
+                splits_out.append({"name": split_name})
+            if features_seen is None and isinstance(split_info.get("features"), dict):
+                features_seen = list(split_info["features"].keys())
+            if config_name is None and split_info.get("config_name"):
+                config_name = str(split_info["config_name"])
+            if dataset_name is None and split_info.get("dataset_name"):
+                dataset_name = str(split_info["dataset_name"])
+
+        out["layout"] = "dataset_dict"
+        out["splits"] = splits_out
+        if features_seen is not None:
+            out["features"] = features_seen
+        if config_name is not None:
+            out["config_name"] = config_name
+        if dataset_name is not None:
+            out["dataset_name"] = dataset_name
+    elif flat_info.is_file():
+        info = _read_info(flat_info)
+        out["layout"] = "dataset"
+        out["splits"] = _extract_splits(info)
+        feats = info.get("features")
+        if isinstance(feats, dict):
+            out["features"] = list(feats.keys())
+        if info.get("config_name"):
+            out["config_name"] = str(info["config_name"])
+        if info.get("dataset_name"):
+            out["dataset_name"] = str(info["dataset_name"])
+    else:
+        out["layout"] = "unknown"
+        out["splits"] = []
+
+    out["size_bytes"] = _dir_size_bytes(path)
+    return out
+
+
 def list_hf_cache(
     cache_root: Optional[Path] = None,
 ) -> Dict[str, Any]:

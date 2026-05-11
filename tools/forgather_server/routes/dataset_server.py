@@ -514,3 +514,107 @@ async def proxy_cache(base: str, request: Request):
 @router.get("/dataset-server/proxy/local")
 async def proxy_local(base: str, request: Request):
     return await _proxy_get(base, "/v1/local", request)
+
+
+# --- handle-level proxy ---
+#
+# The browser-facing endpoints below let the Explore tab load a dataset
+# on demand and page through its rows. The dataset_server's own /iter
+# returns NDJSON (one example per line, streamed); we collect a bounded
+# window into a JSON list so the webui doesn't have to wire up a line
+# parser. Page-size caps are enforced upstream by the limit query
+# parameter — anything that fits in a single response is small enough
+# to materialize here.
+
+
+@router.post("/dataset-server/proxy/load")
+async def proxy_load(base: str, request: Request):
+    """Forward POST /v1/load. Body is a JSON object passed through."""
+    target = _validate_base(base) + "/v1/load"
+    try:
+        body = await request.body()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"could not read body: {e}")
+    headers = _auth_headers_for(base, request)
+    headers["content-type"] = request.headers.get("content-type", "application/json")
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        try:
+            r = await client.post(target, content=body, headers=headers)
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
+    return JSONResponse(
+        status_code=r.status_code,
+        content=_safe_json(r),
+        headers=_upstream_auth_headers(r.status_code),
+    )
+
+
+@router.get("/dataset-server/proxy/length")
+async def proxy_length(base: str, handle: str, request: Request):
+    """Forward GET /v1/datasets/{handle}/length."""
+    return await _proxy_get(base, f"/v1/datasets/{handle}/length", request)
+
+
+@router.get("/dataset-server/proxy/iter")
+async def proxy_iter(
+    base: str,
+    handle: str,
+    request: Request,
+    position: int = 0,
+    limit: int = 25,
+    seed: Optional[int] = None,
+):
+    """Forward GET /v1/datasets/{handle}/iter and materialize the NDJSON
+    stream into ``{"rows": [...]}``.
+
+    ``limit`` is capped (max 500) because the result is fully buffered
+    in memory before returning; the explore tab pages with limit=25 by
+    default. Larger pages stay supported for ad-hoc CLI users hitting
+    the same proxy.
+    """
+    if limit < 1:
+        raise HTTPException(status_code=400, detail="limit must be >= 1")
+    if limit > 500:
+        raise HTTPException(status_code=400, detail="limit must be <= 500")
+    if position < 0:
+        raise HTTPException(status_code=400, detail="position must be >= 0")
+
+    qs = f"?position={int(position)}&limit={int(limit)}"
+    if seed is not None:
+        qs += f"&seed={int(seed)}"
+    target = _validate_base(base) + f"/v1/datasets/{handle}/iter" + qs
+
+    headers = _auth_headers_for(base, request)
+    rows: List[Any] = []
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        try:
+            async with client.stream("GET", target, headers=headers or None) as r:
+                if r.status_code >= 400:
+                    body = await r.aread()
+                    try:
+                        detail = body.decode("utf-8", errors="replace")
+                    except Exception:
+                        detail = "<binary>"
+                    return JSONResponse(
+                        status_code=r.status_code,
+                        content={"detail": detail},
+                        headers=_upstream_auth_headers(r.status_code),
+                    )
+                # NDJSON: one JSON value per line. iter_lines handles
+                # both \n and \r\n; we ignore blanks so a trailing
+                # newline doesn't surface as a None row.
+                import json as _json
+
+                async for line in r.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        rows.append(_json.loads(line))
+                    except ValueError:
+                        # Don't drop the whole window for one bad line —
+                        # surface as a string so the user can at least see
+                        # something went wrong.
+                        rows.append({"_parse_error": line})
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
+    return JSONResponse({"rows": rows})

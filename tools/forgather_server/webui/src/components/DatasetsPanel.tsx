@@ -7,9 +7,10 @@ import {
   DatasetServerUser,
   api,
 } from "../api";
+import { DatasetsExploreTab } from "./DatasetsExploreTab";
 import { ModalBackdrop } from "./ModalBackdrop";
 
-type SubTab = "servers";
+type SubTab = "servers" | "explore";
 
 /** Identifier the panel uses to refer to either kind of server uniformly.
  *  Local servers key by ``queue_id`` (stable across the run), user
@@ -33,10 +34,23 @@ function keyMatches(a: ServerKey, b: ServerKey): boolean {
     : b.kind === "user" && (a as { id: string }).id === (b as { id: string }).id;
 }
 
-/** Top-level Datasets view. First and only tab so far is "Servers" —
- *  more tabs (Browse, Inspect, …) will land alongside it. */
+/** Top-level Datasets view. Tabs: Servers (CRUD + status/handles/cache),
+ *  Explore (tree of dataset → split → table of rows). */
 export function DatasetsPanel() {
   const [tab, setTab] = useState<SubTab>("servers");
+  // Shared queries — both subtabs need the local+user lists. Same keys
+  // mean TanStack Query serves them from one cache.
+  const localsQ = useQuery({
+    queryKey: ["dataset-servers-local"],
+    queryFn: api.listLocalDatasetServers,
+    refetchInterval: 5000,
+  });
+  const usersQ = useQuery({
+    queryKey: ["dataset-servers-user"],
+    queryFn: api.listUserDatasetServers,
+  });
+  const localServers = localsQ.data ?? [];
+  const userServers = usersQ.data ?? [];
   return (
     <div className="inference-panel">
       <header className="viewer-header inference-header">
@@ -48,6 +62,12 @@ export function DatasetsPanel() {
               onClick={() => setTab("servers")}
             >
               servers
+            </button>
+            <button
+              className={tab === "explore" ? "active" : ""}
+              onClick={() => setTab("explore")}
+            >
+              explore
             </button>
           </nav>
         </div>
@@ -62,6 +82,18 @@ export function DatasetsPanel() {
         }}
       >
         <DatasetServersTab />
+      </div>
+      <div
+        style={{
+          display: tab === "explore" ? "flex" : "none",
+          flex: 1,
+          minHeight: 0,
+        }}
+      >
+        <DatasetsExploreTab
+          localServers={localServers}
+          userServers={userServers}
+        />
       </div>
     </div>
   );

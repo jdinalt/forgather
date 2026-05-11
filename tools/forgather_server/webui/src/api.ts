@@ -679,7 +679,8 @@ async function datasetServerProxyGet<T>(
   base: string,
   token: string,
 ): Promise<T> {
-  const u = `${url}?base=${encodeURIComponent(base)}`;
+  const sep = url.includes("?") ? "&" : "?";
+  const u = `${url}${sep}base=${encodeURIComponent(base)}`;
   const headers: Record<string, string> = {};
   if (token) headers["x-dataset-auth-token"] = token;
   const r = await fetch(u, { headers });
@@ -721,6 +722,66 @@ export interface DatasetHandleEntry {
   length?: number | null;
   source?: string | null;
   load_args?: Record<string, unknown> | null;
+}
+
+/** ``GET /v1/cache/hf`` per-split entry. */
+export interface HFCacheSplit {
+  name: string;
+  num_examples?: number | null;
+  num_bytes?: number | null;
+}
+export interface HFCacheConfig {
+  config: string;
+  version?: string | null;
+  size_bytes?: number | null;
+  splits: HFCacheSplit[];
+}
+export interface HFCacheRepo {
+  repo: string;
+  size_bytes?: number | null;
+  configs: HFCacheConfig[];
+}
+export interface HFCacheResponse {
+  cache_root: string;
+  datasets: HFCacheRepo[];
+}
+
+/** One entry from the (enriched) ``GET /v1/local`` response. */
+export interface LocalDatasetEntry {
+  name: string;
+  path: string;
+  layout?: "dataset_dict" | "dataset" | "unknown" | "missing";
+  size_bytes?: number | null;
+  config_name?: string | null;
+  dataset_name?: string | null;
+  features?: string[];
+  splits?: HFCacheSplit[];
+}
+export interface LocalListResponse {
+  local: LocalDatasetEntry[];
+}
+
+/** ``POST /v1/load`` response. */
+export interface LoadResponse {
+  handle: string;
+  length: number;
+  load_args: Record<string, unknown>;
+  source: string | null;
+  column_names: string[] | null;
+}
+
+/** Body of ``POST /v1/load``. */
+export interface LoadRequest {
+  path: string;
+  name?: string;
+  split?: string;
+  data_files?: unknown;
+  revision?: string;
+}
+
+/** ``GET /v1/datasets/{handle}/iter`` (wrapped by our proxy as JSON). */
+export interface IterResponse {
+  rows: Array<Record<string, unknown>>;
 }
 
 export const api = {
@@ -1358,14 +1419,56 @@ export const api = {
       token,
     ),
   datasetServerCache: (base: string, token: string) =>
-    datasetServerProxyGet<Record<string, unknown>>(
+    datasetServerProxyGet<HFCacheResponse>(
       "/api/dataset-server/proxy/cache",
       base,
       token,
     ),
   datasetServerLocal: (base: string, token: string) =>
-    datasetServerProxyGet<Record<string, unknown>>(
+    datasetServerProxyGet<LocalListResponse>(
       "/api/dataset-server/proxy/local",
+      base,
+      token,
+    ),
+  /** POST a ``LoadRequest`` to the proxy; returns the handle + length +
+   *  ``column_names`` the dataset_server reports. ``token`` is the
+   *  optional explicit bearer; empty string defers to proxy auto-lookup. */
+  datasetServerLoad: async (
+    base: string,
+    body: LoadRequest,
+    token: string,
+  ): Promise<LoadResponse> => {
+    const u = `/api/dataset-server/proxy/load?base=${encodeURIComponent(base)}`;
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+    };
+    if (token) headers["x-dataset-auth-token"] = token;
+    const r = await fetch(u, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<LoadResponse>;
+  },
+  datasetServerLength: (base: string, handle: string, token: string) =>
+    datasetServerProxyGet<{ length: number }>(
+      `/api/dataset-server/proxy/length?handle=${encodeURIComponent(handle)}`,
+      base,
+      token,
+    ),
+  datasetServerIter: (
+    base: string,
+    handle: string,
+    position: number,
+    limit: number,
+    token: string,
+  ) =>
+    datasetServerProxyGet<IterResponse>(
+      `/api/dataset-server/proxy/iter?handle=${encodeURIComponent(handle)}` +
+        `&position=${position}&limit=${limit}`,
       base,
       token,
     ),
