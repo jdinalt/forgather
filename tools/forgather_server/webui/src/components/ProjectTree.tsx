@@ -599,8 +599,23 @@ export function ProjectTree({
           >
             📁 Create Project…
           </button>
-          <ReadmeMenuItem
-            dir={workspaceMenuTarget.workspace.workspace_root}
+          <EditFileMenuItem
+            path={
+              workspaceMenuTarget.workspace.workspace_root.replace(/\/+$/, "") +
+              "/forgather_workspace/README.md"
+            }
+            label="✎ Edit README.md"
+            onEdit={(path) => {
+              setWorkspaceMenuTarget(null);
+              onEditTemplate(path);
+            }}
+          />
+          <EditFileMenuItem
+            path={
+              workspaceMenuTarget.workspace.workspace_root.replace(/\/+$/, "") +
+              "/forgather_workspace/meta_defaults.yaml"
+            }
+            label="✎ Edit Meta Defaults…"
             onEdit={(path) => {
               setWorkspaceMenuTarget(null);
               onEditTemplate(path);
@@ -644,8 +659,23 @@ export function ProjectTree({
           >
             📄 New Template…
           </button>
-          <ReadmeMenuItem
-            dir={projectMenuTarget.project.project_dir}
+          <EditFileMenuItem
+            path={
+              projectMenuTarget.project.project_dir.replace(/\/+$/, "") +
+              "/README.md"
+            }
+            label="✎ Edit README.md"
+            onEdit={(path) => {
+              setProjectMenuTarget(null);
+              onEditTemplate(path);
+            }}
+          />
+          <EditFileMenuItem
+            path={
+              projectMenuTarget.project.project_dir.replace(/\/+$/, "") +
+              "/meta.yaml"
+            }
+            label="✎ Edit Meta…"
             onEdit={(path) => {
               setProjectMenuTarget(null);
               onEditTemplate(path);
@@ -943,18 +973,19 @@ function ConfigContextMenuItems({
   );
 }
 
-/** Renders an "Edit README.md" menu item if a README.md exists in
- *  the given directory; renders nothing otherwise. The probe uses
- *  ``fsPathExists`` so a missing file silently hides the entry
- *  instead of offering an action that would open an empty editor. */
-function ReadmeMenuItem({
-  dir,
+/** Renders an "Edit ..." menu item if the given file exists; renders
+ *  nothing otherwise. The probe uses ``fsPathExists`` so a missing file
+ *  silently hides the entry instead of offering an action that would
+ *  open an empty editor. */
+function EditFileMenuItem({
+  path,
+  label,
   onEdit,
 }: {
-  dir: string;
+  path: string;
+  label: string;
   onEdit: (path: string) => void;
 }) {
-  const path = dir.replace(/\/+$/, "") + "/README.md";
   const existsQ = useQuery({
     queryKey: ["fs-path-exists", path],
     queryFn: () => api.fsPathExists(path),
@@ -963,7 +994,7 @@ function ReadmeMenuItem({
   if (!existsQ.data?.exists || !existsQ.data?.is_file) return null;
   return (
     <button onClick={() => onEdit(path)} title={path}>
-      ✎ Edit README.md
+      {label}
     </button>
   );
 }
