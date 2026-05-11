@@ -44,6 +44,23 @@ def _load_auth_token():
     return text or None
 
 
+def _default_base_url():
+    """Same default as before, but pick ``https://`` when local TLS is on.
+
+    This mirrors how the server itself emits its banner URL. A user who
+    ran ``forgather tls init`` doesn't have to set $FORGATHER_SERVER_URL
+    to talk to their own server — the client picks the scheme up from
+    the shared config.
+    """
+    try:
+        from forgather.tls import client_scheme
+
+        scheme = client_scheme()
+    except Exception:
+        scheme = "http"
+    return f"{scheme}://127.0.0.1:8765"
+
+
 class ServerClient:
     def __init__(self, base_url=None, timeout=30.0):
         import requests
@@ -51,12 +68,25 @@ class ServerClient:
         base = (
             base_url
             or os.environ.get("FORGATHER_SERVER_URL")
-            or "http://127.0.0.1:8765"
+            or _default_base_url()
         )
         self.base = base.rstrip("/")
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers["User-Agent"] = "forgather-cli"
+        # When the URL is HTTPS, point `requests` at the shared CA
+        # bundle so our self-signed certs validate. For HTTP, leave the
+        # default; for HTTPS without a configured CA, fall back to the
+        # system trust store (handles BYOC scenarios).
+        if self.base.lower().startswith("https://"):
+            try:
+                from forgather.tls import httpx_verify
+
+                v = httpx_verify()
+                # requests accepts a path string or True.
+                self.session.verify = v
+            except Exception:
+                pass
         self._token = _load_auth_token()
         if self._token:
             self.session.headers["Authorization"] = f"Bearer {self._token}"

@@ -561,14 +561,14 @@ authorization decision; the proxy will then happily forward to it.
 
 ### Network exposure
 
-- **No TLS today.** The server speaks plain HTTP. Bearer tokens and
-  example payloads traverse the network in cleartext on any
-  non-loopback bind. Either:
-  - leave the default loopback bind (`--host 127.0.0.1`) and reach
-    it via SSH port forwarding
-    (recommended for cross-host training);
-  - put it behind a reverse proxy that terminates TLS;
-  - or accept the risk only on a fully trusted L2 segment.
+- **TLS is opt-in.** Run `forgather tls init` once on the host and the
+  dataset server picks up HTTPS off the shared CA at
+  `~/.config/forgather/tls/`. Without it, the server refuses to bind
+  non-loopback hosts unless `--insecure` is passed. Full walkthrough:
+  [docs/operations/tls.md](../../docs/operations/tls.md). Alternatives:
+  - keep the default loopback bind (`--host 127.0.0.1`) and reach it
+    via SSH port forwarding;
+  - put it behind a reverse proxy that terminates TLS.
 - **`--no-auth` removes the bearer-token gate.** Anyone who can reach
   the bind port can list and stream every dataset the server has
   cached, plus the `local/*` mappings. On a multi-user host, loopback

@@ -105,8 +105,10 @@ elsewhere, the opt-in is explicit and the auth gate stays in place:
   host can read the rendered docs if they discover the port. If you
   need LAN-accessible docs, run `mkdocs serve` outside the scheduler or
   put it behind your own reverse proxy.
-- **No TLS.** The server speaks plain HTTP. Any non-loopback bind needs
-  an external TLS terminator.
+- **TLS is opt-in.** Run `forgather tls init` once and every Forgather
+  server on the host serves HTTPS off a shared CA. Without it, the
+  server refuses to bind non-loopback hosts unless `--insecure` is
+  passed. Full walkthrough in [docs/operations/tls.md](../../docs/operations/tls.md).
 - **No rate limiting.** A leaked token has no automatic lockout.
 - **Dataset-server trust is transitive.** Every example a registered
   dataset_server returns flows into the training pipeline as-is — no

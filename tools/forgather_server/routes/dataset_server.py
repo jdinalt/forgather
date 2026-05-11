@@ -234,7 +234,9 @@ def _local_servers() -> List[LocalServerModel]:
         # 0.0.0.0 binds everywhere but the browser-facing URL should
         # still resolve cleanly — same translation the Jobs view does.
         browser_host = "localhost" if host == "0.0.0.0" else host
-        base_url = f"http://{browser_host}:{port}"
+        from forgather.tls import client_scheme
+
+        base_url = f"{client_scheme(browser_host)}://{browser_host}:{port}"
         alive = r.status in {"starting", "running"}
         out.append(
             LocalServerModel(

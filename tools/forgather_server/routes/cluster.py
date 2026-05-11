@@ -20,6 +20,8 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from forgather.tls import httpx_verify
+
 from .. import cluster, cluster_jobs, dataset_source
 from ..dataset_source import DatasetSourceError
 from .gpus import GpuInfoModel, GpuPolicyModel, SetGpuPolicyRequest, _to_model
@@ -27,6 +29,22 @@ from .gpus import GpuInfoModel, GpuPolicyModel, SetGpuPolicyRequest, _to_model
 log = logging.getLogger("forgather_server.routes.cluster")
 
 router = APIRouter(prefix="/cluster", tags=["cluster"])
+
+
+def _peer_base(member) -> str:
+    """``https://host:port`` if peer advertised TLS, else ``http://``."""
+    scheme = "https" if getattr(member, "tls", False) else "http"
+    return f"{scheme}://{member.address}:{member.port}"
+
+
+def _peer_url(member, path: str) -> str:
+    return _peer_base(member) + path
+
+
+def _peer_client(**kwargs) -> httpx.AsyncClient:
+    """``httpx.AsyncClient`` with the shared CA bundle pre-wired."""
+    kwargs.setdefault("verify", httpx_verify())
+    return httpx.AsyncClient(**kwargs)
 
 # Timeout for master->peer GPU snapshot fetches. Tighter than the
 # membership pull timeout because the Nodes view should feel snappy;
@@ -53,6 +71,9 @@ class MemberModel(BaseModel):
     # on a later Phase 2 revision may add a key the frontend hasn't
     # seen yet).
     probe: Optional[Dict[str, Any]] = None
+    # Whether this peer serves HTTPS. Drives the scheme used by
+    # peer-pull and inter-node HTTP calls.
+    tls: bool = False
 
 
 class SelfModel(BaseModel):
@@ -94,6 +115,7 @@ def _to_member_model(m: cluster.MemberInfo) -> MemberModel:
         reachable=m.reachable,
         last_source=m.last_source,
         probe=m.probe,
+        tls=getattr(m, "tls", False),
     )
 
 
@@ -214,7 +236,7 @@ async def _fetch_peer_gpus(
             reachable=False,
             error="member unreachable",
         )
-    url = f"http://{member.address}:{member.port}/api/cluster/gpus_local"
+    url = _peer_url(member, "/api/cluster/gpus_local")
     try:
         r = await client.get(url, timeout=PEER_GPU_TIMEOUT_SECONDS)
     except (httpx.HTTPError, OSError) as e:
@@ -345,13 +367,13 @@ async def set_node_gpu_policy(node_id: str, gpu_index: int, req: SetGpuPolicyReq
             status_code=503,
             detail=f"node {target.hostname} is currently unreachable",
         )
-    url = f"http://{target.address}:{target.port}/api/cluster/gpu_policy_local"
+    url = _peer_url(target, "/api/cluster/gpu_policy_local")
     payload = {
         "gpu_index": gpu_index,
         "disabled": req.disabled,
         "min_priority": req.min_priority,
     }
-    async with httpx.AsyncClient() as client:
+    async with _peer_client() as client:
         try:
             r = await client.post(url, json=payload, timeout=PEER_GPU_TIMEOUT_SECONDS)
         except (httpx.HTTPError, OSError) as e:
@@ -393,7 +415,7 @@ async def cluster_gpus():
     if not cluster.is_active():
         return ClusterGpusResponse(nodes=[], server_time=time.time())
     targets = cluster.members()
-    async with httpx.AsyncClient() as client:
+    async with _peer_client() as client:
         results = await asyncio.gather(
             *[_fetch_peer_gpus(client, m) for m in targets],
             return_exceptions=False,
@@ -522,10 +544,7 @@ async def _measure_one_peer(
             timestamp=time.time(),
             error="member unreachable",
         )
-    url = (
-        f"http://{member.address}:{member.port}"
-        f"/api/cluster/bandwidth_local?bytes={bytes_to_pull}"
-    )
+    url = _peer_url(member, f"/api/cluster/bandwidth_local?bytes={bytes_to_pull}")
     received = 0
     start = time.monotonic()
     try:
@@ -625,7 +644,7 @@ async def refresh_bandwidth(
         or m.node_id != cluster.self_identity().node_id
     ]
     results: List[BandwidthEntry] = []
-    async with httpx.AsyncClient() as client:
+    async with _peer_client() as client:
         for member in targets:
             entry = await _measure_one_peer(client, member, bytes)
             _bandwidth_cache[member.node_id] = entry
@@ -997,9 +1016,9 @@ async def _gather_member_statuses(
         if peer is None or not peer.reachable:
             out[member_assignment.queue_id] = {"status": "unknown"}
             return
-        url = f"http://{peer.address}:{peer.port}" f"/api/cluster/training_status_local"
+        url = _peer_url(peer, "/api/cluster/training_status_local")
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
+            async with _peer_client(timeout=2.0) as client:
                 r = await client.get(
                     url, params={"queue_id": member_assignment.queue_id}
                 )
@@ -1108,7 +1127,7 @@ async def _fanout_training(
         )
         queue_store.add_item(item)
         return {"queue_id": item.queue_id, "node_id": self_id.node_id}
-    url = f"http://{target.address}:{target.port}/api/cluster/training_local"
+    url = _peer_url(target, "/api/cluster/training_local")
     try:
         r = await client.post(url, json=payload, timeout=PEER_TRAINING_TIMEOUT_SECONDS)
     except (httpx.HTTPError, OSError) as e:
@@ -1278,7 +1297,7 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
     # Fanout. Sequential — N is small (usually 2-3) and serial keeps
     # the diagnostic story simple if one peer's enqueue fails.
     assignments: List[cluster_jobs.MemberAssignment] = []
-    async with httpx.AsyncClient() as client:
+    async with _peer_client() as client:
         for idx, (spec, member, payload) in enumerate(
             zip(req.members, participating, fanout_payloads)
         ):
@@ -1351,7 +1370,7 @@ async def _cancel_one_peer_training(
 
         ok = _sched.abort_or_cancel(queue_id)
         return {"queue_id": queue_id, "cancelled": ok}
-    url = f"http://{target.address}:{target.port}/api/cluster/training_cancel_local"
+    url = _peer_url(target, "/api/cluster/training_cancel_local")
     try:
         r = await client.post(
             url,
@@ -1396,9 +1415,9 @@ async def _maybe_proxy_to_master() -> Optional[List[Dict[str, Any]]]:
             self_ident.node_id[:8],
         )
         return None
-    url = f"http://{master.address}:{master.port}/api/cluster/jobs"
+    url = _peer_url(master, "/api/cluster/jobs")
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with _peer_client(timeout=5.0) as client:
             r = await client.get(url)
             if r.status_code != 200:
                 log.warning("cluster jobs proxy: master returned %d", r.status_code)
@@ -1478,7 +1497,7 @@ async def cancel_cluster_job(cluster_job_id: str):
         )
     by_id = {m.node_id: m for m in cluster.members()}
     per_member: List[Dict[str, Any]] = []
-    async with httpx.AsyncClient() as client:
+    async with _peer_client() as client:
         for a in job.members:
             member = by_id.get(a.node_id)
             if member is None:

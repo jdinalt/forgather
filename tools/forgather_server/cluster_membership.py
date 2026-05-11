@@ -30,7 +30,20 @@ from typing import Optional
 
 import httpx
 
+from forgather.tls import httpx_verify
+
 from . import cluster
+
+
+def _peer_url(member: cluster.MemberInfo, path: str) -> str:
+    """Build the URL we should use to call a peer.
+
+    Uses ``https://`` when the peer advertised TLS via mDNS, ``http://``
+    otherwise. The receiving server's bind-policy already refuses
+    cleartext on non-loopback hosts unless ``--insecure`` was passed.
+    """
+    scheme = "https" if getattr(member, "tls", False) else "http"
+    return f"{scheme}://{member.address}:{member.port}{path}"
 
 log = logging.getLogger("forgather_server.cluster.membership")
 
@@ -48,7 +61,7 @@ async def _pull_one_peer(
     False otherwise. The caller uses this to refresh ``last_seen`` for
     the polled peer.
     """
-    url = f"http://{member.address}:{member.port}/api/cluster/members"
+    url = _peer_url(member, "/api/cluster/members")
     try:
         r = await client.get(url, timeout=PEER_TIMEOUT_SECONDS)
     except (httpx.HTTPError, OSError) as e:
@@ -117,6 +130,8 @@ async def _pull_one_peer(
         peer_probe = entry.get("probe")
         if not isinstance(peer_probe, dict):
             peer_probe = None
+        peer_tls = entry.get("tls")
+        peer_tls = bool(peer_tls) if isinstance(peer_tls, bool) else None
         try:
             cluster.update_member(
                 node_id,
@@ -129,6 +144,7 @@ async def _pull_one_peer(
                 ),
                 source="peer_pull",
                 probe=peer_probe,
+                tls=peer_tls,
             )
         except Exception:
             # Logged at debug — a bad single entry shouldn't abort the
@@ -192,7 +208,7 @@ async def membership_loop(
     """
     interval = tick_seconds if tick_seconds is not None else TICK_SECONDS
     log.info("cluster membership loop starting (tick=%.1fs)", interval)
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=httpx_verify()) as client:
         try:
             while True:
                 try:

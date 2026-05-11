@@ -197,6 +197,8 @@ forgather sched status | list | pause | resume | cancel <id> | cleanup [<id>]
 forgather job status | save | stop | save-stop | abort | kill | force-kill | tail | dump <id>
 forgather gpu status | disable | enable | priority | kill <idx>
 forgather cluster nodes | jobs [<id>] | submit [opts] | cancel <id>
+forgather tls init | status | renew | export-ca | import-ca | mint | install | trust-system | clean
+                                                                   # shared TLS state for all 3 servers; see docs/operations/tls.md
 # All accept --server URL or $FORGATHER_SERVER_URL (default: http://127.0.0.1:8765)
 ```
 

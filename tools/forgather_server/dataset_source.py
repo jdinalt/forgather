@@ -100,8 +100,11 @@ def resolve_to_env(source: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]
             # to ::1 first, which fails against an IPv4-only wildcard
             # bind. 127.0.0.1 always matches the IPv4 wildcard.
             client_host = "127.0.0.1" if host == "0.0.0.0" else host
+            from forgather.tls import client_scheme
+
+            scheme = client_scheme(client_host)
             env: Dict[str, str] = {
-                "FORGATHER_DATASET_SERVER": f"http://{client_host}:{int(port)}",
+                "FORGATHER_DATASET_SERVER": f"{scheme}://{client_host}:{int(port)}",
             }
             if r.auth_token:
                 env["FORGATHER_DATASET_SERVER_TOKEN"] = r.auth_token

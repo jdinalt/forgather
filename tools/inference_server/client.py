@@ -25,10 +25,23 @@ except ImportError:
 class InferenceClient:
     def __init__(self, base_url: str, api_key: str = "dummy"):
         """Initialize the OpenAI client for our inference server."""
-        self.client = OpenAI(
-            base_url=base_url,
-            api_key=api_key,  # Not used by our server but required by client
-        )
+        # Build an httpx client carrying the shared CA bundle so the
+        # OpenAI SDK validates our self-signed certs. Passing
+        # ``http_client`` to ``OpenAI`` is the supported escape hatch
+        # (``verify=`` is not exposed on the SDK constructor directly).
+        try:
+            import httpx as _httpx
+            from forgather.tls import httpx_verify_for_url
+
+            _client_kwargs = {"verify": httpx_verify_for_url(base_url)}
+            http_client = _httpx.Client(**_client_kwargs)
+        except Exception:
+            http_client = None  # Fall back to OpenAI's default httpx client.
+
+        kwargs = {"base_url": base_url, "api_key": api_key}
+        if http_client is not None:
+            kwargs["http_client"] = http_client
+        self.client = OpenAI(**kwargs)
         self.conversation_history: List[Dict[str, str]] = []
 
     def add_system_message(self, content: str):

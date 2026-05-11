@@ -31,12 +31,28 @@ from __future__ import annotations
 import json
 import logging
 import os
+import ssl
 from pathlib import Path
 from typing import Iterator, Optional
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from forgather.preprocess import forgather_config_dir
+
+
+def _make_ssl_context(url: str) -> Optional[ssl.SSLContext]:
+    """SSLContext using the shared CA bundle for ``https://`` URLs."""
+    if not url.lower().startswith("https://"):
+        return None
+    try:
+        from forgather.tls import httpx_verify
+
+        bundle = httpx_verify()
+    except Exception:
+        bundle = True
+    if isinstance(bundle, str):
+        return ssl.create_default_context(cafile=bundle)
+    return ssl.create_default_context()
 
 from .iterable_backend import IterableDatasetBackend
 
@@ -153,6 +169,11 @@ class RemoteBackend(IterableDatasetBackend):
         self._seed = seed
         self._position = position
         self._timeout = timeout
+        # SSLContext for ``https://`` URLs that uses the shared CA
+        # bundle (so self-signed forgather certs validate). For ``http://``
+        # this is None and the urllib call falls through to default
+        # plaintext handling.
+        self._ssl_context = _make_ssl_context(self._url)
         # Resolved once at construction; if you change tokens, build a
         # new client. Most callers won't notice.
         self._token = resolve_auth_token(self._url, token)
@@ -179,7 +200,7 @@ class RemoteBackend(IterableDatasetBackend):
             params["seed"] = str(self._seed)
         url = f"{self._url}/v1/datasets/{self._handle}/iter?{urlencode(params)}"
         req = Request(url, method="GET", headers=self._headers())
-        with urlopen(req, timeout=self._timeout) as resp:
+        with urlopen(req, timeout=self._timeout, context=self._ssl_context) as resp:
             for raw in resp:
                 line = raw.rstrip(b"\n")
                 if not line:
@@ -192,7 +213,7 @@ class RemoteBackend(IterableDatasetBackend):
         if self._cached_len is None:
             url = f"{self._url}/v1/datasets/{self._handle}/length"
             req = Request(url, method="GET", headers=self._headers())
-            with urlopen(req, timeout=self._timeout) as resp:
+            with urlopen(req, timeout=self._timeout, context=self._ssl_context) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
             self._cached_len = int(payload["length"])
         return self._cached_len
@@ -261,7 +282,7 @@ class RemoteBackend(IterableDatasetBackend):
         url = f"{self._url}/v1/datasets/{self._handle}"
         req = Request(url, method="GET", headers=self._headers())
         try:
-            with urlopen(req, timeout=self._timeout) as resp:
+            with urlopen(req, timeout=self._timeout, context=self._ssl_context) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
         except Exception as exc:
             logger.debug("column_names lookup failed: %s", exc)

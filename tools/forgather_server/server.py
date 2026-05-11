@@ -36,6 +36,18 @@ else:
 
 import uvicorn
 
+from forgather.tls import (
+    TLSRequiredError,
+    enforce_non_loopback_policy,
+    is_enabled as tls_is_enabled,
+    load_config as tls_load_config,
+    uvicorn_ssl_kwargs as tls_uvicorn_ssl_kwargs,
+)
+from forgather.tls.runtime import (
+    add_server_tls_args,
+    is_tls_active as tls_is_active,
+)
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -77,6 +89,7 @@ def main():
             "with the same --cluster value will see each other."
         ),
     )
+    add_server_tls_args(parser)
     parser.add_argument(
         "--cluster-address",
         action="append",
@@ -107,14 +120,33 @@ def main():
     # before we read or rewrite them.
     paths.tighten_existing_state_perms()
 
-    _configure_auth(args)
+    try:
+        ssl_kwargs = tls_uvicorn_ssl_kwargs(args)
+    except FileNotFoundError as exc:
+        print(f"TLS config error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    tls_on = bool(ssl_kwargs)
+
+    try:
+        enforce_non_loopback_policy(
+            args.host,
+            tls_enabled=tls_on,
+            insecure=args.insecure,
+            service="forgather server",
+        )
+    except TLSRequiredError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(2)
+
+    _configure_auth(args, tls_on=tls_on)
 
     if args.cluster:
-        _activate_cluster(args)
+        _activate_cluster(args, tls_on=tls_on)
 
     app = create_app()
 
-    logging.info(f"Starting Forgather server on {args.host}:{args.port}")
+    scheme = "https" if tls_on else "http"
+    logging.info(f"Starting Forgather server on {scheme}://{args.host}:{args.port}")
     uvicorn.run(
         app,
         host=args.host,
@@ -122,10 +154,11 @@ def main():
         log_level=args.log_level.lower(),
         access_log=True,
         reload=args.reload,
+        **ssl_kwargs,
     )
 
 
-def _configure_auth(args) -> None:
+def _configure_auth(args, *, tls_on: bool = False) -> None:
     """Print the jupyter-style banner and set up auth state.
 
     Always touches the token file (so the CLI can find it) even when
@@ -138,20 +171,21 @@ def _configure_auth(args) -> None:
         token = auth.load_token()
 
     on_loopback = args.host in ("127.0.0.1", "::1", "localhost")
+    scheme = "https" if tls_on else "http"
 
     print()
     if args.no_auth:
         auth.disable_auth()
         print("    !! Forgather server is running with --no-auth !!")
         print(f"    !! Any other local user on this host can read/control jobs.")
-        print(f"        http://{args.host}:{args.port}/")
+        print(f"        {scheme}://{args.host}:{args.port}/")
         print()
         return
 
     print("    Forgather server is running at:")
-    print(f"        http://{args.host}:{args.port}/?token={token}")
+    print(f"        {scheme}://{args.host}:{args.port}/?token={token}")
     if on_loopback and args.host != "localhost":
-        print(f"        http://localhost:{args.port}/?token={token}")
+        print(f"        {scheme}://localhost:{args.port}/?token={token}")
     print()
     print(f"    CLI auth: token in {paths.auth_token_file()} (mode 0600)")
     if not auth.has_password():
@@ -159,20 +193,23 @@ def _configure_auth(args) -> None:
             "    First successful token login will prompt to set a "
             "password for future browser logins."
         )
-    if not on_loopback:
+    if not on_loopback and not tls_on:
         print()
         print(
             f"    !! Bound to non-loopback host {args.host} without TLS — "
             f"the bearer token traverses the network in cleartext."
         )
         print(
-            "    !! Run behind an SSH tunnel or a TLS-terminating "
-            "reverse proxy for LAN access."
+            "    !! Run 'forgather tls init' to enable TLS, or pass "
+            "--insecure to suppress this check."
         )
+    elif tls_on:
+        print()
+        print(f"    TLS: serving HTTPS from {tls_load_config().server_cert}")
     print()
 
 
-def _activate_cluster(args) -> None:
+def _activate_cluster(args, *, tls_on: bool = False) -> None:
     """Stamp the cluster identity and print a banner.
 
     The discovery + membership tasks are started later by the FastAPI
@@ -182,7 +219,7 @@ def _activate_cluster(args) -> None:
     """
     advertise = tuple(args.cluster_address or ())
     ident = cluster.activate(
-        args.cluster, port=args.port, advertise_addresses=advertise
+        args.cluster, port=args.port, advertise_addresses=advertise, tls=tls_on
     )
     print()
     print(
@@ -199,6 +236,10 @@ def _activate_cluster(args) -> None:
     print(
         "    Inter-node API is unauthenticated on the assumption of a " "trusted LAN."
     )
+    if tls_on:
+        print("    Cluster peer transport: HTTPS (CA bundle from forgather.tls).")
+    else:
+        print("    Cluster peer transport: HTTP (cleartext).")
     print()
 
 

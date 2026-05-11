@@ -8,11 +8,30 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 from typing import Any, Dict, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .dataset_server_args import DEFAULT_SERVER_URL, SERVER_URL_ENV
+
+
+def _ssl_context_for_url(url: str) -> Optional[ssl.SSLContext]:
+    """Build an SSLContext that trusts our local CA bundle (if any).
+
+    Returns ``None`` for plain ``http://`` URLs.
+    """
+    if not url.lower().startswith("https://"):
+        return None
+    try:
+        from forgather.tls import httpx_verify
+
+        bundle = httpx_verify()
+    except Exception:
+        bundle = True
+    if isinstance(bundle, str):
+        return ssl.create_default_context(cafile=bundle)
+    return ssl.create_default_context()
 
 
 class ServerError(RuntimeError):
@@ -29,6 +48,18 @@ def resolve_server_url(explicit: Optional[str]) -> str:
     env = os.environ.get(SERVER_URL_ENV)
     if env:
         return env
+    # Default scheme follows local TLS state — when the operator ran
+    # `forgather tls init` and the local server is serving HTTPS, the
+    # CLI talks HTTPS automatically against 127.0.0.1.
+    try:
+        from forgather.tls import client_scheme
+
+        scheme = client_scheme()
+    except Exception:
+        scheme = "http"
+    if scheme == "https":
+        # Replace the default URL's scheme.
+        return DEFAULT_SERVER_URL.replace("http://", "https://", 1)
     return DEFAULT_SERVER_URL
 
 
@@ -67,8 +98,9 @@ def _request(
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
     req = Request(url, data=data, method=method, headers=headers)
+    ctx = _ssl_context_for_url(url)
     try:
-        with urlopen(req, timeout=timeout) as resp:
+        with urlopen(req, timeout=timeout, context=ctx) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except HTTPError as exc:
         try:
