@@ -149,6 +149,22 @@ function DatasetServersTab() {
     },
   });
 
+  // Mint a forgather-dataset:// URI on the server side (the token lives
+  // in JobRecords, not the browser) and write the result to the
+  // clipboard. The "bundle" is two pieces of state in one string so the
+  // destination machine's "+ Add" → "Paste bundle" can fill URL + token
+  // in a single step. See AddServerModal for the parser.
+  const copyLocalBundle = async (queue_id: string) => {
+    try {
+      const { bundle } = await api.localDatasetServerBundle(queue_id);
+      await navigator.clipboard?.writeText(bundle);
+    } catch (e) {
+      window.alert(
+        `Could not copy bundle: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  };
+
   return (
     <div className="inference-model-panel">
       <section>
@@ -187,6 +203,22 @@ function DatasetServersTab() {
                   <span className="muted">· {s.label}</span>
                   {s.has_auth_token && (
                     <span className="muted">· auth ✓</span>
+                  )}
+                  {s.alive && (
+                    <button
+                      className="tiny"
+                      style={{ marginLeft: "auto" }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void copyLocalBundle(s.queue_id);
+                      }}
+                      title={
+                        "Copy a forgather-dataset:// URI containing the URL " +
+                        "and token. Paste it into '+ Add' on another node."
+                      }
+                    >
+                      Copy bundle
+                    </button>
                   )}
                 </div>
               </li>
@@ -418,6 +450,39 @@ function ServerActions({
   );
 }
 
+/** Decode a ``forgather-dataset://host:port/?token=...`` bundle into
+ *  ``{base_url, token}``. The URI shape is produced by
+ *  ``/api/dataset-servers/local/<queue_id>/bundle`` on the source
+ *  machine. Strict-ish parsing: scheme must match, host + port must be
+ *  present, query string must carry a token (empty token allowed but
+ *  surfaces as ""). Anything malformed raises so the caller can show
+ *  the user a specific error rather than silently accepting garbage. */
+function parseBundle(raw: string): { base_url: string; token: string } {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("forgather-dataset://")) {
+    throw new Error(
+      "bundle must start with forgather-dataset:// (use Copy bundle on the source server)",
+    );
+  }
+  // Force a parseable scheme; URL() rejects custom schemes for
+  // hostname/pathname extraction in some browsers, so rewrite to http://
+  // for parsing only — we keep the original scheme out of the result.
+  let parsed: URL;
+  try {
+    parsed = new URL("http://" + trimmed.slice("forgather-dataset://".length));
+  } catch (e) {
+    throw new Error(
+      `could not parse bundle: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  if (!parsed.hostname || !parsed.port) {
+    throw new Error("bundle is missing host or port");
+  }
+  const base_url = `http://${parsed.hostname}:${parsed.port}`;
+  const token = parsed.searchParams.get("token") ?? "";
+  return { base_url, token };
+}
+
 function AddServerModal({
   onClose,
   onAdded,
@@ -431,6 +496,22 @@ function AddServerModal({
   const [showAuthToken, setShowAuthToken] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const pasteBundle = async () => {
+    try {
+      const text = await navigator.clipboard?.readText();
+      if (!text) {
+        setError("clipboard is empty");
+        return;
+      }
+      const { base_url, token } = parseBundle(text);
+      setBaseUrl(base_url);
+      setAuthToken(token);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   const submit = async () => {
     setPending(true);
@@ -477,6 +558,20 @@ function AddServerModal({
             if (!pending && baseUrl.trim()) void submit();
           }}
         >
+          <div className="submit-row">
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => void pasteBundle()}
+              title={
+                "Read a forgather-dataset:// bundle from the clipboard " +
+                "and fill URL + token in one step. Get one by clicking " +
+                "'Copy bundle' on the source machine's local-server row."
+              }
+            >
+              Paste bundle from clipboard
+            </button>
+          </div>
           <div className="submit-row">
             <label className="wide">
               Label

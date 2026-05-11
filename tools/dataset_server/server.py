@@ -19,11 +19,9 @@ See ``--help`` for all options.
 from __future__ import annotations
 
 import argparse
-import atexit
 import logging
 import os
 import secrets
-import signal
 import sys
 from pathlib import Path
 from typing import Optional
@@ -41,11 +39,11 @@ if __name__ == "__main__" and __package__ is None:
     if str(parent_dir) not in sys.path:
         sys.path.insert(0, str(parent_dir))
     from dataset_server.app import create_app
-    from dataset_server.auth import write_standalone_token
+    from dataset_server.auth import standalone_token_file, write_standalone_token
     from dataset_server.state import ServerState
 else:
     from .app import create_app
-    from .auth import write_standalone_token
+    from .auth import standalone_token_file, write_standalone_token
     from .state import ServerState
 
 import uvicorn
@@ -156,6 +154,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Disable bearer-token auth. Any host able to reach the bind "
             "port becomes able to query the server — only set this when "
             "the network is already trusted."
+        ),
+    )
+    parser.add_argument(
+        "--regen-token",
+        action="store_true",
+        help=(
+            "Generate a fresh auth token at startup, overwriting the "
+            "persisted per-port token file. Existing clients (peers "
+            "running training jobs against this server) will start "
+            "getting 401 until they pick up the new token. Mirrors "
+            "'forgather server --regen-token'."
         ),
     )
 
@@ -298,17 +307,32 @@ def _merge_config(
 
 def _resolve_auth_token(
     parser: argparse.ArgumentParser, args: argparse.Namespace
-) -> tuple[Optional[str], bool]:
+) -> tuple[Optional[str], str]:
     """Resolve the effective bearer token from CLI args.
 
-    Returns ``(token, auto_generated)``. ``token`` is ``None`` for
-    ``--no-auth``; ``auto_generated`` is True when we minted the
-    token (so the entry point publishes it to the per-port file).
+    Returns ``(token, source)``. ``token`` is ``None`` for ``--no-auth``;
+    ``source`` is one of:
+
+    - ``"cli"``         — explicit ``--auth-token``
+    - ``"file"``        — explicit ``--auth-token-file``
+    - ``"persisted"``   — loaded from the per-port file at
+                          ``<config>/dataset_server/<port>.token``
+    - ``"generated"``   — freshly minted; entry point should persist it
+                          and emit the "wrote per-port token" banner
+    - ``"regenerated"`` — freshly minted because ``--regen-token`` was
+                          passed (same persistence as ``"generated"``,
+                          but the banner is louder so the operator
+                          notices any peers that just got invalidated)
+
+    Persistence lives in the per-port file: this mirrors the
+    forgather-server's auth_token model. A long-running peer that
+    pulled the token last week keeps working after a restart — until
+    the operator runs with ``--regen-token``.
     """
     if args.no_auth:
-        return None, False
+        return None, "cli"
     if args.auth_token:
-        return args.auth_token.strip(), False
+        return args.auth_token.strip(), "cli"
     if args.auth_token_file:
         try:
             text = Path(args.auth_token_file).read_text().strip()
@@ -316,29 +340,19 @@ def _resolve_auth_token(
             parser.error(f"could not read --auth-token-file: {exc}")
         if not text:
             parser.error(f"auth-token-file is empty: {args.auth_token_file}")
-        return text, False
-    return secrets.token_hex(32), True
-
-
-def _install_token_cleanup(token_path: Path) -> None:
-    """Remove the per-port token file at process exit (atexit + signal
-    handlers, mirroring inference_server)."""
-
-    def _unlink() -> None:
+        return text, "file"
+    if args.regen_token:
+        return secrets.token_hex(32), "regenerated"
+    token_path = standalone_token_file(args.port)
+    if token_path.is_file():
         try:
-            os.unlink(token_path)
-        except OSError:
-            pass
-
-    atexit.register(_unlink)
-
-    def _signal_cleanup(signum, _frame):
-        _unlink()
-        signal.signal(signum, signal.SIG_DFL)
-        os.kill(os.getpid(), signum)
-
-    for _sig in (signal.SIGINT, signal.SIGTERM):
-        signal.signal(_sig, _signal_cleanup)
+            text = token_path.read_text().strip()
+        except OSError as exc:
+            parser.error(f"could not read persisted token at {token_path}: {exc}")
+        if text:
+            return text, "persisted"
+        # Empty file is treated as "missing" — fall through to mint.
+    return secrets.token_hex(32), "generated"
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -388,7 +402,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         except (ValueError, FileNotFoundError) as exc:
             parser.error(str(exc))
 
-    auth_token, auto_generated = _resolve_auth_token(parser, args)
+    auth_token, token_source = _resolve_auth_token(parser, args)
     state.auth_required = bool(auth_token)
 
     if not auth_token:
@@ -399,6 +413,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             flush=True,
         )
     else:
+        # Loud header line for --regen-token so any peer using the
+        # previous token gets a visible heads-up in the operator's
+        # terminal that they're about to start 401-ing.
+        if token_source == "regenerated":
+            print(
+                "!! --regen-token: replacing the persisted per-port token. "
+                "Existing peers will need to re-pull.",
+                file=sys.stderr,
+                flush=True,
+            )
         print(
             f"dataset_server auth token: {auth_token}",
             file=sys.stderr,
@@ -416,7 +440,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             flush=True,
         )
 
-        if auto_generated:
+        # Persist the per-port token file for any auto-discovered token.
+        # Explicit --auth-token / --auth-token-file paths intentionally
+        # don't touch the per-port file — operator-managed tokens stay
+        # wherever the operator put them. The file is NOT deleted on
+        # exit; it survives restarts (mirrors forgather-server's
+        # auth_token persistence) and rotates only on --regen-token.
+        if token_source in ("generated", "regenerated"):
             try:
                 token_path = write_standalone_token(args.port, auth_token)
             except OSError as exc:
@@ -427,11 +457,16 @@ def main(argv: Optional[list[str]] = None) -> int:
                 )
             else:
                 print(
-                    f"shared token file: {token_path}",
+                    f"persisted token file: {token_path}",
                     file=sys.stderr,
                     flush=True,
                 )
-                _install_token_cleanup(token_path)
+        elif token_source == "persisted":
+            print(
+                f"reusing persisted token at: {standalone_token_file(args.port)}",
+                file=sys.stderr,
+                flush=True,
+            )
 
     app = create_app(state, auth_token=auth_token)
 

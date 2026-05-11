@@ -245,6 +245,65 @@ def list_local_servers():
     return _local_servers()
 
 
+class BundleResponse(BaseModel):
+    """A self-describing ``forgather-dataset://`` URI that bundles a
+    dataset_server's base URL and bearer token for transfer to another
+    machine. The destination machine's "+ Add" modal can paste this
+    into a single field and decode both halves at once — fewer
+    copy-paste steps for the operator, and the token never appears
+    separately in clipboard history.
+
+    Equivalent to an SSH private key on the wire: anyone who sees the
+    bundle gets full client access to the named server. Treat it
+    accordingly.
+    """
+
+    bundle: str
+
+
+@router.get("/dataset-servers/local/{queue_id}/bundle", response_model=BundleResponse)
+def local_server_bundle(queue_id: str):
+    """Mint a transferable bundle for a locally-spawned dataset_server.
+
+    Only available for forgather_server-launched instances (token comes
+    from the JobRecord). User-added entries already know their own
+    token on the source machine — no server round-trip needed.
+    """
+    for r in job_records.list_records():
+        if r.job_type != "dataset_server" or r.queue_id != queue_id:
+            continue
+        if r.status not in {"starting", "running"}:
+            raise HTTPException(
+                status_code=410,
+                detail=f"dataset_server {queue_id} is not running",
+            )
+        params = r.job_params or {}
+        port = params.get("port")
+        try:
+            port = int(port) if port is not None else None
+        except (TypeError, ValueError):
+            port = None
+        if port is None:
+            raise HTTPException(status_code=500, detail="job has no port in job_params")
+        host = params.get("host") or "127.0.0.1"
+        # Bundle host: same translation the proxy/JobsPanel use.
+        # 0.0.0.0 binds everywhere but isn't a routable client target;
+        # default to "localhost" so the destination machine can replace
+        # it with whatever hostname they actually reach this box on.
+        bundle_host = "localhost" if host == "0.0.0.0" else host
+        token = r.auth_token or ""
+        # urlencode the token defensively — bearer tokens are hex today
+        # but the URI shape shouldn't assume it.
+        from urllib.parse import quote
+
+        bundle = (
+            f"forgather-dataset://{bundle_host}:{port}"
+            f"/?token={quote(token, safe='')}"
+        )
+        return BundleResponse(bundle=bundle)
+    raise HTTPException(status_code=404, detail=f"no local dataset_server: {queue_id}")
+
+
 @router.get("/dataset-servers/user", response_model=List[UserEntryModel])
 def list_user_entries():
     return [

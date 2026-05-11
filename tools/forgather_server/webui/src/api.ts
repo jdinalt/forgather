@@ -1304,6 +1304,10 @@ export const api = {
 
   listLocalDatasetServers: () =>
     fetchJson<DatasetServerLocal[]>("/api/dataset-servers/local"),
+  localDatasetServerBundle: (queue_id: string) =>
+    fetchJson<{ bundle: string }>(
+      `/api/dataset-servers/local/${encodeURIComponent(queue_id)}/bundle`,
+    ),
   listUserDatasetServers: () =>
     fetchJson<DatasetServerUser[]>("/api/dataset-servers/user"),
   addUserDatasetServer: async (

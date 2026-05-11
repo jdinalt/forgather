@@ -117,21 +117,35 @@ forgather-server's bearer token and the per-job trainer-control
 token), see the
 [forgather server threat model](../../forgather-server.md#threat-model).
 
-**Default behaviour** — if you don't pass any auth flag, the server
-generates a random 64-hex-char token at startup and prints it on
-**stderr**:
+**Default behaviour** — on first start, the server generates a random
+64-hex-char token and writes it to a per-port file under
+`~/.config/forgather/dataset_server/<port>.token` (mode 0600 in a 0700
+directory). The token is printed on **stderr**:
 
 ```
 dataset_server auth token: 8f5b...
 clients must send 'Authorization: Bearer <token>'
 curl -H "Authorization: Bearer 8f5b..." http://127.0.0.1:8766/v1/datasets
-shared token file: /home/<you>/.config/forgather/dataset_server/8766.token
+persisted token file: /home/<you>/.config/forgather/dataset_server/8766.token
 ```
 
-The auto-generated token is also written to a per-port file under
-`~/.config/forgather/dataset_server/<port>.token` (mode 0600 in a 0700
-directory) and removed when the server exits (atexit + SIGINT /
-SIGTERM handlers).
+The token **persists across restarts** (mirroring how
+`forgather server` handles its own bearer). On every subsequent
+startup the server loads the existing per-port file rather than
+minting a fresh value — so peers on other nodes that pulled the
+token last week keep working through a restart. The stderr banner
+on a reused token shows:
+
+```
+reusing persisted token at: /home/<you>/.config/forgather/dataset_server/8766.token
+```
+
+**Rotating the token** — pass `--regen-token` to mint a fresh value
+and overwrite the persisted file. The startup banner gains a louder
+header so the operator sees that any client still using the old
+token is about to start 401-ing. After rotation, redistribute the
+new token to peers (e.g. via the *Datasets → Servers* view's "+ Add"
+modal on each consumer).
 
 `RemoteBackend`, the loader's `_remote_load_iterable_dataset`, and
 the `forgather dataset-server` diagnostic CLI all auto-discover the
@@ -533,9 +547,11 @@ authorization decision; the proxy will then happily forward to it.
   trusted-LAN bind to a single-user box.
 - **Auth token storage.** The auto-generated token lives at
   `<forgather_config_dir>/dataset_server/<port>.token` (mode `0600` in
-  a mode-`0700` dir). Anyone with root on the host, or anyone who
-  compromises the user account that started the server, gets the
-  token. Treat it as a uid-level credential.
+  a mode-`0700` dir) and persists across restarts. Anyone with root on
+  the host, or anyone who compromises the user account that started
+  the server, gets the token. Treat it as a uid-level credential. To
+  rotate after a suspected compromise, run the server with
+  `--regen-token` once.
 
 ### Server-side knobs and what they expose
 
