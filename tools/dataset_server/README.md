@@ -389,6 +389,11 @@ forgather dataset-server start --allow-paths
 
 # Allow HF downloads on cache miss (rare for a server role):
 forgather dataset-server start --allow-downloads
+
+# Rotate the persisted per-port auth token. Use after a suspected
+# token compromise; existing peers will need to re-pull the new
+# token from the server's stderr banner.
+forgather dataset-server start --regen-token
 ```
 
 The default port is **8766**. The forgather orchestration server
@@ -633,8 +638,11 @@ The server is intentionally minimal. The following are explicit
 non-goals — call them out in any future PR if you want them
 discussed:
 
-- **Web UI**. The forgather orchestration server has one; the
-  dataset server doesn't need one.
+- **Web UI**. The forgather orchestration server already provides
+  one (sidebar 🗂 Datasets) that drives a dataset_server over its
+  same-origin proxy — see
+  `tools/forgather_server/README.md` "Datasets view". The
+  dataset_server itself stays a headless API.
 - **LRU / size-bound eviction of cached backends**. Handles live
   for the lifetime of the server. For long-running servers with
   many distinct dataset configs this is a known limitation.
