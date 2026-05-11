@@ -20,7 +20,8 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .. import cluster, cluster_jobs
+from .. import cluster, cluster_jobs, dataset_source
+from ..dataset_source import DatasetSourceError
 from .gpus import GpuInfoModel, GpuPolicyModel, SetGpuPolicyRequest, _to_model
 
 log = logging.getLogger("forgather_server.routes.cluster")
@@ -266,9 +267,7 @@ async def _fetch_peer_gpus(
             try:
                 gpus.append(GpuInfoModel(**raw))
             except Exception:
-                log.debug(
-                    "skipping malformed GPU entry from %s: %r", url, raw
-                )
+                log.debug("skipping malformed GPU entry from %s: %r", url, raw)
     return ClusterGpusEntry(
         node_id=member.node_id,
         hostname=member.hostname,
@@ -312,17 +311,11 @@ def gpu_policy_local(req: GpuPolicyLocalRequest, response: Response):
         disabled=req.disabled,
         min_priority=req.min_priority,
     )
-    return GpuPolicyModel(
-        disabled=result.disabled, min_priority=result.min_priority
-    )
+    return GpuPolicyModel(disabled=result.disabled, min_priority=result.min_priority)
 
 
-@router.post(
-    "/nodes/{node_id}/gpus/{gpu_index}/policy", response_model=GpuPolicyModel
-)
-async def set_node_gpu_policy(
-    node_id: str, gpu_index: int, req: SetGpuPolicyRequest
-):
+@router.post("/nodes/{node_id}/gpus/{gpu_index}/policy", response_model=GpuPolicyModel)
+async def set_node_gpu_policy(node_id: str, gpu_index: int, req: SetGpuPolicyRequest):
     """Master-side proxy: forward a GPU policy change to the named node.
 
     Looks up ``node_id`` in the cluster member table, POSTs the
@@ -360,9 +353,7 @@ async def set_node_gpu_policy(
     }
     async with httpx.AsyncClient() as client:
         try:
-            r = await client.post(
-                url, json=payload, timeout=PEER_GPU_TIMEOUT_SECONDS
-            )
+            r = await client.post(url, json=payload, timeout=PEER_GPU_TIMEOUT_SECONDS)
         except (httpx.HTTPError, OSError) as e:
             raise HTTPException(
                 status_code=502,
@@ -372,8 +363,7 @@ async def set_node_gpu_policy(
         raise HTTPException(
             status_code=502,
             detail=(
-                f"node {target.hostname} returned {r.status_code}: "
-                f"{r.text[:200]}"
+                f"node {target.hostname} returned {r.status_code}: " f"{r.text[:200]}"
             ),
         )
     served_by = r.headers.get("x-forgather-node-id") or r.headers.get(
@@ -553,9 +543,9 @@ async def _measure_one_peer(
                     timestamp=time.time(),
                     error=f"http {r.status_code}",
                 )
-            served_by = r.headers.get(
-                "x-forgather-node-id"
-            ) or r.headers.get("X-Forgather-Node-Id")
+            served_by = r.headers.get("x-forgather-node-id") or r.headers.get(
+                "X-Forgather-Node-Id"
+            )
             if served_by and served_by != member.node_id:
                 return BandwidthEntry(
                     peer_node_id=member.node_id,
@@ -738,9 +728,7 @@ class TrainingStatusLocalResponse(BaseModel):
     error: Optional[str] = None
 
 
-@router.get(
-    "/training_status_local", response_model=TrainingStatusLocalResponse
-)
+@router.get("/training_status_local", response_model=TrainingStatusLocalResponse)
 def training_status_local(queue_id: str, response: Response):
     """Peer-side status snapshot for one local queue item.
 
@@ -777,12 +765,8 @@ class TrainingCancelLocalResponse(BaseModel):
     detail: str = ""
 
 
-@router.post(
-    "/training_cancel_local", response_model=TrainingCancelLocalResponse
-)
-def training_cancel_local(
-    req: TrainingCancelLocalRequest, response: Response
-):
+@router.post("/training_cancel_local", response_model=TrainingCancelLocalResponse)
+def training_cancel_local(req: TrainingCancelLocalRequest, response: Response):
     """Peer-side cancel: try to remove the queue item, abort if running.
 
     Returns ``cancelled=True`` if the item was waiting (and thus removed)
@@ -844,6 +828,11 @@ class ClusterJobSubmitRequest(BaseModel):
     # before submit and asks the operator to acknowledge — so by the
     # time we get here the operator has already eyeballed the diff.
     allow_version_mismatch: bool = False
+    # See routes/queue.py::EnqueueRequest. Resolved here on the master
+    # and merged into every peer's extra_env so the whole cluster pulls
+    # examples from the same dataset_server (typically a dedicated data
+    # host the entire LAN can reach).
+    dataset_source: Optional[Dict[str, Any]] = None
 
 
 class MemberAssignmentModel(BaseModel):
@@ -1008,10 +997,7 @@ async def _gather_member_statuses(
         if peer is None or not peer.reachable:
             out[member_assignment.queue_id] = {"status": "unknown"}
             return
-        url = (
-            f"http://{peer.address}:{peer.port}"
-            f"/api/cluster/training_status_local"
-        )
+        url = f"http://{peer.address}:{peer.port}" f"/api/cluster/training_status_local"
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
                 r = await client.get(
@@ -1028,9 +1014,7 @@ async def _gather_member_statuses(
     return out
 
 
-def _maybe_promote_terminal(
-    job: cluster_jobs.ClusterJob, rolled_up: str
-) -> None:
+def _maybe_promote_terminal(job: cluster_jobs.ClusterJob, rolled_up: str) -> None:
     """Stick a terminal roll-up status onto the bundle record itself.
 
     Once a cluster job is fully done/failed, we don't need to keep
@@ -1066,9 +1050,7 @@ def _check_version_mismatch(
         if len(vals) > 1:
             warnings.append(
                 f"{key} differs across the cluster: "
-                + ", ".join(
-                    f"{val} ({n})" for val, n in sorted(vals.items())
-                )
+                + ", ".join(f"{val} ({n})" for val, n in sorted(vals.items()))
             )
     return warnings
 
@@ -1128,9 +1110,7 @@ async def _fanout_training(
         return {"queue_id": item.queue_id, "node_id": self_id.node_id}
     url = f"http://{target.address}:{target.port}/api/cluster/training_local"
     try:
-        r = await client.post(
-            url, json=payload, timeout=PEER_TRAINING_TIMEOUT_SECONDS
-        )
+        r = await client.post(url, json=payload, timeout=PEER_TRAINING_TIMEOUT_SECONDS)
     except (httpx.HTTPError, OSError) as e:
         raise HTTPException(
             status_code=502,
@@ -1140,8 +1120,7 @@ async def _fanout_training(
         raise HTTPException(
             status_code=502,
             detail=(
-                f"node {target.hostname} returned {r.status_code}: "
-                f"{r.text[:200]}"
+                f"node {target.hostname} returned {r.status_code}: " f"{r.text[:200]}"
             ),
         )
     served_by = r.headers.get("x-forgather-node-id") or r.headers.get(
@@ -1161,9 +1140,7 @@ async def _fanout_training(
 @router.post("/jobs/submit", response_model=ClusterJobSubmitResponse)
 async def submit_cluster_job(req: ClusterJobSubmitRequest):
     if not cluster.is_active():
-        raise HTTPException(
-            status_code=400, detail="cluster mode is not active"
-        )
+        raise HTTPException(status_code=400, detail="cluster mode is not active")
     if not req.members:
         raise HTTPException(status_code=400, detail="members list is empty")
     by_id = {m.node_id: m for m in cluster.members()}
@@ -1209,9 +1186,7 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
     # peer that needs it.
     rdzv_node_id = req.rdzv_node_id or cluster.master_node_id()
     if rdzv_node_id is None:
-        raise HTTPException(
-            status_code=400, detail="cluster has no master right now"
-        )
+        raise HTTPException(status_code=400, detail="cluster has no master right now")
     rdzv_member = by_id.get(rdzv_node_id)
     if rdzv_member is None:
         raise HTTPException(
@@ -1221,6 +1196,18 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
     rdzv_endpoint = f"{rdzv_member.address}:{req.rdzv_port}"
     rdzv_id = cluster_jobs.new_rdzv_id()
     cluster_job_id = cluster_jobs.new_cluster_job_id()
+
+    # Resolve the dataset-source choice once on the master — the URL
+    # + token are reachable from every peer (that's the whole point of
+    # the central data host), so the same env vars get merged into
+    # every per-peer extra_env below. Resolution errors become 400 so
+    # the operator sees "your saved server is gone" rather than a
+    # cluster of training processes all silently falling back to
+    # in-process loading.
+    try:
+        _dataset_env = dataset_source.resolve_to_env(req.dataset_source)
+    except DatasetSourceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     # Build per-peer payloads. ``node_rank`` is assigned by index in
     # the request order — the operator picks the order in the submit
@@ -1254,6 +1241,14 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
             "GLOO_SOCKET_IFNAME": iface,
             "TP_SOCKET_IFNAME": iface,
         }
+        # The dataset_source choice is identical for every peer (the
+        # whole cluster pulls from the same data host), so resolve
+        # once outside the loop — but the easier thing here is to
+        # resolve once before the loop and inject inside. Done above;
+        # see ``_dataset_env`` set just before the fanout payloads.
+        if _dataset_env:
+            for k, v in _dataset_env.items():
+                extra_env.setdefault(k, v)
         fanout_payloads.append(
             {
                 "project_dir": req.project_dir,
@@ -1298,9 +1293,7 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
                 await _cancel_fanout(client, assignments, by_id)
                 raise HTTPException(
                     status_code=502,
-                    detail=(
-                        f"node {member.hostname} returned no queue_id"
-                    ),
+                    detail=(f"node {member.hostname} returned no queue_id"),
                 )
             assignments.append(
                 cluster_jobs.MemberAssignment(
@@ -1366,14 +1359,10 @@ async def _cancel_one_peer_training(
             timeout=PEER_TRAINING_TIMEOUT_SECONDS,
         )
     except (httpx.HTTPError, OSError) as e:
-        log.warning(
-            "cancel forward to %s failed: %s", target.hostname, e
-        )
+        log.warning("cancel forward to %s failed: %s", target.hostname, e)
         return None
     if r.status_code != 200:
-        log.warning(
-            "cancel non-200 from %s: %d", target.hostname, r.status_code
-        )
+        log.warning("cancel non-200 from %s: %d", target.hostname, r.status_code)
         return None
     return r.json()
 
@@ -1412,9 +1401,7 @@ async def _maybe_proxy_to_master() -> Optional[List[Dict[str, Any]]]:
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.get(url)
             if r.status_code != 200:
-                log.warning(
-                    "cluster jobs proxy: master returned %d", r.status_code
-                )
+                log.warning("cluster jobs proxy: master returned %d", r.status_code)
                 return None
             data = r.json()
             if isinstance(data, list):
@@ -1463,9 +1450,7 @@ async def list_cluster_jobs():
     return out
 
 
-@router.get(
-    "/jobs/{cluster_job_id}", response_model=Optional[ClusterJobModel]
-)
+@router.get("/jobs/{cluster_job_id}", response_model=Optional[ClusterJobModel])
 async def get_cluster_job(cluster_job_id: str):
     job = cluster_jobs.get_job(cluster_job_id)
     if job is None:
@@ -1484,9 +1469,7 @@ class ClusterJobCancelResponse(BaseModel):
     per_member: List[Dict[str, Any]]
 
 
-@router.post(
-    "/jobs/{cluster_job_id}/cancel", response_model=ClusterJobCancelResponse
-)
+@router.post("/jobs/{cluster_job_id}/cancel", response_model=ClusterJobCancelResponse)
 async def cancel_cluster_job(cluster_job_id: str):
     job = cluster_jobs.get_job(cluster_job_id)
     if job is None:
@@ -1537,10 +1520,7 @@ async def cancel_cluster_job(cluster_job_id: str):
             [
                 f"{p['node_id'][:8]}={p['result']}"
                 for p in per_member
-                if not (
-                    isinstance(p["result"], dict)
-                    and p["result"].get("cancelled")
-                )
+                if not (isinstance(p["result"], dict) and p["result"].get("cancelled"))
             ],
         )
     return ClusterJobCancelResponse(

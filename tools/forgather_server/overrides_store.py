@@ -93,10 +93,12 @@ def get_overrides_payload(project_dir: str, config: str) -> Dict[str, Any]:
         }
     rg = data.get("requested_gpus")
     mn = data.get("multinode")
+    ds = data.get("dataset_source")
     return {
         "values": data.get("values") if isinstance(data.get("values"), dict) else {},
         "requested_gpus": rg if isinstance(rg, int) else None,
         "multinode": mn if isinstance(mn, dict) else None,
+        "dataset_source": ds if isinstance(ds, dict) else None,
         "updated_at": data.get("updated_at"),
     }
 
@@ -107,15 +109,20 @@ def set_overrides(
     values: Dict[str, Any],
     requested_gpus: Optional[int] = None,
     multinode: Optional[Dict[str, Any]] = None,
+    dataset_source: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Persist *values* (+ optional GPU count + optional cluster settings)
-    and return the stored payload.
+    """Persist *values* (+ optional GPU count + optional cluster settings
+    + optional dataset source) and return the stored payload.
 
-    ``multinode`` is an opaque dict passed through verbatim — the webui
-    owns its shape (participants, rdzv host/port, per-node iface). We
-    keep it here rather than in a separate file so an "always opens
-    where you left off" experience is consistent across single-node
-    and multi-node submits.
+    ``multinode`` and ``dataset_source`` are opaque dicts passed through
+    verbatim — the webui owns each shape. ``dataset_source`` is the
+    submit-modal's last-used choice of where to fetch training datasets
+    from: ``{"kind": "local"}`` for the in-process loader, or
+    ``{"kind": "server", "server_id": "..."}`` for a known
+    dataset_server (local-spawn ``local:<queue_id>`` or registered
+    ``user:<entry_id>``). The token itself is never persisted here; it
+    lives in the dataset_server registry or JobRecord and is resolved
+    at submit time.
     """
     abs_dir = os.path.abspath(project_dir)
     now = time.time()
@@ -125,6 +132,7 @@ def set_overrides(
         "values": dict(values),
         "requested_gpus": requested_gpus,
         "multinode": dict(multinode) if multinode else None,
+        "dataset_source": dict(dataset_source) if dataset_source else None,
         "updated_at": now,
     }
     p = _path(project_dir, config)
@@ -134,6 +142,7 @@ def set_overrides(
         "values": dict(values),
         "requested_gpus": requested_gpus,
         "multinode": dict(multinode) if multinode else None,
+        "dataset_source": dict(dataset_source) if dataset_source else None,
         "updated_at": now,
     }
 

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api, ConfigInfo, ProjectInfo } from "../api";
+import { useDatasetSource } from "../dataset-source";
 import { persistGet, persistRemove, persistSet } from "../persist";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import {
@@ -166,6 +167,18 @@ export function DatasetSubmitModal({
   const [values, setValues] = useState<Record<string, string>>({});
   const [overrideSeeded, setOverrideSeeded] = useState<boolean>(false);
 
+  // Dataset-source selector (shared hook). ``forgather dataset``
+  // reads FORGATHER_DATASET_SERVER like every other consumer, so the
+  // choice plumbs through cleanly.
+  const {
+    source: datasetSource,
+    setSource: setDatasetSource,
+    selector: datasetSourceSelector,
+  } = useDatasetSource({
+    ready: !!overridesQ.data,
+    initial: overridesQ.data?.dataset_source ?? null,
+  });
+
   // Seed each field from the persisted blob (if any) on first mount.
   // Read once via lazy initializers so subsequent re-renders don't keep
   // re-reading localStorage. Reset is a hard reload of DEFAULTS.
@@ -216,6 +229,10 @@ export function DatasetSubmitModal({
     setTruncate(DEFAULTS.truncate);
     setHistogramSamples(DEFAULTS.histogramSamples);
     setPriority(0);
+    // Dataset-source dropdown — without this the live in-form value
+    // survives the reset and the next submit writes it straight back
+    // into overrides.
+    setDatasetSource(null);
   };
 
   // Filter the materialized target list down to the canonical six —
@@ -393,6 +410,7 @@ export function DatasetSubmitModal({
       priority,
       job_type: "dataset",
       job_params: params,
+      dataset_source: datasetSource,
     });
     // Persist the dialog-specific knobs (not priority — see the
     // ``priority`` declaration above) for the next open. Snapshot
@@ -414,7 +432,14 @@ export function DatasetSubmitModal({
       histogramSamples,
     });
     api
-      .setOverrides(project.project_dir, config.name, dyn)
+      .setOverrides(
+        project.project_dir,
+        config.name,
+        dyn,
+        null,
+        null,
+        datasetSource,
+      )
       .then(() => {
         qc.invalidateQueries({
           queryKey: ["overrides", project.project_dir, config.name],
@@ -449,6 +474,8 @@ export function DatasetSubmitModal({
               <code>{project.project_dir}</code>
             </div>
           </div>
+
+          {datasetSourceSelector}
 
           <div className="submit-row">
             <label

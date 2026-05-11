@@ -7,6 +7,7 @@ import {
   ConfigInfo,
   ProjectInfo,
 } from "../api";
+import { useDatasetSource } from "../dataset-source";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import {
   coerceArgs,
@@ -93,6 +94,20 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   // submit takes the regular single-node path.
   const [mnState, setMnState] = useState<MultiNodePanelState>(emptyMultiNodeState);
   const [mnSeeded, setMnSeeded] = useState<boolean>(false);
+
+  // Dataset-source selector — state + queries + seeding live in the
+  // shared hook. ``null`` = local (in-process loader). The hook waits
+  // for overrides to load (``ready``) before applying its offline
+  // fallback rule, so a missing or unreachable cached choice snaps
+  // back to local before the user sees the dropdown.
+  const {
+    source: datasetSource,
+    setSource: setDatasetSource,
+    selector: datasetSourceSelector,
+  } = useDatasetSource({
+    ready: !!overridesQ.data,
+    initial: overridesQ.data?.dataset_source ?? null,
+  });
 
   const maxGpus = Math.max(1, gpusQ.data?.length ?? 1);
   const idleGpuCount = useMemo(() => {
@@ -305,6 +320,10 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
       // the next render.
       setMnState(emptyMultiNodeState());
       setMnSeeded(false);
+      // And the dataset-source dropdown — without this the live in-
+      // form value survives the reset and the next submit writes it
+      // straight back into overrides, defeating the clear.
+      setDatasetSource(null);
       qc.invalidateQueries({
         queryKey: ["overrides", project.project_dir, config.name],
       });
@@ -343,6 +362,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
         dyn,
         requestedGpus,
         mnPayload,
+        datasetSource,
       )
       .then(() => {
         qc.invalidateQueries({
@@ -381,6 +401,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
         rdzv_node_id: mnState.rdzvNodeId ?? undefined,
         rdzv_port: mnState.rdzvPort,
         allow_version_mismatch: mnState.allowMismatch,
+        dataset_source: datasetSource,
       };
       submitCluster.mutate(req);
       return;
@@ -405,6 +426,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
       dynamic_args: dyn,
       requested_gpus: gpus,
       priority,
+      dataset_source: datasetSource,
     });
   };
 
@@ -434,6 +456,9 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
               <code>{project.project_dir}</code>
             </div>
           </div>
+
+          {datasetSourceSelector}
+
 
           {/* Single-node controls. Hidden when the server is in
               cluster mode — the multi-node panel below owns the
@@ -644,3 +669,4 @@ function formatNproc(v: number | string | null): string {
   if (typeof v === "string") return `"${v}"`;
   return String(v);
 }
+

@@ -34,7 +34,11 @@ from forgather import trainer_control
 
 from . import _atomic, _gc, gpu_monitor, job_records, launcher, queue_store
 from .job_records import RUNNING_STATUSES, TERMINAL_STATUSES, JobRecord
-from .paths import inference_token_file, jobs_tty_dir
+from .paths import (
+    dataset_server_token_file,
+    inference_token_file,
+    jobs_tty_dir,
+)
 from .queue_store import LOCAL_NODE, QueueItem
 
 # NOTE (multi-node): today the scheduler directly calls gpu_monitor.snapshot()
@@ -299,6 +303,7 @@ def _build_eval(item, gpu_indices, tty_path):
         output_dir=p.get("output_dir"),
         gpu_indices=gpu_indices,
         tty_log_path=tty_path,
+        extra_env=p.get("extra_env") or None,
     )
 
 
@@ -328,6 +333,35 @@ def _build_inference(item, gpu_indices, tty_path):
         compile_args=p.get("compile_args"),
         log_level=p.get("log_level", "INFO"),
         gpu_indices=gpu_indices,
+        tty_log_path=tty_path,
+        auth_token_file=auth_token_file,
+        no_auth=no_auth,
+    )
+
+
+def _build_dataset_server(item, gpu_indices, tty_path):
+    p = item.job_params
+    no_auth = bool(p.get("no_auth", False))
+    auth_token_file: Optional[str] = None
+    if not no_auth:
+        auth_token_file = str(dataset_server_token_file(item.queue_id))
+    # ``locals`` arrives as a list of [name, path] pairs from the
+    # webui (JSON has no tuple type); coerce to tuples for the ops layer.
+    raw_locals = p.get("locals") or []
+    locals_: list[tuple] = []
+    if isinstance(raw_locals, list):
+        for entry in raw_locals:
+            if isinstance(entry, (list, tuple)) and len(entry) == 2:
+                locals_.append((str(entry[0]), str(entry[1])))
+    return launcher.spawn_dataset_server_process(
+        host=p.get("host", "127.0.0.1"),
+        port=int(p.get("port", 8766)),
+        log_level=p.get("log_level", "INFO"),
+        no_hf=bool(p.get("no_hf", False)),
+        allow_paths=bool(p.get("allow_paths", False)),
+        allow_downloads=bool(p.get("allow_downloads", False)),
+        locals_=locals_,
+        config_file=p.get("config_file"),
         tty_log_path=tty_path,
         auth_token_file=auth_token_file,
         no_auth=no_auth,
@@ -498,6 +532,7 @@ def _build_model(item, gpu_indices, tty_path):
         amp=p.get("amp"),
         gpu_indices=gpu_indices,
         tty_log_path=tty_path,
+        extra_env=p.get("extra_env") or None,
     )
 
 
@@ -535,6 +570,7 @@ def _build_dataset(item, gpu_indices, tty_path):
         ),
         truncate=int(p["truncate"]) if p.get("truncate") is not None else None,
         tty_log_path=tty_path,
+        extra_env=p.get("extra_env") or None,
     )
 
 
@@ -561,6 +597,7 @@ def _build_training(item, gpu_indices, tty_path):
 _LAUNCHERS = {
     "eval": _build_eval,
     "inference": _build_inference,
+    "dataset_server": _build_dataset_server,
     "tensorboard": _build_tensorboard,
     "convert": _build_convert,
     "finalize": _build_finalize,
@@ -594,14 +631,22 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
     if item.job_type == "tensorboard":
         path_prefix = f"/api/tb/{item.queue_id}"
 
-    # Generate the inference bearer token here (before the builder runs) so
-    # the JobRecord persists it for the proxy and the spawn reads it from
-    # the same 0600 file. ``no_auth`` in job_params opts out.
+    # Generate the bearer token here (before the builder runs) so the
+    # JobRecord persists it and the spawn reads it from the same 0600 file.
+    # ``no_auth`` in job_params opts out. Same pattern is used for both
+    # inference and dataset_server jobs.
     auth_token: Optional[str] = None
-    if item.job_type == "inference" and not bool(item.job_params.get("no_auth", False)):
-        auth_token = secrets.token_hex(32)
-        token_path = inference_token_file(item.queue_id)
-        _atomic.atomic_write_text(token_path, auth_token, mode=0o600)
+    if not bool(item.job_params.get("no_auth", False)):
+        if item.job_type == "inference":
+            auth_token = secrets.token_hex(32)
+            _atomic.atomic_write_text(
+                inference_token_file(item.queue_id), auth_token, mode=0o600
+            )
+        elif item.job_type == "dataset_server":
+            auth_token = secrets.token_hex(32)
+            _atomic.atomic_write_text(
+                dataset_server_token_file(item.queue_id), auth_token, mode=0o600
+            )
 
     record = JobRecord(
         queue_id=item.queue_id,
@@ -826,20 +871,24 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
 
 
 def _cleanup_inference_token(record: JobRecord) -> None:
-    """Best-effort delete of the per-job inference token file.
+    """Best-effort delete of the per-job auth token file.
 
-    Token is useless once the inference process is gone, but tidying up
-    keeps the directory bounded and is cheap. Errors are swallowed so a
-    missing/already-removed file never breaks reap.
+    Token is useless once the spawned process is gone, but tidying up
+    keeps the directory bounded and is cheap. Covers both inference and
+    dataset_server jobs (each has its own per-port file). Errors are
+    swallowed so a missing/already-removed file never breaks reap.
     """
-    if record.job_type != "inference":
+    if record.job_type == "inference":
+        path = inference_token_file(record.queue_id)
+    elif record.job_type == "dataset_server":
+        path = dataset_server_token_file(record.queue_id)
+    else:
         return
     try:
-        path = inference_token_file(record.queue_id)
         if path.exists():
             path.unlink()
     except OSError as e:
-        log.debug("could not unlink inference token for %s: %s", record.queue_id, e)
+        log.debug("could not unlink token for %s: %s", record.queue_id, e)
 
 
 def abort_or_cancel(queue_id: str) -> bool:

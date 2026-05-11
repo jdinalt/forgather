@@ -324,6 +324,9 @@ export interface ClusterJobSubmitRequest {
   rdzv_node_id?: string;
   rdzv_port?: number;
   allow_version_mismatch?: boolean;
+  /** Same shape as ``EnqueueRequest.dataset_source``; resolved once on
+   *  the master and merged into every peer's extra_env. */
+  dataset_source?: DatasetSource | null;
 }
 
 export interface ClusterJobSubmitResponse {
@@ -380,6 +383,7 @@ export interface Job {
   job_type: "training"
     | "eval"
     | "inference"
+    | "dataset_server"
     | "tensorboard"
     | "mkdocs"
     | "convert"
@@ -473,10 +477,21 @@ export interface MultinodeOverrides {
   allow_version_mismatch: boolean;
 }
 
+/** Submit-modal dataset-source choice. ``server_id`` is one of:
+ *  ``local:<queue_id>`` (a forgather_server-spawned dataset_server) or
+ *  ``user:<entry_id>`` (a URL registered via Datasets → Servers → + Add).
+ *  The token is never embedded here — the backend resolves it from the
+ *  JobRecord / registry at submit time, so deleting an entry or stopping
+ *  a local server invalidates the choice and surfaces as a 400. */
+export type DatasetSource =
+  | { kind: "local" }
+  | { kind: "server"; server_id: string };
+
 export interface OverridesData {
   values: Record<string, unknown>;
   requested_gpus: number | null;
   multinode: MultinodeOverrides | null;
+  dataset_source: DatasetSource | null;
   updated_at: number | null;
 }
 
@@ -509,6 +524,7 @@ export interface EnqueueRequest {
   job_type?: "training"
     | "eval"
     | "inference"
+    | "dataset_server"
     | "tensorboard"
     | "mkdocs"
     | "convert"
@@ -518,6 +534,9 @@ export interface EnqueueRequest {
     | "dataset";
   /** Type-specific payload; empty for training. */
   job_params?: Record<string, unknown>;
+  /** Submit-modal dataset-source choice. Resolved server-side and
+   *  merged into ``job_params.extra_env`` for training jobs. */
+  dataset_source?: DatasetSource | null;
 }
 
 /** One row for the "pick an eval config" picker in EvalModal. */
@@ -665,6 +684,146 @@ async function fetchText(url: string): Promise<string> {
     throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
   }
   return r.text();
+}
+
+/** Helper for dataset_server proxy GETs. Forwards the optional bearer
+ *  token via the side-channel header so the user's forgather-server
+ *  bearer (in Authorization) doesn't leak to the upstream. The proxy
+ *  itself falls back to JobRecord / registry auto-lookup when token is
+ *  blank — see ``routes/dataset_server.py::_auth_headers_for``. */
+async function datasetServerProxyGet<T>(
+  url: string,
+  base: string,
+  token: string,
+): Promise<T> {
+  const sep = url.includes("?") ? "&" : "?";
+  const u = `${url}${sep}base=${encodeURIComponent(base)}`;
+  const headers: Record<string, string> = {};
+  if (token) headers["x-dataset-auth-token"] = token;
+  const r = await fetch(u, { headers });
+  if (!r.ok) {
+    throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+  }
+  return r.json() as Promise<T>;
+}
+
+/** Dataset server registered as a user-added entry. */
+export interface DatasetServerUser {
+  id: string;
+  label: string;
+  base_url: string;
+  has_auth_token: boolean;
+}
+
+/** Dataset server spawned by the forgather_server itself. */
+export interface DatasetServerLocal {
+  queue_id: string;
+  label: string;
+  base_url: string;
+  host: string;
+  port: number;
+  alive: boolean;
+  has_auth_token: boolean;
+}
+
+export interface AddDatasetServerRequest {
+  label?: string;
+  base_url: string;
+  auth_token?: string;
+}
+
+/** One row from ``GET /v1/datasets``. Field set tracks what the
+ *  dataset_server's wire model exposes; we mirror only what we render. */
+export interface DatasetHandleEntry {
+  handle: string;
+  length?: number | null;
+  source?: string | null;
+  load_args?: Record<string, unknown> | null;
+}
+
+/** ``GET /v1/cache/hf`` per-split entry. */
+export interface HFCacheSplit {
+  name: string;
+  num_examples?: number | null;
+  num_bytes?: number | null;
+}
+export interface HFCacheConfig {
+  config: string;
+  version?: string | null;
+  size_bytes?: number | null;
+  splits: HFCacheSplit[];
+}
+export interface HFCacheRepo {
+  repo: string;
+  size_bytes?: number | null;
+  configs: HFCacheConfig[];
+}
+export interface HFCacheResponse {
+  cache_root: string;
+  datasets: HFCacheRepo[];
+}
+
+/** One entry from the (enriched) ``GET /v1/local`` response. */
+export interface LocalDatasetEntry {
+  name: string;
+  path: string;
+  layout?: "dataset_dict" | "dataset" | "unknown" | "missing";
+  size_bytes?: number | null;
+  config_name?: string | null;
+  dataset_name?: string | null;
+  features?: string[];
+  splits?: HFCacheSplit[];
+}
+export interface LocalListResponse {
+  local: LocalDatasetEntry[];
+}
+
+/** ``GET /v1/health`` response. */
+export interface DatasetServerHealth {
+  status: string;          // "ok"
+  service: string;         // "forgather-dataset-server"
+  version: string;         // "1.0.0"
+  policy: {
+    auth_required: boolean;
+    hf_cache_enabled: boolean;
+    allow_paths: boolean;
+    allow_downloads: boolean;
+    local_count: number;
+  };
+}
+
+/** ``GET /v1/datasets`` response — currently-loaded handles. */
+export interface DatasetHandleRow {
+  handle: string;
+  length: number;
+  source: string | null;
+  load_args: Record<string, unknown>;
+}
+export interface DatasetHandlesResponse {
+  handles: DatasetHandleRow[];
+}
+
+/** ``POST /v1/load`` response. */
+export interface LoadResponse {
+  handle: string;
+  length: number;
+  load_args: Record<string, unknown>;
+  source: string | null;
+  column_names: string[] | null;
+}
+
+/** Body of ``POST /v1/load``. */
+export interface LoadRequest {
+  path: string;
+  name?: string;
+  split?: string;
+  data_files?: unknown;
+  revision?: string;
+}
+
+/** ``GET /v1/datasets/{handle}/iter`` (wrapped by our proxy as JSON). */
+export interface IterResponse {
+  rows: Array<Record<string, unknown>>;
 }
 
 export const api = {
@@ -1194,6 +1353,7 @@ export const api = {
     values: Record<string, unknown>,
     requested_gpus?: number | null,
     multinode?: MultinodeOverrides | null,
+    dataset_source?: DatasetSource | null,
   ): Promise<OverridesData> => {
     const r = await fetch("/api/config/overrides", {
       method: "POST",
@@ -1204,6 +1364,7 @@ export const api = {
         values,
         requested_gpus: requested_gpus ?? null,
         multinode: multinode ?? null,
+        dataset_source: dataset_source ?? null,
       }),
     });
     if (!r.ok) {
@@ -1231,6 +1392,130 @@ export const api = {
       `/api/project/readme?project_dir=${encodeURIComponent(project_dir)}`,
     ),
   docsRoot: () => fetchJson<{ path: string | null }>("/api/docs/root"),
+  docsRepoRoot: () => fetchJson<{ repo_root: string }>("/api/docs/repo-root"),
+  ensureDatasetServerConfigStub: async (): Promise<{
+    path: string;
+    created: boolean;
+  }> => {
+    const r = await fetch("/api/dataset-server/config/ensure-stub", {
+      method: "POST",
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+    return r.json();
+  },
+
+  listLocalDatasetServers: () =>
+    fetchJson<DatasetServerLocal[]>("/api/dataset-servers/local"),
+  localDatasetServerBundle: (queue_id: string) =>
+    fetchJson<{ bundle: string }>(
+      `/api/dataset-servers/local/${encodeURIComponent(queue_id)}/bundle`,
+    ),
+  listUserDatasetServers: () =>
+    fetchJson<DatasetServerUser[]>("/api/dataset-servers/user"),
+  addUserDatasetServer: async (
+    req: AddDatasetServerRequest,
+  ): Promise<DatasetServerUser> => {
+    const r = await fetch("/api/dataset-servers/user", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+    return r.json();
+  },
+  deleteUserDatasetServer: async (id: string): Promise<void> => {
+    const r = await fetch(
+      `/api/dataset-servers/user/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+  },
+
+  // Proxy GETs. ``token`` is the upstream bearer that's forwarded via
+  // the X-Dataset-Auth-Token side-channel; empty string means no
+  // explicit token (the proxy then falls back to JobRecord auto-lookup
+  // for local servers, or registry lookup for saved user entries).
+  datasetServerHealth: (base: string, token: string) =>
+    datasetServerProxyGet<DatasetServerHealth>(
+      "/api/dataset-server/proxy/health",
+      base,
+      token,
+    ),
+  datasetServerAuthStatus: (base: string, token: string) =>
+    datasetServerProxyGet<{ auth_required: boolean }>(
+      "/api/dataset-server/proxy/auth-status",
+      base,
+      token,
+    ),
+  datasetServerDatasets: (base: string, token: string) =>
+    datasetServerProxyGet<DatasetHandlesResponse>(
+      "/api/dataset-server/proxy/datasets",
+      base,
+      token,
+    ),
+  datasetServerCache: (base: string, token: string) =>
+    datasetServerProxyGet<HFCacheResponse>(
+      "/api/dataset-server/proxy/cache",
+      base,
+      token,
+    ),
+  datasetServerLocal: (base: string, token: string) =>
+    datasetServerProxyGet<LocalListResponse>(
+      "/api/dataset-server/proxy/local",
+      base,
+      token,
+    ),
+  /** POST a ``LoadRequest`` to the proxy; returns the handle + length +
+   *  ``column_names`` the dataset_server reports. ``token`` is the
+   *  optional explicit bearer; empty string defers to proxy auto-lookup. */
+  datasetServerLoad: async (
+    base: string,
+    body: LoadRequest,
+    token: string,
+  ): Promise<LoadResponse> => {
+    const u = `/api/dataset-server/proxy/load?base=${encodeURIComponent(base)}`;
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+    };
+    if (token) headers["x-dataset-auth-token"] = token;
+    const r = await fetch(u, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<LoadResponse>;
+  },
+  datasetServerLength: (base: string, handle: string, token: string) =>
+    datasetServerProxyGet<{ length: number }>(
+      `/api/dataset-server/proxy/length?handle=${encodeURIComponent(handle)}`,
+      base,
+      token,
+    ),
+  datasetServerIter: (
+    base: string,
+    handle: string,
+    position: number,
+    limit: number,
+    token: string,
+  ) =>
+    datasetServerProxyGet<IterResponse>(
+      `/api/dataset-server/proxy/iter?handle=${encodeURIComponent(handle)}` +
+        `&position=${position}&limit=${limit}`,
+      base,
+      token,
+    ),
   docsFile: (path: string) =>
     fetchJson<DocsFile>(`/api/docs/file?path=${encodeURIComponent(path)}`),
   docsAssetUrl: (path: string): string =>

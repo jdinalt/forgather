@@ -30,6 +30,10 @@ class DocsRootResponse(BaseModel):
     path: Optional[str] = None
 
 
+class DocsRepoRootResponse(BaseModel):
+    repo_root: str
+
+
 class IpynbCell(BaseModel):
     cell_type: str  # "markdown" | "code" | "raw"
     source: str
@@ -79,6 +83,19 @@ def docs_root():
     if candidate.is_file():
         return DocsRootResponse(path=str(candidate))
     return DocsRootResponse(path=None)
+
+
+@router.get("/docs/repo-root", response_model=DocsRepoRootResponse)
+def docs_repo_root():
+    """Absolute filesystem path of the Forgather repo root.
+
+    Lets the frontend build absolute paths for known-relative doc links
+    (Tools-menu Help entries, etc.) without round-tripping each one
+    through a custom resolve endpoint. The Docs API requires absolute
+    paths, so the frontend joins this with a relative-to-repo path
+    before calling ``/api/docs/file``.
+    """
+    return DocsRepoRootResponse(repo_root=str(Path(sr.forgather_repo_root())))
 
 
 @router.get("/docs/file", response_model=DocsFileResponse)

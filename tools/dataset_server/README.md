@@ -41,9 +41,9 @@ Two use cases this is built for:
    `~/.config/forgather/dataset_server/8766.token` on the WORKSTATION
    (the loader sees a loopback URL — it can't tell that the
    tunnel terminates on a different host) — which either
-   doesn't exist or holds a stale token from an unrelated local
-   run. Setting `FORGATHER_DATASET_SERVER_TOKEN` short-circuits
-   the file lookup. See [Authentication](#authentication).
+   doesn't exist or holds a token unrelated to the dataset_server
+   you're tunneling to. Setting `FORGATHER_DATASET_SERVER_TOKEN`
+   short-circuits the file lookup. See [Authentication](#authentication).
 
 ## Quick start
 
@@ -92,6 +92,28 @@ forgather dataset-server status
 forgather train
 ```
 
+### Cross-host via the webui bundle
+
+For installs where the dataset_server was spawned via the
+forgather_server webui (Tools → Start Dataset Server…), there's a
+one-click cross-host transfer that bundles the URL and token into a
+single string:
+
+1. On the **source** machine, open **Datasets → Servers**, find the
+   running dataset_server in the *Local* list, and click **Copy
+   bundle**. The clipboard now contains a
+   `forgather-dataset://host:port/?token=<urlencoded>` URI.
+2. On the **destination** machine, open the same view and click
+   **+ Add server**. In the modal, click **Paste bundle from
+   clipboard** — the URL and Auth-token fields are populated in one
+   step.
+
+Treat the bundle as a credential — it is equivalent to an SSH private
+key on the wire. Clipboard managers often sync content across devices
+and may not redact `token=` query strings the way they do
+`password=…` patterns. SSH-forward the port and skip the bundle
+entirely if you don't trust the channel.
+
 For the full token-resolution order (explicit kwarg →
 `FORGATHER_DATASET_SERVER_TOKEN` → per-port localhost file →
 none) see [Authentication](#authentication) below.
@@ -117,21 +139,35 @@ forgather-server's bearer token and the per-job trainer-control
 token), see the
 [forgather server threat model](../../forgather-server.md#threat-model).
 
-**Default behaviour** — if you don't pass any auth flag, the server
-generates a random 64-hex-char token at startup and prints it on
-**stderr**:
+**Default behaviour** — on first start, the server generates a random
+64-hex-char token and writes it to a per-port file under
+`~/.config/forgather/dataset_server/<port>.token` (mode 0600 in a 0700
+directory). The token is printed on **stderr**:
 
 ```
 dataset_server auth token: 8f5b...
 clients must send 'Authorization: Bearer <token>'
 curl -H "Authorization: Bearer 8f5b..." http://127.0.0.1:8766/v1/datasets
-shared token file: /home/<you>/.config/forgather/dataset_server/8766.token
+persisted token file: /home/<you>/.config/forgather/dataset_server/8766.token
 ```
 
-The auto-generated token is also written to a per-port file under
-`~/.config/forgather/dataset_server/<port>.token` (mode 0600 in a 0700
-directory) and removed when the server exits (atexit + SIGINT /
-SIGTERM handlers).
+The token **persists across restarts** (mirroring how
+`forgather server` handles its own bearer). On every subsequent
+startup the server loads the existing per-port file rather than
+minting a fresh value — so peers on other nodes that pulled the
+token last week keep working through a restart. The stderr banner
+on a reused token shows:
+
+```
+reusing persisted token at: /home/<you>/.config/forgather/dataset_server/8766.token
+```
+
+**Rotating the token** — pass `--regen-token` to mint a fresh value
+and overwrite the persisted file. The startup banner gains a louder
+header so the operator sees that any client still using the old
+token is about to start 401-ing. After rotation, redistribute the
+new token to peers (e.g. via the *Datasets → Servers* view's "+ Add server"
+modal on each consumer).
 
 `RemoteBackend`, the loader's `_remote_load_iterable_dataset`, and
 the `forgather dataset-server` diagnostic CLI all auto-discover the
@@ -263,6 +299,24 @@ Then start it with:
 forgather dataset-server start --config ~/dataset_server.yaml
 ```
 
+### Default config path
+
+If you omit `--config`, the server looks for
+`<forgather_config_dir>/dataset_server/config.yaml` (on Linux,
+`~/.config/forgather/dataset_server/config.yaml`) and loads it
+when present. Missing default is silently ignored; an explicit
+`--config` that points at a missing path still errors out.
+
+The directory is the same one that already holds the per-port
+auth-token files (`<port>.token`), so a single `dataset_server/`
+directory under your forgather config dir contains all of the
+tool's persistent state.
+
+A startup line at INFO level (`loaded default config: …`) records
+which file the server picked up so it's obvious whether the
+default was applied. CLI-flag precedence is unchanged: anything
+you pass on the command line still overrides the file values.
+
 ### Precedence
 
 CLI flags always win. Anything you don't pass on the command
@@ -335,6 +389,11 @@ forgather dataset-server start --allow-paths
 
 # Allow HF downloads on cache miss (rare for a server role):
 forgather dataset-server start --allow-downloads
+
+# Rotate the persisted per-port auth token. Use after a suspected
+# token compromise; existing peers will need to re-pull the new
+# token from the server's stderr banner.
+forgather dataset-server start --regen-token
 ```
 
 The default port is **8766**. The forgather orchestration server
@@ -464,14 +523,126 @@ on `/iter` is newline-delimited JSON.
   end-of-stream conditions when the client closes early; both
   are logged at INFO with the example count actually emitted.
 
+## Security considerations
+
+The dataset_server is intentionally minimal and the threat model is
+narrow. This section is the operator's "what am I signing up for"
+checklist when deciding whether (and how) to expose it on a network.
+
+### Trust the dataset_server you point training at
+
+The most important rule: **every byte the server returns ends up in your
+training pipeline.** A malicious or compromised dataset_server can:
+
+- **Poison the model.** Crafted examples can teach the model whatever the
+  attacker wants — backdoors, biased completions, content that violates
+  policy, prompt-injection payloads that surface during inference. There
+  is no integrity check on dataset content; the wire format is "trust
+  what the server sends." Treat a dataset_server URL the same way you
+  treat a `pip install` source.
+- **Exhaust resources.** The NDJSON `/iter` stream is unbounded.
+  A hostile server can keep emitting examples until the trainer fills
+  its tokenizer cache / disk / RAM. Mitigation: set training-side
+  `max_steps` / dataset budgets so a run is bounded regardless. See
+  [Trainer Options](../../docs/trainers/trainer_options.md) for the
+  full list of `TrainingArguments` knobs.
+- **Probe internals.** Examples are JSON. A server can return strings
+  containing HTML/JS, which the webui's *Datasets → Servers* tab
+  renders inside `<pre>` (inert) — but the same strings flow into
+  the trainer's example queue and through to checkpoints. If those
+  ever surface in a downstream tool that does render HTML, you've
+  shipped XSS through your training data.
+
+If you didn't deploy the server yourself, or you can't audit who else
+has shell access to its host, don't add its URL to the registry. The
+"+ Add server" dialog in the webui is gated by the operator's explicit
+consent for exactly this reason — registering a URL is the
+authorization decision; the proxy will then happily forward to it.
+
+### Network exposure
+
+- **No TLS today.** The server speaks plain HTTP. Bearer tokens and
+  example payloads traverse the network in cleartext on any
+  non-loopback bind. Either:
+  - leave the default loopback bind (`--host 127.0.0.1`) and reach
+    it via SSH port forwarding
+    (recommended for cross-host training);
+  - put it behind a reverse proxy that terminates TLS;
+  - or accept the risk only on a fully trusted L2 segment.
+- **`--no-auth` removes the bearer-token gate.** Anyone who can reach
+  the bind port can list and stream every dataset the server has
+  cached, plus the `local/*` mappings. On a multi-user host, loopback
+  ports are not isolated by uid — `--no-auth` on `127.0.0.1` is still
+  reachable by every local account. Only use `--no-auth` on a
+  trusted-LAN bind to a single-user box.
+- **Auth token storage.** The auto-generated token lives at
+  `<forgather_config_dir>/dataset_server/<port>.token` (mode `0600` in
+  a mode-`0700` dir) and persists across restarts. Anyone with root on
+  the host, or anyone who compromises the user account that started
+  the server, gets the token. Treat it as a uid-level credential. To
+  rotate after a suspected compromise, run the server with
+  `--regen-token` once.
+
+### Server-side knobs and what they expose
+
+All three loading-policy flags default to the safe choice. Each opt-in
+widens the server's exposure in a specific way:
+
+- **`--allow-paths`** lets clients request loads by absolute filesystem
+  path. Off by default. Turning it on means:
+  - A client can probe for the existence of paths on the server host
+    (`POST /v1/load` with various paths returns 200 vs. 404).
+  - A client can read any HF-loadable dataset under any path the
+    server's uid has read access to — including paths the operator
+    might not consider "datasets" (e.g. cached artefacts in
+    `/tmp`, `/home/<other_user>/...` if the perms allow it).
+  - Prefer named `local/*` mappings: they're an explicit allowlist and
+    they hide the server-side path from the client.
+- **`--allow-downloads`** lets cache misses trigger HF downloads on the
+  server. Off by default. Turning it on means:
+  - A client can fill the server's HF cache by requesting datasets
+    that aren't there — useful for warming caches, abusive for filling
+    disks. There's no per-client quota.
+  - The server now makes outbound HTTP requests to HuggingFace on
+    behalf of clients. If your network policy forbids that for
+    compliance reasons, leave the default in place.
+- **`--no-hf`** disables HF cache loads entirely; only `local/*`
+  mappings are servable. This is the most restrictive policy — useful
+  on a server whose only job is to host a curated dataset set.
+
+### Webui registry caveats
+
+The *Datasets → Servers* tab's "+ Add server" registry stores `{label, url,
+auth_token}` triples in
+`<forgather_config_dir>/server/dataset_server_registry.json` (mode
+`0600`). Points to keep in mind:
+
+- **It is not a credential safe.** Anyone with the forgather-server
+  bearer token can read the file via the API (or by reading the file
+  directly if they have shell access). Treat stored dataset_server
+  tokens with the same care as the forgather-server bearer itself.
+- **No URL validation beyond scheme + host parse.** The proxy will
+  refuse to forward to a non-registered, non-loopback URL — but it
+  won't tell you the URL you registered is reachable, has a valid
+  cert, or actually runs a dataset_server. Use the *Status* /
+  *Handles* buttons to confirm before relying on it.
+- **The registry is the SSRF allowlist.** That means a stolen
+  forgather-server bearer is enough to register a new URL and then
+  proxy to it. The token is uid-level (see the forgather-server
+  threat model); registry abuse is bounded by what the bearer can do
+  anyway.
+
 ## Out of scope
 
 The server is intentionally minimal. The following are explicit
 non-goals — call them out in any future PR if you want them
 discussed:
 
-- **Web UI**. The forgather orchestration server has one; the
-  dataset server doesn't need one.
+- **Web UI**. The forgather orchestration server already provides
+  one (sidebar 🗂 Datasets) that drives a dataset_server over its
+  same-origin proxy — see
+  `tools/forgather_server/README.md` "Datasets view". The
+  dataset_server itself stays a headless API.
 - **LRU / size-bound eviction of cached backends**. Handles live
   for the lifetime of the server. For long-running servers with
   many distinct dataset configs this is a known limitation.

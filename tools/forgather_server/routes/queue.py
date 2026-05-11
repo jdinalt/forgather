@@ -20,7 +20,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from .. import config_ops, queue_store, scheduler
+from .. import config_ops, dataset_source, queue_store, scheduler
+from ..dataset_source import DatasetSourceError
 
 router = APIRouter(tags=["queue"])
 
@@ -66,6 +67,13 @@ class EnqueueRequest(BaseModel):
     # See QueueItem for the per-type shape of job_params.
     job_type: str = "training"
     job_params: Dict[str, Any] = Field(default_factory=dict)
+    # Submit-modal dataset-source choice. ``None`` (or {"kind":"local"})
+    # leaves the training process to load datasets in-process; a
+    # ``{"kind":"server","server_id":"..."}`` value is resolved server-
+    # side to ``FORGATHER_DATASET_SERVER[_TOKEN]`` env vars that are
+    # merged into ``job_params.extra_env`` here. Only meaningful for
+    # ``job_type == "training"`` — other job types ignore it.
+    dataset_source: Optional[Dict[str, Any]] = None
 
 
 class SchedulerStatusModel(BaseModel):
@@ -97,6 +105,7 @@ _SUPPORTED_JOB_TYPES = {
     "training",
     "eval",
     "inference",
+    "dataset_server",
     "tensorboard",
     "mkdocs",
     "convert",
@@ -112,6 +121,7 @@ _SUPPORTED_JOB_TYPES = {
 _REQUIRED_PARAMS_BY_TYPE = {
     "eval": {"eval_project", "eval_template", "model_path"},
     "inference": {"model_path", "port"},
+    "dataset_server": {"port"},
     "tensorboard": {"logdir", "port"},
     "mkdocs": {"config_file", "port"},
     "convert": {"src_model_path", "dst_model_path"},
@@ -133,6 +143,7 @@ _ZERO_GPU_JOB_TYPES = {
     "update",
     "model",
     "dataset",
+    "dataset_server",
 }
 
 
@@ -238,6 +249,29 @@ def enqueue(req: EnqueueRequest):
                     f"{sorted(_VALID_MODEL_SUBCOMMANDS)}; got {sub!r}"
                 ),
             )
+
+    # Merge dataset-source env vars into job_params.extra_env. Applies
+    # to every job type whose subprocess goes through
+    # ``fast_load_iterable_dataset`` — training, eval, and the
+    # ``forgather model`` / ``forgather dataset`` CLI paths. Inference,
+    # mkdocs, tensorboard etc. ignore the field entirely. Resolution
+    # failures (stale ids) become 400s so the operator sees a clear
+    # error rather than a job that silently fell back to in-process
+    # loading.
+    job_params = dict(req.job_params)
+    if req.job_type in ("training", "eval", "model", "dataset") and req.dataset_source:
+        try:
+            ds_env = dataset_source.resolve_to_env(req.dataset_source)
+        except DatasetSourceError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if ds_env:
+            merged_env = dict(job_params.get("extra_env") or {})
+            # Caller-supplied extra_env wins on conflict — same precedence
+            # we use elsewhere (CLI-style explicit-over-default).
+            for k, v in ds_env.items():
+                merged_env.setdefault(k, v)
+            job_params["extra_env"] = merged_env
+
     item = queue_store.QueueItem.new(
         project_dir=req.project_dir,
         config=req.config,
@@ -245,7 +279,7 @@ def enqueue(req: EnqueueRequest):
         requested_gpus=req.requested_gpus,
         priority=req.priority,
         job_type=req.job_type,
-        job_params=req.job_params,
+        job_params=job_params,
     )
     queue_store.add_item(item)
     return _to_model(item)

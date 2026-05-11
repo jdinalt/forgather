@@ -87,6 +87,15 @@ elsewhere, the opt-in is explicit and the auth gate stays in place:
   refuses non-loopback `base=` URLs by default. Set
   `FORGATHER_INFERENCE_PROXY_ALLOW_REMOTE=1` to allow proxying to a
   remote inference upstream (logged with a warning).
+- **Dataset_server proxy.** The forgather server's
+  `/api/dataset-server/proxy/*` routes forward to dataset_servers the
+  webui knows about: locally spawned jobs (auto-discovered, loopback
+  only) and URLs the operator has registered via *Datasets → Servers →
+  + Add*. Unlike the inference proxy, the dataset_server's primary
+  deployment is *remote* — one data host serving N training nodes —
+  so the SSRF allowlist is the registry itself rather than an env
+  var. Any URL the operator hasn't registered (and isn't loopback) is
+  refused with a 403. The registration is the explicit consent.
 
 ### Residual gaps
 
@@ -99,6 +108,14 @@ elsewhere, the opt-in is explicit and the auth gate stays in place:
 - **No TLS.** The server speaks plain HTTP. Any non-loopback bind needs
   an external TLS terminator.
 - **No rate limiting.** A leaked token has no automatic lockout.
+- **Dataset-server trust is transitive.** Every example a registered
+  dataset_server returns flows into the training pipeline as-is — no
+  integrity check, no content filter. A malicious or compromised
+  dataset host can poison the resulting model. See the
+  [Security considerations](../dataset_server/README.md#security-considerations)
+  section of the dataset_server README for the full client-side trust
+  story; the short version is "only register URLs you'd `pip install`
+  from."
 
 ## Authentication overview
 
@@ -1356,36 +1373,49 @@ sets/clears them.
   `forgather train` does, minus the extra subprocess layer — lets the
   scheduler own the process group for clean abort).
 
-**Nine job types** share the queue, scheduler, GPU accounting, and TTY
+**Ten job types** share the queue, scheduler, GPU accounting, and TTY
 capture machinery. The non-CUDA-by-default types (`tensorboard`,
-`mkdocs`, `convert`, `finalize`, `update`, `dataset`) accept
-`requested_gpus == 0`; the others default to at least one GPU.
+`mkdocs`, `convert`, `finalize`, `update`, `dataset`, `dataset_server`)
+accept `requested_gpus == 0`; the others default to at least one GPU.
 Convert / finalize / update will happily take a GPU if the user sets
 `--device cuda…` and bumps the reservation.
 
-| Type         | Spawned by                                                                             | Lifecycle                              |
-| ------------ | -------------------------------------------------------------------------------------- | -------------------------------------- |
-| `training`   | ▶ Run (Submit modal)                                                                   | Terminal when trainer exits.           |
-| `eval`       | ⚖ Evaluate… (EvalModal, from config or checkpoint)                                     | Terminal when `forgather eval` exits.  |
-| `inference`  | 🔮 Serve Inference… (InferenceModal, project-backed or ad-hoc)                         | Long-lived; kill/force-kill to stop.   |
-| `tensorboard`| 📊 TensorBoard… (TensorBoardModal, per-config or per-model)                            | Long-lived; kill to stop.              |
-| `mkdocs`     | 📖 MkDocs… (MkDocsModal, sidebar Tools — picks an `mkdocs.yml` + host:port)            | Long-lived; kill to stop.              |
-| `convert`    | 🔁 Convert Model… (ConvertModal, sidebar Tools)                                        | Terminal when `convert` exits.         |
-| `finalize`   | 📦 Finalize Model… (FinalizeModal, sidebar Tools)                                      | Terminal when `finalize` exits.        |
-| `update`     | ⬆️ Update Model… (UpdateModal, sidebar Tools or config / checkpoint right-click)        | Terminal when `update` exits.          |
-| `model`      | Run on a model config (config_class `type.model`)                                      | Terminal when `forgather model` exits. |
-| `dataset`    | Run on a dataset config (config_class `type.dataset`)                                  | Terminal when `forgather dataset` exits.|
+| Type             | Spawned by                                                                             | Lifecycle                              |
+| ---------------- | -------------------------------------------------------------------------------------- | -------------------------------------- |
+| `training`       | ▶ Run (Submit modal)                                                                   | Terminal when trainer exits.           |
+| `eval`           | ⚖ Evaluate… (EvalModal, from config or checkpoint)                                     | Terminal when `forgather eval` exits.  |
+| `inference`      | 🔮 Serve Inference… (InferenceModal, project-backed or ad-hoc)                         | Long-lived; kill/force-kill to stop.   |
+| `dataset_server` | 🗂 Start Dataset Server… (DatasetServerModal, sidebar Tools)                           | Long-lived; kill to stop.              |
+| `tensorboard`    | 📊 TensorBoard… (TensorBoardModal, per-config or per-model)                            | Long-lived; kill to stop.              |
+| `mkdocs`         | 📖 MkDocs… (MkDocsModal, sidebar Tools — picks an `mkdocs.yml` + host:port)            | Long-lived; kill to stop.              |
+| `convert`        | 🔁 Convert Model… (ConvertModal, sidebar Tools)                                        | Terminal when `convert` exits.         |
+| `finalize`       | 📦 Finalize Model… (FinalizeModal, sidebar Tools)                                      | Terminal when `finalize` exits.        |
+| `update`         | ⬆️ Update Model… (UpdateModal, sidebar Tools or config / checkpoint right-click)        | Terminal when `update` exits.          |
+| `model`          | Run on a model config (config_class `type.model`)                                      | Terminal when `forgather model` exits. |
+| `dataset`        | Run on a dataset config (config_class `type.dataset`)                                  | Terminal when `forgather dataset` exits.|
 
 Helpers live in `inference_ops.py`, `eval_ops.py`, `tensorboard_ops.py`,
 `mkdocs_ops.py`, `convert_ops.py`, `finalize_ops.py`, `update_ops.py`,
-`model_ops.py`, `dataset_ops.py` (build argv) and
-`launcher.spawn_*_process` (same sandbox as training but with the right
-argv). The scheduler's
-dispatcher branches on `item.job_type` to pick the spawn function;
-GPU accounting and re-attach logic are unchanged. Long-lived web
-services (inference, tensorboard, mkdocs) all surface their URL as a
-clickable link on the Jobs card so the operator can jump straight to
-the running endpoint.
+`model_ops.py`, `dataset_ops.py`, `dataset_server_ops.py` (build argv)
+and `launcher.spawn_*_process` (same sandbox as training but with the
+right argv). The scheduler's dispatcher branches on `item.job_type` to
+pick the spawn function; GPU accounting and re-attach logic are
+unchanged. Long-lived web services (inference, tensorboard, mkdocs,
+dataset_server) all surface their URL as a clickable link on the Jobs
+card so the operator can jump straight to the running endpoint.
+
+**Dataset-source selector**. Every job type whose subprocess pulls
+training examples (`training`, `eval`, `model`, `dataset`) gains a
+dropdown in its submit modal that picks where the loader fetches
+from: **Local** (the in-process loader, default) or any
+dataset_server the forgather_server knows about (spawned-locally
+JobRecords + URLs registered under *Datasets → Servers → + Add
+server*). The choice persists alongside the other overrides; if the
+saved server has gone away by the time the modal re-opens it snaps
+back to Local. Resolved server-side into `FORGATHER_DATASET_SERVER`
++ `FORGATHER_DATASET_SERVER_TOKEN` env vars and merged into the
+spawn's `extra_env`. Cluster fanout applies the same env vars to
+every peer (the master resolves once and broadcasts).
 
 ### Scheduling algorithm
 
@@ -1579,6 +1609,65 @@ remote vLLM box can opt in by exporting
 starting the server; each non-localhost forward is logged at WARNING.
 The check is string-based, not DNS-based — use the literal address if
 you mean loopback.
+
+### Datasets view
+
+Top-level webui tab (sidebar 🗂 **Datasets**) for inspecting and
+managing the dataset_servers a training run might pull from. Two
+sub-tabs sharing the local + user-added server lists:
+
+- **Servers** — left list of locally-spawned dataset_server jobs
+  (auto-discovered from JobRecords) and user-registered remote
+  URLs. Add/delete dialog for user entries; **Copy bundle** on each
+  alive local row emits a `forgather-dataset://host:port/?token=…`
+  URI to the clipboard, and the *+ Add server* modal has a matching
+  **Paste bundle** affordance for one-step cross-host transfer.
+  Selecting a server reveals four typed renderers (no JSON dumps):
+  - **Status** — colored policy chips (auth required/disabled, HF
+    cache enabled/disabled, paths off/allowed, downloads off/
+    allowed) with tooltips explaining each setting.
+  - **Handles** — sortable table; full-row click opens the handle's
+    leaf in the Explore tab.
+  - **HF Cache** — sortable table with a horizontal stacked
+    size-distribution bar above it. Each split name in the splits
+    cell is a clickable link that opens that split in Explore.
+  - **Local** — same shape (table + chart + per-split click-
+    through). Registered `local/<name>` mappings are enriched
+    server-side with split metadata so the webui shows the same
+    row counts / features / size info HF cache entries get.
+- **Explore** — hierarchical tree (server → HF cache / local →
+  repo → config → split) with a paged preview table on the right
+  for the selected split. Tree is lazily expanded; click-to-expand
+  individual rows in the preview table bumps the per-cell
+  truncation cap. Pager elides the middle (`‹ Prev 1 … 42 43 44 …
+  588 Next ›`); 25 / 100 / 200 rows-per-page selector.
+
+**Start Dataset Server… (sidebar Tools section)** — opens the
+DatasetServerModal: host, port, no-auth toggle, loading-policy
+flags (`--no-hf`, `--allow-paths`, `--allow-downloads`), a
+repeatable Local-mapping form (`name=path`), and an optional
+config-file path. Spawned dataset_servers join the regular Jobs
+view with the same URL + token surfacing inference jobs get. The
+generated bearer token is **persisted** across restarts (mirroring
+`forgather server`'s `auth_token`) so peers keep working after a
+server reboot; pass `--regen-token` to the underlying script (or
+re-spawn from this modal after deleting the per-port `.token` file)
+to rotate.
+
+**Edit Configuration… (right-click on Start Dataset Server…)** —
+creates `<forgather_config_dir>/dataset_server/config.yaml` as a
+commented YAML stub if it doesn't exist (0600 in a 0700 dir), then
+opens it in the editor view. The standalone dataset_server loads
+this file when no `--config` is passed.
+
+**Browser → dataset_server proxy** (`routes/dataset_server.py`) —
+same-origin proxy for the `/v1/*` endpoints. Unlike the inference
+proxy (localhost-default), this proxy's SSRF allowlist is the user
+registry itself: loopback always, registered URLs always,
+everything else 403 with a "register first" hint. The registration
+step is the explicit operator consent. See the module docstring
+for the threat-model details, including the small bearer-
+amplification it acknowledges.
 
 ### GPUs
 
@@ -2095,7 +2184,7 @@ for the threat model.
 | Endpoint                                                  | Purpose                                                |
 | --------------------------------------------------------- | ------------------------------------------------------ |
 | `GET /api/queue`                                          | List queued items                                      |
-| `POST /api/queue` `{project_dir, config, dynamic_args, requested_gpus, priority, job_type?, job_params?}` | Enqueue any job type (`training` / `eval` / `inference` / `tensorboard` / `mkdocs` / `convert` / `finalize` / `update` / `model` / `dataset`) |
+| `POST /api/queue` `{project_dir, config, dynamic_args, requested_gpus, priority, job_type?, job_params?, dataset_source?}` | Enqueue any job type (`training` / `eval` / `inference` / `dataset_server` / `tensorboard` / `mkdocs` / `convert` / `finalize` / `update` / `model` / `dataset`). `dataset_source` is `{kind:"local"}` or `{kind:"server", server_id:"local:<queue_id>"|"user:<entry_id>"}`; resolved into `FORGATHER_DATASET_SERVER[_TOKEN]` env vars and merged into `job_params.extra_env` for training-shaped types. |
 | `DELETE /api/queue/{queue_id}`                            | Cancel a queued item (or abort if it's already running) |
 | `GET /api/queue/scheduler`                                | Dispatcher on/off + counters                           |
 | `POST /api/queue/scheduler` `{enabled}`                   | Enable / disable the dispatcher                        |
@@ -2124,6 +2213,35 @@ without running into CORS / PNA issues.
 | `GET /api/inference/models?base=`                     | Proxy `<base>/models`                                          |
 | `POST /api/inference/completions?base=`               | Proxy `<base>/completions` (byte-for-byte SSE passthrough)     |
 | `POST /api/inference/chat/completions?base=`          | Proxy `<base>/chat/completions` (byte-for-byte SSE passthrough) |
+
+### Dataset_server registry + proxy
+
+Drives the Datasets view's Servers tab. The registry CRUD endpoints
+persist user-added URLs + tokens at `<config>/server/
+dataset_server_registry.json` (0600). The proxy is the same-origin
+forwarder for the dataset_server's `/v1/*` endpoints; its SSRF
+allowlist is the registry itself (see `routes/dataset_server.py`).
+
+| Endpoint                                                                              | Purpose                                                              |
+| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `GET /api/dataset-servers/local`                                                      | Enumerate dataset_server JobRecords spawned by this forgather_server |
+| `GET /api/dataset-servers/local/{queue_id}/bundle`                                    | Mint a `forgather-dataset://` transfer URI for Copy bundle           |
+| `GET /api/dataset-servers/user`                                                       | List registered user URLs                                            |
+| `POST /api/dataset-servers/user` `{label, base_url, auth_token?}`                     | Register a remote dataset_server. Tokens with CR/LF rejected as 400. |
+| `DELETE /api/dataset-servers/user/{entry_id}`                                         | Remove a registry entry                                              |
+| `POST /api/dataset-server/config/ensure-stub`                                         | Create the standalone-server's default config stub if absent         |
+| `GET /api/dataset-server/proxy/health?base=`                                          | Proxy `<base>/v1/health`                                             |
+| `GET /api/dataset-server/proxy/auth-status?base=`                                     | Proxy `<base>/v1/auth/status`                                        |
+| `GET /api/dataset-server/proxy/datasets?base=`                                        | Proxy `<base>/v1/datasets`                                           |
+| `GET /api/dataset-server/proxy/cache?base=`                                           | Proxy `<base>/v1/cache/hf`                                           |
+| `GET /api/dataset-server/proxy/local?base=`                                           | Proxy `<base>/v1/local`                                              |
+| `POST /api/dataset-server/proxy/load?base=`                                           | Proxy `<base>/v1/load` (body passthrough)                            |
+| `GET /api/dataset-server/proxy/length?base=&handle=`                                  | Proxy `<base>/v1/datasets/{handle}/length`                           |
+| `GET /api/dataset-server/proxy/iter?base=&handle=&position=&limit=`                   | Proxy `<base>/v1/datasets/{handle}/iter`; NDJSON stream collected into `{rows: [...]}`. `limit` capped at 500. |
+
+Token resolution order for every proxy call: explicit
+`X-Dataset-Auth-Token` header → JobRecord auto-lookup (for local
+servers) → registry lookup (for user-added entries) → none.
 
 ### Generation-parameter presets
 

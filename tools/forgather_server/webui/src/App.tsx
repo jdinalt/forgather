@@ -2,13 +2,16 @@ import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, CheckpointEntry, ConfigInfo, EvalEntry, ProjectInfo } from "./api";
 import { getAutoWatchTty } from "./autoWatch";
+import { ContextMenu } from "./components/ContextMenu";
 import { ProjectTree } from "./components/ProjectTree";
 import { ConfigViewer } from "./components/ConfigViewer";
 import { GpuPanel } from "./components/GpuPanel";
 import { NodesPanel } from "./components/NodesPanel";
 import { EvalModal } from "./components/EvalModal";
 import { InferenceModal } from "./components/InferenceModal";
+import { DatasetServerModal } from "./components/DatasetServerModal";
 import { InferencePanel } from "./components/InferencePanel";
+import { DatasetsPanel } from "./components/DatasetsPanel";
 import { JobsPanel } from "./components/JobsPanel";
 import { QueuePanel } from "./components/QueuePanel";
 import { LogDetailPanel } from "./components/LogDetailPanel";
@@ -32,7 +35,8 @@ type View =
   | "gpus"
   | "jobs"
   | "queue"
-  | "inference";
+  | "inference"
+  | "datasets";
 export type ConfigTab = "info" | "pp" | "code" | "graph" | "templates" | "debug";
 
 // View metadata. The "gpus" entry is dual-labelled at render time:
@@ -47,6 +51,7 @@ const VIEWS: { id: View; label: string; icon: string }[] = [
   { id: "queue", label: "Queue", icon: "📋" },
   { id: "jobs", label: "Jobs", icon: "⚙" },
   { id: "inference", label: "Inference", icon: "🔮" },
+  { id: "datasets", label: "Datasets", icon: "🗂" },
 ];
 
 // A window glyph with a left-biased vertical divider — represents the
@@ -132,6 +137,7 @@ export default function App() {
   const [filesOpen, setFilesOpen] = useState(false);
   const [viewsOpen, setViewsOpen] = useState(true);
   const [startServerOpen, setStartServerOpen] = useState(false);
+  const [datasetServerOpen, setDatasetServerOpen] = useState(false);
   const [tensorboardOpen, setTensorboardOpen] = useState(false);
   const [mkdocsOpen, setMkdocsOpen] = useState(false);
   const [convertOpen, setConvertOpen] = useState(false);
@@ -316,6 +322,204 @@ export default function App() {
 
   const currentTab = safeTab(tab);
 
+  // Help context-menu state for the Tools sidebar. Right-clicking any
+  // tool button surfaces a single "Help…" item; clicking it routes to
+  // the primary doc for that tool. When a MkDocs job is alive we open
+  // its rendered page in a new tab instead of the built-in Docs view
+  // (nicer rendering + search). All Tools entries share the same shape;
+  // the per-tool variation is just the doc relpath and the mkdocs slug.
+  /** A single extra menu item, rendered above "Help…". Tool-specific
+   *  affordances (e.g. "Edit Configuration…" for the dataset server)
+   *  use this to attach lightweight one-shot actions without growing
+   *  the per-tool surface area further. */
+  interface ToolExtraMenuItem {
+    label: string;
+    onChoose: () => void | Promise<void>;
+  }
+  interface ToolHelpMenu {
+    x: number;
+    y: number;
+    /** Relative-to-repo-root path of the doc, e.g.
+     *  ``docs/guides/finalize-model.md``. Absolute path is built at click
+     *  time by joining with ``repo-root`` from the API. */
+    docRelpath: string;
+    /** Slug under MkDocs's served base URL — i.e. the path produced by
+     *  MkDocs for the same doc. For ``docs/guides/foo.md`` that's
+     *  ``guides/foo/``; for ``tools/dataset_server/README.md`` (symlinked
+     *  into ``docs/tools/dataset_server/``) that's
+     *  ``tools/dataset_server/``. Trailing slash matches MkDocs's own
+     *  output so the link doesn't bounce through a redirect. */
+    mkdocsSlug: string;
+    /** Tool label used in the context menu header. */
+    label: string;
+    /** Optional tool-specific items rendered above "Help…". */
+    extraItems?: ToolExtraMenuItem[];
+  }
+  const [toolHelpMenu, setToolHelpMenu] = useState<ToolHelpMenu | null>(null);
+  // Repo root is server-resolved once; we cache so each Help click is
+  // synchronous after the first fetch.
+  const repoRootQ = useQuery({
+    queryKey: ["docs-repo-root"],
+    queryFn: api.docsRepoRoot,
+    staleTime: Infinity,
+  });
+
+  const openHelp = useCallback(
+    async (menu: ToolHelpMenu) => {
+      // 1. Build the absolute path the Docs API expects.
+      let repoRoot = repoRootQ.data?.repo_root;
+      if (!repoRoot) {
+        try {
+          const r = await api.docsRepoRoot();
+          repoRoot = r.repo_root;
+        } catch {
+          // Network blip: surface nothing better than the built-in fallback.
+          repoRoot = "";
+        }
+      }
+      const absPath = repoRoot
+        ? `${repoRoot.replace(/\/+$/, "")}/${menu.docRelpath}`
+        : null;
+
+      // 2. If a MkDocs serve is alive, prefer rendering through it —
+      //    nicer theme + search than the lightweight built-in viewer.
+      try {
+        const jobs = await api.listJobs(false);
+        const mk = jobs.find(
+          (j) => j.job_type === "mkdocs" && j.alive && j.port,
+        );
+        if (mk && mk.port) {
+          const host = (mk.job_params?.host as string) || "localhost";
+          const safeHost =
+            host === "0.0.0.0" || host === "127.0.0.1" || host === "::1"
+              ? "localhost"
+              : host;
+          const url = `http://${safeHost}:${mk.port}/${menu.mkdocsSlug}`;
+          window.open(url, "_blank", "noopener,noreferrer");
+          return;
+        }
+      } catch {
+        // Fall through to the built-in viewer.
+      }
+
+      // 3. Built-in Docs view.
+      if (absPath) openDocs(absPath);
+    },
+    [repoRootQ.data, openDocs],
+  );
+
+  // Per-tool button: standard click opens the modal; right-click opens
+  // the help menu seeded with the matching doc. ``extraItems`` lets a
+  // tool surface lightweight side-affordances (e.g. "Edit
+  // Configuration…") in the same context menu, without inventing a
+  // second menu type.
+  interface ToolEntry {
+    icon: string;
+    label: string;
+    title: string;
+    onOpen: () => void;
+    docRelpath: string;
+    mkdocsSlug: string;
+    extraItems?: ToolExtraMenuItem[];
+  }
+
+  // Build "Edit Configuration…" for the dataset server. Creates the
+  // commented stub if it doesn't exist, then opens it in the editor.
+  // Errors surface via window.alert — same fallback the FilesTree's
+  // file-create path uses.
+  const onEditDatasetServerConfig = useCallback(async () => {
+    try {
+      const { path } = await api.ensureDatasetServerConfigStub();
+      openFileForEdit(path);
+    } catch (e) {
+      window.alert(
+        `Could not create / open dataset_server config: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
+    // openFileForEdit isn't memoized but is stable across renders in
+    // practice; we don't include it in deps to avoid recreating the
+    // callback on every render — and the closure captures the latest
+    // implementation via filesApi/setView regardless.
+  }, []);
+
+  const TOOLS: ToolEntry[] = [
+    {
+      icon: "🔮",
+      label: "Serve Inference…",
+      title:
+        "Serve an arbitrary model directory — project affiliation optional",
+      onOpen: () => setStartServerOpen(true),
+      docRelpath: "tools/inference_server/README.md",
+      mkdocsSlug: "tools/inference_server/",
+    },
+    {
+      icon: "🗂",
+      label: "Start Dataset Server…",
+      title:
+        "Run the Forgather dataset server — clients route fast_load_iterable_dataset over HTTP via FORGATHER_DATASET_SERVER",
+      onOpen: () => setDatasetServerOpen(true),
+      docRelpath: "tools/dataset_server/README.md",
+      mkdocsSlug: "tools/dataset_server/",
+      extraItems: [
+        {
+          label: "Edit Configuration…",
+          onChoose: onEditDatasetServerConfig,
+        },
+      ],
+    },
+    {
+      icon: "📐",
+      label: "Evaluate…",
+      title: "Run loss/perplexity evaluation against any model directory",
+      onOpen: () => setEvaluateOpen(true),
+      docRelpath: "docs/guides/evaluating-models.md",
+      mkdocsSlug: "guides/evaluating-models/",
+    },
+    {
+      icon: "📊",
+      label: "TensorBoard…",
+      title: "Open TensorBoard against any logdir on disk",
+      onOpen: () => setTensorboardOpen(true),
+      docRelpath: "docs/guides/tensorboard.md",
+      mkdocsSlug: "guides/tensorboard/",
+    },
+    {
+      icon: "📖",
+      label: "MkDocs…",
+      title:
+        "Serve Forgather's documentation locally with live rebuild on edit. Defaults to the bundled mkdocs.yml; the served URL appears as a clickable link on the resulting Job card.",
+      onOpen: () => setMkdocsOpen(true),
+      docRelpath: "docs/guides/mkdocs.md",
+      mkdocsSlug: "guides/mkdocs/",
+    },
+    {
+      icon: "🔁",
+      label: "Convert Model…",
+      title: "Convert between Huggingface and Forgather model formats",
+      onOpen: () => setConvertOpen(true),
+      docRelpath: "docs/guides/model-conversion.md",
+      mkdocsSlug: "guides/model-conversion/",
+    },
+    {
+      icon: "📦",
+      label: "Finalize Model…",
+      title: "Finalize a trained model into a clean output directory",
+      onOpen: () => setFinalizeOpen(true),
+      docRelpath: "docs/guides/finalize-model.md",
+      mkdocsSlug: "guides/finalize-model/",
+    },
+    {
+      icon: "⬆️",
+      label: "Update Model…",
+      title: "Migrate a saved Forgather model to the current source schema",
+      onOpen: () => setUpdateOpen(true),
+      docRelpath: "docs/guides/model-update.md",
+      mkdocsSlug: "guides/model-update/",
+    },
+  ];
+
   return (
     <div className={"app" + (sidebarCollapsed ? " sidebar-collapsed" : "")}>
       {/*
@@ -426,55 +630,30 @@ export default function App() {
           >
             <summary>Tools</summary>
             <div className="sidebar-tools-body">
-              <button
-                className="sidebar-tool-btn"
-                onClick={() => setStartServerOpen(true)}
-                title="Serve an arbitrary model directory — project affiliation optional"
-              >
-                🔮 Serve Inference…
-              </button>
-              <button
-                className="sidebar-tool-btn"
-                onClick={() => setEvaluateOpen(true)}
-                title="Run loss/perplexity evaluation against any model directory"
-              >
-                📐 Evaluate…
-              </button>
-              <button
-                className="sidebar-tool-btn"
-                onClick={() => setTensorboardOpen(true)}
-                title="Open TensorBoard against any logdir on disk"
-              >
-                📊 TensorBoard…
-              </button>
-              <button
-                className="sidebar-tool-btn"
-                onClick={() => setMkdocsOpen(true)}
-                title="Serve Forgather's documentation locally with live rebuild on edit. Defaults to the bundled mkdocs.yml; the served URL appears as a clickable link on the resulting Job card."
-              >
-                📖 MkDocs…
-              </button>
-              <button
-                className="sidebar-tool-btn"
-                onClick={() => setConvertOpen(true)}
-                title="Convert between Huggingface and Forgather model formats"
-              >
-                🔁 Convert Model…
-              </button>
-              <button
-                className="sidebar-tool-btn"
-                onClick={() => setFinalizeOpen(true)}
-                title="Finalize a trained model into a clean output directory"
-              >
-                📦 Finalize Model…
-              </button>
-              <button
-                className="sidebar-tool-btn"
-                onClick={() => setUpdateOpen(true)}
-                title="Migrate a saved Forgather model to the current source schema"
-              >
-                ⬆️ Update Model…
-              </button>
+              {TOOLS.map((tool) => (
+                <button
+                  key={tool.label}
+                  className="sidebar-tool-btn"
+                  onClick={tool.onOpen}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setToolHelpMenu({
+                      x: e.clientX,
+                      y: e.clientY,
+                      docRelpath: tool.docRelpath,
+                      mkdocsSlug: tool.mkdocsSlug,
+                      label: tool.label,
+                      extraItems: tool.extraItems,
+                    });
+                  }}
+                  title={tool.title}
+                >
+                  {tool.icon} {tool.label}
+                </button>
+              ))}
+              <div className="sidebar-tools-hint muted">
+                Right-click any tool for help.
+              </div>
             </div>
           </details>
 
@@ -640,12 +819,24 @@ export default function App() {
         >
           <InferencePanel />
         </div>
+        <div
+          className="view-panel"
+          style={view === "datasets" ? undefined : { display: "none" }}
+        >
+          <DatasetsPanel />
+        </div>
       </div>
 
       {startServerOpen && (
         <InferenceModal
           checkpointPath={null}
           onClose={() => setStartServerOpen(false)}
+          onSubmitted={onJobSubmitted}
+        />
+      )}
+      {datasetServerOpen && (
+        <DatasetServerModal
+          onClose={() => setDatasetServerOpen(false)}
           onSubmitted={onJobSubmitted}
         />
       )}
@@ -687,6 +878,37 @@ export default function App() {
           onClose={() => setEvaluateOpen(false)}
           onSubmitted={onJobSubmitted}
         />
+      )}
+
+      {toolHelpMenu && (
+        <ContextMenu
+          x={toolHelpMenu.x}
+          y={toolHelpMenu.y}
+          onClose={() => setToolHelpMenu(null)}
+        >
+          <div className="context-menu-header muted">{toolHelpMenu.label}</div>
+          {toolHelpMenu.extraItems?.map((item) => (
+            <button
+              key={item.label}
+              onClick={() => {
+                const fn = item.onChoose;
+                setToolHelpMenu(null);
+                void fn();
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+          <button
+            onClick={() => {
+              const t = toolHelpMenu;
+              setToolHelpMenu(null);
+              void openHelp(t);
+            }}
+          >
+            Help…
+          </button>
+        </ContextMenu>
       )}
     </div>
   );
