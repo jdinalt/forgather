@@ -172,7 +172,8 @@ export function DatasetSubmitModal({
   // choice plumbs through cleanly.
   const {
     source: datasetSource,
-    Selector: DatasetSourceSelectorEl,
+    setSource: setDatasetSource,
+    selector: datasetSourceSelector,
   } = useDatasetSource({
     ready: !!overridesQ.data,
     initial: overridesQ.data?.dataset_source ?? null,
@@ -228,6 +229,10 @@ export function DatasetSubmitModal({
     setTruncate(DEFAULTS.truncate);
     setHistogramSamples(DEFAULTS.histogramSamples);
     setPriority(0);
+    // Dataset-source dropdown — without this the live in-form value
+    // survives the reset and the next submit writes it straight back
+    // into overrides.
+    setDatasetSource(null);
   };
 
   // Filter the materialized target list down to the canonical six —
@@ -470,7 +475,7 @@ export function DatasetSubmitModal({
             </div>
           </div>
 
-          <DatasetSourceSelectorEl />
+          {datasetSourceSelector}
 
           <div className="submit-row">
             <label

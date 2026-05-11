@@ -107,7 +107,7 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
   // route training uses.
   const {
     source: datasetSource,
-    Selector: DatasetSourceSelectorEl,
+    selector: datasetSourceSelector,
   } = useDatasetSource({
     ready: !!overridesQ.data,
     initial: overridesQ.data?.dataset_source ?? null,
@@ -298,7 +298,7 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
             </div>
           </div>
 
-          <DatasetSourceSelectorEl />
+          {datasetSourceSelector}
 
           <div className="submit-row">
             <label title="construct: build the model and print its parameter / architecture summary. test: run a few train steps against random or a real dataset to verify forward + backward.">

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   AddDatasetServerRequest,
@@ -146,8 +146,9 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
 
   // When the selected entry disappears (e.g. a local server exits, or
   // the user deletes their entry), clear the selection so the action
-  // buttons don't fire against a stale URL.
-  useMemo(() => {
+  // buttons don't fire against a stale URL. useEffect so the setState
+  // happens after commit rather than during render.
+  useEffect(() => {
     if (!selected) return;
     if (selected.key.kind === "local") {
       const found = localServers.find(
@@ -291,7 +292,7 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
         </h4>
         {userServers.length === 0 && (
           <div className="muted pane-state-small">
-            No user-added servers. Use “+ Add” to register a remote URL.
+            No user-added servers. Use “+ Add server” to register a remote URL.
           </div>
         )}
         <ul className="inference-server-list">
@@ -339,7 +340,13 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
       </section>
 
       {selected && (
+        // Key on base_url so switching to a different server (or one
+        // whose host/port changed) remounts the component — the old
+        // metadata + ↻-refresh button would otherwise point at the
+        // wrong server. Also nukes any in-flight fetch's resolved
+        // setState (the unmounted instance is GC'd).
         <ServerActions
+          key={selected.base_url}
           selected={selected}
           onOpenInExplore={onOpenInExplore}
         />
@@ -1492,8 +1499,10 @@ function AddServerModal({
             Loopback + URLs you add here are allowed; everything else is
             refused by the proxy. The URL list is the authorization
             decision — only add servers you trust. Every byte they return
-            flows into your training pipeline. See the dataset_server
-            README's “Security considerations” for the full trust story.
+            flows into your training pipeline. User-added URLs aren't
+            actively probed for reachability — click Status after
+            adding to confirm. See the dataset_server README's “Security
+            considerations” for the full trust story.
           </div>
           <div className="submit-row">
             <label className="wide">

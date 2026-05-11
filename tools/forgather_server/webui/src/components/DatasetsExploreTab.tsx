@@ -115,8 +115,7 @@ export function DatasetsExploreTab({
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const [page, setPage] = useState<number>(0);
   // Reset page when the selection changes — different leaf, fresh state.
-  // Done in an effect-shaped useMemo so it only fires on a real change.
-  useMemo(() => setPage(0), [selected]);
+  useEffect(() => setPage(0), [selected]);
 
   // Load query: cached by (server, load_args). Re-clicking the same leaf
   // is a no-op on the server (it hashes the load_args).

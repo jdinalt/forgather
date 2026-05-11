@@ -29,8 +29,10 @@ import {
 /** True iff ``server_id`` resolves to a *reachable* dataset_server.
  *  Local servers carry an ``alive`` flag from the JobRecord scan; the
  *  registry doesn't currently probe user entries, so we treat them as
- *  reachable when they exist. */
-export function isReachableId(
+ *  "reachable when registered" until a clicked Status call says
+ *  otherwise. The selector in DatasetSourceSelector only marks
+ *  ``local:`` entries as ``(unreachable)`` for this reason. */
+function isReachableId(
   server_id: string,
   locals: DatasetServerLocal[],
   users: DatasetServerUser[],
@@ -55,10 +57,15 @@ interface UseDatasetSourceOptions {
 interface UseDatasetSourceResult {
   /** Current selection. ``null`` = local. */
   source: DatasetSource | null;
-  /** Setter the selector component calls on change. */
+  /** Setter the selector component calls on change. Useful for
+   *  Reset-to-defaults handlers that need to clear the dropdown
+   *  alongside everything else. */
   setSource: (s: DatasetSource | null) => void;
-  /** Selector component, ready to drop in a ``.submit-row`` parent. */
-  Selector: () => JSX.Element;
+  /** Selector ready to drop into a ``.submit-row`` parent. Returned
+   *  as a JSX element rather than a function component so re-renders
+   *  on the parent don't remount the underlying ``<select>`` (which
+   *  would close it mid-interaction). */
+  selector: React.ReactNode;
 }
 
 /** Wires up the selector state + queries + offline-fallback seeding.
@@ -106,7 +113,7 @@ export function useDatasetSource(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localsQ.data, usersQ.data, seeded, ready]);
 
-  const Selector = () => (
+  const selector = (
     <DatasetSourceSelector
       value={source}
       onChange={setSource}
@@ -115,7 +122,7 @@ export function useDatasetSource(
     />
   );
 
-  return { source, setSource, Selector };
+  return { source, setSource, selector };
 }
 
 interface DatasetSourceSelectorProps {
@@ -211,7 +218,7 @@ export function DatasetSourceSelector({
         </select>
         <span className="muted">
           {currentDiagnostic
-            ? `⚠ ${currentDiagnostic} — submit will fall back to local or fail with a clear error`
+            ? `⚠ ${currentDiagnostic} — submit will fail with a clear error; pick a different source or switch to Local`
             : value?.kind === "server"
               ? "Training reads FORGATHER_DATASET_SERVER from the chosen server."
               : "Training loads datasets in-process (the default)."}

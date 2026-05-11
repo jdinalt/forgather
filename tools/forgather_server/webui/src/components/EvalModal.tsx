@@ -158,7 +158,7 @@ export function EvalModal({
   const {
     source: datasetSource,
     setSource: setDatasetSource,
-    Selector: DatasetSourceSelectorEl,
+    selector: datasetSourceSelector,
   } = useDatasetSource({
     initial: adHoc ? persisted.datasetSource ?? null : null,
   });
@@ -325,7 +325,7 @@ export function EvalModal({
             </div>
           )}
 
-          <DatasetSourceSelectorEl />
+          {datasetSourceSelector}
 
 
           <div className="submit-row">

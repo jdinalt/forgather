@@ -102,7 +102,8 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   // back to local before the user sees the dropdown.
   const {
     source: datasetSource,
-    Selector: DatasetSourceSelectorEl,
+    setSource: setDatasetSource,
+    selector: datasetSourceSelector,
   } = useDatasetSource({
     ready: !!overridesQ.data,
     initial: overridesQ.data?.dataset_source ?? null,
@@ -319,6 +320,10 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
       // the next render.
       setMnState(emptyMultiNodeState());
       setMnSeeded(false);
+      // And the dataset-source dropdown — without this the live in-
+      // form value survives the reset and the next submit writes it
+      // straight back into overrides, defeating the clear.
+      setDatasetSource(null);
       qc.invalidateQueries({
         queryKey: ["overrides", project.project_dir, config.name],
       });
@@ -452,7 +457,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
             </div>
           </div>
 
-          <DatasetSourceSelectorEl />
+          {datasetSourceSelector}
 
 
           {/* Single-node controls. Hidden when the server is in
