@@ -82,13 +82,6 @@ function DatasetServersTab() {
   const [selected, setSelected] = useState<SelectedServer | null>(null);
   const [addOpen, setAddOpen] = useState(false);
 
-  // Token entered manually for the *currently selected* user entry,
-  // when the server hasn't stored one. Empty string means the user
-  // hasn't typed anything yet; the proxy then falls back to its
-  // saved-registry value (None for blank entries). Local servers never
-  // need this — the proxy auto-looks-up from the JobRecord.
-  const [pendingToken, setPendingToken] = useState<string>("");
-
   const localServers = localsQ.data ?? [];
   const userServers = usersQ.data ?? [];
 
@@ -129,7 +122,6 @@ function DatasetServersTab() {
       has_auth_token: s.has_auth_token,
       alive: s.alive,
     });
-    setPendingToken("");
   };
   const onPickUser = (s: DatasetServerUser) => {
     setSelected({
@@ -139,7 +131,6 @@ function DatasetServersTab() {
       has_auth_token: s.has_auth_token,
       alive: null,
     });
-    setPendingToken("");
   };
 
   const removeUser = useMutation({
@@ -206,7 +197,7 @@ function DatasetServersTab() {
                   )}
                   {s.alive && (
                     <button
-                      className="tiny"
+                      className="secondary"
                       style={{ marginLeft: "auto" }}
                       onClick={(e) => {
                         e.stopPropagation();
@@ -214,7 +205,7 @@ function DatasetServersTab() {
                       }}
                       title={
                         "Copy a forgather-dataset:// URI containing the URL " +
-                        "and token. Paste it into '+ Add' on another node."
+                        "and token. Paste it into '+ Add server' on another node."
                       }
                     >
                       Copy bundle
@@ -232,12 +223,11 @@ function DatasetServersTab() {
           User-added servers
           <span className="muted"> ({userServers.length})</span>
           <button
-            className="tiny"
-            style={{ marginLeft: 8 }}
+            style={{ marginLeft: 12 }}
             onClick={() => setAddOpen(true)}
             title="Register a remote dataset_server URL"
           >
-            + Add
+            + Add server
           </button>
         </h4>
         {userServers.length === 0 && (
@@ -289,13 +279,7 @@ function DatasetServersTab() {
         </ul>
       </section>
 
-      {selected && (
-        <ServerActions
-          selected={selected}
-          pendingToken={pendingToken}
-          setPendingToken={setPendingToken}
-        />
-      )}
+      {selected && <ServerActions selected={selected} />}
 
       {addOpen && (
         <AddServerModal
@@ -312,8 +296,6 @@ function DatasetServersTab() {
 
 interface ServerActionsProps {
   selected: SelectedServer;
-  pendingToken: string;
-  setPendingToken: (t: string) => void;
 }
 
 type ResultKind = "status" | "datasets" | "cache" | "local";
@@ -325,19 +307,15 @@ interface FetchResult {
   fetched_at: number;
 }
 
-function ServerActions({
-  selected,
-  pendingToken,
-  setPendingToken,
-}: ServerActionsProps) {
+function ServerActions({ selected }: ServerActionsProps) {
   const [result, setResult] = useState<FetchResult | null>(null);
   const [pending, setPending] = useState<ResultKind | null>(null);
 
-  // Local-server tokens flow via the proxy's JobRecord auto-lookup, so
-  // ``pendingToken`` only matters for user entries (where the registry
-  // either has a token or doesn't, and the user may want to override
-  // for one-off requests).
-  const tokenToUse = selected.key.kind === "user" ? pendingToken : "";
+  // Auth is resolved by the proxy: JobRecord auto-lookup for local
+  // servers, registry lookup for user-added entries. The "override
+  // token" input is gone now that tokens persist across restarts —
+  // delete + re-add the entry to change a stored token.
+  const tokenToUse = "";
 
   const runFetch = async (kind: ResultKind) => {
     setPending(kind);
@@ -369,24 +347,6 @@ function ServerActions({
         Selected:{" "}
         <code style={{ marginLeft: 6 }}>{selected.base_url}</code>
       </h4>
-
-      {selected.key.kind === "user" && (
-        <div className="submit-row">
-          <label className="wide">
-            Auth token (override)
-            <input
-              type="password"
-              value={pendingToken}
-              onChange={(e) => setPendingToken(e.target.value)}
-              placeholder={
-                selected.has_auth_token
-                  ? "leave blank to use the registered token"
-                  : "leave blank if the server runs --no-auth"
-              }
-            />
-          </label>
-        </div>
-      )}
 
       <div className="submit-row">
         <button
