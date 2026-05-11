@@ -2,6 +2,7 @@ import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api, CheckpointEntry, ConfigInfo, EvalEntry, ModelEntry, ProjectInfo, RunEntry, WorkspaceCluster } from "../api";
 import { CleanOutputModal } from "./CleanOutputModal";
+import { ConstructModal } from "./ConstructModal";
 import { ContextMenu } from "./ContextMenu";
 import { ConvertModal } from "./ConvertModal";
 import { EvalModal } from "./EvalModal";
@@ -19,6 +20,7 @@ import { Selection } from "../App";
 
 type ConfigAction =
   | "submit"
+  | "construct"
   | "overrides"
   | "clean"
   | "tensorboard"
@@ -714,6 +716,14 @@ export function ProjectTree({
           onSubmitted={onJobSubmitted}
         />
       )}
+      {activeModal?.action === "construct" && (
+        <ConstructModal
+          project={activeModal.project}
+          config={activeModal.config}
+          onClose={() => setActiveModal(null)}
+          onSubmitted={onJobSubmitted}
+        />
+      )}
       {activeModal?.action === "overrides" && (
         <OverridesModal
           project={activeModal.project}
@@ -884,6 +894,7 @@ function ConfigContextMenuItems({
       {showRun && (
         <button onClick={() => onChoose("submit")}>▶ Run…</button>
       )}
+      <button onClick={() => onChoose("construct")}>🔨 Construct…</button>
       <button onClick={() => onChoose("overrides")}>🔧 Overrides…</button>
       {showRunCleanup && (
         <button onClick={() => onChoose("clean")}>🗑 Clean Output…</button>

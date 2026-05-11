@@ -25,6 +25,7 @@ from forgather.latent import Latent
 from forgather.meta_config import MetaConfig
 
 from . import (
+    construct_ops,
     convert_ops,
     dataset_ops,
     dataset_server_ops,
@@ -597,6 +598,34 @@ def spawn_model_process(
         compile_dynamic=compile_dynamic,
         compile_fullgraph=compile_fullgraph,
         amp=amp,
+    )
+    return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
+
+
+def spawn_construct_process(
+    *,
+    project_dir: str,
+    config_name: str,
+    dynamic_args: Dict[str, Any],
+    gpu_indices: List[int],
+    tty_log_path: Path,
+    target: str = "main",
+    call: bool = False,
+    extra_env: Optional[Dict[str, str]] = None,
+) -> LaunchResult:
+    """Spawn a ``forgather construct`` run.
+
+    Fire-and-forget like model / eval / convert. ``gpu_indices`` may be
+    empty — most targets don't need a GPU, but the modal lets the user
+    reserve one for targets that allocate real tensors (e.g. a tokenizer
+    trainer that runs on CUDA).
+    """
+    cmd = construct_ops.build_construct_command(
+        project_dir=project_dir,
+        config_name=config_name,
+        target=target,
+        dynamic_args=dynamic_args,
+        call=call,
     )
     return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
 

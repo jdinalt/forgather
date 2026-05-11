@@ -32,6 +32,7 @@ const JOB_TYPE_CHIPS: Record<Job["job_type"], { label: string; className: string
   update: { label: "update", className: "type-update" },
   model: { label: "model", className: "type-model" },
   dataset: { label: "dataset", className: "type-dataset" },
+  construct: { label: "construct", className: "type-construct" },
 };
 
 // Loopback hosts that some browsers (notably ChromeOS over SSH

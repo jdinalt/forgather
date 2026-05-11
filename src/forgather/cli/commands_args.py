@@ -256,6 +256,30 @@ def create_construct_parser(global_args):
         action="store_true",
         help="Call the materialized object",
     )
+    parser.add_argument(
+        "--enqueue",
+        action="store_true",
+        help="Submit to the forgather-server queue instead of running locally.",
+    )
+    parser.add_argument(
+        "--priority",
+        type=int,
+        default=0,
+        help="Queue priority for --enqueue (default: 0).",
+    )
+    parser.add_argument(
+        "--requested-gpus",
+        type=int,
+        default=0,
+        help="GPUs to reserve when enqueuing (default: 0).",
+    )
+    parser.add_argument(
+        "--server",
+        type=str,
+        default=None,
+        metavar="URL",
+        help="forgather-server URL for --enqueue (default: $FORGATHER_SERVER_URL or http://127.0.0.1:8765).",
+    )
     add_output_arg(parser)
     add_editor_arg(parser)
     parse_dynamic_args(parser, global_args)

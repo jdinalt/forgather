@@ -574,6 +574,20 @@ def _build_dataset(item, gpu_indices, tty_path):
     )
 
 
+def _build_construct(item, gpu_indices, tty_path):
+    p = item.job_params
+    return launcher.spawn_construct_process(
+        project_dir=item.project_dir,
+        config_name=item.config,
+        dynamic_args=item.dynamic_args,
+        target=str(p.get("target") or "main"),
+        call=bool(p.get("call", False)),
+        gpu_indices=gpu_indices,
+        tty_log_path=tty_path,
+        extra_env=p.get("extra_env") or None,
+    )
+
+
 def _build_training(item, gpu_indices, tty_path):
     # Multi-node training jobs (Phase 3 cluster-coordinator submit)
     # carry their torchrun rendezvous args + NCCL env in
@@ -605,6 +619,7 @@ _LAUNCHERS = {
     "mkdocs": _build_mkdocs,
     "model": _build_model,
     "dataset": _build_dataset,
+    "construct": _build_construct,
 }
 
 
