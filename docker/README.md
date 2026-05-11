@@ -17,7 +17,7 @@ so you can browse it without cloning the repo.
 | - | - |
 | `build.sh` | Build the dev image (`Dockerfile`) |
 | `run.sh` | Launch / attach the dev container |
-| `entrypoint.sh` | Shared entrypoint (PUID/PGID remap, venv setup, `nvidia-smi` probe) |
+| `entrypoint.sh` | Shared entrypoint (`nvidia-smi` probe, PUID/PGID remap on the runtime image, editable install when `FORGATHER_REPO` is set) |
 | `_lib.sh` | Shared shell library used by both `run.sh` scripts |
 | `runtime/build.sh` | Build the runtime image (`Dockerfile.runtime`) |
 | `runtime/run.sh` | Launch / manage the runtime container |

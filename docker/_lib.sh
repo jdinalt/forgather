@@ -60,6 +60,12 @@ lib_container_state() {
 # -------- start-or-create dispatch --------
 # Caller must have defined `do_create_container`. We call it on the
 # absent path; the existing-but-stopped path just `docker start`s.
+#
+# Callers that need to wait for the entrypoint's PUID remap before
+# attaching (i.e. the runtime image, which usermods at container
+# start) should call ``lib_wait_for_entrypoint_remap`` themselves
+# after this returns. The dev image bakes the host user directly
+# and does no runtime remap, so it doesn't need the wait.
 lib_ensure_running() {
     local state
     state="$(lib_container_state)"
@@ -74,6 +80,42 @@ lib_ensure_running() {
             do_create_container
             ;;
     esac
+}
+
+# -------- wait for the entrypoint's privilege-drop --------
+# Only relevant for images whose entrypoint does a runtime UID remap
+# (i.e. ``Dockerfile.runtime``). The entrypoint runs as root, does
+# usermod to PUID, then execs gosu to drop privileges. ``docker run
+# -d`` returns as soon as PID 1 starts, BEFORE the entrypoint has
+# had a chance to run usermod — so a follow-up ``docker exec -u
+# <name>`` can race against the entrypoint and resolve the username
+# to its pre-remap UID. After the remap that pre-remap UID is no
+# longer in /etc/passwd, leaving the attached shell at an orphaned
+# UID it can't look up (whoami fails, sudo refuses, $HOME is
+# inaccessible).
+#
+# Poll the in-image user's /etc/passwd entry via a one-shot
+# ``docker exec`` until ``id -u <name>`` reports the target PUID
+# — that's the unambiguous signal the entrypoint has finished
+# usermod. Using docker exec (rather than reading PID 1's UID from
+# /proc) keeps the check tini-agnostic: ``--init`` puts tini at PID
+# 1 (always root), so PID-1-UID polling would never converge.
+#
+# Caller must set ``USER_NAME_IN_IMAGE`` to the build-time username
+# (e.g. ``forgather`` for the runtime image) before invoking.
+lib_wait_for_entrypoint_remap() {
+    local user="${USER_NAME_IN_IMAGE:?USER_NAME_IN_IMAGE must be set}"
+    local expected="${PUID:-$(id -u)}"
+    local elapsed=0 actual
+    while (( elapsed < 100 )); do  # 10s total at 100ms granularity
+        actual="$(docker exec "${NAME}" id -u "${user}" 2>/dev/null || true)"
+        if [[ "${actual}" == "${expected}" ]]; then
+            return 0
+        fi
+        sleep 0.1
+        elapsed=$((elapsed + 1))
+    done
+    echo "[${0##*/}] warning: container entrypoint did not complete UID remap within 10s — attached shell may land at the wrong UID" >&2
 }
 
 # -------- shared subcommand handler --------

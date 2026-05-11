@@ -14,7 +14,7 @@ ssh -L 8765:localhost:8765 \
 # Install with Docker
 git clone https://github.com/jdinalt/forgather.git
 cd forgather
-docker/build.sh                  # generic image; works for any host user
+docker/build.sh                  # per-user dev image, bakes your host UID/GID in
 docker/run.sh                    # interactive shell, --gpus all, ports forwarded
 
 # Inside the container:
@@ -220,15 +220,16 @@ cd forgather
 docker/build.sh
 ```
 
-`docker/build.sh` builds a single generic image — there are no
-per-user build args. The image carries a fixed in-container user at
-UID/GID 1000; at container start, the entrypoint reads `PUID`/`PGID`
-env vars (forwarded by `docker/run.sh` from your host's `id -u` /
-`id -g`) and remaps the in-container user via `gosu`. Files created
-inside the container on a bind-mounted home land with correct
-ownership on the host, and the same image works for any operator
-without rebuilding. See [Docker images](docker.md) for the full
-PUID/PGID remap rationale.
+`docker/build.sh` builds a **per-user** dev image: it reads your
+`id -u` / `id -g` / `id -un` and passes them as build args, baking
+your host identity into the in-container user. Files created inside
+the container on bind-mounted host paths land with correct ownership
+without any runtime remap — the in-container user simply IS you.
+
+The default image tag is `forgather-dev:<your-host-username>` so
+multiple operators on a shared host get separate images. (For the
+build-once-deploy-everywhere, user-agnostic story, see the
+[runtime image](docker.md#runtime-image-specifics).)
 
 The first build pulls ~3 GB of dependencies and takes a few minutes;
 rebuilds reuse the layer cache. After the docker build, `build.sh`

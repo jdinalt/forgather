@@ -129,6 +129,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # common subcommand dispatch). See docker/_lib.sh for the contract.
 # shellcheck source=../_lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../_lib.sh"
+# The runtime image's in-container user is ``forgather``; the lib
+# defaults to ``dev`` (the dev image's user). Override before any
+# lib call so the entrypoint-remap wait targets the right name.
+USER_NAME_IN_IMAGE=forgather
 lib_load_config
 
 IMAGE="${IMAGE:-forgather:latest}"
@@ -454,6 +458,10 @@ case "${1:-}" in
         ;;
     --shell)
         lib_ensure_running
+        # Block until the entrypoint's PUID remap completes so the
+        # ``-u forgather`` resolution below doesn't race against
+        # ``usermod`` and land at the pre-remap UID.
+        lib_wait_for_entrypoint_remap
         exec docker exec -it \
             -u forgather \
             -e "TERM=${TERM:-xterm-256color}" \

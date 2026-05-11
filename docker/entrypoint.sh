@@ -28,6 +28,23 @@ export VIRTUAL_ENV="${VENV_DIR}"
 export PATH="${VENV_DIR}/bin:${PATH}"
 
 # ----------------------------------------------------------------------
+# Scrub build-time-only env vars unconditionally.
+#
+# The Dockerfiles set ``UV_CACHE_DIR=/root/.cache/uv`` (and friends)
+# in ENV so build-time ``uv pip install`` RUNs hit the BuildKit cache
+# mount under /root. At container runtime the in-image user can't
+# write to /root, so any uv invocation (notably the editable
+# reinstall below) fails with "Failed to initialize cache".
+#
+# The runtime image's entrypoint used to scrub these only on the
+# gosu re-exec line in phase 1; that doesn't cover the dev image
+# (which skips phase 1 entirely since the container already starts
+# as the host operator). Move the scrub here so both images get it
+# regardless of which phase actually runs.
+unset UV_CACHE_DIR UV_LINK_MODE UV_INSTALL_DIR \
+      PIP_DISABLE_PIP_VERSION_CHECK BUILDKIT_PROGRESS
+
+# ----------------------------------------------------------------------
 # CUDA driver / wheel sanity probe.
 #
 # PyTorch wheels carry their own CUDA runtime, but if the host's NVIDIA
@@ -118,30 +135,10 @@ if [[ "${FORGATHER_ENTRYPOINT_PHASE:-}" != "2" && "$(id -u)" == "0" ]]; then
     : "${HOME:=/home/${USER_NAME}}"
 
     export FORGATHER_ENTRYPOINT_PHASE=2
-    # Drop build-time env vars that point at root-owned paths or
-    # configure tooling for the build-time install context — they
-    # shouldn't carry into runtime where the unprivileged user
-    # can't write to ``/root/`` and shouldn't be inheriting build
-    # toolchain settings.
-    #
-    # Maintained as an explicit denylist (rather than ``env -i``)
-    # because ``env -i`` would also clear LANG / LC_ALL / TERM /
-    # TZ which we want passed through. New build-time-only env
-    # vars added to either Dockerfile must be added here too —
-    # this is the contract.
-    #
-    # Concrete payoff: ``UV_CACHE_DIR=/root/.cache/uv`` is set in
-    # the Dockerfile ENV so the build-time uv install hits the
-    # BuildKit cache mount; at runtime the unprivileged user
-    # can't write to ``/root``, so the editable reinstall fails
-    # with "Failed to initialize cache" without this scrub.
-    exec env \
-        -u UV_CACHE_DIR \
-        -u UV_LINK_MODE \
-        -u UV_INSTALL_DIR \
-        -u PIP_DISABLE_PIP_VERSION_CHECK \
-        -u BUILDKIT_PROGRESS \
-        gosu "${USER_NAME}" env \
+    # Build-time env vars (UV_CACHE_DIR etc.) are already scrubbed at
+    # the top of this script, so we don't need to drop them on the
+    # gosu line here.
+    exec gosu "${USER_NAME}" env \
         HOME="${HOME}" \
         VIRTUAL_ENV="${VENV_DIR}" \
         PATH="${VENV_DIR}/bin:${PATH}" \

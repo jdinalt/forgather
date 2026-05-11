@@ -10,14 +10,16 @@ Two images, distinct roles:
 | **Mutability** | Mutable (host-clone bind-mount, edits go live) | **Immutable by design** (build once, distribute identical) |
 | **Networking default** | `--network host` (Linux only) | Bridge with `-p 8765:8765` (portable) |
 | **Multi-node** | `--network host` works out of the box | `NETWORK=host` opt-in required |
-| **Distributable** | Yes — PUID/PGID remap means one image works for any host user | Yes |
+| **User identity** | Host operator's UID/GID/name baked in at build time via `docker/build.sh` build args | Fixed in-container user (`forgather`, UID 1000), remapped to host's PUID/PGID at container start via `gosu` |
+| **Distributable** | **No** — scoped to the user who built it (single-host, single-user) | Yes — build once, deploy anywhere |
 
-After [recent consolidation work](#consolidation), both images share the
-same user-identity pattern (PUID/PGID remap via `gosu` at container
-start), the same entrypoint script (`docker/entrypoint.sh`), and a
-shared shell library for run-script scaffolding (`docker/_lib.sh`).
-The differences in the table above are deliberate, not historical
-duplication.
+The two images share the entrypoint script (`docker/entrypoint.sh`)
+and a shared shell library for run-script scaffolding
+(`docker/_lib.sh`), but they pursue different user-identity stories:
+the dev image is built per-operator so the in-container user IS the
+host operator from the first instant (no usermod, no gosu drop, no
+race); the runtime image is portable and does the PUID/PGID-via-gosu
+remap at container start.
 
 **Which to pick:**
 
@@ -34,8 +36,8 @@ duplication.
 ## Quick start
 
 ```bash
-# Dev image:
-docker/build.sh                   # build forgather-dev:latest
+# Dev image (tag defaults to forgather-dev:<your-host-username>):
+docker/build.sh                   # build forgather-dev:dinalt (or similar)
 docker/run.sh                     # interactive shell, repo bind-mounted
 
 # Runtime image:
@@ -77,9 +79,14 @@ docker/build.sh [TAG] [--claude] [-- DOCKER_BUILD_ARGS...]
 docker/build.sh -h | --help
 ```
 
-Build the dev image (`Dockerfile`). The image is generic — there
-are no host-user build args — so a single image works for any
-operator via the runtime PUID/PGID remap.
+Build the dev image (`Dockerfile`). The image is **single-user and
+host-scoped**: `docker/build.sh` reads `id -u` / `id -g` / `id -un`
+from the calling shell and passes them as `USER_UID` / `USER_GID` /
+`USER_NAME` build args, baking the host operator's identity directly
+into the image. There's no runtime usermod / gosu drop — the in-
+container user IS the host user from container start. (For the
+build-once-deploy-everywhere, user-agnostic story, use
+`docker/runtime/build.sh` instead.)
 
 After the docker build succeeds, `build.sh` runs `./build-webui.sh`
 in a transient container against your host clone so the SPA `dist/`
@@ -87,11 +94,19 @@ is ready before `docker/run.sh` is invoked. Skip with
 `SKIP_WEBUI_BUILD=1` (e.g. when iterating on the SPA via
 `npm run dev`).
 
+The default tag is `forgather-dev:<host-username>` so multiple
+operators on a shared host don't collide on a single
+`forgather-dev:latest` tag.
+
+`docker/build.sh` refuses to run as `uid 0` — baking root into the
+image would collide with the existing in-image root account. Re-run
+as a regular user, or use the runtime image which is user-agnostic.
+
 **Positional argument**
 
 | Arg | Default | Notes |
 | - | - | - |
-| `TAG` | `forgather-dev:latest` | Image tag. Combine with `IMAGE=` on `docker/run.sh` to use a non-default build. |
+| `TAG` | `forgather-dev:<host-username>` | Image tag. Combine with `IMAGE=` on `docker/run.sh` to use a non-default build. |
 
 **Flags**
 
@@ -149,7 +164,7 @@ can be inspected from another terminal.
 
 | Var | Default | Effect |
 | - | - | - |
-| `IMAGE` | `forgather-dev:latest` | Image to run. Combine with `docker/build.sh TAG` to test a different build. |
+| `IMAGE` | `forgather-dev:<host-username>` | Image to run. Combine with `docker/build.sh TAG` to test a different build. |
 | `NAME` | `forgather-dev-${USER}` | Container name. Useful when running multiple variants side-by-side. |
 | `GPUS` | `all` | Passed to `--gpus`. `none` disables GPU access; `'"device=0,1"'` exposes a subset (note the inner quotes — required for the docker CLI to parse the device list). |
 | `NETWORK` | `host` | `host` or `bridge`. Host networking is Linux-only and the most ergonomic; bridge wraps with explicit `-p` forwards. |
@@ -363,46 +378,62 @@ into your interactive shell.
 
 Topics that apply to both images.
 
-### User identity (PUID/PGID remap)
+### User identity
 
-Both images ship with a fixed in-container user at UID/GID 1000. At
-container start, the entrypoint reads `PUID` / `PGID` env vars
-(defaulting to 1000:1000), `usermod`s the in-container **uid only**
-(see below), chowns the small in-image home, then drops privileges
-via `gosu` before exec'ing the real command.
+The two images take opposite approaches here. Pick whichever fits
+your deployment story.
 
-The run scripts forward `PUID=$(id -u)` and `PGID=$(id -g)` from the
-calling shell automatically, so files written from inside the
-container land on bind-mounted host paths with host-correct ownership
-— without rebuilding the image. One image, any user.
+**Dev image — host operator baked in at build time.** `docker/build.sh`
+reads `id -u` / `id -g` / `id -un` from the calling shell and passes
+them to `docker build` as the `USER_UID` / `USER_GID` / `USER_NAME`
+build args. The Dockerfile uses those to create the in-container user
+with the operator's exact identity. The final `USER ${USER_NAME}`
+directive makes that user the default for `docker exec`, so files
+written from inside the container land on bind-mounted host paths
+with host-correct ownership *without* any runtime remap. The
+entrypoint's privilege-drop block is guarded on `id -u == 0` and is
+naturally skipped because the container starts as the operator, not
+as root.
 
-If you launch with `docker run --user $(id -u):$(id -g)` (rootless
-podman, container-with-no-root scenarios), the entrypoint detects it
-isn't running as root and skips the remap entirely.
+There's no race window, no usermod, no gosu. The trade-off: one
+image per operator on a shared host — the default tag is
+`forgather-dev:<host-username>` for exactly this reason.
 
-#### Why only the uid is remapped (and the gid stays at 1000)
+**Runtime image — fixed in-image UID, remapped at start via PUID/PGID.**
+The runtime image is distributable, so it can't bake any single
+operator's UID in. It ships with a fixed in-container user (`forgather`,
+UID/GID 1000); at container start the entrypoint reads `PUID` / `PGID`
+env vars (forwarded automatically by `docker/runtime/run.sh` from
+`id -u` / `id -g`), `usermod`s the in-container **uid only** (see
+below), chowns the small in-image home, then drops privileges via
+`gosu` before exec'ing the server. One image, any operator.
 
-The in-image venv at `/opt/forgather/venv` is built with files
-owned by uid 1000 / gid 1000, with `chmod -R go+rwX` applied so
-group + other have read/write/execute on directories and
-read/write on files. At runtime the entrypoint changes the
-in-container user's **uid** to PUID but leaves the primary **gid**
-at 1000. That keeps the venv group-writable for the remapped user
-without any recursive chown — cold-start is ~2 seconds even when
-host UID != 1000 (an earlier version did `chown -R /opt/forgather`
-on every container start with a different UID, which ran over
-thousands of files and added tens of seconds).
+If you launch the runtime image with `docker run --user $(id -u):$(id -g)`
+(rootless podman, container-with-no-root scenarios), the entrypoint
+detects it isn't running as root and skips the remap entirely.
+
+#### Runtime image: why only the uid is remapped (and the gid stays at 1000)
+
+The in-image venv at `/opt/forgather/venv` is built with files owned
+by uid 1000 / gid 1000, with `umask 0002` set during venv-building
+RUNs so newly created directories land at mode 0775 (group writable).
+At runtime the entrypoint changes the in-container user's **uid** to
+PUID but leaves the primary **gid** at 1000. That keeps the venv
+group-writable for the remapped user without any recursive chown —
+cold-start is fast even when host UID != 1000 (an earlier version
+did `chown -R /opt/forgather` on every container start with a
+different UID, which ran over thousands of files and added tens of
+seconds).
 
 This implicitly assumes **gid 1000 inside the container has no
-load-bearing meaning on your host**. On a typical
-single-user Linux box the host's gid 1000 is just the first
-interactive user's primary group — files created in your
-bind-mounted home will land with gid 1000 on the host side, which
-is fine if you're the only user. On a shared host where gid 1000
-belongs to a different user / service, you may want to inspect
-ownership of files written from the container before assuming the
-default is right; ACLs or a different bind-mount strategy can fix
-it if needed.
+load-bearing meaning on your host**. On a typical single-user Linux
+box the host's gid 1000 is just the first interactive user's primary
+group — files created in your bind-mounted home will land with gid
+1000 on the host side, which is fine if you're the only user. On a
+shared host where gid 1000 belongs to a different user / service,
+inspect ownership of files written from the container before
+assuming the default is right; ACLs or a different bind-mount
+strategy can fix it if needed.
 
 ### GPUs
 
@@ -488,9 +519,9 @@ for the full story.
 | ---- | ------- |
 | `Dockerfile` | Image definition |
 | `.dockerignore` | Build-context filter |
-| `docker/build.sh` | Builds the image (no per-user args needed) |
+| `docker/build.sh` | Builds the image; passes host `id -u`/`id -g`/`id -un` as build args |
 | `docker/run.sh` | Launches a long-lived container with `$HOME` bind-mounted |
-| `docker/entrypoint.sh` | **Shared with runtime image** — venv setup, PUID/PGID remap, `nvidia-smi` probe, editable-install when `FORGATHER_REPO` is set |
+| `docker/entrypoint.sh` | **Shared with runtime image** — `nvidia-smi` probe, editable-install when `FORGATHER_REPO` is set. The phase-1 PUID/PGID remap block is skipped on the dev image because the container starts as the host operator already. |
 | `docker/_lib.sh` | **Shared with runtime image** — common run-script scaffold |
 
 ### Editable install against your host clone
@@ -541,9 +572,9 @@ Optional, opt-in at build time:
 
 - **Claude Code** (`@anthropic-ai/claude-code`) — pass `--claude`
   to `docker/build.sh` to install it globally via npm. Lands at
-  `/usr/bin/claude`, world-executable so the gosu-dropped runtime
-  user can invoke it. Off by default; the average operator
-  doesn't need it baked in.
+  `/usr/bin/claude`, world-executable so the in-container user can
+  invoke it. Off by default; the average operator doesn't need it
+  baked in.
 
   Note that if you already have Claude Code installed in your
   host's `~/.local/bin/` or via npm under `~/`, the dev image's
@@ -651,7 +682,7 @@ below is a debugging affordance, not the workflow.**
 | `Dockerfile.runtime` | Image definition |
 | `docker/runtime/build.sh` | Builds the image |
 | `docker/runtime/run.sh` | Launches a server container, prints auth-token URL |
-| `docker/entrypoint.sh` | **Shared with dev image** — venv setup, PUID/PGID remap, `nvidia-smi` probe; editable-install branch is no-op when `FORGATHER_REPO` is unset |
+| `docker/entrypoint.sh` | **Shared with dev image** — `nvidia-smi` probe, PUID/PGID remap via `usermod`+`gosu` (only the runtime image takes this branch — the dev image starts as the host operator and skips it), and an editable-install branch that's a no-op when `FORGATHER_REPO` is unset |
 | `docker/_lib.sh` | **Shared with dev image** — common run-script scaffold |
 
 ### Source tree comes from `git`, not from your local checkout
@@ -833,10 +864,13 @@ lives on the bind-mounted host home, so it persists across
 container recreate.
 
 **Different host user wants to use the same image.**
-Both images now support this — that's the whole point of the
-PUID/PGID remap pattern. They run `docker/run.sh` (dev) or
-`docker/runtime/run.sh` (runtime) from their account; the script
-forwards their UID automatically. No rebuild needed.
+Only the **runtime image** supports this without a rebuild —
+`docker/runtime/run.sh` forwards `PUID=$(id -u)` and `PGID=$(id -g)`
+automatically, and the in-image user is remapped at container start
+via `gosu`. The **dev image** bakes a single host operator's
+identity in at build time; a second user needs to run
+`docker/build.sh` from their own account to produce their own image
+(the default tag includes their username, so the two coexist).
 
 **Multi-node hang or "no peer discovery."**
 mDNS doesn't traverse Docker bridge networks. Set `NETWORK=host`
@@ -859,20 +893,28 @@ remove the patch invocation from both Dockerfiles.
 ## Consolidation
 
 Recent refactor work collapsed several pieces of duplication between
-the two images:
+the two images while keeping them deliberately divergent on user
+identity:
 
 - `docker/_lib.sh` — shared shell library, sourced by both run
   scripts. `container_state`, `lib_ensure_running`, common
-  subcommand dispatch, persistent overrides loading.
+  subcommand dispatch, persistent overrides loading. Also provides
+  `lib_wait_for_entrypoint_remap`, which the runtime image's
+  `--shell` path calls before `docker exec -u forgather` to defeat
+  the race against the entrypoint's `usermod`.
 - `docker/entrypoint.sh` — single entrypoint script used by both
-  images. Branches on `FORGATHER_REPO`: when set (dev), re-installs
-  forgather editable against that path; when unset (runtime), just
-  exec's the command. Both flows share the PUID/PGID remap and
-  `nvidia-smi` probe.
-- PUID/PGID remap — both images use the same pattern (fixed in-image
-  UID 1000, remap-via-gosu at start). The dev image used to bake
-  host UID at build; that's gone, so a single dev image works for
-  any host user.
+  images. Branches on `FORGATHER_REPO` for the editable install, and
+  the phase-1 PUID/PGID remap block is guarded on `id -u == 0` so
+  only the runtime image takes it (the dev image starts as the host
+  operator). The `nvidia-smi` probe runs for both. Build-time env
+  vars (`UV_CACHE_DIR` etc.) are scrubbed unconditionally at the top
+  of the script so both flows behave correctly.
+- User identity — **deliberately not unified.** The dev image bakes
+  the host operator's UID/GID/name in at build time (one image per
+  operator, no runtime remap, no race). The runtime image keeps the
+  fixed-UID + PUID-remap pattern (one image, any operator). The two
+  scripts are written so the same shared lib handles both stories
+  without each having to know about the other.
 
 What stays per-image:
 - `Dockerfile` vs `Dockerfile.runtime` — different sources of the

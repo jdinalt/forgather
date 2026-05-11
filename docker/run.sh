@@ -10,11 +10,10 @@
 #
 # Bind-mounts the host home directory at the same path used inside
 # the container so absolute paths in shell history, configs, and
-# project files keep resolving correctly. The image's in-container
-# user is fixed at uid 1000; the entrypoint remaps to PUID/PGID
-# (passed in by this script as the host user's uid/gid) at start
-# time via gosu, so file ownership is preserved across the boundary
-# regardless of who built the image.
+# project files keep resolving correctly. The image is single-user
+# and host-scoped: ``docker/build.sh`` bakes the host operator's
+# UID/GID/name into the image directly, so there's no runtime
+# remap — the in-container user IS the host user.
 #
 # Networking: defaults to host networking (--network host) so the
 # container shares the host's network stack — every service inside
@@ -34,7 +33,7 @@
 #
 # Environment overrides (only applied when the container is being
 # CREATED — ignored on re-attach):
-#   IMAGE=forgather-dev:my-tag         # default: forgather-dev:latest
+#   IMAGE=forgather-dev:my-tag         # default: forgather-dev:<host-user>
 #   NAME=my-forgather                  # default: forgather-dev-$USER
 #   GPUS=none                          # default: all
 #   GPUS='"device=0,1"'                # specific GPUs
@@ -73,7 +72,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
 lib_load_config
 
-IMAGE="${IMAGE:-forgather-dev:latest}"
+IMAGE="${IMAGE:-forgather-dev:${USER:-$(id -un)}}"
 NAME="${NAME:-forgather-dev-${USER:-$(id -un)}}"
 GPUS="${GPUS:-all}"
 NETWORK="${NETWORK:-host}"
@@ -237,8 +236,6 @@ do_create_container() {
         -w "${REPO_ROOT}" \
         -e "FORGATHER_REPO=${REPO_ROOT}" \
         -e "HOME=${HOME}" \
-        -e "PUID=$(id -u)" \
-        -e "PGID=$(id -g)" \
         "${PORT_ARGS[@]}" \
         ${EXTRA_PORTS} \
         ${EXTRA_MOUNTS} \
@@ -250,15 +247,10 @@ attach_shell() {
     # Pass current TERM through; default to a sane value if absent
     # (e.g. invoked from a non-interactive parent).
     #
-    # ``-u dev`` lands the exec as the in-container user. The Dockerfile
-    # ends with ``USER root`` so the entrypoint can do the PUID/PGID
-    # remap at container start; without ``-u`` here, ``docker exec``
-    # would default to root and the operator would land in a root
-    # shell. ``-u dev`` resolves the username at exec time, so after
-    # the entrypoint's ``usermod -u <PUID> dev`` ran, this lands at
-    # the host UID — matching what the bind-mounted home expects.
+    # No ``-u`` flag: the Dockerfile's final USER directive sets the
+    # default exec identity to the baked-in host operator, so docker
+    # exec lands at the right user automatically.
     exec docker exec -it \
-        -u dev \
         -w "${REPO_ROOT}" \
         -e "TERM=${TERM:-xterm-256color}" \
         "${NAME}" \
