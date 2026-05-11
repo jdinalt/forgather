@@ -428,6 +428,7 @@ function AddServerModal({
   const [label, setLabel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [authToken, setAuthToken] = useState("");
+  const [showAuthToken, setShowAuthToken] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -463,7 +464,19 @@ function AddServerModal({
             ×
           </button>
         </header>
-        <div className="modal-body">
+        {/* Wrap inputs in a <form> with autoComplete="off" plus the
+            new-password trick on the token field so Chrome doesn't try
+            to autofill the URL as a username for a saved password. The
+            onSubmit handler is wired to the Add button so Enter still
+            submits. */}
+        <form
+          className="modal-body"
+          autoComplete="off"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!pending && baseUrl.trim()) void submit();
+          }}
+        >
           <div className="submit-row">
             <label className="wide">
               Label
@@ -472,6 +485,8 @@ function AddServerModal({
                 value={label}
                 onChange={(e) => setLabel(e.target.value)}
                 placeholder="e.g. dataset host"
+                autoComplete="off"
+                name="ds-label"
               />
             </label>
           </div>
@@ -480,34 +495,79 @@ function AddServerModal({
               Base URL
               <input
                 type="text"
+                className="wide"
+                inputMode="url"
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
                 placeholder="http://datahost:8766"
+                autoComplete="off"
+                spellCheck={false}
+                name="ds-base-url"
               />
-              <span className="muted">
-                Non-localhost targets require <code>FORGATHER_INFERENCE_PROXY_ALLOW_REMOTE=1</code> on the forgather server.
-              </span>
             </label>
+          </div>
+          {/* Hint sits below the row so it doesn't fight the input for
+              horizontal flex space (which is what made the input look
+              ~10% wide before). */}
+          <div className="muted" style={{ marginTop: -4, marginBottom: 10 }}>
+            Loopback + URLs you add here are allowed; everything else is
+            refused by the proxy. The URL list is the authorization
+            decision — only add servers you trust. Every byte they return
+            flows into your training pipeline. See the dataset_server
+            README's “Security considerations” for the full trust story.
           </div>
           <div className="submit-row">
             <label className="wide">
               Auth token
-              <input
-                type="password"
-                value={authToken}
-                onChange={(e) => setAuthToken(e.target.value)}
-                placeholder="optional — leave blank if the server runs --no-auth"
-              />
+              {/* path-field stretches the input to fit a 64-hex bearer
+                  and parks the Show / Copy buttons inline — same pattern
+                  the Inference Model panel uses. */}
+              <div className="path-field">
+                <input
+                  type={showAuthToken ? "text" : "password"}
+                  className="wide"
+                  value={authToken}
+                  onChange={(e) => setAuthToken(e.target.value)}
+                  placeholder="optional — leave blank if the server runs --no-auth"
+                  autoComplete="new-password"
+                  spellCheck={false}
+                  name="ds-auth-token"
+                />
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setShowAuthToken((v) => !v)}
+                  title={showAuthToken ? "Hide token" : "Show token"}
+                >
+                  {showAuthToken ? "Hide" : "Show"}
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    if (!authToken) return;
+                    navigator.clipboard?.writeText(authToken).catch(() => {});
+                  }}
+                  disabled={!authToken}
+                  title="Copy token to clipboard"
+                >
+                  Copy
+                </button>
+              </div>
             </label>
           </div>
-        </div>
+        </form>
         <footer className="modal-footer">
           <div className="muted current-path">{error ?? ""}</div>
           <div className="btn-row">
             <button className="secondary" onClick={onClose}>
               Cancel
             </button>
-            <button onClick={submit} disabled={pending || !baseUrl.trim()}>
+            <button
+              type="button"
+              onClick={() => void submit()}
+              disabled={pending || !baseUrl.trim()}
+            >
               {pending ? "Adding…" : "Add"}
             </button>
           </div>

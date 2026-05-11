@@ -15,14 +15,35 @@ Path used by (1): ``<forgather_config_dir>/dataset_server/config.yaml``
 — same directory the standalone dataset_server reads from when
 ``--config`` is omitted.
 
-The proxy mirrors ``inference_proxy.py`` closely: same SSRF guard
-(localhost-only by default), same opt-in env var
-(``FORGATHER_INFERENCE_PROXY_ALLOW_REMOTE`` is reused — both proxies are
-"webui talking to a same-host service" by design), same explicit-token
-header pattern so the user's forgather-server bearer never leaks past
-us. Token-lookup order: explicit ``X-Dataset-Auth-Token`` header →
-JobRecord auto-lookup (for forgather_server-spawned instances) →
-registry lookup (for user-added entries) → none.
+SSRF policy
+-----------
+Unlike the inference proxy (where remote targets are exceptional), the
+dataset_server is *expected* to live on a different host: the primary
+deployment shape is one dataset host serving several training nodes
+across a LAN. A "localhost only" default would just push every operator
+into setting an env var or, worse, running with ``--no-auth`` — neither
+helps security.
+
+Instead, the proxy uses the user registry itself as the SSRF allowlist:
+
+  - Loopback hosts (``127.0.0.1`` / ``localhost`` / ``::1``) are always
+    allowed — that covers same-host development and the auto-discovered
+    JobRecord-spawned instances.
+  - Any URL the operator has registered via ``POST /api/dataset-servers/user``
+    is allowed. The act of registering an entry *is* the explicit
+    authorization decision; "I added this URL to my dataset-server list"
+    is exactly the consent the SSRF gate needs.
+  - Everything else returns 403 with a hint to register the URL first.
+
+A stolen forgather-server bearer can still proxy to anything in the
+registry — but the registry is auditable, and registering a fresh URL
+takes a separate, explicit API call. Compared to either "always allow"
+or the inference-style env-var gate, this gives the operator the same
+explicit control without an obscure flag they have to discover.
+
+Token resolution: explicit ``X-Dataset-Auth-Token`` header → JobRecord
+auto-lookup (for forgather_server-spawned instances) → registry lookup
+(for user-added entries) → none.
 """
 
 from __future__ import annotations
@@ -278,11 +299,6 @@ def delete_user_entry(entry_id: str):
 # Read-only metadata proxy
 # ---------------------------------------------------------------------------
 
-# Same opt-in env var as the inference proxy — both proxies share the
-# "talk only to localhost by default" stance, and a deployment that's
-# already opted into remote inference is exactly the kind of setup
-# that also wants remote dataset access.
-_REMOTE_ALLOW_ENV = "FORGATHER_INFERENCE_PROXY_ALLOW_REMOTE"
 _LOCALHOST_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 _TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
 
@@ -290,17 +306,25 @@ _TOKEN_OVERRIDE_HEADER = "x-dataset-auth-token"
 _UPSTREAM_AUTH_FAILED_HEADER = "x-upstream-auth-failed"
 
 
-def _remote_allowed() -> bool:
-    return os.environ.get(_REMOTE_ALLOW_ENV, "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+def _registered_base_urls() -> frozenset[str]:
+    """Snapshot of base URLs in the user registry, normalized.
+
+    URLs are stored without trailing slash; we match by exact string
+    equality after the same normalization, so an entry registered as
+    ``http://datahost:8766`` matches a proxy request for
+    ``http://datahost:8766`` but not for ``http://datahost:8766/``
+    (the proxy callers normalize too — see ``_validate_base``).
+    """
+    return frozenset(e.base_url for e in dataset_server_registry.list_entries())
 
 
 def _validate_base(base: str) -> str:
-    """Same SSRF policy as inference_proxy: scheme allow-list +
-    localhost-only host unless opt-in env var is set.
+    """SSRF policy: loopback always, registered URLs always, otherwise 403.
+
+    The user registry doubles as the host-allowlist for the proxy. A
+    URL the operator has explicitly added via ``POST
+    /api/dataset-servers/user`` is treated as authorized; anything else
+    that isn't loopback is rejected with a clear "register first" hint.
     """
     try:
         parsed = urlparse(base)
@@ -313,24 +337,20 @@ def _validate_base(base: str) -> str:
         )
     if not parsed.netloc:
         raise HTTPException(status_code=400, detail="missing host")
+    normalized = base.rstrip("/")
     host = (parsed.hostname or "").lower()
-    if host not in _LOCALHOST_HOSTS:
-        if _remote_allowed():
-            log.warning(
-                "dataset_server proxy forwarding to non-localhost host %r "
-                "(opt-in via %s)",
-                host,
-                _REMOTE_ALLOW_ENV,
-            )
-        else:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    f"refusing to proxy to non-localhost host: {host!r} "
-                    f"(set {_REMOTE_ALLOW_ENV}=1 to allow)"
-                ),
-            )
-    return base.rstrip("/")
+    if host in _LOCALHOST_HOSTS:
+        return normalized
+    if normalized in _registered_base_urls():
+        return normalized
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            f"refusing to proxy to unregistered host: {host!r}. "
+            "Add it via the Datasets view (+ Add) or POST "
+            "/api/dataset-servers/user first."
+        ),
+    )
 
 
 def _token_for_local(base: str) -> Optional[str]:

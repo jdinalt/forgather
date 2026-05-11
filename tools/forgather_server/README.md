@@ -87,6 +87,15 @@ elsewhere, the opt-in is explicit and the auth gate stays in place:
   refuses non-loopback `base=` URLs by default. Set
   `FORGATHER_INFERENCE_PROXY_ALLOW_REMOTE=1` to allow proxying to a
   remote inference upstream (logged with a warning).
+- **Dataset_server proxy.** The forgather server's
+  `/api/dataset-server/proxy/*` routes forward to dataset_servers the
+  webui knows about: locally spawned jobs (auto-discovered, loopback
+  only) and URLs the operator has registered via *Datasets → Servers →
+  + Add*. Unlike the inference proxy, the dataset_server's primary
+  deployment is *remote* — one data host serving N training nodes —
+  so the SSRF allowlist is the registry itself rather than an env
+  var. Any URL the operator hasn't registered (and isn't loopback) is
+  refused with a 403. The registration is the explicit consent.
 
 ### Residual gaps
 
@@ -99,6 +108,14 @@ elsewhere, the opt-in is explicit and the auth gate stays in place:
 - **No TLS.** The server speaks plain HTTP. Any non-loopback bind needs
   an external TLS terminator.
 - **No rate limiting.** A leaked token has no automatic lockout.
+- **Dataset-server trust is transitive.** Every example a registered
+  dataset_server returns flows into the training pipeline as-is — no
+  integrity check, no content filter. A malicious or compromised
+  dataset host can poison the resulting model. See the
+  [Security considerations](../dataset_server/README.md#security-considerations)
+  section of the dataset_server README for the full client-side trust
+  story; the short version is "only register URLs you'd `pip install`
+  from."
 
 ## Authentication overview
 

@@ -482,6 +482,110 @@ on `/iter` is newline-delimited JSON.
   end-of-stream conditions when the client closes early; both
   are logged at INFO with the example count actually emitted.
 
+## Security considerations
+
+The dataset_server is intentionally minimal and the threat model is
+narrow. This section is the operator's "what am I signing up for"
+checklist when deciding whether (and how) to expose it on a network.
+
+### Trust the dataset_server you point training at
+
+The most important rule: **every byte the server returns ends up in your
+training pipeline.** A malicious or compromised dataset_server can:
+
+- **Poison the model.** Crafted examples can teach the model whatever the
+  attacker wants — backdoors, biased completions, content that violates
+  policy, prompt-injection payloads that surface during inference. There
+  is no integrity check on dataset content; the wire format is "trust
+  what the server sends." Treat a dataset_server URL the same way you
+  treat a `pip install` source.
+- **Exhaust resources.** The NDJSON `/iter` stream is unbounded.
+  A hostile server can keep emitting examples until the trainer fills
+  its tokenizer cache / disk / RAM. Mitigation: set training-side
+  `max_steps` / dataset budgets so a run is bounded regardless.
+- **Probe internals.** Examples are JSON. A server can return strings
+  containing HTML/JS, which the webui's *Datasets → Servers* tab
+  renders inside `<pre>` (inert) — but the same strings flow into
+  the trainer's example queue and through to checkpoints. If those
+  ever surface in a downstream tool that does render HTML, you've
+  shipped XSS through your training data.
+
+If you didn't deploy the server yourself, or you can't audit who else
+has shell access to its host, don't add its URL to the registry. The
+"+ Add" dialog in the webui is gated by the operator's explicit
+consent for exactly this reason — registering a URL is the
+authorization decision; the proxy will then happily forward to it.
+
+### Network exposure
+
+- **No TLS today.** The server speaks plain HTTP. Bearer tokens and
+  example payloads traverse the network in cleartext on any
+  non-loopback bind. Either:
+  - keep `--host 127.0.0.1` and reach it via SSH port forwarding
+    (recommended for cross-host training);
+  - put it behind a reverse proxy that terminates TLS;
+  - or accept the risk only on a fully trusted L2 segment.
+- **`--no-auth` removes the bearer-token gate.** Anyone who can reach
+  the bind port can list and stream every dataset the server has
+  cached, plus the `local/*` mappings. On a multi-user host, loopback
+  ports are not isolated by uid — `--no-auth` on `127.0.0.1` is still
+  reachable by every local account. Only use `--no-auth` on a
+  trusted-LAN bind to a single-user box.
+- **Auth token storage.** The auto-generated token lives at
+  `<forgather_config_dir>/dataset_server/<port>.token` (mode `0600` in
+  a mode-`0700` dir). Anyone with root on the host, or anyone who
+  compromises the user account that started the server, gets the
+  token. Treat it as a uid-level credential.
+
+### Server-side knobs and what they expose
+
+All three loading-policy flags default to the safe choice. Each opt-in
+widens the server's exposure in a specific way:
+
+- **`--allow-paths`** lets clients request loads by absolute filesystem
+  path. Off by default. Turning it on means:
+  - A client can probe for the existence of paths on the server host
+    (`POST /v1/load` with various paths returns 200 vs. 404).
+  - A client can read any HF-loadable dataset under any path the
+    server's uid has read access to — including paths the operator
+    might not consider "datasets" (e.g. cached artefacts in
+    `/tmp`, `/home/<other_user>/...` if the perms allow it).
+  - Prefer named `local/*` mappings: they're an explicit allowlist and
+    they hide the server-side path from the client.
+- **`--allow-downloads`** lets cache misses trigger HF downloads on the
+  server. Off by default. Turning it on means:
+  - A client can fill the server's HF cache by requesting datasets
+    that aren't there — useful for warming caches, abusive for filling
+    disks. There's no per-client quota.
+  - The server now makes outbound HTTP requests to HuggingFace on
+    behalf of clients. If your network policy forbids that for
+    compliance reasons, leave the default in place.
+- **`--no-hf`** disables HF cache loads entirely; only `local/*`
+  mappings are servable. This is the most restrictive policy — useful
+  on a server whose only job is to host a curated dataset set.
+
+### Webui registry caveats
+
+The *Datasets → Servers* tab's "+ Add" registry stores `{label, url,
+auth_token}` triples in
+`<forgather_config_dir>/server/dataset_server_registry.json` (mode
+`0600`). Points to keep in mind:
+
+- **It is not a credential safe.** Anyone with the forgather-server
+  bearer token can read the file via the API (or by reading the file
+  directly if they have shell access). Treat stored dataset_server
+  tokens with the same care as the forgather-server bearer itself.
+- **No URL validation beyond scheme + host parse.** The proxy will
+  refuse to forward to a non-registered, non-loopback URL — but it
+  won't tell you the URL you registered is reachable, has a valid
+  cert, or actually runs a dataset_server. Use the *Status* /
+  *Handles* buttons to confirm before relying on it.
+- **The registry is the SSRF allowlist.** That means a stolen
+  forgather-server bearer is enough to register a new URL and then
+  proxy to it. The token is uid-level (see the forgather-server
+  threat model); registry abuse is bounded by what the bearer can do
+  anyway.
+
 ## Out of scope
 
 The server is intentionally minimal. The following are explicit
