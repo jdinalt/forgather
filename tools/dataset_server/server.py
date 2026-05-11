@@ -355,6 +355,73 @@ def _resolve_auth_token(
     return secrets.token_hex(32), "generated"
 
 
+def _format_auth_mode(args: argparse.Namespace, token_source: Optional[str]) -> str:
+    """Human-readable auth line built from the *resolved* token source.
+
+    ``token_source`` is the value ``_resolve_auth_token`` returned
+    (cli / file / persisted / generated / regenerated) or ``None``
+    when auth is disabled. We render the actual outcome rather than
+    re-deriving it from argv precedence — important for distinguishing
+    "first run, minted a fresh token" (generated) from "reused the
+    existing per-port file" (persisted), which look identical in argv.
+    """
+    if args.no_auth or token_source is None:
+        return "disabled (--no-auth)"
+    if token_source == "cli":
+        return "token via --auth-token"
+    if token_source == "file":
+        return f"token from file: {args.auth_token_file}"
+    if token_source == "persisted":
+        return "persisted per-port (reused existing token file)"
+    if token_source == "generated":
+        return "generated (minted + persisted to per-port file)"
+    if token_source == "regenerated":
+        return "regenerated (--regen-token; per-port file overwritten)"
+    return token_source  # forward-compat: unknown source
+
+
+def _log_effective_config(
+    logger: logging.Logger,
+    args: argparse.Namespace,
+    config_path: Optional[str],
+    config_path_source: str,
+    token_source: Optional[str],
+) -> None:
+    """Dump every effective setting at startup for postmortem visibility.
+
+    Renders one ``key=value`` per log line so grep + tail-of-log is
+    enough to answer "what did this instance start with?". Auth-token
+    *source* is included (cli / file / persisted / regenerated /
+    generated) so a token-rotation incident is reconstructible from
+    logs alone — the actual token never lands here.
+    """
+    auth_mode = _format_auth_mode(args, token_source)
+
+    if config_path:
+        cfg_line = f"{config_path} ({config_path_source})"
+    else:
+        cfg_line = "<none>"
+
+    locals_lines = (
+        [f"{name}={path}" for name, path in args.local]
+        if args.local
+        else ["<none>"]
+    )
+
+    logger.info("effective configuration:")
+    logger.info("  host             = %s", args.host)
+    logger.info("  port             = %d", int(args.port))
+    logger.info("  log_level        = %s", args.log_level)
+    logger.info("  config_file      = %s", cfg_line)
+    logger.info("  auth             = %s", auth_mode)
+    logger.info("  hf_cache_enabled = %s", not args.no_hf)
+    logger.info("  allow_paths      = %s", bool(args.allow_paths))
+    logger.info("  allow_downloads  = %s", bool(args.allow_downloads))
+    logger.info("  locals (%d):", len(args.local))
+    for line in locals_lines:
+        logger.info("    %s", line)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
@@ -389,6 +456,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.info("loaded default config: %s", config_path)
     elif config_path:
         logger.info("loaded config: %s", config_path)
+    else:
+        logger.info("no config file (CLI flags + built-in defaults only)")
 
     # Build state from policy flags + local mappings.
     state = ServerState(
@@ -404,6 +473,20 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     auth_token, token_source = _resolve_auth_token(parser, args)
     state.auth_required = bool(auth_token)
+
+    # Effective-configuration dump: everything the operator could have
+    # influenced via flags or the YAML config, plus the *resolved*
+    # auth-token source (persisted vs generated vs regenerated) so a
+    # "why did the token change?" report has the data right next to
+    # the startup banner. Token *value* is logged separately on stderr
+    # below (one place to copy from); this dump never echoes the secret.
+    _log_effective_config(
+        logger,
+        args,
+        config_path,
+        config_path_source,
+        token_source if auth_token else None,
+    )
 
     if not auth_token:
         print(

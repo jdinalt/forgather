@@ -32,10 +32,14 @@ from typing import Dict, List, Optional
 
 from forgather import trainer_control
 
+from dataset_server.auth import (
+    standalone_token_file as dataset_server_standalone_token_file,
+    write_standalone_token as dataset_server_write_standalone_token,
+)
+
 from . import _atomic, _gc, gpu_monitor, job_records, launcher, queue_store
 from .job_records import RUNNING_STATUSES, TERMINAL_STATUSES, JobRecord
 from .paths import (
-    dataset_server_token_file,
     inference_token_file,
     jobs_tty_dir,
 )
@@ -344,7 +348,12 @@ def _build_dataset_server(item, gpu_indices, tty_path):
     no_auth = bool(p.get("no_auth", False))
     auth_token_file: Optional[str] = None
     if not no_auth:
-        auth_token_file = str(dataset_server_token_file(item.queue_id))
+        # Use the canonical per-port token path shared with the
+        # standalone ``forgather dataset-server start`` CLI so a
+        # webui-spawned dataset_server keeps the same token across
+        # restarts (rotated only on ``regen_token``).
+        port = int(p.get("port", 8766))
+        auth_token_file = str(dataset_server_standalone_token_file(port))
     # ``locals`` arrives as a list of [name, path] pairs from the
     # webui (JSON has no tuple type); coerce to tuples for the ops layer.
     raw_locals = p.get("locals") or []
@@ -623,6 +632,46 @@ _LAUNCHERS = {
 }
 
 
+def _resolve_dataset_server_token(*, port: int, regen: bool) -> str:
+    """Return the bearer token a dataset_server spawn should use.
+
+    Unlike inference (per-queue ephemeral tokens), dataset_server shares
+    the same per-port persisted token file the standalone CLI uses, so
+    long-running clients (training peers) keep working across server
+    restarts. ``regen=True`` is the operator-opt-in to rotate.
+
+    Reuse rules:
+
+    - ``regen=True``  -> always mint + persist.
+    - File missing    -> mint + persist.
+    - File present, non-empty -> reuse its contents.
+    - File present, empty / unreadable -> treat as missing.
+
+    Persisting to the per-port file may fail (e.g. read-only home);
+    the spawn still gets a valid token in memory and the JobRecord
+    carries it, but the next start won't auto-discover. Logged at
+    WARNING; not raised.
+    """
+    token_path = dataset_server_standalone_token_file(port)
+    if not regen and token_path.is_file():
+        try:
+            existing = token_path.read_text().strip()
+        except OSError:
+            existing = ""
+        if existing:
+            return existing
+    token = secrets.token_hex(32)
+    try:
+        dataset_server_write_standalone_token(port, token)
+    except OSError as e:
+        log.warning(
+            "could not persist dataset_server token at %s: %s",
+            token_path,
+            e,
+        )
+    return token
+
+
 def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
     """Move a queue item to a JobRecord and spawn the appropriate subprocess.
 
@@ -658,9 +707,9 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
                 inference_token_file(item.queue_id), auth_token, mode=0o600
             )
         elif item.job_type == "dataset_server":
-            auth_token = secrets.token_hex(32)
-            _atomic.atomic_write_text(
-                dataset_server_token_file(item.queue_id), auth_token, mode=0o600
+            auth_token = _resolve_dataset_server_token(
+                port=int(item.job_params.get("port", 8766)),
+                regen=bool(item.job_params.get("regen_token", False)),
             )
 
     record = JobRecord(
@@ -888,17 +937,16 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
 def _cleanup_inference_token(record: JobRecord) -> None:
     """Best-effort delete of the per-job auth token file.
 
-    Token is useless once the spawned process is gone, but tidying up
-    keeps the directory bounded and is cheap. Covers both inference and
-    dataset_server jobs (each has its own per-port file). Errors are
-    swallowed so a missing/already-removed file never breaks reap.
+    Inference servers use per-queue ephemeral tokens — those get tidied
+    up here once the spawn exits. Dataset servers intentionally share a
+    per-port persistent token with the standalone CLI (so restarts
+    don't invalidate every remote client); that file is NOT deleted on
+    reap. Errors are swallowed so a missing/already-removed file never
+    breaks reap.
     """
-    if record.job_type == "inference":
-        path = inference_token_file(record.queue_id)
-    elif record.job_type == "dataset_server":
-        path = dataset_server_token_file(record.queue_id)
-    else:
+    if record.job_type != "inference":
         return
+    path = inference_token_file(record.queue_id)
     try:
         if path.exists():
             path.unlink()

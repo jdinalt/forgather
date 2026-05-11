@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
@@ -66,6 +66,15 @@ export function DatasetServerModal({ onClose, onSubmitted }: Props) {
   const [priority, setPriority] = useState<number>(0);
 
   const [noAuth, setNoAuth] = useState<boolean>(persisted.noAuth ?? false);
+  // Not persisted: this is a one-shot "rotate on this start" knob,
+  // not a default to carry between modal opens.
+  const [regenToken, setRegenToken] = useState<boolean>(false);
+  // Toggling --no-auth makes regenToken meaningless; clear it so the
+  // visible checked state always matches the disabled state. Without
+  // this the box can look "checked but greyed", which confuses users.
+  useEffect(() => {
+    if (noAuth && regenToken) setRegenToken(false);
+  }, [noAuth, regenToken]);
   const [noHf, setNoHf] = useState<boolean>(persisted.noHf ?? false);
   const [allowPaths, setAllowPaths] = useState<boolean>(
     persisted.allowPaths ?? false,
@@ -86,6 +95,7 @@ export function DatasetServerModal({ onClose, onSubmitted }: Props) {
     setPort(8766);
     setLogLevel("INFO");
     setNoAuth(false);
+    setRegenToken(false);
     setNoHf(false);
     setAllowPaths(false);
     setAllowDownloads(false);
@@ -146,6 +156,9 @@ export function DatasetServerModal({ onClose, onSubmitted }: Props) {
       port,
       log_level: logLevel,
       no_auth: noAuth,
+      // ``regen_token`` only meaningful when auth is on; the scheduler
+      // ignores it under ``--no-auth`` but no need to ship a stale flag.
+      regen_token: regenToken && !noAuth,
       no_hf: noHf,
       allow_paths: allowPaths,
       allow_downloads: allowDownloads,
@@ -231,6 +244,19 @@ export function DatasetServerModal({ onClose, onSubmitted }: Props) {
               <code>--no-auth</code>
               <span className="muted">
                 disable bearer-token gate (trusted-LAN only)
+              </span>
+            </label>
+            <label className="dyn-checkbox">
+              <input
+                type="checkbox"
+                checked={regenToken}
+                disabled={noAuth}
+                onChange={(e) => setRegenToken(e.target.checked)}
+              />
+              <code>--regen-token</code>
+              <span className="muted">
+                rotate the persisted per-port token; existing clients
+                will need to re-pull
               </span>
             </label>
           </div>
