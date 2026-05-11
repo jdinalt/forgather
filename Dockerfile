@@ -1,25 +1,30 @@
 # syntax=docker/dockerfile:1.6
 #
-# Forgather development image.
+# Forgather development image — single-user, host-baked.
 #
 # Base: Ubuntu 24.04 (Python 3.12 ships in-distro). PyTorch wheels
 # bundle their own CUDA runtime, so we don't pull in an nvidia/cuda
 # base image — GPU access at runtime comes from the host driver via
 # nvidia-container-toolkit (`docker run --gpus all ...`).
 #
-# The in-container user is fixed at uid/gid 1000 (`dev`). The
-# entrypoint remaps to PUID/PGID at container start (gosu drop —
-# same pattern as `Dockerfile.runtime`), so a single prebuilt image
-# works for any host user without rebuilding. Bind-mount your host
-# clone at $FORGATHER_REPO and the container will install it editable
-# on first start.
+# This image is intentionally NOT user-agnostic — it's a dev container
+# scoped to the operator who built it. ``docker/build.sh`` bakes the
+# host user's name/UID/GID directly into the image via build args, so
+# files created inside the container land owned by the same identity
+# on the host clone, with no runtime usermod / gosu / privilege-drop
+# dance. (For the user-agnostic, build-once-deploy-everywhere story,
+# see ``Dockerfile.runtime``.) Bind-mount your host clone at
+# $FORGATHER_REPO and the container will install it editable on first
+# start.
 #
 # See `docker/build.sh` and `docker/run.sh` for convenience wrappers.
 
 FROM ubuntu:24.04
 
-# In-container user identity is fixed at build time. The runtime
-# entrypoint remaps to PUID/PGID via gosu when the container starts.
+# Host user identity, baked in at build time. ``docker/build.sh``
+# overrides these with the host operator's actual values
+# (``id -u`` / ``id -g`` / ``id -un``); the defaults below are
+# placeholders that let ``docker build`` work without the wrapper.
 ARG USER_NAME=dev
 ARG USER_UID=1000
 ARG USER_GID=1000
@@ -120,11 +125,14 @@ RUN if [ "${INSTALL_CLAUDE}" = "1" ]; then \
     fi
 
 # ---------------------------------------------------------------------------
-# Create the in-container user (fixed UID 1000 — the entrypoint remaps
-# at container start) *before* we build the venv, so all venv files
-# (~thousands, dominated by PyTorch) are owned by the user from the
-# start. Ubuntu 24.04 already ships with a uid=1000 'ubuntu' user;
-# if our UID collides with it we delete the stock account first.
+# Create the in-container user with the host operator's UID/GID/name
+# (passed in via build args from ``docker/build.sh``) *before* we
+# build the venv, so all venv files (~thousands, dominated by
+# PyTorch) are owned by the same identity as the host user from the
+# start — no runtime usermod, no recursive chown, no gosu drop, no
+# permission gymnastics. Ubuntu 24.04 ships with a uid=1000 'ubuntu'
+# user; if our UID collides with it we delete the stock account
+# first.
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     if id -u ubuntu >/dev/null 2>&1 && [ "$(id -u ubuntu)" = "${USER_UID}" ]; then \
@@ -142,14 +150,14 @@ RUN set -eux; \
     install -d -o "${USER_UID}" -g "${USER_GID}" /opt/forgather; \
     chmod 0755 /root
 # /root is 0700 in the Ubuntu base image, which blocks the unprivileged
-# build user from traversing into the uv cache mount at /root/.cache/uv
-# even when the leaf is world-writable (mode=0777 on the mount). The
-# chmod above opens up just the parent dir; harmless in a container.
+# build user from traversing into the uv cache mount at /root/.cache/uv.
+# The chmod above opens up just the parent dir; harmless in a container.
 
 # ---------------------------------------------------------------------------
 # Everything below this line that touches the venv runs as the
-# unprivileged user, so files land with the right ownership and the
-# slow `chown -R /opt/forgather` is gone. We switch back to root
+# unprivileged user — that's the same UID/GID/name as the host
+# operator, so created files are owned correctly from the start
+# and bind-mounted host paths Just Work. We switch back to root
 # below for the system-wide /etc/profile.d and entrypoint setup.
 # ---------------------------------------------------------------------------
 USER ${USER_NAME}
@@ -216,26 +224,6 @@ RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sh
 RUN --mount=type=bind,source=docker/patches/fix_tensorboard_pkg_resources.py,target=/tmp/fix_tb.py \
     ${VENV_DIR}/bin/python /tmp/fix_tb.py
 
-# Make the venv readable + writable by *any* uid (group + world).
-# The whole venv was created as ${USER_UID}:${USER_GID} just above
-# (USER directive + ``uv venv`` as user), so we already followed the
-# "create files as the user who will own them" pattern at build
-# time. The remaining wrinkle: at runtime the in-image user is
-# remapped to PUID via ``usermod`` so files written from inside
-# the container land at the host's UID — but the venv files were
-# baked at uid 1000 and a different runtime uid can't write to
-# them under default 644 perms. A previous fix recursive-chowned
-# /opt/forgather on every container start where host UID != 1000;
-# that runs over thousands of venv files (PyTorch alone drops
-# several thousand) and adds tens of seconds to every cold start.
-#
-# Move the cost to build time (paid once, baked into the image
-# layer, BuildKit caches subsequent builds). Container is
-# single-tenant anyway — group/world write on internal venv dirs
-# is acceptable; any sensitive state lives under bind-mounted
-# $HOME, not in /opt.
-RUN chmod -R go+rwX /opt/forgather
-
 # Switch back to root for the system-wide /etc/profile.d edits and
 # the entrypoint COPY into /usr/local/bin.
 USER root
@@ -287,17 +275,19 @@ RUN printf '%s\n' \
 # re-install the package in editable mode against that path so the
 # user's host-side edits are picked up live.
 #
-# The entrypoint runs as root so it can usermod the in-image user
-# (PUID/PGID remap to match the host), then drops to that user via
-# gosu before exec'ing the real command. Without ``USER root`` here
-# the entrypoint inherits a non-root identity from the previous
-# USER directive, can't remap, and the in-container UID stays at
-# the baked-in 1000 — bind-mounted host home becomes unreadable
-# whenever the host UID isn't 1000.
+# The entrypoint script is shared with ``Dockerfile.runtime``. There
+# the entrypoint runs as root to usermod/gosu-drop into a runtime
+# UID; here the image's user IS already the host operator, so the
+# entrypoint's phase-1 (root) block is skipped automatically (it
+# guards on ``$(id -u) == 0``) and we go straight to the editable-
+# install + exec path. That's why we install the entrypoint as root
+# (file ownership) but leave the final USER set to the operator,
+# unlike the runtime image which ends on USER root.
 USER root
 COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/forgather-entrypoint
 ENTRYPOINT ["/usr/local/bin/forgather-entrypoint"]
 
+USER ${USER_NAME}
 WORKDIR /home/${USER_NAME}
 
 CMD ["bash", "-l"]

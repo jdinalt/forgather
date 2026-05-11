@@ -124,7 +124,7 @@ RUN set -eux; \
         useradd --uid "${USER_UID}" --gid "${USER_GID}" \
             --shell /bin/bash --create-home "${USER_NAME}"; \
     fi; \
-    install -d -o "${USER_UID}" -g "${USER_GID}" /opt/forgather; \
+    install -d -o "${USER_UID}" -g "${USER_GID}" -m 0775 /opt/forgather; \
     chmod 0755 /root
 # /root is 0700 in the Ubuntu base image, which blocks the unprivileged
 # build user from traversing into the uv cache mount at /root/.cache/uv
@@ -136,11 +136,24 @@ RUN set -eux; \
 # Build the venv and install dependencies as the unprivileged user, so
 # every venv file is correctly owned from the start (no slow recursive
 # chown later).
+#
+# Each venv-touching RUN sets ``umask 0002`` so newly created
+# directories land at mode 0775 (group writable) rather than the
+# default 0755. The runtime entrypoint remaps only the UID via
+# ``usermod`` and keeps GID at 1000, so the dropped-privilege user
+# inherits group access to every venv directory baked at gid 1000.
+# Files inside the venv keep their wheel-recorded modes (typically
+# 644, group-readable), which is sufficient because runtime only
+# reads them. This replaces a previous
+# ``chmod -R go+rwX /opt/forgather`` step that walked every
+# installed file (PyTorch alone is several thousand) and re-ran
+# whenever earlier layers' caches got invalidated.
 # ---------------------------------------------------------------------------
 USER ${USER_NAME}
 
 RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
-    uv venv --python python3.12 --seed ${VENV_DIR}
+    umask 0002 \
+    && uv venv --python python3.12 --seed ${VENV_DIR}
 
 # Fetch a fresh copy of the source tree from git rather than COPYing
 # the publisher's local checkout. Three reasons:
@@ -170,6 +183,7 @@ RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sh
 #     so behavior is consistent.
 RUN --mount=type=bind,target=/build-context \
     set -eux; \
+    umask 0002; \
     if [ -n "${FORGATHER_SOURCE_DIR}" ]; then \
         src="/build-context/${FORGATHER_SOURCE_DIR}"; \
         if [ ! -d "${src}" ]; then \
@@ -197,34 +211,27 @@ RUN --mount=type=bind,target=/build-context \
 # correctly; the tree is frozen anyway because nothing bind-mounts
 # over it at runtime.
 RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
-    uv pip install --python ${VENV_DIR}/bin/python -e ${REPO_DIR}
+    umask 0002 \
+    && uv pip install --python ${VENV_DIR}/bin/python -e ${REPO_DIR}
 
 # cut-cross-entropy from source for bf16/fp16 numerical stability
 # (the pip release lacks the accum_e_fp32 / accum_c_fp32 features).
 RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
-    uv pip install --python ${VENV_DIR}/bin/python \
+    umask 0002 \
+    && uv pip install --python ${VENV_DIR}/bin/python \
         "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
 
 # TensorBoard <= 2.20.0 imports `pkg_resources` at module load, but
 # setuptools 82 (Feb 2026) removed it. Backport the fix.
-RUN ${VENV_DIR}/bin/python ${REPO_DIR}/docker/patches/fix_tensorboard_pkg_resources.py
+RUN umask 0002 \
+    && ${VENV_DIR}/bin/python ${REPO_DIR}/docker/patches/fix_tensorboard_pkg_resources.py
 
 # Build the SPA bundle in-image. Output lands at
 # ${REPO_DIR}/tools/forgather_server/webui/dist/ — exactly where
 # tools/forgather_server/app.py looks for it at runtime.
-RUN cd ${REPO_DIR} && ./build-webui.sh \
+RUN umask 0002 \
+    && cd ${REPO_DIR} && ./build-webui.sh \
     && rm -rf ${REPO_DIR}/tools/forgather_server/webui/node_modules
-
-# Make /opt/forgather (venv + cloned repo) readable + writable by
-# any uid. The build pattern already follows "switch user before
-# creating files" (USER ${USER_NAME} above), so files land owned
-# by uid 1000 from the start. At runtime the entrypoint may
-# usermod the in-image user to a different host UID; this chmod
-# at build time means no slow recursive chown is needed at
-# container start to hand the venv over. See the equivalent
-# ``RUN chmod`` block in the dev image's Dockerfile for the full
-# rationale.
-RUN chmod -R go+rwX /opt/forgather
 
 # ---------------------------------------------------------------------------
 # Back to root for the entrypoint setup. The entrypoint runs as root

@@ -1,9 +1,13 @@
 #!/bin/bash
 # Build the Forgather development image.
 #
-# The image is now distributable: the in-container user is fixed at
-# uid/gid 1000 and the entrypoint remaps to PUID/PGID via gosu at
-# container start. There are no host-user build args to pass.
+# The dev image is single-user and host-scoped: ``id -u``, ``id -g``,
+# and ``id -un`` are baked into the image as the in-container user's
+# UID/GID/name, so files created inside the container land owned by
+# the same identity on the host. The default image tag is
+# ``forgather-dev:<host-username>`` to avoid cross-user collisions on
+# shared hosts. (For the user-agnostic, build-once-deploy-everywhere
+# image, see ``docker/runtime/build.sh``.)
 #
 # After the image build succeeds we run ./build-webui.sh inside a
 # transient container against the host clone, so the SPA dist/ lands
@@ -11,7 +15,7 @@
 # moment they start it. Skip this post-step with SKIP_WEBUI_BUILD=1.
 #
 # Usage:
-#   docker/build.sh                    # tag: forgather-dev:latest
+#   docker/build.sh                    # tag: forgather-dev:<host-user>
 #   docker/build.sh my-tag             # custom tag
 #   docker/build.sh --claude           # also bake in Claude Code (npm global)
 #   docker/build.sh -- --no-cache      # pass extra args to docker build
@@ -57,18 +61,24 @@ for tok in "$@"; do
 done
 set -- "${ARGV[@]}"
 
-TAG="${1:-forgather-dev:latest}"
+HOST_UID="$(id -u)"
+HOST_GID="$(id -g)"
+HOST_USER="$(id -un)"
+
+DEFAULT_TAG="forgather-dev:${HOST_USER}"
+TAG="${1:-${DEFAULT_TAG}}"
 # Only consume $1 as TAG if it's not a docker passthrough flag.
 if [[ "${TAG}" == --* ]] || [[ "${TAG}" == -* ]]; then
-    TAG="forgather-dev:latest"
+    TAG="${DEFAULT_TAG}"
 else
     shift || true
 fi
 # Drop a leading "--" separator so callers can pass extra docker args:
-#   docker/build.sh forgather-dev:latest -- --progress=plain
+#   docker/build.sh forgather-dev:dinalt -- --progress=plain
 if [[ "${1:-}" == "--" ]]; then shift; fi
 
 echo "Building ${TAG}"
+echo "  in-container user: ${HOST_USER} (uid=${HOST_UID}, gid=${HOST_GID})"
 if [[ "${INSTALL_CLAUDE}" = "1" ]]; then
     echo "  --claude: also installing Claude Code (npm global)"
 fi
@@ -76,6 +86,9 @@ fi
 docker build \
     -t "${TAG}" \
     --build-arg "INSTALL_CLAUDE=${INSTALL_CLAUDE}" \
+    --build-arg "USER_NAME=${HOST_USER}" \
+    --build-arg "USER_UID=${HOST_UID}" \
+    --build-arg "USER_GID=${HOST_GID}" \
     -f "${REPO_ROOT}/Dockerfile" \
     "$@" \
     "${REPO_ROOT}"
@@ -89,17 +102,13 @@ echo
 echo "[build.sh] running ./build-webui.sh in the just-built image"
 echo "[build.sh] (one-time; skip with SKIP_WEBUI_BUILD=1)"
 
-# The image's entrypoint runs as root and would gosu-drop to the
-# in-container `dev` user, but we want the build artifacts owned by
-# the host user so the dist/ files in the bind-mounted clone are
-# writable host-side. Run the throw-away container with --user set
-# to the host UID/GID and override the entrypoint to bash directly,
-# bypassing the entrypoint's editable-install + gosu-drop logic.
-HOST_UID="$(id -u)"
-HOST_GID="$(id -g)"
-
+# The image's in-container user is already the host operator (baked
+# in via build args above), so files created inside the container
+# land owned correctly on the host without --user gymnastics. We
+# still override --entrypoint to bash here to skip the editable-
+# install dance: this throw-away container doesn't need
+# FORGATHER_REPO set up, just a writable cwd to invoke npm.
 docker run --rm \
-    --user "${HOST_UID}:${HOST_GID}" \
     -v "${REPO_ROOT}:${REPO_ROOT}" \
     -w "${REPO_ROOT}" \
     --entrypoint bash \
