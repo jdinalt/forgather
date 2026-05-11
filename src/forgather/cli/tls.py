@@ -86,9 +86,11 @@ def _cmd_init(args) -> int:
         "TLS is now enabled. Every forgather server on this host will\n"
         "serve HTTPS on next start — including loopback binds. Update\n"
         "any bookmarks/scripts that hard-code http:// URLs:\n"
-        f"  https://localhost:8765/   (forgather server, with ?token=…)\n"
-        f"  https://localhost:8766/   (dataset_server)\n"
-        f"  https://localhost:8137/   (inference_server)\n"
+        "  https://localhost:8765/   (forgather server, with ?token=…)\n"
+        "  https://localhost:8766/   (dataset_server)\n"
+        "  https://localhost:8137/   (inference_server)\n"
+        "\n"
+        f"State directory: {cfg.root}\n"
         "\n"
         "To opt a single server back to HTTP, pass --no-tls on its\n"
         "command line. To opt out globally without removing the CA,\n"
@@ -539,38 +541,64 @@ def _cmd_install(args) -> int:
 
 
 def _cmd_trust_system(args) -> int:
+    """Brief reminder + commands for THIS host's OS.
+
+    The authoritative procedure lives in ``docs/operations/tls.md``
+    under "Trusting the CA from a browser". This subcommand only
+    helps when the browser runs on the same machine as forgather
+    — common during local development, rare on production. In the
+    typical headless-server-plus-remote-laptop deployment, follow
+    the doc's per-OS section *on the laptop*, not here.
+    """
     cfg = load_config()
     if not cfg.ca_cert.is_file():
         print(f"No CA cert at {cfg.ca_cert}", file=sys.stderr)
         return 1
+
+    print(
+        "Primary documentation: docs/operations/tls.md → 'Trusting the CA "
+        "from a browser'.\n"
+        "It walks through copying the CA from the forgather server to a\n"
+        "separate client (macOS / Windows / Linux laptop) over SSH, then\n"
+        "the per-OS / per-browser import procedure. Read it there — this\n"
+        "summary only covers the case where the browser runs on the same\n"
+        "machine as forgather.\n"
+    )
+
+    print(f"CA cert on this host: {cfg.ca_cert}")
+    print()
+
     sys_name = platform.system()
-    print("Add the following CA cert to your OS / browser trust store so")
-    print("forgather URLs validate without warnings:")
-    print()
-    print(f"  CA cert: {cfg.ca_cert}")
-    print()
     if sys_name == "Linux":
-        print("Linux (Debian/Ubuntu):")
+        print("Same-machine install (Linux):")
+        print(f"  # Debian/Ubuntu:")
         print(f"  sudo cp {cfg.ca_cert} /usr/local/share/ca-certificates/forgather-ca.crt")
-        print("  sudo update-ca-certificates")
-        print()
-        print("Linux (Fedora/RHEL):")
+        print(f"  sudo update-ca-certificates")
+        print(f"  # Fedora/RHEL:")
         print(f"  sudo cp {cfg.ca_cert} /etc/pki/ca-trust/source/anchors/")
-        print("  sudo update-ca-trust")
+        print(f"  sudo update-ca-trust")
     elif sys_name == "Darwin":
-        print("macOS:")
+        print("Same-machine install (macOS):")
         print(
-            "  sudo security add-trusted-cert -d -r trustRoot \\"
+            f"  sudo security add-trusted-cert -d -r trustRoot \\\n"
+            f"      -k /Library/Keychains/System.keychain {cfg.ca_cert}"
         )
-        print(f"      -k /Library/Keychains/System.keychain {cfg.ca_cert}")
     elif sys_name == "Windows":
-        print("Windows (PowerShell, admin):")
+        print("Same-machine install (Windows, PowerShell as admin):")
         print(
             f"  Import-Certificate -FilePath {cfg.ca_cert} "
             "-CertStoreLocation Cert:\\LocalMachine\\Root"
         )
+    else:
+        print(f"Unknown OS ({sys_name}); see the docs for per-OS instructions.")
+
     print()
-    print("Firefox uses its own trust store: about:preferences#privacy → View Certificates → Import.")
+    print(
+        "Browser running on a different machine? Export the CA and run\n"
+        "the install on that machine instead:\n"
+        "  forgather tls export-ca > forgather-ca.crt\n"
+        "  # then follow docs/operations/tls.md on the client side"
+    )
     return 0
 
 

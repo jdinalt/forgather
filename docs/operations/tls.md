@@ -177,27 +177,150 @@ forgather sched status   # uses the shared bundle automatically
 
 ## Trusting the CA from a browser
 
-`forgather tls trust-system` prints OS-specific instructions for
-installing the CA into the system trust store. Per-browser caveats:
+Forgather is typically running on a Linux server you reach over SSH,
+while your browser runs on a separate laptop (macOS, Windows, or
+another Linux box). The trust install happens *on the laptop*, not
+on the server — the server already trusts its own CA. So this is a
+two-step process:
 
-* Firefox uses its own store: `about:preferences#privacy → View
-  Certificates → Authorities → Import`.
-* Chromium/Edge/Safari follow the system store.
-
-For one-off testing, your browser's "advanced → proceed anyway"
-flow still works — but cluster peer-pull requires the CA in the
-shared bundle, so distribute it properly.
+1. **Copy the CA cert from the forgather server to the client
+   machine** (the laptop running the browser).
+2. **Install it into the client's trust store** with whatever
+   procedure that OS / browser uses.
 
 > **`ca.crt` is a high-trust artifact.** A machine that trusts this
-> CA will accept *any* cert signed by it for *any* hostname. If a
-> colleague's laptop trusts your CA, an attacker who steals your
-> CA private key (`ca/ca.key`) can mint a cert claiming to be
-> `bank.example.com` and that laptop will accept it without warning.
-> Only trust the CA on machines you intend to talk to forgather
-> servers from, and treat `ca/ca.key` with the same care as an SSH
-> private key (0600, never copied, never on shared storage).
+> CA will accept *any* cert signed by it for *any* hostname an
+> attacker can route traffic for. If a colleague's laptop trusts
+> your CA, an attacker who steals your CA private key
+> (`ca/ca.key`) can mint a cert claiming to be `bank.example.com`
+> and that laptop will accept it without warning. Only trust the
+> CA on machines you intend to talk to forgather servers from, and
+> treat `ca/ca.key` with the same care as an SSH private key
+> (0600, never copied, never on shared storage).
 
-## Behind a reverse proxy or in containers
+### Step 1: Copy `ca.crt` from the server to the client
+
+From the laptop:
+
+```bash
+# Easiest: read the cert over the existing SSH session and write
+# it to a local file. No key material crosses the wire.
+ssh <forgather-host> 'forgather tls export-ca' > forgather-ca.crt
+
+# Equivalent, with scp:
+ssh <forgather-host> 'forgather tls export-ca -o /tmp/forgather-ca.crt'
+scp <forgather-host>:/tmp/forgather-ca.crt .
+```
+
+For containerized servers (`docker/runtime/run.sh`), the same cert
+lives inside the state volume:
+
+```bash
+ssh <forgather-host> \
+    'docker exec forgather-server cat /home/forgather/.config/forgather/tls/ca/ca.crt' \
+    > forgather-ca.crt
+```
+
+### Step 2: Install into the client's trust store
+
+Pick the section matching the **laptop's** OS (not the server's).
+
+#### macOS (system + Safari + Chrome + Edge)
+
+```bash
+# Adds the CA to the System keychain and marks it trusted for SSL.
+# Prompts for your sudo password.
+sudo security add-trusted-cert -d -r trustRoot \
+    -k /Library/Keychains/System.keychain forgather-ca.crt
+```
+
+Firefox uses its own store — see the Firefox section below.
+
+#### Linux (system + Chromium + Edge)
+
+Debian / Ubuntu:
+
+```bash
+sudo cp forgather-ca.crt /usr/local/share/ca-certificates/forgather-ca.crt
+sudo update-ca-certificates
+```
+
+Fedora / RHEL / Rocky:
+
+```bash
+sudo cp forgather-ca.crt /etc/pki/ca-trust/source/anchors/forgather-ca.crt
+sudo update-ca-trust
+```
+
+Arch / openSUSE:
+
+```bash
+sudo cp forgather-ca.crt /etc/ca-certificates/trust-source/anchors/
+sudo update-ca-trust
+```
+
+Firefox uses its own store — see the Firefox section below.
+
+#### Windows (system + Edge + Chrome)
+
+PowerShell, run as administrator:
+
+```powershell
+Import-Certificate -FilePath forgather-ca.crt `
+    -CertStoreLocation Cert:\LocalMachine\Root
+```
+
+Or via the GUI: double-click `forgather-ca.crt` → **Install
+Certificate** → **Local Machine** → **Place all certificates in the
+following store: Trusted Root Certification Authorities**.
+
+Firefox uses its own store — see the Firefox section below.
+
+#### Firefox (every OS)
+
+Firefox does not consult the system trust store. Import the CA
+into Firefox's own store:
+
+1. **Preferences** → **Privacy & Security** (or paste
+   `about:preferences#privacy` into the URL bar)
+2. Scroll to **Certificates** → **View Certificates…**
+3. **Authorities** tab → **Import…** → choose `forgather-ca.crt`
+4. In the dialog that appears, tick **Trust this CA to identify
+   websites** → **OK**
+
+You can verify the import: `about:certificate?cert=...` will show
+the CA you just added, with its expiry and SAN.
+
+### Verifying
+
+After installing, restart the browser and load
+`https://<forgather-host>:8765/`. A clean lock icon means the CA
+was installed correctly; a "Certificate is not valid" warning
+means the cert install didn't take (or you've installed the wrong
+file — verify the SHA-256 fingerprint with `openssl x509 -in
+forgather-ca.crt -noout -fingerprint -sha256`).
+
+### Removing trust
+
+* macOS: **Keychain Access** → **System** → find `Forgather CA <hostname>`
+  → right-click → **Delete**.
+* Linux: delete the file you copied into the system trust dir, then
+  re-run `update-ca-certificates` / `update-ca-trust`.
+* Windows: `certmgr.msc` → **Trusted Root Certification Authorities**
+  → find the entry → delete.
+* Firefox: same dialog as import, then **Delete or Distrust**.
+
+### What `forgather tls trust-system` does
+
+The CLI helper `forgather tls trust-system` prints the same per-OS
+commands listed above, computed for the **server's** OS. It exists
+for the case where forgather and your browser are on the same
+machine (e.g. local development on a laptop). For the headless-
+server-plus-remote-laptop case — which is the usual production
+shape — read this section instead and run the commands on the
+laptop.
+
+## Behind a reverse proxy
 
 If you front your forgather servers with nginx/Caddy/Traefik that
 terminates TLS, run forgather itself with `--no-tls --insecure` and
@@ -205,11 +328,281 @@ let the proxy handle the cert. Same pattern in a sidecar-style
 Docker setup (TLS-terminating proxy container forwards to the
 plaintext forgather container on a private network).
 
-The runtime image's `NO_AUTH=1` smoke-test mode is for trusted-LAN
-testing only. For multi-node clusters in production, either
-provision TLS on the host before launching the container (mount
-`~/.config/forgather/tls/` into the container) or place a TLS
-terminator in front and use `--insecure` inside.
+## Docker runtime image
+
+The runtime image (`docker/runtime/`) mounts a state volume at
+`/home/forgather/.config/forgather` inside the container — that's
+the same directory the TLS module uses, so any TLS state lives in
+the volume and persists across `docker rm`.
+
+Three deployment patterns, in order of complexity:
+
+**1. Single-machine HTTPS bring-up (recommended for first-time users):**
+
+```bash
+TLS_INIT=1 docker/runtime/run.sh --recreate
+```
+
+`TLS_INIT=1` makes the container run `forgather tls init` on first
+start (no-op on subsequent starts — the cert is in the named volume
+already). The launcher detects TLS state and prints the
+`https://…?token=…` URL.
+
+To trust the container's CA from the host browser:
+
+```bash
+docker exec forgather-server cat \
+    /home/forgather/.config/forgather/tls/ca/ca.crt > /tmp/forgather-ca.crt
+# Then: forgather tls trust-system  → instructions for your OS,
+#       or import /tmp/forgather-ca.crt into your browser manually.
+```
+
+**2. Share TLS state with the host's `forgather tls init`:**
+
+If you've already run `forgather tls init` on the host (the
+recommended workflow when the host is also a development machine),
+bind-mount your host config dir into the container so both share
+the same CA + cert:
+
+```bash
+STATE_VOLUME=$HOME/.config/forgather docker/runtime/run.sh --recreate
+```
+
+The container sees the host's TLS state and serves HTTPS off the
+same CA. The CLI on the host already trusts that CA, so
+`forgather sched status` from outside the container Just Works.
+
+**3. Multi-node cluster with one CA holder:**
+
+Mint a per-host cert on the head node (host or container, either
+works), distribute to peers, then run each peer's container with
+the cert pre-installed in its state volume:
+
+```bash
+# Head node (already has TLS provisioned).
+forgather tls mint --hostname peer.lan --ip 10.0.0.99 -o /tmp/peer-tls
+
+# Copy /tmp/peer-tls/ to the peer host with 0600 preserved on server.key.
+scp /tmp/peer-tls/{server.crt,server.key,ca.crt} peer.lan:/tmp/peer-tls/
+
+# On the peer host, install into a directory the runtime container
+# will bind-mount as its state volume.
+mkdir -p ~/forgather-state/tls
+forgather tls install --cert /tmp/peer-tls/server.crt \
+                      --key  /tmp/peer-tls/server.key \
+                      --ca   /tmp/peer-tls/ca.crt
+# (run with FORGATHER_TLS_DIR=~/forgather-state/tls if you don't want
+# it to land in the host's real config dir)
+
+# Launch the container reusing that state.
+CLUSTER=mycluster NETWORK=host \
+    STATE_VOLUME=$HOME/forgather-state \
+    docker/runtime/run.sh --recreate
+```
+
+> **`NO_AUTH=1` is independent of TLS.** Set both for the smoke-test
+> mode used by `scripts/smoke_runtime_multinode.sh`; set neither for
+> a production-shape deployment. `TLS_INIT=1` + `NO_AUTH=1`
+> together gives encrypted-transport-but-no-token-required, which
+> is the right tradeoff for a fully trusted LAN where peers can't
+> easily share tokens but can still benefit from preventing
+> eavesdroppers.
+
+## Command reference
+
+The shorthand `forgather tls <subcmd>` always operates on the shared
+TLS directory (`~/.config/forgather/tls/` on Linux; platform-correct
+on macOS/Windows via `platformdirs`). Override via
+`FORGATHER_TLS_DIR=/path/to/dir` — useful for tests or per-tenant
+isolation.
+
+### `tls init` — provision a CA + server cert for this host
+
+```text
+forgather tls init [--hostname NAME …] [--ip IP …] [--ca-name CN] [--force]
+```
+
+Creates `ca/ca.{crt,key}` if absent, mints `server.{crt,key}` covering
+auto-detected hostnames (`socket.gethostname()`, `socket.getfqdn()`)
+and IPs (from `psutil.net_if_addrs()`), then writes `config.yaml`
+with `enabled: true`. Auto-discovered SAN entries are capped at 32 —
+add more explicitly with repeatable `--hostname` / `--ip`.
+
+* `--ca-name CN` overrides the CA common name (default: `Forgather CA
+  <hostname>`).
+* `--force` overwrites an existing CA. *Destructive* — every peer's
+  trust bundle breaks until you redistribute the new CA.
+
+**When to use:** first-time TLS bring-up on the CA-holding host.
+Never run on a peer (use `install` instead — running `init` on a
+peer mints a *different* CA that the master won't trust).
+
+### `tls install` — receive a cert minted elsewhere
+
+```text
+forgather tls install --cert PATH --key PATH [--ca PATH]
+```
+
+Cross-validates that:
+1. The cert's public key matches the private key,
+2. The cert chains to the supplied CA (if `--ca` is given),
+3. The CA cert is actually marked as a CA (BasicConstraints CA:TRUE).
+
+Refuses to install on any mismatch. The private key is written with
+0600 perms at creation (no TOCTOU window). Sets `enabled: true` and
+populates the SAN list from the installed cert.
+
+**When to use:** the receiving end of `forgather tls mint` on a peer
+host. The `--ca` flag is technically optional but recommended —
+without it, the peer has no trust anchor for the master's cert.
+
+### `tls mint` — issue a cert for a peer using this host's CA
+
+```text
+forgather tls mint --hostname NAME [--hostname NAME …] [--ip IP …] -o DIR
+```
+
+Writes `server.crt`, `server.key` (0600), and `ca.crt` into `DIR`.
+The directory is created with 0700; the key is created atomically
+with 0600 from the start.
+
+**When to use:** the CA holder provisioning a peer. Distribute the
+directory via a channel that preserves 0600 perms on `server.key`
+(`scp` does; email and shared S3 buckets do not).
+
+### `tls status` — show CA, server cert, and trust state
+
+```text
+forgather tls status [--json]
+```
+
+Prints the CA subject + expiry, server cert SAN + expiry, trusted
+imports, and *diagnostic warnings* covering:
+
+* Cert provisioned but `enabled: false` — you'll need `--tls` per
+  invocation; `forgather tls enable` flips the master switch back.
+* Server cert expiring within 30 days — run `tls renew --server`.
+* SAN gaps: cert SAN doesn't cover one of the host's current
+  hostnames/IPs (typical after a hostname change). Suggests
+  `tls renew --server --add-hostname … --add-ip …`.
+
+**When to use:** "is TLS actually doing what I think it's doing?"
+First place to look when a connection refuses or a peer is shown
+unreachable in the Nodes view.
+
+### `tls renew` — re-issue cert(s) from the existing CA
+
+```text
+forgather tls renew [--ca] [--add-hostname NAME …] [--add-ip IP …]
+```
+
+* Default: renews the server cert only. Cheap, reversible.
+* `--ca`: re-issues the CA itself. *Prompts for `yes` confirmation*.
+  Every peer that trusts the old CA breaks until you redistribute
+  the new `ca.crt`. See the "Renewal" section above.
+* `--add-hostname` / `--add-ip`: union into the SAN before
+  re-issuing. Persisted into `config.yaml`.
+
+**When to use:** scheduled rotation, or after a hostname/IP change.
+For SAN-only updates without a fresh signature, you still have to
+re-issue — there's no "just patch the SAN" path.
+
+### `tls enable` / `tls disable` — flip the master switch
+
+```text
+forgather tls enable
+forgather tls disable
+```
+
+Sets `enabled: true` / `false` in `config.yaml` without touching
+any cert files. `disable` is the right tool for "I need HTTP back
+for an hour to troubleshoot"; `clean --yes` is the right tool for
+"I'm done with this host."
+
+**When to use:** temporarily revert without re-running `init` later.
+Servers must be restarted for the change to take effect.
+
+### `tls export-ca` / `tls import-ca` — trust distribution
+
+```text
+forgather tls export-ca [-o PATH]
+forgather tls import-ca PATH [--name LABEL]
+```
+
+* `export-ca` writes `ca/ca.crt` to PATH (default: stdout). Never
+  exports the private key.
+* `import-ca` validates the cert is a CA, then stores it under
+  `trusted/<label>.crt` and rebuilds `ca-bundle.crt`. The bundle is
+  what httpx uses for inter-node verification.
+
+**When to use:** sharing CA trust between hosts that don't have a
+common CA holder (e.g. two separately-managed clusters that want to
+talk to each other).
+
+### `tls trust-system` — OS-level trust instructions
+
+```text
+forgather tls trust-system
+```
+
+Prints platform-specific commands for adding the local CA to the
+system trust store (Linux: `update-ca-certificates` /
+`update-ca-trust`; macOS: `security add-trusted-cert`; Windows:
+`Import-Certificate`). Firefox uses its own store; instructions are
+included separately.
+
+**When to use:** after `tls init`, to make the host's browser
+accept the forgather URLs without warnings.
+
+### `tls clean` — wipe everything
+
+```text
+forgather tls clean --yes
+```
+
+Removes the entire shared TLS directory. *Irreversible.* `--yes` is
+required.
+
+**When to use:** decommissioning a host, or a clean-slate redo when
+TLS state is too tangled to recover.
+
+## Configuration file format
+
+`config.yaml` under the TLS directory is the single source of truth:
+
+```yaml
+enabled: true
+auto_on_non_loopback: true
+ca_cert: /home/dinalt/.config/forgather/tls/ca/ca.crt
+ca_key: /home/dinalt/.config/forgather/tls/ca/ca.key
+ca_serial: /home/dinalt/.config/forgather/tls/ca/ca.srl
+server_cert: /home/dinalt/.config/forgather/tls/server.crt
+server_key: /home/dinalt/.config/forgather/tls/server.key
+ca_bundle: /home/dinalt/.config/forgather/tls/ca-bundle.crt
+trusted_dir: /home/dinalt/.config/forgather/tls/trusted
+san:
+  hostnames: [localhost, myhost.lan]
+  ips: [127.0.0.1, 10.0.0.5]
+validity_days: 825
+ca_validity_days: 3650
+```
+
+Edit by hand if you need to point at certs in non-default paths
+(corporate PKI mounted at `/etc/ssl/...`, for example), or use the
+CLI to keep the file consistent.
+
+## Server flags reference
+
+All three servers (`forgather server`, `dataset-server start`,
+`inf server`) accept the same shared TLS flag block:
+
+| Flag | Effect |
+|---|---|
+| `--tls` | Force TLS on for this invocation, overriding `enabled` in `config.yaml`. Cert/key resolved from shared config. |
+| `--no-tls` | Force TLS off, overriding `enabled: true`. Servers go back to plain HTTP. |
+| `--insecure` | Allow binding a non-loopback host without TLS (cleartext bearer tokens on the wire). Without this, the server refuses to bind. |
+| `--tls-cert PATH` | Override the cert path (for BYOC / corporate PKI). |
+| `--tls-key PATH` | Override the key path. |
 
 ## CLI clients
 

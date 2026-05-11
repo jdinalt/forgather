@@ -3,15 +3,22 @@
 import argparse
 from argparse import RawTextHelpFormatter
 
+from forgather.tls.config import tls_dir
+
 
 def create_tls_parser(global_args):
+    # Resolve the actual TLS root on this host (platformdirs gives us
+    # the correct location on macOS/Windows too — not just Linux's
+    # ~/.config). Show it in help text so the operator sees the
+    # *actual* path they'll be working with.
+    _tls_root = str(tls_dir())
     parser = argparse.ArgumentParser(
         prog="forgather tls",
         description=(
             "Manage shared TLS state for forgather servers.\n"
             "\n"
-            "Creates and maintains a local CA + server certificate under\n"
-            "~/.config/forgather/tls/ that all three servers\n"
+            f"Creates and maintains a local CA + server certificate under\n"
+            f"{_tls_root}/ that all three servers\n"
             "(forgather server / dataset_server / inference_server) share."
         ),
         formatter_class=RawTextHelpFormatter,
@@ -42,7 +49,7 @@ def create_tls_parser(global_args):
         description=(
             "Provision the shared TLS state.\n"
             "\n"
-            "Creates ~/.config/forgather/tls/ca/ca.{crt,key} if absent,\n"
+            f"Creates {_tls_root}/ca/ca.{{crt,key}} if absent,\n"
             "mints server.{crt,key} covering auto-detected hostnames\n"
             "and IPs (plus any added via --hostname/--ip), writes\n"
             "config.yaml with enabled: true, and rebuilds ca-bundle.crt."

@@ -66,6 +66,10 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 - **[TensorBoard](guides/tensorboard.md)** - Launch TensorBoard against a model's `runs/` directory from the webui or `forgather tb`
 - **[MkDocs](guides/mkdocs.md)** - Serve the bundled Forgather docs locally with live-reload via the Tools menu or `forgather mkdocs`
 
+**Operations:**
+
+- **[TLS](operations/tls.md)** - Enable HTTPS for `forgather server`, `dataset_server`, and `inference_server` off a single per-host CA + cert. Single-host bring-up, cluster cert distribution, renewal, Docker runtime integration, command reference, threat model.
+
 ## Tutorials
 - **[Tiny Llama](tutorials/tiny_llama/README.md)** - Demonstration of basic usage
 - **[Projects Overview](tutorials/projects_overview/project_index.ipynb)** - Learn about the Forgather Project abstraction

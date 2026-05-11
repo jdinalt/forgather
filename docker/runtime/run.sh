@@ -97,6 +97,24 @@
 #                                         #   multi-node testing flow where
 #                                         #   token wrangling across N
 #                                         #   containers is friction.
+#   TLS_INIT=1                            # default: unset. When set on first
+#                                         #   start of a container whose
+#                                         #   state volume has no TLS state
+#                                         #   yet, exec `forgather tls init`
+#                                         #   inside the container before
+#                                         #   launching the server. The CA
+#                                         #   + cert land in the state
+#                                         #   volume so they persist across
+#                                         #   `docker rm`. No-op on
+#                                         #   containers that already have
+#                                         #   TLS provisioned. For peers,
+#                                         #   skip TLS_INIT and instead
+#                                         #   distribute a cert from the
+#                                         #   CA-holding host and run
+#                                         #   `forgather tls install`
+#                                         #   inside the container.
+#                                         #   See docs/operations/tls.md
+#                                         #   "Docker runtime image".
 #   DEV=1                                 # default: unset. DEBUG-ONLY.
 #   DEV=/path/to/forgather                #   When set, bind-mounts a host-
 #                                         #   side forgather clone over
@@ -172,6 +190,12 @@ CLUSTER_ADDRESS="${CLUSTER_ADDRESS:-}"
 # operational friction. Default off — production deployments leave the
 # token gate in place.
 NO_AUTH="${NO_AUTH:-}"
+# TLS_INIT=1 runs `forgather tls init` inside the container on first
+# start (no-op if TLS state already exists in the mounted volume).
+# Convenience for single-machine HTTPS bring-up; multi-node setups
+# should mint per-host certs from a CA holder instead — see
+# docs/operations/tls.md.
+TLS_INIT="${TLS_INIT:-}"
 # DEV opts in to bind-mounting a host-side forgather clone over the
 # image's baked-in /opt/forgather/repo. Empty = production mode (default).
 # "1" or unset-but-flag-passed = use ${REPO_ROOT}. Any other value
@@ -192,6 +216,21 @@ read_auth_token() {
         sleep 1
     done
     return 1
+}
+
+# Detect whether the running container has TLS provisioned. Looks
+# for the shared config + server cert under the state volume. Echo
+# "https" on success, "http" otherwise.
+detect_scheme_in_container() {
+    if docker exec "${NAME}" sh -c \
+        'test -f /home/forgather/.config/forgather/tls/config.yaml \
+         && test -f /home/forgather/.config/forgather/tls/server.crt \
+         && grep -q "enabled: true" /home/forgather/.config/forgather/tls/config.yaml' \
+        2>/dev/null; then
+        echo "https"
+    else
+        echo "http"
+    fi
 }
 
 do_create_container() {
@@ -323,23 +362,43 @@ EOF
         EXTRA_PORTS_FINAL=""
     fi
 
-    # When CLUSTER or NO_AUTH is set, override the image's default
-    # CMD so the server starts with the right flags. We replicate
-    # the default arguments (-H 0.0.0.0 -p 8765) so operators don't
-    # have to think about the base CMD; they only care about
-    # --cluster / address / auth.
+    # When CLUSTER, NO_AUTH, or TLS_INIT is set, override the image's
+    # default CMD so the server starts with the right flags (and TLS
+    # state, if applicable). We replicate the default arguments
+    # (-H 0.0.0.0 -p 8765) so operators don't have to think about the
+    # base CMD; they only care about --cluster / address / auth / tls.
     CMD_ARGS=()
-    if [[ -n "${CLUSTER}" || -n "${NO_AUTH}" ]]; then
-        CMD_ARGS=(forgather server -H 0.0.0.0 -p 8765)
-        if [[ -n "${CLUSTER}" ]]; then
-            CMD_ARGS+=(--cluster "${CLUSTER}")
-            if [[ -n "${CLUSTER_ADDRESS}" ]]; then
-                CMD_ARGS+=(--cluster-address "${CLUSTER_ADDRESS}")
+    if [[ -n "${CLUSTER}" || -n "${NO_AUTH}" || -n "${TLS_INIT}" ]]; then
+        if [[ -n "${TLS_INIT}" ]]; then
+            # Wrap server launch with a one-shot `tls init` if no TLS
+            # state exists yet in the (mounted) state volume. Idempotent:
+            # subsequent starts find the cert already present and skip.
+            CMD_ARGS=(
+                sh -c
+                'set -e; \
+                 if [ ! -f "$HOME/.config/forgather/tls/server.crt" ]; then \
+                     forgather tls init; \
+                 else \
+                     echo "[entrypoint] TLS state already present; skipping tls init"; \
+                 fi; \
+                 exec forgather server -H 0.0.0.0 -p 8765 '"$(
+                    echo -n "$([ -n "${CLUSTER}" ] && echo "--cluster ${CLUSTER}") \
+                              $([ -n "${CLUSTER_ADDRESS}" ] && echo "--cluster-address ${CLUSTER_ADDRESS}") \
+                              $([ -n "${NO_AUTH}" ] && echo "--no-auth")")
+            )
+            echo "[run.sh]   tls:  TLS_INIT=${TLS_INIT}; will run 'forgather tls init' on first start if needed" >&2
+        else
+            CMD_ARGS=(forgather server -H 0.0.0.0 -p 8765)
+            if [[ -n "${CLUSTER}" ]]; then
+                CMD_ARGS+=(--cluster "${CLUSTER}")
+                if [[ -n "${CLUSTER_ADDRESS}" ]]; then
+                    CMD_ARGS+=(--cluster-address "${CLUSTER_ADDRESS}")
+                fi
             fi
-        fi
-        if [[ -n "${NO_AUTH}" ]]; then
-            CMD_ARGS+=(--no-auth)
-            echo "[run.sh]   auth: DISABLED (NO_AUTH=${NO_AUTH}); trusted-LAN only" >&2
+            if [[ -n "${NO_AUTH}" ]]; then
+                CMD_ARGS+=(--no-auth)
+                echo "[run.sh]   auth: DISABLED (NO_AUTH=${NO_AUTH}); trusted-LAN only" >&2
+            fi
         fi
     fi
 
@@ -392,19 +451,38 @@ EOF
 
     local token=""
     if token="$(read_auth_token 30)"; then
+        # Pick the scheme the server is actually serving. The server
+        # picks TLS up from the shared config inside the container —
+        # we report what's there so the clickable URL doesn't 400
+        # with "TLS-required" or hit a TLS handshake on a plain HTTP
+        # server.
+        local scheme
+        scheme="$(detect_scheme_in_container)"
         cat >&2 <<EOF
 
 [run.sh] forgather server is up.
 
-  url (clickable):  http://${url_host}:${url_port}/?token=${token}
-  url (plain):      http://${url_host}:${url_port}/
+  url (clickable):  ${scheme}://${url_host}:${url_port}/?token=${token}
+  url (plain):      ${scheme}://${url_host}:${url_port}/
   auth token:       ${token}
 
 Re-fetch later:   docker/runtime/run.sh --token
 Diagnostic shell: docker/runtime/run.sh --shell
 Server logs:      docker/runtime/run.sh --logs
 EOF
+        if [[ "${scheme}" == "https" ]]; then
+            cat >&2 <<EOF
+
+[run.sh] Note: TLS is enabled. To trust the container's CA on the
+[run.sh] host, run:
+  docker exec ${NAME} cat /home/forgather/.config/forgather/tls/ca/ca.crt > /tmp/forgather-ca.crt
+  # then import /tmp/forgather-ca.crt into your browser or system trust store
+[run.sh] See docs/operations/tls.md for the full distribution flow.
+EOF
+        fi
     else
+        local scheme
+        scheme="$(detect_scheme_in_container 2>/dev/null || echo http)"
         cat >&2 <<EOF
 
 [run.sh] container is running but the auth token file hasn't appeared yet.
@@ -412,7 +490,7 @@ EOF
   docker/runtime/run.sh --token
   docker/runtime/run.sh --logs
 
-  url:    http://${url_host}:${url_port}/
+  url:    ${scheme}://${url_host}:${url_port}/
 EOF
     fi
 }

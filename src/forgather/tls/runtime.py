@@ -160,15 +160,23 @@ def add_server_tls_args(parser: argparse.ArgumentParser) -> None:
     BYOC scenarios; they don't touch shared config.
     """
     group = parser.add_mutually_exclusive_group()
+    # Resolve the platform-correct TLS root for the help text so
+    # macOS / Windows / non-XDG-Linux installs see the actual path
+    # rather than the Linux-only ~/.config/forgather/tls.
+    from .config import tls_dir as _tls_dir_fn
+
+    _tls_root_help = str(_tls_dir_fn())
     group.add_argument(
         "--tls",
         dest="tls",
         action="store_const",
         const=True,
         default=None,
-        help="Force TLS on (overrides shared config). "
-        "Cert/key resolved from ~/.config/forgather/tls/ unless "
-        "--tls-cert/--tls-key are given.",
+        help=(
+            "Force TLS on (overrides shared config). "
+            f"Cert/key resolved from {_tls_root_help}/ unless "
+            "--tls-cert/--tls-key are given."
+        ),
     )
     group.add_argument(
         "--no-tls",
