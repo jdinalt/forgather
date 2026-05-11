@@ -250,13 +250,16 @@ def enqueue(req: EnqueueRequest):
                 ),
             )
 
-    # Merge dataset-source env vars into job_params.extra_env. Only
-    # meaningful for training; other job types don't run a trainer that
-    # reads FORGATHER_DATASET_SERVER. Resolution failures (stale ids)
-    # become 400s so the operator sees a clear error rather than a
-    # training job that silently fell back to in-process loading.
+    # Merge dataset-source env vars into job_params.extra_env. Applies
+    # to every job type whose subprocess goes through
+    # ``fast_load_iterable_dataset`` — training, eval, and the
+    # ``forgather model`` / ``forgather dataset`` CLI paths. Inference,
+    # mkdocs, tensorboard etc. ignore the field entirely. Resolution
+    # failures (stale ids) become 400s so the operator sees a clear
+    # error rather than a job that silently fell back to in-process
+    # loading.
     job_params = dict(req.job_params)
-    if req.job_type == "training" and req.dataset_source:
+    if req.job_type in ("training", "eval", "model", "dataset") and req.dataset_source:
         try:
             ds_env = dataset_source.resolve_to_env(req.dataset_source)
         except DatasetSourceError as e:

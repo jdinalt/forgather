@@ -303,6 +303,7 @@ def _build_eval(item, gpu_indices, tty_path):
         output_dir=p.get("output_dir"),
         gpu_indices=gpu_indices,
         tty_log_path=tty_path,
+        extra_env=p.get("extra_env") or None,
     )
 
 
@@ -531,6 +532,7 @@ def _build_model(item, gpu_indices, tty_path):
         amp=p.get("amp"),
         gpu_indices=gpu_indices,
         tty_log_path=tty_path,
+        extra_env=p.get("extra_env") or None,
     )
 
 
@@ -568,6 +570,7 @@ def _build_dataset(item, gpu_indices, tty_path):
         ),
         truncate=int(p["truncate"]) if p.get("truncate") is not None else None,
         tty_log_path=tty_path,
+        extra_env=p.get("extra_env") or None,
     )
 
 

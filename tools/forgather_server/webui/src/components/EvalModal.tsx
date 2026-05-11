@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 
-import { api, EvalConfigEntry } from "../api";
+import { api, DatasetSource, EvalConfigEntry } from "../api";
+import { useDatasetSource } from "../dataset-source";
 import { persistGet, persistRemove, persistSet } from "../persist";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
@@ -26,6 +27,10 @@ interface PersistedAdHoc {
   ckptPath: string;
   outputDir: string;
   requestedGpus: number;
+  /** Sticky dataset-source for ad-hoc eval. Reset to defaults clears
+   *  it back to ``null`` (local). The server-side resolver still
+   *  applies the offline-fallback rule at submit time. */
+  datasetSource: DatasetSource | null;
 }
 
 const AD_HOC_STORAGE_KEY = "forgather-adhoc-eval-v1";
@@ -43,6 +48,7 @@ const AD_HOC_DEFAULTS: PersistedAdHoc = {
   ckptPath: "",
   outputDir: "",
   requestedGpus: 1,
+  datasetSource: null,
 };
 
 function loadAdHoc(): Partial<PersistedAdHoc> {
@@ -144,6 +150,19 @@ export function EvalModal({
     adHoc ? persisted.outputDir ?? "" : "",
   );
 
+  // Dataset-source selector (shared hook). Eval persists across
+  // invocations via the ad-hoc localStorage blob; project-backed
+  // flows still get the dropdown but the choice doesn't survive
+  // modal close (matching the existing pattern for project-backed
+  // eval, which doesn't pull from cache for any other field either).
+  const {
+    source: datasetSource,
+    setSource: setDatasetSource,
+    Selector: DatasetSourceSelectorEl,
+  } = useDatasetSource({
+    initial: adHoc ? persisted.datasetSource ?? null : null,
+  });
+
   // Only meaningful in ad-hoc mode — project-backed flows don't touch
   // persistence and derive everything from props.
   const resetDefaults = () => {
@@ -160,6 +179,7 @@ export function EvalModal({
     setCkptPath(AD_HOC_DEFAULTS.ckptPath);
     setOutputDir(AD_HOC_DEFAULTS.outputDir);
     setRequestedGpus(AD_HOC_DEFAULTS.requestedGpus);
+    setDatasetSource(null);
   };
 
   const maxGpus = Math.max(1, gpusQ.data?.length ?? 1);
@@ -205,6 +225,7 @@ export function EvalModal({
         ckptPath: ckptPath.trim(),
         outputDir: outputDir.trim(),
         requestedGpus,
+        datasetSource,
       });
     }
 
@@ -243,6 +264,7 @@ export function EvalModal({
       priority,
       job_type: "eval",
       job_params,
+      dataset_source: datasetSource,
     });
   };
 
@@ -302,6 +324,9 @@ export function EvalModal({
               )}
             </div>
           )}
+
+          <DatasetSourceSelectorEl />
+
 
           <div className="submit-row">
             <label>
