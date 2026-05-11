@@ -324,6 +324,9 @@ export interface ClusterJobSubmitRequest {
   rdzv_node_id?: string;
   rdzv_port?: number;
   allow_version_mismatch?: boolean;
+  /** Same shape as ``EnqueueRequest.dataset_source``; resolved once on
+   *  the master and merged into every peer's extra_env. */
+  dataset_source?: DatasetSource | null;
 }
 
 export interface ClusterJobSubmitResponse {
@@ -474,10 +477,21 @@ export interface MultinodeOverrides {
   allow_version_mismatch: boolean;
 }
 
+/** Submit-modal dataset-source choice. ``server_id`` is one of:
+ *  ``local:<queue_id>`` (a forgather_server-spawned dataset_server) or
+ *  ``user:<entry_id>`` (a URL registered via Datasets → Servers → + Add).
+ *  The token is never embedded here — the backend resolves it from the
+ *  JobRecord / registry at submit time, so deleting an entry or stopping
+ *  a local server invalidates the choice and surfaces as a 400. */
+export type DatasetSource =
+  | { kind: "local" }
+  | { kind: "server"; server_id: string };
+
 export interface OverridesData {
   values: Record<string, unknown>;
   requested_gpus: number | null;
   multinode: MultinodeOverrides | null;
+  dataset_source: DatasetSource | null;
   updated_at: number | null;
 }
 
@@ -520,6 +534,9 @@ export interface EnqueueRequest {
     | "dataset";
   /** Type-specific payload; empty for training. */
   job_params?: Record<string, unknown>;
+  /** Submit-modal dataset-source choice. Resolved server-side and
+   *  merged into ``job_params.extra_env`` for training jobs. */
+  dataset_source?: DatasetSource | null;
 }
 
 /** One row for the "pick an eval config" picker in EvalModal. */
@@ -1311,6 +1328,7 @@ export const api = {
     values: Record<string, unknown>,
     requested_gpus?: number | null,
     multinode?: MultinodeOverrides | null,
+    dataset_source?: DatasetSource | null,
   ): Promise<OverridesData> => {
     const r = await fetch("/api/config/overrides", {
       method: "POST",
@@ -1321,6 +1339,7 @@ export const api = {
         values,
         requested_gpus: requested_gpus ?? null,
         multinode: multinode ?? null,
+        dataset_source: dataset_source ?? null,
       }),
     });
     if (!r.ok) {

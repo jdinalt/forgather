@@ -5,6 +5,9 @@ import {
   ClusterJobSubmitRequest,
   ClusterMembersResponse,
   ConfigInfo,
+  DatasetSource,
+  DatasetServerLocal,
+  DatasetServerUser,
   ProjectInfo,
 } from "../api";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
@@ -93,6 +96,29 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   // submit takes the regular single-node path.
   const [mnState, setMnState] = useState<MultiNodePanelState>(emptyMultiNodeState);
   const [mnSeeded, setMnSeeded] = useState<boolean>(false);
+
+  // Dataset-source selector state. ``null`` = local (in-process loader);
+  // a ``{kind: "server", server_id}`` value routes the training job
+  // through that dataset_server. Seeded from cached overrides; falls
+  // back to local when the cached choice is unreachable or no longer
+  // exists. The token lives server-side; we only carry the server_id.
+  const [datasetSource, setDatasetSource] = useState<DatasetSource | null>(
+    null,
+  );
+  const [datasetSourceSeeded, setDatasetSourceSeeded] = useState<boolean>(
+    false,
+  );
+  // The two dataset-server lists drive the option set. Same query keys
+  // the Datasets view uses, so opening the submit modal after browsing
+  // the Datasets view is instant.
+  const dsLocalsQ = useQuery({
+    queryKey: ["dataset-servers-local"],
+    queryFn: api.listLocalDatasetServers,
+  });
+  const dsUsersQ = useQuery({
+    queryKey: ["dataset-servers-user"],
+    queryFn: api.listUserDatasetServers,
+  });
 
   const maxGpus = Math.max(1, gpusQ.data?.length ?? 1);
   const idleGpuCount = useMemo(() => {
@@ -206,6 +232,33 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     // = true and seed properly.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [membersQ.data, overridesQ.data, clusterActive]);
+
+  // Seed the dataset-source selector from cached overrides, applying
+  // the documented offline fallback: if the saved choice points at a
+  // server that no longer exists or isn't reachable, snap back to
+  // "local" rather than refusing to submit. Runs once after the
+  // overrides + both server lists have loaded.
+  useEffect(() => {
+    if (datasetSourceSeeded) return;
+    if (!overridesQ.data || !dsLocalsQ.data || !dsUsersQ.data) return;
+    const cached = overridesQ.data.dataset_source;
+    if (!cached || cached.kind === "local") {
+      setDatasetSource(null);
+      setDatasetSourceSeeded(true);
+      return;
+    }
+    if (isReachableId(cached.server_id, dsLocalsQ.data, dsUsersQ.data)) {
+      setDatasetSource(cached);
+    } else {
+      setDatasetSource(null);
+    }
+    setDatasetSourceSeeded(true);
+  }, [
+    datasetSourceSeeded,
+    overridesQ.data,
+    dsLocalsQ.data,
+    dsUsersQ.data,
+  ]);
 
   // True when the operator has opted in more than just the local
   // node. Drives whether Submit goes via the cluster fanout or the
@@ -343,6 +396,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
         dyn,
         requestedGpus,
         mnPayload,
+        datasetSource,
       )
       .then(() => {
         qc.invalidateQueries({
@@ -381,6 +435,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
         rdzv_node_id: mnState.rdzvNodeId ?? undefined,
         rdzv_port: mnState.rdzvPort,
         allow_version_mismatch: mnState.allowMismatch,
+        dataset_source: datasetSource,
       };
       submitCluster.mutate(req);
       return;
@@ -405,6 +460,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
       dynamic_args: dyn,
       requested_gpus: gpus,
       priority,
+      dataset_source: datasetSource,
     });
   };
 
@@ -434,6 +490,14 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
               <code>{project.project_dir}</code>
             </div>
           </div>
+
+          <DatasetSourceSelector
+            value={datasetSource}
+            onChange={setDatasetSource}
+            locals={dsLocalsQ.data ?? []}
+            users={dsUsersQ.data ?? []}
+          />
+
 
           {/* Single-node controls. Hidden when the server is in
               cluster mode — the multi-node panel below owns the
@@ -639,8 +703,140 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   );
 }
 
+/** Compact dropdown for the dataset-source choice. The select shows
+ *  every known dataset_server even when unreachable, with the
+ *  unreachable entries disabled so the operator can see what *would*
+ *  be available — and gets a diagnostic in the title attribute on
+ *  hover. The current selection always renders enabled, even if it
+ *  has gone offline since the modal opened, so the user can see the
+ *  problem before they switch. */
+interface DatasetSourceSelectorProps {
+  value: DatasetSource | null;
+  onChange: (v: DatasetSource | null) => void;
+  locals: DatasetServerLocal[];
+  users: DatasetServerUser[];
+}
+
+function DatasetSourceSelector({
+  value,
+  onChange,
+  locals,
+  users,
+}: DatasetSourceSelectorProps) {
+  // Identify the active option so the dropdown reflects it. The
+  // ``local`` sentinel is the empty value the <select> defaults to.
+  const currentId =
+    value?.kind === "server" ? value.server_id : "local";
+
+  // Compose option rows. Diagnostic is shown via ``title`` for
+  // disabled options and surfaces as a small hint under the dropdown
+  // for the *selected* option when that option is unreachable.
+  interface OptionRow {
+    server_id: string;
+    label: string;
+    disabled: boolean;
+    diagnostic: string | null;
+  }
+  const options: OptionRow[] = [];
+  for (const s of locals) {
+    options.push({
+      server_id: `local:${s.queue_id}`,
+      label: `${s.label} — ${s.base_url}`,
+      disabled: !s.alive,
+      diagnostic: s.alive ? null : "local dataset_server is not running",
+    });
+  }
+  for (const s of users) {
+    options.push({
+      server_id: `user:${s.id}`,
+      label: `${s.label} — ${s.base_url}`,
+      // We don't actively probe user entries here; the proxy will
+      // surface 502 at submit time if the URL is unreachable. The
+      // proxy *will* refuse a registry-deleted URL on submit too, so
+      // the worst case is a clear 400 the operator can correct.
+      disabled: false,
+      diagnostic: null,
+    });
+  }
+
+  const onPick = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const id = e.target.value;
+    if (id === "local") onChange(null);
+    else onChange({ kind: "server", server_id: id });
+  };
+
+  // Diagnostic banner for the *current* selection when it's gone
+  // missing — surfaces above the dropdown so the operator sees that
+  // the saved choice has been auto-switched.
+  const currentDiagnostic = (() => {
+    if (!value || value.kind !== "server") return null;
+    if (
+      value.server_id.startsWith("local:") &&
+      !locals.some(
+        (s) =>
+          s.queue_id === value.server_id.slice("local:".length) && s.alive,
+      )
+    ) {
+      return "the selected local dataset_server is not running";
+    }
+    if (
+      value.server_id.startsWith("user:") &&
+      !users.some((s) => s.id === value.server_id.slice("user:".length))
+    ) {
+      return "the selected registered dataset_server is gone";
+    }
+    return null;
+  })();
+
+  return (
+    <div className="submit-row dataset-source-row">
+      <label className="wide">
+        Dataset source
+        <select value={currentId} onChange={onPick}>
+          <option value="local">Local (in-process loader)</option>
+          {options.map((o) => (
+            <option
+              key={o.server_id}
+              value={o.server_id}
+              disabled={o.disabled && o.server_id !== currentId}
+              title={o.diagnostic ?? ""}
+            >
+              {o.label}
+              {o.disabled ? " (unreachable)" : ""}
+            </option>
+          ))}
+        </select>
+        <span className="muted">
+          {currentDiagnostic
+            ? `⚠ ${currentDiagnostic} — submit will fall back to local or fail with a clear error`
+            : value?.kind === "server"
+              ? "Training reads FORGATHER_DATASET_SERVER from the chosen server."
+              : "Training loads datasets in-process (the default)."}
+        </span>
+      </label>
+    </div>
+  );
+}
+
 function formatNproc(v: number | string | null): string {
   if (v === null) return "(unknown)";
   if (typeof v === "string") return `"${v}"`;
   return String(v);
+}
+
+/** True iff ``server_id`` resolves to a *reachable* dataset_server in
+ *  the supplied lists. For local servers we use the JobRecord's
+ *  ``alive`` flag (the proxy itself is the reachability signal); for
+ *  user entries the registry only carries metadata, so we treat the
+ *  entry as reachable when it exists. A future health-probe pass could
+ *  refine that. */
+function isReachableId(
+  server_id: string,
+  locals: DatasetServerLocal[],
+  users: DatasetServerUser[],
+): boolean {
+  const [kind, value] = server_id.split(":", 2);
+  if (kind === "local") return locals.some((s) => s.queue_id === value && s.alive);
+  if (kind === "user") return users.some((s) => s.id === value);
+  return false;
 }
