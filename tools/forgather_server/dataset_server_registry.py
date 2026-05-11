@@ -85,10 +85,24 @@ def add_entry(*, label: str, base_url: str, auth_token: str = "") -> RegistryEnt
     The label falls back to the URL when blank so the UI always has
     something to display, even if the user didn't bother naming the
     endpoint. Caller is responsible for trimming whitespace.
+
+    Tokens are rejected if they contain CR, LF, or any other ASCII
+    control character. httpx already refuses to emit such values in
+    outbound header fields (LocalProtocolError), so the upstream
+    request would fail anyway — but rejecting at registration time
+    gives a clear 400 instead of an opaque 502 later, AND keeps
+    attacker-shaped strings from round-tripping through our own JSON
+    API.
     """
     base_url = (base_url or "").rstrip("/")
     if not base_url:
         raise ValueError("base_url is required")
+    auth_token = auth_token or ""
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in auth_token):
+        raise ValueError(
+            "auth_token contains control characters (CR, LF, or other "
+            "non-printable). Strip them before registering."
+        )
     label = (label or "").strip() or base_url
     with _lock:
         existing = _entries_from_raw(_read_raw())
@@ -96,7 +110,7 @@ def add_entry(*, label: str, base_url: str, auth_token: str = "") -> RegistryEnt
             id=secrets.token_hex(4),
             label=label,
             base_url=base_url,
-            auth_token=auth_token or "",
+            auth_token=auth_token,
         )
         existing.append(new)
         _write_raw(existing)

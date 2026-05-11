@@ -37,8 +37,22 @@ SERVICE_REALM = "forgather-dataset"
 
 
 def dataset_server_tokens_dir() -> Path:
-    """Directory holding per-port token files (mode 0700)."""
-    d = Path(forgather_config_dir()) / "dataset_server"
+    """Directory holding per-port token files (mode 0700).
+
+    Also tightens the parent ``<forgather_config_dir>`` to 0o700. On a
+    fresh install where the user has only ever run the standalone
+    dataset_server (never the forgather_server itself, which does its
+    own tighten), the parent could otherwise stay at the umask default
+    — exposing the existence of ``dataset_server/`` to other local
+    users via plain ``ls``. Token contents remain protected (0600 in
+    0700 dir) but enumeration is itself a small information leak.
+    """
+    home = Path(forgather_config_dir())
+    try:
+        os.chmod(home, 0o700)
+    except OSError:
+        pass
+    d = home / "dataset_server"
     d.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(d, 0o700)
@@ -52,11 +66,22 @@ def standalone_token_file(port: int) -> Path:
 
 
 def write_standalone_token(port: int, token: str) -> Path:
-    """Atomically write ``token`` to the per-port token file (0600)."""
+    """Atomically write ``token`` to the per-port token file (0600).
+
+    Belt-and-suspenders on the mode: ``os.open(..., mode)`` is subject
+    to the process umask (a permissive umask can clear bits), so an
+    extra ``os.fchmod`` enforces the exact mode before any data lands
+    on disk. Cleanup on partial write removes the tmp file rather
+    than letting it linger.
+    """
     path = standalone_token_file(port)
     tmp = path.with_suffix(".token.tmp")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            pass
         with os.fdopen(fd, "w") as f:
             f.write(token)
     except Exception:

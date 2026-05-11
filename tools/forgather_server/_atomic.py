@@ -11,12 +11,17 @@ helpers to guarantee:
    intact but with stale (or zero) content.
 3. **Tmp in the same directory** — so the rename stays on one filesystem and
    is truly atomic (POSIX).  Cross-device renames fall back to copy+unlink.
+4. **Mode applied before any data is written** — when ``mode`` is given the
+   tmp fd is opened with that mode directly via ``os.open`` and the mode is
+   re-asserted via ``os.fchmod`` (defeats the process umask, which would
+   otherwise mask bits off the mode passed to ``os.open``). The previous
+   implementation called ``open(tmp, "w")`` then ``os.chmod`` after-the-
+   fact, leaving a brief window where another local user could open the
+   newly-created file at the umask-default mode (typically 0o644) and
+   read sensitive content as it was being written.
 
-The optional ``mode`` parameter chmods the tmp file *before* writing, so
-sensitive content (auth tokens, password hashes, anything in
-``~/.config/forgather/server/``) is never readable on disk during the write
-window. Without a mode argument the file inherits the process umask, which
-is what user-content writes (template editor saves) want.
+Without a ``mode`` argument the file inherits the process umask, which is
+what user-content writes (template editor saves) want.
 """
 
 import os
@@ -24,23 +29,36 @@ from pathlib import Path
 from typing import Optional
 
 
+def _open_tmp_with_mode(tmp: Path, mode: Optional[int]) -> int:
+    """Return a freshly-created tmp fd. Applies ``mode`` atomically at
+    creation (subject to umask, then re-asserted via fchmod) when given.
+    ``O_EXCL`` is intentionally NOT used — same-port restarts and other
+    retries depend on overwriting a stale tmp from a previous run.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if mode is None:
+        return os.open(str(tmp), flags)
+    fd = os.open(str(tmp), flags, mode)
+    try:
+        os.fchmod(fd, mode)
+    except OSError:
+        pass
+    return fd
+
+
 def atomic_write_text(path: Path, content: str, *, mode: Optional[int] = None) -> None:
     """Write *content* to *path* atomically.
 
     Creates the parent directory if it does not exist, writes to a sibling
     ``.tmp`` file, fsyncs the fd, then renames into place. When ``mode`` is
-    provided the tmp file is chmod'd to it after creation but before the
-    write, closing the window where a sensitive file is briefly readable
-    by other users.
+    provided the tmp file is created with that mode AND has it re-asserted
+    via fchmod — sensitive content is never readable at the umask-default
+    mode, even momentarily.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w") as f:
-        if mode is not None:
-            try:
-                os.chmod(tmp, mode)
-            except OSError:
-                pass
+    fd = _open_tmp_with_mode(tmp, mode)
+    with os.fdopen(fd, "w") as f:
         f.write(content)
         f.flush()
         os.fsync(f.fileno())
@@ -53,12 +71,8 @@ def atomic_write_bytes(
     """Binary equivalent of :func:`atomic_write_text`."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "wb") as f:
-        if mode is not None:
-            try:
-                os.chmod(tmp, mode)
-            except OSError:
-                pass
+    fd = _open_tmp_with_mode(tmp, mode)
+    with os.fdopen(fd, "wb") as f:
         f.write(content)
         f.flush()
         os.fsync(f.fileno())
