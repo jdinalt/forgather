@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
@@ -23,9 +23,6 @@ interface PersistedDatasetServer {
   configFile: string;
   locals: Array<{ name: string; path: string }>;
 }
-
-// ``regenToken`` is intentionally not persisted — it's a one-shot
-// "rotate on this start" knob, not a default to carry between launches.
 
 const STORAGE_KEY = "forgather-dataset-server-v1";
 
@@ -69,7 +66,15 @@ export function DatasetServerModal({ onClose, onSubmitted }: Props) {
   const [priority, setPriority] = useState<number>(0);
 
   const [noAuth, setNoAuth] = useState<boolean>(persisted.noAuth ?? false);
+  // Not persisted: this is a one-shot "rotate on this start" knob,
+  // not a default to carry between modal opens.
   const [regenToken, setRegenToken] = useState<boolean>(false);
+  // Toggling --no-auth makes regenToken meaningless; clear it so the
+  // visible checked state always matches the disabled state. Without
+  // this the box can look "checked but greyed", which confuses users.
+  useEffect(() => {
+    if (noAuth && regenToken) setRegenToken(false);
+  }, [noAuth, regenToken]);
   const [noHf, setNoHf] = useState<boolean>(persisted.noHf ?? false);
   const [allowPaths, setAllowPaths] = useState<boolean>(
     persisted.allowPaths ?? false,

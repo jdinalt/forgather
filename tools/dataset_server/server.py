@@ -355,11 +355,37 @@ def _resolve_auth_token(
     return secrets.token_hex(32), "generated"
 
 
+def _format_auth_mode(args: argparse.Namespace, token_source: Optional[str]) -> str:
+    """Human-readable auth line built from the *resolved* token source.
+
+    ``token_source`` is the value ``_resolve_auth_token`` returned
+    (cli / file / persisted / generated / regenerated) or ``None``
+    when auth is disabled. We render the actual outcome rather than
+    re-deriving it from argv precedence — important for distinguishing
+    "first run, minted a fresh token" (generated) from "reused the
+    existing per-port file" (persisted), which look identical in argv.
+    """
+    if args.no_auth or token_source is None:
+        return "disabled (--no-auth)"
+    if token_source == "cli":
+        return "token via --auth-token"
+    if token_source == "file":
+        return f"token from file: {args.auth_token_file}"
+    if token_source == "persisted":
+        return "persisted per-port (reused existing token file)"
+    if token_source == "generated":
+        return "generated (minted + persisted to per-port file)"
+    if token_source == "regenerated":
+        return "regenerated (--regen-token; per-port file overwritten)"
+    return token_source  # forward-compat: unknown source
+
+
 def _log_effective_config(
     logger: logging.Logger,
     args: argparse.Namespace,
     config_path: Optional[str],
     config_path_source: str,
+    token_source: Optional[str],
 ) -> None:
     """Dump every effective setting at startup for postmortem visibility.
 
@@ -369,16 +395,7 @@ def _log_effective_config(
     generated) so a token-rotation incident is reconstructible from
     logs alone — the actual token never lands here.
     """
-    if args.no_auth:
-        auth_mode = "disabled (--no-auth)"
-    elif args.auth_token:
-        auth_mode = "token via --auth-token"
-    elif args.auth_token_file:
-        auth_mode = f"token from file: {args.auth_token_file}"
-    elif args.regen_token:
-        auth_mode = "regenerated (persisted per-port)"
-    else:
-        auth_mode = "persisted per-port (auto-discover)"
+    auth_mode = _format_auth_mode(args, token_source)
 
     if config_path:
         cfg_line = f"{config_path} ({config_path_source})"
@@ -442,14 +459,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         logger.info("no config file (CLI flags + built-in defaults only)")
 
-    # Effective-configuration dump: everything the operator could have
-    # influenced via flags or the YAML config, plus the auth-token
-    # source so a "why did the token change?" report has the data
-    # right next to the startup banner. Token *value* is logged
-    # separately on stderr below (one place to copy from); this dump
-    # never echoes the secret itself.
-    _log_effective_config(logger, args, config_path, config_path_source)
-
     # Build state from policy flags + local mappings.
     state = ServerState(
         hf_cache_enabled=not args.no_hf,
@@ -464,6 +473,20 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     auth_token, token_source = _resolve_auth_token(parser, args)
     state.auth_required = bool(auth_token)
+
+    # Effective-configuration dump: everything the operator could have
+    # influenced via flags or the YAML config, plus the *resolved*
+    # auth-token source (persisted vs generated vs regenerated) so a
+    # "why did the token change?" report has the data right next to
+    # the startup banner. Token *value* is logged separately on stderr
+    # below (one place to copy from); this dump never echoes the secret.
+    _log_effective_config(
+        logger,
+        args,
+        config_path,
+        config_path_source,
+        token_source if auth_token else None,
+    )
 
     if not auth_token:
         print(

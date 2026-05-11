@@ -632,6 +632,46 @@ _LAUNCHERS = {
 }
 
 
+def _resolve_dataset_server_token(*, port: int, regen: bool) -> str:
+    """Return the bearer token a dataset_server spawn should use.
+
+    Unlike inference (per-queue ephemeral tokens), dataset_server shares
+    the same per-port persisted token file the standalone CLI uses, so
+    long-running clients (training peers) keep working across server
+    restarts. ``regen=True`` is the operator-opt-in to rotate.
+
+    Reuse rules:
+
+    - ``regen=True``  -> always mint + persist.
+    - File missing    -> mint + persist.
+    - File present, non-empty -> reuse its contents.
+    - File present, empty / unreadable -> treat as missing.
+
+    Persisting to the per-port file may fail (e.g. read-only home);
+    the spawn still gets a valid token in memory and the JobRecord
+    carries it, but the next start won't auto-discover. Logged at
+    WARNING; not raised.
+    """
+    token_path = dataset_server_standalone_token_file(port)
+    if not regen and token_path.is_file():
+        try:
+            existing = token_path.read_text().strip()
+        except OSError:
+            existing = ""
+        if existing:
+            return existing
+    token = secrets.token_hex(32)
+    try:
+        dataset_server_write_standalone_token(port, token)
+    except OSError as e:
+        log.warning(
+            "could not persist dataset_server token at %s: %s",
+            token_path,
+            e,
+        )
+    return token
+
+
 def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
     """Move a queue item to a JobRecord and spawn the appropriate subprocess.
 
@@ -667,33 +707,10 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
                 inference_token_file(item.queue_id), auth_token, mode=0o600
             )
         elif item.job_type == "dataset_server":
-            # Unlike inference (per-queue ephemeral tokens), dataset_server
-            # shares the same per-port persisted token the standalone CLI
-            # uses — long-running clients (training peers) shouldn't be
-            # forced to refetch a new token every time the operator
-            # restarts the server. ``regen_token`` in job_params is the
-            # opt-in for the operator to rotate.
-            port = int(item.job_params.get("port", 8766))
-            regen = bool(item.job_params.get("regen_token", False))
-            token_path = dataset_server_standalone_token_file(port)
-            existing = ""
-            if not regen and token_path.is_file():
-                try:
-                    existing = token_path.read_text().strip()
-                except OSError:
-                    existing = ""
-            if existing:
-                auth_token = existing
-            else:
-                auth_token = secrets.token_hex(32)
-                try:
-                    dataset_server_write_standalone_token(port, auth_token)
-                except OSError as e:
-                    log.warning(
-                        "could not persist dataset_server token at %s: %s",
-                        token_path,
-                        e,
-                    )
+            auth_token = _resolve_dataset_server_token(
+                port=int(item.job_params.get("port", 8766)),
+                regen=bool(item.job_params.get("regen_token", False)),
+            )
 
     record = JobRecord(
         queue_id=item.queue_id,
