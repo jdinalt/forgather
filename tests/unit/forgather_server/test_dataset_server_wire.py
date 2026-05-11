@@ -166,3 +166,79 @@ def test_numpy_array_converted_to_nested_list():
 def test_numpy_array_nested_inside_dict():
     example = {"ids": _np.array([1, 2, 3], dtype=_np.int64)}
     assert _roundtrip(example) == {"ids": [1, 2, 3]}
+
+
+# ---------------------------------------------------------------------------
+# Generic unserializable fallback (no extra deps required).
+# ---------------------------------------------------------------------------
+
+
+def test_generic_unserializable_envelope_for_custom_class():
+    """Arbitrary objects must produce the generic envelope rather than
+    leaking through unchanged and crashing ``json.dumps``."""
+
+    class Custom:
+        def __repr__(self) -> str:
+            return "Custom(id=42)"
+
+    out = to_jsonable(Custom())
+    assert isinstance(out, dict)
+    assert out.get("__unserializable__") is True
+    # __type__ should include both module and class name so the user
+    # can identify what showed up in the column.
+    assert out["__type__"].endswith(".Custom")
+    assert "Custom(id=42)" in out["__repr__"]
+
+
+def test_generic_unserializable_envelope_json_dumps_cleanly():
+    """The envelope must survive ``json.dumps`` — the whole point of
+    the fallback is to keep the NDJSON stream alive."""
+
+    class Custom:
+        pass
+
+    line = json.dumps(to_jsonable(Custom()))
+    parsed = json.loads(line)
+    assert parsed["__unserializable__"] is True
+    assert ".Custom" in parsed["__type__"]
+
+
+def test_generic_unserializable_repr_is_truncated_for_long_values():
+    """A pathological repr (e.g. giant numpy / torch print) must not
+    bloat the NDJSON payload."""
+
+    class HugeRepr:
+        def __repr__(self) -> str:
+            return "x" * 5000
+
+    out = to_jsonable(HugeRepr())
+    assert out["__unserializable__"] is True
+    # The cap lives in wire.py (_MAX_REPR_LEN = 256); we only assert
+    # the envelope's repr is dramatically smaller than the raw 5000.
+    assert len(out["__repr__"]) < 500
+    assert out["__repr__"].startswith("xxxx")
+    assert out["__repr__"].endswith("<truncated>")
+
+
+# ---------------------------------------------------------------------------
+# PIL image branch — soft dep, skipped if PIL isn't installed.
+# ---------------------------------------------------------------------------
+
+
+def test_pil_image_emits_descriptive_envelope():
+    PIL = pytest.importorskip("PIL")
+    from PIL import Image  # noqa: F401  (use via PIL.Image below)
+
+    img = PIL.Image.new("RGB", (10, 8))
+    out = to_jsonable({"thumbnail": img})
+    env = out["thumbnail"]
+    assert env["__pil_image__"] is True
+    # In-memory images don't have a format set (only loaded ones do).
+    assert env["format"] is None
+    assert env["mode"] == "RGB"
+    assert env["size"] == [10, 8]
+    # And the envelope must survive json.dumps cleanly.
+    line = json.dumps(out)
+    parsed = json.loads(line)
+    assert parsed["thumbnail"]["__pil_image__"] is True
+    assert parsed["thumbnail"]["size"] == [10, 8]

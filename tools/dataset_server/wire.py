@@ -5,10 +5,11 @@ NDJSON-over-HTTP can carry str/int/float/list/dict/None directly via
 ``json.dumps``. ``bytes`` values get wrapped in a tagged dict so the
 client can recover them. Other commonly-seen-but-not-JSON-native types
 that HF datasets produce (``datetime``, ``decimal.Decimal``, numpy
-scalars / arrays) are normalized to JSON-friendly forms here so the
-streaming endpoint doesn't crash on them. Anything still unhandled
-surfaces a ``TypeError`` from ``json.dumps`` rather than being silently
-lost.
+scalars / arrays, ``PIL.Image.Image`` instances) are normalized to
+JSON-friendly forms here so the streaming endpoint doesn't crash on
+them. Anything still unhandled is wrapped in a generic
+``__unserializable__`` envelope (with type name and a truncated
+``repr``) rather than being silently lost or crashing the stream.
 """
 
 from __future__ import annotations
@@ -30,11 +31,47 @@ except Exception:  # pragma: no cover - import guard
     _HAS_NUMPY = False
 
 
+# PIL is also optional. Many HF image / multimodal datasets carry
+# ``PIL.Image.Image`` instances even on primarily-text rows (e.g. PNG
+# thumbnails attached as metadata). Imported lazily so the wire layer
+# stays usable on installs without PIL.
+try:  # pragma: no cover - import guard
+    from PIL import Image as _PIL_Image  # type: ignore
+
+    _HAS_PIL = True
+except Exception:  # pragma: no cover - import guard
+    _PIL_Image = None  # type: ignore
+    _HAS_PIL = False
+
+
 # Defensive guard against pathological / cyclic structures. HF examples
 # in practice never recurse this deep, so anything past this bound is
 # almost certainly a bug — we fall back to ``str(value)`` rather than
 # blowing the stack.
 _MAX_DEPTH = 64
+
+# Cap on the ``__repr__`` field in the generic unserializable envelope.
+# Picked to be informative for diagnosing the offending column without
+# bloating the NDJSON stream when the offender has a multi-KB repr
+# (e.g. a giant array printed via numpy/torch reprs).
+_MAX_REPR_LEN = 256
+
+
+def _safe_repr(obj: Any) -> str:
+    """Return a truncated ``repr(obj)`` that never raises.
+
+    Used by the generic-fallback envelope so a single misbehaving
+    column can't crash the iter stream. Mirrors the spirit of the
+    existing ``_parse_error`` handling in the iter proxy: degrade
+    gracefully, don't kill the explore session.
+    """
+    try:
+        text = repr(obj)
+    except Exception as exc:  # pragma: no cover - exotic __repr__
+        return f"<repr unavailable: {type(exc).__name__}>"
+    if len(text) > _MAX_REPR_LEN:
+        return text[:_MAX_REPR_LEN] + "...<truncated>"
+    return text
 
 
 def to_jsonable(value: Any, _depth: int = 0) -> Any:
@@ -84,7 +121,30 @@ def to_jsonable(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, (list, tuple)):
         return [to_jsonable(v, _depth + 1) for v in value]
 
-    return value
+    # PIL image branch: emit a descriptive envelope rather than the
+    # raw bytes. The webui's Explore tab is for inspection, not image
+    # rendering — shipping multi-megapixel pixel buffers over NDJSON
+    # would dwarf the actual text content and make the pretty-printed
+    # JSON unreadable. A separate endpoint can serve image bytes if
+    # we ever need to render thumbnails.
+    if _HAS_PIL and isinstance(value, _PIL_Image.Image):
+        return {
+            "__pil_image__": True,
+            "format": value.format,
+            "mode": value.mode,
+            "size": list(value.size),
+        }
+
+    # Generic catch-all envelope. Anything that reaches this point is
+    # not JSON-native and not one of the types we've explicitly handled
+    # above. Returning a descriptive envelope (rather than the raw
+    # object) keeps ``json.dumps`` from blowing up the iter stream and
+    # lets the user still see *what* showed up in the table.
+    return {
+        "__unserializable__": True,
+        "__type__": f"{type(value).__module__}.{type(value).__name__}",
+        "__repr__": _safe_repr(value),
+    }
 
 
 def from_jsonable(value: Any) -> Any:
