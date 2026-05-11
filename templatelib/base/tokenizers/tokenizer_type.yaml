@@ -5,9 +5,9 @@
 -- block config_metadata
     == super()
     -- set ns.config_class = ns.config_class + ".tokenizer"
-    -- set ns.tokenizer_name = "custom_tokenizer"
-    -- set ns.model_max_length = 2048
-    -- set ns.vocab_size = 32000
+    -- set ns.tokenizer_name = tokenizer_name | default("custom_tokenizer")
+    -- set ns.model_max_length = model_max_length | default(2048)
+    -- set ns.vocab_size = vocab_size | default(32000)
     ## Define special tokens
     -- set ns.pad_token = "<|PAD|>"
     -- set ns.bos_token = "<|BOS|>"
@@ -19,7 +19,7 @@
 
 
 -- block globals
-    -- set ns.output_dir = joinpath(ns.tokenizers_dir, ns.tokenizer_name)
+    -- set ns.output_dir = output_dir | default(joinpath(ns.tokenizers_dir, ns.tokenizer_name))
 -- endblock globals
 
 
@@ -94,6 +94,32 @@ tokenizer_trainer: &tokenizer_trainer !partial:forgather.ml.tokenizer:train_toke
     << endblock tokenizer_trainer
     -- endfilter
 << endblock main_body
+
+
+-- block dynamic_args
+    == super()
+    output_dir:
+        names: "--output-dir"
+        type: "path"
+        group: "Output"
+        help: "Tokenizer output directory"
+    tokenizer_name:
+        names: "--tokenizer-name"
+        group: "Output"
+        help: "Name of tokenizer"
+    model_max_length:
+        names: "--model-max-length"
+        type: "int"
+        group: "Length"
+        min: 1
+        help: "Maximum model sequence length"
+    vocab_size:
+        names: "--vocab-size"
+        type: "int"
+        group: "Length"
+        min: 1
+        help: "Base size of vocabulary (tokens)"
+<< endblock dynamic_args
 
 
 -- block meta_output

@@ -3,8 +3,8 @@
 [config_metadata]
     == super()
     ## Probably not optimal, but good enough for testings...
-    -- set ns.tokenizer_name = "wikitext_titan_128k"
+    -- set ns.tokenizer_name = tokenizer_name | default("wikitext_titan_128k")
     -- set ns.config_name = "Torch Titan Compatible Wikitext 128K"
     -- set ns.config_description = "Torch Titan Compatible Wikitext 128K"
-    -- set ns.vocab_size = 128256
-    -- set ns.model_max_length = 131072
+    -- set ns.vocab_size = vocab_size | default(128256)
+    -- set ns.model_max_length = model_max_length | default(131072)

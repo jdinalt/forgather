@@ -1,3 +1,3 @@
 # Tokenizers
 
-Tokenizer project examples.
+Examples of different tokenizer configurations and usage patterns in Forgather.

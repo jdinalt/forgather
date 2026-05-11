@@ -1,8 +1,7 @@
 -- extends "meta_defaults.yaml"
 
--- block configs
-name: "BPE Tokenizer"
-description: "Demonstrates how to create a new tokenizer from scratch"
+[configs]
+name: "Wikitext BPE Tokenizer"
+description: "An example BPE tokenizer trained on the 'EleutherAI/wikitext_document_level' dataset"
 config_prefix: "configs"
 default_config: "32k.yaml"
-<< endblock configs

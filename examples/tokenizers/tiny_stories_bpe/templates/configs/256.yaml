@@ -1,9 +1,8 @@
 -- extends 'project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
-    -- set ns.tokenizer_name = "tiny_stories_256"
+    -- set ns.tokenizer_name = tokenizer_name | default("tiny_stories_256")
     -- set ns.config_name = ns.config_name + " 256"
     -- set ns.config_description = ns.config_description + " w/ 256 tokens"
-    -- set ns.vocab_size = 256
--- endblock config_metadata
+    -- set ns.vocab_size = vocab_size | default(256)
