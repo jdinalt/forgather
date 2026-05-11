@@ -179,8 +179,8 @@ RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sh
 #     read-only at /build-context) into ${REPO_DIR}. Lets operators
 #     build offline / from a vendored snapshot without internet access
 #     to a git remote. The build-context bind mount is used the same
-#     way the dev image's pyproject install does (Dockerfile:166-171),
-#     so behavior is consistent.
+#     way the dev image's pyproject install does, so behavior is
+#     consistent.
 RUN --mount=type=bind,target=/build-context \
     set -eux; \
     umask 0002; \
@@ -236,8 +236,9 @@ RUN umask 0002 \
 # ---------------------------------------------------------------------------
 # Back to root for the entrypoint setup. The entrypoint runs as root
 # so it can usermod for UID remap then drops to the forgather user
-# via gosu before exec'ing the real command. Build-time chmod above
-# means no recursive chown is needed at container start.
+# via gosu before exec'ing the real command. Build-time umask above
+# means venv directories are already group-writable, so no recursive
+# chmod / chown is needed at container start.
 # ---------------------------------------------------------------------------
 USER root
 

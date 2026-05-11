@@ -35,15 +35,15 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # ``--help`` MUST short-circuit before the docker invocation. Without
 # this, ``--help`` falls through into the positional-argument logic
-# below: TAG="--help" gets reset to forgather-dev:latest but never
-# shifted off, then ``--help`` ends up in the ``docker build`` argv.
+# below: TAG="--help" gets reset to the default tag but never shifted
+# off, then ``--help`` ends up in the ``docker build`` argv.
 # ``docker build --help`` succeeds with rc=0 (printing its own help),
 # which lets the rest of the script — including the post-build
 # ``./build-webui.sh`` step — keep running.
 for tok in "$@"; do
     case "${tok}" in
         -h|--help)
-            sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
     esac
@@ -64,6 +64,19 @@ set -- "${ARGV[@]}"
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 HOST_USER="$(id -un)"
+
+# Refuse to bake root into the image. ``useradd --uid 0`` collides
+# with the existing root account and fails the build with a confusing
+# "UID 0 is not unique" error several layers in. Bail early with a
+# clear message and a workaround.
+if [[ "${HOST_UID}" == "0" ]]; then
+    echo "[build.sh] error: refusing to build the dev image as root" >&2
+    echo "[build.sh]   the dev image bakes the host operator's identity in;" >&2
+    echo "[build.sh]   uid 0 collides with the in-image root account." >&2
+    echo "[build.sh]   re-run as a regular user, or use the runtime image" >&2
+    echo "[build.sh]   (Dockerfile.runtime) which IS user-agnostic." >&2
+    exit 2
+fi
 
 DEFAULT_TAG="forgather-dev:${HOST_USER}"
 TAG="${1:-${DEFAULT_TAG}}"
