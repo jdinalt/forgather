@@ -126,6 +126,32 @@ def construct_cmd(args):
     meta = MetaConfig(args.project_dir)
     set_default_template(meta, args)
     dynamic_args = get_dynamic_args(args)
+
+    if getattr(args, "enqueue", False):
+        from .server_client import ServerClient, ServerUnreachable
+
+        client = ServerClient.from_args(args)
+        try:
+            item = client.enqueue_job(
+                project_dir=os.path.abspath(args.project_dir),
+                config=args.config_template,
+                job_type="construct",
+                job_params={"target": args.target, "call": bool(args.call)},
+                requested_gpus=max(0, int(args.requested_gpus or 0)),
+                priority=args.priority,
+                dynamic_args=dynamic_args,
+            )
+        except ServerUnreachable as e:
+            import sys
+
+            print(str(e), file=sys.stderr)
+            raise SystemExit(1)
+        print(
+            f"queued: {item['queue_id']} (target={args.target}, "
+            f"priority={item['priority']}, gpus={item['requested_gpus']})"
+        )
+        return
+
     proj = Project(args.config_template, args.project_dir, **dynamic_args)
     target = proj(args.target)
     if args.call:

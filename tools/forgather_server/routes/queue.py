@@ -113,6 +113,7 @@ _SUPPORTED_JOB_TYPES = {
     "update",
     "model",
     "dataset",
+    "construct",
 }
 # Required job_params keys per job type. Training jobs are absent because
 # their real parameters live in project_dir/config/dynamic_args; model and
@@ -144,6 +145,7 @@ _ZERO_GPU_JOB_TYPES = {
     "model",
     "dataset",
     "dataset_server",
+    "construct",
 }
 
 
@@ -175,7 +177,7 @@ def enqueue(req: EnqueueRequest):
     # time so any client (CLI, scripted enqueues) gets the same guarantee.
     # Training, model, and dataset jobs all materialize the same dynamic
     # args; other types don't consume them.
-    if req.job_type in ("training", "model", "dataset"):
+    if req.job_type in ("training", "model", "dataset", "construct"):
         # If the schema can't load (template parse error, missing config,
         # etc.) we surface the failure as 400 rather than silently treating
         # it as an empty schema — otherwise required-field enforcement is
@@ -259,7 +261,10 @@ def enqueue(req: EnqueueRequest):
     # error rather than a job that silently fell back to in-process
     # loading.
     job_params = dict(req.job_params)
-    if req.job_type in ("training", "eval", "model", "dataset") and req.dataset_source:
+    if (
+        req.job_type in ("training", "eval", "model", "dataset", "construct")
+        and req.dataset_source
+    ):
         try:
             ds_env = dataset_source.resolve_to_env(req.dataset_source)
         except DatasetSourceError as e:

@@ -390,7 +390,8 @@ export interface Job {
     | "finalize"
     | "update"
     | "model"
-    | "dataset";
+    | "dataset"
+    | "construct";
   job_params: Record<string, unknown> | null;
   status: string;
   started_at: number | null;
@@ -531,7 +532,8 @@ export interface EnqueueRequest {
     | "finalize"
     | "update"
     | "model"
-    | "dataset";
+    | "dataset"
+    | "construct";
   /** Type-specific payload; empty for training. */
   job_params?: Record<string, unknown>;
   /** Submit-modal dataset-source choice. Resolved server-side and
