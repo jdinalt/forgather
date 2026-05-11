@@ -78,13 +78,16 @@ def build_construct_command(
         project_dir,
         "-t",
         config_name,
+        "construct",
     ]
-    # Dynamic args are added by ``parse_dynamic_args`` to the *global*
-    # parser, so they sit before the subcommand name.
-    cmd.extend(_dynamic_args_to_argv(project_dir, config_name, dynamic_args or {}))
-    cmd.append("construct")
     if target:
         cmd.extend(["--target", target])
     if call:
         cmd.append("--call")
+    # Dynamic args are registered on the construct subparser itself
+    # (``parse_dynamic_args`` in ``create_construct_parser``), so they
+    # come after the subcommand name. Anything before ``construct``
+    # would be picked up as the subcommand by ``remaining_args[0]`` in
+    # ``forgather.cli.main`` and fail with "Unknown subcommand".
+    cmd.extend(_dynamic_args_to_argv(project_dir, config_name, dynamic_args or {}))
     return cmd

@@ -2980,6 +2980,10 @@ li.config.selected button.link:hover {
   background: #3a4a2e;
   color: #c4d89c;
 }
+.job-type-chip.type-construct {
+  background: #4a4a2e;
+  color: #d8d49c;
+}
 
 /* ----- Inference panel ----- */
 
