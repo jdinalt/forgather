@@ -298,47 +298,58 @@ def test_install_rejects_mismatched_cert_and_key(tls_root, tmp_path):
 
 
 def test_member_tls_preserved_when_update_omits_field(tls_root):
-    """update_member(tls=None) must NOT overwrite an existing tls value."""
-    import importlib
+    """update_member(tls=None) must NOT overwrite an existing tls value.
+
+    Important: we use the same import path other tests use
+    (``forgather_server.cluster``), and we *always* call
+    ``_reset_for_tests`` on both entry and exit so the module-level
+    singleton is left in a clean state. Reloading the module here
+    would break other tests in the same pytest session that hold a
+    reference to the old module.
+    """
     import sys
 
-    # Re-import cluster freshly so the module-level singleton is clean.
-    if "forgather_server.cluster" in sys.modules:
-        del sys.modules["forgather_server.cluster"]
-    sys.path.insert(0, str(Path(__file__).parents[3] / "tools"))
-    cluster = importlib.import_module("forgather_server.cluster")
+    # Add tools/ to sys.path the same way the test_routes_cluster
+    # tests do — once, idempotent — without deleting any cached
+    # imports.
+    tools_dir = str(Path(__file__).parents[3] / "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    from forgather_server import cluster
+
     cluster._state._reset_for_tests()
-    cluster.activate("test-cluster", port=8765, tls=True)
-    ident = cluster.self_identity()
-    cluster.update_member(
-        "node-b",
-        hostname="b",
-        address="10.0.0.2",
-        port=8765,
-        cluster_name="test-cluster",
-        tls=True,
-    )
-    members = {m.node_id: m for m in cluster.members()}
-    assert members["node-b"].tls is True
-    # Now update without passing tls — should preserve True.
-    cluster.update_member(
-        "node-b",
-        hostname="b",
-        address="10.0.0.2",
-        port=8765,
-        cluster_name="test-cluster",
-    )
-    members = {m.node_id: m for m in cluster.members()}
-    assert members["node-b"].tls is True
-    # Pass tls=False — should overwrite.
-    cluster.update_member(
-        "node-b",
-        hostname="b",
-        address="10.0.0.2",
-        port=8765,
-        cluster_name="test-cluster",
-        tls=False,
-    )
-    members = {m.node_id: m for m in cluster.members()}
-    assert members["node-b"].tls is False
-    cluster._state._reset_for_tests()
+    try:
+        cluster.activate("test-cluster", port=8765, tls=True)
+        cluster.update_member(
+            "node-b",
+            hostname="b",
+            address="10.0.0.2",
+            port=8765,
+            cluster_name="test-cluster",
+            tls=True,
+        )
+        members = {m.node_id: m for m in cluster.members()}
+        assert members["node-b"].tls is True
+        # Now update without passing tls — should preserve True.
+        cluster.update_member(
+            "node-b",
+            hostname="b",
+            address="10.0.0.2",
+            port=8765,
+            cluster_name="test-cluster",
+        )
+        members = {m.node_id: m for m in cluster.members()}
+        assert members["node-b"].tls is True
+        # Pass tls=False — should overwrite.
+        cluster.update_member(
+            "node-b",
+            hostname="b",
+            address="10.0.0.2",
+            port=8765,
+            cluster_name="test-cluster",
+            tls=False,
+        )
+        members = {m.node_id: m for m in cluster.members()}
+        assert members["node-b"].tls is False
+    finally:
+        cluster._state._reset_for_tests()

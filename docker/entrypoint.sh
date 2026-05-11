@@ -128,6 +128,37 @@ if [[ "${FORGATHER_ENTRYPOINT_PHASE:-}" != "2" && "$(id -u)" == "0" ]]; then
         "/home/${USER_NAME}/.cache" \
         "/home/${USER_NAME}/.cache/huggingface"
 
+    # ------------------------------------------------------------------
+    # TLS seed unpack (runtime image, opt-in at build time).
+    #
+    # The Dockerfile's FORGATHER_TLS_SEED_DIR arg, when set, deposits
+    # /etc/forgather/tls-seed/ in the image. On first container start
+    # (state volume's tls/ is empty), unpack the seed into the state
+    # volume so every container from this image shares a CA + cert
+    # without per-node `forgather tls install` ceremony.
+    #
+    # Idempotent: any existing tls/ in the state volume wins (operator
+    # who explicitly mounted a different cert set keeps it). Keys land
+    # 0600 owned by the in-image user.
+    # ------------------------------------------------------------------
+    _tls_state="/home/${USER_NAME}/.config/forgather/tls"
+    if [[ -d /etc/forgather/tls-seed && ! -e "${_tls_state}" ]]; then
+        echo "[forgather-entrypoint] baked TLS seed found; installing into ${_tls_state}" >&2
+        install -d -o "${USER_NAME}" -g "${USER_NAME}" -m 0700 "${_tls_state}"
+        # `cp -a` preserves perms, so the 0600 keys from the seed layer
+        # stay 0600. The chown below fixes ownership to the (possibly
+        # remapped) in-image user.
+        cp -a /etc/forgather/tls-seed/. "${_tls_state}/"
+        chown -R "${USER_NAME}:${USER_NAME}" "${_tls_state}"
+        # Belt and suspenders: ensure every *.key is 0600 after the
+        # chown (cp -a should preserve, but a bad umask interaction
+        # would otherwise yield a 0644 private key on disk).
+        find "${_tls_state}" -type f -name "*.key" -exec chmod 0600 {} +
+    elif [[ -d /etc/forgather/tls-seed ]]; then
+        echo "[forgather-entrypoint] baked TLS seed present but ${_tls_state} already populated; keeping existing state" >&2
+    fi
+    unset _tls_state
+
     # Make sure HOME is set for the dropped-privilege process — gosu
     # does NOT set it (unlike `su -`). Default to the in-image home
     # for the remapped user; the dev image's run wrapper passes a

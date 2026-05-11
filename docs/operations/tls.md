@@ -335,7 +335,68 @@ The runtime image (`docker/runtime/`) mounts a state volume at
 the same directory the TLS module uses, so any TLS state lives in
 the volume and persists across `docker rm`.
 
-Three deployment patterns, in order of complexity:
+Four deployment patterns:
+
+**0. Bake the TLS state into the image (recommended for clusters):**
+
+The common case for the runtime image is *build once on one machine,
+distribute to N peers*. Per-node `forgather tls install` doesn't fit
+that shape — it requires the operator to SSH into every peer with a
+mint output. Instead, bake the CA + cert directly into the image so
+every container that gets pulled from it already shares trust.
+
+```bash
+# On the dev workstation where you've already run `forgather tls init`:
+TLS_BAKE_FROM_HOST=1 docker/runtime/build.sh forgather:cluster
+
+# Distribute to peers (private registry):
+docker tag forgather:cluster myregistry.lan/forgather:cluster
+docker push myregistry.lan/forgather:cluster
+
+# Or via docker save | ssh on a trusted channel:
+docker save forgather:cluster | ssh peer.lan 'docker load'
+
+# On each peer:
+IMAGE=forgather:cluster docker/runtime/run.sh --recreate
+```
+
+Every peer container, on first start, copies the baked seed into its
+state volume. Same CA + same server identity across all peers means
+peer-pull validates without warnings. The dev workstation can also
+talk to any of them (it already trusts the CA — that's where the CA
+came from).
+
+> **The image is a secret.** A TLS-baked image carries the CA
+> private key and the server private key. Anyone who can pull the
+> image can mint forgather certs in your cluster's trust domain
+> *and* impersonate any of your nodes. Never publish to a public
+> registry. Use a private registry on a controlled network, or
+> `docker save | ssh`, or removable media.
+
+Alternative bake sources:
+
+```bash
+# Explicit path (e.g. CI workspace with a CA built specifically
+# for this build):
+TLS_BAKE_FROM_DIR=/path/to/tls-state docker/runtime/build.sh
+
+# Multi-build coordination: mint a CA once, bake the *same* CA into
+# multiple images (so independently-built images can still talk to
+# each other). The CA private key needs to be reachable from the
+# CI worker; the leaf cert can be re-issued per build.
+```
+
+**Doesn't work** with the bake flow:
+
+* Building two images on two different machines that have each run
+  their own `forgather tls init`. Each image carries a different CA,
+  and containers won't validate each other's certs. Pick one CA
+  holder (a workstation, a build server, or a CI secret store) and
+  bake from that source.
+* Public images. The CA private key is in the image layers; anyone
+  who can `docker pull` can read it.
+
+Three runtime-only patterns (no bake), in order of complexity:
 
 **1. Single-machine HTTPS bring-up (recommended for first-time users):**
 
@@ -372,11 +433,13 @@ The container sees the host's TLS state and serves HTTPS off the
 same CA. The CLI on the host already trusts that CA, so
 `forgather sched status` from outside the container Just Works.
 
-**3. Multi-node cluster with one CA holder:**
+**3. Multi-node cluster with one CA holder (no bake):**
 
-Mint a per-host cert on the head node (host or container, either
-works), distribute to peers, then run each peer's container with
-the cert pre-installed in its state volume:
+Use this when you can't or won't bake the seed into the image
+(e.g. you're pulling a public image and adding TLS yourself). Mint
+per-host certs on the head node, distribute to peers, install on
+each. Heavier than pattern 0; use pattern 0 instead unless you have
+a reason not to.
 
 ```bash
 # Head node (already has TLS provisioned).
