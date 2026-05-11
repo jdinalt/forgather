@@ -188,6 +188,8 @@ forgather -t config.yaml train --enqueue [--priority N] [--requested-gpus N]
 forgather eval test <name> -M <model> --enqueue [--priority N]
 forgather tb --enqueue [--port 6006] [--priority N]
 forgather inf server --enqueue -m <model> [--port 8137] [--priority N]
+forgather dataset-server start [--host 0.0.0.0] [--port 8766] [--regen-token] [--no-auth] [--local NAME=PATH ...] [--config FILE]
+forgather dataset-server status | list | cache | local            # diagnostic CLI; all accept --server URL, --token TOKEN, --json
 forgather convert --enqueue --src <src> --dst <dst> [--priority N]
 forgather finalize --enqueue --source <src> --dest <dst> [--priority N]
 forgather mkdocs -f mkdocs.yml [--enqueue] [--priority N]

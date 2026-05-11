@@ -41,9 +41,9 @@ Two use cases this is built for:
    `~/.config/forgather/dataset_server/8766.token` on the WORKSTATION
    (the loader sees a loopback URL — it can't tell that the
    tunnel terminates on a different host) — which either
-   doesn't exist or holds a stale token from an unrelated local
-   run. Setting `FORGATHER_DATASET_SERVER_TOKEN` short-circuits
-   the file lookup. See [Authentication](#authentication).
+   doesn't exist or holds a token unrelated to the dataset_server
+   you're tunneling to. Setting `FORGATHER_DATASET_SERVER_TOKEN`
+   short-circuits the file lookup. See [Authentication](#authentication).
 
 ## Quick start
 
@@ -91,6 +91,28 @@ forgather dataset-server status
 # over the wire:
 forgather train
 ```
+
+### Cross-host via the webui bundle
+
+For installs where the dataset_server was spawned via the
+forgather_server webui (Tools → Start Dataset Server…), there's a
+one-click cross-host transfer that bundles the URL and token into a
+single string:
+
+1. On the **source** machine, open **Datasets → Servers**, find the
+   running dataset_server in the *Local* list, and click **Copy
+   bundle**. The clipboard now contains a
+   `forgather-dataset://host:port/?token=<urlencoded>` URI.
+2. On the **destination** machine, open the same view and click
+   **+ Add server**. In the modal, click **Paste bundle from
+   clipboard** — the URL and Auth-token fields are populated in one
+   step.
+
+Treat the bundle as a credential — it is equivalent to an SSH private
+key on the wire. Clipboard managers often sync content across devices
+and may not redact `token=` query strings the way they do
+`password=…` patterns. SSH-forward the port and skip the bundle
+entirely if you don't trust the channel.
 
 For the full token-resolution order (explicit kwarg →
 `FORGATHER_DATASET_SERVER_TOKEN` → per-port localhost file →
@@ -144,7 +166,7 @@ reusing persisted token at: /home/<you>/.config/forgather/dataset_server/8766.to
 and overwrite the persisted file. The startup banner gains a louder
 header so the operator sees that any client still using the old
 token is about to start 401-ing. After rotation, redistribute the
-new token to peers (e.g. via the *Datasets → Servers* view's "+ Add"
+new token to peers (e.g. via the *Datasets → Servers* view's "+ Add server"
 modal on each consumer).
 
 `RemoteBackend`, the loader's `_remote_load_iterable_dataset`, and
@@ -516,7 +538,9 @@ training pipeline.** A malicious or compromised dataset_server can:
 - **Exhaust resources.** The NDJSON `/iter` stream is unbounded.
   A hostile server can keep emitting examples until the trainer fills
   its tokenizer cache / disk / RAM. Mitigation: set training-side
-  `max_steps` / dataset budgets so a run is bounded regardless.
+  `max_steps` / dataset budgets so a run is bounded regardless. See
+  [Trainer Options](../../docs/trainers/trainer_options.md) for the
+  full list of `TrainingArguments` knobs.
 - **Probe internals.** Examples are JSON. A server can return strings
   containing HTML/JS, which the webui's *Datasets → Servers* tab
   renders inside `<pre>` (inert) — but the same strings flow into
@@ -526,7 +550,7 @@ training pipeline.** A malicious or compromised dataset_server can:
 
 If you didn't deploy the server yourself, or you can't audit who else
 has shell access to its host, don't add its URL to the registry. The
-"+ Add" dialog in the webui is gated by the operator's explicit
+"+ Add server" dialog in the webui is gated by the operator's explicit
 consent for exactly this reason — registering a URL is the
 authorization decision; the proxy will then happily forward to it.
 
@@ -535,7 +559,8 @@ authorization decision; the proxy will then happily forward to it.
 - **No TLS today.** The server speaks plain HTTP. Bearer tokens and
   example payloads traverse the network in cleartext on any
   non-loopback bind. Either:
-  - keep `--host 127.0.0.1` and reach it via SSH port forwarding
+  - leave the default loopback bind (`--host 127.0.0.1`) and reach
+    it via SSH port forwarding
     (recommended for cross-host training);
   - put it behind a reverse proxy that terminates TLS;
   - or accept the risk only on a fully trusted L2 segment.
@@ -582,7 +607,7 @@ widens the server's exposure in a specific way:
 
 ### Webui registry caveats
 
-The *Datasets → Servers* tab's "+ Add" registry stores `{label, url,
+The *Datasets → Servers* tab's "+ Add server" registry stores `{label, url,
 auth_token}` triples in
 `<forgather_config_dir>/server/dataset_server_registry.json` (mode
 `0600`). Points to keep in mind:

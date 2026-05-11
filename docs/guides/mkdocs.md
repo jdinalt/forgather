@@ -104,7 +104,10 @@ the modal toggles.
 
 ## See also
 
-- [Forgather server overview](forgather-server.md) -- the broader server
-  / scheduler / Jobs view architecture that hosts the MkDocs job.
-- [`docs/README.md`](../README.md) -- table of contents for the doc tree
-  this site renders.
+- [Forgather server overview](../forgather-server.md) -- the broader
+  server / scheduler / Jobs view architecture that hosts the MkDocs
+  job.
+- [TensorBoard](tensorboard.md) -- the other long-lived viewer
+  spawned from the Tools menu; same lifecycle and auth-gating model.
+- [`docs/README.md`](../README.md) -- table of contents for the doc
+  tree this site renders.

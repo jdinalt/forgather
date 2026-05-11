@@ -147,3 +147,5 @@ If both `--bind_all` and a host override are passed, `--bind_all` wins
   `/api/tb/` proxy and the rest of the webui.
 - [Server CLI](server-cli.md) -- workflow walkthrough for `forgather
   tb --enqueue`, `forgather job`, `forgather sched`, and friends.
+- [MkDocs](mkdocs.md) -- the other long-lived viewer spawned from
+  the Tools menu; same lifecycle and auth-gating model.
