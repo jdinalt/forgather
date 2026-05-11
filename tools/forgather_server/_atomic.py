@@ -20,8 +20,14 @@ helpers to guarantee:
    newly-created file at the umask-default mode (typically 0o644) and
    read sensitive content as it was being written.
 
-Without a ``mode`` argument the file inherits the process umask, which is
-what user-content writes (template editor saves) want.
+Without a ``mode`` argument the file is created at ``0o666 & ~umask`` —
+the same default Python's built-in ``open(path, "w")`` uses. This is
+what user-content writes (template editor saves) want: a typical 0o022
+umask yields 0o644, matching the rest of the filesystem. The naked
+``os.open(path, flags)`` call (no mode arg) defaults to ``0o777``,
+which after a 0o022 umask becomes 0o755 — silently flipping the +x bit
+on every saved file. Always pass an explicit mode (even ``0o666``) to
+``os.open``.
 """
 
 import os
@@ -37,7 +43,10 @@ def _open_tmp_with_mode(tmp: Path, mode: Optional[int]) -> int:
     """
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     if mode is None:
-        return os.open(str(tmp), flags)
+        # Match open(path, "w"): create at 0o666 so umask trims to 0o644.
+        # Naked os.open(path, flags) defaults to 0o777 -> 0o755 with umask
+        # 022, which silently flipped +x on every editor save.
+        return os.open(str(tmp), flags, 0o666)
     fd = os.open(str(tmp), flags, mode)
     try:
         os.fchmod(fd, mode)

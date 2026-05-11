@@ -94,3 +94,30 @@ class TestAtomicWriteMode:
         mode = stat.S_IMODE(target.stat().st_mode)
         assert mode == 0o600
         assert target.read_text() == "new"
+
+    def test_no_mode_creates_data_file(self, tmp_path):
+        # Regression: a no-mode write used to call os.open(path, flags)
+        # without a mode argument, which defaulted to 0o777. With a typical
+        # 0o022 umask that became 0o755 on the saved file, silently
+        # flipping the +x bit on every webui template-editor save (PR #24).
+        # The fix passes 0o666 explicitly, matching Python's open(path,"w").
+        old_umask = os.umask(0o022)
+        try:
+            target = tmp_path / "config.yaml"
+            atomic_write_text(target, "key: value\n")
+            assert stat.S_IMODE(target.stat().st_mode) == 0o644
+        finally:
+            os.umask(old_umask)
+
+    def test_no_mode_overwrite_does_not_flip_exec_bit(self, tmp_path):
+        # The bug's user-visible symptom: editing an existing 0o644 file
+        # via the template-source PUT endpoint chmod'd it to 0o755.
+        old_umask = os.umask(0o022)
+        try:
+            target = tmp_path / "template.yaml"
+            target.write_text("original\n")
+            os.chmod(target, 0o644)
+            atomic_write_text(target, "edited\n")
+            assert stat.S_IMODE(target.stat().st_mode) == 0o644
+        finally:
+            os.umask(old_umask)
