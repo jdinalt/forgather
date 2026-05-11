@@ -75,6 +75,10 @@ forgather train
 # clients via your usual secret channel (config-management,
 # secret store, scp, etc.) and write it to ~/.fdss.token there
 # with mode 0600.
+#
+# Cross-host bind without TLS is refused unless --insecure. Run
+# `forgather tls init` on this host first (and `forgather tls
+# install` on every client) — see docs/operations/tls.md.
 forgather dataset-server start --host 0.0.0.0 \
     --local stories=/data/tinystories
 

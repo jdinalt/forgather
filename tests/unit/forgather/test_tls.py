@@ -194,3 +194,151 @@ def test_httpx_verify_points_at_bundle(tls_root):
     assert isinstance(v, str)
     assert v.endswith("ca-bundle.crt")
     assert Path(v).is_file()
+
+
+def test_private_key_is_0600_from_creation(tls_root):
+    """Atomic-create path must not leave the key at default perms."""
+    cfg = _provisioned_cfg(tls_root)
+    assert cfg.ca_key.stat().st_mode & 0o777 == 0o600
+    assert cfg.server_key.stat().st_mode & 0o777 == 0o600
+
+
+def test_random_serial_numbers_dont_collide(tls_root):
+    """Re-creating ca.srl shouldn't reuse serials from prior generations."""
+    cfg = _provisioned_cfg(tls_root)
+    serial_a = cert_info(cfg.server_cert)["serial"]
+    # Wipe the serial counter file — simulates ops accidentally deleting it.
+    cfg.ca_serial.unlink(missing_ok=True)
+    minted = mint_server_cert(cfg, hostnames=("localhost",), ips=("127.0.0.1",))
+    install_server_cert(cfg, minted)
+    serial_b = cert_info(cfg.server_cert)["serial"]
+    assert serial_a != serial_b
+    # Both should be high-entropy (>= 64 bits).
+    assert int(serial_a) > 2 ** 64
+    assert int(serial_b) > 2 ** 64
+
+
+def test_san_hard_cap_refuses_huge_lists(tls_root):
+    from forgather.tls.discovery import merge_san
+
+    huge_hosts = [f"host{i}.lan" for i in range(300)]
+    with pytest.raises(ValueError):
+        merge_san([], [], extra_hostnames=huge_hosts, extra_ips=[])
+
+
+def test_discovery_caps_auto_san(tls_root):
+    from forgather.tls.discovery import detect_hostnames, detect_ips
+
+    # cap=2 should always shrink to <=2 even on a host with more.
+    h = detect_hostnames(cap=2)
+    i = detect_ips(cap=2)
+    assert len(h) <= 2
+    assert len(i) <= 2
+
+
+def test_resolve_state_precedence(tls_root):
+    """--no-tls always wins; --tls wins over disabled config; default falls back."""
+    from forgather.tls.runtime import _resolve_state
+    import argparse
+
+    _provisioned_cfg(tls_root)
+    cfg = load_config()
+    assert cfg.enabled is True
+
+    # Default: pick from config.
+    args = argparse.Namespace(tls=None, no_tls=False, tls_cert=None, tls_key=None)
+    _, on, _, _ = _resolve_state(args, cfg)
+    assert on is True
+
+    # --no-tls overrides enabled.
+    args = argparse.Namespace(tls=None, no_tls=True, tls_cert=None, tls_key=None)
+    _, on, _, _ = _resolve_state(args, cfg)
+    assert on is False
+
+    # --tls overrides disabled config.
+    cfg.enabled = False
+    args = argparse.Namespace(tls=True, no_tls=False, tls_cert=None, tls_key=None)
+    _, on, _, _ = _resolve_state(args, cfg)
+    assert on is True
+
+
+def test_policy_error_branches_on_state(tls_root):
+    """The refusal message should suggest the right next step per state."""
+    # Provisioned but disabled → should mention 'tls enable' or --tls.
+    cfg = _provisioned_cfg(tls_root)
+    cfg.enabled = False
+    save_config(cfg)
+    cfg2 = load_config()
+    try:
+        enforce_non_loopback_policy(
+            "0.0.0.0", tls_enabled=False, insecure=False, service="x", cfg=cfg2
+        )
+    except Exception as exc:
+        msg = str(exc)
+        assert "tls enable" in msg or "--tls" in msg, msg
+
+
+def test_install_rejects_mismatched_cert_and_key(tls_root, tmp_path):
+    """`forgather tls install` must refuse a cert/key pair that don't match."""
+    from forgather.cli.tls import _cmd_install
+    import argparse
+
+    cfg = _provisioned_cfg(tls_root)
+    # Mint two independent cert/key pairs.
+    a = mint_server_cert(cfg, hostnames=("a.example",), ips=("10.0.0.1",))
+    b = mint_server_cert(cfg, hostnames=("b.example",), ips=("10.0.0.2",))
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+    cert_path.write_bytes(a.cert_pem)
+    key_path.write_bytes(b.key_pem)  # wrong key.
+
+    args = argparse.Namespace(cert=str(cert_path), key=str(key_path), ca=None)
+    rc = _cmd_install(args)
+    assert rc == 1
+
+
+def test_member_tls_preserved_when_update_omits_field(tls_root):
+    """update_member(tls=None) must NOT overwrite an existing tls value."""
+    import importlib
+    import sys
+
+    # Re-import cluster freshly so the module-level singleton is clean.
+    if "forgather_server.cluster" in sys.modules:
+        del sys.modules["forgather_server.cluster"]
+    sys.path.insert(0, str(Path(__file__).parents[3] / "tools"))
+    cluster = importlib.import_module("forgather_server.cluster")
+    cluster._state._reset_for_tests()
+    cluster.activate("test-cluster", port=8765, tls=True)
+    ident = cluster.self_identity()
+    cluster.update_member(
+        "node-b",
+        hostname="b",
+        address="10.0.0.2",
+        port=8765,
+        cluster_name="test-cluster",
+        tls=True,
+    )
+    members = {m.node_id: m for m in cluster.members()}
+    assert members["node-b"].tls is True
+    # Now update without passing tls — should preserve True.
+    cluster.update_member(
+        "node-b",
+        hostname="b",
+        address="10.0.0.2",
+        port=8765,
+        cluster_name="test-cluster",
+    )
+    members = {m.node_id: m for m in cluster.members()}
+    assert members["node-b"].tls is True
+    # Pass tls=False — should overwrite.
+    cluster.update_member(
+        "node-b",
+        hostname="b",
+        address="10.0.0.2",
+        port=8765,
+        cluster_name="test-cluster",
+        tls=False,
+    )
+    members = {m.node_id: m for m in cluster.members()}
+    assert members["node-b"].tls is False
+    cluster._state._reset_for_tests()

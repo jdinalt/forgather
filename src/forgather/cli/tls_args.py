@@ -89,12 +89,10 @@ def create_tls_parser(global_args):
         formatter_class=RawTextHelpFormatter,
     )
     renew.add_argument(
-        "--server", action="store_true", help="Renew the server cert (default)"
-    )
-    renew.add_argument(
         "--ca",
         action="store_true",
-        help="Also re-issue the CA. DESTRUCTIVE: peer trust breaks.",
+        help="Also re-issue the CA. DESTRUCTIVE: peer trust breaks until "
+        "the new CA is redistributed to every peer.",
     )
     renew.add_argument(
         "--add-hostname",
@@ -189,6 +187,27 @@ def create_tls_parser(global_args):
         "trust-system",
         help="Print instructions for adding the CA to OS / browser trust stores",
         formatter_class=RawTextHelpFormatter,
+    )
+
+    sub.add_parser(
+        "enable",
+        help="Set 'enabled: true' in shared config (no cert changes)",
+        formatter_class=RawTextHelpFormatter,
+        description=(
+            "Re-enable TLS for all forgather servers on this host without\n"
+            "re-issuing any certs. Existing cert/key files stay in place;\n"
+            "this just flips the master switch in config.yaml."
+        ),
+    )
+    sub.add_parser(
+        "disable",
+        help="Set 'enabled: false' in shared config (no cert changes)",
+        formatter_class=RawTextHelpFormatter,
+        description=(
+            "Disable TLS for all forgather servers on this host without\n"
+            "deleting any certs. Useful when troubleshooting connectivity\n"
+            "or temporarily reverting. Re-enable with 'forgather tls enable'."
+        ),
     )
 
     clean = sub.add_parser(

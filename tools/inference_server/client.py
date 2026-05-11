@@ -29,19 +29,26 @@ class InferenceClient:
         # OpenAI SDK validates our self-signed certs. Passing
         # ``http_client`` to ``OpenAI`` is the supported escape hatch
         # (``verify=`` is not exposed on the SDK constructor directly).
+        #
+        # Narrow the catch to ImportError: we'd rather surface a real
+        # configuration failure (bad cert path, broken bundle) than
+        # silently degrade to the SDK's default httpx client (system
+        # trust only — would reject our self-signed certs and produce
+        # a confusing TLS verification error several stack frames
+        # away).
+        import httpx as _httpx
+
         try:
-            import httpx as _httpx
             from forgather.tls import httpx_verify_for_url
 
-            _client_kwargs = {"verify": httpx_verify_for_url(base_url)}
-            http_client = _httpx.Client(**_client_kwargs)
-        except Exception:
-            http_client = None  # Fall back to OpenAI's default httpx client.
+            verify = httpx_verify_for_url(base_url)
+        except ImportError:
+            verify = True  # forgather.tls missing entirely — system trust.
 
-        kwargs = {"base_url": base_url, "api_key": api_key}
-        if http_client is not None:
-            kwargs["http_client"] = http_client
-        self.client = OpenAI(**kwargs)
+        http_client = _httpx.Client(verify=verify)
+        self.client = OpenAI(
+            base_url=base_url, api_key=api_key, http_client=http_client
+        )
         self.conversation_history: List[Dict[str, str]] = []
 
     def add_system_message(self, content: str):

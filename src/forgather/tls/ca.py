@@ -39,13 +39,40 @@ def _gen_key(bits: int = 2048) -> rsa.RSAPrivateKey:
 
 
 def _write_secret(path: Path, data: bytes) -> None:
+    """Write a private key with 0600 bits set *at creation time*.
+
+    ``open(path, "wb")`` creates the file with ``0666 & ~umask`` (typically
+    0644 — world-readable) and only an explicit ``chmod`` would tighten
+    it afterwards. That leaves a TOCTOU window in which a local non-root
+    attacker can read the key. ``os.open`` with ``O_CREAT|O_WRONLY|O_TRUNC``
+    and mode ``0o600`` is the *only* portable way to ensure the file is
+    never readable to anyone else, even momentarily. A chmod failure on
+    a key path is treated as a hard error: a 0644 RSA private key on
+    disk is never acceptable.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as f:
-        f.write(data)
+    # Remove any existing file so O_CREAT|O_EXCL semantics aren't needed;
+    # we still get the safe creation bits via the mode argument.
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+    # Defensive re-chmod in case the process umask interacted oddly with
+    # O_CREAT's mode argument on some platforms; failure here means the
+    # file is on a filesystem that doesn't support POSIX modes (e.g. some
+    # FAT/exotic mounts), which is *not* an acceptable place for a key.
     try:
         os.chmod(path, 0o600)
-    except OSError:
-        pass
+    except OSError as exc:
+        raise OSError(
+            f"could not set 0600 perms on private-key file {path}: {exc}. "
+            "Refusing to leave a private key with default permissions."
+        ) from exc
 
 
 def _write_public(path: Path, data: bytes) -> None:
@@ -101,21 +128,27 @@ def _san_entries(
 
 
 def _next_serial(serial_file: Path) -> int:
-    """Monotonic serial counter persisted to disk (atomic enough for one host)."""
+    """Issue a fresh certificate serial number.
+
+    Uses ``x509.random_serial_number()`` (160 bits of entropy, RFC 5280
+    compliant — same as the CA self-cert at create_ca). The serial file
+    is still touched as a human-readable audit trail of issuance count,
+    but the serial value itself is not derived from the file: a wiped
+    or corrupted serial file MUST NOT cause subsequent mints to collide
+    with prior generations' serials.
+    """
     serial_file.parent.mkdir(parents=True, exist_ok=True)
     try:
         cur = int(serial_file.read_text().strip(), 10)
     except (OSError, ValueError):
         cur = 0
-    nxt = cur + 1
     try:
         with open(serial_file, "w") as f:
-            f.write(f"{nxt}\n")
+            f.write(f"{cur + 1}\n")
         os.chmod(serial_file, 0o600)
     except OSError:
         pass
-    # Mix in a random nibble so a wiped serial file doesn't reuse numbers.
-    return (nxt << 16) | secrets.randbits(16)
+    return x509.random_serial_number()
 
 
 # --------------------------------------------------------------------- CA

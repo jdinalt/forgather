@@ -592,11 +592,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
     tls_on = bool(ssl_kwargs)
     try:
+        from forgather.tls import load_config as _tls_load_config
+
         enforce_non_loopback_policy(
             args.host,
             tls_enabled=tls_on,
             insecure=args.insecure,
             service="dataset_server",
+            cfg=_tls_load_config(),
         )
     except TLSRequiredError as exc:
         logger.error("%s", exc)

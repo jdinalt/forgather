@@ -492,10 +492,24 @@ def _safe_json(r: httpx.Response) -> Any:
         return {"error": "non-json response from upstream", "body": r.text}
 
 
+def _verify_for(target: str) -> object:
+    """Pick the right ``verify=`` for an upstream URL.
+
+    Imported here (not at module load) so a test environment without
+    forgather.tls available falls back cleanly to httpx defaults.
+    """
+    try:
+        from forgather.tls import httpx_verify_for_url
+
+        return httpx_verify_for_url(target)
+    except ImportError:
+        return True
+
+
 async def _proxy_get(base: str, upstream_path: str, request: Request) -> JSONResponse:
     target = _validate_base(base) + upstream_path
     headers = _auth_headers_for(base, request)
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target)) as client:
         try:
             r = await client.get(target, headers=headers or None)
         except httpx.RequestError as e:
@@ -553,7 +567,7 @@ async def proxy_load(base: str, request: Request):
         raise HTTPException(status_code=400, detail=f"could not read body: {e}")
     headers = _auth_headers_for(base, request)
     headers["content-type"] = request.headers.get("content-type", "application/json")
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target)) as client:
         try:
             r = await client.post(target, content=body, headers=headers)
         except httpx.RequestError as e:
@@ -608,7 +622,7 @@ async def proxy_iter(
 
     headers = _auth_headers_for(base, request)
     rows: List[Any] = []
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target)) as client:
         try:
             async with client.stream("GET", target, headers=headers or None) as r:
                 if r.status_code >= 400:

@@ -133,6 +133,7 @@ def main():
             tls_enabled=tls_on,
             insecure=args.insecure,
             service="forgather server",
+            cfg=tls_load_config(),
         )
     except TLSRequiredError as exc:
         print(str(exc), file=sys.stderr)

@@ -46,6 +46,7 @@ def _peer_client(**kwargs) -> httpx.AsyncClient:
     kwargs.setdefault("verify", httpx_verify())
     return httpx.AsyncClient(**kwargs)
 
+
 # Timeout for master->peer GPU snapshot fetches. Tighter than the
 # membership pull timeout because the Nodes view should feel snappy;
 # a slow peer simply shows up empty in this round and refreshes next

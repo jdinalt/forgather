@@ -94,14 +94,33 @@ def is_tls_active(
 def httpx_verify(cfg: Optional[TLSConfig] = None) -> object:
     """Value to pass to httpx's ``verify=`` for talking to forgather peers.
 
-    Returns a path string when a local CA bundle exists; otherwise
-    ``True`` (system trust store). The httpx default of ``True`` would
-    reject our self-signed certs, so callers MUST pass this through.
+    Returns a path string when a local CA bundle exists. When TLS is
+    enabled on this host but no bundle is present, we intentionally
+    *still* fall back to ``True`` (system trust) so the connection
+    fails closed against forgather peers (system trust will not
+    contain the self-signed cluster CA). Returning ``False`` here
+    would silently disable verification — never what we want.
+
+    Falling back to ``True`` rather than raising lets callers in
+    mixed environments (e.g. talking to a public LLM endpoint *and*
+    a local forgather peer with the same httpx client) keep working
+    against system-trusted hosts; the forgather peers will simply
+    fail to verify, which is the correct failure mode.
     """
     cfg = cfg or load_config()
     bundle = cfg.effective_bundle()
     if bundle is not None:
         return str(bundle)
+    if cfg.enabled:
+        log.warning(
+            "TLS enabled in %s but no CA bundle present at %s — "
+            "forgather peer connections will fall back to the system "
+            "trust store and almost certainly fail to verify. Run "
+            "'forgather tls init' or import a peer CA via "
+            "'forgather tls import-ca'.",
+            cfg.config_file,
+            cfg.ca_bundle,
+        )
     return True
 
 

@@ -10,7 +10,15 @@ from typing import Iterable
 log = logging.getLogger("forgather.tls")
 
 
-def detect_hostnames() -> list[str]:
+# Bound the auto-detected SAN list. A host with dozens of virtual
+# interfaces (containers, VPNs, bridges) can otherwise produce a cert
+# the operator can't audit at a glance. The operator can always add
+# more entries via --hostname / --ip — but the *automatic* list stops
+# at a reviewable size.
+MAX_AUTO_SAN_ENTRIES = 32
+
+
+def detect_hostnames(*, cap: int = MAX_AUTO_SAN_ENTRIES) -> list[str]:
     """Best-effort: short hostname + FQDN + ``localhost``.
 
     Deduplicated, lowercased. Falls back gracefully if any lookup fails.
@@ -36,10 +44,17 @@ def detect_hostnames() -> list[str]:
             continue
         seen.add(n)
         out.append(n)
+    if len(out) > cap:
+        log.warning(
+            "auto-detected %d hostnames; capping to %d for SAN inclusion",
+            len(out),
+            cap,
+        )
+        out = out[:cap]
     return out
 
 
-def detect_ips() -> list[str]:
+def detect_ips(*, cap: int = MAX_AUTO_SAN_ENTRIES) -> list[str]:
     """Local IPv4/IPv6 addresses, excluding link-local and loopback duplicates.
 
     Always includes ``127.0.0.1`` and ``::1``. Other addresses come from
@@ -79,6 +94,13 @@ def detect_ips() -> list[str]:
                 _add(info[4][0])
         except Exception:
             log.debug("IP discovery fallback failed", exc_info=True)
+    if len(ips) > cap:
+        log.warning(
+            "auto-detected %d IPs; capping to %d for SAN inclusion",
+            len(ips),
+            cap,
+        )
+        ips = ips[:cap]
     return ips
 
 
@@ -87,8 +109,18 @@ def merge_san(
     base_ips: Iterable[str],
     extra_hostnames: Iterable[str] = (),
     extra_ips: Iterable[str] = (),
+    *,
+    hard_cap: int = 256,
 ) -> tuple[list[str], list[str]]:
-    """Union + dedupe hostname/IP lists, preserving first-seen order."""
+    """Union + dedupe hostname/IP lists, preserving first-seen order.
+
+    A ``hard_cap`` defends against accidental or hostile SAN bloat —
+    extremely large SAN lists are both legitimately rare and a sign of
+    something being wrong with discovery (e.g. a container host with
+    hundreds of veth interfaces, or an operator pasting a CSV by
+    mistake). ``ValueError`` is raised rather than silently truncating
+    because in this case the operator typed the entries.
+    """
     hseen: set[str] = set()
     hosts: list[str] = []
     for h in list(base_hostnames) + list(extra_hostnames):
@@ -114,4 +146,10 @@ def merge_san(
             continue
         iseen.add(s)
         ips.append(s)
+    if len(hosts) + len(ips) > hard_cap:
+        raise ValueError(
+            f"SAN list too large ({len(hosts)} hostnames + {len(ips)} IPs > "
+            f"{hard_cap}); refusing to issue a cert this hard to audit. "
+            "Trim --hostname/--ip entries or raise the cap."
+        )
     return hosts, ips
