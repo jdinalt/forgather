@@ -1,5 +1,5 @@
 import { UseQueryResult, useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   DatasetServerLocal,
@@ -43,7 +43,7 @@ function TreeToggleIcon() {
 /** What the user has selected — a leaf in the tree. ``server_base_url``
  *  pins which dataset_server the load goes to; the rest is the wire
  *  format for ``POST /v1/load``. */
-interface SelectedLeaf {
+export interface SelectedLeaf {
   server_label: string;
   server_base_url: string;
   load: LoadRequest;
@@ -65,9 +65,22 @@ interface ServerOption {
 interface Props {
   localServers: DatasetServerLocal[];
   userServers: DatasetServerUser[];
+  /** Cross-tab navigation: when DatasetsPanel switches to "explore"
+   *  after the user clicked a row in the Servers tab, the leaf to
+   *  pre-select is set here. The tab consumes it once on mount /
+   *  change, then signals back via ``onPreselectConsumed`` so the
+   *  parent can clear it (otherwise re-opening the same tab would
+   *  re-trigger the seed). */
+  preselect?: SelectedLeaf | null;
+  onPreselectConsumed?: () => void;
 }
 
-export function DatasetsExploreTab({ localServers, userServers }: Props) {
+export function DatasetsExploreTab({
+  localServers,
+  userServers,
+  preselect,
+  onPreselectConsumed,
+}: Props) {
   const servers: ServerOption[] = useMemo(() => {
     const local = localServers
       .filter((s) => s.alive)
@@ -86,6 +99,16 @@ export function DatasetsExploreTab({ localServers, userServers }: Props) {
 
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<SelectedLeaf | null>(null);
+
+  // Cross-tab preselect: when the Servers tab fires a row click,
+  // DatasetsPanel sets ``preselect`` and switches the active tab here.
+  // Consume the value once, then tell the parent to clear it so a
+  // later tab switch doesn't re-seed an old selection.
+  useEffect(() => {
+    if (!preselect) return;
+    setSelected(preselect);
+    onPreselectConsumed?.();
+  }, [preselect, onPreselectConsumed]);
   // Tree pane collapse — gives the preview pane the full width when the
   // user has already picked a leaf and just wants to read rows.
   const [treeCollapsed, setTreeCollapsed] = useState<boolean>(false);

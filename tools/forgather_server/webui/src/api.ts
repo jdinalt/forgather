@@ -778,6 +778,31 @@ export interface LocalListResponse {
   local: LocalDatasetEntry[];
 }
 
+/** ``GET /v1/health`` response. */
+export interface DatasetServerHealth {
+  status: string;          // "ok"
+  service: string;         // "forgather-dataset-server"
+  version: string;         // "1.0.0"
+  policy: {
+    auth_required: boolean;
+    hf_cache_enabled: boolean;
+    allow_paths: boolean;
+    allow_downloads: boolean;
+    local_count: number;
+  };
+}
+
+/** ``GET /v1/datasets`` response — currently-loaded handles. */
+export interface DatasetHandleRow {
+  handle: string;
+  length: number;
+  source: string | null;
+  load_args: Record<string, unknown>;
+}
+export interface DatasetHandlesResponse {
+  handles: DatasetHandleRow[];
+}
+
 /** ``POST /v1/load`` response. */
 export interface LoadResponse {
   handle: string;
@@ -1420,7 +1445,7 @@ export const api = {
   // explicit token (the proxy then falls back to JobRecord auto-lookup
   // for local servers, or registry lookup for saved user entries).
   datasetServerHealth: (base: string, token: string) =>
-    datasetServerProxyGet<Record<string, unknown>>(
+    datasetServerProxyGet<DatasetServerHealth>(
       "/api/dataset-server/proxy/health",
       base,
       token,
@@ -1432,7 +1457,7 @@ export const api = {
       token,
     ),
   datasetServerDatasets: (base: string, token: string) =>
-    datasetServerProxyGet<DatasetHandleEntry[]>(
+    datasetServerProxyGet<DatasetHandlesResponse>(
       "/api/dataset-server/proxy/datasets",
       base,
       token,

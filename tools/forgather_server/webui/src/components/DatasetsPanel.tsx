@@ -3,11 +3,20 @@ import { useMemo, useState } from "react";
 
 import {
   AddDatasetServerRequest,
+  DatasetHandleRow,
+  DatasetHandlesResponse,
+  DatasetServerHealth,
   DatasetServerLocal,
   DatasetServerUser,
+  HFCacheResponse,
+  LocalDatasetEntry,
+  LocalListResponse,
   api,
 } from "../api";
-import { DatasetsExploreTab } from "./DatasetsExploreTab";
+import {
+  DatasetsExploreTab,
+  type SelectedLeaf,
+} from "./DatasetsExploreTab";
 import { ModalBackdrop } from "./ModalBackdrop";
 
 type SubTab = "servers" | "explore";
@@ -38,6 +47,16 @@ function keyMatches(a: ServerKey, b: ServerKey): boolean {
  *  Explore (tree of dataset → split → table of rows). */
 export function DatasetsPanel() {
   const [tab, setTab] = useState<SubTab>("servers");
+  // Pending pre-selection for the Explore tab. Set when a row in the
+  // Servers tab is clicked (handles row / cache split / local split);
+  // the Explore tab consumes it once and signals back to clear.
+  const [pendingExplore, setPendingExplore] = useState<SelectedLeaf | null>(
+    null,
+  );
+  const openInExplore = (leaf: SelectedLeaf) => {
+    setPendingExplore(leaf);
+    setTab("explore");
+  };
   // Shared queries — both subtabs need the local+user lists. Same keys
   // mean TanStack Query serves them from one cache.
   const localsQ = useQuery({
@@ -81,7 +100,7 @@ export function DatasetsPanel() {
           overflow: "auto",
         }}
       >
-        <DatasetServersTab />
+        <DatasetServersTab onOpenInExplore={openInExplore} />
       </div>
       <div
         style={{
@@ -93,13 +112,21 @@ export function DatasetsPanel() {
         <DatasetsExploreTab
           localServers={localServers}
           userServers={userServers}
+          preselect={pendingExplore}
+          onPreselectConsumed={() => setPendingExplore(null)}
         />
       </div>
     </div>
   );
 }
 
-function DatasetServersTab() {
+interface DatasetServersTabProps {
+  /** Click-through for table rows / split links. Builds a SelectedLeaf
+   *  in the right shape for the Explore tab to seed its own state. */
+  onOpenInExplore: (leaf: SelectedLeaf) => void;
+}
+
+function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
   const qc = useQueryClient();
   const localsQ = useQuery({
     queryKey: ["dataset-servers-local"],
@@ -311,7 +338,12 @@ function DatasetServersTab() {
         </ul>
       </section>
 
-      {selected && <ServerActions selected={selected} />}
+      {selected && (
+        <ServerActions
+          selected={selected}
+          onOpenInExplore={onOpenInExplore}
+        />
+      )}
 
       {addOpen && (
         <AddServerModal
@@ -328,18 +360,20 @@ function DatasetServersTab() {
 
 interface ServerActionsProps {
   selected: SelectedServer;
+  onOpenInExplore: (leaf: SelectedLeaf) => void;
 }
 
 type ResultKind = "status" | "datasets" | "cache" | "local";
 
-interface FetchResult {
-  kind: ResultKind;
-  data: unknown;
-  error: string | null;
-  fetched_at: number;
-}
+/** Tagged union so per-kind renderers can destructure typed data. */
+type FetchResult =
+  | { kind: "status"; data: DatasetServerHealth; fetched_at: number }
+  | { kind: "datasets"; data: DatasetHandlesResponse; fetched_at: number }
+  | { kind: "cache"; data: HFCacheResponse; fetched_at: number }
+  | { kind: "local"; data: LocalListResponse; fetched_at: number }
+  | { kind: ResultKind; data: null; error: string; fetched_at: number };
 
-function ServerActions({ selected }: ServerActionsProps) {
+function ServerActions({ selected, onOpenInExplore }: ServerActionsProps) {
   const [result, setResult] = useState<FetchResult | null>(null);
   const [pending, setPending] = useState<ResultKind | null>(null);
 
@@ -353,14 +387,22 @@ function ServerActions({ selected }: ServerActionsProps) {
     setPending(kind);
     setResult(null);
     try {
-      let data: unknown;
       const base = selected.base_url;
-      if (kind === "status") data = await api.datasetServerHealth(base, tokenToUse);
-      else if (kind === "datasets")
-        data = await api.datasetServerDatasets(base, tokenToUse);
-      else if (kind === "cache") data = await api.datasetServerCache(base, tokenToUse);
-      else data = await api.datasetServerLocal(base, tokenToUse);
-      setResult({ kind, data, error: null, fetched_at: Date.now() });
+      let r: FetchResult;
+      if (kind === "status") {
+        const data = await api.datasetServerHealth(base, tokenToUse);
+        r = { kind, data, fetched_at: Date.now() };
+      } else if (kind === "datasets") {
+        const data = await api.datasetServerDatasets(base, tokenToUse);
+        r = { kind, data, fetched_at: Date.now() };
+      } else if (kind === "cache") {
+        const data = await api.datasetServerCache(base, tokenToUse);
+        r = { kind, data, fetched_at: Date.now() };
+      } else {
+        const data = await api.datasetServerLocal(base, tokenToUse);
+        r = { kind, data, fetched_at: Date.now() };
+      }
+      setResult(r);
     } catch (e) {
       setResult({
         kind,
@@ -381,34 +423,52 @@ function ServerActions({ selected }: ServerActionsProps) {
       </h4>
 
       <div className="submit-row">
-        <button
-          onClick={() => runFetch("status")}
-          disabled={pending !== null}
-          title="GET /v1/health"
-        >
-          Status
-        </button>
-        <button
-          onClick={() => runFetch("datasets")}
-          disabled={pending !== null}
-          title="GET /v1/datasets — currently loaded handles"
-        >
-          Handles
-        </button>
-        <button
-          onClick={() => runFetch("cache")}
-          disabled={pending !== null}
-          title="GET /v1/cache/hf — HF cache contents on the server host"
-        >
-          HF Cache
-        </button>
-        <button
-          onClick={() => runFetch("local")}
-          disabled={pending !== null}
-          title="GET /v1/local — registered local/* dataset mappings"
-        >
-          Local
-        </button>
+        {(
+          [
+            { kind: "status", label: "Status", title: "GET /v1/health" },
+            {
+              kind: "datasets",
+              label: "Handles",
+              title: "GET /v1/datasets — currently loaded handles",
+            },
+            {
+              kind: "cache",
+              label: "HF Cache",
+              title: "GET /v1/cache/hf — HF cache contents on the server host",
+            },
+            {
+              kind: "local",
+              label: "Local",
+              title: "GET /v1/local — registered local/* dataset mappings",
+            },
+          ] as { kind: ResultKind; label: string; title: string }[]
+        ).map(({ kind, label, title }) => {
+          // Visual states:
+          // - pending === kind            → "Refreshing…"
+          // - result.kind === kind        → ↻ prefix (click again to refresh)
+          // - otherwise                    → bare label
+          const active = result?.kind === kind;
+          const refreshing = pending === kind;
+          const text = refreshing
+            ? `${label}…`
+            : active
+              ? `↻ ${label}`
+              : label;
+          return (
+            <button
+              key={kind}
+              className={active ? "active" : ""}
+              onClick={() => runFetch(kind)}
+              disabled={pending !== null}
+              title={
+                title +
+                (active ? "  (click to refresh)" : "")
+              }
+            >
+              {text}
+            </button>
+          );
+        })}
       </div>
 
       {result && (
@@ -416,29 +476,861 @@ function ServerActions({ selected }: ServerActionsProps) {
           <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>
             {result.kind} · fetched{" "}
             {new Date(result.fetched_at).toLocaleTimeString()}
-            {result.error ? " · error" : ""}
+            {"error" in result ? " · error" : ""}
           </div>
-          {result.error ? (
+          {"error" in result ? (
             <pre className="pane-state err" style={{ whiteSpace: "pre-wrap" }}>
               {result.error}
             </pre>
+          ) : result.kind === "status" ? (
+            <StatusCard data={result.data} />
+          ) : result.kind === "datasets" ? (
+            <HandlesTable
+              data={result.data}
+              server={selected}
+              onOpenInExplore={onOpenInExplore}
+            />
+          ) : result.kind === "cache" ? (
+            <HFCacheTable
+              data={result.data}
+              server={selected}
+              onOpenInExplore={onOpenInExplore}
+            />
           ) : (
-            <pre
-              style={{
-                background: "var(--bg)",
-                border: "1px solid var(--border)",
-                padding: 8,
-                fontSize: 12,
-                overflow: "auto",
-                maxHeight: 320,
-              }}
-            >
-              {JSON.stringify(result.data, null, 2)}
-            </pre>
+            <LocalTable
+              data={result.data}
+              server={selected}
+              onOpenInExplore={onOpenInExplore}
+            />
           )}
         </div>
       )}
     </section>
+  );
+}
+
+type SortDir = "asc" | "desc";
+
+interface SortState<K extends string> {
+  by: K;
+  dir: SortDir;
+}
+
+/** Click handler for sortable column headers. Cycles dir if the column
+ *  is already active; switches to the new column with the supplied
+ *  default direction otherwise. Default direction is "desc" for numeric
+ *  columns (the operator usually wants "largest first") and "asc" for
+ *  text (alphabetical). */
+function makeSortToggle<K extends string>(
+  current: SortState<K>,
+  set: (s: SortState<K>) => void,
+) {
+  return (col: K, defaultDir: SortDir = "asc") => {
+    if (current.by === col) {
+      set({ by: col, dir: current.dir === "asc" ? "desc" : "asc" });
+    } else {
+      set({ by: col, dir: defaultDir });
+    }
+  };
+}
+
+interface SortableHeaderProps<K extends string> {
+  col: K;
+  label: string;
+  current: SortState<K>;
+  toggle: (col: K, defaultDir?: SortDir) => void;
+  defaultDir?: SortDir;
+}
+
+function SortableHeader<K extends string>({
+  col,
+  label,
+  current,
+  toggle,
+  defaultDir,
+}: SortableHeaderProps<K>) {
+  const active = current.by === col;
+  const arrow = active ? (current.dir === "asc" ? " ▲" : " ▼") : "";
+  return (
+    <th
+      className={"sortable" + (active ? " active" : "")}
+      onClick={() => toggle(col, defaultDir)}
+      style={{ cursor: "pointer", userSelect: "none" }}
+      title={`Sort by ${label}`}
+    >
+      {label}
+      {arrow}
+    </th>
+  );
+}
+
+/** Sum num_examples across a split list. Treats missing values as 0
+ *  so a row with partial metadata still sorts. */
+function sumSplitRows(
+  splits: Array<{ num_examples?: number | null } | { rows?: number | null }>,
+): number {
+  let total = 0;
+  for (const s of splits) {
+    const v =
+      "num_examples" in s ? s.num_examples : "rows" in s ? s.rows : null;
+    if (typeof v === "number") total += v;
+  }
+  return total;
+}
+
+/** Format bytes as a short human string. KB / MB / GB / TB. */
+function fmtBytes(n: number | null | undefined): string {
+  if (n == null || n === 0) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`;
+}
+
+function fmtCount(n: number | null | undefined): string {
+  if (n == null) return "—";
+  return n.toLocaleString();
+}
+
+/** Truncate a string to ``max`` chars, appending "…" when cut. */
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max) + "…" : s;
+}
+
+/** Status pane. Card with the service line + a row of policy chips
+ *  colored by what each setting means for trust:
+ *  - auth_required false → red (anyone reachable can pull)
+ *  - hf_cache_enabled true / false → neutral (default true is fine)
+ *  - allow_paths true → amber (server leaks fs layout to clients)
+ *  - allow_downloads true → amber (clients can fill disk via the server)
+ *  Everything safe-default stays neutral. */
+function StatusCard({ data }: { data: DatasetServerHealth }) {
+  const p = data.policy;
+  const status = data.status;
+  const statusClass =
+    status === "ok" ? "chip chip-ok" : "chip chip-warn";
+  return (
+    <div className="ds-status-card">
+      <div className="ds-status-head">
+        <span className={statusClass}>{status.toUpperCase()}</span>
+        <strong>{data.service}</strong>
+        <span className="muted">v{data.version}</span>
+      </div>
+      <div className="ds-status-policy">
+        <span
+          className={p.auth_required ? "chip chip-ok" : "chip chip-danger"}
+          title={
+            p.auth_required
+              ? "Bearer token required for /v1/* endpoints"
+              : "--no-auth is set; any host that can reach the bind " +
+                "port can pull datasets"
+          }
+        >
+          {p.auth_required ? "auth required" : "auth disabled"}
+        </span>
+        <span
+          className={p.hf_cache_enabled ? "chip" : "chip chip-muted"}
+          title={
+            p.hf_cache_enabled
+              ? "HuggingFace cache loads are allowed"
+              : "--no-hf is set; only local/* mappings are servable"
+          }
+        >
+          HF cache: {p.hf_cache_enabled ? "enabled" : "disabled"}
+        </span>
+        <span
+          className={p.allow_paths ? "chip chip-warn" : "chip"}
+          title={
+            p.allow_paths
+              ? "--allow-paths is set; clients can request loads by " +
+                "absolute filesystem path, leaking server fs layout"
+              : "Path-based loads are refused; only HF cache + local/* " +
+                "mappings are loadable"
+          }
+        >
+          paths: {p.allow_paths ? "allowed" : "off"}
+        </span>
+        <span
+          className={p.allow_downloads ? "chip chip-warn" : "chip"}
+          title={
+            p.allow_downloads
+              ? "--allow-downloads is set; cache misses trigger HF " +
+                "downloads (clients can fill server disk / bandwidth)"
+              : "Cache-only; misses surface as 404 instead of pulling " +
+                "from HuggingFace"
+          }
+        >
+          downloads: {p.allow_downloads ? "allowed" : "off"}
+        </span>
+        <span className="chip">
+          local datasets: {p.local_count}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** Compact rendering of a load_args dict for the Handles table.
+ *  ``path`` is the only required key; ``name`` and ``split`` follow
+ *  when present. Other keys (data_files, revision) are appended
+ *  generically. Keeps to one line so the table doesn't grow per-row
+ *  heights. */
+function formatLoadArgs(args: Record<string, unknown>): string {
+  const ordered: string[] = [];
+  if (args.path) ordered.push(String(args.path));
+  if (args.name) ordered.push(`name=${String(args.name)}`);
+  if (args.split) ordered.push(`split=${String(args.split)}`);
+  for (const [k, v] of Object.entries(args)) {
+    if (k === "path" || k === "name" || k === "split") continue;
+    if (v == null) continue;
+    ordered.push(`${k}=${typeof v === "object" ? JSON.stringify(v) : String(v)}`);
+  }
+  return ordered.join(" · ");
+}
+
+type HandleSortKey = "handle" | "length" | "source" | "args";
+
+function HandlesTable({
+  data,
+  server,
+  onOpenInExplore,
+}: {
+  data: DatasetHandlesResponse;
+  server: SelectedServer;
+  onOpenInExplore: (leaf: SelectedLeaf) => void;
+}) {
+  const rows = data.handles ?? [];
+  const [sort, setSort] = useState<SortState<HandleSortKey>>({
+    by: "length",
+    dir: "desc",
+  });
+  const toggle = makeSortToggle(sort, setSort);
+
+  const sorted = useMemo(() => {
+    const cmp = (a: DatasetHandleRow, b: DatasetHandleRow): number => {
+      let r = 0;
+      switch (sort.by) {
+        case "handle":
+          r = a.handle.localeCompare(b.handle);
+          break;
+        case "length":
+          r = (a.length ?? 0) - (b.length ?? 0);
+          break;
+        case "source":
+          r = (a.source ?? "").localeCompare(b.source ?? "");
+          break;
+        case "args":
+          r = formatLoadArgs(a.load_args ?? {}).localeCompare(
+            formatLoadArgs(b.load_args ?? {}),
+          );
+          break;
+      }
+      return sort.dir === "asc" ? r : -r;
+    };
+    return [...rows].sort(cmp);
+  }, [rows, sort]);
+
+  if (rows.length === 0) {
+    return (
+      <div className="pane-state muted">
+        No datasets currently loaded on this server.
+        <div style={{ marginTop: 4 }}>
+          The handle cache fills as clients call POST /v1/load (typically
+          on first read of a training dataset).
+        </div>
+      </div>
+    );
+  }
+
+  const openLeaf = (row: DatasetHandleRow) => {
+    const args = row.load_args ?? {};
+    const path = String(args.path ?? "");
+    const name = args.name != null ? String(args.name) : undefined;
+    const split = args.split != null ? String(args.split) : undefined;
+    if (!path) return;
+    const bits = [path];
+    if (name) bits.push(name);
+    if (split) bits.push(split);
+    onOpenInExplore({
+      server_label: server.label,
+      server_base_url: server.base_url,
+      load: { path, name, split },
+      display: bits.join(" · "),
+      hint_rows: row.length,
+    });
+  };
+
+  return (
+    <div className="preview-table-wrap">
+      <table className="preview-table ds-handles-table">
+        <thead>
+          <tr>
+            <SortableHeader
+              col="handle"
+              label="Handle"
+              current={sort}
+              toggle={toggle}
+            />
+            <SortableHeader
+              col="length"
+              label="Length"
+              current={sort}
+              toggle={toggle}
+              defaultDir="desc"
+            />
+            <SortableHeader
+              col="source"
+              label="Source"
+              current={sort}
+              toggle={toggle}
+            />
+            <SortableHeader
+              col="args"
+              label="Load args"
+              current={sort}
+              toggle={toggle}
+            />
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((h) => (
+            <tr
+              key={h.handle}
+              onClick={() => openLeaf(h)}
+              title="Open in Explore"
+              style={{ cursor: "pointer" }}
+            >
+              <td>
+                <code title={h.handle}>{truncate(h.handle, 12)}</code>
+              </td>
+              <td className="row-index">{fmtCount(h.length)}</td>
+              <td>
+                <span className="muted">{h.source ?? "—"}</span>
+              </td>
+              <td title={JSON.stringify(h.load_args, null, 2)}>
+                <span className="preview-cell">
+                  {truncate(formatLoadArgs(h.load_args ?? {}), 120)}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+type HFCacheSortKey = "repo" | "config" | "version" | "splits" | "size";
+
+interface HFFlatRow {
+  repo: string;
+  config: string;
+  version: string;
+  splits: { name: string; rows: number | null }[];
+  size_bytes: number | null;
+}
+
+/** HF Cache table. One row per (repo, config). Splits are shown
+ *  inline so the user sees row counts without an extra drill-in.
+ *  Each split name in the cell is clickable and opens that split in
+ *  the Explore tab. */
+function HFCacheTable({
+  data,
+  server,
+  onOpenInExplore,
+}: {
+  data: HFCacheResponse;
+  server: SelectedServer;
+  onOpenInExplore: (leaf: SelectedLeaf) => void;
+}) {
+  const datasets = data.datasets ?? [];
+  const totalSize = datasets.reduce(
+    (acc, d) => acc + (d.size_bytes ?? 0),
+    0,
+  );
+  // Flatten into (repo, config) rows for tabular rendering.
+  const rows: HFFlatRow[] = useMemo(() => {
+    const out: HFFlatRow[] = [];
+    for (const d of datasets) {
+      if (!d.configs || d.configs.length === 0) {
+        out.push({
+          repo: d.repo,
+          config: "—",
+          version: "—",
+          splits: [],
+          size_bytes: d.size_bytes ?? null,
+        });
+        continue;
+      }
+      for (const c of d.configs) {
+        out.push({
+          repo: d.repo,
+          config: c.config,
+          version: c.version ?? "—",
+          splits: c.splits.map((s) => ({
+            name: s.name,
+            rows: s.num_examples ?? null,
+          })),
+          size_bytes: c.size_bytes ?? null,
+        });
+      }
+    }
+    return out;
+  }, [datasets]);
+
+  const [sort, setSort] = useState<SortState<HFCacheSortKey>>({
+    by: "size",
+    dir: "desc",
+  });
+  const toggle = makeSortToggle(sort, setSort);
+  const sorted = useMemo(() => {
+    const cmp = (a: HFFlatRow, b: HFFlatRow): number => {
+      let r = 0;
+      switch (sort.by) {
+        case "repo":
+          r = a.repo.localeCompare(b.repo);
+          break;
+        case "config":
+          r = a.config.localeCompare(b.config);
+          break;
+        case "version":
+          r = a.version.localeCompare(b.version);
+          break;
+        case "splits":
+          r = sumSplitRows(a.splits) - sumSplitRows(b.splits);
+          break;
+        case "size":
+          r = (a.size_bytes ?? 0) - (b.size_bytes ?? 0);
+          break;
+      }
+      return sort.dir === "asc" ? r : -r;
+    };
+    return [...rows].sort(cmp);
+  }, [rows, sort]);
+
+  const openSplit = (row: HFFlatRow, splitName: string, splitRows: number | null) => {
+    onOpenInExplore({
+      server_label: server.label,
+      server_base_url: server.base_url,
+      load: { path: row.repo, name: row.config, split: splitName },
+      display: `${row.repo} · ${row.config} · ${splitName}`,
+      hint_rows: splitRows,
+    });
+  };
+
+  return (
+    <div className="ds-section">
+      <div className="muted ds-section-summary">
+        cache root: <code>{data.cache_root}</code> · {datasets.length}{" "}
+        dataset{datasets.length === 1 ? "" : "s"} · {fmtBytes(totalSize)}
+      </div>
+      {rows.length === 0 ? (
+        <div className="pane-state muted">HF cache is empty on this host.</div>
+      ) : (
+        <>
+          <DatasetBarChart
+            title="Size distribution across the cache"
+            items={rows.map((r, i) => ({
+              key: `${r.repo}:${r.config}:${i}`,
+              code: r.repo,
+              muted: r.config,
+              size: r.size_bytes ?? 0,
+            }))}
+          />
+          <div className="preview-table-wrap">
+            <table className="preview-table ds-hf-table">
+              <thead>
+                <tr>
+                  <SortableHeader
+                    col="repo"
+                    label="Repo"
+                    current={sort}
+                    toggle={toggle}
+                  />
+                  <SortableHeader
+                    col="config"
+                    label="Config"
+                    current={sort}
+                    toggle={toggle}
+                  />
+                  <SortableHeader
+                    col="version"
+                    label="Version"
+                    current={sort}
+                    toggle={toggle}
+                  />
+                  <SortableHeader
+                    col="splits"
+                    label="Splits"
+                    current={sort}
+                    toggle={toggle}
+                    defaultDir="desc"
+                  />
+                  <SortableHeader
+                    col="size"
+                    label="Size"
+                    current={sort}
+                    toggle={toggle}
+                    defaultDir="desc"
+                  />
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((r, i) => (
+                  <tr key={`${r.repo}:${r.config}:${i}`}>
+                    <td>
+                      <code>{r.repo}</code>
+                    </td>
+                    <td>{r.config}</td>
+                    <td className="muted">{r.version}</td>
+                    <td>
+                      {r.splits.length === 0 ? (
+                        <span className="muted">—</span>
+                      ) : (
+                        <span className="preview-cell">
+                          {r.splits.map((s, idx) => (
+                            <span key={s.name}>
+                              {idx > 0 && ", "}
+                              <a
+                                className="ds-split-link"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openSplit(r, s.name, s.rows);
+                                }}
+                                title={`Open ${r.repo} · ${r.config} · ${s.name} in Explore`}
+                              >
+                                {s.name}
+                                {s.rows != null && `: ${fmtCount(s.rows)}`}
+                              </a>
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                    </td>
+                    <td className="row-index">{fmtBytes(r.size_bytes)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** One bar segment in the size-distribution chart. ``key`` must be
+ *  stable across renders; ``code`` is rendered with code styling
+ *  (typically a repo / dataset name), ``muted`` is the trailing
+ *  qualifier (config, dataset_name, etc.). */
+interface BarItem {
+  key: string;
+  code: string;
+  muted: string;
+  size: number;
+}
+
+/** Horizontal stacked bars showing each item's share of the total.
+ *  Top-K segments; the rest collapse into "+ N more". Generic so both
+ *  HF Cache and Local tables can share the rendering. */
+function DatasetBarChart({
+  items,
+  title,
+}: {
+  items: BarItem[];
+  title: string;
+}) {
+  const TOP_N = 8;
+  const sized = items.filter((r) => r.size > 0).sort((a, b) => b.size - a.size);
+  const totalSize = sized.reduce((acc, r) => acc + r.size, 0);
+  if (totalSize === 0 || sized.length === 0) return null;
+  const top = sized.slice(0, TOP_N);
+  const tail = sized.slice(TOP_N);
+  const tailSize = tail.reduce((a, b) => a + b.size, 0);
+
+  // Stable palette: cycle through a small set tinted off the accent
+  // color so the bars look consistent across re-renders without
+  // dragging in a chart library.
+  const palette = [
+    "var(--accent)",
+    "#3fb950",
+    "#f78166",
+    "#a371f7",
+    "#56d4dd",
+    "#d2a8ff",
+    "#ffa657",
+    "#79c0ff",
+  ];
+
+  return (
+    <div className="ds-bar-chart" title={title}>
+      <div className="ds-bar-row">
+        {top.map((r, i) => {
+          const pct = (r.size / totalSize) * 100;
+          return (
+            <span
+              key={r.key}
+              className="ds-bar-seg"
+              style={{
+                flexBasis: `${pct}%`,
+                background: palette[i % palette.length],
+              }}
+              title={`${r.code}${r.muted ? " · " + r.muted : ""} — ${fmtBytes(r.size)} (${pct.toFixed(1)}%)`}
+            />
+          );
+        })}
+        {tailSize > 0 && (
+          <span
+            className="ds-bar-seg ds-bar-tail"
+            style={{ flexBasis: `${(tailSize / totalSize) * 100}%` }}
+            title={`+ ${tail.length} more — ${fmtBytes(tailSize)}`}
+          />
+        )}
+      </div>
+      <div className="ds-bar-legend">
+        {top.map((r, i) => (
+          <span key={r.key} className="ds-bar-legend-item">
+            <span
+              className="ds-bar-swatch"
+              style={{ background: palette[i % palette.length] }}
+            />
+            <code>{r.code}</code>
+            {r.muted && <span className="muted"> · {r.muted}</span>}
+            <span className="muted"> · {fmtBytes(r.size)}</span>
+          </span>
+        ))}
+        {tail.length > 0 && (
+          <span className="ds-bar-legend-item muted">
+            <span className="ds-bar-swatch ds-bar-tail" />+ {tail.length} more
+            ({fmtBytes(tailSize)})
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+type LocalSortKey =
+  | "name"
+  | "path"
+  | "layout"
+  | "config"
+  | "splits"
+  | "features"
+  | "size";
+
+/** Local mappings table. One row per registered ``local/<name>``.
+ *  Split names in the splits cell are clickable and open that split
+ *  in the Explore tab. */
+function LocalTable({
+  data,
+  server,
+  onOpenInExplore,
+}: {
+  data: LocalListResponse;
+  server: SelectedServer;
+  onOpenInExplore: (leaf: SelectedLeaf) => void;
+}) {
+  const rows = data.local ?? [];
+  const totalSize = rows.reduce((acc, r) => acc + (r.size_bytes ?? 0), 0);
+
+  const [sort, setSort] = useState<SortState<LocalSortKey>>({
+    by: "size",
+    dir: "desc",
+  });
+  const toggle = makeSortToggle(sort, setSort);
+  const sorted = useMemo(() => {
+    const cmp = (a: LocalDatasetEntry, b: LocalDatasetEntry): number => {
+      let r = 0;
+      switch (sort.by) {
+        case "name":
+          r = a.name.localeCompare(b.name);
+          break;
+        case "path":
+          r = a.path.localeCompare(b.path);
+          break;
+        case "layout":
+          r = (a.layout ?? "").localeCompare(b.layout ?? "");
+          break;
+        case "config":
+          r = (a.config_name ?? "").localeCompare(b.config_name ?? "");
+          break;
+        case "splits":
+          r = sumSplitRows(a.splits ?? []) - sumSplitRows(b.splits ?? []);
+          break;
+        case "features":
+          r = (a.features?.length ?? 0) - (b.features?.length ?? 0);
+          break;
+        case "size":
+          r = (a.size_bytes ?? 0) - (b.size_bytes ?? 0);
+          break;
+      }
+      return sort.dir === "asc" ? r : -r;
+    };
+    return [...rows].sort(cmp);
+  }, [rows, sort]);
+
+  if (rows.length === 0) {
+    return (
+      <div className="pane-state muted">
+        No named local datasets registered on this server. Start the
+        dataset_server with one or more <code>--local NAME=PATH</code>{" "}
+        flags (or add them to the YAML config).
+      </div>
+    );
+  }
+
+  const openSplit = (
+    row: LocalDatasetEntry,
+    splitName: string,
+    splitRows: number | null,
+  ) => {
+    onOpenInExplore({
+      server_label: server.label,
+      server_base_url: server.base_url,
+      load: { path: `local/${row.name}`, split: splitName },
+      display: `local/${row.name}${row.config_name ? ` · ${row.config_name}` : ""} · ${splitName}`,
+      hint_rows: splitRows,
+    });
+  };
+
+  return (
+    <div className="ds-section">
+      <div className="muted ds-section-summary">
+        {rows.length} mapping{rows.length === 1 ? "" : "s"} · {fmtBytes(totalSize)}
+      </div>
+      <DatasetBarChart
+        title="Size distribution across local mappings"
+        items={rows.map((r) => ({
+          key: r.name,
+          code: `local/${r.name}`,
+          // Use config_name when present; fall back to dataset_name
+          // so the legend is informative for both layouts.
+          muted: r.config_name ?? r.dataset_name ?? "",
+          size: r.size_bytes ?? 0,
+        }))}
+      />
+      <div className="preview-table-wrap">
+        <table className="preview-table ds-local-table">
+          <thead>
+            <tr>
+              <SortableHeader col="name" label="Name" current={sort} toggle={toggle} />
+              <SortableHeader col="path" label="Path" current={sort} toggle={toggle} />
+              <SortableHeader col="layout" label="Layout" current={sort} toggle={toggle} />
+              <SortableHeader col="config" label="Config" current={sort} toggle={toggle} />
+              <SortableHeader
+                col="splits"
+                label="Splits"
+                current={sort}
+                toggle={toggle}
+                defaultDir="desc"
+              />
+              <SortableHeader
+                col="features"
+                label="Features"
+                current={sort}
+                toggle={toggle}
+                defaultDir="desc"
+              />
+              <SortableHeader
+                col="size"
+                label="Size"
+                current={sort}
+                toggle={toggle}
+                defaultDir="desc"
+              />
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((r) => (
+              <LocalRow
+                key={r.name}
+                row={r}
+                onOpenSplit={openSplit}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function LocalRow({
+  row,
+  onOpenSplit,
+}: {
+  row: LocalDatasetEntry;
+  onOpenSplit: (
+    row: LocalDatasetEntry,
+    splitName: string,
+    splitRows: number | null,
+  ) => void;
+}) {
+  const splits = row.splits ?? [];
+  const features = row.features ?? [];
+  // Features as small, comma-separated text — datasets can carry
+  // dozens of columns, and a wall of pill chips made the row height
+  // explode. Truncate the visible text; full list lands in the title
+  // attribute for hover.
+  const featuresText = features.join(", ");
+  const featuresTruncated = truncate(featuresText, 80);
+  return (
+    <tr>
+      <td>
+        <code>local/{row.name}</code>
+      </td>
+      <td title={row.path}>
+        <span className="preview-cell">{truncate(row.path, 40)}</span>
+      </td>
+      <td className="muted">
+        {row.layout ?? "—"}
+        {row.layout === "missing" && (
+          <span className="chip chip-warn" style={{ marginLeft: 6 }}>
+            path gone
+          </span>
+        )}
+      </td>
+      <td className="muted">
+        {row.config_name ?? "—"}
+        {row.dataset_name ? ` · ${row.dataset_name}` : ""}
+      </td>
+      <td>
+        {splits.length === 0 ? (
+          <span className="muted">—</span>
+        ) : (
+          <span className="preview-cell">
+            {splits.map((s, idx) => (
+              <span key={s.name}>
+                {idx > 0 && ", "}
+                <a
+                  className="ds-split-link"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenSplit(row, s.name, s.num_examples ?? null);
+                  }}
+                  title={`Open local/${row.name} · ${s.name} in Explore`}
+                >
+                  {s.name}
+                  {s.num_examples != null && `: ${fmtCount(s.num_examples)}`}
+                </a>
+              </span>
+            ))}
+          </span>
+        )}
+      </td>
+      <td
+        className="ds-features-cell muted"
+        title={featuresText || undefined}
+      >
+        {featuresText ? featuresTruncated : <span className="muted">—</span>}
+      </td>
+      <td className="row-index">{fmtBytes(row.size_bytes)}</td>
+    </tr>
   );
 }
 
