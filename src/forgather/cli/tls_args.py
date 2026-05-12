@@ -213,7 +213,11 @@ def create_tls_parser(global_args):
             "    normal — set up ssh-agent or keys if you don't want to\n"
             "    type per-peer (or pass --batch to refuse password\n"
             "    prompts and fail fast on missing keys).\n"
-            "  * `forgather` is on the remote PATH for the ssh user.\n"
+            "  * `forgather` reachable on the remote side: either on the\n"
+            "    ssh user's PATH directly, or inside a Docker container\n"
+            "    (use --container <name> — the install runs as\n"
+            "    `docker exec <name> forgather tls install …` and files\n"
+            "    are streamed in via a tar pipe).\n"
             "\n"
             "Idempotent: peers that already have a server cert installed\n"
             "are skipped unless --force is given. The local mint is\n"
@@ -245,6 +249,29 @@ def create_tls_parser(global_args):
             "Use when the peer's cluster address isn't directly ssh-reachable "
             "by the same name — e.g. `--ssh-host node-b=10.0.0.6` or "
             "`--ssh-host node-b=bastion.lan` if you tunnel through a bastion."
+        ),
+    )
+    deploy.add_argument(
+        "--container",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Peer is running forgather inside a Docker container; wrap remote "
+            "commands in `docker exec <NAME>`. File transfer uses a tar pipe "
+            "through `docker exec -i` so the host doesn't need to know where "
+            "the container's state volume lives. Same name applies to every "
+            "peer in this run — use --container-host PEER=NAME if peers use "
+            "different container names."
+        ),
+    )
+    deploy.add_argument(
+        "--container-host",
+        action="append",
+        default=[],
+        metavar="PEER=NAME",
+        help=(
+            "Per-peer override of --container (repeatable). Use when "
+            "different peers run different container names."
         ),
     )
     deploy.add_argument(

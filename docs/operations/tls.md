@@ -259,6 +259,19 @@ fingerprint → fail with a clear message and require `--force`. No
 existing state → proceed normally. Re-running `deploy` on a
 correctly-bootstrapped cluster is therefore a no-op.
 
+**Peer runs forgather in Docker?** Pass `--container <name>`. Every
+remote command then runs as `docker exec <name> forgather …`, and
+the cert files stream into the container via a tar pipe through
+`docker exec -i` — no `docker cp` needed, and the host doesn't have
+to care where the container's state volume lives.
+
+```bash
+forgather tls deploy muthur --container forgather-server
+```
+
+For mixed clusters where peers use different container names:
+`forgather tls deploy --container-host peer-a=forgather-server --container-host peer-b=fg-prod`.
+
 Other useful flags:
 
 * `--dry-run` — print the plan without minting, scping, or installing.
@@ -267,6 +280,7 @@ Other useful flags:
 * `--ssh-host PEER=HOST` — override the ssh target for a peer (useful
   when the peer's cluster address isn't directly reachable, e.g.
   through a bastion).
+* `--container NAME` / `--container-host PEER=NAME` — see above.
 
 The manual flow below is still supported and is the right answer
 when ssh isn't available, or when you want to inspect each cert

@@ -671,8 +671,18 @@ def _cmd_deploy(args) -> int:
         ssh_base += ["-o", "BatchMode=yes"]
         scp_base += ["-o", "BatchMode=yes"]
 
+    # Container-target map: per-peer override falls back to --container.
+    container_for: dict = {}
+    for raw in args.container_host or []:
+        if "=" not in raw:
+            print(f"--container-host expects PEER=NAME (got {raw!r})", file=sys.stderr)
+            return 2
+        peer, name = raw.split("=", 1)
+        container_for[peer.strip()] = name.strip()
+
     results: list[tuple] = []
     for peer in peers:
+        container = container_for.get(peer.get("hostname"), args.container)
         result = _deploy_to_peer(
             cfg,
             peer,
@@ -681,6 +691,7 @@ def _cmd_deploy(args) -> int:
             ssh_base=tuple(ssh_base),
             scp_base=tuple(scp_base),
             force=args.force,
+            container=container,
         )
         results.append((peer, result))
         status = "OK" if result is True else f"FAILED — {result}"
@@ -706,16 +717,30 @@ def _ca_fingerprint(ca_cert_path: Path) -> str:
     return hashlib.sha256(ca_cert_path.read_bytes()).hexdigest()
 
 
-def _peer_ca_fingerprint(ssh_base, target) -> "Optional[str]":
-    """Compute the SHA-256 of the peer's CA cert PEM via ssh. None if absent."""
+def _peer_ca_fingerprint(ssh_base, target, container=None) -> "Optional[str]":
+    """Compute the SHA-256 of the peer's CA cert PEM via ssh. None if absent.
+
+    When ``container`` is set, the probe runs inside that Docker
+    container and looks at the in-container path (the host's
+    ``~/.config/forgather/`` may or may not exist; what we care about
+    is what the running forgather server actually sees).
+    """
     import subprocess
 
+    in_container_path = "/home/forgather/.config/forgather/tls/ca/ca.crt"
+    if container:
+        remote_cmd = (
+            f"docker exec {container} sh -c "
+            f"'sha256sum {in_container_path} 2>/dev/null' "
+            "| awk '{print $1}'"
+        )
+    else:
+        remote_cmd = (
+            "sha256sum ~/.config/forgather/tls/ca/ca.crt 2>/dev/null "
+            "| awk '{print $1}'"
+        )
     probe = subprocess.run(
-        [
-            *ssh_base,
-            target,
-            "sha256sum ~/.config/forgather/tls/ca/ca.crt 2>/dev/null | awk '{print $1}'",
-        ],
+        [*ssh_base, target, remote_cmd],
         capture_output=True,
         text=True,
     )
@@ -728,7 +753,7 @@ def _peer_ca_fingerprint(ssh_base, target) -> "Optional[str]":
 
 
 def _deploy_to_peer(
-    cfg, peer, *, ssh_target, ssh_user, ssh_base, scp_base, force
+    cfg, peer, *, ssh_target, ssh_user, ssh_base, scp_base, force, container=None
 ):
     """Mint a cert, ship it via scp, run `tls install` via ssh.
 
@@ -769,18 +794,8 @@ def _deploy_to_peer(
         (local / "ca.crt").write_bytes(cfg.ca_cert.read_bytes())
 
         # CA-aware idempotency check.
-        #
-        # The original "TLS state exists → bail" check failed in a
-        # bootstrap-y way: the operator running `deploy` doesn't want
-        # to be told the peer has state, they want to know whether
-        # the peer has *the right state*. Compare CA fingerprints:
-        #   * Peer's CA matches ours → genuinely already deployed by
-        #     this CA. Skip silently (idempotent).
-        #   * Peer's CA differs from ours → stale or wrong state.
-        #     Refuse unless --force.
-        #   * Peer has no CA at all → proceed (the bootstrap case).
         local_ca_fp = _ca_fingerprint(cfg.ca_cert)
-        peer_ca_fp = _peer_ca_fingerprint(ssh_base, target)
+        peer_ca_fp = _peer_ca_fingerprint(ssh_base, target, container=container)
         if peer_ca_fp is not None:
             if peer_ca_fp == local_ca_fp:
                 return "already deployed (peer's CA matches this host's CA)"
@@ -792,7 +807,71 @@ def _deploy_to_peer(
                     "Pass --force to overwrite."
                 )
 
-        # Create a remote temp dir.
+        if container:
+            # Container path: stage files INTO the running container
+            # via a tar pipe through `docker exec -i`. No host-side
+            # tempfile required; works regardless of whether the
+            # container's state volume is a named volume, a host
+            # bind-mount, or unset. The container user owns the
+            # extracted files automatically.
+            import tarfile, io
+
+            remote_tmp = "/tmp/forgather-tls-deploy"
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w") as tar:
+                # ``filter`` resets owner/perms so the archive is
+                # reproducible — extracted perms are set by --mode 600
+                # on the keyfile via a tarinfo tweak below.
+                for name in ("server.crt", "server.key", "ca.crt"):
+                    info = tar.gettarinfo(str(local / name), arcname=name)
+                    info.uid = 0
+                    info.gid = 0
+                    info.uname = ""
+                    info.gname = ""
+                    info.mode = 0o600 if name.endswith(".key") else 0o644
+                    with open(local / name, "rb") as f:
+                        tar.addfile(info, f)
+            buf.seek(0)
+            extract_cmd = (
+                f"docker exec -i {container} sh -c "
+                f"'rm -rf {remote_tmp} && mkdir -m 0700 -p {remote_tmp} "
+                f"&& tar -C {remote_tmp} -xpf -'"
+            )
+            try:
+                subprocess.run(
+                    [*ssh_base, target, extract_cmd],
+                    input=buf.getvalue(),
+                    check=True,
+                    capture_output=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                err = exc.stderr.decode("utf-8", "replace").strip()
+                return f"docker exec tar: {err or exc.returncode}"
+
+            install_cmd = (
+                f"docker exec {container} forgather tls install "
+                f"--cert {remote_tmp}/server.crt "
+                f"--key {remote_tmp}/server.key "
+                f"--ca {remote_tmp}/ca.crt"
+            )
+            try:
+                subprocess.run(
+                    [*ssh_base, target, install_cmd],
+                    check=True,
+                    capture_output=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                err = exc.stderr.decode("utf-8", "replace").strip()
+                return f"remote install (in container {container}): {err or exc.returncode}"
+            # Clean up inside the container.
+            subprocess.run(
+                [*ssh_base, target,
+                 f"docker exec {container} rm -rf {remote_tmp}"],
+                capture_output=True,
+            )
+            return True
+
+        # Default path: forgather is installed on the peer host (no container).
         try:
             mk = subprocess.run(
                 [*ssh_base, target, "mktemp -d /tmp/forgather-tls-deploy.XXXXXX"],
@@ -805,7 +884,6 @@ def _deploy_to_peer(
         remote_tmp = mk.stdout.strip()
 
         try:
-            # scp the bundle.
             try:
                 subprocess.run(
                     [
@@ -821,7 +899,6 @@ def _deploy_to_peer(
             except subprocess.CalledProcessError as exc:
                 return f"scp: {exc.stderr.decode('utf-8', 'replace').strip() or exc.returncode}"
 
-            # Run `forgather tls install` on the peer.
             install_cmd = (
                 f"forgather tls install "
                 f"--cert {remote_tmp}/server.crt "
@@ -838,7 +915,6 @@ def _deploy_to_peer(
                 err = exc.stderr.decode("utf-8", "replace").strip()
                 return f"remote install: {err or exc.returncode}"
         finally:
-            # Clean up remote staging dir even on failure.
             subprocess.run(
                 [*ssh_base, target, f"rm -rf {remote_tmp}"],
                 capture_output=True,
