@@ -143,6 +143,24 @@ def _record_to_model(
             job_params_out["scheme"] = _client_scheme(host_for_scheme)
         except Exception:
             job_params_out["scheme"] = "http"
+    # Backfill routable_host the same way — pre-existing inference/
+    # dataset_server records bound to 0.0.0.0 want a LAN-routable URL
+    # displayed in the Job card. Computed at API-response time because
+    # the routable address depends on the *current* network state (mDNS
+    # discovery may have come up since the record was written).
+    if (
+        r.job_type in ("inference", "dataset_server")
+        and job_params_out.get("host") in ("0.0.0.0", "::", "")
+        and "routable_host" not in job_params_out
+    ):
+        try:
+            from .. import scheduler as _scheduler
+
+            routable = _scheduler._detect_routable_host()
+            if routable:
+                job_params_out["routable_host"] = routable
+        except Exception:
+            pass
 
     return JobModel(
         id=r.queue_id,

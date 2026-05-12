@@ -577,6 +577,24 @@ function JobCard({
       ? (job.job_params.scheme as string)
       : "http";
 
+  // `routable_host` is stamped server-side by the scheduler for
+  // inference/dataset_server jobs bound to 0.0.0.0 — it's a LAN-
+  // reachable address (cluster-self address or psutil's first
+  // non-loopback IP). When present, prefer it over browserSafeHost's
+  // 0.0.0.0→localhost fallback: that fallback is only useful for
+  // same-host access, and the cross-host case is the whole point
+  // of binding 0.0.0.0.
+  const jobRoutable =
+    typeof job.job_params?.routable_host === "string"
+      ? (job.job_params.routable_host as string)
+      : null;
+  function urlHost(rawHost: string | null): string {
+    if (jobRoutable && (rawHost === "0.0.0.0" || rawHost === "::" || !rawHost)) {
+      return jobRoutable;
+    }
+    return browserSafeHost(rawHost);
+  }
+
   // Inference jobs run a local HTTP(S) server on a user-chosen port.
   // Synthesize the URL for a clickable link so the user can jump straight
   // to the OpenAPI root rather than copy-pasting host:port.
@@ -589,7 +607,7 @@ function JobCard({
       ? (job.job_params.port as number)
       : null;
   const inferenceUrl = inferencePort
-    ? `${jobScheme}://${browserSafeHost(inferenceHost)}:${inferencePort}`
+    ? `${jobScheme}://${urlHost(inferenceHost)}:${inferencePort}`
     : null;
 
   // Dataset server: same shape as inference — local HTTP(S) service whose
@@ -604,7 +622,7 @@ function JobCard({
       ? (job.job_params.port as number)
       : null;
   const dsUrl = dsPort
-    ? `${jobScheme}://${browserSafeHost(dsHost)}:${dsPort}`
+    ? `${jobScheme}://${urlHost(dsHost)}:${dsPort}`
     : null;
 
   // TensorBoard is the same idea: a local web server. ``bind_all`` →

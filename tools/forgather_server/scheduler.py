@@ -23,6 +23,7 @@ import logging
 import os
 import secrets
 import signal
+import socket
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -632,6 +633,113 @@ _LAUNCHERS = {
 }
 
 
+def _detect_routable_host() -> Optional[str]:
+    """Best-effort LAN-routable address for this host.
+
+    Priority:
+      1. Cluster-self address (the one peers already use to peer-pull).
+         Most reliable because cluster_discovery already filtered out
+         loopback / virtual-interface addresses for us.
+      2. First non-loopback IPv4 from psutil.net_if_addrs. Used when
+         the server isn't in cluster mode.
+      3. None — caller should fall back to whatever it was going to
+         display before (typically "localhost").
+    """
+    try:
+        from . import cluster as _cluster
+
+        if _cluster.is_active():
+            self_ident = _cluster.self_identity()
+            if self_ident:
+                m = next(
+                    (mm for mm in _cluster.members() if mm.node_id == self_ident.node_id),
+                    None,
+                )
+                if m and m.address and not m.address.startswith("127."):
+                    return m.address
+    except Exception:
+        pass
+    try:
+        import psutil
+
+        for _iface, entries in psutil.net_if_addrs().items():
+            for entry in entries:
+                addr = getattr(entry, "address", "")
+                if not addr:
+                    continue
+                # IPv4 only for now; the URL field is a single string,
+                # and IPv6 in URLs needs bracket escaping that complicates
+                # downstream. IPv4 covers the common-case LAN deployment.
+                if entry.family != socket.AF_INET:
+                    continue
+                if addr.startswith("127."):
+                    continue
+                # Link-local (169.254.x) and most virtual interfaces fail
+                # the "is this the address the operator would type" test.
+                if addr.startswith("169.254."):
+                    continue
+                return addr
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_inference_server_token(*, port: int, regen: bool) -> str:
+    """Return the bearer token an inference_server spawn should use.
+
+    Mirrors the dataset_server token persistence model: the per-port
+    standalone token file (the same one a CLI-launched ``forgather inf
+    server -p <port>`` writes) is reused across restarts so a remote
+    operator who copied the token doesn't have to refetch it every
+    time the server bounces. ``regen=True`` is the opt-in rotation.
+
+    Reuse rules:
+
+    - ``regen=True``  -> always mint + persist.
+    - File missing    -> mint + persist.
+    - File present, non-empty -> reuse its contents.
+    - File present, empty / unreadable -> treat as missing.
+
+    Persisting may fail (read-only home, etc.); the spawn still gets
+    a valid in-memory token and the JobRecord carries it. Logged at
+    WARNING in that case; not raised.
+    """
+    # Lazy import — the standalone helper lives in tools/inference_server/,
+    # which the runtime image puts on the python path but isn't strictly
+    # required to import at module load.
+    try:
+        from inference_server.auth_paths import (
+            standalone_token_file as _inf_token_path,
+            write_standalone_token as _inf_token_write,
+        )
+    except ImportError:
+        # Fall back to ephemeral if the helper isn't reachable (shouldn't
+        # happen in any supported install). The operator just loses
+        # persistence; functionality is unaffected.
+        return secrets.token_hex(32)
+
+    token_path = _inf_token_path(port)
+    if not regen and token_path.is_file():
+        try:
+            existing = token_path.read_text().strip()
+        except OSError:
+            existing = ""
+        if existing:
+            return existing
+    token = secrets.token_hex(32)
+    try:
+        _inf_token_write(port, token)
+    except OSError as exc:
+        log.warning(
+            "could not persist inference-server token to %s: %s "
+            "(spawn still works; CLI auto-discovery for this port disabled "
+            "until the next successful write).",
+            token_path,
+            exc,
+        )
+    return token
+
+
 def _resolve_dataset_server_token(*, port: int, regen: bool) -> str:
     """Return the bearer token a dataset_server spawn should use.
 
@@ -702,7 +810,17 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
     auth_token: Optional[str] = None
     if not bool(item.job_params.get("no_auth", False)):
         if item.job_type == "inference":
-            auth_token = secrets.token_hex(32)
+            # Per-port persistent token (matches dataset_server model)
+            # so restarts don't invalidate the token a remote operator
+            # already copied. The per-queue file at
+            # inference_token_file(queue_id) stays the path
+            # spawn_inference_process reads via --auth-token-file
+            # (operator-managed tokens shouldn't appear in argv) — write
+            # the resolved-persistent value there too.
+            auth_token = _resolve_inference_server_token(
+                port=int(item.job_params.get("port", 8137)),
+                regen=bool(item.job_params.get("regen_token", False)),
+            )
             _atomic.atomic_write_text(
                 inference_token_file(item.queue_id), auth_token, mode=0o600
             )
@@ -731,6 +849,18 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
             )
         except Exception:
             finalized_params.setdefault("scheme", "http")
+        # Stamp a routable host for cross-machine URL display. When
+        # the server binds 0.0.0.0, "localhost" in the URL is correct
+        # for browser+proxy on the same host but useless for any
+        # other machine the operator is browsing from. Pick the
+        # cluster-routable address when available (same one peers
+        # use), or fall back to the first non-loopback psutil-detected
+        # IP. Leave unset for explicit bind hosts (operator knows
+        # what they typed).
+        if finalized_params.get("host") in ("0.0.0.0", "::", ""):
+            routable = _detect_routable_host()
+            if routable:
+                finalized_params["routable_host"] = routable
 
     record = JobRecord(
         queue_id=item.queue_id,
