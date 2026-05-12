@@ -113,6 +113,7 @@ def _cmd_status(args) -> int:
         "config_path": str(cfg.config_path) if cfg.config_path else None,
         "enabled": cfg.enabled,
         "auto_on_non_loopback": cfg.auto_on_non_loopback,
+        "verify_hostname": cfg.verify_hostname,
         "provisioned": cfg.is_provisioned(),
         "has_ca_authority": cfg.has_ca_authority(),
         "ca_cert": str(cfg.ca_cert),
@@ -152,6 +153,10 @@ def _cmd_status(args) -> int:
     print(f"enabled         : {data['enabled']}")
     print(f"provisioned     : {data['provisioned']}")
     print(f"CA authority    : {data['has_ca_authority']}")
+    print(
+        f"verify_hostname : {cfg.verify_hostname} "
+        f"({'strict RFC-6125' if cfg.verify_hostname else 'chain-only — LAN default'})"
+    )
     if data["ca_info"]:
         info = data["ca_info"]
         print()
@@ -340,11 +345,31 @@ def _cmd_mint(args) -> int:
             file=sys.stderr,
         )
         return 1
-    if not args.hostname and not args.ip:
-        print("--hostname or --ip is required", file=sys.stderr)
-        return 2
 
-    hostnames, ips = merge_san([], [], extra_hostnames=args.hostname, extra_ips=args.ip)
+    # --hostname / --ip are now optional. On a private LAN with a
+    # private CA, the SAN is informational (peer-pull and webui
+    # proxies do chain-only validation by default — see
+    # docs/operations/tls.md and TLSConfig.verify_hostname). Pass
+    # explicit SAN entries only when you also need browsers or
+    # external clients to hit the URL by a specific name/IP and
+    # have those clients enforce hostname matching.
+    extra_hosts = list(args.hostname or [])
+    extra_ips = list(args.ip or [])
+    if not extra_hosts and not extra_ips:
+        # Placeholder SAN that satisfies RFC 5280's "must have at
+        # least one SAN entry" requirement without baking in an
+        # IP/hostname the operator may not know yet.
+        extra_hosts = ["forgather-peer", "localhost"]
+        extra_ips = ["127.0.0.1", "::1"]
+        print(
+            "No --hostname/--ip given; minting a chain-only-trust cert "
+            "with placeholder SAN. Peers will validate this cert by CA "
+            "chain, ignoring the SAN. Add --hostname/--ip if a browser "
+            "or strict-hostname client needs to reach the URL directly.",
+            file=sys.stderr,
+        )
+
+    hostnames, ips = merge_san([], [], extra_hostnames=extra_hosts, extra_ips=extra_ips)
     minted = mint_server_cert(cfg, hostnames=hostnames, ips=ips)
 
     out_dir = Path(os.path.expanduser(args.output))

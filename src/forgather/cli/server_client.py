@@ -61,6 +61,27 @@ def _default_base_url():
     return f"{scheme}://127.0.0.1:8765"
 
 
+class _NoHostnameHTTPSAdapter:
+    """Lazy import wrapper — only build the requests/urllib3 plumbing
+    when we actually need it. Avoids importing requests at module load."""
+
+    @staticmethod
+    def build():
+        from requests.adapters import HTTPAdapter
+
+        class _Adapter(HTTPAdapter):
+            def init_poolmanager(self, *args, **kwargs):
+                # ``assert_hostname=False`` tells urllib3 to skip the
+                # cert-SAN-vs-URL-hostname check while still requiring
+                # chain validation against the configured CA bundle.
+                # Matches what we do for httpx/urllib elsewhere — see
+                # forgather.tls.runtime.httpx_verify for the rationale.
+                kwargs["assert_hostname"] = False
+                return super().init_poolmanager(*args, **kwargs)
+
+        return _Adapter()
+
+
 class ServerClient:
     def __init__(self, base_url=None, timeout=30.0):
         import requests
@@ -74,17 +95,28 @@ class ServerClient:
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers["User-Agent"] = "forgather-cli"
-        # When the URL is HTTPS, point `requests` at the shared CA
-        # bundle so our self-signed certs validate. For HTTP, leave the
-        # default; for HTTPS without a configured CA, fall back to the
-        # system trust store (handles BYOC scenarios).
+        # HTTPS configuration:
+        #   1. Point `requests` at the shared CA bundle so our self-
+        #      signed certs validate. Without it, requests falls back
+        #      to the system trust store and rejects the cert.
+        #   2. If the shared config has verify_hostname=False (the
+        #      LAN default), install an HTTPAdapter that disables
+        #      urllib3's hostname-SAN check. The chain check is the
+        #      actual security boundary on a private CA — see
+        #      docs/operations/tls.md.
         if self.base.lower().startswith("https://"):
             try:
-                from forgather.tls import httpx_verify
+                from forgather.tls import load_config
+                from forgather.tls.runtime import httpx_verify  # noqa: F401
 
-                v = httpx_verify()
-                # requests accepts a path string or True.
-                self.session.verify = v
+                cfg = load_config()
+                bundle = cfg.effective_bundle()
+                if bundle is not None:
+                    self.session.verify = str(bundle)
+                if not cfg.verify_hostname:
+                    self.session.mount(
+                        "https://", _NoHostnameHTTPSAdapter.build()
+                    )
             except Exception:
                 pass
         self._token = _load_auth_token()

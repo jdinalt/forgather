@@ -41,17 +41,28 @@ from forgather.preprocess import forgather_config_dir
 
 
 def _make_ssl_context(url: str) -> Optional[ssl.SSLContext]:
-    """SSLContext using the shared CA bundle for ``https://`` URLs."""
+    """SSLContext using the shared CA bundle for ``https://`` URLs.
+
+    Honors ``verify_hostname`` from the shared TLS config — defaults to
+    chain-only validation on a LAN with a private CA. See the comment
+    in :func:`forgather.tls.runtime.httpx_verify` for the rationale.
+    """
     if not url.lower().startswith("https://"):
         return None
     try:
         from forgather.tls import httpx_verify
 
-        bundle = httpx_verify()
+        verify = httpx_verify()
     except Exception:
-        bundle = True
-    if isinstance(bundle, str):
-        return ssl.create_default_context(cafile=bundle)
+        verify = True
+    # httpx_verify already returns an SSLContext when a bundle is
+    # present (with hostname checking flipped per config); urlopen
+    # accepts that directly. The legacy string-path return shape is
+    # also still handled for safety.
+    if isinstance(verify, ssl.SSLContext):
+        return verify
+    if isinstance(verify, str):
+        return ssl.create_default_context(cafile=verify)
     return ssl.create_default_context()
 
 from .iterable_backend import IterableDatasetBackend

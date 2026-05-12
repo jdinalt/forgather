@@ -19,18 +19,22 @@ from .dataset_server_args import DEFAULT_SERVER_URL, SERVER_URL_ENV
 def _ssl_context_for_url(url: str) -> Optional[ssl.SSLContext]:
     """Build an SSLContext that trusts our local CA bundle (if any).
 
-    Returns ``None`` for plain ``http://`` URLs.
+    Returns ``None`` for plain ``http://`` URLs. Honors the shared
+    config's ``verify_hostname`` flag — defaults to chain-only
+    validation, matching the rest of the forgather TLS surface.
     """
     if not url.lower().startswith("https://"):
         return None
     try:
         from forgather.tls import httpx_verify
 
-        bundle = httpx_verify()
+        verify = httpx_verify()
     except Exception:
-        bundle = True
-    if isinstance(bundle, str):
-        return ssl.create_default_context(cafile=bundle)
+        verify = True
+    if isinstance(verify, ssl.SSLContext):
+        return verify
+    if isinstance(verify, str):
+        return ssl.create_default_context(cafile=verify)
     return ssl.create_default_context()
 
 

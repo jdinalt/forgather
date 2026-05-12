@@ -83,6 +83,15 @@ class TLSConfig:
     san_ips: list[str] = field(default_factory=list)
     validity_days: int = 825
     ca_validity_days: int = 3650
+    # Whether peer-pull and proxy clients should validate the peer
+    # cert's SAN against the URL hostname. Defaults to False:
+    # on a private LAN with a private CA, the security boundary is
+    # "do you hold a cert signed by my CA?", not "does your IP match
+    # this string." DHCP-issued IPs and ephemeral hostnames make
+    # hostname-SAN matching mostly theatre. Flip to True for setups
+    # where you want strict RFC-6125 hostname verification (e.g.
+    # public-DNS clusters with cert manager auto-renewal).
+    verify_hostname: bool = False
     config_path: Optional[Path] = None
     raw: dict = field(default_factory=dict)
 
@@ -137,6 +146,7 @@ def load_config(root: Optional[Path] = None) -> TLSConfig:
         root=root,
         enabled=bool(raw.get("enabled", False)),
         auto_on_non_loopback=bool(raw.get("auto_on_non_loopback", True)),
+        verify_hostname=bool(raw.get("verify_hostname", False)),
         ca_cert=Path(os.path.expanduser(raw.get("ca_cert") or paths["ca_cert"])),
         ca_key=Path(os.path.expanduser(raw.get("ca_key") or paths["ca_key"])),
         ca_serial=Path(
@@ -174,6 +184,7 @@ def save_config(cfg: TLSConfig) -> Path:
     data = {
         "enabled": bool(cfg.enabled),
         "auto_on_non_loopback": bool(cfg.auto_on_non_loopback),
+        "verify_hostname": bool(cfg.verify_hostname),
         "ca_cert": str(cfg.ca_cert),
         "ca_key": str(cfg.ca_key),
         "ca_serial": str(cfg.ca_serial),

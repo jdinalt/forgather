@@ -188,12 +188,60 @@ def test_is_enabled_reflects_provisioning(tls_root):
     assert is_enabled() is True
 
 
-def test_httpx_verify_points_at_bundle(tls_root):
+def test_httpx_verify_returns_chain_only_ssl_context(tls_root):
+    """Default (verify_hostname=False) returns an SSLContext with chain
+    validation on but hostname matching off — the LAN-friendly mode."""
+    import ssl
+
     _provisioned_cfg(tls_root)
     v = httpx_verify()
-    assert isinstance(v, str)
-    assert v.endswith("ca-bundle.crt")
-    assert Path(v).is_file()
+    assert isinstance(v, ssl.SSLContext)
+    assert v.check_hostname is False
+    assert v.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_httpx_verify_strict_when_verify_hostname_set(tls_root):
+    """verify_hostname=True turns on RFC-6125 SAN-vs-URL checking."""
+    import ssl
+
+    cfg = _provisioned_cfg(tls_root)
+    cfg.verify_hostname = True
+    save_config(cfg)
+    cfg2 = load_config()
+    v = httpx_verify(cfg2)
+    assert isinstance(v, ssl.SSLContext)
+    assert v.check_hostname is True
+    assert v.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_httpx_verify_without_bundle_returns_true(tls_root):
+    """No bundle → True (system trust); peer connections fail closed."""
+    # No cert provisioned.
+    cfg = load_config()
+    v = httpx_verify(cfg)
+    assert v is True
+
+
+def test_mint_with_no_san_flags_uses_placeholder(tls_root):
+    """`tls mint` (no --hostname/--ip) mints a chain-only-trust cert.
+
+    Operators on dynamic-IP LANs shouldn't have to know each peer's
+    address to mint its cert. Validate by checking the placeholder
+    SAN is present.
+    """
+    from forgather.cli.tls import _cmd_mint
+    import argparse
+    import tempfile
+
+    _provisioned_cfg(tls_root)
+    with tempfile.TemporaryDirectory() as out_dir:
+        args = argparse.Namespace(hostname=[], ip=[], output=out_dir)
+        rc = _cmd_mint(args)
+        assert rc == 0
+        info = cert_info(Path(out_dir) / "server.crt")
+        # Placeholder SAN: forgather-peer + localhost + 127.0.0.1 + ::1.
+        assert "forgather-peer" in info["san_dns"]
+        assert "127.0.0.1" in info["san_ip"]
 
 
 def test_private_key_is_0600_from_creation(tls_root):

@@ -63,7 +63,7 @@ After init, every server respects:
 Run the same CA across every node so peer-pull validates without
 warnings.
 
-### Trust model: one CA, one direction of minting
+### Trust model: one CA, chain-only validation
 
 A forgather cluster has **exactly one CA**. One host — call it host A
 — holds the CA private key and mints leaf certs for every node,
@@ -84,6 +84,29 @@ verifies in both directions:
 You do **not** need to mint a second cert "back from B to A". The
 asymmetry is in *issuance* (only A has the CA key), not in *trust*
 (every node trusts the same CA).
+
+**Chain-only validation is the default.** Standard TLS layers two
+checks: (1) the cert chains to a trusted CA, and (2) the cert's SAN
+matches the URL hostname/IP. On the public web, (2) is what binds a
+cert to a specific operator — the public CA refused to sign for a
+domain you don't control. On a private LAN with a private CA, (2)
+adds nothing: the operator who holds the CA key can mint a cert
+claiming any hostname or IP, and the IPs themselves are often
+DHCP-issued and ephemeral. So forgather's default is **chain-only**:
+the peer's cert must chain to your CA; the SAN is informational.
+
+The practical consequence: you don't need to know each peer's
+hostname or IP when minting its cert. The `--hostname` / `--ip`
+flags are optional in `forgather tls mint`. Pass them only when an
+external client (a browser, a non-forgather tool) needs to hit the
+URL by a specific name and you want that client to enforce
+hostname-SAN matching.
+
+For paranoid setups (public-DNS clusters, regulated environments
+where strict RFC-6125 verification is a policy requirement), flip
+`verify_hostname: true` in `~/.config/forgather/tls/config.yaml`
+and make sure your mint commands carry the right `--hostname`/`--ip`
+SAN entries.
 
 ### What if host A goes away?
 
@@ -185,26 +208,41 @@ Pick exactly one node. Implications you should be comfortable with:
 ### Step 2 — provision the CA + the CA holder's own cert (host A only)
 
 ```bash
-# Auto-detected SANs cover this host's hostnames + IPs. Add the
-# peers' hostnames/IPs here too if you want the CA holder's *own*
-# cert to also be valid for those names — not required, just
-# convenient if peers will ever curl back to A by an alternate name.
-forgather tls init --hostname a.lan --ip 10.0.0.5
+forgather tls init
 ```
+
+`init` auto-discovers this host's hostnames + IPs and bakes them
+into the cert's SAN. You don't need to know peers' addresses here
+— under the chain-only default, peers will dial A and validate by
+CA chain regardless of what SAN is on A's cert.
+
+If browsers / external clients will hit `https://a.lan:8765/` and
+those clients enforce strict hostname matching, pass `--hostname`
+explicitly: `forgather tls init --hostname a.lan`.
 
 ### Step 3 — for each other node, mint + distribute + install
 
 Repeat this block for **every** non-CA-holder node. The 3-node
-example covers B (`10.0.0.6`) and C (`10.0.0.7`); add more lines
-for D, E, …
+example covers B and C; add more lines for D, E, …
 
-**On host A** (the CA holder), mint a cert for each peer:
+**On host A** (the CA holder), mint one cert per peer:
 
 ```bash
-forgather tls mint --hostname b.lan --ip 10.0.0.6 -o /tmp/b-tls
-forgather tls mint --hostname c.lan --ip 10.0.0.7 -o /tmp/c-tls
+forgather tls mint -o /tmp/b-tls
+forgather tls mint -o /tmp/c-tls
 # ...one mint per additional peer
 ```
+
+Each call produces a chain-only-trust cert with a placeholder SAN
+(`forgather-peer`, `localhost`, `127.0.0.1`, `::1`). Peers will
+validate it by CA chain; the SAN is informational. **You don't need
+to know any peer's IP or hostname** — particularly useful when
+peers are on a DHCP-issued network you don't control.
+
+If a peer will be reached by a *browser* via its LAN IP/hostname
+and you want the browser to validate the SAN, add explicit entries
+on that peer's mint:
+`forgather tls mint --hostname b.lan --ip 10.0.0.6 -o /tmp/b-tls`.
 
 Each output directory contains `server.crt`, `server.key` (0600),
 and a copy of `ca.crt`. The CA private key never leaves A.
@@ -273,7 +311,7 @@ needed:
 
 ```bash
 # On host A (the CA holder):
-forgather tls mint --hostname d.lan --ip 10.0.0.8 -o /tmp/d-tls
+forgather tls mint -o /tmp/d-tls
 scp /tmp/d-tls/server.crt /tmp/d-tls/server.key /tmp/d-tls/ca.crt \
     d.lan:/tmp/d-tls/
 
@@ -283,6 +321,9 @@ forgather tls install --cert /tmp/d-tls/server.crt \
                       --ca   /tmp/d-tls/ca.crt
 forgather server -H 0.0.0.0 --cluster mycluster
 ```
+
+No hostname/IP arguments are needed because peer-pull validates by
+CA chain — D's IP can be whatever the network gives it.
 
 Existing peers pick up the new node via mDNS — no restart required.
 

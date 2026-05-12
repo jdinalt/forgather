@@ -94,34 +94,45 @@ def is_tls_active(
 def httpx_verify(cfg: Optional[TLSConfig] = None) -> object:
     """Value to pass to httpx's ``verify=`` for talking to forgather peers.
 
-    Returns a path string when a local CA bundle exists. When TLS is
-    enabled on this host but no bundle is present, we intentionally
-    *still* fall back to ``True`` (system trust) so the connection
-    fails closed against forgather peers (system trust will not
-    contain the self-signed cluster CA). Returning ``False`` here
-    would silently disable verification — never what we want.
+    Returns an ``ssl.SSLContext`` carrying the shared CA bundle when
+    one exists. By default the context is built with
+    ``check_hostname = False`` because forgather's threat model on a
+    LAN is "trust any leaf signed by my CA" — DHCP-issued IPs and
+    ephemeral hostnames make RFC-6125 hostname verification mostly
+    theatre, and an attacker who can mint a CA-signed cert can also
+    pick whatever hostname/IP they like. Flip
+    ``verify_hostname: true`` in ``config.yaml`` for strict
+    hostname-SAN matching (e.g. public-DNS clusters).
 
-    Falling back to ``True`` rather than raising lets callers in
-    mixed environments (e.g. talking to a public LLM endpoint *and*
-    a local forgather peer with the same httpx client) keep working
-    against system-trusted hosts; the forgather peers will simply
-    fail to verify, which is the correct failure mode.
+    Returns ``True`` (system trust) only when no bundle exists. The
+    forgather peer will then fail-closed against the system trust
+    store, which is the correct failure mode — we never silently
+    disable verification.
     """
+    import ssl
+
     cfg = cfg or load_config()
     bundle = cfg.effective_bundle()
-    if bundle is not None:
-        return str(bundle)
-    if cfg.enabled:
-        log.warning(
-            "TLS enabled in %s but no CA bundle present at %s — "
-            "forgather peer connections will fall back to the system "
-            "trust store and almost certainly fail to verify. Run "
-            "'forgather tls init' or import a peer CA via "
-            "'forgather tls import-ca'.",
-            cfg.config_file,
-            cfg.ca_bundle,
-        )
-    return True
+    if bundle is None:
+        if cfg.enabled:
+            log.warning(
+                "TLS enabled in %s but no CA bundle present at %s — "
+                "forgather peer connections will fall back to the "
+                "system trust store and almost certainly fail to verify. "
+                "Run 'forgather tls init' or import a peer CA via "
+                "'forgather tls import-ca'.",
+                cfg.config_file,
+                cfg.ca_bundle,
+            )
+        return True
+    ctx = ssl.create_default_context(cafile=str(bundle))
+    if not cfg.verify_hostname:
+        # Chain validation stays on (CERT_REQUIRED is the default for
+        # create_default_context); we just don't insist that the SAN
+        # matches the URL hostname. The chain check is the actual
+        # security boundary on a private CA.
+        ctx.check_hostname = False
+    return ctx
 
 
 def httpx_verify_for_url(
