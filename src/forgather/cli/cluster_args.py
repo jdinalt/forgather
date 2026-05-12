@@ -123,6 +123,21 @@ def create_cluster_parser(global_args):
         ),
     )
     submit_parser.add_argument(
+        "--dataset-source",
+        default=None,
+        metavar="auto|server:<id>|local",
+        help=(
+            "Where the training job fetches its dataset from. Matches "
+            "the webui submit modal's dataset-source selector.\n"
+            "  auto       — cluster auto-routing via the master's "
+            "dataset_server inventory (recommended for multi-node).\n"
+            "  server:<id> — a specific server_id (use 'forgather "
+            "cluster datasets' to list).\n"
+            "  local      — the training script's default loader (no "
+            "dataset_server). Same as omitting the flag."
+        ),
+    )
+    submit_parser.add_argument(
         "--json",
         action="store_true",
         help="Emit the submit response JSON instead of the table view",

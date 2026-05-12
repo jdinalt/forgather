@@ -232,6 +232,36 @@ def _parse_member_spec(spec):
     return host, n, (iface or None)
 
 
+def _parse_dataset_source(spec):
+    """Translate the CLI ``--dataset-source`` value to the dict shape
+    the forgather_server expects in the submit body.
+
+    Accepted values:
+      ``None`` / ``"local"`` / ``""``: omit (training script default).
+      ``"auto"``: cluster auto-routing.
+      ``"server:<server_id>"``: pin to a specific known server (run
+        ``forgather cluster datasets`` for ids).
+    """
+    if spec is None:
+        return None
+    spec = spec.strip()
+    if spec in ("", "local"):
+        return None
+    if spec == "auto":
+        return {"kind": "auto"}
+    if spec.startswith("server:"):
+        sid = spec[len("server:") :].strip()
+        if not sid:
+            raise RuntimeError(
+                "--dataset-source server:<id> requires a non-empty id"
+            )
+        return {"kind": "server", "server_id": sid}
+    raise RuntimeError(
+        f"unknown --dataset-source value: {spec!r} "
+        "(expected 'auto', 'local', or 'server:<id>')"
+    )
+
+
 def _parse_dynamic_args(specs):
     out = {}
     for s in specs:
@@ -367,6 +397,7 @@ def _cmd_submit(client, args):
         rdzv_node_id = _resolve_host_to_node_id(members, args.rdzv_host)["node_id"]
 
     dynamic_args = _parse_dynamic_args(args.dynamic_arg)
+    dataset_source = _parse_dataset_source(getattr(args, "dataset_source", None))
 
     resp = client.cluster_jobs_submit(
         project_dir=project_dir,
@@ -377,6 +408,7 @@ def _cmd_submit(client, args):
         rdzv_node_id=rdzv_node_id,
         rdzv_port=args.rdzv_port,
         allow_version_mismatch=args.allow_version_mismatch,
+        dataset_source=dataset_source,
     )
 
     bundle = resp.get("cluster_job") or {}

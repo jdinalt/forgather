@@ -71,9 +71,19 @@ def resolve_to_env(
     kind = source.get("kind")
     if kind in (None, "local"):
         return None
+    if kind == "auto":
+        # Cluster auto-routing: the resilient client consults
+        # /api/cluster/dataset_router/resolve on the local
+        # forgather_server every time it needs to (re)connect. No
+        # token is shipped via env — the client uses
+        # $FORGATHER_SERVER_TOKEN (or the bearer file) to talk to its
+        # local forgather_server, which holds the upstream token in
+        # the master inventory.
+        return {"FORGATHER_DATASET_SERVER": "auto"}
     if kind != "server":
         raise DatasetSourceError(
-            f"unknown dataset_source kind: {kind!r} " "(expected 'local' or 'server')"
+            f"unknown dataset_source kind: {kind!r} "
+            "(expected 'local', 'server', or 'auto')"
         )
 
     server_id = source.get("server_id")
