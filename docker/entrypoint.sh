@@ -28,21 +28,11 @@ export VIRTUAL_ENV="${VENV_DIR}"
 export PATH="${VENV_DIR}/bin:${PATH}"
 
 # ----------------------------------------------------------------------
-# Scrub build-time-only env vars unconditionally.
-#
-# Historical: the Dockerfiles used to put
-# ``UV_CACHE_DIR=/root/.cache/uv`` in ENV so build-time ``uv pip
-# install`` RUNs would hit the BuildKit cache mount under /root. That
-# leaked into every ``docker exec``-spawned shell (which inherits
-# image ENV but bypasses this entrypoint), so an interactive ``uv pip
-# install -e .`` would fail with "Failed to initialize cache" against
-# the root-only /root cache dir. Current Dockerfiles set UV_CACHE_DIR
-# inline on each RUN instead, so it's never in ENV.
-#
-# We keep the scrub here as defense-in-depth: (a) protects users on
-# older images built before the inline-export fix; (b) clears stale
-# values that might leak in from a parent process or operator env.
-# Cheap and idempotent.
+# Scrub build-time-only env vars that might leak in from a parent
+# process or operator env. UV_CACHE_DIR in particular, if it points at
+# a path the in-container user can't write to, breaks the editable
+# reinstall below with "Failed to initialize cache". Cheap and
+# idempotent.
 unset UV_CACHE_DIR UV_LINK_MODE UV_INSTALL_DIR \
       PIP_DISABLE_PIP_VERSION_CHECK BUILDKIT_PROGRESS
 

@@ -323,8 +323,7 @@ docker/run.sh --recreate
 ```
 
 See [docker.md → Upgrading Forgather inside the container](docker.md#upgrading-forgather-inside-the-container)
-for the full reference, including the `UV_CACHE_DIR` workaround
-for older images.
+for the full reference.
 
 ### Networking
 

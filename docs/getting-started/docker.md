@@ -577,21 +577,6 @@ docker/build.sh -- --no-cache    # full rebuild from scratch
 docker/run.sh --recreate         # discard the old container, attach to the new image
 ```
 
-**Stuck on "Failed to initialize cache at /root/.cache/uv"?** Images
-built before May 2026 set `UV_CACHE_DIR=/root/.cache/uv` in image
-ENV. That env var is inherited by every `docker exec` shell but
-points at a root-only path, so `uv pip install ...` fails for the
-unprivileged in-container user. Workaround without a rebuild:
-
-```bash
-unset UV_CACHE_DIR
-uv pip install -e "$FORGATHER_REPO"
-```
-
-Or rebuild the image (`docker/build.sh`) — current Dockerfiles set
-`UV_CACHE_DIR` inline on the build RUNs only, so it never leaks into
-image ENV.
-
 ### Web UI bundle (build on the host)
 
 The dev image does **not** prebuild the SPA. The bundle is
