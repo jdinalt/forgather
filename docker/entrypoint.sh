@@ -28,19 +28,11 @@ export VIRTUAL_ENV="${VENV_DIR}"
 export PATH="${VENV_DIR}/bin:${PATH}"
 
 # ----------------------------------------------------------------------
-# Scrub build-time-only env vars unconditionally.
-#
-# The Dockerfiles set ``UV_CACHE_DIR=/root/.cache/uv`` (and friends)
-# in ENV so build-time ``uv pip install`` RUNs hit the BuildKit cache
-# mount under /root. At container runtime the in-image user can't
-# write to /root, so any uv invocation (notably the editable
-# reinstall below) fails with "Failed to initialize cache".
-#
-# The runtime image's entrypoint used to scrub these only on the
-# gosu re-exec line in phase 1; that doesn't cover the dev image
-# (which skips phase 1 entirely since the container already starts
-# as the host operator). Move the scrub here so both images get it
-# regardless of which phase actually runs.
+# Scrub build-time-only env vars that might leak in from a parent
+# process or operator env. UV_CACHE_DIR in particular, if it points at
+# a path the in-container user can't write to, breaks the editable
+# reinstall below with "Failed to initialize cache". Cheap and
+# idempotent.
 unset UV_CACHE_DIR UV_LINK_MODE UV_INSTALL_DIR \
       PIP_DISABLE_PIP_VERSION_CHECK BUILDKIT_PROGRESS
 

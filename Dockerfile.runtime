@@ -64,11 +64,18 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     UV_LINK_MODE=copy \
-    UV_CACHE_DIR=/root/.cache/uv \
     VIRTUAL_ENV=${VENV_DIR} \
     USER_NAME=${USER_NAME} \
     VENV_DIR=${VENV_DIR} \
     PATH=${VENV_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# UV_CACHE_DIR is intentionally NOT in ENV: the build-time cache target
+# /root/.cache/uv is unwritable to the unprivileged in-image user, so
+# baking it into ENV poisons every `docker exec`-spawned shell (which
+# inherits image ENV but bypasses the entrypoint's scrub). Instead we
+# set it inline on each uv-using RUN below, so it's scoped to the
+# build only. At runtime uv falls back to $HOME/.cache/uv, which lands
+# in the in-image user's home (a named volume by default).
 
 # ---------------------------------------------------------------------------
 # System packages. Same baseline as the dev image, plus `gosu` for the
@@ -171,7 +178,8 @@ RUN set -eux; \
 USER ${USER_NAME}
 
 RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
-    umask 0002 \
+    export UV_CACHE_DIR=/root/.cache/uv \
+    && umask 0002 \
     && uv venv --python python3.12 --seed ${VENV_DIR}
 
 # Fetch a fresh copy of the source tree from git rather than COPYing
@@ -230,13 +238,15 @@ RUN --mount=type=bind,target=/build-context \
 # correctly; the tree is frozen anyway because nothing bind-mounts
 # over it at runtime.
 RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
-    umask 0002 \
+    export UV_CACHE_DIR=/root/.cache/uv \
+    && umask 0002 \
     && uv pip install --python ${VENV_DIR}/bin/python -e ${REPO_DIR}
 
 # cut-cross-entropy from source for bf16/fp16 numerical stability
 # (the pip release lacks the accum_e_fp32 / accum_c_fp32 features).
 RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
-    umask 0002 \
+    export UV_CACHE_DIR=/root/.cache/uv \
+    && umask 0002 \
     && uv pip install --python ${VENV_DIR}/bin/python \
         "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
 
