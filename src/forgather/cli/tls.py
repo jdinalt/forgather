@@ -37,6 +37,7 @@ def tls_cmd(args) -> int:
         "import-ca": _cmd_import_ca,
         "mint": _cmd_mint,
         "install": _cmd_install,
+        "deploy": _cmd_deploy,
         "trust-system": _cmd_trust_system,
         "clean": _cmd_clean,
         "enable": _cmd_enable,
@@ -560,6 +561,242 @@ def _cmd_install(args) -> int:
     save_config(cfg)
     print(f"Wrote config : {cfg.config_file}")
     return 0
+
+
+# --------------------------------------------------------------------- deploy
+
+
+def _cmd_deploy(args) -> int:
+    """Mint + scp + install for every cluster peer via ssh.
+
+    Reuses the local forgather server's cluster membership table —
+    so the operator never has to type peer hostnames or IPs. Each
+    peer gets a freshly minted cert (placeholder SAN, chain-only
+    trust); the local CA private key stays on this host.
+    """
+    import getpass
+    import shutil
+    import subprocess
+    import tempfile
+
+    cfg = load_config()
+    if not cfg.has_ca_authority():
+        print(
+            "This host has no CA authority — run 'forgather tls init' first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Pull membership from the local forgather server. ServerClient
+    # handles auth-token discovery + the right scheme.
+    try:
+        from forgather.cli.server_client import ServerClient
+
+        client = ServerClient(getattr(args, "server", None))
+        members_payload = client.cluster_members()
+        self_payload = client.cluster_self()
+    except Exception as exc:
+        print(
+            f"could not reach local forgather server: {exc}\n"
+            "  Start it first ('forgather server --cluster <name>') so deploy "
+            "can read the membership table.",
+            file=sys.stderr,
+        )
+        return 1
+
+    members = members_payload.get("members") or []
+    self_id = (self_payload or {}).get("node_id") if self_payload else None
+    if not members:
+        print("No cluster members visible — is the local server running in cluster mode?")
+        return 1
+
+    # Build the host-override map from --ssh-host PEER=HOST entries.
+    ssh_host_override: dict = {}
+    for raw in args.ssh_host or []:
+        if "=" not in raw:
+            print(f"--ssh-host expects PEER=HOST (got {raw!r})", file=sys.stderr)
+            return 2
+        peer, host = raw.split("=", 1)
+        ssh_host_override[peer.strip()] = host.strip()
+
+    # Filter peers: drop self, apply positional filter. We deliberately
+    # do NOT skip "unreachable" peers — reachability in the membership
+    # table is driven by HTTPS peer-pull success, and the operator is
+    # likely running `deploy` precisely because that pull is broken
+    # (TLS state missing or mismatched). ssh is independent of
+    # forgather's TLS, so we always try — the per-peer ssh result is
+    # the authoritative answer.
+    peers = [m for m in members if not (self_id and m.get("node_id") == self_id)]
+
+    if args.nodes:
+        wanted = set(args.nodes)
+        matched = []
+        for p in peers:
+            if (
+                p.get("hostname") in wanted
+                or p.get("address") in wanted
+                or p.get("node_id") in wanted
+            ):
+                matched.append(p)
+                wanted.discard(p.get("hostname"))
+                wanted.discard(p.get("address"))
+                wanted.discard(p.get("node_id"))
+        if wanted:
+            print(f"unknown peers (not in membership): {sorted(wanted)}", file=sys.stderr)
+            return 1
+        peers = matched
+
+    if not peers:
+        print("No peers to deploy to.")
+        return 0
+
+    ssh_user = args.ssh_user or os.environ.get("USER") or getpass.getuser()
+
+    # Plan summary up front so the operator sees what's about to happen
+    # before any passwords are prompted for.
+    print(f"Deploying TLS state to {len(peers)} peer(s) as ssh user {ssh_user!r}:")
+    for p in peers:
+        target = ssh_host_override.get(p.get("hostname"), p.get("address"))
+        print(f"  • {p.get('hostname')} ({target})")
+    print()
+
+    if args.dry_run:
+        print("--dry-run: stopping here.")
+        return 0
+
+    ssh_base = ["ssh"]
+    scp_base = ["scp", "-p"]
+    if args.batch:
+        ssh_base += ["-o", "BatchMode=yes"]
+        scp_base += ["-o", "BatchMode=yes"]
+
+    results: list[tuple] = []
+    for peer in peers:
+        result = _deploy_to_peer(
+            cfg,
+            peer,
+            ssh_target=ssh_host_override.get(peer.get("hostname"), peer.get("address")),
+            ssh_user=ssh_user,
+            ssh_base=tuple(ssh_base),
+            scp_base=tuple(scp_base),
+            force=args.force,
+        )
+        results.append((peer, result))
+        status = "OK" if result is True else f"FAILED — {result}"
+        print(f"  {peer.get('hostname')}: {status}")
+
+    failed = [r for _, r in results if r is not True]
+    print()
+    if failed:
+        print(f"{len(failed)} of {len(results)} peer(s) failed.", file=sys.stderr)
+        return 1
+    print(f"All {len(results)} peer(s) deployed. Restart the forgather server on each peer for TLS to take effect.")
+    return 0
+
+
+def _deploy_to_peer(
+    cfg, peer, *, ssh_target, ssh_user, ssh_base, scp_base, force
+):
+    """Mint a cert, ship it via scp, run `tls install` via ssh.
+
+    Returns ``True`` on success or a short error string on failure.
+    The local mint goes through the same code path as `tls mint`
+    (placeholder SAN by default — peers validate by CA chain).
+    """
+    import subprocess
+    import tempfile
+
+    target = f"{ssh_user}@{ssh_target}"
+    # Mint a fresh cert into a temp dir on this host.
+    try:
+        hostnames, ips = merge_san(
+            [], [],
+            extra_hostnames=["forgather-peer", "localhost"],
+            extra_ips=["127.0.0.1", "::1"],
+        )
+        from forgather.tls.ca import mint_server_cert as _mint
+
+        minted = _mint(cfg, hostnames=hostnames, ips=ips)
+    except Exception as exc:
+        return f"mint: {exc}"
+
+    with tempfile.TemporaryDirectory(prefix="forgather-tls-deploy-") as local_tmp:
+        local = Path(local_tmp)
+        (local / "server.crt").write_bytes(minted.cert_pem)
+        # Atomic 0600 creation, matching forgather.tls.ca._write_secret.
+        fd = os.open(
+            str(local / "server.key"),
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o600,
+        )
+        try:
+            os.write(fd, minted.key_pem)
+        finally:
+            os.close(fd)
+        (local / "ca.crt").write_bytes(cfg.ca_cert.read_bytes())
+
+        # Optional idempotency check: skip if peer already has TLS unless --force.
+        if not force:
+            check = subprocess.run(
+                [*ssh_base, target, "test -f ~/.config/forgather/tls/server.crt"],
+                capture_output=True,
+            )
+            if check.returncode == 0:
+                return "peer already has TLS state (pass --force to overwrite)"
+
+        # Create a remote temp dir.
+        try:
+            mk = subprocess.run(
+                [*ssh_base, target, "mktemp -d /tmp/forgather-tls-deploy.XXXXXX"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            return f"ssh mktemp: {exc.stderr.strip() or exc.returncode}"
+        remote_tmp = mk.stdout.strip()
+
+        try:
+            # scp the bundle.
+            try:
+                subprocess.run(
+                    [
+                        *scp_base,
+                        str(local / "server.crt"),
+                        str(local / "server.key"),
+                        str(local / "ca.crt"),
+                        f"{target}:{remote_tmp}/",
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                return f"scp: {exc.stderr.decode('utf-8', 'replace').strip() or exc.returncode}"
+
+            # Run `forgather tls install` on the peer.
+            install_cmd = (
+                f"forgather tls install "
+                f"--cert {remote_tmp}/server.crt "
+                f"--key {remote_tmp}/server.key "
+                f"--ca {remote_tmp}/ca.crt"
+            )
+            try:
+                subprocess.run(
+                    [*ssh_base, target, install_cmd],
+                    check=True,
+                    capture_output=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                err = exc.stderr.decode("utf-8", "replace").strip()
+                return f"remote install: {err or exc.returncode}"
+        finally:
+            # Clean up remote staging dir even on failure.
+            subprocess.run(
+                [*ssh_base, target, f"rm -rf {remote_tmp}"],
+                capture_output=True,
+            )
+
+    return True
 
 
 # ---------------------------------------------------------------- trust-system

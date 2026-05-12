@@ -196,6 +196,83 @@ def create_tls_parser(global_args):
         formatter_class=RawTextHelpFormatter,
     )
 
+    deploy = sub.add_parser(
+        "deploy",
+        help="Mint + scp + install certs on cluster peers via ssh",
+        formatter_class=RawTextHelpFormatter,
+        description=(
+            "Automate the per-peer TLS bring-up. For every cluster peer\n"
+            "(discovered via the local forgather server's membership\n"
+            "table), mints a cert here, scps it over, and runs\n"
+            "`forgather tls install` on the peer via ssh. Requires:\n"
+            "\n"
+            "  * This host holds the CA (`forgather tls init` already run).\n"
+            "  * The local forgather server is running with `--cluster <name>`\n"
+            "    so it knows the membership.\n"
+            "  * ssh access to every peer. ssh prompts for passwords as\n"
+            "    normal — set up ssh-agent or keys if you don't want to\n"
+            "    type per-peer (or pass --batch to refuse password\n"
+            "    prompts and fail fast on missing keys).\n"
+            "  * `forgather` is on the remote PATH for the ssh user.\n"
+            "\n"
+            "Idempotent: peers that already have a server cert installed\n"
+            "are skipped unless --force is given. The local mint is\n"
+            "always fresh — no client state is reused between runs."
+        ),
+    )
+    deploy.add_argument(
+        "nodes",
+        nargs="*",
+        metavar="NODE",
+        help=(
+            "Hostname or IP of one or more specific peers to deploy to. "
+            "If omitted, deploys to every reachable peer in the membership table."
+        ),
+    )
+    deploy.add_argument(
+        "--ssh-user",
+        default=None,
+        metavar="USER",
+        help="SSH user on each peer (default: $USER).",
+    )
+    deploy.add_argument(
+        "--ssh-host",
+        action="append",
+        default=[],
+        metavar="PEER=HOST",
+        help=(
+            "Override the ssh target for a specific peer (repeatable). "
+            "Use when the peer's cluster address isn't directly ssh-reachable "
+            "by the same name — e.g. `--ssh-host node-b=10.0.0.6` or "
+            "`--ssh-host node-b=bastion.lan` if you tunnel through a bastion."
+        ),
+    )
+    deploy.add_argument(
+        "--server",
+        default=None,
+        metavar="URL",
+        help="Local forgather server URL (default: $FORGATHER_SERVER_URL).",
+    )
+    deploy.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing TLS state on the peer. Off by default.",
+    )
+    deploy.add_argument(
+        "--batch",
+        action="store_true",
+        help=(
+            "Pass BatchMode=yes to ssh/scp: refuses to prompt for "
+            "passwords, fails fast if keys aren't set up. Default off "
+            "(let ssh prompt as usual)."
+        ),
+    )
+    deploy.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would happen but don't mint, scp, or install.",
+    )
+
     sub.add_parser(
         "enable",
         help="Set 'enabled: true' in shared config (no cert changes)",

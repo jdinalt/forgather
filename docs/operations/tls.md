@@ -220,7 +220,42 @@ If browsers / external clients will hit `https://a.lan:8765/` and
 those clients enforce strict hostname matching, pass `--hostname`
 explicitly: `forgather tls init --hostname a.lan`.
 
-### Step 3 — for each other node, mint + distribute + install
+### Step 3 (automated path) — `forgather tls deploy`
+
+If this host has ssh access to every peer, the whole loop is one
+command:
+
+```bash
+# Start the local forgather server first so deploy can read the
+# cluster membership table.
+forgather server -H 0.0.0.0 --cluster mycluster &
+
+# Mint + scp + remote-install for every peer in the cluster.
+forgather tls deploy
+```
+
+`deploy` walks the membership table (so you don't type any
+hostnames or IPs), mints a fresh placeholder-SAN cert for each
+peer, scps it over, and runs `forgather tls install` on the peer
+via ssh. Passwordless ssh is the smooth path; without it ssh will
+prompt for passwords as it normally does. Targets specific peers
+with positional args (`forgather tls deploy node-b node-c`) and
+skips peers that already have TLS state unless `--force` is
+passed.
+
+For a clean dry-run that shows what would happen without touching
+anything:
+
+```bash
+forgather tls deploy --dry-run
+```
+
+The manual three-step flow below is still supported and is the
+right answer when ssh isn't available, when peer addresses aren't
+in the membership table yet, or when you want to inspect each
+cert before installing it.
+
+### Step 3 (manual path) — for each other node, mint + distribute + install
 
 Repeat this block for **every** non-CA-holder node. The 3-node
 example covers B and C; add more lines for D, E, …
