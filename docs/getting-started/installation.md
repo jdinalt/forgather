@@ -303,12 +303,28 @@ docker start ${NAME}                      # start an existing stopped container
 docker rm -f ${NAME}                      # stop and remove
 ```
 
-For force-rebuilding after pulling repo changes:
+After pulling repo changes, most updates are picked up live —
+the source tree is bind-mounted from your host clone. If
+`pyproject.toml` changed (new deps, version bumps), refresh the
+venv from inside the running container — no rebuild needed:
+
+```bash
+# Inside the container:
+uv pip install -e "$FORGATHER_REPO"
+./build-webui.sh      # only if the SPA changed
+```
+
+Force-rebuilding the image is only needed when the `Dockerfile`
+itself changed (new system packages, Python minor-version bump):
 
 ```bash
 docker/build.sh -- --no-cache
 docker/run.sh --recreate
 ```
+
+See [docker.md → Upgrading Forgather inside the container](docker.md#upgrading-forgather-inside-the-container)
+for the full reference, including the `UV_CACHE_DIR` workaround
+for older images.
 
 ### Networking
 

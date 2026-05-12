@@ -541,6 +541,57 @@ checkout) the entrypoint prints a warning — the venv is still usable
 for arbitrary Python work, but the `forgather` command won't be
 available until you install the package against a real source tree.
 
+### Upgrading Forgather inside the container
+
+The dev image's venv is mutable, and the source tree is bind-mounted
+from your host clone — so most updates don't need a rebuild. The
+smallest hammer:
+
+```bash
+# On the host: pull the new revision.
+cd "$FORGATHER_REPO" && git pull
+
+# Inside the running container: refresh deps + re-run editable install.
+uv pip install -e "$FORGATHER_REPO"
+
+# If the SPA changed, rebuild the static bundle too.
+./build-webui.sh
+
+# Restart any long-running services (forgather server, training jobs)
+# so they pick up the new code.
+```
+
+`uv pip install` here updates whatever's drifted in `pyproject.toml`
+(new pinned versions, new dependencies) without re-downloading the
+whole venv.
+
+**When you do need to rebuild the image:** dependency surgery that
+needs a fresh apt layer (new system packages, a Python minor-version
+bump), changes to `Dockerfile` itself, or a venv that's accumulated
+enough cruft that a clean slate is faster than untangling it. In
+those cases:
+
+```bash
+docker/build.sh                  # incremental rebuild
+docker/build.sh -- --no-cache    # full rebuild from scratch
+docker/run.sh --recreate         # discard the old container, attach to the new image
+```
+
+**Stuck on "Failed to initialize cache at /root/.cache/uv"?** Images
+built before May 2026 set `UV_CACHE_DIR=/root/.cache/uv` in image
+ENV. That env var is inherited by every `docker exec` shell but
+points at a root-only path, so `uv pip install ...` fails for the
+unprivileged in-container user. Workaround without a rebuild:
+
+```bash
+unset UV_CACHE_DIR
+uv pip install -e "$FORGATHER_REPO"
+```
+
+Or rebuild the image (`docker/build.sh`) — current Dockerfiles set
+`UV_CACHE_DIR` inline on the build RUNs only, so it never leaks into
+image ENV.
+
 ### Web UI bundle (build on the host)
 
 The dev image does **not** prebuild the SPA. The bundle is

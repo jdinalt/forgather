@@ -42,11 +42,18 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     UV_LINK_MODE=copy \
-    UV_CACHE_DIR=/root/.cache/uv \
     VIRTUAL_ENV=${VENV_DIR} \
     USER_NAME=${USER_NAME} \
     VENV_DIR=${VENV_DIR} \
     PATH=${VENV_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# UV_CACHE_DIR is intentionally NOT in ENV: the build-time cache target
+# /root/.cache/uv is unwritable to the unprivileged in-image user, so
+# baking it into ENV poisons every `docker exec`-spawned shell (which
+# inherits image ENV but bypasses the entrypoint's scrub). Instead we
+# set it inline on each uv-using RUN below, so it's scoped to the
+# build only. At runtime uv falls back to $HOME/.cache/uv, which lives
+# under the bind-mounted host home and is owned by the host operator.
 
 # ---------------------------------------------------------------------------
 # System packages
@@ -164,7 +171,8 @@ USER ${USER_NAME}
 # /opt/forgather/ is just the venv's parent — there is no in-image
 # copy of the repo.
 RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
-    uv venv --python python3.12 --seed ${VENV_DIR}
+    export UV_CACHE_DIR=/root/.cache/uv \
+    && uv venv --python python3.12 --seed ${VENV_DIR}
 
 # Install Forgather + every dependency from pyproject.toml. We bind-
 # mount the build context read-only and then copy it into a user-
@@ -192,7 +200,8 @@ RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sh
 # unprivileged user can write to it.
 RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
     --mount=type=bind,target=/build-context \
-    sudo cp -a /build-context /tmp/src \
+    export UV_CACHE_DIR=/root/.cache/uv \
+    && sudo cp -a /build-context /tmp/src \
     && sudo chown -R ${USER_UID}:${USER_GID} /tmp/src \
     && uv pip install --python ${VENV_DIR}/bin/python /tmp/src \
     && rm -rf /tmp/src
@@ -203,7 +212,8 @@ RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sh
 # the cut-cross-entropy 25.1.1 wheel installed via pyproject.toml
 # above.
 RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
-    uv pip install --python ${VENV_DIR}/bin/python \
+    export UV_CACHE_DIR=/root/.cache/uv \
+    && uv pip install --python ${VENV_DIR}/bin/python \
         "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
 
 # TensorBoard <= 2.20.0 imports `pkg_resources` at module load,

@@ -230,6 +230,21 @@ export default function App() {
     queryFn: api.schedulerStatus,
     refetchInterval: 3000,
   });
+  // Sidebar count pills for the Queue and Jobs view entries. Share the
+  // same query keys as QueuePanel / JobsPanel so the data is deduped:
+  // when those views are open the polling already pays for itself,
+  // and when they're closed we still want a heartbeat so the pills
+  // stay current. Refetch cadence here matches the panels' own.
+  const queueCountQ = useQuery({
+    queryKey: ["queue"],
+    queryFn: api.listQueue,
+    refetchInterval: 2000,
+  });
+  const jobsCountQ = useQuery({
+    queryKey: ["jobs", false],
+    queryFn: () => api.listJobs(false),
+    refetchInterval: 5000,
+  });
   // Cluster identity is fetched once at app load and again every 30 s.
   // The payload is null in standalone mode and a small object in
   // cluster mode; either way the response is cheap. The label of the
@@ -243,6 +258,26 @@ export default function App() {
     staleTime: 30000,
   });
   const clusterActive = !!clusterSelfQ.data;
+  // Total node count for the Nodes sidebar pill — only fetched when
+  // we're actually in cluster mode. Shares the queryKey used by
+  // NodesPanel so the cache is reused once that view is opened.
+  const clusterMembersQ = useQuery({
+    queryKey: ["cluster", "members"],
+    queryFn: api.getClusterMembers,
+    refetchInterval: 5000,
+    enabled: clusterActive,
+  });
+  const queuedCount = queueCountQ.data?.length ?? 0;
+  const runningCount = (jobsCountQ.data ?? []).filter((j) => j.alive).length;
+  const nodesCount = clusterMembersQ.data?.members.length ?? 0;
+  const viewCounts: Partial<Record<View, number>> = {
+    queue: queuedCount,
+    jobs: runningCount,
+    // "gpus" is the dual-labelled entry: shows GPUs in standalone
+    // mode and Nodes in cluster mode. The pill only makes sense as
+    // a node count, so we only set it when clusterActive.
+    gpus: clusterActive ? nodesCount : undefined,
+  };
   // Tab title: include the node hostname when in cluster mode so
   // the user can tell which node's webui a given browser tab is
   // talking to. Two-tab workflows are common — one tab per node —
@@ -607,6 +642,7 @@ export default function App() {
               {VIEWS.map((v) => {
                 const label =
                   v.id === "gpus" && clusterActive ? "Nodes" : v.label;
+                const count = viewCounts[v.id];
                 return (
                   <button
                     key={v.id}
@@ -615,6 +651,9 @@ export default function App() {
                   >
                     <span className="view-icon">{v.icon}</span>
                     <span className="view-label">{label}</span>
+                    {count != null && count > 0 && (
+                      <span className="badge">{count}</span>
+                    )}
                   </button>
                 );
               })}
