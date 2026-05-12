@@ -1,0 +1,570 @@
+"""
+Tests for the master-side aggregation layer of
+:mod:`forgather_server.cluster_dataset_inventory`.
+
+Three concerns:
+
+1. **MasterInventory state machine** — set_master_state transitions,
+   merge_servers preserves health/dataset data, resolve() picks
+   correctly across local/<name> vs HF/path requests.
+2. **The tick functions** — collect/health/refresh against an httpx
+   transport whose responses we control byte-for-byte.
+3. **The role-change hook in cluster_membership** — listeners are
+   fired on master_id transitions.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+import uuid
+
+import httpx
+import pytest
+
+from forgather_server import cluster, cluster_dataset_inventory, cluster_membership
+from forgather_server.cluster_dataset_inventory import (
+    LocalServer,
+    MasterInventory,
+    MasterServerEntry,
+    master_inventory,
+)
+
+
+@pytest.fixture(autouse=True)
+def isolated_cluster_state(tmp_path, monkeypatch):
+    from forgather_server import paths
+
+    cluster_dir = tmp_path / "cluster"
+    cluster_dir.mkdir()
+    monkeypatch.setattr(paths, "cluster_state_dir", lambda: cluster_dir)
+    monkeypatch.setattr(
+        paths, "cluster_node_id_file", lambda: cluster_dir / "node_id"
+    )
+    cluster._reset_for_tests()
+    cluster_dataset_inventory._reset_master_state_for_tests()
+    cluster_membership._reset_role_listeners_for_tests()
+    yield
+
+
+# ---------------------------------------------------------------------------
+# MasterInventory state machine
+# ---------------------------------------------------------------------------
+
+
+class TestMasterInventoryStateMachine:
+    def test_initial_state(self):
+        inv = MasterInventory()
+        assert inv.is_master() is False
+        assert inv.is_warmed_up() is False
+        assert inv.servers_snapshot() == []
+        assert inv.resolve("local/x") is None
+
+    def test_become_master_clears_state(self):
+        inv = MasterInventory()
+        # Seed some stale state (simulating a prior tenure).
+        inv.merge_servers(
+            {
+                "s1": MasterServerEntry(
+                    server_id="s1",
+                    base_url="http://x:8766",
+                    auth_token="",
+                    label="x",
+                    source="local",
+                    peer_node_id=None,
+                    healthy=True,
+                )
+            }
+        )
+        inv.set_master_state(False)  # we weren't actually master yet
+        # Now do the actual transition:
+        inv.set_master_state(True)
+        assert inv.is_master() is True
+        assert inv.servers_snapshot() == []
+        assert inv.is_warmed_up() is False
+
+    def test_lose_master_role_clears_state(self):
+        inv = MasterInventory()
+        inv.set_master_state(True)
+        inv.merge_servers(
+            {
+                "s1": MasterServerEntry(
+                    server_id="s1",
+                    base_url="http://x:8766",
+                    auth_token="",
+                    label="x",
+                    source="local",
+                    peer_node_id=None,
+                )
+            }
+        )
+        inv.set_master_state(False)
+        assert inv.is_master() is False
+        assert inv.servers_snapshot() == []
+
+    def test_merge_preserves_health_and_datasets(self):
+        inv = MasterInventory()
+        inv.set_master_state(True)
+        inv.merge_servers(
+            {
+                "s1": MasterServerEntry(
+                    server_id="s1",
+                    base_url="http://x:8766",
+                    auth_token="t",
+                    label="x",
+                    source="local",
+                    peer_node_id="peer-1",
+                )
+            }
+        )
+        inv.update_health("s1", healthy=True)
+        inv.update_datasets(
+            "s1",
+            handles=[{"handle": "h1", "source": "hf"}],
+            locals_info=[{"name": "stories"}],
+        )
+        # Second merge with the same server set — should preserve.
+        inv.merge_servers(
+            {
+                "s1": MasterServerEntry(
+                    server_id="s1",
+                    base_url="http://x:8766",
+                    auth_token="t",
+                    label="x",
+                    source="local",
+                    peer_node_id="peer-1",
+                )
+            }
+        )
+        s = inv.get_server("s1")
+        assert s is not None
+        assert s.healthy is True
+        assert s.available_keys == ["local/stories"]
+        assert s.handles == [{"handle": "h1", "source": "hf"}]
+
+    def test_merge_drops_servers_no_longer_reported(self):
+        inv = MasterInventory()
+        inv.set_master_state(True)
+        inv.merge_servers(
+            {
+                "s1": MasterServerEntry(
+                    server_id="s1", base_url="http://x:8766",
+                    auth_token="", label="x", source="local",
+                    peer_node_id=None,
+                ),
+                "s2": MasterServerEntry(
+                    server_id="s2", base_url="http://y:8766",
+                    auth_token="", label="y", source="local",
+                    peer_node_id=None,
+                ),
+            }
+        )
+        inv.merge_servers(
+            {
+                "s1": MasterServerEntry(
+                    server_id="s1", base_url="http://x:8766",
+                    auth_token="", label="x", source="local",
+                    peer_node_id=None,
+                )
+            }
+        )
+        ids = {s.server_id for s in inv.servers_snapshot()}
+        assert ids == {"s1"}
+
+
+# ---------------------------------------------------------------------------
+# resolve() — routing strategy
+# ---------------------------------------------------------------------------
+
+
+def _seed_inventory(servers):
+    inv = MasterInventory()
+    inv.set_master_state(True)
+    inv.merge_servers({s.server_id: s for s in servers})
+    return inv
+
+
+def _make_entry(*, server_id, base_url, healthy=True, locals_names=()):
+    e = MasterServerEntry(
+        server_id=server_id,
+        base_url=base_url,
+        auth_token="tok-" + server_id,
+        label=server_id,
+        source="local",
+        peer_node_id=None,
+        healthy=healthy,
+    )
+    e.available_keys = [f"local/{n}" for n in locals_names]
+    return e
+
+
+class TestResolve:
+    def test_local_path_only_servers_with_that_name(self):
+        a = _make_entry(server_id="a", base_url="http://a:8766",
+                        locals_names=["stories"])
+        b = _make_entry(server_id="b", base_url="http://b:8766",
+                        locals_names=["other"])
+        inv = _seed_inventory([a, b])
+        pick = inv.resolve("local/stories")
+        assert pick == ("http://a:8766", "tok-a")
+
+    def test_local_returns_none_when_no_match(self):
+        a = _make_entry(server_id="a", base_url="http://a:8766",
+                        locals_names=["other"])
+        inv = _seed_inventory([a])
+        assert inv.resolve("local/missing") is None
+
+    def test_local_picks_at_random_across_replicas(self):
+        """Two servers advertising the same local/<name> should be
+        treated as interchangeable replicas (the documented redundancy
+        story). Verify the resolver picks both over many calls."""
+        a = _make_entry(server_id="a", base_url="http://a:8766",
+                        locals_names=["stories"])
+        b = _make_entry(server_id="b", base_url="http://b:8766",
+                        locals_names=["stories"])
+        inv = _seed_inventory([a, b])
+        urls = {inv.resolve("local/stories")[0] for _ in range(40)}
+        # Statistically vanishingly unlikely to be wrong; >40 calls of
+        # uniform-random pick from {a, b} hits both with overwhelming
+        # probability. The test's failure mode (single URL) is the bug.
+        assert urls == {"http://a:8766", "http://b:8766"}
+
+    def test_local_skips_unhealthy(self):
+        a = _make_entry(server_id="a", base_url="http://a:8766",
+                        locals_names=["stories"], healthy=False)
+        b = _make_entry(server_id="b", base_url="http://b:8766",
+                        locals_names=["stories"], healthy=True)
+        inv = _seed_inventory([a, b])
+        for _ in range(20):
+            pick = inv.resolve("local/stories")
+            assert pick == ("http://b:8766", "tok-b")
+
+    def test_hf_path_picks_any_healthy_server(self):
+        """For non-local requests, the master picks any healthy server
+        — the server loads on demand. The client's resilient backend
+        retries elsewhere if the chosen server can't actually serve
+        the dataset."""
+        a = _make_entry(server_id="a", base_url="http://a:8766",
+                        locals_names=["foo"])
+        b = _make_entry(server_id="b", base_url="http://b:8766",
+                        locals_names=["bar"])
+        inv = _seed_inventory([a, b])
+        urls = {inv.resolve("allenai/c4")[0] for _ in range(40)}
+        assert urls == {"http://a:8766", "http://b:8766"}
+
+    def test_hf_path_returns_none_when_no_healthy_server(self):
+        a = _make_entry(server_id="a", base_url="http://a:8766", healthy=False)
+        inv = _seed_inventory([a])
+        assert inv.resolve("allenai/c4") is None
+
+
+# ---------------------------------------------------------------------------
+# Tick functions exercised via mocked httpx transport
+# ---------------------------------------------------------------------------
+
+
+def _mock_transport(handler):
+    """Build a httpx.AsyncClient whose every request is dispatched to
+    ``handler(request) -> httpx.Response``."""
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def _activate_cluster_as_master(node_id="self-node"):
+    """Activate cluster with us as the only (and therefore master)
+    member. ``cluster.activate`` generates a UUID node_id; we patch
+    the lookup so it's deterministic for assertions."""
+    # cluster.activate persists a node_id on disk; the
+    # isolated_cluster_state fixture relocates the storage dir so
+    # this stays a clean slate.
+    cluster.activate("c", port=8765)
+
+
+class TestCollectServersTick:
+    def test_includes_local_servers(self, monkeypatch):
+        _activate_cluster_as_master()
+        cluster_dataset_inventory.master_inventory.set_master_state(True)
+
+        local = LocalServer(
+            server_id="abc",
+            base_url="http://node-a:8766",
+            auth_token="tok",
+            label="x",
+            source="local",
+            peer_node_id="self",
+        )
+        monkeypatch.setattr(
+            cluster_dataset_inventory, "local_servers", lambda: [local]
+        )
+        # No peers — only the local server should land in inventory.
+
+        def handler(req):
+            return httpx.Response(404)
+
+        async def go():
+            async with _mock_transport(handler) as client:
+                await cluster_dataset_inventory._collect_servers_tick(client)
+
+        asyncio.run(go())
+        entries = master_inventory.servers_snapshot()
+        assert len(entries) == 1
+        assert entries[0].server_id == "abc"
+        assert entries[0].auth_token == "tok"
+
+    def test_fans_to_peers(self, monkeypatch):
+        _activate_cluster_as_master()
+        master_inventory.set_master_state(True)
+
+        peer_id = str(uuid.uuid4())
+        cluster.update_member(
+            peer_id,
+            hostname="peer-1",
+            address="10.0.0.7",
+            port=8765,
+            cluster_name="c",
+        )
+        monkeypatch.setattr(
+            cluster_dataset_inventory, "local_servers", lambda: []
+        )
+
+        def handler(req):
+            assert req.url.path == "/api/cluster/dataset_servers_local"
+            return httpx.Response(
+                200,
+                json={
+                    "self_node_id": peer_id,
+                    "servers": [
+                        {
+                            "server_id": "remote-srv",
+                            "base_url": "http://peer-host:8766",
+                            "auth_token": "remote-tok",
+                            "label": "peer-cfg",
+                            "source": "local",
+                            "peer_node_id": peer_id,
+                        }
+                    ],
+                },
+            )
+
+        async def go():
+            async with _mock_transport(handler) as client:
+                await cluster_dataset_inventory._collect_servers_tick(client)
+
+        asyncio.run(go())
+        entries = master_inventory.servers_snapshot()
+        assert len(entries) == 1
+        assert entries[0].server_id == "remote-srv"
+        assert entries[0].auth_token == "remote-tok"
+        assert entries[0].peer_node_id == peer_id
+
+
+class TestHealthTick:
+    def test_marks_unreachable_on_network_error(self):
+        _activate_cluster_as_master()
+        master_inventory.set_master_state(True)
+        master_inventory.merge_servers(
+            {
+                "s1": MasterServerEntry(
+                    server_id="s1",
+                    base_url="http://dead:8766",
+                    auth_token="",
+                    label="x",
+                    source="local",
+                    peer_node_id=None,
+                    healthy=True,  # starts healthy
+                )
+            }
+        )
+
+        def handler(req):
+            raise httpx.ConnectError("simulated unreachable")
+
+        async def go():
+            async with _mock_transport(handler) as client:
+                await cluster_dataset_inventory._health_tick(client)
+
+        asyncio.run(go())
+        s = master_inventory.get_server("s1")
+        assert s.healthy is False
+        assert "simulated unreachable" in s.last_health_error
+
+    def test_marks_healthy_on_200(self):
+        master_inventory.set_master_state(True)
+        master_inventory.merge_servers(
+            {
+                "s1": MasterServerEntry(
+                    server_id="s1",
+                    base_url="http://alive:8766",
+                    auth_token="",
+                    label="x",
+                    source="local",
+                    peer_node_id=None,
+                )
+            }
+        )
+
+        def handler(req):
+            assert req.url.path == "/v1/health"
+            return httpx.Response(200, json={"status": "ok"})
+
+        async def go():
+            async with _mock_transport(handler) as client:
+                await cluster_dataset_inventory._health_tick(client)
+
+        asyncio.run(go())
+        s = master_inventory.get_server("s1")
+        assert s.healthy is True
+        assert s.last_health_error == ""
+
+    def test_health_pass_complete_flag_set(self):
+        master_inventory.set_master_state(True)
+
+        def handler(req):
+            return httpx.Response(200, json={"status": "ok"})
+
+        async def go():
+            async with _mock_transport(handler) as client:
+                await cluster_dataset_inventory._health_tick(client)
+
+        asyncio.run(go())
+        # Even with zero servers, the pass should be marked complete.
+        assert master_inventory.status()["last_health_pass_ts"] is not None
+
+
+class TestDatasetRefreshTick:
+    def test_collects_datasets_and_locals(self):
+        master_inventory.set_master_state(True)
+        master_inventory.merge_servers(
+            {
+                "s1": MasterServerEntry(
+                    server_id="s1",
+                    base_url="http://alive:8766",
+                    auth_token="tok",
+                    label="x",
+                    source="local",
+                    peer_node_id=None,
+                    healthy=True,
+                )
+            }
+        )
+
+        def handler(req):
+            assert req.headers["authorization"] == "Bearer tok"
+            if req.url.path == "/v1/datasets":
+                return httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "handle": "h1",
+                            "source": "hf",
+                            "load_args": {"path": "allenai/c4"},
+                            "length": 100,
+                        }
+                    ],
+                )
+            if req.url.path == "/v1/local":
+                return httpx.Response(
+                    200,
+                    json=[{"name": "stories", "length": 20}],
+                )
+            return httpx.Response(404)
+
+        async def go():
+            async with _mock_transport(handler) as client:
+                await cluster_dataset_inventory._dataset_refresh_tick(client)
+
+        asyncio.run(go())
+        s = master_inventory.get_server("s1")
+        assert s.last_dataset_error == ""
+        assert s.available_keys == ["local/stories"]
+        assert s.handles == [
+            {
+                "handle": "h1",
+                "source": "hf",
+                "load_args": {"path": "allenai/c4"},
+                "length": 100,
+            }
+        ]
+        assert master_inventory.is_warmed_up() is True
+
+    def test_skips_unhealthy_servers(self):
+        master_inventory.set_master_state(True)
+        master_inventory.merge_servers(
+            {
+                "s1": MasterServerEntry(
+                    server_id="s1",
+                    base_url="http://alive:8766",
+                    auth_token="",
+                    label="x",
+                    source="local",
+                    peer_node_id=None,
+                    healthy=False,
+                )
+            }
+        )
+
+        called = []
+
+        def handler(req):
+            called.append(req.url.path)
+            return httpx.Response(200, json=[])
+
+        async def go():
+            async with _mock_transport(handler) as client:
+                await cluster_dataset_inventory._dataset_refresh_tick(client)
+
+        asyncio.run(go())
+        assert called == []  # no HTTP issued
+        # Warm-up flag still flips so the route doesn't get stuck on
+        # 503 when every known server is dead.
+        assert master_inventory.is_warmed_up() is True
+
+
+# ---------------------------------------------------------------------------
+# Role-change listener hook
+# ---------------------------------------------------------------------------
+
+
+class TestRoleChangeListener:
+    def test_listener_fired_on_master_id_change(self):
+        _activate_cluster_as_master()
+
+        events: list = []
+        cluster_membership.register_role_change_listener(
+            lambda prev, new: events.append((prev, new))
+        )
+
+        # First tick observes us as the only (and therefore master)
+        # member. That's a transition from None -> our_id.
+        cluster_membership._notify_role_change_if_needed()
+        assert len(events) == 1
+        prev, new = events[0]
+        assert prev is None
+        assert new == cluster.self_identity().node_id
+
+        # Calling again with no change: no event.
+        cluster_membership._notify_role_change_if_needed()
+        assert len(events) == 1
+
+        # Introduce a peer with a "smaller" UUID so master flips.
+        peer_id = "00000000-0000-0000-0000-000000000000"
+        cluster.update_member(
+            peer_id,
+            hostname="peer",
+            address="10.0.0.5",
+            port=8765,
+            cluster_name="c",
+        )
+        cluster_membership._notify_role_change_if_needed()
+        assert len(events) == 2
+        prev, new = events[1]
+        assert new == peer_id  # smaller UUID wins
+
+    def test_listener_exception_does_not_break_membership(self):
+        _activate_cluster_as_master()
+
+        def angry(prev, new):
+            raise RuntimeError("listener exploded")
+
+        cluster_membership.register_role_change_listener(angry)
+        # Should not raise — exceptions are caught + logged.
+        cluster_membership._notify_role_change_if_needed()

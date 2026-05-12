@@ -37,11 +37,18 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(
         paths, "password_hash_file", lambda: server_dir / "password_hash"
     )
-    from forgather_server import cluster_jobs, cluster_journal
+    from forgather_server import (
+        cluster_dataset_inventory,
+        cluster_jobs,
+        cluster_journal,
+        cluster_membership,
+    )
 
     cluster._reset_for_tests()
     cluster_jobs._reset_for_tests()
     cluster_journal._reset_for_tests()
+    cluster_dataset_inventory._reset_master_state_for_tests()
+    cluster_membership._reset_role_listeners_for_tests()
     auth._reset_sessions_for_tests()
     yield
 
@@ -430,6 +437,148 @@ class TestDatasetServersLocal:
         client = TestClient(_make_app())
         r = client.get("/api/cluster/dataset_servers_local")
         assert r.status_code == 401
+
+
+class TestDatasetInventoryRoutes:
+    """End-to-end shape of /dataset_inventory, /dataset_servers, and
+    /dataset_router/resolve when this node is master."""
+
+    def _seed_master_inventory(self):
+        from forgather_server import cluster_dataset_inventory as cdi
+
+        cdi.master_inventory.set_master_state(True)
+        cdi.master_inventory.merge_servers(
+            {
+                "srv-a": cdi.MasterServerEntry(
+                    server_id="srv-a",
+                    base_url="http://node-a:8766",
+                    auth_token="tok-a",
+                    label="cfg:8766",
+                    source="local",
+                    peer_node_id="peer-a",
+                    healthy=True,
+                ),
+                "srv-b": cdi.MasterServerEntry(
+                    server_id="srv-b",
+                    base_url="http://node-b:8766",
+                    auth_token="tok-b",
+                    label="user-entry",
+                    source="user",
+                    peer_node_id="peer-b",
+                    healthy=False,
+                    last_health_error="conn refused",
+                ),
+            }
+        )
+        cdi.master_inventory.update_datasets(
+            "srv-a",
+            handles=[
+                {
+                    "handle": "h-hf-1",
+                    "source": "hf",
+                    "load_args": {"path": "allenai/c4", "name": "en"},
+                    "length": 1000,
+                }
+            ],
+            locals_info=[{"name": "stories", "length": 20}],
+        )
+        # srv-b is unhealthy; refresh_tick won't touch it, but we
+        # can simulate stale data being present.
+        cdi.master_inventory.update_datasets(
+            "srv-b",
+            handles=[],
+            locals_info=[{"name": "stories", "length": 20}],
+        )
+        cdi.master_inventory.mark_dataset_pass_complete()
+
+    def test_dataset_inventory_returns_deduped_listing(self):
+        cluster.activate("c", port=8765)
+        self._seed_master_inventory()
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_inventory",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["is_master"] is True
+        assert len(body["servers"]) == 2
+        # Tokens MUST be absent from this webui-facing surface.
+        assert all("auth_token" not in s for s in body["servers"])
+        # local/stories is on both servers — dedup keeps one entry.
+        local_entries = [d for d in body["datasets"] if d["source"] == "local"]
+        assert len(local_entries) == 1
+        assert local_entries[0]["dataset_id"] == "local/stories"
+        assert set(local_entries[0]["server_ids"]) == {"srv-a", "srv-b"}
+        hf_entries = [d for d in body["datasets"] if d["source"] == "hf"]
+        assert len(hf_entries) == 1
+        assert hf_entries[0]["dataset_id"] == "h-hf-1"
+        assert hf_entries[0]["load_args"]["path"] == "allenai/c4"
+
+    def test_dataset_servers_token_stripped(self):
+        cluster.activate("c", port=8765)
+        self._seed_master_inventory()
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_servers",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert {s["server_id"] for s in body} == {"srv-a", "srv-b"}
+        for s in body:
+            assert "auth_token" not in s
+
+    def test_router_resolve_returns_token_to_training_client(self):
+        cluster.activate("c", port=8765)
+        self._seed_master_inventory()
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_router/resolve",
+            params={"path": "local/stories"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # Only srv-a is healthy + has stories, so the pick is
+        # deterministic here.
+        assert body["base_url"] == "http://node-a:8766"
+        assert body["auth_token"] == "tok-a"
+        assert body["server_id"] == "srv-a"
+
+    def test_router_resolve_503_until_warmed_up(self):
+        from forgather_server import cluster_dataset_inventory as cdi
+
+        cluster.activate("c", port=8765)
+        cdi.master_inventory.set_master_state(True)
+        # Do NOT mark_dataset_pass_complete — simulate cold start.
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_router/resolve",
+            params={"path": "local/stories"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 503
+        assert r.headers.get("retry-after") == "5"
+
+    def test_router_resolve_410_when_no_candidate(self):
+        from forgather_server import cluster_dataset_inventory as cdi
+
+        cluster.activate("c", port=8765)
+        cdi.master_inventory.set_master_state(True)
+        cdi.master_inventory.mark_dataset_pass_complete()
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_router/resolve",
+            params={"path": "local/missing"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 410
 
 
 class TestClusterJobSubmit:
