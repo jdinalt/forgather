@@ -92,6 +92,13 @@ _PEER_ALLOWED_PATHS = frozenset(
         # bundle catalogue across the LAN is consistent with the
         # trusted-peer security contract.
         "/api/cluster/jobs",
+        # Dataset-server inventory: each peer's local list of
+        # dataset_servers (JobRecord-spawned + user-registered),
+        # including the bearer token. The master aggregator polls
+        # this every ~10s to build the cluster-wide routing index.
+        # Tokens leaving this surface stay within the cluster bearer
+        # trust boundary — see cluster_dataset_inventory.py.
+        "/api/cluster/dataset_servers_local",
     }
 )
 

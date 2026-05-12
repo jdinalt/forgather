@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from forgather.tls import httpx_verify
 
-from .. import cluster, cluster_jobs, dataset_source
+from .. import cluster, cluster_dataset_inventory, cluster_jobs, dataset_source
 from ..dataset_source import DatasetSourceError
 from .gpus import GpuInfoModel, GpuPolicyModel, SetGpuPolicyRequest, _to_model
 
@@ -209,6 +209,69 @@ def gpus_local(response: Response):
     if ident is not None:
         response.headers["X-Forgather-Node-Id"] = ident.node_id
     return [_to_model(g) for g in gpu_monitor.snapshot()]
+
+
+# ---------------------------------------------------------------------------
+# Dataset-server inventory (peer-local)
+# ---------------------------------------------------------------------------
+
+
+class LocalDatasetServerModel(BaseModel):
+    """A dataset_server this peer attests to.
+
+    Includes ``auth_token`` — the cluster carve-out gates this surface
+    to known cluster peers, so the master's aggregator can poll
+    upstream dataset_servers without an extra credential exchange.
+    Anything that surfaces this to a browser must strip the token
+    first (handled by the master-side webui endpoints in Phase 3 / 6).
+    """
+
+    server_id: str
+    base_url: str
+    auth_token: str
+    label: str
+    source: str  # "local" or "user"
+    peer_node_id: Optional[str] = None
+
+
+class LocalDatasetServersResponse(BaseModel):
+    self_node_id: Optional[str] = None
+    servers: List[LocalDatasetServerModel] = []
+
+
+@router.get(
+    "/dataset_servers_local", response_model=LocalDatasetServersResponse
+)
+def dataset_servers_local(response: Response):
+    """Per-peer dataset_server inventory.
+
+    Counterpart of ``/api/cluster/gpus_local`` for the dataset-server
+    routing infrastructure: the master fans GETs to this endpoint
+    every aggregation tick (Phase 3) to build the cluster-wide server
+    set. Carved out of the bearer-token gate for known cluster peers.
+
+    Tokens are returned in the body — the carve-out is peer-only and
+    the cluster bearer protects the rest of the surface. See
+    ``auth._PEER_ALLOWED_PATHS`` for the trust assumptions.
+    """
+    ident = cluster.self_identity()
+    if ident is not None:
+        response.headers["X-Forgather-Node-Id"] = ident.node_id
+    servers = cluster_dataset_inventory.local_servers()
+    return LocalDatasetServersResponse(
+        self_node_id=ident.node_id if ident is not None else None,
+        servers=[
+            LocalDatasetServerModel(
+                server_id=s.server_id,
+                base_url=s.base_url,
+                auth_token=s.auth_token,
+                label=s.label,
+                source=s.source,
+                peer_node_id=s.peer_node_id,
+            )
+            for s in servers
+        ],
+    )
 
 
 async def _fetch_peer_gpus(

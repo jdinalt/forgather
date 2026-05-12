@@ -358,6 +358,80 @@ class TestBandwidth:
         assert r.status_code == 200, r.text
 
 
+class TestDatasetServersLocal:
+    """Verifies `GET /api/cluster/dataset_servers_local` returns the
+    inventory module's view of this peer's dataset_servers and is
+    reachable via the peer carve-out."""
+
+    def _patch_inventory(self, monkeypatch, servers):
+        from forgather_server import cluster_dataset_inventory
+
+        monkeypatch.setattr(
+            cluster_dataset_inventory, "local_servers", lambda: list(servers)
+        )
+
+    def test_returns_servers_with_tokens(self, monkeypatch):
+        from forgather_server.cluster_dataset_inventory import LocalServer
+
+        cluster.activate("c", port=8765)
+        self._patch_inventory(
+            monkeypatch,
+            [
+                LocalServer(
+                    server_id="abc123",
+                    base_url="http://node-a:8766",
+                    auth_token="tok",
+                    label="config.yaml:8766",
+                    source="local",
+                    peer_node_id=cluster.self_identity().node_id,
+                )
+            ],
+        )
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_servers_local",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["self_node_id"] == cluster.self_identity().node_id
+        assert len(body["servers"]) == 1
+        s = body["servers"][0]
+        assert s["base_url"] == "http://node-a:8766"
+        assert s["auth_token"] == "tok"  # bearer included over carve-out
+        assert s["source"] == "local"
+        # Node-id header for the master's sanity check.
+        assert r.headers.get("x-forgather-node-id") == cluster.self_identity().node_id
+
+    def test_carved_out_for_known_peers(self, monkeypatch):
+        cluster.activate("c", port=8765)
+        for addr in ("127.0.0.1", "testclient"):
+            cluster.update_member(
+                str(uuid.uuid4()),
+                hostname=f"peer-{addr}",
+                address=addr,
+                port=8765,
+                cluster_name="c",
+            )
+        self._patch_inventory(monkeypatch, [])
+        client = TestClient(_make_app())
+        # No Authorization header — must be accepted by carve-out.
+        r = client.get("/api/cluster/dataset_servers_local")
+        assert r.status_code == 200, r.text
+
+    def test_rejected_when_no_token_and_no_carve_out(self, monkeypatch):
+        # Cluster active but no peer registered at this source IP —
+        # the carve-out must not fire and the call must 401.
+        cluster.activate("c", port=8765)
+        ident = cluster.self_identity()
+        cluster._state._members[ident.node_id].address = "203.0.113.1"
+        self._patch_inventory(monkeypatch, [])
+        client = TestClient(_make_app())
+        r = client.get("/api/cluster/dataset_servers_local")
+        assert r.status_code == 401
+
+
 class TestClusterJobSubmit:
     """Cluster-coordinator submit path. The fanout step is monkey-
     patched away — we don't want to actually enqueue anything during
