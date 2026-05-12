@@ -1224,8 +1224,41 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
     # the operator sees "your saved server is gone" rather than a
     # cluster of training processes all silently falling back to
     # in-process loading.
+    #
+    # remote_host_override: for a *cluster* submit the resolved env is
+    # shipped to peer training processes, so loopback would route to
+    # the peer's own 127.0.0.1 (no dataset server there). Use the
+    # master's cluster-routable address — the same one peers already
+    # use to peer-pull. cluster.self_identity() gives the local node;
+    # its member entry carries the post-discovery address.
+    self_ident = cluster.self_identity()
+    self_member = (
+        next(
+            (m for m in cluster.members() if m.node_id == self_ident.node_id),
+            None,
+        )
+        if self_ident
+        else None
+    )
+    master_cluster_addr = self_member.address if self_member else None
+    if master_cluster_addr in (None, "", "127.0.0.1", "::1"):
+        # update_self_address hasn't run yet (or the cluster module
+        # never got a real interface address). Don't ship loopback to
+        # peers — that's the exact bug we're fixing.
+        if req.dataset_source and req.dataset_source.get("kind") == "server":
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "cluster master has no routable cluster address yet — "
+                    "dataset_server cannot be shared with peers. Wait for "
+                    "mDNS discovery to complete and retry."
+                ),
+            )
     try:
-        _dataset_env = dataset_source.resolve_to_env(req.dataset_source)
+        _dataset_env = dataset_source.resolve_to_env(
+            req.dataset_source,
+            remote_host_override=master_cluster_addr,
+        )
     except DatasetSourceError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
