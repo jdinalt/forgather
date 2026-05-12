@@ -581,6 +581,186 @@ class TestDatasetInventoryRoutes:
         assert r.status_code == 410
 
 
+class TestDatasetServerProxy:
+    """Master-side cluster proxy: /api/cluster/dataset_server_proxy/{server_id}/{op}
+    looks up the server in the master inventory, applies the bearer
+    token, and forwards to the upstream dataset_server.
+
+    Upstream calls are intercepted with `monkeypatch` so we exercise
+    the routing/auth/SSRF-allowlist logic without booting a real
+    dataset_server.
+    """
+
+    def _seed(self, *, server_id="srv-1", base_url="http://upstream:8766",
+              token="tok-1"):
+        from forgather_server import cluster_dataset_inventory as cdi
+
+        cdi.master_inventory.set_master_state(True)
+        cdi.master_inventory.merge_servers(
+            {
+                server_id: cdi.MasterServerEntry(
+                    server_id=server_id,
+                    base_url=base_url,
+                    auth_token=token,
+                    label="x",
+                    source="local",
+                    peer_node_id="self",
+                    healthy=True,
+                )
+            }
+        )
+
+    def _intercept_httpx(self, monkeypatch, fake):
+        """Patch httpx.AsyncClient so every call goes to `fake(method,
+        target, headers, body)` and returns httpx.Response."""
+        import httpx as _httpx
+        from forgather_server.routes import cluster as cluster_routes
+
+        class _FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, target, headers=None):
+                return fake("GET", target, headers, None)
+
+            async def post(self, target, content=None, headers=None):
+                return fake("POST", target, headers, content)
+
+            def stream(self, method, target, headers=None):
+                fake_resp = fake(method, target, headers, None)
+                return _FakeStreamCtx(fake_resp)
+
+        class _FakeStreamCtx:
+            def __init__(self, resp):
+                self._resp = resp
+
+            async def __aenter__(self):
+                return self._resp
+
+            async def __aexit__(self, *a):
+                return False
+
+        monkeypatch.setattr(_httpx, "AsyncClient", _FakeAsyncClient)
+
+    def test_health_forwards_with_token(self, monkeypatch):
+        import httpx as _httpx
+
+        cluster.activate("c", port=8765)
+        self._seed()
+        calls = []
+
+        def fake(method, target, headers, body):
+            calls.append((method, target, headers, body))
+            return _httpx.Response(200, json={"status": "ok"})
+
+        self._intercept_httpx(monkeypatch, fake)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_server_proxy/srv-1/health",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        assert r.json() == {"status": "ok"}
+        # One upstream call, /v1/health on the inventory's base_url,
+        # with the inventory's token in the Authorization header.
+        assert calls[0][0] == "GET"
+        assert calls[0][1] == "http://upstream:8766/v1/health"
+        assert calls[0][2] == {"Authorization": "Bearer tok-1"}
+
+    def test_unknown_server_id_returns_404(self):
+        cluster.activate("c", port=8765)
+        # Inventory empty → server_id doesn't exist.
+        from forgather_server import cluster_dataset_inventory as cdi
+
+        cdi.master_inventory.set_master_state(True)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_server_proxy/nonexistent/health",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 404
+
+    def test_unknown_op_returns_404(self):
+        cluster.activate("c", port=8765)
+        self._seed()
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_server_proxy/srv-1/evil",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 404
+
+    def test_load_post_passes_body(self, monkeypatch):
+        import httpx as _httpx
+
+        cluster.activate("c", port=8765)
+        self._seed()
+        calls = []
+
+        def fake(method, target, headers, body):
+            calls.append((method, target, headers, body))
+            return _httpx.Response(200, json={"handle": "h", "length": 3})
+
+        self._intercept_httpx(monkeypatch, fake)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.post(
+            "/api/cluster/dataset_server_proxy/srv-1/load",
+            content='{"path":"local/stories"}',
+            headers={
+                "Authorization": f"Bearer {token}",
+                "content-type": "application/json",
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["handle"] == "h"
+        assert calls[0][0] == "POST"
+        assert calls[0][1] == "http://upstream:8766/v1/load"
+        assert calls[0][3] == b'{"path":"local/stories"}'
+
+    def test_length_requires_handle_param(self):
+        cluster.activate("c", port=8765)
+        self._seed()
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_server_proxy/srv-1/length",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 400
+
+    def test_upstream_401_forwarded_with_marker(self, monkeypatch):
+        import httpx as _httpx
+
+        cluster.activate("c", port=8765)
+        self._seed()
+
+        def fake(method, target, headers, body):
+            return _httpx.Response(401, json={"detail": "bad token"})
+
+        self._intercept_httpx(monkeypatch, fake)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_server_proxy/srv-1/health",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        # Upstream's 401 surfaces verbatim plus the marker header so
+        # the webui can show "your saved token is wrong" instead of
+        # the generic "forgather-server auth failed."
+        assert r.status_code == 401
+        assert r.headers.get("x-upstream-auth-failed") == "1"
+
+
 class TestClusterJobSubmit:
     """Cluster-coordinator submit path. The fanout step is monkey-
     patched away — we don't want to actually enqueue anything during

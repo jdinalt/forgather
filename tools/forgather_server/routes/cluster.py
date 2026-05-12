@@ -13,11 +13,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Response
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from forgather.tls import httpx_verify
@@ -2018,3 +2018,319 @@ async def cancel_cluster_job(cluster_job_id: str):
         cancelled=cancelled,
         per_member=per_member,
     )
+
+
+# ---------------------------------------------------------------------------
+# Master-side dataset-server proxy
+# ---------------------------------------------------------------------------
+#
+# The webui's Explore + Cluster tabs need to reach dataset_servers
+# known anywhere in the cluster — not just the ones registered on
+# the local node. ``/api/cluster/dataset_server_proxy/{server_id}/{op}``
+# is the cluster-wide equivalent of ``/api/dataset-server/proxy/*``:
+#
+#   * the master looks up the ``server_id`` in its inventory (built
+#     by the Phase 3 loops), pulls the matching ``(base_url, token)``,
+#     and calls the upstream dataset_server directly;
+#   * non-master nodes forward the same path to the master so every
+#     webui sees the same surface regardless of which node serves it.
+#
+# The inventory itself is the SSRF allowlist — only servers that
+# survived the master's collect + health gates appear there, and the
+# auth token never crosses out to the browser.
+
+_PROXY_OP_TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
+
+# Map op name (URL segment) -> (upstream method, upstream path template
+# or builder, body-passthrough?). Listed explicitly so an unknown op
+# returns 404 immediately rather than smuggling traffic through.
+_OP_HEALTH = "health"
+_OP_AUTH_STATUS = "auth-status"
+_OP_DATASETS = "datasets"
+_OP_CACHE = "cache"
+_OP_LOCAL = "local"
+_OP_LOAD = "load"
+_OP_LENGTH = "length"
+_OP_ITER = "iter"
+_ALLOWED_PROXY_OPS = frozenset(
+    {
+        _OP_HEALTH,
+        _OP_AUTH_STATUS,
+        _OP_DATASETS,
+        _OP_CACHE,
+        _OP_LOCAL,
+        _OP_LOAD,
+        _OP_LENGTH,
+        _OP_ITER,
+    }
+)
+
+
+def _proxy_auth_headers(token: str) -> Dict[str, str]:
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _verify_for_proxy(target: str) -> object:
+    try:
+        from forgather.tls import httpx_verify_for_url
+
+        return httpx_verify_for_url(target)
+    except Exception:
+        return True
+
+
+def _safe_json_proxy(r: httpx.Response) -> Any:
+    try:
+        return r.json()
+    except ValueError:
+        return {"error": "non-json response from upstream", "body": r.text}
+
+
+def _upstream_failed_headers(status: int) -> Dict[str, str]:
+    """Forward an upstream-auth-failure marker so the webui surfaces a
+    clear "your saved token is wrong" message rather than the
+    generic forgather-server 401 it would otherwise see."""
+    if status in (401, 403):
+        return {"x-upstream-auth-failed": "1"}
+    return {}
+
+
+async def _forward_get_to_upstream(
+    target: str, token: str
+) -> JSONResponse:
+    headers = _proxy_auth_headers(token)
+    async with httpx.AsyncClient(
+        timeout=_PROXY_OP_TIMEOUT, verify=_verify_for_proxy(target)
+    ) as client:
+        try:
+            r = await client.get(target, headers=headers or None)
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
+    return JSONResponse(
+        status_code=r.status_code,
+        content=_safe_json_proxy(r),
+        headers=_upstream_failed_headers(r.status_code),
+    )
+
+
+async def _forward_post_to_upstream(
+    target: str, token: str, body: bytes, content_type: str
+) -> JSONResponse:
+    headers = _proxy_auth_headers(token)
+    headers["content-type"] = content_type
+    async with httpx.AsyncClient(
+        timeout=_PROXY_OP_TIMEOUT, verify=_verify_for_proxy(target)
+    ) as client:
+        try:
+            r = await client.post(target, content=body, headers=headers)
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
+    return JSONResponse(
+        status_code=r.status_code,
+        content=_safe_json_proxy(r),
+        headers=_upstream_failed_headers(r.status_code),
+    )
+
+
+async def _stream_iter_window(
+    target: str, token: str, limit: int
+) -> JSONResponse:
+    """Materialize a bounded ``/v1/datasets/{handle}/iter`` NDJSON
+    window into ``{"rows": [...]}``.
+
+    Same bounded-buffering approach as
+    :func:`routes.dataset_server.proxy_iter` — the upstream is asked
+    for ``limit`` rows but we stop reading at exactly ``limit`` in case
+    a misbehaving server ignores the cap.
+    """
+    headers = _proxy_auth_headers(token)
+    rows: List[Any] = []
+    import json as _json
+
+    async with httpx.AsyncClient(
+        timeout=_PROXY_OP_TIMEOUT, verify=_verify_for_proxy(target)
+    ) as client:
+        try:
+            async with client.stream("GET", target, headers=headers or None) as r:
+                if r.status_code >= 400:
+                    body = await r.aread()
+                    detail = body.decode("utf-8", errors="replace")
+                    return JSONResponse(
+                        status_code=r.status_code,
+                        content={"detail": detail},
+                        headers=_upstream_failed_headers(r.status_code),
+                    )
+                async for line in r.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        rows.append(_json.loads(line))
+                    except ValueError:
+                        rows.append({"_parse_error": line})
+                    if len(rows) >= limit:
+                        break
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
+    return JSONResponse({"rows": rows})
+
+
+def _lookup_proxy_target(server_id: str) -> Tuple[str, str]:
+    """Resolve ``server_id`` to ``(base_url, auth_token)`` from the
+    master inventory. Raises 404 if unknown — keeps the master from
+    being turned into an open relay by a fabricated server_id."""
+    entry = cluster_dataset_inventory.master_inventory.get_server(server_id)
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown cluster dataset_server: {server_id!r}",
+        )
+    return entry.base_url, entry.auth_token
+
+
+async def _proxy_via_master(
+    server_id: str, op: str, request: Request
+) -> Response:
+    """Forward a proxy request to the master node, preserving method,
+    query params, and body."""
+    master = _master_member()
+    if master is None:
+        raise HTTPException(
+            status_code=503,
+            detail="No cluster master is currently reachable.",
+            headers={"Retry-After": "5"},
+        )
+    base = _peer_base(master)
+    path = f"/api/cluster/dataset_server_proxy/{server_id}/{op}"
+    target = f"{base}{path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    body = await request.body() if request.method == "POST" else None
+    async with _peer_client(timeout=_PROXY_OP_TIMEOUT) as client:
+        try:
+            if request.method == "GET":
+                r = await client.get(target)
+            else:
+                content_type = request.headers.get(
+                    "content-type", "application/json"
+                )
+                r = await client.post(
+                    target,
+                    content=body,
+                    headers={"content-type": content_type},
+                )
+        except httpx.RequestError as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"master proxy: {type(e).__name__}: {e}",
+            )
+    return JSONResponse(
+        status_code=r.status_code,
+        content=_safe_json_proxy(r),
+        headers=_upstream_failed_headers(r.status_code),
+    )
+
+
+@router.api_route(
+    "/dataset_server_proxy/{server_id}/{op}", methods=["GET", "POST"]
+)
+async def dataset_server_proxy(
+    server_id: str, op: str, request: Request
+) -> Response:
+    """Cluster-wide proxy to a dataset_server known anywhere in the
+    cluster.
+
+    Resolves ``server_id`` against the master's inventory and forwards
+    the call to the upstream dataset_server with the inventory's
+    bearer token. Non-master nodes forward the call to the master so
+    every webui instance can use a single path.
+
+    Supported ops (mirrors the per-node ``/api/dataset-server/proxy``):
+      * ``health``, ``auth-status``, ``datasets``, ``cache``, ``local`` (GET)
+      * ``load`` (POST)
+      * ``length`` (GET, ``handle`` query)
+      * ``iter`` (GET, ``handle``/``position``/``limit``/``seed`` query;
+        the NDJSON stream is materialized into ``{"rows": [...]}``)
+    """
+    if op not in _ALLOWED_PROXY_OPS:
+        raise HTTPException(status_code=404, detail=f"unknown op: {op!r}")
+
+    if not _self_is_master():
+        return await _proxy_via_master(server_id, op, request)
+
+    base_url, token = _lookup_proxy_target(server_id)
+    base = base_url.rstrip("/")
+
+    if op == _OP_HEALTH:
+        return await _forward_get_to_upstream(base + "/v1/health", token)
+    if op == _OP_AUTH_STATUS:
+        return await _forward_get_to_upstream(base + "/v1/auth/status", token)
+    if op == _OP_DATASETS:
+        return await _forward_get_to_upstream(base + "/v1/datasets", token)
+    if op == _OP_CACHE:
+        return await _forward_get_to_upstream(base + "/v1/cache/hf", token)
+    if op == _OP_LOCAL:
+        return await _forward_get_to_upstream(base + "/v1/local", token)
+
+    if op == _OP_LOAD:
+        if request.method != "POST":
+            raise HTTPException(status_code=405, detail="load requires POST")
+        body = await request.body()
+        content_type = request.headers.get("content-type", "application/json")
+        return await _forward_post_to_upstream(
+            base + "/v1/load", token, body, content_type
+        )
+
+    if op == _OP_LENGTH:
+        handle = request.query_params.get("handle")
+        if not handle:
+            raise HTTPException(
+                status_code=400, detail="handle query parameter required"
+            )
+        from urllib.parse import quote as _quote
+
+        return await _forward_get_to_upstream(
+            base + f"/v1/datasets/{_quote(handle, safe='')}/length", token
+        )
+
+    if op == _OP_ITER:
+        handle = request.query_params.get("handle")
+        if not handle:
+            raise HTTPException(
+                status_code=400, detail="handle query parameter required"
+            )
+        try:
+            position = int(request.query_params.get("position", "0"))
+            limit = int(request.query_params.get("limit", "25"))
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="position and limit must be integers",
+            )
+        if position < 0:
+            raise HTTPException(
+                status_code=400, detail="position must be >= 0"
+            )
+        if limit < 1 or limit > 500:
+            raise HTTPException(
+                status_code=400, detail="limit must be in [1, 500]"
+            )
+        seed = request.query_params.get("seed")
+        qs = f"?position={position}&limit={limit}"
+        if seed is not None:
+            try:
+                qs += f"&seed={int(seed)}"
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400, detail="seed must be an integer"
+                )
+        from urllib.parse import quote as _quote
+
+        return await _stream_iter_window(
+            base + f"/v1/datasets/{_quote(handle, safe='')}/iter" + qs,
+            token,
+            limit,
+        )
+
+    raise HTTPException(status_code=500, detail="unreachable")
