@@ -656,8 +656,15 @@ async def _refresh_one_dataset_listing(
             body = r.json()
             if isinstance(body, list):
                 handles = body
-            elif isinstance(body, dict) and isinstance(body.get("datasets"), list):
-                handles = body["datasets"]
+            elif isinstance(body, dict):
+                # The server returns ``{"handles": [...]}`` today; the
+                # older ``{"datasets": [...]}`` shape is tolerated for
+                # forward compatibility with mixed-version clusters.
+                for key in ("handles", "datasets"):
+                    items = body.get(key)
+                    if isinstance(items, list):
+                        handles = items
+                        break
         else:
             error_parts.append(f"datasets HTTP {r.status_code}")
     except (httpx.HTTPError, OSError, ValueError) as e:
@@ -673,15 +680,21 @@ async def _refresh_one_dataset_listing(
             body = r.json()
             if isinstance(body, list):
                 locals_info = body
-            elif isinstance(body, dict) and isinstance(body.get("entries"), list):
-                locals_info = body["entries"]
-            elif isinstance(body, dict) and isinstance(body.get("local"), dict):
-                # Tolerate ``{"local": {"<name>": {...}}}`` shapes from
-                # older server builds — normalize to a list of dicts.
-                locals_info = [
-                    {"name": k, **(v if isinstance(v, dict) else {})}
-                    for k, v in body["local"].items()
-                ]
+            elif isinstance(body, dict):
+                # Current server returns ``{"local": [...]}`` —
+                # tolerate ``entries`` and ``{"local": {<name>: {...}}}``
+                # for forward + backward compatibility.
+                for key in ("local", "entries"):
+                    items = body.get(key)
+                    if isinstance(items, list):
+                        locals_info = items
+                        break
+                    if isinstance(items, dict):
+                        locals_info = [
+                            {"name": k, **(v if isinstance(v, dict) else {})}
+                            for k, v in items.items()
+                        ]
+                        break
         else:
             error_parts.append(f"local HTTP {r.status_code}")
     except (httpx.HTTPError, OSError, ValueError) as e:
