@@ -92,13 +92,47 @@ def _remote_allowed() -> bool:
     )
 
 
+def _is_cluster_peer_address(host: str) -> bool:
+    """True if ``host`` matches a current cluster member's advertised address.
+
+    Lets the proxy forward to peers an operator has already explicitly
+    federated with — typical multi-node webui flow: chat from the
+    master's webui with a model running on a peer node. Cluster
+    membership is operator-controlled (you joined the cluster on
+    purpose), so this isn't widening the SSRF surface beyond what the
+    operator already opted into.
+    """
+    if not host:
+        return False
+    try:
+        from .. import cluster as _cluster
+    except Exception:
+        return False
+    if not _cluster.is_active():
+        return False
+    host_l = host.lower()
+    for m in _cluster.members():
+        if (m.address or "").lower() == host_l:
+            return True
+    return False
+
+
 def _validate_base(base: str) -> str:
     """Reject obviously-unsafe values before connecting upstream.
 
     Two layers: scheme allow-list (http/https only — no ``file://`` /
-    ``gopher://`` exfiltration tricks) plus an SSRF host allow-list
-    pinned to literal localhost. Hostname comparison is string-based;
-    DNS is not resolved (see module docstring).
+    ``gopher://`` exfiltration tricks) plus an SSRF host allow-list.
+    Allowed hosts:
+      * Literal localhost (127.0.0.1 / ::1 / localhost).
+      * Any currently-known cluster member's address (the common
+        multi-node flow — operator already federated, so this isn't
+        widening the surface).
+      * Anything else when FORGATHER_INFERENCE_PROXY_ALLOW_REMOTE=1
+        is set in the server env.
+
+    Rejections are 403s tagged with ``X-Forgather-Proxy-Refused: 1``
+    so the webui can render them inline instead of treating them as
+    session-expired.
     """
     try:
         parsed = urlparse(base)
@@ -113,25 +147,31 @@ def _validate_base(base: str) -> str:
         raise HTTPException(status_code=400, detail="missing host")
     # parsed.hostname returns the bare host with brackets stripped from
     # IPv6 literals ("::1", not "[::1]"). Lowercased for case-insensitive
-    # match against the localhost set.
+    # match against the allow-lists.
     host = (parsed.hostname or "").lower()
-    if host not in _LOCALHOST_HOSTS:
-        if _remote_allowed():
-            log.warning(
-                "inference proxy forwarding to non-localhost host %r "
-                "(opt-in via %s)",
-                host,
-                _REMOTE_ALLOW_ENV,
-            )
-        else:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    f"refusing to proxy to non-localhost host: {host!r} "
-                    f"(set {_REMOTE_ALLOW_ENV}=1 to allow)"
-                ),
-            )
-    return base.rstrip("/")
+    if host in _LOCALHOST_HOSTS:
+        return base.rstrip("/")
+    if _is_cluster_peer_address(host):
+        log.debug("inference proxy forwarding to cluster peer host %r", host)
+        return base.rstrip("/")
+    if _remote_allowed():
+        log.warning(
+            "inference proxy forwarding to non-localhost host %r "
+            "(opt-in via %s)",
+            host,
+            _REMOTE_ALLOW_ENV,
+        )
+        return base.rstrip("/")
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            f"refusing to proxy to non-localhost host: {host!r}. "
+            f"Federate this host as a cluster peer of the forgather "
+            f"server, or set {_REMOTE_ALLOW_ENV}=1 to allow arbitrary "
+            "remotes."
+        ),
+        headers={"X-Forgather-Proxy-Refused": "1"},
+    )
 
 
 # JobRecord lookup is hit on every proxy request — cache the (host, port)
