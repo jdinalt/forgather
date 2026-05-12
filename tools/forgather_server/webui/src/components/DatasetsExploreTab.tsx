@@ -2,6 +2,7 @@ import { UseQueryResult, useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
 import {
+  ClusterDatasetServer,
   DatasetServerLocal,
   DatasetServerUser,
   HFCacheConfig,
@@ -42,10 +43,22 @@ function TreeToggleIcon() {
 
 /** What the user has selected — a leaf in the tree. ``server_base_url``
  *  pins which dataset_server the load goes to; the rest is the wire
- *  format for ``POST /v1/load``. */
+ *  format for ``POST /v1/load``.
+ *
+ *  When ``cluster_server_id`` is set, the Explore tab routes the
+ *  /load + /iter calls through the cluster-proxy path
+ *  (``/api/cluster/dataset_server_proxy/{server_id}/...``) so the
+ *  master injects the upstream bearer — used for cluster-mode
+ *  servers the local node hasn't registered. ``server_base_url``
+ *  is still carried for display purposes.
+ */
 export interface SelectedLeaf {
   server_label: string;
   server_base_url: string;
+  /** When present, hit the cluster proxy instead of the per-node
+   *  proxy. Used by the Cluster mode unified host list and by
+   *  cross-tab "View in Explore" handoffs from cluster-server rows. */
+  cluster_server_id?: string;
   load: LoadRequest;
   /** Display string for the right pane header. */
   display: string;
@@ -55,16 +68,25 @@ export interface SelectedLeaf {
 }
 
 interface ServerOption {
-  /** "local:<queue_id>" or "user:<id>" — stable identifier for tree
-   *  expansion state. */
+  /** "local:<queue_id>", "user:<id>", or "cluster:<server_id>" —
+   *  stable identifier for tree expansion state. */
   key: string;
   label: string;
   base_url: string;
+  /** When set, this entry routes through the cluster proxy. */
+  cluster_server_id?: string;
 }
 
 interface Props {
   localServers: DatasetServerLocal[];
   userServers: DatasetServerUser[];
+  /** Cluster-wide servers from the master's inventory. Empty in
+   *  standalone mode. The tab merges these into the host list and
+   *  routes their fetches through the cluster proxy. */
+  clusterServers?: ClusterDatasetServer[];
+  /** When true, hide the per-node Local + User sources and use
+   *  ``clusterServers`` exclusively. */
+  clusterActive?: boolean;
   /** Cross-tab navigation: when DatasetsPanel switches to "explore"
    *  after the user clicked a row in the Servers tab, the leaf to
    *  pre-select is set here. The tab consumes it once on mount /
@@ -78,10 +100,28 @@ interface Props {
 export function DatasetsExploreTab({
   localServers,
   userServers,
+  clusterServers,
+  clusterActive,
   preselect,
   onPreselectConsumed,
 }: Props) {
   const servers: ServerOption[] = useMemo(() => {
+    if (clusterActive) {
+      // Cluster mode: master-aggregated, deduped, healthy-first. We
+      // *show* unhealthy entries too (they may come back) but mark
+      // them visually — the tree expansion will surface the
+      // upstream error if the operator clicks anyway.
+      const cluster = (clusterServers ?? [])
+        .slice()
+        .sort((a, b) => Number(b.healthy) - Number(a.healthy))
+        .map((s) => ({
+          key: `cluster:${s.server_id}`,
+          label: s.healthy ? s.label : `${s.label} (down)`,
+          base_url: s.base_url,
+          cluster_server_id: s.server_id,
+        }));
+      return cluster;
+    }
     const local = localServers
       .filter((s) => s.alive)
       .map((s) => ({
@@ -95,7 +135,7 @@ export function DatasetsExploreTab({
       base_url: s.base_url,
     }));
     return [...local, ...user];
-  }, [localServers, userServers]);
+  }, [localServers, userServers, clusterServers, clusterActive]);
 
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<SelectedLeaf | null>(null);
@@ -119,16 +159,26 @@ export function DatasetsExploreTab({
 
   // Load query: cached by (server, load_args). Re-clicking the same leaf
   // is a no-op on the server (it hashes the load_args).
+  //
+  // Cluster-mode leaves carry ``cluster_server_id``; for those we go
+  // through the cluster proxy so the master injects the upstream
+  // bearer. Per-node leaves keep using ``datasetServerLoad`` against
+  // the local registry / JobRecord proxy.
   const loadQ = useQuery({
     queryKey: selected
-      ? ["ds-load", selected.server_base_url, JSON.stringify(selected.load)]
+      ? [
+          "ds-load",
+          selected.cluster_server_id ?? selected.server_base_url,
+          JSON.stringify(selected.load),
+        ]
       : ["ds-load-idle"],
-    queryFn: () =>
-      api.datasetServerLoad(
-        (selected as SelectedLeaf).server_base_url,
-        (selected as SelectedLeaf).load,
-        "",
-      ),
+    queryFn: () => {
+      const s = selected as SelectedLeaf;
+      if (s.cluster_server_id) {
+        return api.clusterDatasetServerLoad(s.cluster_server_id, s.load);
+      }
+      return api.datasetServerLoad(s.server_base_url, s.load, "");
+    },
     enabled: !!selected,
   });
 
@@ -141,19 +191,29 @@ export function DatasetsExploreTab({
   const iterQ = useQuery({
     queryKey: [
       "ds-iter",
-      selected?.server_base_url,
+      selected?.cluster_server_id ?? selected?.server_base_url,
       handle,
       page,
       pageSize,
     ],
-    queryFn: () =>
-      api.datasetServerIter(
-        (selected as SelectedLeaf).server_base_url,
+    queryFn: () => {
+      const s = selected as SelectedLeaf;
+      if (s.cluster_server_id) {
+        return api.clusterDatasetServerIter(
+          s.cluster_server_id,
+          handle as string,
+          page * pageSize,
+          pageSize,
+        );
+      }
+      return api.datasetServerIter(
+        s.server_base_url,
         handle as string,
         page * pageSize,
         pageSize,
         "",
-      ),
+      );
+    },
     enabled: !!handle && !!selected,
   });
 
@@ -313,6 +373,7 @@ function ServerNode({
           <CacheGroup
             serverKey={key}
             base_url={server.base_url}
+            cluster_server_id={server.cluster_server_id}
             server_label={server.label}
             isOpen={isOpen}
             toggle={toggle}
@@ -322,6 +383,7 @@ function ServerNode({
           <LocalGroup
             serverKey={key}
             base_url={server.base_url}
+            cluster_server_id={server.cluster_server_id}
             server_label={server.label}
             isOpen={isOpen}
             toggle={toggle}
@@ -337,12 +399,16 @@ function ServerNode({
 interface GroupProps extends NodeProps {
   serverKey: string;
   base_url: string;
+  /** When set, the group's data fetches route through the cluster
+   *  proxy instead of the per-node proxy. */
+  cluster_server_id?: string;
   server_label: string;
 }
 
 function CacheGroup({
   serverKey,
   base_url,
+  cluster_server_id,
   server_label,
   isOpen,
   toggle,
@@ -351,9 +417,16 @@ function CacheGroup({
 }: GroupProps) {
   const key = `${serverKey}:cache`;
   const open = isOpen(key);
+  // Cluster servers route through /api/cluster/dataset_server_proxy
+  // so the master injects the upstream bearer — keeps the browser
+  // free of any cluster server's token. Per-node servers keep using
+  // the existing per-node proxy.
   const cacheQ = useQuery({
-    queryKey: ["ds-cache", base_url],
-    queryFn: () => api.datasetServerCache(base_url, ""),
+    queryKey: ["ds-cache", cluster_server_id ?? base_url],
+    queryFn: () =>
+      cluster_server_id
+        ? api.clusterDatasetServerCache(cluster_server_id)
+        : api.datasetServerCache(base_url, ""),
     enabled: open,
   });
   const repos = (cacheQ.data as HFCacheResponse | undefined)?.datasets ?? [];
@@ -387,6 +460,7 @@ function CacheGroup({
               parentKey={key}
               repo={repo}
               base_url={base_url}
+              cluster_server_id={cluster_server_id}
               server_label={server_label}
               isOpen={isOpen}
               toggle={toggle}
@@ -404,6 +478,7 @@ interface RepoNodeProps extends NodeProps {
   parentKey: string;
   repo: HFCacheRepo;
   base_url: string;
+  cluster_server_id?: string;
   server_label: string;
 }
 
@@ -411,6 +486,7 @@ function RepoNode({
   parentKey,
   repo,
   base_url,
+  cluster_server_id,
   server_label,
   isOpen,
   toggle,
@@ -438,6 +514,7 @@ function RepoNode({
               repo_id={repo.repo}
               cfg={cfg}
               base_url={base_url}
+              cluster_server_id={cluster_server_id}
               server_label={server_label}
               isOpen={isOpen}
               toggle={toggle}
@@ -456,6 +533,7 @@ interface ConfigNodeProps extends NodeProps {
   repo_id: string;
   cfg: HFCacheConfig;
   base_url: string;
+  cluster_server_id?: string;
   server_label: string;
 }
 
@@ -464,6 +542,7 @@ function ConfigNode({
   repo_id,
   cfg,
   base_url,
+  cluster_server_id,
   server_label,
   isOpen,
   toggle,
@@ -491,6 +570,7 @@ function ConfigNode({
             const leaf: SelectedLeaf = {
               server_label,
               server_base_url: base_url,
+              cluster_server_id,
               display: `${repo_id} · ${cfg.config} · ${sp.name}`,
               hint_rows: sp.num_examples ?? null,
               load: { path: repo_id, name: cfg.config, split: sp.name },
@@ -514,6 +594,7 @@ function ConfigNode({
 function LocalGroup({
   serverKey,
   base_url,
+  cluster_server_id,
   server_label,
   isOpen,
   toggle,
@@ -523,8 +604,11 @@ function LocalGroup({
   const key = `${serverKey}:local`;
   const open = isOpen(key);
   const localQ = useQuery({
-    queryKey: ["ds-local", base_url],
-    queryFn: () => api.datasetServerLocal(base_url, ""),
+    queryKey: ["ds-local", cluster_server_id ?? base_url],
+    queryFn: () =>
+      cluster_server_id
+        ? api.clusterDatasetServerLocal(cluster_server_id)
+        : api.datasetServerLocal(base_url, ""),
     enabled: open,
   });
   const entries = (localQ.data as LocalListResponse | undefined)?.local ?? [];
@@ -560,6 +644,7 @@ function LocalGroup({
               parentKey={key}
               entry={entry}
               base_url={base_url}
+              cluster_server_id={cluster_server_id}
               server_label={server_label}
               isOpen={isOpen}
               toggle={toggle}
@@ -577,6 +662,7 @@ interface LocalEntryNodeProps extends NodeProps {
   parentKey: string;
   entry: LocalDatasetEntry;
   base_url: string;
+  cluster_server_id?: string;
   server_label: string;
 }
 
@@ -584,6 +670,7 @@ function LocalEntryNode({
   parentKey,
   entry,
   base_url,
+  cluster_server_id,
   server_label,
   isOpen,
   toggle,
@@ -608,6 +695,7 @@ function LocalEntryNode({
             setSelected({
               server_label,
               server_base_url: base_url,
+              cluster_server_id,
               display: `${path}${
                 entry.config_name ? ` · ${entry.config_name}` : ""
               }`,
@@ -637,6 +725,7 @@ function LocalEntryNode({
             const leaf: SelectedLeaf = {
               server_label,
               server_base_url: base_url,
+              cluster_server_id,
               display: `${path}${
                 entry.config_name ? ` · ${entry.config_name}` : ""
               } · ${sp.name}`,
