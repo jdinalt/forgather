@@ -486,7 +486,8 @@ export interface MultinodeOverrides {
  *  a local server invalidates the choice and surfaces as a 400. */
 export type DatasetSource =
   | { kind: "local" }
-  | { kind: "server"; server_id: string };
+  | { kind: "server"; server_id: string }
+  | { kind: "auto" };
 
 export interface OverridesData {
   values: Record<string, unknown>;
@@ -707,6 +708,42 @@ async function datasetServerProxyGet<T>(
     throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
   }
   return r.json() as Promise<T>;
+}
+
+/** Cluster-aggregated dataset_server entry. Tokens are stripped by
+ *  the master before responding; this shape is safe for the browser. */
+export interface ClusterDatasetServer {
+  server_id: string;
+  base_url: string;
+  label: string;
+  source: string; // "local" | "user"
+  peer_node_id: string | null;
+  healthy: boolean;
+  last_health_check: number;
+  last_health_error: string;
+  last_dataset_refresh: number;
+  last_dataset_error: string;
+}
+
+/** One unique dataset in the cluster (deduped across servers). */
+export interface ClusterDatasetEntry {
+  dataset_id: string;
+  source: string; // "local" | "hf" | "path"
+  name: string | null;
+  load_args: Record<string, unknown> | null;
+  length: number | null;
+  column_names: string[] | null;
+  server_ids: string[];
+}
+
+export interface ClusterDatasetInventoryResponse {
+  is_master: boolean;
+  master_become_ts: number | null;
+  last_servers_collect_ts: number | null;
+  last_health_pass_ts: number | null;
+  last_dataset_pass_ts: number | null;
+  servers: ClusterDatasetServer[];
+  datasets: ClusterDatasetEntry[];
 }
 
 /** Dataset server registered as a user-added entry. */
@@ -1518,6 +1555,75 @@ export const api = {
       base,
       token,
     ),
+
+  // ---- Cluster-aggregated dataset inventory + master proxy ----
+
+  /** Master-aggregated dataset-server inventory + dataset listing.
+   *  Same shape the ``forgather cluster datasets`` CLI consumes. */
+  getClusterDatasetInventory: () =>
+    fetchJson<ClusterDatasetInventoryResponse>(
+      "/api/cluster/dataset_inventory",
+    ),
+  /** Token-stripped server list — same as ``inventory.servers`` but
+   *  a smaller payload for the Explore + Servers tabs. */
+  getClusterDatasetServers: () =>
+    fetchJson<ClusterDatasetServer[]>("/api/cluster/dataset_servers"),
+
+  /** Cluster-proxied probes against a single dataset_server. The master
+   *  injects the bearer from its inventory, so the browser only needs
+   *  the cluster bearer. ``server_id`` comes from the cluster inventory. */
+  clusterDatasetServerHealth: (server_id: string) =>
+    fetchJson<DatasetServerHealth>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/health`,
+    ),
+  clusterDatasetServerAuthStatus: (server_id: string) =>
+    fetchJson<{ auth_required: boolean }>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/auth-status`,
+    ),
+  clusterDatasetServerDatasets: (server_id: string) =>
+    fetchJson<DatasetHandlesResponse>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/datasets`,
+    ),
+  clusterDatasetServerCache: (server_id: string) =>
+    fetchJson<HFCacheResponse>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/cache`,
+    ),
+  clusterDatasetServerLocal: (server_id: string) =>
+    fetchJson<LocalListResponse>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/local`,
+    ),
+  clusterDatasetServerLoad: async (
+    server_id: string,
+    body: LoadRequest,
+  ): Promise<LoadResponse> => {
+    const u = `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/load`;
+    const r = await fetch(u, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<LoadResponse>;
+  },
+  clusterDatasetServerLength: (server_id: string, handle: string) =>
+    fetchJson<{ length: number }>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/length` +
+        `?handle=${encodeURIComponent(handle)}`,
+    ),
+  clusterDatasetServerIter: (
+    server_id: string,
+    handle: string,
+    position: number,
+    limit: number,
+  ) =>
+    fetchJson<IterResponse>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/iter` +
+        `?handle=${encodeURIComponent(handle)}` +
+        `&position=${position}&limit=${limit}`,
+    ),
+
   docsFile: (path: string) =>
     fetchJson<DocsFile>(`/api/docs/file?path=${encodeURIComponent(path)}`),
   docsAssetUrl: (path: string): string =>

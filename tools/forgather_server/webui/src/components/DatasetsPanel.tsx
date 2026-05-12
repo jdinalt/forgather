@@ -3,6 +3,9 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   AddDatasetServerRequest,
+  ClusterDatasetEntry,
+  ClusterDatasetInventoryResponse,
+  ClusterDatasetServer,
   DatasetHandleRow,
   DatasetHandlesResponse,
   DatasetServerHealth,
@@ -19,7 +22,7 @@ import {
 } from "./DatasetsExploreTab";
 import { ModalBackdrop } from "./ModalBackdrop";
 
-type SubTab = "servers" | "explore";
+type SubTab = "cluster" | "servers" | "explore";
 
 /** Identifier the panel uses to refer to either kind of server uniformly.
  *  Local servers key by ``queue_id`` (stable across the run), user
@@ -43,10 +46,25 @@ function keyMatches(a: ServerKey, b: ServerKey): boolean {
     : b.kind === "user" && (a as { id: string }).id === (b as { id: string }).id;
 }
 
-/** Top-level Datasets view. Tabs: Servers (CRUD + status/handles/cache),
- *  Explore (tree of dataset → split → table of rows). */
+/** Top-level Datasets view. Tabs:
+ *  - Cluster (read-only, only when the forgather_server is in
+ *    cluster mode): master-aggregated view of every dataset_server
+ *    and every unique dataset across the cluster.
+ *  - Servers: CRUD + status/handles/cache.
+ *  - Explore: tree of dataset → split → table of rows.
+ */
 export function DatasetsPanel() {
-  const [tab, setTab] = useState<SubTab>("servers");
+  // Detect cluster mode via the same query the App-level gate uses.
+  // TanStack dedups by ``queryKey`` so this doesn't cost an extra HTTP
+  // request — App.tsx's polling and this one share the same cache.
+  const clusterSelfQ = useQuery({
+    queryKey: ["cluster-self"],
+    queryFn: api.getClusterSelf,
+    refetchInterval: 30000,
+  });
+  const clusterActive = !!clusterSelfQ.data;
+
+  const [tab, setTab] = useState<SubTab>(clusterActive ? "cluster" : "servers");
   // Pending pre-selection for the Explore tab. Set when a row in the
   // Servers tab is clicked (handles row / cache split / local split);
   // the Explore tab consumes it once and signals back to clear.
@@ -76,6 +94,14 @@ export function DatasetsPanel() {
         <div className="inference-header-title">
           <strong>Datasets</strong>
           <nav className="tabs">
+            {clusterActive && (
+              <button
+                className={tab === "cluster" ? "active" : ""}
+                onClick={() => setTab("cluster")}
+              >
+                cluster
+              </button>
+            )}
             <button
               className={tab === "servers" ? "active" : ""}
               onClick={() => setTab("servers")}
@@ -92,6 +118,18 @@ export function DatasetsPanel() {
         </div>
       </header>
 
+      {clusterActive && (
+        <div
+          style={{
+            display: tab === "cluster" ? "block" : "none",
+            flex: 1,
+            minHeight: 0,
+            overflow: "auto",
+          }}
+        >
+          <DatasetsClusterTab />
+        </div>
+      )}
       <div
         style={{
           display: tab === "servers" ? "block" : "none",
@@ -117,6 +155,338 @@ export function DatasetsPanel() {
         />
       </div>
     </div>
+  );
+}
+
+// ---------- Cluster tab ----------
+
+type ClusterDatasetSortKey =
+  | "dataset_id"
+  | "source"
+  | "length"
+  | "host_count";
+
+/** Format an epoch-seconds timestamp as a ``Ns / Nm / Nh ago`` delta. */
+function formatAgo(ts: number | null): string {
+  if (ts === null || ts === undefined || ts <= 0) return "never";
+  const now = Date.now() / 1000;
+  const delta = Math.max(0, Math.floor(now - ts));
+  if (delta < 60) return `${delta}s ago`;
+  if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
+  return `${Math.floor(delta / 3600)}h ago`;
+}
+
+/** Read-only cluster inventory view. Polls /api/cluster/dataset_inventory
+ *  every 5s. The master self-gates the loops, so this surface stays
+ *  consistent across master failover (the new master rebuilds its
+ *  inventory from peers within ~10s of taking over). */
+function DatasetsClusterTab() {
+  const inventoryQ = useQuery<ClusterDatasetInventoryResponse>({
+    queryKey: ["cluster", "dataset_inventory"],
+    queryFn: api.getClusterDatasetInventory,
+    refetchInterval: 5000,
+  });
+  const inv = inventoryQ.data;
+
+  const [serverSort, setServerSort] = useState<SortState<"label" | "healthy">>({
+    by: "healthy",
+    dir: "desc",
+  });
+  const [dsSort, setDsSort] = useState<SortState<ClusterDatasetSortKey>>({
+    by: "dataset_id",
+    dir: "asc",
+  });
+  const toggleServer = makeSortToggle(serverSort, setServerSort);
+  const toggleDs = makeSortToggle(dsSort, setDsSort);
+
+  const servers = inv?.servers ?? [];
+  const datasets = inv?.datasets ?? [];
+
+  // server_id -> {base_url, label} for rendering "hosts" column on
+  // dataset rows. Built once per render — cheap (a few dozen entries).
+  const serverIdMap: Map<string, ClusterDatasetServer> = useMemo(() => {
+    const m = new Map<string, ClusterDatasetServer>();
+    for (const s of servers) m.set(s.server_id, s);
+    return m;
+  }, [servers]);
+
+  const sortedServers = useMemo(() => {
+    const arr = [...servers];
+    arr.sort((a, b) => {
+      let cmp = 0;
+      if (serverSort.by === "label") {
+        cmp = a.base_url.localeCompare(b.base_url);
+      } else {
+        // "healthy" desc puts healthy servers first; secondary sort
+        // by label for stable order across refreshes.
+        cmp =
+          Number(b.healthy) - Number(a.healthy) ||
+          a.base_url.localeCompare(b.base_url);
+      }
+      return serverSort.dir === "asc" ? cmp : -cmp;
+    });
+    return arr;
+  }, [servers, serverSort]);
+
+  const sortedDatasets = useMemo(() => {
+    const arr = [...datasets];
+    arr.sort((a, b) => {
+      let cmp = 0;
+      if (dsSort.by === "dataset_id") {
+        cmp = a.dataset_id.localeCompare(b.dataset_id);
+      } else if (dsSort.by === "source") {
+        cmp = a.source.localeCompare(b.source) ||
+          a.dataset_id.localeCompare(b.dataset_id);
+      } else if (dsSort.by === "length") {
+        cmp = (a.length ?? -1) - (b.length ?? -1);
+      } else if (dsSort.by === "host_count") {
+        cmp = a.server_ids.length - b.server_ids.length;
+      }
+      return dsSort.dir === "asc" ? cmp : -cmp;
+    });
+    return arr;
+  }, [datasets, dsSort]);
+
+  if (inventoryQ.isLoading && !inv) {
+    return (
+      <div className="pane-state-small muted" style={{ padding: 16 }}>
+        Loading cluster inventory…
+      </div>
+    );
+  }
+  if (inventoryQ.isError) {
+    const msg = inventoryQ.error instanceof Error
+      ? inventoryQ.error.message
+      : "request failed";
+    return (
+      <div className="pane-state-small" style={{ padding: 16, color: "var(--danger, #b00)" }}>
+        Could not load cluster inventory: {msg}
+      </div>
+    );
+  }
+  const isMaster = inv?.is_master ?? false;
+  const lastPass = inv?.last_dataset_pass_ts ?? null;
+
+  return (
+    <div className="inference-model-panel" style={{ padding: "0 12px" }}>
+      <section>
+        <h4 className="dyn-heading">
+          Cluster inventory
+          <span className="muted" style={{ marginLeft: 8 }}>
+            ({servers.length} server{servers.length === 1 ? "" : "s"},{" "}
+            {datasets.length} dataset{datasets.length === 1 ? "" : "s"})
+          </span>
+        </h4>
+        <div className="muted" style={{ marginBottom: 8 }}>
+          {isMaster
+            ? "This node is the cluster master. Inventory is computed locally."
+            : "Inventory proxied from the cluster master."}
+          {" · "}
+          last dataset refresh: {formatAgo(lastPass)}
+        </div>
+      </section>
+
+      <section>
+        <h4 className="dyn-heading">
+          Servers
+          <span className="muted"> ({servers.length})</span>
+        </h4>
+        {servers.length === 0 ? (
+          <div className="muted pane-state-small">
+            No dataset_servers reported. Start one or add a user entry on
+            any cluster node — the master will pick it up within ~10s.
+          </div>
+        ) : (
+          <div className="preview-table-wrap">
+            <table className="preview-table">
+              <thead>
+                <tr>
+                  <SortableHeader<"label" | "healthy">
+                    col="label"
+                    label="server"
+                    current={serverSort}
+                    toggle={toggleServer}
+                  />
+                  <th>source</th>
+                  <th>peer</th>
+                  <SortableHeader<"label" | "healthy">
+                    col="healthy"
+                    label="health"
+                    current={serverSort}
+                    toggle={toggleServer}
+                    defaultDir="desc"
+                  />
+                  <th>last refresh</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedServers.map((s) => (
+                  <tr key={s.server_id}>
+                    <td>
+                      <span style={{ fontFamily: "monospace" }}>
+                        {s.base_url}
+                      </span>
+                      <span className="muted" style={{ marginLeft: 8 }}>
+                        · {s.label}
+                      </span>
+                    </td>
+                    <td>{s.source}</td>
+                    <td>
+                      <span
+                        style={{ fontFamily: "monospace" }}
+                        title={s.peer_node_id ?? ""}
+                      >
+                        {s.peer_node_id ? s.peer_node_id.slice(0, 8) : "-"}
+                      </span>
+                    </td>
+                    <td>
+                      <span
+                        className={
+                          "queue-status " +
+                          (s.healthy ? "status-running" : "status-done")
+                        }
+                      >
+                        {s.healthy ? "OK" : "DOWN"}
+                      </span>
+                      {!s.healthy && s.last_health_error && (
+                        <span
+                          className="muted"
+                          style={{ marginLeft: 6 }}
+                          title={s.last_health_error}
+                        >
+                          ({s.last_health_error.slice(0, 40)}
+                          {s.last_health_error.length > 40 ? "…" : ""})
+                        </span>
+                      )}
+                    </td>
+                    <td>{formatAgo(s.last_dataset_refresh)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h4 className="dyn-heading">
+          Datasets
+          <span className="muted"> ({datasets.length})</span>
+        </h4>
+        {datasets.length === 0 ? (
+          <div className="muted pane-state-small">
+            No datasets indexed yet. Local mappings (``--local NAME=PATH``)
+            show up automatically; HF / path datasets appear once a
+            client (training run) has issued a ``/v1/load`` for them.
+          </div>
+        ) : (
+          <div className="preview-table-wrap">
+            <table className="preview-table">
+              <thead>
+                <tr>
+                  <SortableHeader<ClusterDatasetSortKey>
+                    col="dataset_id"
+                    label="dataset"
+                    current={dsSort}
+                    toggle={toggleDs}
+                  />
+                  <SortableHeader<ClusterDatasetSortKey>
+                    col="source"
+                    label="source"
+                    current={dsSort}
+                    toggle={toggleDs}
+                  />
+                  <SortableHeader<ClusterDatasetSortKey>
+                    col="length"
+                    label="length"
+                    current={dsSort}
+                    toggle={toggleDs}
+                    defaultDir="desc"
+                  />
+                  <SortableHeader<ClusterDatasetSortKey>
+                    col="host_count"
+                    label="hosts"
+                    current={dsSort}
+                    toggle={toggleDs}
+                    defaultDir="desc"
+                  />
+                  <th>load args / name</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedDatasets.map((d) => (
+                  <ClusterDatasetRow
+                    key={d.dataset_id}
+                    entry={d}
+                    serverIdMap={serverIdMap}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+/** Single row in the cluster datasets table. Extracted so the hosts
+ *  cell can carry a useful tooltip without bloating the parent. */
+function ClusterDatasetRow({
+  entry,
+  serverIdMap,
+}: {
+  entry: ClusterDatasetEntry;
+  serverIdMap: Map<string, ClusterDatasetServer>;
+}) {
+  const hostBaseUrls = entry.server_ids
+    .map((sid) => serverIdMap.get(sid)?.base_url ?? sid)
+    .filter((url): url is string => !!url);
+  const hostsTooltip = hostBaseUrls.join("\n");
+  // Human-friendly handle: for `local/<name>` entries the ID is
+  // already the human name; for HF/path entries the ID is the 16-hex
+  // canonical hash — show the load_args.path beside it for context.
+  const friendlyName =
+    entry.name ??
+    (entry.load_args && typeof entry.load_args["path"] === "string"
+      ? (entry.load_args["path"] as string)
+      : null);
+  return (
+    <tr>
+      <td style={{ fontFamily: "monospace" }}>
+        {entry.dataset_id}
+        {friendlyName && friendlyName !== entry.dataset_id && (
+          <span className="muted" style={{ marginLeft: 6 }}>
+            ({friendlyName})
+          </span>
+        )}
+      </td>
+      <td>{entry.source}</td>
+      <td>{entry.length ?? "?"}</td>
+      <td title={hostsTooltip}>
+        {entry.server_ids.length}
+        {hostBaseUrls.length > 0 && (
+          <span
+            className="muted"
+            style={{
+              marginLeft: 6,
+              fontSize: "0.85em",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              maxWidth: 240,
+              display: "inline-block",
+              verticalAlign: "middle",
+            }}
+          >
+            ({hostBaseUrls.join(", ")})
+          </span>
+        )}
+      </td>
+      <td style={{ fontFamily: "monospace", fontSize: "0.85em" }}>
+        {entry.load_args ? JSON.stringify(entry.load_args) : "-"}
+      </td>
+    </tr>
   );
 }
 
