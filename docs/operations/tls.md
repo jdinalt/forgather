@@ -137,69 +137,154 @@ over minting immediately if A is permanently lost; the rest of the
 cluster doesn't need to be touched because the CA cert (and
 therefore every peer's trust bundle) hasn't changed.
 
-> **Don't run `forgather tls init` on host B.** Init creates a *new*
-> CA. A and B would then trust different CAs, peer-pull would fail
-> closed in both directions, and you'd see "fetch failed" against
-> every other node in the Nodes view. Always use `mint` on the CA
-> holder and `install` on the peer.
+> **Don't run `forgather tls init` on more than one node.** Init
+> creates a *new* CA. Two CAs in one cluster means peers can't
+> validate each other's certs, peer-pull fails closed in both
+> directions, and you'll see "fetch failed" against every other
+> node in the Nodes view. Always use `mint` on the CA holder and
+> `install` on the peer.
 
-### On the CA-holding host (host A)
+The general N-node setup is three steps:
+
+1. **Choose one node as the CA holder** (typically your developer
+   workstation or the first head node). Run `tls init` there
+   exactly once — it produces the CA *and* the CA holder's own
+   server cert in one step.
+
+2. **For each other node in the cluster**, on the CA holder:
+   `forgather tls mint --hostname … --ip … -o /tmp/<node>-tls`
+   produces a server cert + key + a copy of `ca.crt`. Distribute
+   that directory to the peer (scp), then run
+   `forgather tls install --cert … --key … --ca …` on the peer.
+
+3. **Start `forgather server -H 0.0.0.0 --cluster <name>` on every
+   node.** mDNS discovery handles the rest; peers find each other
+   and immediately speak HTTPS over the shared CA bundle.
+
+The example below walks through a 3-node setup (A is the CA holder;
+B and C are peers). Extending to N peers is the same procedure for
+each additional node.
+
+### Step 1 — choose a CA holder
+
+Pick exactly one node. Implications you should be comfortable with:
+
+* That node holds `ca/ca.key`, the only key that can mint new certs.
+  Anyone with shell access to that file (or to a host that
+  bind-mounts it) can produce a cert claiming to be any other node
+  in your cluster.
+* Every future "add a node" or "renew a cert" operation runs on that
+  node. If it's offline, you can't onboard or renew; if it's
+  permanently lost without a backup, you're rebuilding the cluster's
+  TLS state from scratch (see "What if host A goes away?" above —
+  mitigate with a CA-key backup or a warm-spare CA host).
+* The CA holder can still be a fully-participating training node;
+  the role costs almost nothing day-to-day. It just needs to be the
+  one node you don't forget about.
+
+### Step 2 — provision the CA + the CA holder's own cert (host A only)
 
 ```bash
-# Provision the CA and a server cert for host A.
-forgather tls init --hostname a.lan --hostname b.lan \
-                   --ip 10.0.0.5 --ip 10.0.0.6
-
-# Mint a server cert for host B (writes server.crt, server.key, ca.crt
-# into /tmp/b-tls/ — key is mode 0600 from creation).
-forgather tls mint --hostname b.lan --ip 10.0.0.6 -o /tmp/b-tls
+# Auto-detected SANs cover this host's hostnames + IPs. Add the
+# peers' hostnames/IPs here too if you want the CA holder's *own*
+# cert to also be valid for those names — not required, just
+# convenient if peers will ever curl back to A by an alternate name.
+forgather tls init --hostname a.lan --ip 10.0.0.5
 ```
 
-### Distribute to host B
+### Step 3 — for each other node, mint + distribute + install
 
-Use a channel that preserves the 0600 mode on `server.key`:
+Repeat this block for **every** non-CA-holder node. The 3-node
+example covers B (`10.0.0.6`) and C (`10.0.0.7`); add more lines
+for D, E, …
+
+**On host A** (the CA holder), mint a cert for each peer:
 
 ```bash
-# scp preserves permissions when copying file-by-file.
+forgather tls mint --hostname b.lan --ip 10.0.0.6 -o /tmp/b-tls
+forgather tls mint --hostname c.lan --ip 10.0.0.7 -o /tmp/c-tls
+# ...one mint per additional peer
+```
+
+Each output directory contains `server.crt`, `server.key` (0600),
+and a copy of `ca.crt`. The CA private key never leaves A.
+
+**Distribute** each directory to the corresponding peer over a
+channel that preserves the 0600 mode on `server.key`:
+
+```bash
 scp /tmp/b-tls/server.crt /tmp/b-tls/server.key /tmp/b-tls/ca.crt \
     b.lan:/tmp/b-tls/
-# Verify mode after transfer.
-ssh b.lan 'ls -l /tmp/b-tls/server.key'   # expect -rw-------
+scp /tmp/c-tls/server.crt /tmp/c-tls/server.key /tmp/c-tls/ca.crt \
+    c.lan:/tmp/c-tls/
+# Confirm mode after transfer — expect -rw------- on each server.key.
+ssh b.lan 'ls -l /tmp/b-tls/server.key'
+ssh c.lan 'ls -l /tmp/c-tls/server.key'
 ```
 
-Email, Slack DMs, public S3 buckets — anywhere `server.key` could be
-read by an unauthorized party — are off-limits. `ca.crt` is safe to
-distribute over any channel (it carries no secret), but see the
+Email, Slack DMs, public S3 buckets — anywhere `server.key` could
+be read by an unauthorized party — are off-limits. `ca.crt` is safe
+to distribute over any channel (it carries no secret), but see the
 warning in "Trusting the CA" below: anyone who *trusts* it can be
 deceived by certs signed by it.
 
-### On host B
+**On each peer**, install the cert that was minted for it:
 
 ```bash
+# On host B:
 forgather tls install --cert /tmp/b-tls/server.crt \
                       --key  /tmp/b-tls/server.key \
                       --ca   /tmp/b-tls/ca.crt
+forgather tls status
+
+# On host C:
+forgather tls install --cert /tmp/c-tls/server.crt \
+                      --key  /tmp/c-tls/server.key \
+                      --ca   /tmp/c-tls/ca.crt
 forgather tls status
 ```
 
 `install` cross-validates that the cert's public key matches the
 supplied private key, that the cert chains to the supplied CA, and
 that the CA cert is actually a CA. It then writes the key with
-mode 0600 from creation (no TOCTOU window), imports the CA into the
-trust bundle, populates the SAN list from the cert, and sets
-`enabled: true`. Host B can serve TLS but cannot mint new certs (no
-CA private key).
+mode 0600 from creation (no TOCTOU window), imports the CA into
+the trust bundle, populates the SAN list from the cert, and sets
+`enabled: true`. The peer can serve TLS but cannot mint new certs
+(no CA private key — by design, so a compromised peer can't widen
+trust).
 
-### Start both servers
+### Step 4 — start every server
 
 ```bash
-# Host A and host B
+# Run on every node (A, B, C, …):
 forgather server -H 0.0.0.0 --cluster mycluster
 ```
 
-mDNS advertisements include a `tls=1` TXT record so peers know which
-scheme to use. The peer-pull loop dials `https://...` and uses the
-shared CA bundle to validate.
+mDNS advertisements include a `tls=1` TXT record so peers know
+which scheme to use. The peer-pull loop dials `https://...` and
+uses the shared CA bundle to validate. Open the Nodes view in the
+webui on any node and you should see every other node listed and
+reachable within one tick (~5s).
+
+### Adding a node later
+
+The same Step-3 procedure for one more node, no cluster restart
+needed:
+
+```bash
+# On host A (the CA holder):
+forgather tls mint --hostname d.lan --ip 10.0.0.8 -o /tmp/d-tls
+scp /tmp/d-tls/server.crt /tmp/d-tls/server.key /tmp/d-tls/ca.crt \
+    d.lan:/tmp/d-tls/
+
+# On host D:
+forgather tls install --cert /tmp/d-tls/server.crt \
+                      --key  /tmp/d-tls/server.key \
+                      --ca   /tmp/d-tls/ca.crt
+forgather server -H 0.0.0.0 --cluster mycluster
+```
+
+Existing peers pick up the new node via mDNS — no restart required.
 
 ## Renewal
 
