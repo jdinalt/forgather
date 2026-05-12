@@ -16,25 +16,28 @@ Events framing the client expects flows through unchanged.
 
 SSRF policy
 -----------
-Even though every route is auth-gated, the auth token is still a
-confused-deputy risk: a stolen / phished token, or an XSS payload running
-in an authenticated tab, could otherwise direct this proxy at internal
-hosts (cloud metadata services like 169.254.169.254, other LAN boxes,
-etc.). To make that exploit useless on a default install, ``_validate_base``
-rejects any host that is not literal localhost (``127.0.0.1`` /
-``localhost`` / ``::1``). Single-user secure-LAN deployments that
-legitimately need a remote vLLM box can opt back in with the
-``FORGATHER_INFERENCE_PROXY_ALLOW_REMOTE`` env var (truthy values
-``1``/``true``/``yes``); a WARNING is logged for each non-localhost
-target so the choice is visible. The check is purely string-based — we
-do not resolve DNS — so a hostname that resolves to loopback still
-fails. Use the literal addresses if you mean loopback.
+Default: any URL the operator types into the panel is allowed.
+forgather is a single-user research tool; the same auth token that
+gates this endpoint also gates training-job submission, which is
+already arbitrary code execution on the host. An "SSRF guard"
+layered on top of that adds friction without adding security — an
+authenticated attacker who could exploit this proxy could just as
+easily exfiltrate cloud-metadata creds (or anything else) by
+submitting a training job that shells out.
+
+Operators who genuinely want stricter posture (e.g. running
+forgather in an environment with non-operator-controlled clients)
+pass ``--lock-inference-proxy`` to ``forgather server``;
+``_validate_base`` then rejects any non-localhost upstream.
+
+The scheme allow-list stays unconditionally: only ``http`` / ``https``
+through this proxy, so ``file://`` and similar exfiltration vectors
+are off the table regardless of the lock setting.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import time
 from threading import Lock
 from typing import Any, Dict, Optional
@@ -77,61 +80,30 @@ def _verify_for(target: str) -> object:
 # reach the browser promptly rather than sitting in an HTTP buffer.
 _STREAM_CHUNK = 1024
 
-# SSRF guard: localhost-only by default, opt-in for remote bases. See
-# the module docstring for the policy.
-_REMOTE_ALLOW_ENV = "FORGATHER_INFERENCE_PROXY_ALLOW_REMOTE"
 _LOCALHOST_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 
-
-def _remote_allowed() -> bool:
-    """Return True iff the operator opted into non-localhost upstreams."""
-    return os.environ.get(_REMOTE_ALLOW_ENV, "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-
-
-def _is_cluster_peer_address(host: str) -> bool:
-    """True if ``host`` matches a current cluster member's advertised address.
-
-    Lets the proxy forward to peers an operator has already explicitly
-    federated with — typical multi-node webui flow: chat from the
-    master's webui with a model running on a peer node. Cluster
-    membership is operator-controlled (you joined the cluster on
-    purpose), so this isn't widening the SSRF surface beyond what the
-    operator already opted into.
-    """
-    if not host:
-        return False
-    try:
-        from .. import cluster as _cluster
-    except Exception:
-        return False
-    if not _cluster.is_active():
-        return False
-    host_l = host.lower()
-    for m in _cluster.members():
-        if (m.address or "").lower() == host_l:
-            return True
-    return False
+# Set to True by `forgather server --lock-inference-proxy` to restrict
+# the proxy to localhost upstreams. Default off: forgather is a
+# single-user research tool and the operator already has full RCE via
+# training-job submission, so SSRF adds no real capability. The flag
+# exists for the (rare) case of running forgather in an environment
+# with non-operator-controlled clients.
+LOCK_TO_LOCALHOST = False
 
 
 def _validate_base(base: str) -> str:
     """Reject obviously-unsafe values before connecting upstream.
 
-    Two layers: scheme allow-list (http/https only — no ``file://`` /
-    ``gopher://`` exfiltration tricks) plus an SSRF host allow-list.
-    Allowed hosts:
-      * Literal localhost (127.0.0.1 / ::1 / localhost).
-      * Any currently-known cluster member's address (the common
-        multi-node flow — operator already federated, so this isn't
-        widening the surface).
-      * Anything else when FORGATHER_INFERENCE_PROXY_ALLOW_REMOTE=1
-        is set in the server env.
+    Scheme allow-list (http/https only — no ``file://`` / ``gopher://``
+    exfiltration tricks). Host allow-list is empty by default: the
+    operator types the URL into the panel, the operator is the one
+    using forgather, the operator already has full RCE on the host
+    via training-job submission — an "SSRF guard" on top of that adds
+    friction without security. Pass ``--lock-inference-proxy`` to the
+    server to switch to strict-localhost-only mode.
 
     Rejections are 403s tagged with ``X-Forgather-Proxy-Refused: 1``
-    so the webui can render them inline instead of treating them as
+    so the webui renders them inline instead of treating them as
     session-expired.
     """
     try:
@@ -142,36 +114,32 @@ def _validate_base(base: str) -> str:
         raise HTTPException(
             status_code=400,
             detail=f"unsupported scheme: {parsed.scheme!r}",
+            headers={"X-Forgather-Proxy-Refused": "1"},
         )
     if not parsed.netloc:
-        raise HTTPException(status_code=400, detail="missing host")
-    # parsed.hostname returns the bare host with brackets stripped from
-    # IPv6 literals ("::1", not "[::1]"). Lowercased for case-insensitive
-    # match against the allow-lists.
-    host = (parsed.hostname or "").lower()
-    if host in _LOCALHOST_HOSTS:
-        return base.rstrip("/")
-    if _is_cluster_peer_address(host):
-        log.debug("inference proxy forwarding to cluster peer host %r", host)
-        return base.rstrip("/")
-    if _remote_allowed():
-        log.warning(
-            "inference proxy forwarding to non-localhost host %r "
-            "(opt-in via %s)",
-            host,
-            _REMOTE_ALLOW_ENV,
+        raise HTTPException(
+            status_code=400,
+            detail="missing host",
+            headers={"X-Forgather-Proxy-Refused": "1"},
         )
-        return base.rstrip("/")
-    raise HTTPException(
-        status_code=403,
-        detail=(
-            f"refusing to proxy to non-localhost host: {host!r}. "
-            f"Federate this host as a cluster peer of the forgather "
-            f"server, or set {_REMOTE_ALLOW_ENV}=1 to allow arbitrary "
-            "remotes."
-        ),
-        headers={"X-Forgather-Proxy-Refused": "1"},
-    )
+
+    if LOCK_TO_LOCALHOST:
+        # Lowercased for case-insensitive match. parsed.hostname strips
+        # brackets from IPv6 literals, so "[::1]" arrives here as "::1".
+        host = (parsed.hostname or "").lower()
+        if host not in _LOCALHOST_HOSTS:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"inference proxy is locked to localhost; "
+                    f"refusing to proxy to {host!r}. Restart the server "
+                    "without --lock-inference-proxy to allow remote "
+                    "upstreams."
+                ),
+                headers={"X-Forgather-Proxy-Refused": "1"},
+            )
+
+    return base.rstrip("/")
 
 
 # JobRecord lookup is hit on every proxy request — cache the (host, port)

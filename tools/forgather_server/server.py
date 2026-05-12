@@ -91,6 +91,18 @@ def main():
     )
     add_server_tls_args(parser)
     parser.add_argument(
+        "--lock-inference-proxy",
+        action="store_true",
+        help=(
+            "Restrict the inference proxy to localhost upstreams. Default "
+            "is to allow any URL the operator types into the panel — the "
+            "research-tool norm, since the operator can already submit "
+            "arbitrary training jobs and so SSRF adds no capability. Pass "
+            "this flag for a stricter posture where forgather runs in an "
+            "environment with non-operator-controlled clients."
+        ),
+    )
+    parser.add_argument(
         "--cluster-address",
         action="append",
         default=[],
@@ -143,6 +155,15 @@ def main():
 
     if args.cluster:
         _activate_cluster(args, tls_on=tls_on)
+
+    # The inference proxy reads this flag at request time. Set it via
+    # module attribute (rather than env var) so a future `forgather server
+    # --lock-inference-proxy=on/off` at runtime would also work cleanly.
+    if args.lock_inference_proxy:
+        from .routes import inference_proxy as _inf_proxy
+
+        _inf_proxy.LOCK_TO_LOCALHOST = True
+        logging.info("inference proxy: locked to localhost upstreams")
 
     app = create_app()
 
