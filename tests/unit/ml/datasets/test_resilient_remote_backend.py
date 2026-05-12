@@ -338,6 +338,203 @@ class TestHappyPath:
         assert ids == [4, 5, 6, 7, 8, 9]
 
 
+class TestClusterAutoRouting:
+    """End-to-end auto-routing: ``FORGATHER_DATASET_SERVER=auto`` causes
+    the loader to call the cluster router (which we mock) and ride the
+    returned URL/token through the resilient wrapper.
+
+    The router itself is exercised by the forgather_server-side tests;
+    here we just verify the *client side* picks up the router's reply
+    and uses it transparently.
+    """
+
+    def test_auto_load_uses_resolver(self, tmp_path, monkeypatch):
+        from datasets import Dataset
+
+        from forgather.ml.datasets import fast_load_iterable_dataset
+        from forgather.ml.datasets.fast_hf_loader import DATASET_SERVER_ENV_VAR
+
+        ds_path = tmp_path / "stories"
+        Dataset.from_dict({"id": list(range(8))}).save_to_disk(str(ds_path))
+
+        state = ServerState()
+        state.add_local("stories", str(ds_path))
+        srv = TestServer(host="127.0.0.1", port=0, auth_token="srv-tok", state=state)
+        with srv:
+            # Patch the cluster-router resolver to return our test
+            # server's URL + token. Loader is wired to call it on
+            # every (re)connect; for a happy-path run that's just
+            # once.
+            from forgather.ml.datasets import resilient_remote_backend as rrb
+
+            calls = []
+
+            def fake_resolver(load_args):
+                calls.append(dict(load_args))
+                return srv.url, "srv-tok"
+
+            monkeypatch.setattr(
+                rrb, "make_cluster_router_resolver", lambda **_: fake_resolver
+            )
+
+            monkeypatch.setenv(DATASET_SERVER_ENV_VAR, "auto")
+            ds = fast_load_iterable_dataset(path="local/stories")
+            ids = [ex["id"] for ex in ds]
+            assert ids == list(range(8))
+            assert len(calls) >= 1
+            assert calls[0]["path"] == "local/stories"
+
+    def test_auto_resolver_503_retries(self, tmp_path, monkeypatch):
+        """The cluster router returning 503 during cold-start must NOT
+        abort training — it's a transient signal, and the resolver
+        translates it to DatasetServerUnreachable so the resilient
+        wrapper's backoff loop catches it.
+        """
+        from datasets import Dataset
+
+        from forgather.ml.datasets import (
+            DatasetServerUnreachable,
+            fast_load_iterable_dataset,
+        )
+        from forgather.ml.datasets.fast_hf_loader import DATASET_SERVER_ENV_VAR
+
+        ds_path = tmp_path / "stories"
+        Dataset.from_dict({"id": list(range(4))}).save_to_disk(str(ds_path))
+
+        state = ServerState()
+        state.add_local("stories", str(ds_path))
+        srv = TestServer(host="127.0.0.1", port=0, auth_token=None, state=state)
+        with srv:
+            from forgather.ml.datasets import resilient_remote_backend as rrb
+
+            attempts = {"n": 0}
+
+            def flaky_resolver(load_args):
+                attempts["n"] += 1
+                if attempts["n"] == 1:
+                    raise DatasetServerUnreachable("cold-start 503")
+                return srv.url, None
+
+            monkeypatch.setattr(
+                rrb, "make_cluster_router_resolver", lambda **_: flaky_resolver
+            )
+            monkeypatch.setattr(rrb.time, "sleep", lambda *_: None)
+
+            monkeypatch.setenv(DATASET_SERVER_ENV_VAR, "auto")
+            ds = fast_load_iterable_dataset(path="local/stories")
+            ids = [ex["id"] for ex in ds]
+            assert ids == list(range(4))
+            assert attempts["n"] == 2  # one failed resolve + one successful
+
+
+class TestRouterResolverWire:
+    """Direct tests of make_cluster_router_resolver against an httplib
+    test server. Verifies the HTTP-level translation of 503/410 codes
+    into the right exception types."""
+
+    def _make_test_router(self, monkeypatch, response_status, body=None):
+        """Spin up a TestServer-like stub on an OS-assigned port and
+        patch _load_forgather_server_token + the resolver's url.
+
+        We piggyback on the existing TestServer infrastructure but
+        with a freshly-built FastAPI app that just answers
+        /api/cluster/dataset_router/resolve.
+        """
+        import threading
+
+        import uvicorn
+        from fastapi import FastAPI
+        from fastapi.responses import JSONResponse
+
+        app = FastAPI()
+
+        @app.get("/api/cluster/dataset_router/resolve")
+        async def resolve(path: str):
+            if isinstance(body, Exception):
+                raise body
+            return JSONResponse(content=body or {}, status_code=response_status)
+
+        config = uvicorn.Config(
+            app, host="127.0.0.1", port=0, log_level="warning",
+            access_log=False, lifespan="off",
+        )
+        server = uvicorn.Server(config)
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        # Wait for bind.
+        deadline = time.monotonic() + 5.0
+        while not server.started:
+            if time.monotonic() > deadline:
+                raise RuntimeError("router stub didn't start")
+            time.sleep(0.02)
+        port = None
+        for srv in server.servers or []:
+            for sock in srv.sockets:
+                port = int(sock.getsockname()[1])
+                break
+        url = f"http://127.0.0.1:{port}"
+
+        def stop():
+            server.should_exit = True
+            thread.join(timeout=5.0)
+
+        return url, stop
+
+    def test_200_returns_base_url_and_token(self, monkeypatch):
+        from forgather.ml.datasets.resilient_remote_backend import (
+            make_cluster_router_resolver,
+        )
+
+        url, stop = self._make_test_router(
+            monkeypatch,
+            200,
+            body={
+                "base_url": "http://chosen:8766",
+                "auth_token": "chosen-tok",
+                "server_id": "abc",
+            },
+        )
+        try:
+            resolver = make_cluster_router_resolver(server_url=url, server_token=None)
+            base, tok = resolver({"path": "local/stories"})
+            assert base == "http://chosen:8766"
+            assert tok == "chosen-tok"
+        finally:
+            stop()
+
+    def test_503_raises_transient(self, monkeypatch):
+        from forgather.ml.datasets import DatasetServerUnreachable
+        from forgather.ml.datasets.resilient_remote_backend import (
+            make_cluster_router_resolver,
+        )
+
+        url, stop = self._make_test_router(
+            monkeypatch, 503, body={"detail": "warming up"}
+        )
+        try:
+            resolver = make_cluster_router_resolver(server_url=url, server_token=None)
+            with pytest.raises(DatasetServerUnreachable):
+                resolver({"path": "local/stories"})
+        finally:
+            stop()
+
+    def test_410_raises_runtime(self, monkeypatch):
+        from forgather.ml.datasets.resilient_remote_backend import (
+            make_cluster_router_resolver,
+        )
+
+        url, stop = self._make_test_router(
+            monkeypatch, 410, body={"detail": "no candidate"}
+        )
+        try:
+            resolver = make_cluster_router_resolver(server_url=url, server_token=None)
+            with pytest.raises(RuntimeError) as exc_info:
+                resolver({"path": "local/missing"})
+            assert "no candidate" in str(exc_info.value)
+        finally:
+            stop()
+
+
 class TestServerDownExit:
     def test_iter_raises_when_server_gone_and_cap_exceeded(self):
         """Operator-visible failure mode: server is gone, retry cap

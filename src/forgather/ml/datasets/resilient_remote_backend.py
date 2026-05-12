@@ -34,7 +34,10 @@ import json
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .iterable_backend import IterableDatasetBackend
@@ -51,6 +54,11 @@ logger = logging.getLogger(__name__)
 #: Env var setting an optional ceiling on cumulative retry backoff
 #: seconds. Unset = retry forever (only operator termination aborts).
 MAX_RETRY_SECONDS_ENV_VAR = "FORGATHER_DATASET_CLIENT_MAX_RETRY_SECONDS"
+
+#: Env vars consulted to find the local forgather_server when running
+#: in cluster `auto` routing mode.
+FORGATHER_SERVER_URL_ENV_VAR = "FORGATHER_SERVER_URL"
+FORGATHER_SERVER_TOKEN_ENV_VAR = "FORGATHER_SERVER_TOKEN"
 
 
 Resolver = Callable[[dict], tuple[str, Optional[str]]]
@@ -324,3 +332,127 @@ class ResilientRemoteBackend(IterableDatasetBackend):
             f"seed={self._seed}, position={self._position}, "
             f"resolver={'auto' if self._resolver else None})"
         )
+
+
+# ---------------------------------------------------------------------------
+# Cluster `auto` routing — consults the local forgather_server's
+# /api/cluster/dataset_router/resolve endpoint.
+# ---------------------------------------------------------------------------
+
+
+def _default_forgather_server_url() -> str:
+    """Default to localhost, picking up local TLS config if present.
+
+    Mirrors the convention used by ``forgather.cli.server_client`` so
+    a single ``$FORGATHER_SERVER_URL`` (or none) covers both worlds.
+    """
+    try:
+        from forgather.tls import client_scheme
+
+        scheme = client_scheme()
+    except Exception:
+        scheme = "http"
+    return f"{scheme}://127.0.0.1:8765"
+
+
+def _load_forgather_server_token() -> Optional[str]:
+    """Resolve the forgather_server bearer for the local node.
+
+    Order:
+      1. ``$FORGATHER_SERVER_TOKEN``
+      2. ``<forgather_config_dir>/server/auth_token``
+
+    Returns ``None`` if neither is available — the server's 401 will
+    surface as a clear error from the resolver call.
+    """
+    env = os.environ.get(FORGATHER_SERVER_TOKEN_ENV_VAR)
+    if env:
+        return env.strip() or None
+    try:
+        from forgather.preprocess import forgather_config_dir
+
+        token_path = Path(forgather_config_dir()) / "server" / "auth_token"
+        text = token_path.read_text().strip()
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+    except Exception:
+        return None
+    return text or None
+
+
+def make_cluster_router_resolver(
+    server_url: Optional[str] = None,
+    server_token: Optional[str] = None,
+    *,
+    timeout: float = 10.0,
+) -> Resolver:
+    """Build a resolver that queries the local forgather_server.
+
+    The returned callable takes ``load_args`` (a dict with at least
+    ``path``) and returns ``(base_url, token_or_None)`` — exactly the
+    shape :class:`ResilientRemoteBackend` expects.
+
+    Errors:
+      * 503 (master still warming up, or no master reachable) is
+        translated to :class:`DatasetServerUnreachable` so the
+        resilient wrapper retries with backoff.
+      * 410 (warmed but no candidate) becomes a ``RuntimeError`` —
+        no amount of retrying will produce a candidate, so the
+        training run fails noisily.
+      * Network failures become :class:`DatasetServerUnreachable`.
+    """
+    base = (
+        server_url
+        or os.environ.get(FORGATHER_SERVER_URL_ENV_VAR)
+        or _default_forgather_server_url()
+    ).rstrip("/")
+    token = server_token if server_token is not None else _load_forgather_server_token()
+    ssl_context = _make_ssl_context(base)
+
+    def resolve(load_args: dict) -> tuple[str, Optional[str]]:
+        path = load_args.get("path")
+        if not path:
+            raise RuntimeError(
+                "Cluster routing requires a non-empty 'path' in load_args."
+            )
+        # Only ``path`` is consulted by the master's resolver in v1
+        # (the dataset_key for local/<name> is the path itself; for
+        # HF/path the master picks any healthy server and the server
+        # loads on demand via the resilient client's /v1/load).
+        url = (
+            base
+            + "/api/cluster/dataset_router/resolve?"
+            + urlencode({"path": path})
+        )
+        headers: dict[str, str] = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        req = Request(url, method="GET", headers=headers)
+        try:
+            with urlopen(req, timeout=timeout, context=ssl_context) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except HTTPError as exc:
+            if exc.code in (502, 503, 504):
+                raise DatasetServerUnreachable(
+                    f"router transient HTTP {exc.code}: {exc.reason}"
+                ) from exc
+            # 410 / 401 / 400 etc. — surface verbatim so the operator
+            # sees the actionable error.
+            detail = exc.reason
+            try:
+                detail = json.loads(exc.read().decode("utf-8")).get(
+                    "detail", detail
+                )
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"Cluster router rejected request for {path!r} "
+                f"({exc.code}): {detail}"
+            ) from exc
+        except (URLError, TimeoutError, ConnectionError) as exc:
+            raise DatasetServerUnreachable(
+                f"router unreachable at {base}: {exc}"
+            ) from exc
+        return body["base_url"], body.get("auth_token") or None
+
+    return resolve
