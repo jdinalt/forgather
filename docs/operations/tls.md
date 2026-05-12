@@ -85,6 +85,58 @@ You do **not** need to mint a second cert "back from B to A". The
 asymmetry is in *issuance* (only A has the CA key), not in *trust*
 (every node trusts the same CA).
 
+### What if host A goes away?
+
+The CA's job is **issuing** certs, not validating them. Validation
+only needs the CA's *public* cert (`ca.crt`), and every peer
+already has a copy in its bundle. So:
+
+* **Temporary A outage** (reboot, network blip, crashed forgather
+  server): the rest of the cluster keeps working. B ↔ C peer-pull
+  continues over HTTPS, verifies fine, and the master node
+  automatically rolls over (`master_node_id` is the lowest UUID
+  among *reachable* members — if A had the lowest UUID, B takes
+  over until A returns). You just can't mint new certs or onboard
+  new peers while A is down.
+
+* **Permanent loss of A** (disk crash with no backup, key
+  destroyed): existing certs keep working until they expire
+  (~825 days from issue, by default). But nobody can mint new
+  certs, so:
+
+  - You can't add a new peer.
+  - You can't renew a cert. When the first leaf cert ages out,
+    that node starts failing peer verification on its own
+    incoming connections.
+  - You can't rotate the CA.
+
+  Recovery from this state is a full re-key: stand up a new CA on
+  some other host with `forgather tls init`, mint fresh certs for
+  every surviving node, distribute the new `ca.crt` to all peers,
+  restart every server. None of the existing data is lost — it's
+  a TLS-state reset, not a cluster wipe.
+
+**Mitigation: back up `ca/ca.key` + `ca/ca.crt`.** The CA private
+key is the thing that's irreplaceable. Copy `~/.config/forgather/tls/ca/`
+to encrypted offline storage (or to a second machine that's not
+publicly reachable) so you can mint a replacement leaf cert if A's
+disk dies. The CA key is small (≈ 1.7 kB) — easy to keep in a
+password manager's secure-notes section, on a USB stick in a safe,
+or in a sealed `age`/`gpg` blob in your dotfiles repo.
+
+> **The CA key is a high-trust artifact.** Treat the backup the
+> same way you'd treat an SSH agent key — anyone with it can mint
+> certs that impersonate any node in your cluster. The backup
+> destination must not be reachable from the cluster's threat
+> model.
+
+You can also designate a "warm spare" CA holder by mirroring
+`~/.config/forgather/tls/ca/` (key included) to a second host via
+encrypted rsync or filesystem-level replication. That host can take
+over minting immediately if A is permanently lost; the rest of the
+cluster doesn't need to be touched because the CA cert (and
+therefore every peer's trust bundle) hasn't changed.
+
 > **Don't run `forgather tls init` on host B.** Init creates a *new*
 > CA. A and B would then trust different CAs, peer-pull would fail
 > closed in both directions, and you'd see "fetch failed" against
