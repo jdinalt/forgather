@@ -311,7 +311,7 @@ venv from inside the running container — no rebuild needed:
 ```bash
 # Inside the container:
 uv pip install -e "$FORGATHER_REPO"
-./build-webui.sh      # only if the SPA changed
+cd "$FORGATHER_REPO" && ./build-webui.sh    # only if the SPA changed
 ```
 
 Force-rebuilding the image is only needed when the `Dockerfile`

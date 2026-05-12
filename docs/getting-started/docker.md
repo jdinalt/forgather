@@ -555,7 +555,7 @@ cd "$FORGATHER_REPO" && git pull
 uv pip install -e "$FORGATHER_REPO"
 
 # If the SPA changed, rebuild the static bundle too.
-./build-webui.sh
+cd "$FORGATHER_REPO" && ./build-webui.sh
 
 # Restart any long-running services (forgather server, training jobs)
 # so they pick up the new code.
