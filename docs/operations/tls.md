@@ -63,11 +63,33 @@ After init, every server respects:
 Run the same CA across every node so peer-pull validates without
 warnings.
 
+### Trust model: one CA, one direction of minting
+
+A forgather cluster has **exactly one CA**. One host — call it host A
+— holds the CA private key and mints leaf certs for every node,
+including itself. Other hosts (B, C, …) never mint anything; they
+just install the cert+key that A produced for them, plus a copy of
+A's CA cert.
+
+That single CA is the trust anchor on **every** node, so peer-pull
+verifies in both directions:
+
+* **A → B**: B presents a cert signed by A's CA. A's bundle contains
+  A's CA. ✓
+* **B → A**: A presents a cert signed by A's CA. B's bundle contains
+  A's CA (you copied it there via `install --ca`). ✓
+* **B → C** (three-node case): C presents a cert signed by A's CA.
+  B's bundle contains A's CA. ✓
+
+You do **not** need to mint a second cert "back from B to A". The
+asymmetry is in *issuance* (only A has the CA key), not in *trust*
+(every node trusts the same CA).
+
 > **Don't run `forgather tls init` on host B.** Init creates a *new*
-> CA. Host A won't trust certs minted by host B's CA, and vice versa
-> — peer-pull will fail closed and you'll get a confusing "fetch
-> failed" in the Nodes view. Always use `mint` on the CA holder and
-> `install` on the peer.
+> CA. A and B would then trust different CAs, peer-pull would fail
+> closed in both directions, and you'd see "fetch failed" against
+> every other node in the Nodes view. Always use `mint` on the CA
+> holder and `install` on the peer.
 
 ### On the CA-holding host (host A)
 
