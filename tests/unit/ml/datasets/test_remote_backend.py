@@ -741,7 +741,14 @@ class TestEnvVarRouting:
             monkeypatch.setenv(DATASET_SERVER_ENV_VAR, srv.url)
             ds = fast_load_iterable_dataset(path=str(ds_path))
             assert isinstance(ds, ComposableIterableDataset)
-            assert isinstance(ds.backend, RemoteBackend)
+            # fast_load_iterable_dataset wraps the RemoteBackend in a
+            # ResilientRemoteBackend so transient server failures don't
+            # abort training. The wrapper is itself a RemoteBackend-shaped
+            # IterableDatasetBackend; the underlying RemoteBackend is at
+            # ``ds.backend._inner`` once iteration starts.
+            from forgather.ml.datasets import ResilientRemoteBackend
+
+            assert isinstance(ds.backend, ResilientRemoteBackend)
             assert [ex["id"] for ex in ds] == local_ids
 
     def test_env_var_with_local_mapping(self, tmp_path, monkeypatch):

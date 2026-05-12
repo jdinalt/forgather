@@ -662,11 +662,14 @@ def _remote_load_iterable_dataset(
     construction — the server only loads the base split, exactly
     matching the local-loader behavior.
     """
-    import json
-    from urllib.error import HTTPError, URLError
-    from urllib.request import Request, urlopen
-
-    from .remote_backend import RemoteBackend, _make_ssl_context, resolve_auth_token
+    from .remote_backend import (
+        DatasetServerUnreachable,
+        resolve_auth_token,
+    )
+    from .resilient_remote_backend import (
+        ResilientRemoteBackend,
+        _do_load_once,
+    )
 
     base_split, slice_start, slice_end = (
         _parse_split_notation(split) if split else (split, None, None)
@@ -679,41 +682,25 @@ def _remote_load_iterable_dataset(
         "data_files": data_files,
         "revision": revision,
     }
-    payload = json.dumps({k: v for k, v in load_args.items() if v is not None}).encode(
-        "utf-8"
-    )
-    url = server_url.rstrip("/") + "/v1/load"
-    headers: dict[str, str] = {"Content-Type": "application/json"}
     token = resolve_auth_token(server_url, explicit=None)
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = Request(url, data=payload, method="POST", headers=headers)
-    # SSLContext is built from the shared CA bundle for https:// URLs;
-    # None for http://. Without this, urlopen falls back to the system
-    # trust store and rejects our self-signed certs.
-    ssl_context = _make_ssl_context(server_url)
+    # Eager initial load: a permanent failure (bad URL, wrong token,
+    # malformed args) should fault early rather than spin under
+    # `ResilientRemoteBackend`'s retry. Transient (network / 5xx)
+    # errors here still propagate as DatasetServerUnreachable so
+    # callers can handle them; the resilient wrapper covers the
+    # mid-iteration / post-load failure window.
     try:
-        with urlopen(req, timeout=300.0, context=ssl_context) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except HTTPError as exc:
-        # Surface the server's error message for debuggability.
-        try:
-            err_body = exc.read().decode("utf-8")
-        except Exception:
-            err_body = ""
+        body = _do_load_once(server_url, token, load_args)
+    except DatasetServerUnreachable as exc:
         raise RuntimeError(
-            f"Dataset server load failed ({exc.code}): {err_body or exc.reason}"
+            f"Could not reach dataset server at {server_url}: {exc}"
         ) from exc
-    except URLError as exc:
-        raise RuntimeError(
-            f"Could not reach dataset server at {server_url}: {exc.reason}"
-        ) from exc
-
-    handle = body["handle"]
-    backend = RemoteBackend(
+    backend = ResilientRemoteBackend(
         server_url,
-        handle,
-        token=token,
+        token,
+        load_args,
+        handle=body["handle"],
+        length=body.get("length"),
         column_names=body.get("column_names"),
     )
     ds = ComposableIterableDataset(

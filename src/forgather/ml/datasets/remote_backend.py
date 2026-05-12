@@ -31,13 +31,50 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 import ssl
 from pathlib import Path
 from typing import Iterator, Optional
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from forgather.preprocess import forgather_config_dir
+
+
+class DatasetServerUnreachable(IOError):
+    """Raised when the dataset_server endpoint is temporarily unreachable.
+
+    Covers connection failures, timeouts, and transient HTTP errors
+    (5xx responses, plus 404 on a specific handle — the handle may
+    have been evicted after a server restart and a fresh `/v1/load`
+    will re-issue it). Non-transient HTTPError responses (400, 401,
+    403) still propagate unchanged so callers can distinguish "the
+    server told me no" from "I couldn't reach the server."
+
+    :class:`ResilientRemoteBackend` catches this and applies retry +
+    re-routing policy; without that wrapper a `RemoteBackend` lets it
+    propagate, preserving the historical "fail fast" behavior.
+    """
+
+
+def _translate_request_error(exc: BaseException) -> BaseException:
+    """Map transient network/HTTP errors to :class:`DatasetServerUnreachable`.
+
+    HTTPError responses are inspected: 5xx codes and 404 (probably an
+    evicted handle) are transient; 4xx codes are passed through as-is
+    so callers see the original error.
+    """
+    if isinstance(exc, HTTPError):
+        if exc.code == 404 or exc.code >= 500:
+            return DatasetServerUnreachable(
+                f"transient HTTP {exc.code}: {exc.reason}"
+            )
+        return exc
+    if isinstance(exc, (URLError, TimeoutError, ConnectionError, socket.timeout)):
+        reason = getattr(exc, "reason", exc)
+        return DatasetServerUnreachable(f"network error: {reason}")
+    return exc
 
 
 def _make_ssl_context(url: str) -> Optional[ssl.SSLContext]:
@@ -205,13 +242,21 @@ class RemoteBackend(IterableDatasetBackend):
         Open a streaming /iter request from the current position and
         yield decoded examples. Updates ``self._position`` as each
         example arrives so callers can capture progress mid-stream.
+
+        Network and 5xx errors at any point (initial open or mid-stream)
+        are translated to :class:`DatasetServerUnreachable`. 4xx errors
+        (token, bad request) propagate unchanged.
         """
         params: dict[str, str] = {"position": str(self._position)}
         if self._seed is not None:
             params["seed"] = str(self._seed)
         url = f"{self._url}/v1/datasets/{self._handle}/iter?{urlencode(params)}"
         req = Request(url, method="GET", headers=self._headers())
-        with urlopen(req, timeout=self._timeout, context=self._ssl_context) as resp:
+        try:
+            resp = urlopen(req, timeout=self._timeout, context=self._ssl_context)
+        except Exception as exc:
+            raise _translate_request_error(exc) from exc
+        try:
             for raw in resp:
                 line = raw.rstrip(b"\n")
                 if not line:
@@ -219,13 +264,31 @@ class RemoteBackend(IterableDatasetBackend):
                 example = _from_jsonable(json.loads(line.decode("utf-8")))
                 self._position += 1
                 yield example
+        except Exception as exc:
+            # Mid-stream socket drops surface as URLError / ConnectionError
+            # from the response iterator; translate so the wrapper can
+            # retry from the current (updated) position.
+            translated = _translate_request_error(exc)
+            if translated is exc:
+                raise
+            raise translated from exc
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
 
     def __len__(self) -> int:
         if self._cached_len is None:
             url = f"{self._url}/v1/datasets/{self._handle}/length"
             req = Request(url, method="GET", headers=self._headers())
-            with urlopen(req, timeout=self._timeout, context=self._ssl_context) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
+            try:
+                with urlopen(
+                    req, timeout=self._timeout, context=self._ssl_context
+                ) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+            except Exception as exc:
+                raise _translate_request_error(exc) from exc
             self._cached_len = int(payload["length"])
         return self._cached_len
 

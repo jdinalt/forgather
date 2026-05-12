@@ -27,7 +27,8 @@ from .preprocess import (
     default_tokenize_map_fn,
     preprocess_dataset,
 )
-from .remote_backend import RemoteBackend
+from .remote_backend import DatasetServerUnreachable, RemoteBackend
+from .resilient_remote_backend import ResilientRemoteBackend
 from .soft_sequential import soft_sequential
 
 __all__ = [
@@ -47,6 +48,8 @@ __all__ = [
     "ArrowBackend",
     "InMemoryBackend",
     "RemoteBackend",
+    "ResilientRemoteBackend",
+    "DatasetServerUnreachable",
     # Interleaving
     "interleave_datasets",
     "InterleavedDataset",
