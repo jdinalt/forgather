@@ -55,6 +55,24 @@ router = APIRouter(tags=["inference-proxy"])
 # stream — httpx holds the connection open for the duration automatically.
 _TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
 
+
+def _verify_for(target: str) -> object:
+    """Pick ``verify=`` for an upstream URL.
+
+    When the inference server runs with TLS (auto-on from the shared
+    config), the upstream URL is ``https://`` and httpx must validate
+    against the shared CA bundle — otherwise it falls back to the
+    system trust store and rejects our self-signed certs with
+    ``CERTIFICATE_VERIFY_FAILED``. For plain ``http://`` upstreams we
+    short-circuit to ``True`` (no-op).
+    """
+    try:
+        from forgather.tls import httpx_verify_for_url
+
+        return httpx_verify_for_url(target)
+    except ImportError:
+        return True
+
 # Completion responses can be large. Use a small chunk size so tokens
 # reach the browser promptly rather than sitting in an HTTP buffer.
 _STREAM_CHUNK = 1024
@@ -250,7 +268,7 @@ async def proxy_health(base: str, request: Request) -> JSONResponse:
     """
     target = _root_of(_validate_base(base)) + "/health"
     headers = _auth_headers_for(base, request)
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target)) as client:
         try:
             r = await client.get(target, headers=headers or None)
         except httpx.RequestError as e:
@@ -267,7 +285,7 @@ async def proxy_models(base: str, request: Request) -> JSONResponse:
     """Forward GET ``<base>/models``."""
     target = _validate_base(base) + "/models"
     headers = _auth_headers_for(base, request)
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target)) as client:
         try:
             r = await client.get(target, headers=headers or None)
         except httpx.RequestError as e:
@@ -296,7 +314,7 @@ async def _proxy_streaming_post(
     target = _validate_base(base) + upstream_path
     body = await request.body()
 
-    client = httpx.AsyncClient(timeout=_TIMEOUT)
+    client = httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target))
     # Send our own Content-Type; drop hop-by-hop and origin headers that
     # would confuse the upstream or reflect browser trust scope. We also
     # drop the user's Authorization (if any) and re-add a per-job token
@@ -377,7 +395,7 @@ async def proxy_tokenize(base: str, request: Request) -> JSONResponse:
     body = await request.body()
     upstream_headers = {"content-type": "application/json"}
     upstream_headers.update(_auth_headers_for(base, request))
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target)) as client:
         try:
             r = await client.post(target, content=body, headers=upstream_headers)
         except httpx.RequestError as e:

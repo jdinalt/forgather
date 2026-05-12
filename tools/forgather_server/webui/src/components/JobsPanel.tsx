@@ -568,7 +568,16 @@ function JobCard({
   const dyn =
     isTraining && job.dynamic_args ? Object.entries(job.dynamic_args) : [];
 
-  // Inference jobs run a local HTTP server on a user-chosen port.
+  // ``scheme`` is stamped server-side by the scheduler for every job
+  // type that exposes a URL — it reflects whether the spawned child
+  // is actually serving TLS. Fallback to ``http`` for old records that
+  // pre-date the stamp.
+  const jobScheme =
+    typeof job.job_params?.scheme === "string"
+      ? (job.job_params.scheme as string)
+      : "http";
+
+  // Inference jobs run a local HTTP(S) server on a user-chosen port.
   // Synthesize the URL for a clickable link so the user can jump straight
   // to the OpenAPI root rather than copy-pasting host:port.
   const inferenceHost =
@@ -580,10 +589,10 @@ function JobCard({
       ? (job.job_params.port as number)
       : null;
   const inferenceUrl = inferencePort
-    ? `http://${browserSafeHost(inferenceHost)}:${inferencePort}`
+    ? `${jobScheme}://${browserSafeHost(inferenceHost)}:${inferencePort}`
     : null;
 
-  // Dataset server: same shape as inference — local HTTP service whose
+  // Dataset server: same shape as inference — local HTTP(S) service whose
   // host/port the user picked. Render the URL so the operator can copy it
   // into FORGATHER_DATASET_SERVER on the client side.
   const dsHost =
@@ -595,7 +604,7 @@ function JobCard({
       ? (job.job_params.port as number)
       : null;
   const dsUrl = dsPort
-    ? `http://${browserSafeHost(dsHost)}:${dsPort}`
+    ? `${jobScheme}://${browserSafeHost(dsHost)}:${dsPort}`
     : null;
 
   // TensorBoard is the same idea: a local web server. ``bind_all`` →
@@ -623,6 +632,10 @@ function JobCard({
         ? job.path_prefix
         : job.path_prefix + "/"
       : "";
+  // TensorBoard itself doesn't speak TLS — it always serves HTTP on its
+  // own port. The forgather-server's tb_proxy fronts it (auth-gated) but
+  // the direct URL we render here is the bypass for SSH-tunnel users, so
+  // it stays http://.
   const tbUrl = tbPort
     ? `http://${tbBindAll ? "localhost" : browserSafeHost(tbHost)}:${tbPort}${tbPathSuffix}`
     : null;
@@ -638,6 +651,9 @@ function JobCard({
     isMkDocs && typeof job.job_params?.host === "string"
       ? (job.job_params.host as string)
       : null;
+  // MkDocs serve runs the dev server in plain HTTP regardless of
+  // forgather's TLS state — the rendered docs are intended for the
+  // local network. Keep http://.
   const mkUrl = mkPort
     ? `http://${browserSafeHost(mkHost)}:${mkPort}`
     : null;

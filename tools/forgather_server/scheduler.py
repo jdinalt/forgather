@@ -712,6 +712,26 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
                 regen=bool(item.job_params.get("regen_token", False)),
             )
 
+    # Stamp the actual URL scheme into job_params for inference and
+    # dataset_server jobs. The spawned child picks TLS up from the
+    # shared config (forgather.tls), but the webui has no view into
+    # that config — without this stamp the Job card and the Inference
+    # panel would always show http:// even when the upstream is
+    # actually HTTPS.
+    # TensorBoard and MkDocs are intentionally not stamped: those
+    # services don't read forgather's TLS config and always serve HTTP.
+    finalized_params = dict(item.job_params)
+    if item.job_type in ("inference", "dataset_server"):
+        try:
+            from forgather.tls import client_scheme as _client_scheme
+
+            host_for_scheme = finalized_params.get("host", "127.0.0.1")
+            finalized_params.setdefault(
+                "scheme", _client_scheme(host_for_scheme)
+            )
+        except Exception:
+            finalized_params.setdefault("scheme", "http")
+
     record = JobRecord(
         queue_id=item.queue_id,
         project_dir=item.project_dir,
@@ -721,7 +741,7 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
         priority=item.priority,
         submitted_at=item.submitted_at,
         job_type=item.job_type,
-        job_params=dict(item.job_params),
+        job_params=finalized_params,
         node=LOCAL_NODE,
         gpu_indices=gpu_indices,
         status="starting",

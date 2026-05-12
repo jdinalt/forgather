@@ -165,7 +165,15 @@ export function InferenceModelPanel({ state, setState }: Props) {
     // bind_all + "0.0.0.0" is a server setting, not a client address —
     // use localhost when the server is listening on all interfaces.
     const browserHost = host === "0.0.0.0" ? "localhost" : host;
-    const url = `http://${browserHost}:${port}/v1`;
+    // ``scheme`` is stamped server-side by the scheduler when the job
+    // starts — it reflects whether the spawned child is actually
+    // serving TLS. Without it, the webui would always default to
+    // http:// even when the upstream is https://.
+    const scheme =
+      typeof job.job_params?.scheme === "string"
+        ? (job.job_params.scheme as string)
+        : "http";
+    const url = `${scheme}://${browserHost}:${port}/v1`;
     // Auto-populate auth token from the JobRecord. ``null`` here means
     // either the spawn ran with --no-auth or it's a non-server job —
     // either way, blank the field to match the actual upstream policy.
@@ -209,7 +217,11 @@ export function InferenceModelPanel({ state, setState }: Props) {
                 ? basename(j.job_params.model_path as string)
                 : "?";
             const browserHost = host === "0.0.0.0" ? "localhost" : host;
-            const url = port ? `http://${browserHost}:${port}/v1` : null;
+            const scheme =
+              typeof j.job_params?.scheme === "string"
+                ? (j.job_params.scheme as string)
+                : "http";
+            const url = port ? `${scheme}://${browserHost}:${port}/v1` : null;
             const selected = url === state.baseUrl;
             return (
               <li
