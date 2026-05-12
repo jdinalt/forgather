@@ -99,6 +99,12 @@ _PEER_ALLOWED_PATHS = frozenset(
         # Tokens leaving this surface stay within the cluster bearer
         # trust boundary — see cluster_dataset_inventory.py.
         "/api/cluster/dataset_servers_local",
+        # Master-aggregated dataset inventory + router. Non-master
+        # nodes proxy these GETs to master so every webui and every
+        # training client sees the same cluster-wide view.
+        "/api/cluster/dataset_inventory",
+        "/api/cluster/dataset_servers",
+        "/api/cluster/dataset_router/resolve",
     }
 )
 
