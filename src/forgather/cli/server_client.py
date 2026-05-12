@@ -423,3 +423,27 @@ class ServerClient:
         before kicking off cluster-mode training.
         """
         return self._get("/cluster/dataset_inventory").json()
+
+    def cluster_dataset_resolve(self, path):
+        """Ask the master's router which server it would pick for ``path``.
+
+        Returns the response body (which contains
+        ``{base_url, auth_token, server_id}`` on success). Raises
+        ``RuntimeError`` on 503 (cold-start) / 410 (no candidate) /
+        other 4xx with the upstream detail message — same exception
+        shape as the rest of ServerClient, so the CLI handler just
+        prints the message.
+        """
+        return self._get(
+            f"/cluster/dataset_router/resolve?path={quote(path, safe='')}"
+        ).json()
+
+    def cluster_server_proxy_get(self, server_id, op):
+        """Cluster-proxied GET against a single dataset_server.
+
+        ``op`` is one of ``health``, ``auth-status``, ``datasets``,
+        ``cache``, ``local``. The master injects the bearer from its
+        inventory; the caller only needs the cluster bearer.
+        """
+        path = f"/cluster/dataset_server_proxy/{server_id}/{op}"
+        return self._get(path).json()

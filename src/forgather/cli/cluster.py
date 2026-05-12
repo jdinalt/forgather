@@ -14,6 +14,11 @@ def _format_delta(ts_or_none):
         epoch = float(ts_or_none)
     except (ValueError, TypeError):
         return str(ts_or_none)
+    # 0 is the dataclass default for "never set yet" — render as
+    # ``never`` rather than "55 years ago", which would falsely
+    # suggest a stuck loop.
+    if epoch <= 0:
+        return "never"
     ts = datetime.datetime.fromtimestamp(epoch, tz=datetime.timezone.utc)
     now = datetime.datetime.now(datetime.timezone.utc)
     delta = int((now - ts).total_seconds())
@@ -197,6 +202,16 @@ def _print_bundle_detail(bundle):
     print(f"submitted:        {_format_delta(bundle.get('submitted_at'))}")
     if bundle.get("cancelled_at"):
         print(f"cancelled:        {_format_delta(bundle.get('cancelled_at'))}")
+    ds = bundle.get("dataset_source")
+    if ds:
+        # Render the kind plus a compact key=val tail when relevant
+        # (server_id for the pinned-server case). "local" / None is
+        # the default loader — same convention as the submit modal.
+        kind = ds.get("kind", "?")
+        extra = ""
+        if kind == "server" and ds.get("server_id"):
+            extra = f"  server_id={ds['server_id']}"
+        print(f"dataset source:   {kind}{extra}")
     print()
     print("Members:")
     for m in bundle.get("members") or []:
@@ -481,6 +496,128 @@ def _cmd_cancel(client, args):
     return 0 if cancelled else 1
 
 
+def _cmd_resolve(client, args):
+    """Dry-run the cluster dataset router for a given path.
+
+    Useful smoke test before launching training — if this returns 503
+    or 410, training would have the same outcome (modulo retry).
+    """
+    import json as _json
+
+    try:
+        resp = client.cluster_dataset_resolve(args.path)
+    except RuntimeError as e:
+        # 503 / 410 / other server errors come back here. Print the
+        # detail and exit non-zero so scripts can branch on it.
+        print(f"resolve failed: {e}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(_json.dumps(resp, indent=2))
+        return 0
+    print(f"server_id: {resp.get('server_id', '?')}")
+    print(f"base_url:  {resp.get('base_url', '?')}")
+    has_token = bool(resp.get("auth_token"))
+    print(f"token:     {'(set)' if has_token else '(no-auth)'}")
+    return 0
+
+
+def _cmd_server(client, args):
+    """Cluster-proxied diagnostics for a single dataset_server.
+
+    Mirrors the per-server ``forgather dataset-server status|list|cache|local``
+    CLI but routes through the master so the operator only needs the
+    cluster bearer, not each peer's dataset_server bearer.
+    """
+    import json as _json
+
+    op = args.op
+    if op == "status":
+        try:
+            health = client.cluster_server_proxy_get(args.server_id, "health")
+            auth_status = client.cluster_server_proxy_get(
+                args.server_id, "auth-status"
+            )
+        except RuntimeError as e:
+            print(f"status failed: {e}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(_json.dumps({"health": health, "auth_status": auth_status}, indent=2))
+            return 0
+        print(f"service: {health.get('service', '?')}  version: {health.get('version', '?')}")
+        print(f"status:  {health.get('status', '?')}")
+        policy = health.get("policy") or {}
+        if policy:
+            print("policy:")
+            for k, v in policy.items():
+                print(f"  {k:<20}{v}")
+        print(f"auth_required: {auth_status.get('auth_required')}")
+        return 0
+
+    # list / cache / local: fetch + render.
+    upstream_op = {"list": "datasets", "cache": "cache", "local": "local"}[op]
+    try:
+        body = client.cluster_server_proxy_get(args.server_id, upstream_op)
+    except RuntimeError as e:
+        print(f"{op} failed: {e}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(_json.dumps(body, indent=2))
+        return 0
+
+    if op == "list":
+        handles = body.get("handles") if isinstance(body, dict) else body
+        if not handles:
+            print("(no datasets loaded on this server)")
+            return 0
+        print(f"{len(handles)} dataset handle(s):")
+        for h in handles:
+            la = h.get("load_args") or {}
+            print(
+                f"  {h.get('handle', '?')[:16]:<17} "
+                f"src={h.get('source', '?'):<6} "
+                f"len={h.get('length', '?'):<10} "
+                f"args={la}"
+            )
+        return 0
+
+    if op == "cache":
+        datasets = body.get("datasets") if isinstance(body, dict) else None
+        if not datasets:
+            print("(HF cache empty or unreadable)")
+            return 0
+        print(f"cache_root: {body.get('cache_root', '?')}")
+        print(f"{len(datasets)} cached repo(s):")
+        for d in datasets:
+            cfgs = d.get("configs") or []
+            size_mb = (d.get("size_bytes") or 0) / (1024 * 1024)
+            print(f"  {d.get('repo', '?')}  ({size_mb:.1f} MB, {len(cfgs)} config(s))")
+            for c in cfgs:
+                splits = c.get("splits") or []
+                split_names = ", ".join(s.get("name", "?") for s in splits)
+                print(f"    {c.get('config', '?')}: splits=[{split_names}]")
+        return 0
+
+    if op == "local":
+        entries = body.get("local") if isinstance(body, dict) else body
+        if not entries:
+            print("(no local/<name> mappings registered)")
+            return 0
+        if isinstance(entries, dict):
+            entries = [{"name": k, **(v if isinstance(v, dict) else {})}
+                       for k, v in entries.items()]
+        print(f"{len(entries)} local mapping(s):")
+        for e in entries:
+            print(
+                f"  local/{e.get('name', '?'):<20} "
+                f"path={e.get('path', '?')} "
+                f"len={e.get('length', '?')}"
+            )
+        return 0
+
+    return 1  # unreachable — argparse already restricts choices
+
+
 def _cmd_datasets(client, args):
     """Cluster-wide dataset-server inventory: which servers the master
     has aggregated, which datasets are routable, where each one lives.
@@ -512,6 +649,8 @@ def _cmd_datasets(client, args):
             file=sys.stderr,
         )
 
+    verbose = getattr(args, "verbose", False)
+
     servers = inv.get("servers", [])
     if servers:
         print()
@@ -527,6 +666,18 @@ def _cmd_datasets(client, args):
                 f"peer={(s.get('peer_node_id') or '-')[:8]:<8} "
                 f"{health}{err_suffix}"
             )
+            if verbose:
+                # Show per-server health + refresh ages so an
+                # operator can spot a stuck loop. Errors carry through
+                # untruncated so the failure mode is obvious.
+                print(
+                    f"      last_health_check:    {_format_delta(s.get('last_health_check'))}"
+                )
+                print(
+                    f"      last_dataset_refresh: {_format_delta(s.get('last_dataset_refresh'))}"
+                )
+                if s.get("last_dataset_error"):
+                    print(f"      last_dataset_error:   {s['last_dataset_error']}")
     datasets = inv.get("datasets", [])
     if datasets:
         print()
@@ -545,6 +696,17 @@ def _cmd_datasets(client, args):
                 f"len={length_str:<10} "
                 f"hosts={', '.join(hosts)}"
             )
+            if verbose:
+                # load_args is the resolved descriptor on /v1/datasets
+                # — exactly what the server saw at load time. Useful
+                # for distinguishing handles that hash the same path
+                # but differ on revision / split / data_files.
+                la = d.get("load_args")
+                if la:
+                    print(f"      load_args: {la}")
+                cols = d.get("column_names")
+                if cols:
+                    print(f"      columns:   {cols}")
     return 0
 
 
@@ -555,7 +717,8 @@ def cluster_cmd(args):
     sub = getattr(args, "cluster_subcommand", None)
     if sub is None:
         print(
-            "error: specify a subcommand (nodes, jobs, submit, cancel, datasets)",
+            "error: specify a subcommand "
+            "(nodes, jobs, submit, cancel, datasets, resolve, server)",
             file=sys.stderr,
         )
         return 1
@@ -571,6 +734,10 @@ def cluster_cmd(args):
             return _cmd_cancel(client, args)
         if sub == "datasets":
             return _cmd_datasets(client, args)
+        if sub == "resolve":
+            return _cmd_resolve(client, args)
+        if sub == "server":
+            return _cmd_server(client, args)
         print(f"error: unknown subcommand {sub!r}", file=sys.stderr)
         return 1
     except ServerUnreachable as e:

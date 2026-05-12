@@ -243,7 +243,15 @@ def parse_args(args=None):
     # inside `inf server ...`.
     if "server" in args_list:
         srv_idx = args_list.index("server")
-        if srv_idx == 0 or args_list[srv_idx - 1] != "inf":
+        # The carve-out is only for the top-level ``forgather server``
+        # subcommand. Other parents that *contain* a ``server`` sub-
+        # subcommand (``inf server``, ``cluster server``) must NOT be
+        # rewritten — their positional args after ``server`` are real
+        # args for the inner subparser, not REMAINDER passthrough.
+        _server_parents = ("inf", "cluster")
+        if srv_idx > 0 and args_list[srv_idx - 1] in _server_parents:
+            pass  # leave args_list alone — the inner subparser handles them
+        else:
             server_original_args = args_list[srv_idx + 1 :]
             args_list = args_list[: srv_idx + 1]
 

@@ -185,5 +185,74 @@ def create_cluster_parser(global_args):
         action="store_true",
         help="Emit raw /api/cluster/dataset_inventory JSON instead of tables",
     )
+    datasets_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help=(
+            "Render extra columns: last health-check / dataset-refresh "
+            "timestamps, errors, and resolved load_args for HF/path "
+            "datasets."
+        ),
+    )
+
+    resolve_parser = sub.add_parser(
+        "resolve",
+        help=(
+            "Dry-run the dataset router for a given path. Returns the "
+            "server_id + base_url the resolver would pick (or the 503 / "
+            "410 error the live cluster would return). Lets you "
+            "validate routing before launching training."
+        ),
+        formatter_class=RawTextHelpFormatter,
+    )
+    resolve_parser.add_argument(
+        "path",
+        help=(
+            "Dataset path to resolve. ``local/<name>`` requests are "
+            "filtered to servers advertising that name; anything else "
+            "picks any healthy server (server loads on demand)."
+        ),
+    )
+    resolve_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit raw resolve response JSON",
+    )
+
+    server_parser = sub.add_parser(
+        "server",
+        help=(
+            "Cluster-proxied diagnostics for a single dataset_server. "
+            "Reaches any server in the master's inventory by server_id, "
+            "without needing its URL or bearer token directly."
+        ),
+        formatter_class=RawTextHelpFormatter,
+        epilog=(
+            "Run ``forgather cluster datasets`` to find a server_id, "
+            "then e.g.\n"
+            "  forgather cluster server <id> status\n"
+            "  forgather cluster server <id> list\n"
+            "  forgather cluster server <id> cache\n"
+            "  forgather cluster server <id> local\n"
+        ),
+    )
+    server_parser.add_argument(
+        "server_id", help="Server id from ``forgather cluster datasets``"
+    )
+    server_parser.add_argument(
+        "op",
+        choices=["status", "list", "cache", "local"],
+        help=(
+            "What to fetch: ``status`` (/v1/health + /v1/auth/status), "
+            "``list`` (/v1/datasets), ``cache`` (/v1/cache/hf), "
+            "``local`` (/v1/local)."
+        ),
+    )
+    server_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit raw upstream JSON instead of the formatted view",
+    )
 
     return parser

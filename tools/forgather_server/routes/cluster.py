@@ -1326,6 +1326,13 @@ class ClusterJobModel(BaseModel):
     # ``status`` only flips to "cancelled" when the master fans out
     # a cancel.
     rolled_up_status: str = "submitted"
+    # Dataset-source choice from the submit request — None /
+    # ``{"kind": "local"}`` for the in-process loader, ``{"kind":
+    # "auto"}`` for cluster auto-routing, ``{"kind": "server",
+    # "server_id": ...}`` for a pinned URL. Surfaced verbatim so the
+    # operator can see "did this bundle actually use auto-routing"
+    # without consulting per-rank env logs.
+    dataset_source: Optional[Dict[str, Any]] = None
 
 
 class ClusterJobSubmitResponse(BaseModel):
@@ -1373,6 +1380,7 @@ def _to_cluster_job_model(
         rdzv_node_id=job.rdzv_node_id,
         members=member_models,
         status=job.status,
+        dataset_source=job.dataset_source,
         cancelled_at=job.cancelled_at,
         rolled_up_status=_rollup_cluster_status(
             job, [m.current_status for m in member_models]
@@ -1807,6 +1815,7 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
         rdzv_id=rdzv_id,
         rdzv_node_id=rdzv_node_id,
         members=assignments,
+        dataset_source=req.dataset_source,
     )
     cluster_jobs.add_job(job)
     return ClusterJobSubmitResponse(
