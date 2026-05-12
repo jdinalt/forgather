@@ -63,6 +63,34 @@ After init, every server respects:
 Run the same CA across every node so peer-pull validates without
 warnings.
 
+### TL;DR — three commands
+
+For a typical LAN cluster where you have ssh access to every peer:
+
+```bash
+# 1. On the chosen CA holder (your dev workstation is the usual pick):
+forgather tls init
+
+# 2. For each other node — one line per node, no IP table to track:
+forgather tls deploy --force [--container <NAME>] <NODE>
+#   <NODE> is anything ssh can resolve (hostname, IP, ~/.ssh/config alias).
+#   --container <NAME>: pass when the peer runs forgather inside a Docker
+#                       container (the install + token write happen via
+#                       `docker exec <NAME>`, no host-side file shuffling).
+#   --force:            overwrite any pre-existing TLS state on the peer.
+#                       Omit if you're sure the peer is clean.
+
+# 3. Restart `forgather server -H 0.0.0.0 --cluster <name>` on every node
+#    so each one picks up its new cert.
+```
+
+That's it for the cluster-TLS bring-up. The numbered Step-1/Step-2/
+Step-3 sections below break the same procedure into its component
+parts (useful when you don't have ssh, or want to inspect each
+cert before installing it), and the "Trust model" section explains
+*why* one CA + chain-only validation is the right design for a
+LAN cluster.
+
 ### Trust model: one CA, chain-only validation
 
 A forgather cluster has **exactly one CA**. One host — call it host A
