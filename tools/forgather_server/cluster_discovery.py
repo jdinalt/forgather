@@ -48,6 +48,7 @@ _TXT_CLUSTER = b"cluster"
 _TXT_NODE_ID = b"node_id"
 _TXT_VERSION = b"version"
 _TXT_HOSTNAME = b"hostname"
+_TXT_TLS = b"tls"
 
 
 def _build_service_info(
@@ -58,6 +59,7 @@ def _build_service_info(
     port: int,
     version: str,
     addresses: List[bytes],
+    tls: bool = False,
 ) -> ServiceInfo:
     """Construct the ServiceInfo we will register on the local mDNS bus.
 
@@ -72,6 +74,7 @@ def _build_service_info(
         _TXT_NODE_ID: node_id.encode("ascii"),
         _TXT_VERSION: version.encode("utf-8"),
         _TXT_HOSTNAME: hostname.encode("utf-8"),
+        _TXT_TLS: b"1" if tls else b"0",
     }
     return ServiceInfo(
         type_=SERVICE_TYPE,
@@ -231,6 +234,7 @@ class _PeerListener(ServiceListener):
         peer_cluster = _decode(props.get(_TXT_CLUSTER))
         version = _decode(props.get(_TXT_VERSION)) or "unknown"
         hostname = _decode(props.get(_TXT_HOSTNAME)) or info.server.rstrip(".")
+        peer_tls = _decode(props.get(_TXT_TLS)) == "1"
         if not node_id:
             log.debug("ignoring service without node_id TXT: %s", name)
             return
@@ -285,6 +289,7 @@ class _PeerListener(ServiceListener):
                 cluster_name=peer_cluster,
                 forgather_version=version,
                 source="discovery",
+                tls=peer_tls,
             )
         except Exception:
             log.exception("update_member failed for peer %s", node_id)
@@ -441,6 +446,7 @@ class ClusterDiscovery:
             port=ident.port,
             version=ident.forgather_version,
             addresses=addrs,
+            tls=ident.tls,
         )
         # Reflect the chosen address back into the member table so the
         # /api/cluster/members response carries the correct value for

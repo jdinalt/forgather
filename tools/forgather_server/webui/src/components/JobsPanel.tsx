@@ -568,7 +568,34 @@ function JobCard({
   const dyn =
     isTraining && job.dynamic_args ? Object.entries(job.dynamic_args) : [];
 
-  // Inference jobs run a local HTTP server on a user-chosen port.
+  // ``scheme`` is stamped server-side by the scheduler for every job
+  // type that exposes a URL — it reflects whether the spawned child
+  // is actually serving TLS. Fallback to ``http`` for old records that
+  // pre-date the stamp.
+  const jobScheme =
+    typeof job.job_params?.scheme === "string"
+      ? (job.job_params.scheme as string)
+      : "http";
+
+  // `routable_host` is stamped server-side by the scheduler for
+  // inference/dataset_server jobs bound to 0.0.0.0 — it's a LAN-
+  // reachable address (cluster-self address or psutil's first
+  // non-loopback IP). When present, prefer it over browserSafeHost's
+  // 0.0.0.0→localhost fallback: that fallback is only useful for
+  // same-host access, and the cross-host case is the whole point
+  // of binding 0.0.0.0.
+  const jobRoutable =
+    typeof job.job_params?.routable_host === "string"
+      ? (job.job_params.routable_host as string)
+      : null;
+  function urlHost(rawHost: string | null): string {
+    if (jobRoutable && (rawHost === "0.0.0.0" || rawHost === "::" || !rawHost)) {
+      return jobRoutable;
+    }
+    return browserSafeHost(rawHost);
+  }
+
+  // Inference jobs run a local HTTP(S) server on a user-chosen port.
   // Synthesize the URL for a clickable link so the user can jump straight
   // to the OpenAPI root rather than copy-pasting host:port.
   const inferenceHost =
@@ -580,10 +607,10 @@ function JobCard({
       ? (job.job_params.port as number)
       : null;
   const inferenceUrl = inferencePort
-    ? `http://${browserSafeHost(inferenceHost)}:${inferencePort}`
+    ? `${jobScheme}://${urlHost(inferenceHost)}:${inferencePort}`
     : null;
 
-  // Dataset server: same shape as inference — local HTTP service whose
+  // Dataset server: same shape as inference — local HTTP(S) service whose
   // host/port the user picked. Render the URL so the operator can copy it
   // into FORGATHER_DATASET_SERVER on the client side.
   const dsHost =
@@ -595,7 +622,7 @@ function JobCard({
       ? (job.job_params.port as number)
       : null;
   const dsUrl = dsPort
-    ? `http://${browserSafeHost(dsHost)}:${dsPort}`
+    ? `${jobScheme}://${urlHost(dsHost)}:${dsPort}`
     : null;
 
   // TensorBoard is the same idea: a local web server. ``bind_all`` →
@@ -623,6 +650,10 @@ function JobCard({
         ? job.path_prefix
         : job.path_prefix + "/"
       : "";
+  // TensorBoard itself doesn't speak TLS — it always serves HTTP on its
+  // own port. The forgather-server's tb_proxy fronts it (auth-gated) but
+  // the direct URL we render here is the bypass for SSH-tunnel users, so
+  // it stays http://.
   const tbUrl = tbPort
     ? `http://${tbBindAll ? "localhost" : browserSafeHost(tbHost)}:${tbPort}${tbPathSuffix}`
     : null;
@@ -638,6 +669,9 @@ function JobCard({
     isMkDocs && typeof job.job_params?.host === "string"
       ? (job.job_params.host as string)
       : null;
+  // MkDocs serve runs the dev server in plain HTTP regardless of
+  // forgather's TLS state — the rendered docs are intended for the
+  // local network. Keep http://.
   const mkUrl = mkPort
     ? `http://${browserSafeHost(mkHost)}:${mkPort}`
     : null;

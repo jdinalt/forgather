@@ -48,6 +48,15 @@ else:
 
 import uvicorn
 
+from forgather.tls import (
+    TLSRequiredError,
+    enforce_non_loopback_policy,
+)
+from forgather.tls.runtime import (
+    add_server_tls_args,
+    uvicorn_ssl_kwargs as tls_uvicorn_ssl_kwargs,
+)
+
 _SERVICE_NAME = "dataset_server"
 
 
@@ -207,6 +216,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    add_server_tls_args(parser)
     parser.add_argument(
         "--config",
         default=None,
@@ -516,9 +526,19 @@ def main(argv: Optional[list[str]] = None) -> int:
             file=sys.stderr,
             flush=True,
         )
+        # Scheme is decided below once TLS state is known; emit a
+        # placeholder here and let the launch sequence print the final
+        # URL line. Keep this curl snippet under the bearer-token
+        # banner so operators see auth + URL together.
+        try:
+            from forgather.tls import is_enabled as _tls_enabled
+
+            _scheme = "https" if _tls_enabled() else "http"
+        except Exception:
+            _scheme = "http"
         print(
             f'curl -H "Authorization: Bearer {auth_token}" '
-            f"http://{args.host}:{args.port}/v1/datasets",
+            f"{_scheme}://{args.host}:{args.port}/v1/datasets",
             file=sys.stderr,
             flush=True,
         )
@@ -565,12 +585,39 @@ def main(argv: Optional[list[str]] = None) -> int:
         "on" if auth_token else "off",
     )
 
+    try:
+        ssl_kwargs = tls_uvicorn_ssl_kwargs(args)
+    except FileNotFoundError as exc:
+        logger.error("TLS config error: %s", exc)
+        return 2
+    tls_on = bool(ssl_kwargs)
+    try:
+        from forgather.tls import load_config as _tls_load_config
+
+        enforce_non_loopback_policy(
+            args.host,
+            tls_enabled=tls_on,
+            insecure=args.insecure,
+            service="dataset_server",
+            cfg=_tls_load_config(),
+        )
+    except TLSRequiredError as exc:
+        logger.error("%s", exc)
+        return 2
+    if tls_on:
+        scheme = "https"
+        logger.info("TLS: serving HTTPS from %s", ssl_kwargs["ssl_certfile"])
+    else:
+        scheme = "http"
+    print(f"dataset_server URL: {scheme}://{args.host}:{args.port}/", file=sys.stderr, flush=True)
+
     uvicorn.run(
         app,
         host=args.host,
         port=args.port,
         log_level=args.log_level.lower(),
         access_log=True,
+        **ssl_kwargs,
     )
     return 0
 

@@ -78,6 +78,11 @@ class NodeIdentity:
     # override auto-detection when the server runs inside a container
     # whose network namespace hides the host's real interfaces.
     advertise_addresses: tuple = ()
+    # True when the local server is serving HTTPS — advertised to peers
+    # via the mDNS ``tls`` TXT record so they call ``https://…`` for the
+    # peer-pull. Cluster runs are single-mode: every peer is expected to
+    # match.
+    tls: bool = False
 
 
 @dataclass
@@ -102,6 +107,10 @@ class MemberInfo:
     # peer answers at least once. Stored as a generic dict so adding a
     # new probe field doesn't require schema changes here.
     probe: Optional[Dict[str, Any]] = None
+    # Whether this peer serves HTTPS. Propagated via the mDNS ``tls``
+    # TXT record and the peer-pull payload. Defaults to False — pre-TLS
+    # peers won't send the field and stay on HTTP.
+    tls: bool = False
 
 
 class _ClusterState:
@@ -124,6 +133,7 @@ class _ClusterState:
         port: int,
         *,
         advertise_addresses: tuple = (),
+        tls: bool = False,
     ) -> NodeIdentity:
         if not cluster_name:
             raise ValueError("cluster_name must be a non-empty string")
@@ -138,6 +148,7 @@ class _ClusterState:
             forgather_version=_forgather_version(),
             started_at=time.time(),
             advertise_addresses=tuple(advertise_addresses),
+            tls=bool(tls),
         )
         # Probe payload is computed once at activation and attached
         # to the self entry. Lazy import keeps test fixtures free of
@@ -168,6 +179,7 @@ class _ClusterState:
                 reachable=True,
                 last_source="self",
                 probe=self_probe,
+                tls=identity.tls,
             )
         log.info(
             "cluster activated: name=%s node_id=%s hostname=%s port=%d",
@@ -202,6 +214,7 @@ class _ClusterState:
         source: str = "discovery",
         now: Optional[float] = None,
         probe: Optional[Dict[str, Any]] = None,
+        tls: Optional[bool] = None,
     ) -> MemberInfo:
         """Insert or refresh a member entry. Idempotent.
 
@@ -237,6 +250,7 @@ class _ClusterState:
                     reachable=True,
                     last_source=source,
                     probe=probe,
+                    tls=bool(tls) if tls is not None else False,
                 )
                 self._members[node_id] = member
                 log.info(
@@ -254,6 +268,8 @@ class _ClusterState:
             existing.forgather_version = forgather_version
             existing.last_seen = ts
             existing.last_source = source
+            if tls is not None:
+                existing.tls = bool(tls)
             # Only overwrite the cached probe if the caller passed
             # one. mDNS discovery passes None; peer-pull passes the
             # value it received.
@@ -412,8 +428,11 @@ def activate(
     port: int,
     *,
     advertise_addresses: tuple = (),
+    tls: bool = False,
 ) -> NodeIdentity:
-    return _state.activate(cluster_name, port, advertise_addresses=advertise_addresses)
+    return _state.activate(
+        cluster_name, port, advertise_addresses=advertise_addresses, tls=tls
+    )
 
 
 def is_active() -> bool:
@@ -435,6 +454,7 @@ def update_member(
     source: str = "discovery",
     now: Optional[float] = None,
     probe: Optional[Dict[str, Any]] = None,
+    tls: Optional[bool] = None,
 ) -> MemberInfo:
     return _state.update_member(
         node_id,
@@ -446,6 +466,7 @@ def update_member(
         source=source,
         now=now,
         probe=probe,
+        tls=tls,
     )
 
 

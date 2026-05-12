@@ -666,7 +666,7 @@ def _remote_load_iterable_dataset(
     from urllib.error import HTTPError, URLError
     from urllib.request import Request, urlopen
 
-    from .remote_backend import RemoteBackend, resolve_auth_token
+    from .remote_backend import RemoteBackend, _make_ssl_context, resolve_auth_token
 
     base_split, slice_start, slice_end = (
         _parse_split_notation(split) if split else (split, None, None)
@@ -688,8 +688,12 @@ def _remote_load_iterable_dataset(
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = Request(url, data=payload, method="POST", headers=headers)
+    # SSLContext is built from the shared CA bundle for https:// URLs;
+    # None for http://. Without this, urlopen falls back to the system
+    # trust store and rejects our self-signed certs.
+    ssl_context = _make_ssl_context(server_url)
     try:
-        with urlopen(req, timeout=300.0) as resp:
+        with urlopen(req, timeout=300.0, context=ssl_context) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except HTTPError as exc:
         # Surface the server's error message for debuggability.

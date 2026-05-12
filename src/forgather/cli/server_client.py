@@ -44,6 +44,44 @@ def _load_auth_token():
     return text or None
 
 
+def _default_base_url():
+    """Same default as before, but pick ``https://`` when local TLS is on.
+
+    This mirrors how the server itself emits its banner URL. A user who
+    ran ``forgather tls init`` doesn't have to set $FORGATHER_SERVER_URL
+    to talk to their own server — the client picks the scheme up from
+    the shared config.
+    """
+    try:
+        from forgather.tls import client_scheme
+
+        scheme = client_scheme()
+    except Exception:
+        scheme = "http"
+    return f"{scheme}://127.0.0.1:8765"
+
+
+class _NoHostnameHTTPSAdapter:
+    """Lazy import wrapper — only build the requests/urllib3 plumbing
+    when we actually need it. Avoids importing requests at module load."""
+
+    @staticmethod
+    def build():
+        from requests.adapters import HTTPAdapter
+
+        class _Adapter(HTTPAdapter):
+            def init_poolmanager(self, *args, **kwargs):
+                # ``assert_hostname=False`` tells urllib3 to skip the
+                # cert-SAN-vs-URL-hostname check while still requiring
+                # chain validation against the configured CA bundle.
+                # Matches what we do for httpx/urllib elsewhere — see
+                # forgather.tls.runtime.httpx_verify for the rationale.
+                kwargs["assert_hostname"] = False
+                return super().init_poolmanager(*args, **kwargs)
+
+        return _Adapter()
+
+
 class ServerClient:
     def __init__(self, base_url=None, timeout=30.0):
         import requests
@@ -51,12 +89,35 @@ class ServerClient:
         base = (
             base_url
             or os.environ.get("FORGATHER_SERVER_URL")
-            or "http://127.0.0.1:8765"
+            or _default_base_url()
         )
         self.base = base.rstrip("/")
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers["User-Agent"] = "forgather-cli"
+        # HTTPS configuration:
+        #   1. Point `requests` at the shared CA bundle so our self-
+        #      signed certs validate. Without it, requests falls back
+        #      to the system trust store and rejects the cert.
+        #   2. If the shared config has verify_hostname=False (the
+        #      LAN default), install an HTTPAdapter that disables
+        #      urllib3's hostname-SAN check. The chain check is the
+        #      actual security boundary on a private CA — see
+        #      docs/operations/tls.md.
+        if self.base.lower().startswith("https://"):
+            try:
+                from forgather.tls import load_config
+
+                cfg = load_config()
+                bundle = cfg.effective_bundle()
+                if bundle is not None:
+                    self.session.verify = str(bundle)
+                if not cfg.verify_hostname:
+                    self.session.mount(
+                        "https://", _NoHostnameHTTPSAdapter.build()
+                    )
+            except Exception:
+                pass
         self._token = _load_auth_token()
         if self._token:
             self.session.headers["Authorization"] = f"Bearer {self._token}"

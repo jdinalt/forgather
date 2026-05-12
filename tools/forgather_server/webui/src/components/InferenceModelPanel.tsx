@@ -162,10 +162,24 @@ export function InferenceModelPanel({ state, setState }: Props) {
         ? (job.job_params.port as number)
         : null;
     if (!port) return;
-    // bind_all + "0.0.0.0" is a server setting, not a client address —
-    // use localhost when the server is listening on all interfaces.
-    const browserHost = host === "0.0.0.0" ? "localhost" : host;
-    const url = `http://${browserHost}:${port}/v1`;
+    // 0.0.0.0 isn't dialable. Prefer the server-stamped
+    // ``routable_host`` (the inference server's LAN address —
+    // reachable from any peer, the browser, etc.); fall back to
+    // localhost only when the server didn't supply one. For
+    // explicit bind hosts (not 0.0.0.0), trust what the operator typed.
+    const routable =
+      typeof job.job_params?.routable_host === "string"
+        ? (job.job_params.routable_host as string)
+        : null;
+    const browserHost =
+      host === "0.0.0.0" || host === "::" || !host
+        ? routable || "localhost"
+        : host;
+    const scheme =
+      typeof job.job_params?.scheme === "string"
+        ? (job.job_params.scheme as string)
+        : "http";
+    const url = `${scheme}://${browserHost}:${port}/v1`;
     // Auto-populate auth token from the JobRecord. ``null`` here means
     // either the spawn ran with --no-auth or it's a non-server job —
     // either way, blank the field to match the actual upstream policy.
@@ -208,8 +222,19 @@ export function InferenceModelPanel({ state, setState }: Props) {
               typeof j.job_params?.model_path === "string"
                 ? basename(j.job_params.model_path as string)
                 : "?";
-            const browserHost = host === "0.0.0.0" ? "localhost" : host;
-            const url = port ? `http://${browserHost}:${port}/v1` : null;
+            const routable =
+              typeof j.job_params?.routable_host === "string"
+                ? (j.job_params.routable_host as string)
+                : null;
+            const browserHost =
+              host === "0.0.0.0" || host === "::" || !host
+                ? routable || "localhost"
+                : host;
+            const scheme =
+              typeof j.job_params?.scheme === "string"
+                ? (j.job_params.scheme as string)
+                : "http";
+            const url = port ? `${scheme}://${browserHost}:${port}/v1` : null;
             const selected = url === state.baseUrl;
             return (
               <li

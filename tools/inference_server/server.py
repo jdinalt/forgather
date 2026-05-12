@@ -40,6 +40,15 @@ else:
 
 import uvicorn
 
+from forgather.tls import (
+    TLSRequiredError,
+    enforce_non_loopback_policy,
+)
+from forgather.tls.runtime import (
+    add_server_tls_args,
+    uvicorn_ssl_kwargs as tls_uvicorn_ssl_kwargs,
+)
+
 
 def json_type(data):
     try:
@@ -172,6 +181,7 @@ def main():
         help="Disable bearer-token auth. Any local user on the host will be able to use the model — only set this if you understand the threat model.",
     )
 
+    add_server_tls_args(parser)
     args = parser.parse_args()
 
     # Load config file if provided
@@ -266,9 +276,15 @@ def main():
             file=sys.stderr,
             flush=True,
         )
+        try:
+            from forgather.tls import is_enabled as _tls_enabled
+
+            _scheme = "https" if _tls_enabled() else "http"
+        except Exception:
+            _scheme = "http"
         print(
             f'curl -H "Authorization: Bearer {auth_token}" '
-            f"http://{args.host}:{args.port}/v1/models",
+            f"{_scheme}://{args.host}:{args.port}/v1/models",
             file=sys.stderr,
             flush=True,
         )
@@ -323,9 +339,29 @@ def main():
     app = create_app(auth_token=auth_token)
     set_inference_service(service)
 
-    logging.info(f"Starting server on {args.host}:{args.port}")
+    try:
+        ssl_kwargs = tls_uvicorn_ssl_kwargs(args)
+    except FileNotFoundError as exc:
+        print(f"TLS config error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    tls_on = bool(ssl_kwargs)
+    try:
+        from forgather.tls import load_config as _tls_load_config
+
+        enforce_non_loopback_policy(
+            args.host,
+            tls_enabled=tls_on,
+            insecure=args.insecure,
+            service="inference_server",
+            cfg=_tls_load_config(),
+        )
+    except TLSRequiredError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(2)
+    scheme = "https" if tls_on else "http"
+    logging.info(f"Starting server on {scheme}://{args.host}:{args.port}")
     logging.info(
-        f"OpenAI API endpoint: http://{args.host}:{args.port}/v1/chat/completions"
+        f"OpenAI API endpoint: {scheme}://{args.host}:{args.port}/v1/chat/completions"
     )
 
     # Configure uvicorn to use the same log level but not override our logger
@@ -336,6 +372,7 @@ def main():
         port=args.port,
         log_level=uvicorn_log_level,
         access_log=True,
+        **ssl_kwargs,
     )
 
 

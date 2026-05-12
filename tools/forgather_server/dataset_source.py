@@ -37,7 +37,11 @@ class DatasetSourceError(ValueError):
     """Resolution failed (unknown id, server not running, etc.)."""
 
 
-def resolve_to_env(source: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+def resolve_to_env(
+    source: Optional[Dict[str, Any]],
+    *,
+    remote_host_override: Optional[str] = None,
+) -> Optional[Dict[str, str]]:
     """Return the env vars to add to ``extra_env``, or ``None`` for local.
 
     ``source`` shape is webui-owned and validated here. Two forward-
@@ -53,6 +57,14 @@ def resolve_to_env(source: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]
     operator typos and out-of-sync webui/server versions — the rest
     of the resolver raises in equivalent "can't act on the choice"
     cases, so this matches.
+
+    ``remote_host_override`` is for the cluster-dispatch path: when
+    the resolved env will be shipped to a *peer* training process,
+    ``127.0.0.1`` is wrong (that's the peer's loopback, not the
+    master's dataset server). Set this to the master's cluster-
+    routable address; the resolver substitutes it in place of the
+    loopback-fallback. Single-node submits leave this as ``None``
+    and get the loopback URL as before.
     """
     if not source or not isinstance(source, dict):
         return None
@@ -99,9 +111,39 @@ def resolve_to_env(source: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]
             # setups, some /etc/hosts orderings) "localhost" can resolve
             # to ::1 first, which fails against an IPv4-only wildcard
             # bind. 127.0.0.1 always matches the IPv4 wildcard.
-            client_host = "127.0.0.1" if host == "0.0.0.0" else host
+            # Pick the host the *trainer process* will actually dial.
+            #
+            #   * remote_host_override (set by the cluster submit path):
+            #     the master's cluster-routable IP. Used when the
+            #     trainer is on a peer node — that peer's loopback is
+            #     not the master's. Required for multi-node training
+            #     against a master-spawned dataset server.
+            #   * No override + bind host 0.0.0.0 → translate to
+            #     127.0.0.1 (single-node case, trainer on same host
+            #     as the dataset server).
+            #   * No override + explicit bind host → trust it as-is.
+            #
+            # A loopback-only bind (host == "127.0.0.1" or "localhost")
+            # combined with a remote_host_override is an operator error
+            # — the dataset server isn't reachable from peers at all.
+            # Surface that with a clear message instead of letting it
+            # fail at connect time on the peer.
+            if remote_host_override:
+                if host in ("127.0.0.1", "::1", "localhost"):
+                    raise DatasetSourceError(
+                        f"dataset_server {src_value} is bound to loopback "
+                        f"only ({host}); peers in the cluster cannot reach "
+                        "it. Restart the dataset server with --host 0.0.0.0 "
+                        "(or a routable LAN IP) to share it across the cluster."
+                    )
+                client_host = remote_host_override
+            else:
+                client_host = "127.0.0.1" if host == "0.0.0.0" else host
+            from forgather.tls import client_scheme
+
+            scheme = client_scheme(client_host)
             env: Dict[str, str] = {
-                "FORGATHER_DATASET_SERVER": f"http://{client_host}:{int(port)}",
+                "FORGATHER_DATASET_SERVER": f"{scheme}://{client_host}:{int(port)}",
             }
             if r.auth_token:
                 env["FORGATHER_DATASET_SERVER_TOKEN"] = r.auth_token

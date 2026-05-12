@@ -127,6 +127,41 @@ def _record_to_model(
     r: job_records.JobRecord,
     matched_endpoint: Optional[trainer_control.JobInfo] = None,
 ) -> JobModel:
+    # Backfill `scheme` for inference/dataset_server records that
+    # pre-date the scheduler-side stamp (or were created on a host
+    # whose TLS state has since flipped). The current TLS state is
+    # the right answer because the upstream child read the same
+    # shared config when it started; if the operator just enabled
+    # TLS, they also need to restart the spawned child, so the
+    # backfill matches what the server *currently* serves.
+    job_params_out = dict(r.job_params)
+    if r.job_type in ("inference", "dataset_server") and "scheme" not in job_params_out:
+        try:
+            from forgather.tls import client_scheme as _client_scheme
+
+            host_for_scheme = job_params_out.get("host", "127.0.0.1")
+            job_params_out["scheme"] = _client_scheme(host_for_scheme)
+        except Exception:
+            job_params_out["scheme"] = "http"
+    # Backfill routable_host the same way — pre-existing inference/
+    # dataset_server records bound to 0.0.0.0 want a LAN-routable URL
+    # displayed in the Job card. Computed at API-response time because
+    # the routable address depends on the *current* network state (mDNS
+    # discovery may have come up since the record was written).
+    if (
+        r.job_type in ("inference", "dataset_server")
+        and job_params_out.get("host") in ("0.0.0.0", "::", "")
+        and "routable_host" not in job_params_out
+    ):
+        try:
+            from .. import scheduler as _scheduler
+
+            routable = _scheduler.detect_routable_host()
+            if routable:
+                job_params_out["routable_host"] = routable
+        except Exception:
+            pass
+
     return JobModel(
         id=r.queue_id,
         queue_id=r.queue_id,
@@ -140,7 +175,7 @@ def _record_to_model(
         node=r.node,
         gpu_indices=list(r.gpu_indices),
         job_type=r.job_type,
-        job_params=dict(r.job_params),
+        job_params=job_params_out,
         status=r.status,
         started_at=r.started_at,
         finished_at=r.finished_at,

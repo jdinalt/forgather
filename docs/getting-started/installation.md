@@ -338,6 +338,13 @@ default (same exposure as the host-networking case). For LAN
 access from another machine, set `HOST_BIND=0.0.0.0` alongside
 `NETWORK=bridge`.
 
+> **Binding outside loopback?** The server refuses to bind a
+> non-loopback host (`0.0.0.0`, LAN IP, public IP) without TLS
+> unless you pass `--insecure`. Provision HTTPS with
+> `forgather tls init` first — see
+> [TLS](../operations/tls.md) for the single-host setup and the
+> Docker runtime image's `TLS_INIT=1` convenience flag.
+
 ### Common overrides
 
 ```bash

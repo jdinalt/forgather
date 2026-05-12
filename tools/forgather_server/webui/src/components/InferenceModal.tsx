@@ -86,10 +86,16 @@ export function InferenceModal({
   // summary. Relevant defaults shift: from_checkpoint starts off (a bare
   // HuggingFace directory typically loads via ``from_pretrained``).
   const adHoc = !modelOutputDir;
-  // Ad-hoc settings are seeded from the previous invocation's persisted
-  // values. Project-backed flows ignore persistence entirely so their
-  // initial state always derives from props.
-  const persisted = adHoc ? loadAdHoc() : {};
+  // Persisted settings are loaded in BOTH modes. Project-backed flows
+  // (modelOutputDir set) take the model path from props but otherwise
+  // remember the operator's prior choices for host/port/dtype/etc — the
+  // "I always bind to 0.0.0.0 on this machine" knob shouldn't get reset
+  // every time the modal opens from a different model's context menu.
+  // Earlier the load was gated on ad-hoc; that conflated "which model"
+  // (correctly from props) with "which knobs" (which the operator
+  // expects to persist across opens). Saving stays unconditional on
+  // submit; resetDefaults clears for both modes.
+  const persisted = loadAdHoc();
   const [modelPath, setModelPath] = useState<string>(
     modelOutputDir ?? persisted.modelPath ?? "",
   );
@@ -104,21 +110,23 @@ export function InferenceModal({
   // SSH port-forwards) only follow clickable links to "localhost".
   const [host, setHost] = useState<string>(persisted.host ?? "localhost");
   // priority stays fresh each time — its "right" value depends on
-  // current queue state. requestedGpus is sticky.
+  // current queue state. requestedGpus is sticky in both modes.
   const [requestedGpus, setRequestedGpus] = useState<number>(
-    adHoc ? persisted.requestedGpus ?? 1 : 1,
+    persisted.requestedGpus ?? 1,
   );
   const [priority, setPriority] = useState<number>(0);
   const [ckptPath, setCkptPath] = useState<string>(
-    checkpointPath ?? (adHoc ? persisted.ckptPath ?? "" : ""),
+    checkpointPath ?? persisted.ckptPath ?? "",
   );
   // ``from_checkpoint`` on: use Forgather checkpoint loading (either the
   // path above, or the latest if empty). Off: use Transformers
   // ``from_pretrained`` against the model dir. Default on for project
   // models (user wants the -c flag path); default off for ad-hoc paths
-  // that usually point at a plain HF model directory.
+  // that usually point at a plain HF model directory. The persisted
+  // value wins over the mode-derived default — if the user explicitly
+  // set it last time, respect that choice on reopen.
   const [fromCheckpoint, setFromCheckpoint] = useState<boolean>(
-    adHoc ? persisted.fromCheckpoint ?? false : true,
+    persisted.fromCheckpoint ?? !adHoc,
   );
   const [dtype, setDtype] = useState<string>(persisted.dtype ?? "bfloat16");
   // "default" is a UI-only pseudo-value meaning "don't pass the flag,
@@ -128,13 +136,13 @@ export function InferenceModal({
     persisted.cacheImpl ?? "default",
   );
   const [compileFlag, setCompileFlag] = useState<boolean>(
-    adHoc ? persisted.compileFlag ?? false : false,
+    persisted.compileFlag ?? false,
   );
   const [compileArgs, setCompileArgs] = useState<string>(
     persisted.compileArgs ?? "",
   );
   const [disableKvCache, setDisableKvCache] = useState<boolean>(
-    adHoc ? persisted.disableKvCache ?? false : false,
+    persisted.disableKvCache ?? false,
   );
   const [chatTemplate, setChatTemplate] = useState<string>(
     persisted.chatTemplate ?? "",
@@ -179,29 +187,32 @@ export function InferenceModal({
   const submit = () => {
     const finalPath = modelPath.trim();
     if (!finalPath) return;
-    // Persist the ad-hoc choices so the next "Start Server…" click
-    // defaults to whatever the user just committed to. Saving pre-
-    // enqueue (not in onSuccess) keeps this simple — if the request
-    // fails the persisted state still matches the last confirmed
-    // intent, which is what the user wants to see when they reopen
-    // the modal to retry.
-    if (adHoc) {
-      saveAdHoc({
-        modelPath: finalPath,
-        port,
-        host,
-        fromCheckpoint,
-        ckptPath: ckptPath.trim(),
-        dtype,
-        attn,
-        cacheImpl,
-        compileFlag,
-        compileArgs: compileArgs.trim(),
-        disableKvCache,
-        chatTemplate: chatTemplate.trim(),
-        requestedGpus,
-      });
-    }
+    // Persist the choices so the next "Start Server…" click defaults
+    // to whatever the user just committed to. Saving pre-enqueue (not
+    // in onSuccess) keeps this simple — if the request fails the
+    // persisted state still matches the last confirmed intent, which
+    // is what the user wants to see when they reopen the modal to
+    // retry. We don't persist modelPath in project-backed mode: the
+    // path comes from props (next open will be for a different model),
+    // and shoving the last-project-opened path into the ad-hoc default
+    // would silently override the ad-hoc user's prior choice on their
+    // next ad-hoc open. Everything else (host/port/dtype/…) is the
+    // operator's preference and persists in both modes.
+    saveAdHoc({
+      modelPath: adHoc ? finalPath : persisted.modelPath ?? "",
+      port,
+      host,
+      fromCheckpoint,
+      ckptPath: ckptPath.trim(),
+      dtype,
+      attn,
+      cacheImpl,
+      compileFlag,
+      compileArgs: compileArgs.trim(),
+      disableKvCache,
+      chatTemplate: chatTemplate.trim(),
+      requestedGpus,
+    });
     const job_params: Record<string, unknown> = {
       model_path: finalPath,
       port,
@@ -470,15 +481,15 @@ export function InferenceModal({
           </div>
           <div className="btn-row">
             <AutoWatchTtyToggle />
-            {adHoc && (
-              <button
-                className="secondary"
-                onClick={resetDefaults}
-                title="Clear persisted settings and restore defaults"
-              >
-                Reset to defaults
-              </button>
-            )}
+            {/* Reset is meaningful in both modes now that settings
+                persist regardless of how the modal was opened. */}
+            <button
+              className="secondary"
+              onClick={resetDefaults}
+              title="Clear persisted settings and restore defaults"
+            >
+              Reset to defaults
+            </button>
             <button className="secondary" onClick={onClose}>
               Cancel
             </button>

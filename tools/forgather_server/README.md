@@ -84,9 +84,15 @@ elsewhere, the opt-in is explicit and the auth gate stays in place:
   remains enforced; the token is printed on the server's stderr at
   startup.
 - **Inference proxy.** The forgather server's `/api/inference/*` proxy
-  refuses non-loopback `base=` URLs by default. Set
-  `FORGATHER_INFERENCE_PROXY_ALLOW_REMOTE=1` to allow proxying to a
-  remote inference upstream (logged with a warning).
+  forwards to whatever URL the operator typed into the Inference
+  panel. By default any HTTP/HTTPS host is allowed — the proxy is
+  auth-gated by the same bearer token as everything else, and an
+  authenticated attacker can already submit training jobs that
+  exfiltrate anything they please, so an SSRF guard on this endpoint
+  doesn't add capability. Operators in stricter environments
+  (non-operator-controlled clients) can pass `--lock-inference-proxy`
+  to `forgather server` to restrict the proxy to localhost upstreams.
+  The scheme guard (http/https only) is unconditional regardless.
 - **Dataset_server proxy.** The forgather server's
   `/api/dataset-server/proxy/*` routes forward to dataset_servers the
   webui knows about: locally spawned jobs (auto-discovered, loopback
@@ -105,8 +111,10 @@ elsewhere, the opt-in is explicit and the auth gate stays in place:
   host can read the rendered docs if they discover the port. If you
   need LAN-accessible docs, run `mkdocs serve` outside the scheduler or
   put it behind your own reverse proxy.
-- **No TLS.** The server speaks plain HTTP. Any non-loopback bind needs
-  an external TLS terminator.
+- **TLS is opt-in.** Run `forgather tls init` once and every Forgather
+  server on the host serves HTTPS off a shared CA. Without it, the
+  server refuses to bind non-loopback hosts unless `--insecure` is
+  passed. Full walkthrough in [docs/operations/tls.md](../../docs/operations/tls.md).
 - **No rate limiting.** A leaked token has no automatic lockout.
 - **Dataset-server trust is transitive.** Every example a registered
   dataset_server returns flows into the training pipeline as-is — no
@@ -1599,16 +1607,18 @@ the webui can't hit spawned inference servers directly without running
 into CORS / Private Network Access / extension-blocking. Everything
 routes through same-origin `/api/inference/*`; the proxy forwards to
 whichever base URL the caller names, streaming byte-for-byte so the
-SSE framing reaches the browser unchanged. To prevent the proxy from
-being abused as an SSRF springboard (e.g. by a stolen auth token
-reaching cloud metadata services or other LAN hosts), the upstream host
-must be literal localhost — `127.0.0.1`, `localhost`, or `::1` — by
-default. Single-user secure-LAN deployments that need to forward to a
-remote vLLM box can opt in by exporting
-`FORGATHER_INFERENCE_PROXY_ALLOW_REMOTE=1` (or `true` / `yes`) before
-starting the server; each non-localhost forward is logged at WARNING.
-The check is string-based, not DNS-based — use the literal address if
-you mean loopback.
+SSE framing reaches the browser unchanged. The proxy accepts any
+HTTP/HTTPS host the operator types into the panel — forgather is a
+single-user research tool, the proxy is auth-gated by the same token
+that gates training-job submission, and an authenticated attacker
+already has full RCE on the host (a job can shell out and exfiltrate
+anything). An SSRF guard on this endpoint adds friction without
+adding security. The expected workflow is "vLLM on another box"; the
+proxy is built around that. For operators who want stricter posture
+(e.g. forgather behind a multi-user gate), pass
+`--lock-inference-proxy` to `forgather server` to restrict the proxy
+to `127.0.0.1` / `localhost` / `::1`. The scheme guard (http/https
+only) is unconditional regardless of lock state.
 
 ### Datasets view
 

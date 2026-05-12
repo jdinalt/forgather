@@ -38,6 +38,25 @@ ARG FORGATHER_GIT_REF=dev
 # or to bake a working-tree-with-uncommitted-changes for testing.
 # Default empty = git-clone path (the recommended reproducible flow).
 ARG FORGATHER_SOURCE_DIR=
+# TLS-seed bake: when FORGATHER_TLS_SEED_DIR is set to a path *inside
+# the build context*, the directory is copied to /etc/forgather/tls-seed/
+# in the image. On first start, the entrypoint copies the seed into
+# the container's state volume if no TLS state is present yet — so
+# every container launched from this image trusts the same CA and
+# (by default) shares the same server identity. Use case:
+# build-once-distribute-everywhere clusters where each of N runtime
+# containers should talk to its peers (and to the developer's
+# workstation) without per-node `forgather tls install` ceremony.
+#
+# SECURITY: a baked-in cert + key means anyone who can pull this image
+# can impersonate any peer in the cluster. Treat the resulting image
+# as a high-trust secret — equivalent in sensitivity to the CA private
+# key it contains. Never publish a TLS-baked image to a public registry.
+# The dev image's `forgather tls init` workflow + `STATE_VOLUME=$HOME/.config/forgather`
+# bind-mount is the right path for single-machine development.
+#
+# Default empty = no bake (operator must `forgather tls init` per container).
+ARG FORGATHER_TLS_SEED_DIR=
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -262,6 +281,37 @@ RUN printf '%s\n' \
 RUN install -m 0755 -o root -g root \
         ${REPO_DIR}/docker/entrypoint.sh \
         /usr/local/bin/forgather-runtime-entrypoint
+
+# Optional TLS-seed bake. The seed dir is COPY'd in via a bind-mount
+# of the build context (same pattern as FORGATHER_SOURCE_DIR above).
+# At container first-start, the entrypoint copies the seed into the
+# state volume if no TLS state exists there yet. Keys are written
+# 0600, owned by the in-image forgather user via the entrypoint
+# (the layer here is owned by root, mode 0600 on key files).
+#
+# Skipped at build time when FORGATHER_TLS_SEED_DIR is empty (default).
+RUN --mount=type=bind,target=/build-context \
+    set -eux; \
+    if [ -n "${FORGATHER_TLS_SEED_DIR}" ]; then \
+        src="/build-context/${FORGATHER_TLS_SEED_DIR}"; \
+        if [ ! -d "${src}" ]; then \
+            echo "FORGATHER_TLS_SEED_DIR=${FORGATHER_TLS_SEED_DIR} not found in build context" >&2; \
+            exit 1; \
+        fi; \
+        if [ ! -f "${src}/server.crt" ] || [ ! -f "${src}/server.key" ]; then \
+            echo "TLS seed missing server.crt or server.key" >&2; \
+            exit 1; \
+        fi; \
+        echo "[Dockerfile.runtime] baking TLS seed from build context: ${FORGATHER_TLS_SEED_DIR}"; \
+        install -d -m 0700 -o root -g root /etc/forgather/tls-seed; \
+        cp -r "${src}/." /etc/forgather/tls-seed/; \
+        chown -R root:root /etc/forgather/tls-seed; \
+        find /etc/forgather/tls-seed -type f -name "*.key" -exec chmod 0600 {} +; \
+        find /etc/forgather/tls-seed -type f \! -name "*.key" -exec chmod 0644 {} +; \
+        find /etc/forgather/tls-seed -type d -exec chmod 0700 {} +; \
+        echo "[Dockerfile.runtime] seed contents:"; \
+        find /etc/forgather/tls-seed -maxdepth 3 -printf "  %p (%m)\\n"; \
+    fi
 
 # Volumes (advisory — the run wrapper sets the actual mounts).
 VOLUME ["/home/forgather/.forgather", "/home/forgather/.cache/huggingface"]

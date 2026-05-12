@@ -284,6 +284,7 @@ clickable token URL.
 | `CLUSTER` | _unset_ | When set, the server CMD becomes `forgather server -H 0.0.0.0 -p 8765 --cluster <name>`. **Use with `NETWORK=host`** — bridge networking breaks mDNS discovery. The script warns loudly when `CLUSTER` is set without `NETWORK=host`. |
 | `CLUSTER_ADDRESS` | _unset_ | When set with `CLUSTER`, appends `--cluster-address <ip>` (overrides the auto-detected interface IP advertised over mDNS). Useful behind NAT or with multiple network interfaces. |
 | `NO_AUTH` | _unset_ | When set, the server starts with `--no-auth` (no bearer-token gate). **Trusted-LAN only** — any host on the network can hit the API. Used by the multi-node smoke test to avoid token-fetching across N containers. |
+| `TLS_INIT` | _unset_ | When set, runs `forgather tls init` inside the container on first start (idempotent — no-op if TLS state is already provisioned in the mounted state volume). Convenient one-shot HTTPS bring-up. Full reference: [TLS](../operations/tls.md#docker-runtime-image). |
 | `DEV` | _unset_ | DEBUG-ONLY. `1` mounts `${REPO_ROOT}` over `/opt/forgather/repo`; a path mounts that path. Equivalent to the `--dev` flag. Triggers a prominent warning at container create. |
 | `FORGATHER_DOCKER_CONFIG` | `~/.config/forgather/docker.env` | Path to persistent overrides file. |
 

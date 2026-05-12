@@ -50,9 +50,19 @@ export function installAuthFetch(): void {
       // forgather-server session. The middleware would have intercepted
       // before any proxy code ran if the session were truly expired, so
       // a 401 with this tag necessarily came from upstream.
+      //
+      // X-Forgather-Proxy-Refused is set when the proxy itself rejects
+      // the upstream URL (SSRF allow-list miss) — same idea: not a
+      // session expiry, just a policy refusal that the panel should
+      // surface inline.
       const upstreamAuthFailed =
         r.headers.get("X-Upstream-Auth-Failed") === "1";
-      if (!url.includes("/api/auth/") && !upstreamAuthFailed) {
+      const proxyRefused = r.headers.get("X-Forgather-Proxy-Refused") === "1";
+      if (
+        !url.includes("/api/auth/") &&
+        !upstreamAuthFailed &&
+        !proxyRefused
+      ) {
         window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT));
       }
     }

@@ -93,6 +93,7 @@ def get_subcommand_registry():
     from .plot_args import create_plot_parser
     from .project_args import create_project_parser
     from .sched_args import create_sched_parser
+    from .tls_args import create_tls_parser
     from .train_args import create_train_parser
     from .trefs_args import create_trefs_parser
     from .workspace_args import create_ws_parser
@@ -138,6 +139,7 @@ def get_subcommand_registry():
         "gpu": create_gpu_parser,
         "cluster": create_cluster_parser,
         "mkdocs": create_mkdocs_parser,
+        "tls": create_tls_parser,
     }
 
 
@@ -533,6 +535,12 @@ def main():
                 from .mkdocs import mkdocs_cmd
 
                 mkdocs_cmd(args)
+            case "tls":
+                from .tls import tls_cmd
+
+                rc = tls_cmd(args)
+                if rc:
+                    sys.exit(rc)
             case _:
                 index_cmd(args)
     except SystemExit:
