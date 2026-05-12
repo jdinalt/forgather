@@ -223,37 +223,54 @@ explicitly: `forgather tls init --hostname a.lan`.
 ### Step 3 (automated path) — `forgather tls deploy`
 
 If this host has ssh access to every peer, the whole loop is one
-command:
+command. Two forms, depending on whether the peers are already
+running forgather:
+
+**Bootstrap a fresh cluster** (peers have no TLS yet, so they
+can't join the cluster yet — chicken-and-egg). Pass the peer
+hostnames directly:
 
 ```bash
-# Start the local forgather server first so deploy can read the
-# cluster membership table.
-forgather server -H 0.0.0.0 --cluster mycluster &
-
-# Mint + scp + remote-install for every peer in the cluster.
-forgather tls deploy
+forgather tls init                                  # once, on the CA holder
+forgather tls deploy node-b node-c node-d           # ssh to each, mint, install
+# Now start servers everywhere:
+forgather server -H 0.0.0.0 --cluster mycluster &   # on the CA holder
+ssh node-b 'forgather server -H 0.0.0.0 --cluster mycluster &'
+# ...same for each peer
 ```
 
-`deploy` walks the membership table (so you don't type any
-hostnames or IPs), mints a fresh placeholder-SAN cert for each
-peer, scps it over, and runs `forgather tls install` on the peer
-via ssh. Passwordless ssh is the smooth path; without it ssh will
-prompt for passwords as it normally does. Targets specific peers
-with positional args (`forgather tls deploy node-b node-c`) and
-skips peers that already have TLS state unless `--force` is
-passed.
-
-For a clean dry-run that shows what would happen without touching
-anything:
+**Re-deploy to an existing cluster** (peers are already running
+and known to the local server's membership table):
 
 ```bash
-forgather tls deploy --dry-run
+forgather server -H 0.0.0.0 --cluster mycluster &   # if not already up
+forgather tls deploy                                # walks the membership table
 ```
 
-The manual three-step flow below is still supported and is the
-right answer when ssh isn't available, when peer addresses aren't
-in the membership table yet, or when you want to inspect each
-cert before installing it.
+Either form mints a fresh placeholder-SAN cert for each peer, scps
+it over, and runs `forgather tls install` on the peer via ssh.
+Passwordless ssh is the smooth path; without it ssh prompts for
+passwords as usual. `--batch` makes it strict (refuses to prompt).
+
+**Idempotency** is CA-aware: `deploy` reads the peer's existing
+`ca.crt` (if any) and compares its SHA-256 to the local CA. Same
+fingerprint → silent skip ("already deployed by this CA"). Different
+fingerprint → fail with a clear message and require `--force`. No
+existing state → proceed normally. Re-running `deploy` on a
+correctly-bootstrapped cluster is therefore a no-op.
+
+Other useful flags:
+
+* `--dry-run` — print the plan without minting, scping, or installing.
+* `--force` — overwrite an existing-but-different peer CA.
+* `--ssh-user USER` — defaults to `$USER`.
+* `--ssh-host PEER=HOST` — override the ssh target for a peer (useful
+  when the peer's cluster address isn't directly reachable, e.g.
+  through a bastion).
+
+The manual flow below is still supported and is the right answer
+when ssh isn't available, or when you want to inspect each cert
+before installing it.
 
 ### Step 3 (manual path) — for each other node, mint + distribute + install
 

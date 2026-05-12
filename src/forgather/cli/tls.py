@@ -587,29 +587,6 @@ def _cmd_deploy(args) -> int:
         )
         return 1
 
-    # Pull membership from the local forgather server. ServerClient
-    # handles auth-token discovery + the right scheme.
-    try:
-        from forgather.cli.server_client import ServerClient
-
-        client = ServerClient(getattr(args, "server", None))
-        members_payload = client.cluster_members()
-        self_payload = client.cluster_self()
-    except Exception as exc:
-        print(
-            f"could not reach local forgather server: {exc}\n"
-            "  Start it first ('forgather server --cluster <name>') so deploy "
-            "can read the membership table.",
-            file=sys.stderr,
-        )
-        return 1
-
-    members = members_payload.get("members") or []
-    self_id = (self_payload or {}).get("node_id") if self_payload else None
-    if not members:
-        print("No cluster members visible — is the local server running in cluster mode?")
-        return 1
-
     # Build the host-override map from --ssh-host PEER=HOST entries.
     ssh_host_override: dict = {}
     for raw in args.ssh_host or []:
@@ -619,32 +596,56 @@ def _cmd_deploy(args) -> int:
         peer, host = raw.split("=", 1)
         ssh_host_override[peer.strip()] = host.strip()
 
-    # Filter peers: drop self, apply positional filter. We deliberately
-    # do NOT skip "unreachable" peers — reachability in the membership
-    # table is driven by HTTPS peer-pull success, and the operator is
-    # likely running `deploy` precisely because that pull is broken
-    # (TLS state missing or mismatched). ssh is independent of
-    # forgather's TLS, so we always try — the per-peer ssh result is
-    # the authoritative answer.
-    peers = [m for m in members if not (self_id and m.get("node_id") == self_id)]
-
+    # Two modes of peer discovery:
+    #
+    #   1. Operator passed positional hostnames/IPs → use those directly
+    #      as ssh targets. The peers DON'T have to be in any cluster
+    #      membership table — this is the bootstrap path (peer can't
+    #      join the cluster yet because it has no TLS, but ssh works
+    #      regardless).
+    #
+    #   2. No positional args → consult the local forgather server's
+    #      membership table. Convenient for "deploy to everyone."
+    #      Requires the local server to be running with --cluster.
     if args.nodes:
-        wanted = set(args.nodes)
-        matched = []
-        for p in peers:
-            if (
-                p.get("hostname") in wanted
-                or p.get("address") in wanted
-                or p.get("node_id") in wanted
-            ):
-                matched.append(p)
-                wanted.discard(p.get("hostname"))
-                wanted.discard(p.get("address"))
-                wanted.discard(p.get("node_id"))
-        if wanted:
-            print(f"unknown peers (not in membership): {sorted(wanted)}", file=sys.stderr)
+        peers = [
+            {"hostname": n, "address": ssh_host_override.get(n, n), "node_id": None}
+            for n in args.nodes
+        ]
+    else:
+        try:
+            from forgather.cli.server_client import ServerClient
+
+            client = ServerClient(getattr(args, "server", None))
+            members_payload = client.cluster_members()
+            self_payload = client.cluster_self()
+        except Exception as exc:
+            print(
+                f"could not reach local forgather server: {exc}\n"
+                "  Either start it ('forgather server --cluster <name>') so deploy\n"
+                "  can read the membership table, or pass peer hostnames explicitly:\n"
+                "    forgather tls deploy <host1> <host2> ...",
+                file=sys.stderr,
+            )
             return 1
-        peers = matched
+
+        members = members_payload.get("members") or []
+        self_id = (self_payload or {}).get("node_id") if self_payload else None
+        if not members:
+            print(
+                "No cluster members visible. Either start the server with\n"
+                "--cluster <name>, or pass peer hostnames explicitly:\n"
+                "  forgather tls deploy <host1> <host2> ..."
+            )
+            return 1
+
+        # Drop self; keep "unreachable" peers — reachability in the
+        # membership table is driven by HTTPS peer-pull success, and
+        # the operator is likely running `deploy` precisely because
+        # that pull is broken (TLS state missing or mismatched). ssh
+        # is independent of forgather's TLS, so we always try — the
+        # per-peer ssh result is the authoritative answer.
+        peers = [m for m in members if not (self_id and m.get("node_id") == self_id)]
 
     if not peers:
         print("No peers to deploy to.")
@@ -694,6 +695,38 @@ def _cmd_deploy(args) -> int:
     return 0
 
 
+def _ca_fingerprint(ca_cert_path: Path) -> str:
+    """SHA-256 of the CA cert's on-disk PEM bytes.
+
+    Matches what ``sha256sum`` would produce on the peer's copy, so
+    the local and remote hashes are directly comparable.
+    """
+    import hashlib
+
+    return hashlib.sha256(ca_cert_path.read_bytes()).hexdigest()
+
+
+def _peer_ca_fingerprint(ssh_base, target) -> "Optional[str]":
+    """Compute the SHA-256 of the peer's CA cert PEM via ssh. None if absent."""
+    import subprocess
+
+    probe = subprocess.run(
+        [
+            *ssh_base,
+            target,
+            "sha256sum ~/.config/forgather/tls/ca/ca.crt 2>/dev/null | awk '{print $1}'",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    fp = probe.stdout.strip()
+    if probe.returncode != 0 or not fp:
+        return None
+    if len(fp) != 64 or not all(c in "0123456789abcdef" for c in fp):
+        return None
+    return fp
+
+
 def _deploy_to_peer(
     cfg, peer, *, ssh_target, ssh_user, ssh_base, scp_base, force
 ):
@@ -735,14 +768,29 @@ def _deploy_to_peer(
             os.close(fd)
         (local / "ca.crt").write_bytes(cfg.ca_cert.read_bytes())
 
-        # Optional idempotency check: skip if peer already has TLS unless --force.
-        if not force:
-            check = subprocess.run(
-                [*ssh_base, target, "test -f ~/.config/forgather/tls/server.crt"],
-                capture_output=True,
-            )
-            if check.returncode == 0:
-                return "peer already has TLS state (pass --force to overwrite)"
+        # CA-aware idempotency check.
+        #
+        # The original "TLS state exists → bail" check failed in a
+        # bootstrap-y way: the operator running `deploy` doesn't want
+        # to be told the peer has state, they want to know whether
+        # the peer has *the right state*. Compare CA fingerprints:
+        #   * Peer's CA matches ours → genuinely already deployed by
+        #     this CA. Skip silently (idempotent).
+        #   * Peer's CA differs from ours → stale or wrong state.
+        #     Refuse unless --force.
+        #   * Peer has no CA at all → proceed (the bootstrap case).
+        local_ca_fp = _ca_fingerprint(cfg.ca_cert)
+        peer_ca_fp = _peer_ca_fingerprint(ssh_base, target)
+        if peer_ca_fp is not None:
+            if peer_ca_fp == local_ca_fp:
+                return "already deployed (peer's CA matches this host's CA)"
+            if not force:
+                return (
+                    "peer has TLS state from a DIFFERENT CA "
+                    f"(local sha256={local_ca_fp[:12]}…, "
+                    f"peer sha256={peer_ca_fp[:12]}…). "
+                    "Pass --force to overwrite."
+                )
 
         # Create a remote temp dir.
         try:
