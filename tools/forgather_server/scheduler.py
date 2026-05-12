@@ -633,7 +633,7 @@ _LAUNCHERS = {
 }
 
 
-def _detect_routable_host() -> Optional[str]:
+def detect_routable_host() -> Optional[str]:
     """Best-effort LAN-routable address for this host.
 
     Priority:
@@ -858,7 +858,7 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
         # IP. Leave unset for explicit bind hosts (operator knows
         # what they typed).
         if finalized_params.get("host") in ("0.0.0.0", "::", ""):
-            routable = _detect_routable_host()
+            routable = detect_routable_host()
             if routable:
                 finalized_params["routable_host"] = routable
 

@@ -107,7 +107,6 @@ class ServerClient:
         if self.base.lower().startswith("https://"):
             try:
                 from forgather.tls import load_config
-                from forgather.tls.runtime import httpx_verify  # noqa: F401
 
                 cfg = load_config()
                 bundle = cfg.effective_bundle()

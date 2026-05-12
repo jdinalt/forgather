@@ -156,7 +156,7 @@ def _record_to_model(
         try:
             from .. import scheduler as _scheduler
 
-            routable = _scheduler._detect_routable_host()
+            routable = _scheduler.detect_routable_host()
             if routable:
                 job_params_out["routable_host"] = routable
         except Exception:

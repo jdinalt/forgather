@@ -725,12 +725,16 @@ def _peer_ca_fingerprint(ssh_base, target, container=None) -> "Optional[str]":
     ``~/.config/forgather/`` may or may not exist; what we care about
     is what the running forgather server actually sees).
     """
+    import shlex
     import subprocess
 
     in_container_path = "/home/forgather/.config/forgather/tls/ca/ca.crt"
     if container:
+        # Defensive quoting: the container name lands in a shell context
+        # on the remote side. Operator-typed today, but cheap to quote.
+        container_q = shlex.quote(container)
         remote_cmd = (
-            f"docker exec {container} sh -c "
+            f"docker exec {container_q} sh -c "
             f"'sha256sum {in_container_path} 2>/dev/null' "
             "| awk '{print $1}'"
         )
@@ -816,6 +820,9 @@ def _deploy_to_peer(
             # extracted files automatically.
             import tarfile, io
 
+            import shlex as _shlex
+
+            container_q = _shlex.quote(container)
             remote_tmp = "/tmp/forgather-tls-deploy"
             buf = io.BytesIO()
             with tarfile.open(fileobj=buf, mode="w") as tar:
@@ -833,7 +840,7 @@ def _deploy_to_peer(
                         tar.addfile(info, f)
             buf.seek(0)
             extract_cmd = (
-                f"docker exec -i {container} sh -c "
+                f"docker exec -i {container_q} sh -c "
                 f"'rm -rf {remote_tmp} && mkdir -m 0700 -p {remote_tmp} "
                 f"&& tar -C {remote_tmp} -xpf -'"
             )
@@ -849,7 +856,7 @@ def _deploy_to_peer(
                 return f"docker exec tar: {err or exc.returncode}"
 
             install_cmd = (
-                f"docker exec {container} forgather tls install "
+                f"docker exec {container_q} forgather tls install "
                 f"--cert {remote_tmp}/server.crt "
                 f"--key {remote_tmp}/server.key "
                 f"--ca {remote_tmp}/ca.crt"
@@ -866,7 +873,7 @@ def _deploy_to_peer(
             # Clean up inside the container.
             subprocess.run(
                 [*ssh_base, target,
-                 f"docker exec {container} rm -rf {remote_tmp}"],
+                 f"docker exec {container_q} rm -rf {remote_tmp}"],
                 capture_output=True,
             )
             return True
