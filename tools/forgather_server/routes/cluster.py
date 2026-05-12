@@ -297,6 +297,16 @@ class ClusterDatasetServerModel(BaseModel):
     last_health_error: str
     last_dataset_refresh: float
     last_dataset_error: str
+    # Polling counters. ``consecutive_*_failures`` is 0 on a current-
+    # success / never-polled server and non-zero exactly when the
+    # server is currently in trouble — useful for the webui's "is this
+    # stuck or transient" decision.
+    total_health_polls: int = 0
+    health_failures: int = 0
+    consecutive_health_failures: int = 0
+    total_dataset_polls: int = 0
+    dataset_failures: int = 0
+    consecutive_dataset_failures: int = 0
 
 
 class ClusterDatasetEntryModel(BaseModel):
@@ -320,6 +330,24 @@ class ClusterDatasetEntryModel(BaseModel):
     server_ids: List[str] = []
 
 
+class ClusterDatasetInventoryMetrics(BaseModel):
+    """Aggregate counters across the master's collect / health /
+    dataset-refresh loops. Useful for catching "everything's quiet
+    but no data is flowing" failure modes from a single GET."""
+
+    healthy_servers: int = 0
+    unhealthy_servers: int = 0
+    total_servers: int = 0
+    total_datasets: int = 0
+    total_health_polls: int = 0
+    total_health_failures: int = 0
+    total_dataset_polls: int = 0
+    total_dataset_failures: int = 0
+    # How long ago this node became master, in seconds. None when the
+    # node isn't master.
+    master_age_seconds: Optional[float] = None
+
+
 class ClusterDatasetInventoryResponse(BaseModel):
     is_master: bool
     master_become_ts: Optional[float] = None
@@ -328,6 +356,7 @@ class ClusterDatasetInventoryResponse(BaseModel):
     last_dataset_pass_ts: Optional[float] = None
     servers: List[ClusterDatasetServerModel] = []
     datasets: List[ClusterDatasetEntryModel] = []
+    metrics: ClusterDatasetInventoryMetrics = ClusterDatasetInventoryMetrics()
 
 
 class DatasetRouterResolveResponse(BaseModel):
@@ -375,6 +404,12 @@ def _to_dataset_server_model(
         last_health_error=e.last_health_error,
         last_dataset_refresh=e.last_dataset_refresh,
         last_dataset_error=e.last_dataset_error,
+        total_health_polls=e.total_health_polls,
+        health_failures=e.health_failures,
+        consecutive_health_failures=e.consecutive_health_failures,
+        total_dataset_polls=e.total_dataset_polls,
+        dataset_failures=e.dataset_failures,
+        consecutive_dataset_failures=e.consecutive_dataset_failures,
     )
 
 
@@ -466,6 +501,24 @@ def _build_inventory_response() -> ClusterDatasetInventoryResponse:
             if s.server_id not in entry.server_ids:
                 entry.server_ids.append(s.server_id)
 
+    healthy = sum(1 for s in servers if s.healthy)
+    master_age = (
+        time.time() - status["master_become_ts"]
+        if status["master_become_ts"] is not None
+        else None
+    )
+    metrics = ClusterDatasetInventoryMetrics(
+        total_servers=len(servers),
+        healthy_servers=healthy,
+        unhealthy_servers=len(servers) - healthy,
+        total_datasets=len(by_id),
+        total_health_polls=sum(s.total_health_polls for s in servers),
+        total_health_failures=sum(s.health_failures for s in servers),
+        total_dataset_polls=sum(s.total_dataset_polls for s in servers),
+        total_dataset_failures=sum(s.dataset_failures for s in servers),
+        master_age_seconds=master_age,
+    )
+
     return ClusterDatasetInventoryResponse(
         is_master=status["is_master"],
         master_become_ts=status["master_become_ts"],
@@ -474,6 +527,7 @@ def _build_inventory_response() -> ClusterDatasetInventoryResponse:
         last_dataset_pass_ts=status["last_dataset_pass_ts"],
         servers=[_to_dataset_server_model(s) for s in servers],
         datasets=list(by_id.values()),
+        metrics=metrics,
     )
 
 

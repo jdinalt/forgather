@@ -648,6 +648,22 @@ def _cmd_datasets(client, args):
             "unreachable.",
             file=sys.stderr,
         )
+    if args.verbose:
+        m = inv.get("metrics") or {}
+        # Master age (seconds since this node became master), and
+        # the cumulative poll/failure counts across all servers —
+        # quickest "is the inventory keeping up" signal from one
+        # glance.
+        master_age = m.get("master_age_seconds")
+        master_age_str = (
+            f"{int(master_age)}s" if isinstance(master_age, (int, float)) else "n/a"
+        )
+        print(
+            f"  healthy={m.get('healthy_servers', 0)}/{m.get('total_servers', 0)}  "
+            f"polls(health)={m.get('total_health_failures', 0)}/{m.get('total_health_polls', 0)} failed  "
+            f"polls(datasets)={m.get('total_dataset_failures', 0)}/{m.get('total_dataset_polls', 0)} failed  "
+            f"master_age={master_age_str}"
+        )
 
     verbose = getattr(args, "verbose", False)
 
@@ -678,6 +694,23 @@ def _cmd_datasets(client, args):
                 )
                 if s.get("last_dataset_error"):
                     print(f"      last_dataset_error:   {s['last_dataset_error']}")
+                # Poll counts. ``consecutive_*`` is the "currently
+                # stuck?" signal independent of total counts.
+                h_total = s.get("total_health_polls", 0) or 0
+                h_fail = s.get("health_failures", 0) or 0
+                h_streak = s.get("consecutive_health_failures", 0) or 0
+                d_total = s.get("total_dataset_polls", 0) or 0
+                d_fail = s.get("dataset_failures", 0) or 0
+                d_streak = s.get("consecutive_dataset_failures", 0) or 0
+                streak = ""
+                if h_streak > 0 or d_streak > 0:
+                    streak = (
+                        f" (streak: health={h_streak} datasets={d_streak})"
+                    )
+                print(
+                    f"      polls: health={h_fail}/{h_total} failed, "
+                    f"datasets={d_fail}/{d_total} failed{streak}"
+                )
     datasets = inv.get("datasets", [])
     if datasets:
         print()

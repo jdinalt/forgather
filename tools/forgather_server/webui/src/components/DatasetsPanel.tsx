@@ -306,6 +306,30 @@ function DatasetsClusterTab() {
           {" · "}
           last dataset refresh: {formatAgo(lastPass)}
         </div>
+        {inv?.metrics && (
+          // Cumulative poll counters across all servers. Surfaces
+          // "the master is running but everything's failing" cases —
+          // total_health_failures climbing without any healthy
+          // server is the obvious signal.
+          <div className="muted" style={{ marginBottom: 8, fontSize: "0.9em" }}>
+            healthy:{" "}
+            <strong>
+              {inv.metrics.healthy_servers}/{inv.metrics.total_servers}
+            </strong>
+            {" · "}
+            health polls: {inv.metrics.total_health_failures} failed /{" "}
+            {inv.metrics.total_health_polls}
+            {" · "}
+            dataset polls: {inv.metrics.total_dataset_failures} failed /{" "}
+            {inv.metrics.total_dataset_polls}
+            {typeof inv.metrics.master_age_seconds === "number" && (
+              <>
+                {" · "}
+                master age: {Math.floor(inv.metrics.master_age_seconds)}s
+              </>
+            )}
+          </div>
+        )}
       </section>
 
       <section>

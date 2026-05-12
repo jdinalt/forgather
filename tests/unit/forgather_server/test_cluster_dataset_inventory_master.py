@@ -142,6 +142,58 @@ class TestMasterInventoryStateMachine:
         assert s.available_keys == ["local/stories"]
         assert s.handles == [{"handle": "h1", "source": "hf"}]
 
+    def test_merge_carries_polling_counters(self):
+        """The poll counters are owned by the master's loops, not the
+        peer collect tick. A naive merge that drops them would reset
+        them to 0 every COLLECT_INTERVAL_SECONDS, making them useless
+        for diagnosis. Regression: caught while smoke-testing the
+        Phase 7 metrics surface — verbose CLI was always printing
+        ``polls: health=0/0 failed`` even on a long-running master."""
+        inv = MasterInventory()
+        inv.set_master_state(True)
+        inv.merge_servers(
+            {
+                "s1": MasterServerEntry(
+                    server_id="s1",
+                    base_url="http://x:8766",
+                    auth_token="",
+                    label="x",
+                    source="local",
+                    peer_node_id=None,
+                )
+            }
+        )
+        # Simulate a few health passes + one dataset pass.
+        inv.update_health("s1", healthy=False, error="boom")
+        inv.update_health("s1", healthy=False, error="boom")
+        inv.update_health("s1", healthy=True)
+        inv.update_datasets("s1", handles=[], locals_info=[])
+        s_before = inv.get_server("s1")
+        assert s_before.total_health_polls == 3
+        assert s_before.health_failures == 2
+        assert s_before.consecutive_health_failures == 0  # last poll healthy
+        assert s_before.total_dataset_polls == 1
+
+        # Next collect tick replays the server set with a fresh
+        # MasterServerEntry (matching what _collect_servers_tick does).
+        # The counters must survive.
+        inv.merge_servers(
+            {
+                "s1": MasterServerEntry(
+                    server_id="s1",
+                    base_url="http://x:8766",
+                    auth_token="",
+                    label="x",
+                    source="local",
+                    peer_node_id=None,
+                )
+            }
+        )
+        s_after = inv.get_server("s1")
+        assert s_after.total_health_polls == 3
+        assert s_after.health_failures == 2
+        assert s_after.total_dataset_polls == 1
+
     def test_merge_drops_servers_no_longer_reported(self):
         inv = MasterInventory()
         inv.set_master_state(True)

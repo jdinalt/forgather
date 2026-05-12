@@ -424,6 +424,48 @@ the env var is set. No template edits, no client-side code changes.
 
 To go back to local loading, unset the env var.
 
+### Cluster auto-routing (`FORGATHER_DATASET_SERVER=auto`)
+
+When a forgather_server is running with `--cluster <name>`, the
+client supports a special sentinel:
+
+```bash
+export FORGATHER_DATASET_SERVER=auto
+```
+
+In this mode each `fast_load_iterable_dataset` call talks to the
+*local* forgather_server's
+`/api/cluster/dataset_router/resolve?path=...` endpoint, which
+returns `{base_url, auth_token}` for a healthy `dataset_server`
+somewhere in the cluster. The choice is uniform-random across
+healthy candidates for crude load balance.
+
+The client wrapper
+(`forgather.ml.datasets.resilient_remote_backend.ResilientRemoteBackend`)
+re-runs the resolver on every (re)connect, so a server that goes
+down mid-iteration causes the *next* fetch to land on a different
+healthy server — training continues from the captured stream
+position with no operator intervention. The retry budget is
+unbounded by default; set
+`FORGATHER_DATASET_CLIENT_MAX_RETRY_SECONDS` to cap cumulative
+backoff time and abort training after a sustained outage.
+
+`local/<name>` is a **global** routing key: two `dataset_server`s
+that both register `local/stories` (even pointing at different
+filesystem paths underneath) are treated as interchangeable
+replicas. This is the intended redundancy/load-balance model;
+operators are responsible for choosing distinct names for distinct
+datasets, as they already are within a single server.
+
+For HF datasets and absolute paths the router picks any healthy
+server and lets it `/v1/load` on demand. If that server can't
+serve the request (cache miss, `--no-paths`, etc.) the client
+catches the failure, re-resolves, and tries another.
+
+See `tools/forgather_server/README.md → Multi-node dataset routing`
+for the master-side machinery (collect / health / refresh loops),
+the CLI diagnostics, and the Cluster tab in the webui.
+
 ## Diagnostic CLI
 
 ```bash

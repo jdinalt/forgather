@@ -286,6 +286,16 @@ class MasterServerEntry:
     healthy: bool = False
     last_health_check: float = 0.0
     last_health_error: str = ""
+    # Cumulative + streak counters. ``consecutive_*_failures`` resets
+    # to 0 on every successful poll, so a non-zero value is a clear
+    # "this server is currently in trouble" signal independent of how
+    # many ticks ago the first failure occurred.
+    total_health_polls: int = 0
+    health_failures: int = 0
+    consecutive_health_failures: int = 0
+    total_dataset_polls: int = 0
+    dataset_failures: int = 0
+    consecutive_dataset_failures: int = 0
     available_keys: List[str] = field(default_factory=list)
     handles: List[Dict[str, Any]] = field(default_factory=list)
     locals_info: List[Dict[str, Any]] = field(default_factory=list)
@@ -366,6 +376,19 @@ class MasterInventory:
                     new_entry.locals_info = list(old.locals_info)
                     new_entry.last_dataset_refresh = old.last_dataset_refresh
                     new_entry.last_dataset_error = old.last_dataset_error
+                    # Polling counters too — these accumulate across
+                    # the master's whole tenure and would falsely
+                    # reset every 10s collect tick otherwise.
+                    new_entry.total_health_polls = old.total_health_polls
+                    new_entry.health_failures = old.health_failures
+                    new_entry.consecutive_health_failures = (
+                        old.consecutive_health_failures
+                    )
+                    new_entry.total_dataset_polls = old.total_dataset_polls
+                    new_entry.dataset_failures = old.dataset_failures
+                    new_entry.consecutive_dataset_failures = (
+                        old.consecutive_dataset_failures
+                    )
                 merged[sid] = new_entry
             self._servers = merged
             self._last_servers_collect_ts = time.time()
@@ -384,6 +407,12 @@ class MasterInventory:
             s.healthy = healthy
             s.last_health_check = time.time()
             s.last_health_error = error
+            s.total_health_polls += 1
+            if healthy:
+                s.consecutive_health_failures = 0
+            else:
+                s.health_failures += 1
+                s.consecutive_health_failures += 1
 
     def mark_health_pass_complete(self) -> None:
         with self._lock:
@@ -415,6 +444,12 @@ class MasterInventory:
             s.available_keys = keys
             s.last_dataset_refresh = time.time()
             s.last_dataset_error = error
+            s.total_dataset_polls += 1
+            if error:
+                s.dataset_failures += 1
+                s.consecutive_dataset_failures += 1
+            else:
+                s.consecutive_dataset_failures = 0
 
     def mark_dataset_pass_complete(self) -> None:
         with self._lock:

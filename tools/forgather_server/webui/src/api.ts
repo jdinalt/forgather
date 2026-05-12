@@ -723,6 +723,26 @@ export interface ClusterDatasetServer {
   last_health_error: string;
   last_dataset_refresh: number;
   last_dataset_error: string;
+  // Polling counters from the master's loops.
+  total_health_polls?: number;
+  health_failures?: number;
+  consecutive_health_failures?: number;
+  total_dataset_polls?: number;
+  dataset_failures?: number;
+  consecutive_dataset_failures?: number;
+}
+
+/** Aggregate counters across the inventory. */
+export interface ClusterDatasetInventoryMetrics {
+  healthy_servers: number;
+  unhealthy_servers: number;
+  total_servers: number;
+  total_datasets: number;
+  total_health_polls: number;
+  total_health_failures: number;
+  total_dataset_polls: number;
+  total_dataset_failures: number;
+  master_age_seconds: number | null;
 }
 
 /** One unique dataset in the cluster (deduped across servers). */
@@ -744,6 +764,7 @@ export interface ClusterDatasetInventoryResponse {
   last_dataset_pass_ts: number | null;
   servers: ClusterDatasetServer[];
   datasets: ClusterDatasetEntry[];
+  metrics?: ClusterDatasetInventoryMetrics;
 }
 
 /** Dataset server registered as a user-added entry. */
