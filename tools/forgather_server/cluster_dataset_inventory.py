@@ -87,19 +87,26 @@ def _normalize(base_url: str) -> str:
 
 
 def _routable_jobrecord_base_url(
-    host: str, port: int, *, tls: bool
+    host: str, port: int, *, tls: bool, routable_host: Optional[str] = None
 ) -> Optional[str]:
     """Build a peer-visible base URL for a JobRecord-spawned server.
 
-    - 127.0.0.1 / localhost: returns ``None`` (other peers can't reach
-      it; reporting would just clutter the master's inventory with
-      dead entries).
-    - 0.0.0.0: rewritten to the cluster identity's hostname so other
-      peers can route to this node. Falls back to ``None`` if cluster
-      identity is unset (single-node mode).
-    - Anything else (a routable hostname or IP the operator picked):
-      used as-is.
+    Priority order for the host portion:
+      1. ``routable_host`` from job_params if provided (the scheduler
+         records the auto-detected LAN address there for exactly this
+         reason — beats the hostname when DNS isn't resolving across
+         hosts).
+      2. Cluster identity's hostname (when ``host == "0.0.0.0"``).
+      3. ``host`` as-is (operator picked an explicit address).
+
+    Loopback URLs are dropped — other peers can't reach them.
     """
+    if routable_host:
+        rh = routable_host.lower()
+        if rh in _LOOPBACK_HOSTS:
+            return None
+        scheme = "https" if tls else "http"
+        return _normalize(f"{scheme}://{rh}:{int(port)}")
     h = (host or "").lower()
     if h in _LOOPBACK_HOSTS:
         return None
@@ -139,20 +146,28 @@ def _local_jobrecord_servers(peer_node_id: Optional[str]) -> List[LocalServer]:
         if port <= 0:
             continue
         host = str(params.get("host") or "127.0.0.1")
-        # Whether the spawned server is serving HTTPS: stored on the
-        # JobRecord params when known (post-Phase-1 spawn path); fall
-        # back to the forgather_server-wide TLS setting otherwise so
-        # the scheme matches what the dataset_server's auto-discovery
-        # would produce for a clean spawn.
-        tls = bool(params.get("tls"))
-        if "tls" not in params:
-            try:
-                from forgather.tls import client_scheme
+        # Whether the spawned server is serving HTTPS. Newer spawns
+        # store ``scheme`` (preferred) or ``tls``; fall back to the
+        # forgather_server-wide setting otherwise so the scheme
+        # matches what dataset_server auto-discovery would produce.
+        if "scheme" in params:
+            tls = str(params.get("scheme") or "http").lower() == "https"
+        else:
+            tls = bool(params.get("tls"))
+            if "tls" not in params:
+                try:
+                    from forgather.tls import client_scheme
 
-                tls = client_scheme("0.0.0.0") == "https"
-            except Exception:
-                tls = False
-        base_url = _routable_jobrecord_base_url(host, port, tls=tls)
+                    tls = client_scheme("0.0.0.0") == "https"
+                except Exception:
+                    tls = False
+        routable = params.get("routable_host")
+        base_url = _routable_jobrecord_base_url(
+            host,
+            port,
+            tls=tls,
+            routable_host=str(routable) if routable else None,
+        )
         if base_url is None:
             continue
         out.append(
