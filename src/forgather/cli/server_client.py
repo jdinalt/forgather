@@ -406,3 +406,12 @@ class ServerClient:
     def cluster_job_cancel(self, cluster_job_id):
         """Fan out cancel to every participant of the bundle."""
         return self._post(f"/cluster/jobs/{cluster_job_id}/cancel").json()
+
+    def cluster_dataset_inventory(self):
+        """Master-aggregated dataset-server inventory + dataset listing.
+
+        Returns the same payload the webui Cluster + Servers tabs
+        consume — useful for verifying routing readiness from the CLI
+        before kicking off cluster-mode training.
+        """
+        return self._get("/cluster/dataset_inventory").json()

@@ -449,6 +449,73 @@ def _cmd_cancel(client, args):
     return 0 if cancelled else 1
 
 
+def _cmd_datasets(client, args):
+    """Cluster-wide dataset-server inventory: which servers the master
+    has aggregated, which datasets are routable, where each one lives.
+
+    Useful as a smoke test before launching cluster auto-routing
+    training — if a dataset doesn't show up here, the router can't
+    serve it to a training client.
+    """
+    import json as _json
+
+    inv = client.cluster_dataset_inventory()
+    if args.json:
+        print(_json.dumps(inv, indent=2))
+        return 0
+
+    is_master = inv.get("is_master")
+    warm_ts = inv.get("last_dataset_pass_ts")
+    print(
+        f"is_master={is_master} "
+        f"servers={len(inv.get('servers', []))} "
+        f"datasets={len(inv.get('datasets', []))} "
+        f"last_pass={_format_delta(warm_ts)}"
+    )
+    if not is_master:
+        print(
+            "Note: this node is not master. Values were proxied from the "
+            "master if reachable; an empty payload means the master is "
+            "unreachable.",
+            file=sys.stderr,
+        )
+
+    servers = inv.get("servers", [])
+    if servers:
+        print()
+        print("SERVERS")
+        for s in servers:
+            health = "ok" if s.get("healthy") else "DOWN"
+            err = s.get("last_health_error") or ""
+            err_suffix = f"  err={err}" if err else ""
+            print(
+                f"  {s.get('server_id', '?')[:14]:<14} "
+                f"{s.get('base_url', '?'):<45} "
+                f"{s.get('source', '?'):<6} "
+                f"peer={(s.get('peer_node_id') or '-')[:8]:<8} "
+                f"{health}{err_suffix}"
+            )
+    datasets = inv.get("datasets", [])
+    if datasets:
+        print()
+        print("DATASETS")
+        server_id_to_url = {s["server_id"]: s["base_url"] for s in servers}
+        for d in datasets:
+            ids = d.get("server_ids", [])
+            hosts = [
+                server_id_to_url.get(sid, sid)[:30] for sid in ids
+            ]
+            length = d.get("length")
+            length_str = str(length) if length is not None else "?"
+            print(
+                f"  {d.get('dataset_id', '?'):<28} "
+                f"{d.get('source', '?'):<6} "
+                f"len={length_str:<10} "
+                f"hosts={', '.join(hosts)}"
+            )
+    return 0
+
+
 def cluster_cmd(args):
     from .server_client import ServerClient, ServerUnreachable
 
@@ -456,7 +523,7 @@ def cluster_cmd(args):
     sub = getattr(args, "cluster_subcommand", None)
     if sub is None:
         print(
-            "error: specify a subcommand (nodes, jobs, submit, cancel)",
+            "error: specify a subcommand (nodes, jobs, submit, cancel, datasets)",
             file=sys.stderr,
         )
         return 1
@@ -470,6 +537,8 @@ def cluster_cmd(args):
             return _cmd_submit(client, args)
         if sub == "cancel":
             return _cmd_cancel(client, args)
+        if sub == "datasets":
+            return _cmd_datasets(client, args)
         print(f"error: unknown subcommand {sub!r}", file=sys.stderr)
         return 1
     except ServerUnreachable as e:

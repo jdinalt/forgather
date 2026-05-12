@@ -156,4 +156,19 @@ def create_cluster_parser(global_args):
     )
     cancel_parser.add_argument("cluster_job_id", help="Bundle id to cancel")
 
+    datasets_parser = sub.add_parser(
+        "datasets",
+        help=(
+            "Show cluster-wide dataset-server inventory: which servers "
+            "are healthy and which datasets are reachable through cluster "
+            "auto-routing."
+        ),
+        formatter_class=RawTextHelpFormatter,
+    )
+    datasets_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit raw /api/cluster/dataset_inventory JSON instead of tables",
+    )
+
     return parser
