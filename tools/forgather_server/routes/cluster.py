@@ -474,8 +474,55 @@ def _build_inventory_response() -> ClusterDatasetInventoryResponse:
             if isinstance(meta, str) and meta not in entry.meta_hashes:
                 entry.meta_hashes.append(meta)
 
-        # Already-loaded handles (HF / path). Skip "local" handles —
-        # they're already represented under their local name above.
+        # HF cache: every repo that's *available* on this server,
+        # whether or not it has been loaded yet. Keyed by the HF repo
+        # path (``allenai/c4``, ``roneneldan/TinyStories``) so the
+        # cluster view shows one row per repo regardless of how many
+        # configs/splits the cache has. The user's "unified Datasets
+        # tab" view: HF + local in one list, sourced from each
+        # server's `/v1/cache/hf` snapshot rather than waiting for a
+        # client to trigger /v1/load.
+        for repo in s.hf_cache:
+            if not isinstance(repo, dict):
+                continue
+            repo_id = repo.get("repo")
+            if not isinstance(repo_id, str) or not repo_id:
+                continue
+            entry = by_id.get(repo_id)
+            if entry is None:
+                # Aggregate length across all splits across all configs
+                # — a rough "how big is this dataset on the cluster"
+                # signal. Individual splits are visible in the Explore
+                # tab; this is the cluster-level summary.
+                total_rows: Optional[int] = None
+                for cfg in repo.get("configs") or []:
+                    if not isinstance(cfg, dict):
+                        continue
+                    for sp in cfg.get("splits") or []:
+                        if not isinstance(sp, dict):
+                            continue
+                        n = sp.get("num_examples")
+                        if isinstance(n, (int, float)):
+                            total_rows = (total_rows or 0) + int(n)
+                entry = ClusterDatasetEntryModel(
+                    dataset_id=repo_id,
+                    source="hf",
+                    name=repo_id,
+                    load_args=None,
+                    length=total_rows,
+                    column_names=None,
+                    server_ids=[],
+                )
+                by_id[repo_id] = entry
+            if s.server_id not in entry.server_ids:
+                entry.server_ids.append(s.server_id)
+
+        # Already-loaded handles. The HF-cache loop above covers HF
+        # repos that are *available*; surface remaining loaded
+        # handles whose source isn't "local" or "hf" (i.e., path-
+        # based datasets loaded via --allow-paths — there's no
+        # cluster-level "available" listing for those, so the loaded
+        # handle is the best signal we have).
         for h in s.handles:
             if not isinstance(h, dict):
                 continue
@@ -483,7 +530,9 @@ def _build_inventory_response() -> ClusterDatasetInventoryResponse:
             if not isinstance(handle_id, str) or not handle_id:
                 continue
             src = str(h.get("source") or "hf")
-            if src == "local":
+            # local handles are subsumed by /v1/local entries; hf
+            # handles are subsumed by the /v1/cache/hf loop above.
+            if src in ("local", "hf"):
                 continue
             entry = by_id.get(handle_id)
             if entry is None:

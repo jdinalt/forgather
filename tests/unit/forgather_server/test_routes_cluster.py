@@ -529,6 +529,25 @@ class TestDatasetInventoryRoutes:
                 }
             ],
             locals_info=[{"name": "stories", "length": 20}],
+            # HF cache snapshot: ``allenai/c4`` is available on this
+            # server. The cluster inventory keys HF entries on repo
+            # path, not on the canonical load_args hash — so a
+            # cached-but-never-loaded repo still surfaces in the
+            # unified Datasets view.
+            hf_cache=[
+                {
+                    "repo": "allenai/c4",
+                    "size_bytes": 100,
+                    "configs": [
+                        {
+                            "config": "en",
+                            "splits": [
+                                {"name": "train", "num_examples": 1000}
+                            ],
+                        }
+                    ],
+                }
+            ],
         )
         # srv-b is unhealthy; refresh_tick won't touch it, but we
         # can simulate stale data being present.
@@ -536,6 +555,7 @@ class TestDatasetInventoryRoutes:
             "srv-b",
             handles=[],
             locals_info=[{"name": "stories", "length": 20}],
+            hf_cache=[],
         )
         # ≥1 healthy server in the seeded set, so flip the
         # observed-healthy latch so ``is_warmed_up()`` reflects a
@@ -565,10 +585,14 @@ class TestDatasetInventoryRoutes:
         assert len(local_entries) == 1
         assert local_entries[0]["dataset_id"] == "local/stories"
         assert set(local_entries[0]["server_ids"]) == {"srv-a", "srv-b"}
+        # HF entries are now keyed on repo path (sourced from
+        # /v1/cache/hf), so the unified Datasets view lists
+        # ``allenai/c4`` once whether or not any client has loaded it.
         hf_entries = [d for d in body["datasets"] if d["source"] == "hf"]
         assert len(hf_entries) == 1
-        assert hf_entries[0]["dataset_id"] == "h-hf-1"
-        assert hf_entries[0]["load_args"]["path"] == "allenai/c4"
+        assert hf_entries[0]["dataset_id"] == "allenai/c4"
+        assert hf_entries[0]["name"] == "allenai/c4"
+        assert hf_entries[0]["length"] == 1000  # sum across splits
 
     def test_dataset_servers_token_stripped(self):
         cluster.activate("c", port=8765)

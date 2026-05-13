@@ -565,6 +565,33 @@ class TestDatasetRefreshTick:
                     200,
                     json=[{"name": "stories", "length": 20}],
                 )
+            if req.url.path == "/v1/cache/hf":
+                # Master also polls /v1/cache/hf so the Cluster tab
+                # can list HF repos that are *available* (cached on
+                # disk) even before any client has triggered /v1/load.
+                return httpx.Response(
+                    200,
+                    json={
+                        "cache_root": "/cache",
+                        "datasets": [
+                            {
+                                "repo": "allenai/c4",
+                                "size_bytes": 1024,
+                                "configs": [
+                                    {
+                                        "config": "en",
+                                        "splits": [
+                                            {
+                                                "name": "train",
+                                                "num_examples": 100,
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                )
             return httpx.Response(404)
 
         async def go():
@@ -583,6 +610,11 @@ class TestDatasetRefreshTick:
                 "length": 100,
             }
         ]
+        # The /v1/cache/hf poll populates ``hf_cache`` with the cached
+        # repo set — surfaced under each repo's path in the cluster
+        # inventory response.
+        assert len(s.hf_cache) == 1
+        assert s.hf_cache[0]["repo"] == "allenai/c4"
         assert master_inventory.is_warmed_up() is True
 
     def test_skips_unhealthy_servers(self):

@@ -299,6 +299,12 @@ class MasterServerEntry:
     available_keys: List[str] = field(default_factory=list)
     handles: List[Dict[str, Any]] = field(default_factory=list)
     locals_info: List[Dict[str, Any]] = field(default_factory=list)
+    # HF cache snapshot from /v1/cache/hf. Lets the cluster inventory
+    # surface "this HF repo is *available* to load on this server"
+    # without requiring a client to have already triggered /v1/load.
+    # Same shape as ``HFCacheResponse``: a list of repo dicts with
+    # ``repo``, ``configs``, ``size_bytes``.
+    hf_cache: List[Dict[str, Any]] = field(default_factory=list)
     last_dataset_refresh: float = 0.0
     last_dataset_error: str = ""
 
@@ -389,6 +395,7 @@ class MasterInventory:
                     new_entry.available_keys = list(old.available_keys)
                     new_entry.handles = list(old.handles)
                     new_entry.locals_info = list(old.locals_info)
+                    new_entry.hf_cache = list(old.hf_cache)
                     new_entry.last_dataset_refresh = old.last_dataset_refresh
                     new_entry.last_dataset_error = old.last_dataset_error
                     # Polling counters too — these accumulate across
@@ -439,6 +446,7 @@ class MasterInventory:
         *,
         handles: List[Dict[str, Any]],
         locals_info: List[Dict[str, Any]],
+        hf_cache: Optional[List[Dict[str, Any]]] = None,
         error: str = "",
     ) -> None:
         with self._lock:
@@ -447,6 +455,8 @@ class MasterInventory:
                 return
             s.handles = list(handles)
             s.locals_info = list(locals_info)
+            if hf_cache is not None:
+                s.hf_cache = list(hf_cache)
             # The routing-side key set: "local/<name>" for each entry
             # the server advertises in /v1/local. HF / path requests
             # don't need an index entry — any healthy server is a
@@ -775,12 +785,22 @@ def _auth_headers(token: str) -> Dict[str, str]:
 async def _refresh_one_dataset_listing(
     client: httpx.AsyncClient, entry: MasterServerEntry
 ) -> None:
-    """GET ``/v1/datasets`` and ``/v1/local`` on one server, then
-    update the inventory's dataset listing + routing index."""
+    """GET ``/v1/datasets``, ``/v1/local``, and ``/v1/cache/hf`` on
+    one server, then update the inventory's dataset listing + routing
+    index.
+
+    The HF cache snapshot is the answer to "what HF datasets are
+    *available* on this server" — the inventory surfaces it so the
+    Cluster tab can list cached repos even before any client has
+    issued a /v1/load. Without the cache poll, the unified cluster
+    view would only show currently-loaded handles + ``local/<name>``
+    entries, which understates what the cluster can actually serve.
+    """
     headers = _auth_headers(entry.auth_token)
     base = entry.base_url.rstrip("/")
     handles: List[Dict[str, Any]] = []
     locals_info: List[Dict[str, Any]] = []
+    hf_cache_repos: List[Dict[str, Any]] = []
     error_parts: List[str] = []
 
     try:
@@ -837,10 +857,28 @@ async def _refresh_one_dataset_listing(
     except (httpx.HTTPError, OSError, ValueError) as e:
         error_parts.append(f"local {type(e).__name__}: {e}")
 
+    try:
+        r = await client.get(
+            base + "/v1/cache/hf",
+            headers=headers or None,
+            timeout=DATASETS_TIMEOUT_SECONDS,
+        )
+        if r.status_code == 200:
+            body = r.json()
+            if isinstance(body, dict) and isinstance(body.get("datasets"), list):
+                hf_cache_repos = body["datasets"]
+            elif isinstance(body, list):
+                hf_cache_repos = body
+        else:
+            error_parts.append(f"cache HTTP {r.status_code}")
+    except (httpx.HTTPError, OSError, ValueError) as e:
+        error_parts.append(f"cache {type(e).__name__}: {e}")
+
     master_inventory.update_datasets(
         entry.server_id,
         handles=handles,
         locals_info=locals_info,
+        hf_cache=hf_cache_repos,
         error="; ".join(error_parts),
     )
 
