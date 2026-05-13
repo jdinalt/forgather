@@ -100,6 +100,26 @@ def test_mint_server_cert_chains_to_ca(tls_root):
     assert leaf.issuer == ca.subject
 
 
+def test_mint_server_cert_has_server_and_client_auth_eku(tls_root):
+    """Server certs must carry both EKUs so the same identity works
+    in both directions for cluster mTLS (issue #31).
+
+    Without ``CLIENT_AUTH``, OpenSSL rejects the cert during the
+    inbound mTLS handshake with "unsuitable certificate purpose",
+    silently breaking peer-to-peer cluster calls. The failure mode
+    only surfaces at runtime against a real peer, so this regression
+    test pins the EKU at the unit level.
+    """
+    from cryptography import x509
+
+    cfg = _provisioned_cfg(tls_root)
+    leaf = x509.load_pem_x509_certificate(cfg.server_cert.read_bytes())
+    eku = leaf.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+    oids = {e.dotted_string for e in eku}
+    assert x509.ExtendedKeyUsageOID.SERVER_AUTH.dotted_string in oids
+    assert x509.ExtendedKeyUsageOID.CLIENT_AUTH.dotted_string in oids
+
+
 def test_rebuild_bundle_includes_local_ca_and_trusted(tls_root, tmp_path):
     cfg = _provisioned_cfg(tls_root)
     # Create a second standalone CA in a separate dir, import it.

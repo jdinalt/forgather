@@ -401,18 +401,19 @@ def _request_has_client_cert(scope) -> bool:
     """True if the TLS handshake presented a CA-validated client cert.
 
     The custom uvicorn protocol (``ForgatherProtocol``) sets
-    ``scope["extensions"]["tls"]["client_cert_verified"]`` whenever the
-    peer presents a cert that passed validation against the cluster CA
-    (``ssl_cert_reqs=CERT_OPTIONAL`` + ``ssl_ca_certs=<bundle>`` on the
-    listener). Presence is therefore proof of cluster membership — a
-    cert signed by our CA is by definition a legitimate peer.
+    ``scope["extensions"]["forgather.tls"]["client_cert_verified"]``
+    whenever the peer presents a cert that passed validation against
+    the cluster CA (``ssl_cert_reqs=CERT_OPTIONAL`` +
+    ``ssl_ca_certs=<bundle>`` on the listener). Presence is therefore
+    proof of cluster membership — a cert signed by our CA is by
+    definition a legitimate peer.
 
     Returns False for plain-HTTP listeners, for TLS listeners without
     the custom protocol, and for connections where the peer did not
     present a cert.
     """
     extensions = scope.get("extensions") or {}
-    tls_ext = extensions.get("tls") or {}
+    tls_ext = extensions.get("forgather.tls") or {}
     return bool(tls_ext.get("client_cert_verified"))
 
 

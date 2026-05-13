@@ -35,6 +35,7 @@ from .policy import (
 from .runtime import (
     client_scheme,
     httpx_client_cert,
+    httpx_peer_kwargs,
     httpx_verify,
     httpx_verify_for_url,
     is_enabled,
@@ -49,6 +50,7 @@ __all__ = [
     "enforce_non_loopback_policy",
     "host_is_loopback",
     "httpx_client_cert",
+    "httpx_peer_kwargs",
     "httpx_verify",
     "httpx_verify_for_url",
     "is_enabled",

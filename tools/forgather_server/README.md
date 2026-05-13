@@ -115,6 +115,12 @@ elsewhere, the opt-in is explicit and the auth gate stays in place:
   server on the host serves HTTPS off a shared CA. Without it, the
   server refuses to bind non-loopback hosts unless `--insecure` is
   passed. Full walkthrough in [docs/operations/tls.md](../../docs/operations/tls.md).
+- **Inter-node cluster calls authenticate via mutual TLS.** With TLS on,
+  every peer presents its CA-signed `server.crt` as a client cert for
+  `/api/cluster/*_local` requests; the receiving server treats
+  cert-presence as proof of cluster membership. Browser / bearer clients
+  are unaffected. Details in
+  [docs/operations/tls.md#cluster-inter-node-auth-mtls](../../docs/operations/tls.md#cluster-inter-node-auth-mtls).
 - **No rate limiting.** A leaked token has no automatic lockout.
 - **Dataset-server trust is transitive.** Every example a registered
   dataset_server returns flows into the training pipeline as-is — no

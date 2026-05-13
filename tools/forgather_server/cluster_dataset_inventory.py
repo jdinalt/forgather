@@ -38,26 +38,9 @@ from urllib.parse import urlparse
 
 import httpx
 
-from forgather.tls import httpx_client_cert, httpx_verify
+from forgather.tls import httpx_peer_kwargs, httpx_verify
 
 from . import cluster, dataset_server_registry, job_records
-
-
-def _peer_httpx_kwargs() -> dict:
-    """Verify + client-cert kwargs for inter-node httpx clients.
-
-    Mirrors the mTLS posture from ``cluster_membership._peer_httpx_kwargs``:
-    trust the cluster CA and (when provisioned) present our cert so
-    forgather peers can authenticate the call via mutual TLS
-    (issue #31). The client cert is harmless for dataset-server
-    targets that don't request one — TLS only transmits a client cert
-    when the server sends a CertificateRequest.
-    """
-    kwargs: dict = {"verify": httpx_verify()}
-    cert = httpx_client_cert()
-    if cert is not None:
-        kwargs["cert"] = cert
-    return kwargs
 
 log = logging.getLogger("forgather_server.cluster_dataset_inventory")
 
@@ -1130,7 +1113,7 @@ async def master_collect_servers_loop(
     )
     log.info("master collect-servers loop starting (interval=%.1fs)", interval)
     wake = _register_wake_event()
-    async with httpx.AsyncClient(**_peer_httpx_kwargs()) as client:
+    async with httpx.AsyncClient(**httpx_peer_kwargs()) as client:
         try:
             while True:
                 try:
@@ -1153,7 +1136,7 @@ async def master_health_loop(
     )
     log.info("master health loop starting (interval=%.1fs)", interval)
     wake = _register_wake_event()
-    async with httpx.AsyncClient(**_peer_httpx_kwargs()) as client:
+    async with httpx.AsyncClient(**httpx_peer_kwargs()) as client:
         try:
             while True:
                 try:
@@ -1192,7 +1175,7 @@ async def master_dataset_refresh_loop(
         steady,
     )
     wake = _register_wake_event()
-    async with httpx.AsyncClient(**_peer_httpx_kwargs()) as client:
+    async with httpx.AsyncClient(**httpx_peer_kwargs()) as client:
         try:
             while True:
                 interval = steady if master_inventory.is_warmed_up() else fast

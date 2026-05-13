@@ -10,8 +10,11 @@ that:
 
 * capture ``ssl_object.getpeercert(binary_form=True)`` in
   ``connection_made``, after the TLS handshake has completed;
-* inject ``scope["extensions"]["tls"] = {...}`` whenever the parent
-  class assigns a new request scope, via a property setter.
+* inject ``scope["extensions"]["forgather.tls"] = {...}`` whenever the
+  parent class assigns a new request scope, via a property setter.
+  The namespaced key avoids colliding with the in-flight ASGI ``tls``
+  extension spec — when uvicorn ships native support, both can
+  coexist and the middleware can prefer either.
 
 Both ``H11Protocol`` and ``HttpToolsProtocol`` build the scope inline
 in their request-parsing path; intercepting via a ``scope`` property
@@ -95,7 +98,10 @@ class _TLSScopeMixin:
             # CERT_OPTIONAL + ssl_ca_certs means: if a cert was
             # presented, it has already passed chain validation against
             # the cluster CA. Middleware can treat presence as proof.
-            extensions["tls"] = {
+            # Namespaced under "forgather.tls" so we don't collide
+            # with the official ASGI ``tls`` extension if uvicorn ever
+            # ships native support.
+            extensions["forgather.tls"] = {
                 "client_cert_chain_der": [self._peer_cert_der],
                 "client_cert_verified": True,
             }

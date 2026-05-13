@@ -435,7 +435,7 @@ class TestPeerMutualTLS:
             "query_string": b"",
         }
         if tls_ext is not None:
-            scope["extensions"] = {"tls": tls_ext}
+            scope["extensions"] = {"forgather.tls": tls_ext}
         return scope
 
     def test_client_cert_allows_peer_path(self, driven_middleware):
@@ -584,6 +584,74 @@ class TestTLSHelpers:
 
         monkeypatch.setenv("FORGATHER_TLS_DIR", str(tmp_path))
         assert uvicorn_ssl_kwargs() == {}
+
+    def test_httpx_peer_kwargs_loads_client_cert_into_context(
+        self, tmp_path, monkeypatch
+    ):
+        """Inter-node httpx clients carry their identity in the SSLContext.
+
+        Uses the real ``ca`` module to provision a CA + leaf so the
+        cert is well-formed (EKU + chain) and ``load_cert_chain``
+        accepts it.
+        """
+        import ssl
+
+        from forgather.tls import httpx_peer_kwargs, load_config
+        from forgather.tls.ca import (
+            create_ca,
+            install_server_cert,
+            mint_server_cert,
+            rebuild_bundle,
+        )
+        from forgather.tls.config import save_config
+
+        monkeypatch.setenv("FORGATHER_TLS_DIR", str(tmp_path))
+        cfg = load_config()
+        cfg.enabled = True
+        cfg.san_hostnames = ["localhost"]
+        cfg.san_ips = ["127.0.0.1"]
+        create_ca(cfg, common_name="Test CA")
+        install_server_cert(
+            cfg,
+            mint_server_cert(
+                cfg, hostnames=["localhost"], ips=["127.0.0.1"]
+            ),
+        )
+        rebuild_bundle(cfg)
+        save_config(cfg)
+
+        # Spy on load_cert_chain so we can prove the helper called it.
+        calls: list[tuple[str, str]] = []
+        orig_load = ssl.SSLContext.load_cert_chain
+
+        def spy(self, certfile, keyfile=None, password=None):
+            calls.append((str(certfile), str(keyfile) if keyfile else ""))
+            return orig_load(self, certfile, keyfile, password)
+
+        monkeypatch.setattr(ssl.SSLContext, "load_cert_chain", spy)
+
+        kwargs = httpx_peer_kwargs()
+        ctx = kwargs["verify"]
+        assert isinstance(ctx, ssl.SSLContext)
+        # CA bundle loaded for verifying the peer's cert.
+        assert ctx.get_ca_certs()
+        # forgather posture: chain-only, no hostname matching.
+        assert ctx.check_hostname is False
+        # Client cert chain loaded for presenting our identity.
+        assert len(calls) == 1
+        assert calls[0][0].endswith("server.crt")
+        assert calls[0][1].endswith("server.key")
+
+    def test_httpx_peer_kwargs_no_cert_falls_back(self, tmp_path, monkeypatch):
+        """Without a provisioned cert, return verify-only kwargs."""
+        from forgather.tls import httpx_peer_kwargs
+
+        monkeypatch.setenv("FORGATHER_TLS_DIR", str(tmp_path))
+        kwargs = httpx_peer_kwargs()
+        # No cert+key on disk and no CA bundle -> verify=True (system
+        # trust). The forgather peer will fail-closed against the
+        # system trust store, which is the correct failure mode.
+        assert kwargs == {"verify": True}
 
 
 class TestCliClientToken:

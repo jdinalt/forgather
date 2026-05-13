@@ -4,7 +4,7 @@ The protocol subclasses must:
 
 * capture the peer's DER-encoded client cert in ``connection_made`` via
   ``transport.get_extra_info("ssl_object").getpeercert(binary_form=True)``;
-* inject it into ``scope["extensions"]["tls"]`` whenever the parent
+* inject it into ``scope["extensions"]["forgather.tls"]`` whenever the parent
   parser assigns a fresh request scope (via our property setter).
 
 These tests stub the transport with a minimal object that returns a
@@ -125,8 +125,8 @@ class TestScopeInjection:
         # Emulate what the parser does — assign a fresh scope dict.
         proto.scope = {"type": "http", "method": "GET", "path": "/x"}
 
-        assert proto.scope["extensions"]["tls"]["client_cert_verified"] is True
-        assert proto.scope["extensions"]["tls"]["client_cert_chain_der"] == [der]
+        assert proto.scope["extensions"]["forgather.tls"]["client_cert_verified"] is True
+        assert proto.scope["extensions"]["forgather.tls"]["client_cert_chain_der"] == [der]
 
     def test_scope_setter_skips_injection_when_no_cert(self):
         proto = _make_protocol()
@@ -135,8 +135,9 @@ class TestScopeInjection:
 
         proto.scope = {"type": "http", "method": "GET", "path": "/x"}
 
-        assert "extensions" not in proto.scope or "tls" not in proto.scope.get(
-            "extensions", {}
+        assert (
+            "extensions" not in proto.scope
+            or "forgather.tls" not in proto.scope.get("extensions", {})
         )
 
     def test_scope_setter_preserves_other_extensions(self):
@@ -153,7 +154,7 @@ class TestScopeInjection:
         }
 
         assert proto.scope["extensions"]["some.other"] == {"foo": "bar"}
-        assert proto.scope["extensions"]["tls"]["client_cert_verified"] is True
+        assert proto.scope["extensions"]["forgather.tls"]["client_cert_verified"] is True
 
     def test_scope_none_assignment_is_passthrough(self):
         """Parsers reset scope to None between requests; setter must allow that."""

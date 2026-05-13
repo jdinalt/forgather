@@ -20,7 +20,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from forgather.tls import httpx_client_cert, httpx_verify
+from forgather.tls import httpx_peer_kwargs
 
 from .. import cluster, cluster_dataset_inventory, cluster_jobs, dataset_source
 from ..dataset_source import DatasetSourceError
@@ -44,16 +44,14 @@ def _peer_url(member, path: str) -> str:
 def _peer_client(**kwargs) -> httpx.AsyncClient:
     """``httpx.AsyncClient`` for inter-node calls.
 
-    Pre-wires the shared CA bundle (``verify=``) and, when TLS is
-    provisioned locally, presents this node's cert+key (``cert=``) so
-    the peer can authenticate us via mutual TLS (issue #31). The peer's
-    auth middleware accepts a CA-signed client cert in lieu of a bearer
-    token on the inter-node carve-out paths.
+    Pre-wires the shared CA bundle and this node's cert+key into a
+    single ``ssl.SSLContext`` for mutual TLS — the peer authenticates
+    us via the client cert (issue #31). See
+    :func:`forgather.tls.httpx_peer_kwargs` for the kwargs layout and
+    failure modes.
     """
-    kwargs.setdefault("verify", httpx_verify())
-    client_cert = httpx_client_cert()
-    if client_cert is not None:
-        kwargs.setdefault("cert", client_cert)
+    for k, v in httpx_peer_kwargs().items():
+        kwargs.setdefault(k, v)
     return httpx.AsyncClient(**kwargs)
 
 
