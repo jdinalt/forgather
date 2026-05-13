@@ -278,6 +278,154 @@ class TestRetryReconnect:
         rb = ResilientRemoteBackend("http://fake", None, {"path": "x"})
         assert rb._max_retry_seconds is None
 
+    def test_shuffle_with_resolver_drops_handle(self):
+        """Regression for CQ-3: in cluster auto-routing mode the new
+        wrapper from shuffle() must NOT carry the previous handle,
+        so the next iter re-resolves and can land on a different
+        replica. Without this, a shuffle pins the dataset to the
+        last-resolved peer and failover stops working."""
+
+        def resolver(load_args):
+            return "http://peer-1:8766", "tok"
+
+        rb = ResilientRemoteBackend(
+            "cluster-auto://pending",
+            None,
+            {"path": "local/x"},
+            handle="handle-from-first-load",
+            resolver=resolver,
+            seed=1,
+        )
+        # Sanity: inner exists pre-shuffle.
+        assert rb._inner is not None
+        shuffled = rb.shuffle(seed=2)
+        # In cluster mode, the new wrapper must not carry the inner.
+        assert shuffled._inner is None
+        # Resolver still attached.
+        assert shuffled._resolver is resolver
+
+    def test_seek_with_resolver_drops_handle(self):
+        """Same contract as shuffle: seek() in cluster mode re-resolves."""
+
+        def resolver(load_args):
+            return "http://peer-1:8766", "tok"
+
+        rb = ResilientRemoteBackend(
+            "cluster-auto://pending",
+            None,
+            {"path": "local/x"},
+            handle="h",
+            resolver=resolver,
+        )
+        assert rb._inner is not None
+        seeked = rb.seek(100)
+        assert seeked._inner is None
+        assert seeked._resolver is resolver
+        assert seeked._position == 100
+
+    def test_resolver_410_pre_first_load_aborts(self, monkeypatch):
+        """CQ-7b: a resolver raising RuntimeError before the wrapper
+        has ever held a working handle is treated as fatal. Operator
+        config error: the dataset never existed; retrying won't help."""
+        from forgather.ml.datasets import resilient_remote_backend as rrb
+
+        monkeypatch.setattr(rrb.time, "sleep", lambda *_: None)
+
+        def angry_resolver(load_args):
+            raise RuntimeError("Cluster router rejected request (410): no candidate")
+
+        rb = ResilientRemoteBackend(
+            "cluster-auto://pending",
+            None,
+            {"path": "local/typo"},
+            resolver=angry_resolver,
+        )
+        # _has_ever_loaded is False (no eager handle).
+        with pytest.raises(RuntimeError, match="no candidate"):
+            list(rb)
+
+    def test_resolver_410_after_first_load_retries(self, monkeypatch):
+        """CQ-7b: a resolver raising RuntimeError AFTER the wrapper
+        has previously held a working handle gets converted to
+        DatasetServerUnreachable and falls into the backoff/retry
+        path. The whole cluster going DOWN mid-training is transient
+        — keep retrying until either a server comes back or the
+        operator interrupts."""
+        from forgather.ml.datasets import resilient_remote_backend as rrb
+
+        monkeypatch.setattr(rrb.time, "sleep", lambda *_: None)
+        # Suppress the noisy retry-log line during the test (the
+        # assertion is on behavior, not log content).
+        monkeypatch.setattr(rrb.logger, "warning", lambda *a, **k: None)
+
+        # Resolver: first call succeeds, second raises 410, third
+        # succeeds again.
+        seq = iter(
+            [
+                ("http://peer-1:8766", "tok"),
+                "raise-410",
+                ("http://peer-2:8766", "tok2"),
+            ]
+        )
+
+        def flaky_resolver(load_args):
+            v = next(seq)
+            if v == "raise-410":
+                raise RuntimeError(
+                    "Cluster router rejected request (410): no candidate"
+                )
+            return v
+
+        # Fake inner that fails on its first __iter__, succeeds on
+        # subsequent ones. The wrapper will catch the mid-stream
+        # failure, sleep, re-call _ensure_inner → resolver (which
+        # raises 410 the second time → should be folded to transient).
+        inner = _FakeInner(_examples(2), fail_iter_until=1)
+        monkeypatch.setattr(rrb, "RemoteBackend", lambda *a, **k: inner)
+        monkeypatch.setattr(
+            rrb, "_do_load_once", _ScriptedLoader("http://fake", _examples(2))
+        )
+
+        rb = ResilientRemoteBackend(
+            "cluster-auto://pending",
+            None,
+            {"path": "local/x"},
+            resolver=flaky_resolver,
+            max_retry_seconds=None,
+        )
+        # Pre-condition: hasn't loaded yet. A 410 here would abort.
+        assert rb._has_ever_loaded is False
+        out = list(rb)
+        # All examples yielded — the second resolver call's 410
+        # folded into the retry loop, didn't abort training.
+        assert [ex["id"] for ex in out] == [0, 1]
+        # And the latch flipped True after the first successful load.
+        assert rb._has_ever_loaded is True
+        # All three resolver returns consumed.
+        with pytest.raises(StopIteration):
+            next(seq)
+
+    def test_shuffle_without_resolver_preserves_handle(self):
+        """Sticky mode (no resolver): the wrapper should preserve the
+        inner backend across shuffle/seek to avoid a redundant
+        /v1/load round-trip. Pre-existing behavior; locked in to
+        catch future regressions when the resolver-aware branch
+        gets refactored."""
+        rb = ResilientRemoteBackend(
+            "http://server:8766",
+            "tok",
+            {"path": "local/x"},
+            handle="h",
+            resolver=None,
+            seed=1,
+        )
+        assert rb._inner is not None
+        shuffled = rb.shuffle(seed=2)
+        # Inner is preserved (carry_handle != None on the new wrapper's
+        # constructor → builds a fresh RemoteBackend at position 0).
+        assert shuffled._inner is not None
+        assert shuffled._inner._handle == "h"
+
 
 # ---------------------------------------------------------------------
 # Backend-interface conformance + state-passthrough tests with a real

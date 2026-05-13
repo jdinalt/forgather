@@ -215,6 +215,54 @@ class TestPeerCarveOut:
         r = client.post("/api/cluster/gpu_policy_local")
         assert r.status_code == 200, r.text
 
+    def test_dataset_server_proxy_prefix_carved_out_for_peers(self):
+        """The cluster master proxy
+        ``/api/cluster/dataset_server_proxy/{server_id}/{op}`` lives
+        behind a path-prefix carve-out (the path is templated, so
+        exact-match wouldn't fit). A peer-IP GET on the prefix must
+        pass without a token; a non-peer source must still 401.
+        Regression for the Phase-7 review finding."""
+        cluster.activate("c", port=8765)
+        for addr in ("127.0.0.1", "testclient"):
+            cluster.update_member(
+                str(uuid.uuid4()),
+                hostname=f"peer-{addr}",
+                address=addr,
+                port=8765,
+                cluster_name="c",
+            )
+        app = FastAPI()
+        app.add_middleware(AuthMiddleware)
+
+        @app.get("/api/cluster/dataset_server_proxy/{server_id}/{op}")
+        async def fake_get(server_id: str, op: str):
+            return {"server_id": server_id, "op": op}
+
+        @app.post("/api/cluster/dataset_server_proxy/{server_id}/{op}")
+        async def fake_post(server_id: str, op: str):
+            return {"server_id": server_id, "op": op}
+
+        client = TestClient(app)
+        # GET: passes via peer-IP carve-out
+        r = client.get("/api/cluster/dataset_server_proxy/abc123/health")
+        assert r.status_code == 200, r.text
+        # POST: passes via mutation carve-out (used for the /load op)
+        r = client.post("/api/cluster/dataset_server_proxy/abc123/load")
+        assert r.status_code == 200, r.text
+        # Unknown-prefix path must NOT be swept up by the carve-out —
+        # belt-and-suspenders against the prefix accidentally being
+        # too broad.
+        @app.get("/api/cluster/dataset_server_proxy_evil/x/y")
+        async def fake_evil():
+            return {"ok": True}
+
+        # Add a non-peer member-table entry for the test source so the
+        # carve-out predicate fires.
+        r = client.get("/api/cluster/dataset_server_proxy_evil/x/y")
+        # Path doesn't start with ``/api/cluster/dataset_server_proxy/``
+        # (note the trailing slash) — should 401.
+        assert r.status_code == 401
+
     def test_normal_token_still_works(self):
         cluster.activate("c", port=8765)
         token = auth.load_token()
@@ -489,6 +537,12 @@ class TestDatasetInventoryRoutes:
             handles=[],
             locals_info=[{"name": "stories", "length": 20}],
         )
+        # ≥1 healthy server in the seeded set, so flip the
+        # observed-healthy latch so ``is_warmed_up()`` reflects a
+        # fully-warmed master. Without this, /resolve would now
+        # correctly return 503 instead of 200, which is right for
+        # cold-start but wrong for these tests' setup intent.
+        cdi.master_inventory.mark_observed_healthy()
         cdi.master_inventory.mark_dataset_pass_complete()
 
     def test_dataset_inventory_returns_deduped_listing(self):
@@ -570,6 +624,11 @@ class TestDatasetInventoryRoutes:
 
         cluster.activate("c", port=8765)
         cdi.master_inventory.set_master_state(True)
+        # Mark fully warmed (observed a healthy server at some point)
+        # so /resolve goes past the 503 cold-start gate. The actual
+        # path requested doesn't match any server, so the response
+        # should be 410 "no candidate" — operator config error.
+        cdi.master_inventory.mark_observed_healthy()
         cdi.master_inventory.mark_dataset_pass_complete()
         token = auth.load_token()
         client = TestClient(_make_app())

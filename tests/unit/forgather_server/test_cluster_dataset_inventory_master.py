@@ -194,6 +194,44 @@ class TestMasterInventoryStateMachine:
         assert s_after.health_failures == 2
         assert s_after.total_dataset_polls == 1
 
+    def test_is_warmed_up_requires_observed_healthy_server(self):
+        """CQ-7: warm-up gating must require ≥1 healthy server seen.
+
+        Without this, a transient zero-server window (no servers in
+        the inventory yet, or every server simultaneously DOWN) flips
+        warm-up True with empty available_keys, and the router then
+        returns 410 ("no candidate") to clients — which the resilient
+        client treats as fatal and aborts training. The right behavior
+        is to keep returning 503 (transient) until at least one
+        healthy server has been observed during this master tenure."""
+        inv = MasterInventory()
+        inv.set_master_state(True)
+        # Pass with zero healthy servers: should NOT count as warm.
+        inv.mark_dataset_pass_complete()
+        assert inv.is_warmed_up() is False
+        # Now observe a healthy server. Warm-up flips True.
+        inv.mark_observed_healthy()
+        assert inv.is_warmed_up() is True
+        # And stays True even after a subsequent pass that finds zero
+        # healthy servers — once we've seen one work, "everything DOWN"
+        # is transient, not the cluster being unprovisioned.
+        inv.mark_dataset_pass_complete()
+        assert inv.is_warmed_up() is True
+
+    def test_warm_up_resets_on_role_transition(self):
+        """Becoming master after losing the role must clear the
+        observed-healthy latch — the new tenure starts fresh."""
+        inv = MasterInventory()
+        inv.set_master_state(True)
+        inv.mark_observed_healthy()
+        inv.mark_dataset_pass_complete()
+        assert inv.is_warmed_up() is True
+        # Lose master.
+        inv.set_master_state(False)
+        # Become master again.
+        inv.set_master_state(True)
+        assert inv.is_warmed_up() is False
+
     def test_merge_drops_servers_no_longer_reported(self):
         inv = MasterInventory()
         inv.set_master_state(True)
@@ -566,9 +604,17 @@ class TestDatasetRefreshTick:
 
         asyncio.run(go())
         assert called == []  # no HTTP issued
-        # Warm-up flag still flips so the route doesn't get stuck on
-        # 503 when every known server is dead.
-        assert master_inventory.is_warmed_up() is True
+        # Warm-up gate stays False until ≥1 healthy server has been
+        # observed. The dataset-pass timestamp updates (so loops
+        # advance), but ``is_warmed_up()`` is gated on
+        # ``_ever_observed_healthy`` — keeps the router returning
+        # 503 (try again later) instead of 410 (no candidate) when
+        # the cluster is transiently empty.
+        assert master_inventory.is_warmed_up() is False
+        # The pass timestamp DID advance so the next refresh tick
+        # sleeps on the steady-state interval rather than the cold-
+        # start one (decoupling of "pass complete" from "warmed up").
+        assert master_inventory.status()["last_dataset_pass_ts"] is not None
 
 
 # ---------------------------------------------------------------------------

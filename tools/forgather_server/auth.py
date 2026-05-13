@@ -134,6 +134,32 @@ _PEER_ALLOWED_MUTATIONS = frozenset(
     }
 )
 
+# Peer-allowed path *prefixes* for endpoints whose final segments are
+# templated by server_id, queue_id, etc. Exact-match doesn't fit
+# templated routes; matching by prefix keeps the gate narrow as long
+# as the prefix itself is unambiguous (every entry here must be a
+# string no other API endpoint can start with).
+_PEER_ALLOWED_PATH_PREFIXES = frozenset(
+    {
+        # Master-side cluster dataset_server proxy. Non-master nodes
+        # forward webui ``/api/cluster/dataset_server_proxy/{id}/...``
+        # GETs (status / datasets / cache / local / length / iter) to
+        # the master via the existing peer-IP carve-out. The op set is
+        # validated against ``_ALLOWED_PROXY_OPS`` in
+        # routes/cluster.py before any forwarding happens.
+        "/api/cluster/dataset_server_proxy/",
+    }
+)
+
+_PEER_ALLOWED_MUTATION_PREFIXES = frozenset(
+    {
+        # Same family as above; the ``load`` op is POST. Anything
+        # else under this prefix is rejected by _ALLOWED_PROXY_OPS in
+        # routes/cluster.py.
+        "/api/cluster/dataset_server_proxy/",
+    }
+)
+
 # Module-level state. Sessions intentionally do not survive process
 # restart — both the bearer token and the password still work, so a
 # restart only forces a re-login for already-open browser tabs.
@@ -352,12 +378,16 @@ def path_allows_peer(path: str) -> bool:
 
     See ``_PEER_ALLOWED_PATHS`` for the rationale.
     """
-    return path in _PEER_ALLOWED_PATHS
+    if path in _PEER_ALLOWED_PATHS:
+        return True
+    return any(path.startswith(p) for p in _PEER_ALLOWED_PATH_PREFIXES)
 
 
 def path_allows_peer_mutation(path: str) -> bool:
     """True if a known cluster peer may POST ``path`` without auth."""
-    return path in _PEER_ALLOWED_MUTATIONS
+    if path in _PEER_ALLOWED_MUTATIONS:
+        return True
+    return any(path.startswith(p) for p in _PEER_ALLOWED_MUTATION_PREFIXES)
 
 
 def _request_is_from_peer(scope) -> bool:

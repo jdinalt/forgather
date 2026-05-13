@@ -150,6 +150,16 @@ class ResilientRemoteBackend(IterableDatasetBackend):
             list(column_names) if column_names is not None else None
         )
         self._inner: Optional[RemoteBackend] = None
+        # Latch that flips True after the first successful load (i.e.,
+        # the wrapper has held a working handle at least once during
+        # its lifetime). The retry policy treats fatal-looking
+        # resolver errors (RuntimeError from /resolve returning 410)
+        # as transient once this latches — "the dataset existed at
+        # some point, so the disappearance is more likely an outage
+        # than a config error." Pre-first-load failures still
+        # propagate so an operator typo on a non-existent dataset
+        # aborts cleanly instead of spinning forever.
+        self._has_ever_loaded: bool = False
         if handle is not None:
             self._inner = RemoteBackend(
                 base_url,
@@ -161,6 +171,11 @@ class ResilientRemoteBackend(IterableDatasetBackend):
             )
             if length is not None:
                 self._inner._cached_len = length  # avoid an extra /length RPC
+            # A pre-built handle means an eager /v1/load (from
+            # fast_hf_loader) already succeeded — count it as "ever
+            # loaded" so a later failure on this handle re-routes
+            # transiently rather than aborting.
+            self._has_ever_loaded = True
         if max_retry_seconds is None:
             env_cap = os.environ.get(MAX_RETRY_SECONDS_ENV_VAR)
             if env_cap:
@@ -214,12 +229,25 @@ class ResilientRemoteBackend(IterableDatasetBackend):
                 self._inner = None
 
     def shuffle(self, seed: Optional[int] = None) -> "ResilientRemoteBackend":
-        """Return a fresh wrapper at position 0 with the new seed."""
+        """Return a fresh wrapper at position 0 with the new seed.
+
+        With a resolver (cluster auto-routing), the new wrapper drops
+        the prior inner handle so the next iter goes back through
+        ``resolve()`` and may land on a different replica — failover
+        keeps working after the operator's first shuffle. In sticky
+        mode (no resolver) the handle is preserved to avoid an
+        unnecessary /v1/load round-trip.
+        """
+        carry_handle = (
+            self._inner._handle
+            if self._inner is not None and self._resolver is None
+            else None
+        )
         return ResilientRemoteBackend(
             self._base_url,
             self._token,
             self._load_args,
-            handle=self._inner._handle if self._inner is not None else None,
+            handle=carry_handle,
             length=self._cached_len,
             column_names=self._column_names,
             resolver=self._resolver,
@@ -229,13 +257,25 @@ class ResilientRemoteBackend(IterableDatasetBackend):
         )
 
     def seek(self, position: int) -> "ResilientRemoteBackend":
+        """Return a fresh wrapper at ``position`` (same seed).
+
+        Same resolver-aware handle policy as ``shuffle()``: drop the
+        handle in cluster auto-routing mode so the next iter
+        re-resolves; preserve it in sticky mode to skip a redundant
+        ``/v1/load`` round-trip.
+        """
         if position < 0:
             raise ValueError(f"position must be non-negative, got {position}")
+        carry_handle = (
+            self._inner._handle
+            if self._inner is not None and self._resolver is None
+            else None
+        )
         return ResilientRemoteBackend(
             self._base_url,
             self._token,
             self._load_args,
-            handle=self._inner._handle if self._inner is not None else None,
+            handle=carry_handle,
             length=self._cached_len,
             column_names=self._column_names,
             resolver=self._resolver,
@@ -274,7 +314,25 @@ class ResilientRemoteBackend(IterableDatasetBackend):
         if self._inner is not None:
             return
         if self._resolver is not None:
-            self._base_url, self._token = self._resolver(self._load_args)
+            # The resolver raises DatasetServerUnreachable on
+            # transient/503 conditions and RuntimeError on "no
+            # candidate" (410). For a wrapper that has previously
+            # held a working handle, "no candidate right now" is more
+            # likely an outage than a config error — convert
+            # post-first-load RuntimeErrors to transient so the
+            # retry loop keeps trying until either a server reappears
+            # or the operator interrupts. Pre-first-load
+            # RuntimeErrors propagate (the dataset never existed —
+            # retrying won't help).
+            try:
+                self._base_url, self._token = self._resolver(self._load_args)
+            except RuntimeError as exc:
+                if self._has_ever_loaded:
+                    raise DatasetServerUnreachable(
+                        f"router 'no candidate' is transient after prior "
+                        f"success: {exc}"
+                    ) from exc
+                raise
         elif self._token is None:
             # Re-resolve from env / token file in case the file was
             # written after the first attempt.
@@ -299,6 +357,8 @@ class ResilientRemoteBackend(IterableDatasetBackend):
         )
         if self._cached_len is not None:
             self._inner._cached_len = self._cached_len
+        # We hold a working handle now — future failures are transient.
+        self._has_ever_loaded = True
 
     def _sleep_or_raise(
         self, exc: DatasetServerUnreachable, attempt: int, elapsed: float

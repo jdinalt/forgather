@@ -317,6 +317,13 @@ class MasterInventory:
         self._last_servers_collect_ts: Optional[float] = None
         self._last_health_pass_ts: Optional[float] = None
         self._last_dataset_pass_ts: Optional[float] = None
+        # Set once the master has observed at least one healthy server
+        # via a successful dataset-refresh pass. Resets to False on
+        # role transition. ``is_warmed_up()`` gates on this so a
+        # transient zero-server window doesn't flip warm-up True with
+        # an empty inventory — which would convert the router from
+        # ``503 try-again`` to ``410 give-up``.
+        self._ever_observed_healthy: bool = False
 
     # ----- master role transitions -----
 
@@ -337,6 +344,7 @@ class MasterInventory:
                 self._last_servers_collect_ts = None
                 self._last_health_pass_ts = None
                 self._last_dataset_pass_ts = None
+                self._ever_observed_healthy = False
                 log.info(
                     "became master; cleared dataset inventory and starting fresh"
                 )
@@ -347,6 +355,7 @@ class MasterInventory:
                 self._last_servers_collect_ts = None
                 self._last_health_pass_ts = None
                 self._last_dataset_pass_ts = None
+                self._ever_observed_healthy = False
                 log.info("no longer master; dataset inventory cleared")
                 return True
             return False
@@ -455,6 +464,12 @@ class MasterInventory:
         with self._lock:
             self._last_dataset_pass_ts = time.time()
 
+    def mark_observed_healthy(self) -> None:
+        """Sticky flag: ≥1 healthy server has been observed during
+        this master tenure. Resets only on master role change."""
+        with self._lock:
+            self._ever_observed_healthy = True
+
     # ----- reads -----
 
     def servers_snapshot(self) -> List[MasterServerEntry]:
@@ -512,12 +527,28 @@ class MasterInventory:
             return chosen.base_url, chosen.auth_token
 
     def is_warmed_up(self) -> bool:
-        """True once we have at least one completed dataset-refresh
-        pass. The router uses this to gate the 503 cold-start window:
-        until a refresh has filled ``available_keys``, ``local/...``
-        lookups would falsely report "no server has this"."""
+        """True once we have completed a dataset-refresh pass AND
+        have observed at least one healthy server in the cluster.
+
+        Both conditions matter:
+
+        - Without ``_last_dataset_pass_ts``, ``available_keys`` is
+          unpopulated and ``local/*`` lookups would falsely report
+          "no server has this."
+        - Without ``_ever_observed_healthy``, a transiently empty
+          cluster (no servers in the inventory yet, or every server
+          DOWN simultaneously) would mark warm-up complete after
+          the first vacuous pass — and the router would then return
+          ``410`` ("no candidate") to clients, which the resilient
+          client treats as fatal. With the gate, the router keeps
+          returning ``503 Retry-After`` until at least one healthy
+          server has ever been seen.
+        """
         with self._lock:
-            return self._last_dataset_pass_ts is not None
+            return (
+                self._last_dataset_pass_ts is not None
+                and self._ever_observed_healthy
+            )
 
 
 # Module-level singleton — the loops mutate it, the routes read it.
@@ -746,12 +777,22 @@ async def _refresh_one_dataset_listing(
 async def _dataset_refresh_tick(client: httpx.AsyncClient) -> None:
     healthy = [s for s in master_inventory.servers_snapshot() if s.healthy]
     if not healthy:
+        # No healthy servers — mark the pass complete so ``is_warmed_up``
+        # can advance once we've also observed a healthy server, but
+        # do NOT flip ``_ever_observed_healthy``. A transient empty
+        # window keeps the router returning 503 (retry) instead of 410
+        # (give up).
         master_inventory.mark_dataset_pass_complete()
         return
     await asyncio.gather(
         *[_refresh_one_dataset_listing(client, s) for s in healthy],
         return_exceptions=True,
     )
+    # ≥1 healthy server seen on this pass — the warm-up gate can flip
+    # True now. Once set, it stays True for the rest of this master
+    # tenure, so a later all-DOWN window still serves 503 (transient)
+    # rather than 410 (fatal) to in-flight training jobs.
+    master_inventory.mark_observed_healthy()
     master_inventory.mark_dataset_pass_complete()
 
 
