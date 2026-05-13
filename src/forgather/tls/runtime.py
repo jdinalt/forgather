@@ -60,12 +60,21 @@ def _resolve_state(
 def uvicorn_ssl_kwargs(
     args: Optional[argparse.Namespace] = None, cfg: Optional[TLSConfig] = None
 ) -> dict:
-    """Return ``{"ssl_keyfile": …, "ssl_certfile": …}`` or ``{}``.
+    """Return uvicorn TLS kwargs, or ``{}`` when TLS is off for this invocation.
 
-    Empty dict ⇒ caller skips TLS for this invocation. Raises
-    :class:`FileNotFoundError` if TLS is requested but cert/key are
-    missing from disk.
+    When TLS is on and a CA bundle exists, also requests (but does not
+    require) a client cert from the connecting peer:
+    ``ssl_cert_reqs=ssl.CERT_OPTIONAL`` + ``ssl_ca_certs=<bundle>``.
+    The TLS handshake validates any presented cert against the cluster
+    CA; the ASGI auth gate then decides whether cert-presence is
+    sufficient for the request's path. Browser/CLI bearer clients that
+    don't present a cert are unaffected.
+
+    Raises :class:`FileNotFoundError` if TLS is requested but cert/key
+    are missing from disk.
     """
+    import ssl
+
     cfg, on, cert, key = _resolve_state(args, cfg)
     if not on:
         return {}
@@ -78,7 +87,29 @@ def uvicorn_ssl_kwargs(
         raise FileNotFoundError(f"TLS cert not found: {cert}")
     if not Path(key).is_file():
         raise FileNotFoundError(f"TLS key not found: {key}")
-    return {"ssl_keyfile": key, "ssl_certfile": cert}
+    kwargs: dict = {"ssl_keyfile": key, "ssl_certfile": cert}
+    bundle = cfg.effective_bundle()
+    if bundle is not None:
+        kwargs["ssl_cert_reqs"] = ssl.CERT_OPTIONAL
+        kwargs["ssl_ca_certs"] = str(bundle)
+    return kwargs
+
+
+def httpx_client_cert(
+    cfg: Optional[TLSConfig] = None,
+) -> Optional[tuple[str, str]]:
+    """Return ``(cert_path, key_path)`` for httpx ``cert=`` or ``None``.
+
+    Used by inter-node clients to present this node's identity for
+    mutual-TLS authentication. Returns ``None`` when TLS is not
+    provisioned locally — the caller falls back to bearer-only auth in
+    that case (the legacy IP carve-out still works during the migration
+    window).
+    """
+    cfg = cfg or load_config()
+    if not cfg.is_provisioned():
+        return None
+    return (str(cfg.server_cert), str(cfg.server_key))
 
 
 def is_tls_active(

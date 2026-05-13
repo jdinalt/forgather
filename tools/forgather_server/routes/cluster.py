@@ -2,8 +2,8 @@
 
 The peer-pull membership task in ``cluster_membership.py`` calls
 ``GET /api/cluster/members`` on every known peer once per tick. The
-auth middleware allows that call from a known-peer source IP without
-the bearer token (see ``auth._PEER_ALLOWED_PATHS``).
+auth middleware allows that call when the caller presents a CA-signed
+TLS client cert (mTLS — see ``auth._PEER_ALLOWED_PATHS``).
 
 A browser session calls these endpoints to render the Nodes view.
 """
@@ -20,7 +20,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from forgather.tls import httpx_verify
+from forgather.tls import httpx_client_cert, httpx_verify
 
 from .. import cluster, cluster_dataset_inventory, cluster_jobs, dataset_source
 from ..dataset_source import DatasetSourceError
@@ -42,8 +42,18 @@ def _peer_url(member, path: str) -> str:
 
 
 def _peer_client(**kwargs) -> httpx.AsyncClient:
-    """``httpx.AsyncClient`` with the shared CA bundle pre-wired."""
+    """``httpx.AsyncClient`` for inter-node calls.
+
+    Pre-wires the shared CA bundle (``verify=``) and, when TLS is
+    provisioned locally, presents this node's cert+key (``cert=``) so
+    the peer can authenticate us via mutual TLS (issue #31). The peer's
+    auth middleware accepts a CA-signed client cert in lieu of a bearer
+    token on the inter-node carve-out paths.
+    """
     kwargs.setdefault("verify", httpx_verify())
+    client_cert = httpx_client_cert()
+    if client_cert is not None:
+        kwargs.setdefault("cert", client_cert)
     return httpx.AsyncClient(**kwargs)
 
 
@@ -262,9 +272,9 @@ def dataset_servers_local(response: Response):
     every aggregation tick (Phase 3) to build the cluster-wide server
     set. Carved out of the bearer-token gate for known cluster peers.
 
-    Tokens are returned in the body — the carve-out is peer-only and
-    the cluster bearer protects the rest of the surface. See
-    ``auth._PEER_ALLOWED_PATHS`` for the trust assumptions.
+    Tokens are returned in the body — only mTLS-authenticated peers
+    reach this path, and the cluster bearer protects the rest of the
+    surface. See ``auth._PEER_ALLOWED_PATHS`` for the trust assumptions.
     """
     ident = cluster.self_identity()
     if ident is not None:
@@ -942,9 +952,9 @@ class GpuPolicyLocalRequest(BaseModel):
 def gpu_policy_local(req: GpuPolicyLocalRequest, response: Response):
     """Apply a GPU policy update on this node.
 
-    Counterpart of ``POST /api/gpus/{idx}/policy`` carved out for
-    inter-node mutation. The auth middleware allows POST on this
-    exact path from a known peer IP without the bearer token; see
+    Counterpart of ``POST /api/gpus/{idx}/policy`` for inter-node
+    mutation. The auth middleware allows POST on this exact path
+    when the caller is mTLS-authenticated as a cluster peer; see
     ``auth._PEER_ALLOWED_MUTATIONS``.
 
     Returns the same ``X-Forgather-Node-Id`` header as ``gpus_local``

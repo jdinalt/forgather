@@ -30,9 +30,23 @@ from typing import Optional
 
 import httpx
 
-from forgather.tls import httpx_verify
+from forgather.tls import httpx_client_cert, httpx_verify
 
 from . import cluster
+
+
+def _peer_httpx_kwargs() -> dict:
+    """Verify + client-cert kwargs for inter-node httpx clients.
+
+    Centralizes the mTLS posture: trust the cluster CA and, when this
+    node has a provisioned cert, present it so peers can authenticate
+    the call via mutual TLS (issue #31).
+    """
+    kwargs: dict = {"verify": httpx_verify()}
+    cert = httpx_client_cert()
+    if cert is not None:
+        kwargs["cert"] = cert
+    return kwargs
 
 
 def _peer_url(member: cluster.MemberInfo, path: str) -> str:
@@ -261,7 +275,7 @@ async def membership_loop(
     """
     interval = tick_seconds if tick_seconds is not None else TICK_SECONDS
     log.info("cluster membership loop starting (tick=%.1fs)", interval)
-    async with httpx.AsyncClient(verify=httpx_verify()) as client:
+    async with httpx.AsyncClient(**_peer_httpx_kwargs()) as client:
         try:
             while True:
                 try:

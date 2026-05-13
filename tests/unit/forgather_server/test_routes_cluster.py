@@ -125,145 +125,23 @@ class TestEndpointShapes:
 
 
 class TestPeerCarveOut:
-    def test_peer_get_allowed_without_token(self):
-        # TestClient connects from 127.0.0.1 (varies by Starlette
-        # version: testclient is the literal default). Add both
-        # observed values as known peers so the carve-out fires.
-        cluster.activate("c", port=8765)
-        for addr in ("127.0.0.1", "testclient"):
-            cluster.update_member(
-                str(uuid.uuid4()),
-                hostname=f"peer-{addr}",
-                address=addr,
-                port=8765,
-                cluster_name="c",
-            )
-        client = TestClient(_make_app())
-        r = client.get("/api/cluster/members")
-        # No Authorization header. Must be accepted because we are a
-        # "known peer" by source IP.
-        assert r.status_code == 200, r.text
+    """Inter-node endpoints require a bearer token over TestClient.
 
-    def test_unknown_source_rejected(self):
-        # Cluster active but no peer registered at 127.0.0.1 (or
-        # whatever TestClient claims as source). Without a token, the
-        # request must 401.
+    The HTTP-over-TestClient path can't synthesize a TLS scope
+    extension, so these endpoints (which exist for mTLS-authenticated
+    peers) are reached here via the bearer-token path. Coverage of
+    the mTLS gate itself lives in
+    ``test_auth.py::TestPeerMutualTLS`` where the middleware is
+    driven with crafted ASGI scopes.
+    """
+
+    def test_no_token_rejected(self):
         cluster.activate("c", port=8765)
-        # Wipe self's address out of the member table so nothing in
-        # the table matches the testclient source.
-        ident = cluster.self_identity()
-        cluster._state._members[ident.node_id].address = "203.0.113.1"
         client = TestClient(_make_app())
         r = client.get("/api/cluster/members")
         assert r.status_code == 401
 
-    def test_carve_out_inactive_when_cluster_off(self):
-        # No activate() call. Even if the path is in the peer-allowed
-        # list, the carve-out must not fire when cluster is not
-        # active — otherwise these endpoints would be public on
-        # standalone servers.
-        client = TestClient(_make_app())
-        r = client.get("/api/cluster/members")
-        assert r.status_code == 401
-
-    def test_post_on_get_only_path_not_carved_out(self):
-        # /api/cluster/members is GET-only in the carve-out. POSTing
-        # to it from a peer must still be rejected: the GET-allowed
-        # set and the POST-allowed mutation set are disjoint.
-        cluster.activate("c", port=8765)
-        cluster.update_member(
-            str(uuid.uuid4()),
-            hostname="peer",
-            address="127.0.0.1",
-            port=8765,
-            cluster_name="c",
-        )
-        app = FastAPI()
-        app.add_middleware(AuthMiddleware)
-
-        @app.post("/api/cluster/members")
-        async def fake_post():
-            return {"ok": True}
-
-        client = TestClient(app)
-        r = client.post("/api/cluster/members")
-        assert r.status_code == 401
-
-    def test_post_on_mutation_path_carved_out(self):
-        # /api/cluster/gpu_policy_local is in the explicit mutation
-        # allow-list, so a POST from a known peer IP must pass the
-        # gate without a token.
-        cluster.activate("c", port=8765)
-        # Register both possible TestClient source addresses (varies
-        # by Starlette version) so the carve-out matches.
-        for addr in ("127.0.0.1", "testclient"):
-            cluster.update_member(
-                str(uuid.uuid4()),
-                hostname=f"peer-{addr}",
-                address=addr,
-                port=8765,
-                cluster_name="c",
-            )
-        app = FastAPI()
-        app.add_middleware(AuthMiddleware)
-
-        @app.post("/api/cluster/gpu_policy_local")
-        async def fake_post():
-            return {"ok": True}
-
-        client = TestClient(app)
-        r = client.post("/api/cluster/gpu_policy_local")
-        assert r.status_code == 200, r.text
-
-    def test_dataset_server_proxy_prefix_carved_out_for_peers(self):
-        """The cluster master proxy
-        ``/api/cluster/dataset_server_proxy/{server_id}/{op}`` lives
-        behind a path-prefix carve-out (the path is templated, so
-        exact-match wouldn't fit). A peer-IP GET on the prefix must
-        pass without a token; a non-peer source must still 401.
-        Regression for the Phase-7 review finding."""
-        cluster.activate("c", port=8765)
-        for addr in ("127.0.0.1", "testclient"):
-            cluster.update_member(
-                str(uuid.uuid4()),
-                hostname=f"peer-{addr}",
-                address=addr,
-                port=8765,
-                cluster_name="c",
-            )
-        app = FastAPI()
-        app.add_middleware(AuthMiddleware)
-
-        @app.get("/api/cluster/dataset_server_proxy/{server_id}/{op}")
-        async def fake_get(server_id: str, op: str):
-            return {"server_id": server_id, "op": op}
-
-        @app.post("/api/cluster/dataset_server_proxy/{server_id}/{op}")
-        async def fake_post(server_id: str, op: str):
-            return {"server_id": server_id, "op": op}
-
-        client = TestClient(app)
-        # GET: passes via peer-IP carve-out
-        r = client.get("/api/cluster/dataset_server_proxy/abc123/health")
-        assert r.status_code == 200, r.text
-        # POST: passes via mutation carve-out (used for the /load op)
-        r = client.post("/api/cluster/dataset_server_proxy/abc123/load")
-        assert r.status_code == 200, r.text
-        # Unknown-prefix path must NOT be swept up by the carve-out —
-        # belt-and-suspenders against the prefix accidentally being
-        # too broad.
-        @app.get("/api/cluster/dataset_server_proxy_evil/x/y")
-        async def fake_evil():
-            return {"ok": True}
-
-        # Add a non-peer member-table entry for the test source so the
-        # carve-out predicate fires.
-        r = client.get("/api/cluster/dataset_server_proxy_evil/x/y")
-        # Path doesn't start with ``/api/cluster/dataset_server_proxy/``
-        # (note the trailing slash) — should 401.
-        assert r.status_code == 401
-
-    def test_normal_token_still_works(self):
+    def test_bearer_token_passes(self):
         cluster.activate("c", port=8765)
         token = auth.load_token()
         client = TestClient(_make_app())
@@ -395,23 +273,6 @@ class TestBandwidth:
         )
         assert r.status_code == 422
 
-    def test_bandwidth_local_carved_out_for_peers(self):
-        # The bandwidth target is in the peer-allowed GET list so the
-        # master can hit it without holding a token. Verify the
-        # carve-out fires for a known-peer source IP.
-        cluster.activate("c", port=8765)
-        for addr in ("127.0.0.1", "testclient"):
-            cluster.update_member(
-                str(uuid.uuid4()),
-                hostname=f"peer-{addr}",
-                address=addr,
-                port=8765,
-                cluster_name="c",
-            )
-        client = TestClient(_make_app())
-        r = client.get("/api/cluster/bandwidth_local?bytes=4096")
-        assert r.status_code == 200, r.text
-
 
 class TestDatasetServersLocal:
     """Verifies `GET /api/cluster/dataset_servers_local` returns the
@@ -459,28 +320,10 @@ class TestDatasetServersLocal:
         # Node-id header for the master's sanity check.
         assert r.headers.get("x-forgather-node-id") == cluster.self_identity().node_id
 
-    def test_carved_out_for_known_peers(self, monkeypatch):
+    def test_rejected_without_credentials(self, monkeypatch):
+        # Without bearer token (and over plain HTTP, so no mTLS cert
+        # path) the inter-node endpoint must 401.
         cluster.activate("c", port=8765)
-        for addr in ("127.0.0.1", "testclient"):
-            cluster.update_member(
-                str(uuid.uuid4()),
-                hostname=f"peer-{addr}",
-                address=addr,
-                port=8765,
-                cluster_name="c",
-            )
-        self._patch_inventory(monkeypatch, [])
-        client = TestClient(_make_app())
-        # No Authorization header — must be accepted by carve-out.
-        r = client.get("/api/cluster/dataset_servers_local")
-        assert r.status_code == 200, r.text
-
-    def test_rejected_when_no_token_and_no_carve_out(self, monkeypatch):
-        # Cluster active but no peer registered at this source IP —
-        # the carve-out must not fire and the call must 401.
-        cluster.activate("c", port=8765)
-        ident = cluster.self_identity()
-        cluster._state._members[ident.node_id].address = "203.0.113.1"
         self._patch_inventory(monkeypatch, [])
         client = TestClient(_make_app())
         r = client.get("/api/cluster/dataset_servers_local")

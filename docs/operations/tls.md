@@ -1028,23 +1028,60 @@ cleartext-bearer-token risk regardless of which option you picked.
 * Bearer-token auth is unchanged — TLS just protects the token (and
   request/response bodies) in transit. Setting `--no-auth` is still
   needed for unauthenticated access.
-* mTLS (client certs) is not implemented in v1. Clients authenticate
-  via the existing bearer-token mechanism over a TLS-protected
-  channel. For paranoid setups, wrap forgather in nginx with
-  `ssl_verify_client on` and require client certs at the proxy.
+* **mTLS for inter-node calls.** Forgather peers authenticate each
+  other with mutual TLS: every cluster node presents its CA-signed
+  `server.crt` as a client cert when calling `/api/cluster/*_local`
+  on another node, and the receiving server's auth middleware
+  accepts cert-presence in lieu of a bearer token. See "[Cluster
+  inter-node auth (mTLS)](#cluster-inter-node-auth-mtls)" below.
+  Browser / CLI clients still authenticate via bearer; they do not
+  need to present a cert.
 * **Bearer tokens in URLs.** The webui's startup banner and the
   WebSocket TTY-stream URL carry the token as a query parameter
   (`?token=…`). TLS protects the wire, but the token can still
   appear in browser history and uvicorn access logs. Treat the
   banner URL like a password; copy-paste it once into a real
   bookmark rather than leaving it in shell history.
-* **Cluster peer trust.** With TLS, the master peer-pulls peers
-  over HTTPS validating against the shared CA bundle. The
-  inter-node carve-out in `auth.py` still uses source-IP matching
-  to identify peers — meaning an attacker who steals a peer's
-  cert+key *and* lands on an IP in the cluster's member table can
-  exercise the narrow mutation endpoints (`training_local`,
-  `gpu_policy_local`). Strong cert-to-identity binding is a v2
-  item; for now, the operational mitigation is the same as it
-  was pre-TLS: keep cluster traffic on a trusted LAN, and tighten
-  filesystem perms on `server.key` on every peer.
+* **Cluster peer trust.** With TLS, peers authenticate each other via
+  mutual TLS — the call only succeeds if the caller holds a cert
+  signed by the cluster CA. Source-IP matching remains as a
+  one-release deprecated compatibility path (see below). The
+  operational mitigation against a stolen `server.key` is unchanged:
+  keep cluster traffic on a trusted LAN, and tighten filesystem perms
+  on `server.key` (0600) on every peer.
+
+## Cluster inter-node auth (mTLS)
+
+Inter-node calls authenticate by mutual TLS, not by source IP. Every
+peer-to-peer request presents the calling node's `server.crt` /
+`server.key` as a TLS client certificate; the receiving server is
+configured with `ssl_cert_reqs=CERT_OPTIONAL` and the cluster CA
+bundle, so the handshake validates the cert before the request
+reaches application code. The auth middleware then treats cert
+presence as proof of cluster membership — a cert signed by the
+cluster CA is, by definition, a legitimate peer.
+
+Browser and CLI clients that talk to the server with a bearer token
+are unaffected: the TLS listener requests a client cert but does
+not require one, so handshakes without a cert succeed and fall
+through to the bearer gate.
+
+The path allow-list (`auth._PEER_ALLOWED_PATHS` /
+`_PEER_ALLOWED_MUTATIONS`) is the inter-node surface — cert
+presence authenticates the caller as a peer, but only those paths
+are reachable that way. Anything else still requires a bearer
+token even from a peer.
+
+**No operator action is required.** Every node that has run
+`forgather tls init` (or received a cert from `forgather tls mint`
+plus a copy of the CA via `tls install`) is automatically mTLS-ready.
+
+### Disabling the cert request
+
+The handshake `CertificateRequest` only kicks in when
+`cfg.effective_bundle()` resolves to a CA bundle file. A TLS
+deployment with only `server.crt` + `server.key` on disk (no
+`ca-bundle.crt` or `ca.crt`) skips it and falls back to bearer-only
+auth. This is rarely the right call inside a cluster — without the
+bundle, the outbound peer-pull also can't validate the other side —
+but it's available for one-off TLS-without-cluster setups.

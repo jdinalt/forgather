@@ -59,13 +59,15 @@ _OPEN_PATHS = frozenset(
     }
 )
 
-# Cluster API endpoints that may be called by a peer node without the
-# bearer token. The carve-out is gated on the source IP belonging to a
-# known cluster member — see ``_request_is_from_peer`` below — so it is
-# not equivalent to making these paths fully public.
+# Cluster API endpoints that another forgather node may call without
+# a bearer token. The caller authenticates by presenting a CA-signed
+# TLS client cert (mTLS — see ``_request_has_client_cert`` below); the
+# auth gate then checks the path against this allow-list. These paths
+# are the inter-node surface, intentionally narrow and explicit.
 #
-# Limited to read-only GETs in v1. Anything that mutates state still
-# requires the regular auth credential, even from a peer.
+# Limited to read-only GETs; mutations have their own (smaller) list
+# in ``_PEER_ALLOWED_MUTATIONS`` because granting writes to peers is
+# a deliberate decision per endpoint.
 _PEER_ALLOWED_PATHS = frozenset(
     {
         "/api/cluster/members",
@@ -108,12 +110,11 @@ _PEER_ALLOWED_PATHS = frozenset(
     }
 )
 
-# Peer-allowed mutating endpoints. POST is permitted from a known peer
-# IP for these specific paths only — this is a narrower exception than
-# the GET carve-out above. Each entry here represents a deliberate
-# decision that "another node may change my state without
-# authentication", which is consistent with the trusted-LAN security
-# contract for inter-node operation but should remain a very small set.
+# Peer-allowed mutating endpoints. POST is permitted from an mTLS-
+# authenticated peer on these paths only — narrower than the GET
+# allow-list above. Each entry here represents a deliberate decision
+# that "another node may change my state with only cluster-CA-cert
+# proof of identity"; the list should stay small.
 _PEER_ALLOWED_MUTATIONS = frozenset(
     {
         # GPU enable/disable + priority gate. Lets the cluster Nodes
@@ -150,9 +151,9 @@ _PEER_ALLOWED_PATH_PREFIXES = frozenset(
         # Master-side cluster dataset_server proxy. Non-master nodes
         # forward webui ``/api/cluster/dataset_server_proxy/{id}/...``
         # GETs (status / datasets / cache / local / length / iter) to
-        # the master via the existing peer-IP carve-out. The op set is
-        # validated against ``_ALLOWED_PROXY_OPS`` in
-        # routes/cluster.py before any forwarding happens.
+        # the master over mTLS. The op set is validated against
+        # ``_ALLOWED_PROXY_OPS`` in routes/cluster.py before any
+        # forwarding happens.
         "/api/cluster/dataset_server_proxy/",
     }
 )
@@ -396,26 +397,23 @@ def path_allows_peer_mutation(path: str) -> bool:
     return any(path.startswith(p) for p in _PEER_ALLOWED_MUTATION_PREFIXES)
 
 
-def _request_is_from_peer(scope) -> bool:
-    """True if the request's source IP belongs to a known cluster peer.
+def _request_has_client_cert(scope) -> bool:
+    """True if the TLS handshake presented a CA-validated client cert.
 
-    The cluster module is imported lazily so this auth module remains
-    importable in environments where multi-node mode is not active
-    (and therefore zeroconf is not loaded).
+    The custom uvicorn protocol (``ForgatherProtocol``) sets
+    ``scope["extensions"]["tls"]["client_cert_verified"]`` whenever the
+    peer presents a cert that passed validation against the cluster CA
+    (``ssl_cert_reqs=CERT_OPTIONAL`` + ``ssl_ca_certs=<bundle>`` on the
+    listener). Presence is therefore proof of cluster membership — a
+    cert signed by our CA is by definition a legitimate peer.
+
+    Returns False for plain-HTTP listeners, for TLS listeners without
+    the custom protocol, and for connections where the peer did not
+    present a cert.
     """
-    client = scope.get("client")
-    if not client:
-        return False
-    address = client[0] if isinstance(client, (tuple, list)) else None
-    if not address:
-        return False
-    try:
-        from . import cluster
-    except Exception:
-        return False
-    if not cluster.is_active():
-        return False
-    return cluster.is_peer_address(address)
+    extensions = scope.get("extensions") or {}
+    tls_ext = extensions.get("tls") or {}
+    return bool(tls_ext.get("client_cert_verified"))
 
 
 # ---------------------------------------------------------------------------
@@ -463,18 +461,17 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Cluster peer-call carve-out: GET on a read-only peer-allowed
-        # path, or POST on the very small set of explicitly mutation-
-        # allowed cluster endpoints, originating from a known peer
-        # IP, is treated as an inter-node call. Mutations have their
-        # own (smaller) allow-list because granting unauthenticated
-        # writes to peers is a deliberate decision per endpoint.
-        if scope_type == "http" and _request_is_from_peer(scope):
+        # Cluster inter-node call: an mTLS-authenticated peer (proven
+        # by presenting a CA-signed client cert in the TLS handshake)
+        # may GET a peer-allowed path or POST one of the explicitly
+        # mutation-allowed cluster endpoints without a bearer token.
+        # The path allow-lists encode what an inter-node call is
+        # allowed to do; cert presence proves who is making it.
+        if scope_type == "http" and _request_has_client_cert(scope):
             method = scope.get("method", "").upper()
-            if method == "GET" and path_allows_peer(path):
-                await self.app(scope, receive, send)
-                return
-            if method == "POST" and path_allows_peer_mutation(path):
+            if (method == "GET" and path_allows_peer(path)) or (
+                method == "POST" and path_allows_peer_mutation(path)
+            ):
                 await self.app(scope, receive, send)
                 return
 
