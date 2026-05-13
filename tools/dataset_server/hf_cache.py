@@ -24,11 +24,12 @@ just reports what it finds.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -255,7 +256,45 @@ def inspect_local_path(path: Path) -> Dict[str, Any]:
         out["splits"] = []
 
     out["size_bytes"] = _dir_size_bytes(path)
+    # Content-equivalence hash: a stable digest over the bits that
+    # *define* the dataset (features + (split_name, num_examples)
+    # pairs), NOT the filesystem path. Two servers exposing the same
+    # local/<name> with matching meta_hashes are content-equivalent
+    # replicas. Differing hashes under the same name indicate the
+    # operators have named distinct datasets the same thing on
+    # different nodes — the cluster master surfaces that as a
+    # WARNING (see cluster_dataset_inventory.py). Hash truncated to
+    # 16 hex chars; collision-resistance well beyond what a small
+    # cluster needs.
+    out["meta_hash"] = _compute_meta_hash(out)
     return out
+
+
+def _compute_meta_hash(info: Dict[str, Any]) -> str:
+    """Stable content-equivalence digest for a local/<name> entry.
+
+    Hashes the dataset's *identity* — what it contains — not where
+    it lives:
+
+    - sorted feature (column) names, so schema differences register.
+    - sorted ``(split_name, num_examples)`` pairs, so row-count or
+      split-name differences register.
+
+    Deliberately excludes: filesystem path, size_bytes (compressed-
+    vs-uncompressed mismatch shouldn't flag), config_name (often
+    auto-generated, varies harmlessly across save_to_disk versions),
+    dataset_name (same).
+    """
+    features = sorted(info.get("features") or [])
+    splits_raw = info.get("splits") or []
+    splits: List[Tuple[str, Optional[int]]] = []
+    for s in splits_raw:
+        if not isinstance(s, dict):
+            continue
+        splits.append((str(s.get("name") or ""), s.get("num_examples")))
+    splits.sort()
+    payload = json.dumps([features, splits], sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def list_hf_cache(

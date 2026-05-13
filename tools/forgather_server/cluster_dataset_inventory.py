@@ -324,6 +324,10 @@ class MasterInventory:
         # an empty inventory — which would convert the router from
         # ``503 try-again`` to ``410 give-up``.
         self._ever_observed_healthy: bool = False
+        # ``local/<name>`` collisions already warned about this
+        # tenure. Stops the WARNING log from spamming on every
+        # 60s dataset-refresh tick.
+        self._warned_local_collisions: set = set()
 
     # ----- master role transitions -----
 
@@ -345,6 +349,7 @@ class MasterInventory:
                 self._last_health_pass_ts = None
                 self._last_dataset_pass_ts = None
                 self._ever_observed_healthy = False
+                self._warned_local_collisions = set()
                 log.info(
                     "became master; cleared dataset inventory and starting fresh"
                 )
@@ -356,6 +361,7 @@ class MasterInventory:
                 self._last_health_pass_ts = None
                 self._last_dataset_pass_ts = None
                 self._ever_observed_healthy = False
+                self._warned_local_collisions = set()
                 log.info("no longer master; dataset inventory cleared")
                 return True
             return False
@@ -469,6 +475,65 @@ class MasterInventory:
         this master tenure. Resets only on master role change."""
         with self._lock:
             self._ever_observed_healthy = True
+
+    def local_collisions(self) -> Dict[str, List[str]]:
+        """Detect ``local/<name>`` entries reported with different
+        ``meta_hash`` values across the cluster.
+
+        Returns a ``{name: [hash, ...]}`` mapping containing only
+        names with more than one distinct hash observed. Empty when
+        every advertised ``local/<name>`` is content-equivalent
+        across the servers that expose it — the common case for
+        intentional redundancy.
+
+        A non-empty result indicates the operator has named two
+        genuinely distinct datasets the same thing on different
+        nodes; the router will silently load-balance between them,
+        and training jobs will see arbitrary content depending on
+        which replica won the random pick. Caller logs a one-shot
+        WARNING for each new collision (see
+        ``_dataset_refresh_tick``).
+        """
+        from collections import defaultdict
+
+        with self._lock:
+            by_name: Dict[str, set] = defaultdict(set)
+            for s in self._servers.values():
+                for entry in s.locals_info:
+                    if not isinstance(entry, dict):
+                        continue
+                    name = entry.get("name")
+                    meta = entry.get("meta_hash")
+                    if isinstance(name, str) and isinstance(meta, str):
+                        by_name[name].add(meta)
+            return {
+                name: sorted(hashes)
+                for name, hashes in by_name.items()
+                if len(hashes) > 1
+            }
+
+    def warn_new_collisions(self) -> None:
+        """Log a WARNING for each ``local/<name>`` collision not yet
+        reported this tenure. Idempotent — already-warned collisions
+        are silently skipped, so the loop can call this on every
+        refresh tick without spamming the log."""
+        new_collisions = self.local_collisions()
+        with self._lock:
+            for name, hashes in new_collisions.items():
+                if name in self._warned_local_collisions:
+                    continue
+                log.warning(
+                    "local/%s collision: %d distinct meta_hashes across "
+                    "the cluster (%s). Servers advertising this name "
+                    "are NOT content-equivalent; training jobs auto-"
+                    "routed here will see arbitrary content. Either "
+                    "rename one of the conflicting datasets or "
+                    "re-register them with matching content.",
+                    name,
+                    len(hashes),
+                    ", ".join(hashes),
+                )
+                self._warned_local_collisions.add(name)
 
     # ----- reads -----
 
@@ -800,6 +865,9 @@ async def _dataset_refresh_tick(client: httpx.AsyncClient) -> None:
     # rather than 410 (fatal) to in-flight training jobs.
     master_inventory.mark_observed_healthy()
     master_inventory.mark_dataset_pass_complete()
+    # Surface ``local/<name>`` collisions once per tenure — operator
+    # config bug otherwise hidden by the random load-balance pick.
+    master_inventory.warn_new_collisions()
 
 
 # ----- public loop entry points -----

@@ -631,6 +631,119 @@ class TestDatasetRefreshTick:
 # ---------------------------------------------------------------------------
 
 
+class TestLocalCollisions:
+    """``local/<name>`` collision detection: two servers reporting
+    the same name with different meta_hash values are NOT
+    content-equivalent. The master surfaces this so operators can
+    fix the config — the router otherwise silently load-balances
+    between distinct datasets, which is the worst kind of bug."""
+
+    def test_no_collision_when_hashes_match(self):
+        inv = MasterInventory()
+        inv.set_master_state(True)
+        inv.merge_servers(
+            {
+                "a": MasterServerEntry(
+                    server_id="a", base_url="http://a", auth_token="",
+                    label="a", source="local", peer_node_id=None,
+                ),
+                "b": MasterServerEntry(
+                    server_id="b", base_url="http://b", auth_token="",
+                    label="b", source="local", peer_node_id=None,
+                ),
+            }
+        )
+        # Both servers report local/stories with the SAME meta_hash —
+        # genuine content-equivalent replicas, no collision.
+        inv.update_datasets(
+            "a",
+            handles=[],
+            locals_info=[{"name": "stories", "meta_hash": "h1"}],
+        )
+        inv.update_datasets(
+            "b",
+            handles=[],
+            locals_info=[{"name": "stories", "meta_hash": "h1"}],
+        )
+        assert inv.local_collisions() == {}
+
+    def test_collision_detected_across_servers(self):
+        inv = MasterInventory()
+        inv.set_master_state(True)
+        inv.merge_servers(
+            {
+                "a": MasterServerEntry(
+                    server_id="a", base_url="http://a", auth_token="",
+                    label="a", source="local", peer_node_id=None,
+                ),
+                "b": MasterServerEntry(
+                    server_id="b", base_url="http://b", auth_token="",
+                    label="b", source="local", peer_node_id=None,
+                ),
+            }
+        )
+        # Same name, DIFFERENT meta_hashes — operators named distinct
+        # datasets the same thing on different nodes.
+        inv.update_datasets(
+            "a",
+            handles=[],
+            locals_info=[{"name": "stories", "meta_hash": "h1"}],
+        )
+        inv.update_datasets(
+            "b",
+            handles=[],
+            locals_info=[{"name": "stories", "meta_hash": "h2"}],
+        )
+        collisions = inv.local_collisions()
+        assert "stories" in collisions
+        assert sorted(collisions["stories"]) == ["h1", "h2"]
+
+    def test_warn_is_one_shot_per_tenure(self, caplog):
+        import logging as _logging
+
+        caplog.set_level(_logging.WARNING)
+        inv = MasterInventory()
+        inv.set_master_state(True)
+        inv.merge_servers(
+            {
+                "a": MasterServerEntry(
+                    server_id="a", base_url="http://a", auth_token="",
+                    label="a", source="local", peer_node_id=None,
+                ),
+                "b": MasterServerEntry(
+                    server_id="b", base_url="http://b", auth_token="",
+                    label="b", source="local", peer_node_id=None,
+                ),
+            }
+        )
+        inv.update_datasets(
+            "a",
+            handles=[],
+            locals_info=[{"name": "stories", "meta_hash": "h1"}],
+        )
+        inv.update_datasets(
+            "b",
+            handles=[],
+            locals_info=[{"name": "stories", "meta_hash": "h2"}],
+        )
+        # First call: emits one WARNING.
+        inv.warn_new_collisions()
+        first = sum(
+            1
+            for r in caplog.records
+            if r.levelno == _logging.WARNING and "stories collision" in r.getMessage()
+        )
+        assert first == 1
+        # Second call with no new collisions: silent.
+        inv.warn_new_collisions()
+        second = sum(
+            1
+            for r in caplog.records
+            if r.levelno == _logging.WARNING and "stories collision" in r.getMessage()
+        )
+        assert second == 1
+
+
 class TestMasterStateSync:
     """CQ-2 regression: every loop must reconcile the inventory's
     cached ``is_master()`` with the authoritative

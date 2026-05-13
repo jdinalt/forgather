@@ -328,6 +328,14 @@ class ClusterDatasetEntryModel(BaseModel):
     length: Optional[int] = None
     column_names: Optional[List[str]] = None
     server_ids: List[str] = []
+    # For local/<name> entries: the set of distinct ``meta_hash``
+    # values observed across servers advertising this name. One
+    # value = content-equivalent replicas (the intended redundancy
+    # case). Two or more = a collision — operators have named
+    # genuinely distinct datasets the same thing on different nodes.
+    # The router still picks at random among them; the UI surfaces
+    # the collision so the operator can fix the config.
+    meta_hashes: List[str] = []
 
 
 class ClusterDatasetInventoryMetrics(BaseModel):
@@ -459,6 +467,12 @@ def _build_inventory_response() -> ClusterDatasetInventoryResponse:
                 by_id[dataset_id] = entry
             if s.server_id not in entry.server_ids:
                 entry.server_ids.append(s.server_id)
+            # Track the meta_hash this server reported for the name.
+            # Multiple distinct hashes under the same name = the
+            # collision case the master logs a WARNING about.
+            meta = li.get("meta_hash")
+            if isinstance(meta, str) and meta not in entry.meta_hashes:
+                entry.meta_hashes.append(meta)
 
         # Already-loaded handles (HF / path). Skip "local" handles —
         # they're already represented under their local name above.
