@@ -58,6 +58,11 @@ class LocalServer:
     peers' HTTP clients.
 
     ``auth_token`` may be empty for servers running ``--no-auth``.
+
+    ``verify_tls`` is False when the operator registered this URL
+    with chain validation off (typical for SSH-tunneled remotes).
+    Default True so JobRecord-spawned and standard user-registry
+    entries keep the secure-by-default posture.
     """
 
     server_id: str
@@ -66,6 +71,18 @@ class LocalServer:
     label: str
     source: str  # "local" (JobRecord) or "user" (registry)
     peer_node_id: Optional[str]
+    verify_tls: bool = True
+    # Source-side identifier on the *owning peer* (the JobRecord
+    # queue_id for "local"; the registry entry id for "user").
+    # Propagated so the webui can target a DELETE at the right
+    # peer's local endpoint without round-tripping through the
+    # master. ``None`` when not applicable.
+    source_id: Optional[str] = None
+    # True when the URL's host is loopback. Cluster routing skips
+    # these (no other peer can reach them) but the UI still shows
+    # them so operators can register node-local datasets without
+    # losing visibility.
+    loopback: bool = False
 
     def to_dict(self) -> Dict[str, object]:
         return asdict(self)
@@ -86,37 +103,63 @@ def _normalize(base_url: str) -> str:
     return base_url.rstrip("/")
 
 
-def _routable_jobrecord_base_url(
+def _is_loopback_url(url: str) -> bool:
+    """True iff the URL's host is loopback (127.0.0.1 / localhost / ::1).
+
+    Used by the inventory to mark entries that other cluster peers
+    can't route to. They still appear in the per-node Servers view —
+    operators can register node-local datasets for non-cluster use —
+    but ``resolve()`` excludes them from cluster auto-routing.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    return host in _LOOPBACK_HOSTS
+
+
+def _jobrecord_base_url(
     host: str, port: int, *, tls: bool, routable_host: Optional[str] = None
 ) -> Optional[str]:
-    """Build a peer-visible base URL for a JobRecord-spawned server.
+    """Build a base URL for a JobRecord-spawned server.
 
     Priority order for the host portion:
       1. ``routable_host`` from job_params if provided (the scheduler
-         records the auto-detected LAN address there for exactly this
-         reason — beats the hostname when DNS isn't resolving across
-         hosts).
-      2. Cluster identity's hostname (when ``host == "0.0.0.0"``).
-      3. ``host`` as-is (operator picked an explicit address).
+         records the auto-detected LAN address there).
+      2. Cluster identity's hostname (when ``host == "0.0.0.0"`` and
+         we're in cluster mode).
+      3. ``host`` as-is (operator picked an explicit address; this
+         includes loopback binds, which the inventory now keeps
+         instead of dropping).
 
-    Loopback URLs are dropped — other peers can't reach them.
+    Returns ``None`` only when ``host`` is ``0.0.0.0`` and no
+    routable address can be inferred — at that point the URL truly
+    isn't usable by anyone, including the local node, so dropping
+    is correct.
     """
     if routable_host:
-        rh = routable_host.lower()
-        if rh in _LOOPBACK_HOSTS:
-            return None
         scheme = "https" if tls else "http"
-        return _normalize(f"{scheme}://{rh}:{int(port)}")
+        return _normalize(
+            f"{scheme}://{_bracket_ipv6(routable_host.lower())}:{int(port)}"
+        )
     h = (host or "").lower()
-    if h in _LOOPBACK_HOSTS:
-        return None
     if h == "0.0.0.0":
         ident = cluster.self_identity()
-        if ident is None or not ident.hostname:
+        if ident is not None and ident.hostname:
+            h = ident.hostname
+        else:
             return None
-        h = ident.hostname
     scheme = "https" if tls else "http"
-    return _normalize(f"{scheme}://{h}:{int(port)}")
+    return _normalize(f"{scheme}://{_bracket_ipv6(h)}:{int(port)}")
+
+
+def _bracket_ipv6(host: str) -> str:
+    """Wrap IPv6 literals in ``[…]`` so they parse correctly as URL
+    netlocs. Pass-through for hostnames and IPv4 literals."""
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
 
 
 def _local_jobrecord_servers(peer_node_id: Optional[str]) -> List[LocalServer]:
@@ -162,7 +205,7 @@ def _local_jobrecord_servers(peer_node_id: Optional[str]) -> List[LocalServer]:
                 except Exception:
                     tls = False
         routable = params.get("routable_host")
-        base_url = _routable_jobrecord_base_url(
+        base_url = _jobrecord_base_url(
             host,
             port,
             tls=tls,
@@ -178,24 +221,24 @@ def _local_jobrecord_servers(peer_node_id: Optional[str]) -> List[LocalServer]:
                 label=f"{r.config or 'dataset_server'}:{port}",
                 source="local",
                 peer_node_id=peer_node_id,
+                source_id=r.queue_id,
+                loopback=_is_loopback_url(base_url),
             )
         )
     return out
 
 
 def _user_registry_servers(peer_node_id: Optional[str]) -> List[LocalServer]:
-    """User-registered dataset_server entries that point at a peer-
-    reachable address (loopback entries are skipped — same rationale
-    as the JobRecord side)."""
+    """User-registered dataset_server entries.
+
+    Loopback entries are *included* (so the Servers panel shows
+    everything the operator has registered, even node-local datasets
+    that aren't cluster-routable). The ``loopback`` flag marks them
+    so ``MasterInventory.resolve()`` can exclude them from cluster
+    auto-routing without hiding them from the UI.
+    """
     out: List[LocalServer] = []
     for e in dataset_server_registry.list_entries():
-        try:
-            parsed = urlparse(e.base_url)
-        except Exception:
-            continue
-        host = (parsed.hostname or "").lower()
-        if host in _LOOPBACK_HOSTS:
-            continue
         base_url = _normalize(e.base_url)
         out.append(
             LocalServer(
@@ -205,6 +248,9 @@ def _user_registry_servers(peer_node_id: Optional[str]) -> List[LocalServer]:
                 label=e.label or e.base_url,
                 source="user",
                 peer_node_id=peer_node_id,
+                verify_tls=e.verify_tls,
+                source_id=e.id,
+                loopback=_is_loopback_url(base_url),
             )
         )
     return out
@@ -283,6 +329,17 @@ class MasterServerEntry:
     label: str
     source: str  # "local" or "user"
     peer_node_id: Optional[str]
+    # Per-entry TLS verification policy. False = chain + hostname
+    # validation off (SSH-tunneled / out-of-band-secured upstreams).
+    # Propagates from the user-registry entry through to every
+    # outbound call the master makes against this server.
+    verify_tls: bool = True
+    # See ``LocalServer.source_id`` / ``loopback``. Carried through
+    # so the webui can target DELETE at the owning peer and so the
+    # cluster router can exclude loopback URLs from auto-routing
+    # while keeping them visible in the Servers panel.
+    source_id: Optional[str] = None
+    loopback: bool = False
     healthy: bool = False
     last_health_check: float = 0.0
     last_health_error: str = ""
@@ -398,6 +455,11 @@ class MasterInventory:
                     new_entry.hf_cache = list(old.hf_cache)
                     new_entry.last_dataset_refresh = old.last_dataset_refresh
                     new_entry.last_dataset_error = old.last_dataset_error
+                    # verify_tls is set on the fresh entry by
+                    # _to_master_entry → LocalServer.verify_tls
+                    # already; nothing to carry over (the new value
+                    # is the authoritative one from the peer's
+                    # registry).
                     # Polling counters too — these accumulate across
                     # the master's whole tenure and would falsely
                     # reset every 10s collect tick otherwise.
@@ -592,14 +654,25 @@ class MasterInventory:
         load balancing across replicas.
         """
         with self._lock:
+            # Loopback entries are visible in the Servers panel
+            # (node-local datasets are a legit thing) but never
+            # cluster-routable — other peers can't reach them. Filter
+            # them out at the routing decision rather than at the
+            # inventory level.
             if dataset_id.startswith("local/"):
                 candidates = [
                     s
                     for s in self._servers.values()
-                    if s.healthy and dataset_id in s.available_keys
+                    if s.healthy
+                    and not s.loopback
+                    and dataset_id in s.available_keys
                 ]
             else:
-                candidates = [s for s in self._servers.values() if s.healthy]
+                candidates = [
+                    s
+                    for s in self._servers.values()
+                    if s.healthy and not s.loopback
+                ]
             if not candidates:
                 return None
             chosen = random.choice(candidates)
@@ -647,6 +720,9 @@ def _to_master_entry(local: LocalServer) -> MasterServerEntry:
         label=local.label,
         source=local.source,
         peer_node_id=local.peer_node_id,
+        verify_tls=local.verify_tls,
+        source_id=local.source_id,
+        loopback=local.loopback,
     )
 
 
@@ -661,6 +737,13 @@ def _local_server_from_dict(raw: Dict[str, Any]) -> Optional[LocalServer]:
             label=str(raw.get("label") or base_url),
             source=str(raw.get("source") or "user"),
             peer_node_id=raw.get("peer_node_id"),
+            # Default True so older peers that don't ship the field
+            # keep their secure-by-default posture.
+            verify_tls=bool(raw.get("verify_tls", True)),
+            source_id=(
+                str(raw["source_id"]) if raw.get("source_id") else None
+            ),
+            loopback=bool(raw.get("loopback", False)),
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -744,10 +827,38 @@ async def _collect_servers_tick(client: httpx.AsyncClient) -> None:
     master_inventory.merge_servers(fresh)
 
 
+def _verify_for_entry(entry: MasterServerEntry) -> object:
+    """Pick the ``verify=`` argument for an outbound call to ``entry``.
+
+    ``False`` when the operator registered the URL with chain
+    validation off (SSH-tunneled / out-of-band-secured); otherwise
+    the standard forgather.tls verify policy (CA bundle, optional
+    hostname check) applies.
+    """
+    if not entry.verify_tls:
+        return False
+    return httpx_verify()
+
+
 async def _check_one_health(
     client: httpx.AsyncClient, entry: MasterServerEntry
 ) -> None:
-    """GET ``/v1/health`` on one server; update inventory."""
+    """GET ``/v1/health`` on one server; update inventory.
+
+    Default-verify entries reuse the loop's shared ``client``;
+    ``verify_tls=False`` entries get a one-shot client so chain
+    validation can be skipped without breaking pooling for the
+    secure-by-default majority.
+    """
+    if not entry.verify_tls:
+        async with httpx.AsyncClient(verify=False) as c:
+            return await _check_one_health_inner(c, entry)
+    return await _check_one_health_inner(client, entry)
+
+
+async def _check_one_health_inner(
+    client: httpx.AsyncClient, entry: MasterServerEntry
+) -> None:
     url = entry.base_url.rstrip("/") + "/v1/health"
     try:
         r = await client.get(url, timeout=HEALTH_TIMEOUT_SECONDS)
@@ -795,7 +906,20 @@ async def _refresh_one_dataset_listing(
     issued a /v1/load. Without the cache poll, the unified cluster
     view would only show currently-loaded handles + ``local/<name>``
     entries, which understates what the cluster can actually serve.
+
+    ``verify_tls=False`` entries get a one-shot client so chain
+    validation can be skipped without affecting the secure-by-
+    default pool.
     """
+    if not entry.verify_tls:
+        async with httpx.AsyncClient(verify=False) as c:
+            return await _refresh_one_dataset_listing_inner(c, entry)
+    return await _refresh_one_dataset_listing_inner(client, entry)
+
+
+async def _refresh_one_dataset_listing_inner(
+    client: httpx.AsyncClient, entry: MasterServerEntry
+) -> None:
     headers = _auth_headers(entry.auth_token)
     base = entry.base_url.rstrip("/")
     handles: List[Dict[str, Any]] = []

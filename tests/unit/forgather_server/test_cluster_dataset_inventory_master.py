@@ -356,6 +356,45 @@ class TestResolve:
         inv = _seed_inventory([a])
         assert inv.resolve("allenai/c4") is None
 
+    def test_loopback_entries_excluded_from_routing(self):
+        """Loopback entries appear in the inventory (the Servers
+        panel shows them) but ``resolve()`` skips them — other
+        cluster peers can't reach a node-local URL even if the
+        server is healthy from the master's POV."""
+        # Build a loopback entry and a normal one, both with
+        # local/stories. Only the non-loopback should be returned.
+        loopback = _make_entry(
+            server_id="lb",
+            base_url="http://127.0.0.1:8766",
+            locals_names=["stories"],
+        )
+        loopback.loopback = True
+        normal = _make_entry(
+            server_id="lan",
+            base_url="http://10.0.0.5:8766",
+            locals_names=["stories"],
+        )
+        inv = _seed_inventory([loopback, normal])
+        for _ in range(20):
+            pick = inv.resolve("local/stories")
+            assert pick is not None
+            assert pick.base_url == "http://10.0.0.5:8766"
+
+    def test_loopback_only_returns_none(self):
+        """If the only healthy server is loopback, the router returns
+        None — i.e. surfaces 410 to clients. Loopback entries are
+        never cluster-routable, regardless of how many of them there
+        are."""
+        loopback = _make_entry(
+            server_id="lb",
+            base_url="http://127.0.0.1:8766",
+            locals_names=["stories"],
+        )
+        loopback.loopback = True
+        inv = _seed_inventory([loopback])
+        assert inv.resolve("local/stories") is None
+        assert inv.resolve("allenai/c4") is None
+
 
 # ---------------------------------------------------------------------------
 # Tick functions exercised via mocked httpx transport

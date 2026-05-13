@@ -232,6 +232,18 @@ class LocalDatasetServerModel(BaseModel):
     label: str
     source: str  # "local" or "user"
     peer_node_id: Optional[str] = None
+    # False = chain validation off for outbound calls to this URL
+    # (SSH-tunneled / out-of-band-secured upstreams). Default True so
+    # mixed-version clusters get secure-by-default behavior.
+    verify_tls: bool = True
+    # Source-side identifier on the owning peer (JobRecord queue_id
+    # for ``source="local"``; registry entry id for ``source="user"``).
+    # Used by the webui to target a DELETE at the owning peer.
+    source_id: Optional[str] = None
+    # True when the URL's host is loopback. Cluster auto-routing
+    # skips these; the webui still surfaces them with a "node-local"
+    # badge.
+    loopback: bool = False
 
 
 class LocalDatasetServersResponse(BaseModel):
@@ -268,6 +280,9 @@ def dataset_servers_local(response: Response):
                 label=s.label,
                 source=s.source,
                 peer_node_id=s.peer_node_id,
+                verify_tls=s.verify_tls,
+                source_id=s.source_id,
+                loopback=s.loopback,
             )
             for s in servers
         ],
@@ -293,6 +308,16 @@ class ClusterDatasetServerModel(BaseModel):
     source: str
     peer_node_id: Optional[str] = None
     healthy: bool
+    # Per-entry TLS verification policy. False = chain validation off
+    # for outbound calls to this URL — surfaced so the webui can show
+    # an "insecure TLS" badge.
+    verify_tls: bool = True
+    # Source-side id on the owning peer (queue_id for ``local``,
+    # registry id for ``user``) so the webui can target a DELETE.
+    source_id: Optional[str] = None
+    # True when the URL's host is loopback. Cluster auto-routing
+    # skips these; the webui shows them with a "node-local" badge.
+    loopback: bool = False
     last_health_check: float
     last_health_error: str
     last_dataset_refresh: float
@@ -408,6 +433,9 @@ def _to_dataset_server_model(
         source=e.source,
         peer_node_id=e.peer_node_id,
         healthy=e.healthy,
+        verify_tls=e.verify_tls,
+        source_id=e.source_id,
+        loopback=e.loopback,
         last_health_check=e.last_health_check,
         last_health_error=e.last_health_error,
         last_dataset_refresh=e.last_dataset_refresh,
@@ -2199,7 +2227,15 @@ def _proxy_auth_headers(token: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _verify_for_proxy(target: str) -> object:
+def _verify_for_proxy(target: str, verify_tls: bool = True) -> object:
+    """Pick the ``verify=`` for an outbound proxy call.
+
+    ``verify_tls=False`` mirrors what the registry entry says: chain
+    + hostname validation off, for SSH-tunneled or otherwise out-of-
+    band-secured upstreams.
+    """
+    if not verify_tls:
+        return False
     try:
         from forgather.tls import httpx_verify_for_url
 
@@ -2225,11 +2261,12 @@ def _upstream_failed_headers(status: int) -> Dict[str, str]:
 
 
 async def _forward_get_to_upstream(
-    target: str, token: str
+    target: str, token: str, verify_tls: bool = True
 ) -> JSONResponse:
     headers = _proxy_auth_headers(token)
     async with httpx.AsyncClient(
-        timeout=_PROXY_OP_TIMEOUT, verify=_verify_for_proxy(target)
+        timeout=_PROXY_OP_TIMEOUT,
+        verify=_verify_for_proxy(target, verify_tls=verify_tls),
     ) as client:
         try:
             r = await client.get(target, headers=headers or None)
@@ -2243,12 +2280,17 @@ async def _forward_get_to_upstream(
 
 
 async def _forward_post_to_upstream(
-    target: str, token: str, body: bytes, content_type: str
+    target: str,
+    token: str,
+    body: bytes,
+    content_type: str,
+    verify_tls: bool = True,
 ) -> JSONResponse:
     headers = _proxy_auth_headers(token)
     headers["content-type"] = content_type
     async with httpx.AsyncClient(
-        timeout=_PROXY_OP_TIMEOUT, verify=_verify_for_proxy(target)
+        timeout=_PROXY_OP_TIMEOUT,
+        verify=_verify_for_proxy(target, verify_tls=verify_tls),
     ) as client:
         try:
             r = await client.post(target, content=body, headers=headers)
@@ -2262,7 +2304,7 @@ async def _forward_post_to_upstream(
 
 
 async def _stream_iter_window(
-    target: str, token: str, limit: int
+    target: str, token: str, limit: int, verify_tls: bool = True
 ) -> JSONResponse:
     """Materialize a bounded ``/v1/datasets/{handle}/iter`` NDJSON
     window into ``{"rows": [...]}``.
@@ -2277,7 +2319,8 @@ async def _stream_iter_window(
     import json as _json
 
     async with httpx.AsyncClient(
-        timeout=_PROXY_OP_TIMEOUT, verify=_verify_for_proxy(target)
+        timeout=_PROXY_OP_TIMEOUT,
+        verify=_verify_for_proxy(target, verify_tls=verify_tls),
     ) as client:
         try:
             async with client.stream("GET", target, headers=headers or None) as r:
@@ -2303,17 +2346,23 @@ async def _stream_iter_window(
     return JSONResponse({"rows": rows})
 
 
-def _lookup_proxy_target(server_id: str) -> Tuple[str, str]:
-    """Resolve ``server_id`` to ``(base_url, auth_token)`` from the
-    master inventory. Raises 404 if unknown — keeps the master from
-    being turned into an open relay by a fabricated server_id."""
+def _lookup_proxy_target(server_id: str) -> Tuple[str, str, bool]:
+    """Resolve ``server_id`` to ``(base_url, auth_token, verify_tls)``
+    from the master inventory. Raises 404 if unknown — keeps the
+    master from being turned into an open relay by a fabricated
+    server_id.
+
+    ``verify_tls`` reflects the operator's per-entry TLS verification
+    policy: False means chain + hostname validation off for outbound
+    calls to this server.
+    """
     entry = cluster_dataset_inventory.master_inventory.get_server(server_id)
     if entry is None:
         raise HTTPException(
             status_code=404,
             detail=f"Unknown cluster dataset_server: {server_id!r}",
         )
-    return entry.base_url, entry.auth_token
+    return entry.base_url, entry.auth_token, entry.verify_tls
 
 
 async def _proxy_via_master(
@@ -2386,19 +2435,29 @@ async def dataset_server_proxy(
     if not _self_is_master():
         return await _proxy_via_master(server_id, op, request)
 
-    base_url, token = _lookup_proxy_target(server_id)
+    base_url, token, verify_tls = _lookup_proxy_target(server_id)
     base = base_url.rstrip("/")
 
     if op == _OP_HEALTH:
-        return await _forward_get_to_upstream(base + "/v1/health", token)
+        return await _forward_get_to_upstream(
+            base + "/v1/health", token, verify_tls=verify_tls
+        )
     if op == _OP_AUTH_STATUS:
-        return await _forward_get_to_upstream(base + "/v1/auth/status", token)
+        return await _forward_get_to_upstream(
+            base + "/v1/auth/status", token, verify_tls=verify_tls
+        )
     if op == _OP_DATASETS:
-        return await _forward_get_to_upstream(base + "/v1/datasets", token)
+        return await _forward_get_to_upstream(
+            base + "/v1/datasets", token, verify_tls=verify_tls
+        )
     if op == _OP_CACHE:
-        return await _forward_get_to_upstream(base + "/v1/cache/hf", token)
+        return await _forward_get_to_upstream(
+            base + "/v1/cache/hf", token, verify_tls=verify_tls
+        )
     if op == _OP_LOCAL:
-        return await _forward_get_to_upstream(base + "/v1/local", token)
+        return await _forward_get_to_upstream(
+            base + "/v1/local", token, verify_tls=verify_tls
+        )
 
     if op == _OP_LOAD:
         if request.method != "POST":
@@ -2406,7 +2465,7 @@ async def dataset_server_proxy(
         body = await request.body()
         content_type = request.headers.get("content-type", "application/json")
         return await _forward_post_to_upstream(
-            base + "/v1/load", token, body, content_type
+            base + "/v1/load", token, body, content_type, verify_tls=verify_tls
         )
 
     if op == _OP_LENGTH:
@@ -2418,7 +2477,9 @@ async def dataset_server_proxy(
         from urllib.parse import quote as _quote
 
         return await _forward_get_to_upstream(
-            base + f"/v1/datasets/{_quote(handle, safe='')}/length", token
+            base + f"/v1/datasets/{_quote(handle, safe='')}/length",
+            token,
+            verify_tls=verify_tls,
         )
 
     if op == _OP_ITER:
@@ -2458,6 +2519,7 @@ async def dataset_server_proxy(
             base + f"/v1/datasets/{_quote(handle, safe='')}/iter" + qs,
             token,
             limit,
+            verify_tls=verify_tls,
         )
 
     raise HTTPException(status_code=500, detail="unreachable")

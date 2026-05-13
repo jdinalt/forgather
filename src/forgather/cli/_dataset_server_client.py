@@ -16,15 +16,30 @@ from urllib.request import Request, urlopen
 from .dataset_server_args import DEFAULT_SERVER_URL, SERVER_URL_ENV
 
 
-def _ssl_context_for_url(url: str) -> Optional[ssl.SSLContext]:
+def _ssl_context_for_url(
+    url: str, *, insecure: bool = False
+) -> Optional[ssl.SSLContext]:
     """Build an SSLContext that trusts our local CA bundle (if any).
 
     Returns ``None`` for plain ``http://`` URLs. Honors the shared
     config's ``verify_hostname`` flag — defaults to chain-only
     validation, matching the rest of the forgather TLS surface.
+
+    ``insecure=True`` returns an SSL context that *neither* verifies
+    chains *nor* checks hostnames. Used for the explicit-opt-out
+    case (``--insecure``) where the operator knows the channel is
+    secured by some other means (SSH tunnel, VPN, air-gapped LAN).
     """
     if not url.lower().startswith("https://"):
         return None
+    if insecure:
+        # Operator-asserted "I trust this channel for other reasons"
+        # — chain-and-hostname validation off. Documented on the
+        # CLI flag; not the default.
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
     try:
         from forgather.tls import httpx_verify
 
@@ -95,6 +110,7 @@ def _request(
     token: Optional[str] = None,
     body: Optional[Dict[str, Any]] = None,
     timeout: float = 30.0,
+    insecure: bool = False,
 ) -> Any:
     data = None
     headers = _build_headers(token)
@@ -102,7 +118,7 @@ def _request(
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
     req = Request(url, data=data, method=method, headers=headers)
-    ctx = _ssl_context_for_url(url)
+    ctx = _ssl_context_for_url(url, insecure=insecure)
     try:
         with urlopen(req, timeout=timeout, context=ctx) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -126,30 +142,53 @@ def _request(
 class DatasetServerClient:
     """Minimal client for the dataset server's diagnostic endpoints."""
 
-    def __init__(self, url: Optional[str] = None, token: Optional[str] = None):
+    def __init__(
+        self,
+        url: Optional[str] = None,
+        token: Optional[str] = None,
+        insecure: bool = False,
+    ):
         self.url = resolve_server_url(url).rstrip("/")
         self.token = resolve_token(self.url, token)
+        # When True, every outbound request skips TLS chain + hostname
+        # validation. Operator-asserted "I trust this channel"; used
+        # for SSH-tunneled and otherwise out-of-band-secured remotes.
+        self.insecure = insecure
 
     @classmethod
     def from_args(cls, args) -> "DatasetServerClient":
         return cls(
             url=getattr(args, "server", None),
             token=getattr(args, "token", None),
+            insecure=bool(getattr(args, "insecure", False)),
         )
 
     # Endpoints (one method per /v1 path the diagnostic actions hit).
 
     def health(self) -> Dict[str, Any]:
-        return _request("GET", f"{self.url}/v1/health", token=self.token)
+        return _request(
+            "GET", f"{self.url}/v1/health", token=self.token, insecure=self.insecure
+        )
 
     def auth_status(self) -> Dict[str, Any]:
-        return _request("GET", f"{self.url}/v1/auth/status", token=self.token)
+        return _request(
+            "GET",
+            f"{self.url}/v1/auth/status",
+            token=self.token,
+            insecure=self.insecure,
+        )
 
     def list_datasets(self) -> Dict[str, Any]:
-        return _request("GET", f"{self.url}/v1/datasets", token=self.token)
+        return _request(
+            "GET", f"{self.url}/v1/datasets", token=self.token, insecure=self.insecure
+        )
 
     def list_local(self) -> Dict[str, Any]:
-        return _request("GET", f"{self.url}/v1/local", token=self.token)
+        return _request(
+            "GET", f"{self.url}/v1/local", token=self.token, insecure=self.insecure
+        )
 
     def list_hf_cache(self) -> Dict[str, Any]:
-        return _request("GET", f"{self.url}/v1/cache/hf", token=self.token)
+        return _request(
+            "GET", f"{self.url}/v1/cache/hf", token=self.token, insecure=self.insecure
+        )

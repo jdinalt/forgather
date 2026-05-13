@@ -536,6 +536,161 @@ function ClusterDatasetRow({
   );
 }
 
+interface ClusterServerSectionProps {
+  title: string;
+  servers: ClusterDatasetServer[];
+  emptyHint: string;
+  headerAction?: React.ReactNode;
+  selected: SelectedServer | null;
+  /** This node's cluster node_id. Entries whose ``peer_node_id``
+   *  matches are managed locally — DELETE goes to this node's
+   *  ``/api/dataset-servers/user/<id>``. */
+  selfNodeId: string | null;
+  onPick: (s: ClusterDatasetServer) => void;
+  /** Called after a successful delete so the parent can invalidate
+   *  the local + cluster queries. */
+  onDeleted: () => void;
+}
+
+/** A single sub-section of the cluster-mode Servers tab — either
+ *  "Spawned" or "User-added", same shape so the two render
+ *  consistently. The standalone-mode list keeps its old per-row
+ *  rendering; this component is cluster-only. */
+function ClusterServerSection({
+  title,
+  servers,
+  emptyHint,
+  headerAction,
+  selected,
+  selfNodeId,
+  onPick,
+  onDeleted,
+}: ClusterServerSectionProps) {
+  const removeUser = useMutation({
+    mutationFn: (entryId: string) => api.deleteUserDatasetServer(entryId),
+    onSuccess: () => onDeleted(),
+  });
+  return (
+    <section>
+      <h4 className="dyn-heading">
+        {title}
+        <span className="muted"> ({servers.length})</span>
+        {headerAction}
+      </h4>
+      {servers.length === 0 && (
+        <div className="muted pane-state-small">{emptyHint}</div>
+      )}
+      <ul className="inference-server-list">
+        {servers.map((s) => {
+          const sel =
+            selected !== null &&
+            keyMatches(selected.key, {
+              kind: "cluster",
+              server_id: s.server_id,
+            });
+          const ownedHere =
+            s.source === "user" &&
+            !!selfNodeId &&
+            s.peer_node_id === selfNodeId &&
+            !!s.source_id;
+          return (
+            <li
+              key={s.server_id}
+              className={
+                "inference-server-row" + (sel ? " selected" : "")
+              }
+              onClick={() => onPick(s)}
+              title={
+                s.last_health_error
+                  ? `health error: ${s.last_health_error}`
+                  : ""
+              }
+            >
+              <div className="inference-server-row-line">
+                <span
+                  className={
+                    "queue-status " +
+                    (s.healthy ? "status-running" : "status-done")
+                  }
+                >
+                  {s.healthy ? "OK" : "DOWN"}
+                </span>
+                <span className="inference-server-url">{s.base_url}</span>
+                <span className="muted">· {s.label}</span>
+                {s.peer_node_id && (
+                  <span
+                    className="muted"
+                    title={`peer node_id: ${s.peer_node_id}`}
+                  >
+                    · peer {s.peer_node_id.slice(0, 8)}
+                  </span>
+                )}
+                {s.loopback && (
+                  <span
+                    className="muted"
+                    style={{ color: "var(--warning, #b87000)" }}
+                    title={
+                      "Host is loopback. The cluster master skips this " +
+                      "entry for auto-routing because other peers can't " +
+                      "reach it. Still usable for node-local training " +
+                      "when picked explicitly in the submit modal."
+                    }
+                  >
+                    · node-local
+                  </span>
+                )}
+                {s.verify_tls === false && (
+                  <span
+                    className="muted"
+                    style={{ color: "var(--warning, #b87000)" }}
+                    title="TLS chain validation off for this entry"
+                  >
+                    · insecure TLS
+                  </span>
+                )}
+                {ownedHere ? (
+                  <button
+                    className="tiny"
+                    style={{ marginLeft: "auto" }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (
+                        window.confirm(
+                          `Remove ${s.label} from this node's registry?`,
+                        )
+                      ) {
+                        removeUser.mutate(s.source_id as string);
+                      }
+                    }}
+                    title="Remove this entry from the local registry"
+                  >
+                    ×
+                  </button>
+                ) : (
+                  s.source === "user" &&
+                  s.peer_node_id && (
+                    <span
+                      className="muted"
+                      style={{ marginLeft: "auto" }}
+                      title={
+                        `Registered on peer ${s.peer_node_id.slice(0, 8)}. ` +
+                        "Open that node's webui to delete — v1 doesn't " +
+                        "proxy DELETE through the master."
+                      }
+                    >
+                      managed by peer
+                    </span>
+                  )
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 interface DatasetServersTabProps {
   /** Click-through for table rows / split links. Builds a SelectedLeaf
    *  in the right shape for the Explore tab to seed its own state. */
@@ -576,6 +731,13 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
   const localServers = localsQ.data ?? [];
   const userServers = usersQ.data ?? [];
   const clusterServers = clusterServersQ.data ?? [];
+  // The local node's cluster node_id, used to decide which cluster
+  // entries we can delete directly. Entries with a matching
+  // ``peer_node_id`` were registered here — DELETE goes to the
+  // local registry. Entries owned by other peers get a tooltip
+  // explaining where to manage them; v1 doesn't proxy the delete
+  // through the master.
+  const selfNodeId = clusterSelfQ.data?.node_id ?? null;
 
   // When the selected entry disappears (e.g. a local server exits,
   // the user deletes their entry, or a cluster server stops being
@@ -686,79 +848,58 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
   return (
     <div className="inference-model-panel">
       {clusterActive ? (
-        // Cluster mode: a single unified list that includes every
-        // dataset_server known to the master (regardless of which
-        // peer registered or spawned it). The per-node Local / User
-        // split is master-aggregated away — operators don't care
-        // which peer "owns" a server entry, just what's reachable.
-        <section>
-          <h4 className="dyn-heading">
-            Cluster dataset servers
-            <span className="muted"> ({clusterServers.length})</span>
-            <button
-              style={{ marginLeft: 12 }}
-              onClick={() => setAddOpen(true)}
-              title={
-                "Register a remote dataset_server URL with this node. The " +
-                "cluster master will pick it up on the next collect tick."
-              }
-            >
-              + Add server
-            </button>
-          </h4>
-          {clusterServers.length === 0 && (
-            <div className="muted pane-state-small">
-              The master has no dataset_servers yet. Start one on any cluster
-              node (Tools → Start Dataset Server…) or use “+ Add server”.
-            </div>
-          )}
-          <ul className="inference-server-list">
-            {clusterServers.map((s) => {
-              const sel =
-                selected !== null &&
-                keyMatches(selected.key, {
-                  kind: "cluster",
-                  server_id: s.server_id,
-                });
-              return (
-                <li
-                  key={s.server_id}
-                  className={
-                    "inference-server-row" + (sel ? " selected" : "")
-                  }
-                  onClick={() => onPickCluster(s)}
-                  title={
-                    s.last_health_error
-                      ? `health error: ${s.last_health_error}`
-                      : ""
-                  }
-                >
-                  <div className="inference-server-row-line">
-                    <span
-                      className={
-                        "queue-status " +
-                        (s.healthy ? "status-running" : "status-done")
-                      }
-                    >
-                      {s.healthy ? "OK" : "DOWN"}
-                    </span>
-                    <span className="inference-server-url">{s.base_url}</span>
-                    <span className="muted">· {s.label}</span>
-                    <span className="muted">· {s.source}</span>
-                    {s.peer_node_id && (
-                      <span
-                        className="muted"
-                        title={`peer node_id: ${s.peer_node_id}`}
-                      >
-                        · peer {s.peer_node_id.slice(0, 8)}
-                      </span>
-                    )}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
+        // Cluster mode: split the master-aggregated list into
+        // Spawned (JobRecord-owned) + User-added sub-sections, same
+        // shape as standalone but sourced cluster-wide. Loopback
+        // entries are shown with a "node-local" badge — they're
+        // legitimate for non-cluster training, just excluded from
+        // auto-routing because other peers can't reach them.
+        <>
+          <ClusterServerSection
+            title="Spawned dataset servers"
+            servers={clusterServers.filter((s) => s.source === "local")}
+            emptyHint={
+              "No spawned dataset_servers in the cluster yet. " +
+              "Start one from Tools → Start Dataset Server…"
+            }
+            selected={selected}
+            selfNodeId={selfNodeId}
+            onPick={onPickCluster}
+            onDeleted={() => {
+              qc.invalidateQueries({ queryKey: ["dataset-servers-user"] });
+              qc.invalidateQueries({
+                queryKey: ["cluster", "dataset_servers"],
+              });
+            }}
+          />
+          <ClusterServerSection
+            title="User-added servers"
+            servers={clusterServers.filter((s) => s.source === "user")}
+            emptyHint={
+              "No user-added servers in the cluster yet. " +
+              "Use “+ Add server” — entries register on this node " +
+              "and the cluster master picks them up on the next tick."
+            }
+            headerAction={
+              <button
+                style={{ marginLeft: 12 }}
+                onClick={() => setAddOpen(true)}
+                title="Register a remote dataset_server URL with this node"
+              >
+                + Add server
+              </button>
+            }
+            selected={selected}
+            selfNodeId={selfNodeId}
+            onPick={onPickCluster}
+            onDeleted={() => {
+              qc.invalidateQueries({ queryKey: ["dataset-servers-user"] });
+              qc.invalidateQueries({
+                queryKey: ["cluster", "dataset_servers"],
+              });
+            }}
+          />
+        </>
       ) : (
         // Standalone mode: per-node Local + User sections, unchanged.
         <>
@@ -1961,6 +2102,10 @@ function AddServerModal({
   const [baseUrl, setBaseUrl] = useState("");
   const [authToken, setAuthToken] = useState("");
   const [showAuthToken, setShowAuthToken] = useState(false);
+  // Per-entry TLS policy. Default secure (verify chain + hostname);
+  // operator can opt out for SSH-tunneled / out-of-band-secured
+  // remotes whose cert doesn't validate against the local CA.
+  const [verifyTls, setVerifyTls] = useState(true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1988,6 +2133,7 @@ function AddServerModal({
         label: label.trim(),
         base_url: baseUrl.trim(),
         auth_token: authToken.trim(),
+        verify_tls: verifyTls,
       };
       await api.addUserDatasetServer(req);
       onAdded();
@@ -2119,6 +2265,41 @@ function AddServerModal({
                 </button>
               </div>
             </label>
+          </div>
+          <div className="submit-row">
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                cursor: "pointer",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={verifyTls}
+                onChange={(e) => setVerifyTls(e.target.checked)}
+              />
+              <span>Verify TLS chain + hostname</span>
+            </label>
+            {!verifyTls && (
+              <div
+                className="muted"
+                style={{
+                  marginTop: 4,
+                  paddingLeft: 24,
+                  // Make the warning visually distinct without
+                  // shouting — operator already chose this.
+                  color: "var(--warning, #b87000)",
+                }}
+              >
+                ⚠ Chain validation off. The upstream cert is no longer
+                authenticated by TLS — only enable this when the
+                channel is secured by other means (SSH tunnel, VPN,
+                air-gapped LAN). Bearer auth and any downstream load
+                policy still apply.
+              </div>
+            )}
           </div>
         </form>
         <footer className="modal-footer">

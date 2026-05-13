@@ -205,12 +205,19 @@ class UserEntryModel(BaseModel):
     label: str
     base_url: str
     has_auth_token: bool
+    # ``False`` means outbound calls to this URL skip TLS chain +
+    # hostname validation. Default ``True`` (secure-by-default).
+    verify_tls: bool = True
 
 
 class AddUserEntryRequest(BaseModel):
     label: str = ""
     base_url: str
     auth_token: str = ""
+    # Operator-asserted "I trust this channel for other reasons" —
+    # used for SSH-tunneled or otherwise out-of-band-secured
+    # upstreams whose cert won't validate against the local CA.
+    verify_tls: bool = True
 
 
 def _local_servers() -> List[LocalServerModel]:
@@ -325,6 +332,7 @@ def list_user_entries():
             label=e.label,
             base_url=e.base_url,
             has_auth_token=bool(e.auth_token),
+            verify_tls=e.verify_tls,
         )
         for e in dataset_server_registry.list_entries()
     ]
@@ -332,6 +340,13 @@ def list_user_entries():
 
 @router.post("/dataset-servers/user", response_model=UserEntryModel)
 def add_user_entry(req: AddUserEntryRequest):
+    """Add a server to this node's user-registry. **Pure database
+    operation** — this handler validates only the URL format and
+    persists the entry. It does NOT probe the target. The operator
+    can manage entries while remotes are offline, misconfigured, or
+    unreachable. ``Status``/``Handles``/``HF Cache``/``Local``
+    buttons validate after the fact.
+    """
     base_url = (req.base_url or "").strip()
     if not base_url:
         raise HTTPException(status_code=400, detail="base_url is required")
@@ -351,6 +366,7 @@ def add_user_entry(req: AddUserEntryRequest):
             label=req.label,
             base_url=base_url,
             auth_token=(req.auth_token or "").strip(),
+            verify_tls=bool(req.verify_tls),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -359,6 +375,7 @@ def add_user_entry(req: AddUserEntryRequest):
         label=entry.label,
         base_url=entry.base_url,
         has_auth_token=bool(entry.auth_token),
+        verify_tls=entry.verify_tls,
     )
 
 
@@ -492,12 +509,21 @@ def _safe_json(r: httpx.Response) -> Any:
         return {"error": "non-json response from upstream", "body": r.text}
 
 
-def _verify_for(target: str) -> object:
+def _verify_for(target: str, base: Optional[str] = None) -> object:
     """Pick the right ``verify=`` for an upstream URL.
+
+    If ``base`` matches a registry entry whose ``verify_tls`` is
+    ``False``, returns ``False`` — chain validation is off and the
+    upstream cert is trusted purely on the operator's say-so (used
+    for SSH-tunneled remotes where the upstream cert doesn't match
+    the tunnel's local hostname). The default secure-by-default
+    posture stays the norm; this is the explicit-opt-out lever.
 
     Imported here (not at module load) so a test environment without
     forgather.tls available falls back cleanly to httpx defaults.
     """
+    if base is not None and not dataset_server_registry.find_verify_tls(base):
+        return False
     try:
         from forgather.tls import httpx_verify_for_url
 
@@ -509,7 +535,9 @@ def _verify_for(target: str) -> object:
 async def _proxy_get(base: str, upstream_path: str, request: Request) -> JSONResponse:
     target = _validate_base(base) + upstream_path
     headers = _auth_headers_for(base, request)
-    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target)) as client:
+    async with httpx.AsyncClient(
+        timeout=_TIMEOUT, verify=_verify_for(target, base=base)
+    ) as client:
         try:
             r = await client.get(target, headers=headers or None)
         except httpx.RequestError as e:
@@ -567,7 +595,7 @@ async def proxy_load(base: str, request: Request):
         raise HTTPException(status_code=400, detail=f"could not read body: {e}")
     headers = _auth_headers_for(base, request)
     headers["content-type"] = request.headers.get("content-type", "application/json")
-    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target)) as client:
+    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target, base=base)) as client:
         try:
             r = await client.post(target, content=body, headers=headers)
         except httpx.RequestError as e:
@@ -622,7 +650,7 @@ async def proxy_iter(
 
     headers = _auth_headers_for(base, request)
     rows: List[Any] = []
-    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target)) as client:
+    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target, base=base)) as client:
         try:
             async with client.stream("GET", target, headers=headers or None) as r:
                 if r.status_code >= 400:

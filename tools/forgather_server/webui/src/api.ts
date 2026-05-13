@@ -730,6 +730,19 @@ export interface ClusterDatasetServer {
   total_dataset_polls?: number;
   dataset_failures?: number;
   consecutive_dataset_failures?: number;
+  /** Per-entry TLS verification policy. False = chain validation off
+   *  for outbound calls. Used for SSH-tunneled / out-of-band-secured
+   *  upstreams; surfaced so the webui can show an "insecure TLS"
+   *  badge. */
+  verify_tls?: boolean;
+  /** Source-side identifier on the owning peer — JobRecord
+   *  ``queue_id`` for ``source === "local"``, registry entry id for
+   *  ``source === "user"``. Used by the webui to target a DELETE
+   *  for user-added entries owned by the local node. */
+  source_id?: string | null;
+  /** True when the URL's host is loopback. Cluster auto-routing
+   *  skips these; the webui shows them with a "node-local" badge. */
+  loopback?: boolean;
 }
 
 /** Aggregate counters across the inventory. */
@@ -773,6 +786,10 @@ export interface DatasetServerUser {
   label: string;
   base_url: string;
   has_auth_token: boolean;
+  /** False = TLS chain + hostname validation off for outbound calls
+   *  to this URL. Operator-asserted for SSH-tunneled / out-of-band-
+   *  secured upstreams. Default true (secure-by-default). */
+  verify_tls?: boolean;
 }
 
 /** Dataset server spawned by the forgather_server itself. */
@@ -790,6 +807,11 @@ export interface AddDatasetServerRequest {
   label?: string;
   base_url: string;
   auth_token?: string;
+  /** False = TLS chain + hostname validation off for outbound calls
+   *  to this URL. Operator-asserted for SSH-tunneled / out-of-band-
+   *  secured upstreams. Defaults to true on the server side when
+   *  omitted. */
+  verify_tls?: boolean;
 }
 
 /** One row from ``GET /v1/datasets``. Field set tracks what the

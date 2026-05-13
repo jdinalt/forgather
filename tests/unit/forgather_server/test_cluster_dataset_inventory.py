@@ -99,13 +99,20 @@ class TestLocalServersFromJobRecords:
         )
 
     @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
-    def test_loopback_excluded(self, monkeypatch, host):
+    def test_loopback_included_with_flag(self, monkeypatch, host):
+        """Loopback binds are kept in the inventory (so the Servers
+        panel can show node-local datasets) but marked with
+        ``loopback=True``. ``MasterInventory.resolve()`` filters
+        these out at the cluster-routing decision rather than the
+        inventory level."""
         _patch_sources(
             monkeypatch,
             records=[_record(host=host)],
             identity=_identity(),
         )
-        assert cluster_dataset_inventory.local_servers() == []
+        servers = cluster_dataset_inventory.local_servers()
+        assert len(servers) == 1
+        assert servers[0].loopback is True
 
     def test_routable_host_used_as_is(self, monkeypatch):
         _patch_sources(
@@ -139,9 +146,11 @@ class TestLocalServersFromJobRecords:
     def test_no_cluster_identity_drops_zero_bound(self, monkeypatch):
         """When the server isn't in cluster mode (or hasn't activated
         yet), 0.0.0.0 binds can't be rewritten to a peer-visible host
-        and so don't make it into the inventory. Loopback binds are
-        already excluded, leaving the result empty — matching the
-        "single-node, nothing to share" expectation."""
+        and so don't make it into the inventory. 0.0.0.0 is the only
+        case where we still drop entries — there's no usable URL at
+        all without an identity to substitute. Loopback binds, by
+        contrast, stay in the list (marked) — they're node-local but
+        legitimate."""
         _patch_sources(
             monkeypatch,
             records=[_record(host="0.0.0.0")],
@@ -200,7 +209,11 @@ class TestLocalServersFromRegistry:
             == "http://otherhost:8766"
         )
 
-    def test_loopback_user_entry_excluded(self, monkeypatch):
+    def test_loopback_user_entry_included_with_flag(self, monkeypatch):
+        """Loopback user-registry entries stay in the inventory
+        (marked with ``loopback=True``) so the Servers panel shows
+        node-local datasets. ``MasterInventory.resolve()`` filters
+        them out at the cluster-routing decision."""
         _patch_sources(
             monkeypatch,
             entries=[
@@ -213,7 +226,10 @@ class TestLocalServersFromRegistry:
             ],
             identity=_identity(),
         )
-        assert cluster_dataset_inventory.local_servers() == []
+        servers = cluster_dataset_inventory.local_servers()
+        assert len(servers) == 1
+        assert servers[0].loopback is True
+        assert servers[0].source_id == "r1"
 
 
 class TestDedup:

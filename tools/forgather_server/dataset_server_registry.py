@@ -35,6 +35,13 @@ class RegistryEntry:
     label: str
     base_url: str
     auth_token: str  # may be empty; servers running --no-auth don't need one
+    # When False, outbound calls to ``base_url`` skip TLS chain +
+    # hostname validation. Used for SSH-tunneled or otherwise out-of-
+    # band-secured remotes whose certificate won't validate against
+    # the local CA. Operator-asserted "I trust this channel for
+    # other reasons"; defaults to True (chain validation on) so the
+    # secure-by-default posture stays the norm.
+    verify_tls: bool = True
 
 
 def _read_raw() -> List[dict]:
@@ -69,6 +76,9 @@ def _entries_from_raw(raw: List[dict]) -> List[RegistryEntry]:
             label=str(item.get("label") or item["base_url"]),
             base_url=str(item["base_url"]).rstrip("/"),
             auth_token=str(item.get("auth_token") or ""),
+            # Default True for entries written before the field
+            # existed — they keep the secure-by-default posture.
+            verify_tls=bool(item.get("verify_tls", True)),
         )
         for item in raw
     ]
@@ -79,12 +89,26 @@ def list_entries() -> List[RegistryEntry]:
         return _entries_from_raw(_read_raw())
 
 
-def add_entry(*, label: str, base_url: str, auth_token: str = "") -> RegistryEntry:
+def add_entry(
+    *,
+    label: str,
+    base_url: str,
+    auth_token: str = "",
+    verify_tls: bool = True,
+) -> RegistryEntry:
     """Append a new entry. URL is normalized to drop any trailing slash.
 
     The label falls back to the URL when blank so the UI always has
     something to display, even if the user didn't bother naming the
     endpoint. Caller is responsible for trimming whitespace.
+
+    ``verify_tls`` defaults to True — outbound calls to this URL
+    validate the cert chain + hostname like everywhere else. Pass
+    False for SSH-tunneled remotes (the upstream cert is for the
+    *remote* host, not ``localhost``, and chain validation against
+    the local CA fails). Setting this on a per-entry basis lets
+    operators mix secure and tunneled remotes in one cluster
+    without flipping a global "trust everything" switch.
 
     Tokens are rejected if they contain CR, LF, or any other ASCII
     control character. httpx already refuses to emit such values in
@@ -93,6 +117,11 @@ def add_entry(*, label: str, base_url: str, auth_token: str = "") -> RegistryEnt
     gives a clear 400 instead of an opaque 502 later, AND keeps
     attacker-shaped strings from round-tripping through our own JSON
     API.
+
+    This is a pure database operation: it does NOT probe the target.
+    The webui can register URLs while remotes are offline,
+    misconfigured, or unreachable; the operator validates with
+    ``Status``/``Handles``/``HF Cache``/``Local`` after the fact.
     """
     base_url = (base_url or "").rstrip("/")
     if not base_url:
@@ -111,6 +140,7 @@ def add_entry(*, label: str, base_url: str, auth_token: str = "") -> RegistryEnt
             label=label,
             base_url=base_url,
             auth_token=auth_token,
+            verify_tls=verify_tls,
         )
         existing.append(new)
         _write_raw(existing)
@@ -147,3 +177,20 @@ def find_token(base_url: str) -> Optional[str]:
         if e.base_url == base_url and e.auth_token:
             return e.auth_token
     return None
+
+
+def find_verify_tls(base_url: str) -> bool:
+    """Look up the per-entry ``verify_tls`` setting for ``base_url``.
+
+    Returns True (default secure posture) when the URL isn't in the
+    registry — the caller falls back to chain validation. False only
+    when an entry exists AND the operator explicitly opted out for
+    that URL.
+    """
+    base_url = (base_url or "").rstrip("/")
+    if not base_url:
+        return True
+    for e in list_entries():
+        if e.base_url == base_url:
+            return e.verify_tls
+    return True
