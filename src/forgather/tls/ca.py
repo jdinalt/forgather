@@ -290,7 +290,17 @@ def mint_server_cert(
             critical=True,
         )
         .add_extension(
-            x509.ExtendedKeyUsage([x509.ExtendedKeyUsageOID.SERVER_AUTH]),
+            # Server cert doubles as the node's client cert when peers
+            # call this node over mTLS — same identity, both directions.
+            # Without CLIENT_AUTH here, OpenSSL rejects the cert as
+            # "unsuitable certificate purpose" during the inbound mTLS
+            # handshake.
+            x509.ExtendedKeyUsage(
+                [
+                    x509.ExtendedKeyUsageOID.SERVER_AUTH,
+                    x509.ExtendedKeyUsageOID.CLIENT_AUTH,
+                ]
+            ),
             critical=False,
         )
         .add_extension(x509.SubjectAlternativeName(san), critical=False)
