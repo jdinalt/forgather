@@ -3008,7 +3008,12 @@ li.config.selected button.link:hover {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  max-width: 920px;
+  /* Was 920px — too narrow for the Cluster + Servers tabs whose
+   * tables carry several columns (dataset id, source, rows, size,
+   * hosts, load args). 1400px fits comfortably on a 1080-wide
+   * display with sidebar; falls back to 92vw on narrower screens
+   * so it doesn't push the page horizontally. */
+  max-width: min(1400px, 92vw);
 }
 .inference-model-panel h4 {
   margin: 0 0 6px 0;

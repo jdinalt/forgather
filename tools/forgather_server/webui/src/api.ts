@@ -767,6 +767,12 @@ export interface ClusterDatasetEntry {
   length: number | null;
   column_names: string[] | null;
   server_ids: string[];
+  /** Total on-disk size in bytes across the dataset (sum of splits
+   *  for HF / cluster-aggregated local entries). Null when unknown. */
+  size_bytes?: number | null;
+  /** Distinct ``meta_hash`` values observed across servers
+   *  advertising this name. Multiple values = collision. */
+  meta_hashes?: string[];
 }
 
 export interface ClusterDatasetInventoryResponse {
@@ -1611,6 +1617,19 @@ export const api = {
    *  a smaller payload for the Explore + Servers tabs. */
   getClusterDatasetServers: () =>
     fetchJson<ClusterDatasetServer[]>("/api/cluster/dataset_servers"),
+  /** Wake the master's collect/health/refresh loops on demand.
+   *  Best-effort — fire-and-forget. Used right after a registry
+   *  add/delete so the cluster inventory reflects the change within
+   *  ~1s rather than waiting up to one collect tick. */
+  refreshClusterDatasetServers: async (): Promise<void> => {
+    try {
+      await fetch("/api/cluster/dataset_servers/refresh", {
+        method: "POST",
+      });
+    } catch {
+      // Latency hint only — silently ignore failures.
+    }
+  },
 
   /** Cluster-proxied probes against a single dataset_server. The master
    *  injects the bearer from its inventory, so the browser only needs

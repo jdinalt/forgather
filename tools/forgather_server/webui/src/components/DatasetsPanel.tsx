@@ -186,6 +186,7 @@ type ClusterDatasetSortKey =
   | "dataset_id"
   | "source"
   | "length"
+  | "size_bytes"
   | "host_count";
 
 /** Format an epoch-seconds timestamp as a ``Ns / Nm / Nh ago`` delta. */
@@ -261,6 +262,8 @@ function DatasetsClusterTab() {
           a.dataset_id.localeCompare(b.dataset_id);
       } else if (dsSort.by === "length") {
         cmp = (a.length ?? -1) - (b.length ?? -1);
+      } else if (dsSort.by === "size_bytes") {
+        cmp = (a.size_bytes ?? -1) - (b.size_bytes ?? -1);
       } else if (dsSort.by === "host_count") {
         cmp = a.server_ids.length - b.server_ids.length;
       }
@@ -444,7 +447,14 @@ function DatasetsClusterTab() {
                   />
                   <SortableHeader<ClusterDatasetSortKey>
                     col="length"
-                    label="length"
+                    label="rows"
+                    current={dsSort}
+                    toggle={toggleDs}
+                    defaultDir="desc"
+                  />
+                  <SortableHeader<ClusterDatasetSortKey>
+                    col="size_bytes"
+                    label="size"
                     current={dsSort}
                     toggle={toggleDs}
                     defaultDir="desc"
@@ -508,7 +518,10 @@ function ClusterDatasetRow({
         )}
       </td>
       <td>{entry.source}</td>
-      <td>{entry.length ?? "?"}</td>
+      <td title={entry.length != null ? fmtCount(entry.length) : ""}>
+        {fmtCountCompact(entry.length)}
+      </td>
+      <td>{fmtBytes(entry.size_bytes)}</td>
       <td title={hostsTooltip}>
         {entry.server_ids.length}
         {hostBaseUrls.length > 0 && (
@@ -568,7 +581,14 @@ function ClusterServerSection({
 }: ClusterServerSectionProps) {
   const removeUser = useMutation({
     mutationFn: (entryId: string) => api.deleteUserDatasetServer(entryId),
-    onSuccess: () => onDeleted(),
+    onSuccess: () => {
+      // Kick the master's collect loop so the cluster inventory
+      // drops the entry within ~1s instead of one collect tick.
+      // Fire-and-forget — onDeleted's invalidate will trigger the
+      // refetch.
+      void api.refreshClusterDatasetServers();
+      onDeleted();
+    },
   });
   return (
     <section>
@@ -1051,7 +1071,19 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
         <AddServerModal
           onClose={() => setAddOpen(false)}
           onAdded={() => {
+            // Kick the master collect/refresh loops so the cluster
+            // inventory reflects the new entry within ~1s instead
+            // of waiting up to one collect tick. Both queries get
+            // invalidated; the cluster query waits a beat for the
+            // master to re-poll before refetching.
+            void api.refreshClusterDatasetServers();
             qc.invalidateQueries({ queryKey: ["dataset-servers-user"] });
+            qc.invalidateQueries({
+              queryKey: ["cluster", "dataset_servers"],
+            });
+            qc.invalidateQueries({
+              queryKey: ["cluster", "dataset_inventory"],
+            });
             setAddOpen(false);
           }}
         />
@@ -1312,6 +1344,22 @@ function fmtBytes(n: number | null | undefined): string {
 function fmtCount(n: number | null | undefined): string {
   if (n == null) return "—";
   return n.toLocaleString();
+}
+
+/** Compact human form of a row count: ``1234`` → ``1.2K``, ``2119719`` →
+ *  ``2.1M``. Used for the Cluster tab's Datasets summary column where
+ *  the full locale-formatted number would crowd the layout. */
+function fmtCountCompact(n: number | null | undefined): string {
+  if (n == null) return "—";
+  if (n < 1000) return String(n);
+  const units = ["", "K", "M", "B", "T"];
+  let i = 0;
+  let v = n;
+  while (v >= 1000 && i < units.length - 1) {
+    v /= 1000;
+    i++;
+  }
+  return `${v.toFixed(v < 10 ? 1 : 0)}${units[i]}`;
 }
 
 /** Truncate a string to ``max`` chars, appending "…" when cut. */

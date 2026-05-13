@@ -353,6 +353,10 @@ class ClusterDatasetEntryModel(BaseModel):
     length: Optional[int] = None
     column_names: Optional[List[str]] = None
     server_ids: List[str] = []
+    # Total on-disk size in bytes (cache + locals). Used by the
+    # Cluster tab to render a human-readable size column matching
+    # the Servers tab's HF-cache display.
+    size_bytes: Optional[int] = None
     # For local/<name> entries: the set of distinct ``meta_hash``
     # values observed across servers advertising this name. One
     # value = content-equivalent replicas (the intended redundancy
@@ -476,21 +480,29 @@ def _build_inventory_response() -> ClusterDatasetInventoryResponse:
             dataset_id = f"local/{name}"
             entry = by_id.get(dataset_id)
             if entry is None:
+                # ``/v1/local`` shape: ``splits=[{name, num_examples,
+                # num_bytes}, ...]`` and ``features=[col, ...]``.
+                # Sum num_examples across splits to get a row count;
+                # use features as the column-names list.
+                rows: Optional[int] = None
+                for sp in li.get("splits") or []:
+                    if not isinstance(sp, dict):
+                        continue
+                    n = sp.get("num_examples")
+                    if isinstance(n, (int, float)):
+                        rows = (rows or 0) + int(n)
+                cols = li.get("features") or li.get("column_names")
+                size = li.get("size_bytes")
                 entry = ClusterDatasetEntryModel(
                     dataset_id=dataset_id,
                     source="local",
                     name=name,
-                    length=(
-                        int(li["length"])
-                        if isinstance(li.get("length"), (int, float))
-                        else None
-                    ),
-                    column_names=(
-                        list(li["column_names"])
-                        if isinstance(li.get("column_names"), list)
-                        else None
-                    ),
+                    length=rows,
+                    column_names=(list(cols) if isinstance(cols, list) else None),
                     server_ids=[],
+                    size_bytes=(
+                        int(size) if isinstance(size, (int, float)) else None
+                    ),
                 )
                 by_id[dataset_id] = entry
             if s.server_id not in entry.server_ids:
@@ -518,10 +530,10 @@ def _build_inventory_response() -> ClusterDatasetInventoryResponse:
                 continue
             entry = by_id.get(repo_id)
             if entry is None:
-                # Aggregate length across all splits across all configs
-                # — a rough "how big is this dataset on the cluster"
-                # signal. Individual splits are visible in the Explore
-                # tab; this is the cluster-level summary.
+                # Aggregate length + size across all splits across all
+                # configs — a rough "how big is this dataset on the
+                # cluster" signal. Individual splits are visible in
+                # the Explore tab; this is the cluster-level summary.
                 total_rows: Optional[int] = None
                 for cfg in repo.get("configs") or []:
                     if not isinstance(cfg, dict):
@@ -532,6 +544,7 @@ def _build_inventory_response() -> ClusterDatasetInventoryResponse:
                         n = sp.get("num_examples")
                         if isinstance(n, (int, float)):
                             total_rows = (total_rows or 0) + int(n)
+                size = repo.get("size_bytes")
                 entry = ClusterDatasetEntryModel(
                     dataset_id=repo_id,
                     source="hf",
@@ -540,6 +553,9 @@ def _build_inventory_response() -> ClusterDatasetInventoryResponse:
                     length=total_rows,
                     column_names=None,
                     server_ids=[],
+                    size_bytes=(
+                        int(size) if isinstance(size, (int, float)) else None
+                    ),
                 )
                 by_id[repo_id] = entry
             if s.server_id not in entry.server_ids:
@@ -670,6 +686,34 @@ async def dataset_inventory() -> ClusterDatasetInventoryResponse:
     # No master reachable — emit an empty "uninitialized" shape so the
     # webui can render the cold-start hint rather than a 5xx.
     return ClusterDatasetInventoryResponse(is_master=False)
+
+
+@router.post("/dataset_servers/refresh", status_code=204)
+async def refresh_dataset_servers() -> Response:
+    """Wake the master's collect loop on demand.
+
+    Called by the webui right after an add/delete on the
+    user-registry so the cluster inventory reflects the change
+    within ~1s instead of waiting up to ``COLLECT_INTERVAL_SECONDS``.
+    Non-master nodes proxy the call to the master via the peer
+    carve-out so a webui served from any cluster member can trigger
+    the refresh.
+
+    Best-effort: the response is 204 regardless of whether the
+    master was reachable. Worst case is the operator waits one
+    collect tick — the inventory eventually converges either way.
+    """
+    cluster_dataset_inventory.wake_loops()
+    if not _self_is_master():
+        master = _master_member()
+        if master is not None:
+            url = _peer_url(master, "/api/cluster/dataset_servers/refresh")
+            try:
+                async with _peer_client(timeout=2.0) as client:
+                    await client.post(url)
+            except (httpx.HTTPError, OSError):
+                pass
+    return Response(status_code=204)
 
 
 @router.get(

@@ -370,6 +370,10 @@ def add_user_entry(req: AddUserEntryRequest):
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    # Kick the cluster collect loop so the inventory reflects the
+    # new entry within ~1s instead of waiting up to one full
+    # collect tick. No-op when cluster mode isn't active.
+    _wake_cluster_inventory()
     return UserEntryModel(
         id=entry.id,
         label=entry.label,
@@ -379,11 +383,32 @@ def add_user_entry(req: AddUserEntryRequest):
     )
 
 
+def _wake_cluster_inventory() -> None:
+    """Signal the cluster dataset_server collect loop to re-poll.
+
+    Lazy import so the route module stays usable in test fixtures
+    that don't load the cluster machinery.
+    """
+    try:
+        from .. import cluster_dataset_inventory
+
+        cluster_dataset_inventory.wake_loops()
+    except Exception:
+        # Wake is a latency hint, not correctness-critical. Silently
+        # ignore failures so a missing/broken cluster module never
+        # breaks the registry mutation.
+        pass
+
+
 @router.delete("/dataset-servers/user/{entry_id}")
 def delete_user_entry(entry_id: str):
     removed = dataset_server_registry.remove_entry(entry_id)
     if removed is None:
         raise HTTPException(status_code=404, detail=f"no entry: {entry_id}")
+    # Same wake-on-mutation as the add path — the cluster inventory
+    # drops the entry on the next collect tick; the wake makes that
+    # near-immediate.
+    _wake_cluster_inventory()
     return {"removed": removed.id}
 
 

@@ -131,6 +131,12 @@ _PEER_ALLOWED_MUTATIONS = frozenset(
         # as POST so the carve-out (which only allows GET / POST)
         # applies cleanly without widening it to DELETE.
         "/api/cluster/training_cancel_local",
+        # On-demand wake for the master's dataset-server collect
+        # loop. Non-master nodes proxy here so an add/delete on a
+        # peer's user-registry surfaces in the cluster inventory
+        # within ~1 s instead of one collect tick. Read-only-ish:
+        # the handler just sets an asyncio.Event.
+        "/api/cluster/dataset_servers/refresh",
     }
 )
 
