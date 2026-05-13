@@ -30,7 +30,7 @@ from typing import Optional
 
 import httpx
 
-from forgather.tls import httpx_verify
+from forgather.tls import httpx_peer_kwargs
 
 from . import cluster
 
@@ -261,7 +261,7 @@ async def membership_loop(
     """
     interval = tick_seconds if tick_seconds is not None else TICK_SECONDS
     log.info("cluster membership loop starting (tick=%.1fs)", interval)
-    async with httpx.AsyncClient(verify=httpx_verify()) as client:
+    async with httpx.AsyncClient(**httpx_peer_kwargs()) as client:
         try:
             while True:
                 try:

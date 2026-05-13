@@ -379,6 +379,281 @@ class TestRoutes:
             auth._auth_disabled = False
 
 
+class TestPeerMutualTLS:
+    """Exercise the AuthMiddleware peer carve-out gate (issue #31).
+
+    Drives the middleware directly with crafted ASGI scopes so the
+    decision matrix (bearer / client-cert / peer-IP / nothing) can be
+    tested without standing up a real TLS listener.
+    """
+
+    @pytest.fixture
+    def driven_middleware(self, isolated_home, monkeypatch):
+        """Return (call, captured) where call(scope) invokes the gate
+        and captured["app_ran"] tells you whether the downstream app
+        was reached."""
+        from forgather_server import auth
+
+        captured = {"app_ran": False, "send": []}
+
+        async def inner_app(scope, receive, send):
+            captured["app_ran"] = True
+
+        async def fake_receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def fake_send(message):
+            captured["send"].append(message)
+
+        mw = auth.AuthMiddleware(inner_app)
+
+        def call(scope):
+            import asyncio
+
+            captured["app_ran"] = False
+            captured["send"] = []
+            asyncio.run(mw(scope, fake_receive, fake_send))
+            return captured
+
+        return call, captured
+
+    @staticmethod
+    def _http_scope(
+        path: str,
+        *,
+        method: str = "GET",
+        client: tuple = ("10.0.0.5", 54321),
+        headers=None,
+        tls_ext: dict | None = None,
+    ) -> dict:
+        scope: dict = {
+            "type": "http",
+            "method": method,
+            "path": path,
+            "client": client,
+            "headers": headers or [],
+            "query_string": b"",
+        }
+        if tls_ext is not None:
+            scope["extensions"] = {"forgather.tls": tls_ext}
+        return scope
+
+    def test_client_cert_allows_peer_path(self, driven_middleware):
+        """A verified client cert authenticates an inter-node GET."""
+        call, captured = driven_middleware
+        scope = self._http_scope(
+            "/api/cluster/members",
+            tls_ext={"client_cert_verified": True},
+        )
+        call(scope)
+        assert captured["app_ran"] is True
+
+    def test_client_cert_allows_peer_mutation(self, driven_middleware):
+        call, captured = driven_middleware
+        scope = self._http_scope(
+            "/api/cluster/training_local",
+            method="POST",
+            tls_ext={"client_cert_verified": True},
+        )
+        call(scope)
+        assert captured["app_ran"] is True
+
+    def test_client_cert_does_not_open_user_paths(self, driven_middleware):
+        """A client cert is *not* a substitute for a user bearer.
+
+        The cert proves "I am a cluster member"; it does NOT grant
+        access to user-facing endpoints (those still need a bearer).
+        """
+        call, captured = driven_middleware
+        scope = self._http_scope(
+            "/api/queue",
+            tls_ext={"client_cert_verified": True},
+        )
+        call(scope)
+        assert captured["app_ran"] is False
+        assert any(
+            m["type"] == "http.response.start" and m["status"] == 401
+            for m in captured["send"]
+        )
+
+    def test_no_credentials_rejected_on_peer_path(self, driven_middleware):
+        """No bearer, no cert → 401 even on a peer-allowed path."""
+        call, captured = driven_middleware
+        scope = self._http_scope("/api/cluster/members")
+        call(scope)
+        assert captured["app_ran"] is False
+
+    def test_peer_ip_alone_does_not_authenticate(self, driven_middleware):
+        """Source IP is not authentication.
+
+        Even a request from a putative peer address must present a
+        verified client cert to reach an inter-node endpoint.
+        """
+        call, captured = driven_middleware
+        scope = self._http_scope(
+            "/api/cluster/members",
+            client=("10.0.0.5", 12345),
+        )
+        call(scope)
+        assert captured["app_ran"] is False
+
+    def test_unverified_cert_does_not_authenticate(self, driven_middleware):
+        """A presented-but-not-verified cert must not pass the gate.
+
+        With ``ssl_cert_reqs=CERT_OPTIONAL`` + ``ssl_ca_certs`` we
+        only ever get ``client_cert_verified=True`` on the scope, but
+        a buggy protocol could in theory set it falsy. Make sure the
+        check is on the truthy verified flag, not on cert presence
+        alone.
+        """
+        call, captured = driven_middleware
+        scope = self._http_scope(
+            "/api/cluster/members",
+            tls_ext={
+                "client_cert_chain_der": [b"fake-der"],
+                "client_cert_verified": False,
+            },
+        )
+        call(scope)
+        assert captured["app_ran"] is False
+
+    def test_bearer_still_works_alongside_cert_path(self, driven_middleware):
+        """A valid bearer still authenticates regardless of cert state."""
+        from forgather_server import auth
+
+        token = auth.load_token()
+        call, captured = driven_middleware
+        scope = self._http_scope(
+            "/api/queue",
+            headers=[(b"authorization", f"Bearer {token}".encode())],
+        )
+        call(scope)
+        assert captured["app_ran"] is True
+
+
+class TestTLSHelpers:
+    def test_httpx_client_cert_returns_none_when_unprovisioned(self, tmp_path, monkeypatch):
+        """When the local node has no cert+key on disk, return None."""
+        from forgather.tls import httpx_client_cert
+        from forgather.tls.config import TLSConfig
+
+        cfg = TLSConfig(root=tmp_path)  # no files
+        # Sanity: explicit cfg path. Also test the implicit-load branch
+        # by pointing the env override at an empty dir.
+        monkeypatch.setenv("FORGATHER_TLS_DIR", str(tmp_path))
+        assert httpx_client_cert() is None
+
+    def test_httpx_client_cert_returns_pair_when_provisioned(
+        self, tmp_path, monkeypatch
+    ):
+        """When cert+key exist, return their paths as a tuple."""
+        from forgather.tls import httpx_client_cert
+
+        (tmp_path / "server.crt").write_text("-----BEGIN CERTIFICATE-----\n")
+        (tmp_path / "server.key").write_text("-----BEGIN PRIVATE KEY-----\n")
+        monkeypatch.setenv("FORGATHER_TLS_DIR", str(tmp_path))
+        result = httpx_client_cert()
+        assert result is not None
+        cert_path, key_path = result
+        assert cert_path.endswith("server.crt")
+        assert key_path.endswith("server.key")
+
+    def test_uvicorn_ssl_kwargs_requests_client_cert(self, tmp_path, monkeypatch):
+        """When TLS is on + a CA bundle exists, listener requests client certs."""
+        import ssl
+
+        from forgather.tls import uvicorn_ssl_kwargs
+        from forgather.tls.config import load_config, save_config
+
+        (tmp_path / "server.crt").write_text("dummy cert\n")
+        (tmp_path / "server.key").write_text("dummy key\n")
+        (tmp_path / "ca-bundle.crt").write_text("dummy bundle\n")
+        monkeypatch.setenv("FORGATHER_TLS_DIR", str(tmp_path))
+        cfg = load_config()
+        cfg.enabled = True
+        save_config(cfg)
+
+        kwargs = uvicorn_ssl_kwargs()
+        assert kwargs["ssl_cert_reqs"] == ssl.CERT_OPTIONAL
+        assert kwargs["ssl_ca_certs"].endswith("ca-bundle.crt")
+        assert kwargs["ssl_certfile"].endswith("server.crt")
+        assert kwargs["ssl_keyfile"].endswith("server.key")
+
+    def test_uvicorn_ssl_kwargs_off_returns_empty(self, tmp_path, monkeypatch):
+        from forgather.tls import uvicorn_ssl_kwargs
+
+        monkeypatch.setenv("FORGATHER_TLS_DIR", str(tmp_path))
+        assert uvicorn_ssl_kwargs() == {}
+
+    def test_httpx_peer_kwargs_loads_client_cert_into_context(
+        self, tmp_path, monkeypatch
+    ):
+        """Inter-node httpx clients carry their identity in the SSLContext.
+
+        Uses the real ``ca`` module to provision a CA + leaf so the
+        cert is well-formed (EKU + chain) and ``load_cert_chain``
+        accepts it.
+        """
+        import ssl
+
+        from forgather.tls import httpx_peer_kwargs, load_config
+        from forgather.tls.ca import (
+            create_ca,
+            install_server_cert,
+            mint_server_cert,
+            rebuild_bundle,
+        )
+        from forgather.tls.config import save_config
+
+        monkeypatch.setenv("FORGATHER_TLS_DIR", str(tmp_path))
+        cfg = load_config()
+        cfg.enabled = True
+        cfg.san_hostnames = ["localhost"]
+        cfg.san_ips = ["127.0.0.1"]
+        create_ca(cfg, common_name="Test CA")
+        install_server_cert(
+            cfg,
+            mint_server_cert(
+                cfg, hostnames=["localhost"], ips=["127.0.0.1"]
+            ),
+        )
+        rebuild_bundle(cfg)
+        save_config(cfg)
+
+        # Spy on load_cert_chain so we can prove the helper called it.
+        calls: list[tuple[str, str]] = []
+        orig_load = ssl.SSLContext.load_cert_chain
+
+        def spy(self, certfile, keyfile=None, password=None):
+            calls.append((str(certfile), str(keyfile) if keyfile else ""))
+            return orig_load(self, certfile, keyfile, password)
+
+        monkeypatch.setattr(ssl.SSLContext, "load_cert_chain", spy)
+
+        kwargs = httpx_peer_kwargs()
+        ctx = kwargs["verify"]
+        assert isinstance(ctx, ssl.SSLContext)
+        # CA bundle loaded for verifying the peer's cert.
+        assert ctx.get_ca_certs()
+        # forgather posture: chain-only, no hostname matching.
+        assert ctx.check_hostname is False
+        # Client cert chain loaded for presenting our identity.
+        assert len(calls) == 1
+        assert calls[0][0].endswith("server.crt")
+        assert calls[0][1].endswith("server.key")
+
+    def test_httpx_peer_kwargs_no_cert_falls_back(self, tmp_path, monkeypatch):
+        """Without a provisioned cert, return verify-only kwargs."""
+        from forgather.tls import httpx_peer_kwargs
+
+        monkeypatch.setenv("FORGATHER_TLS_DIR", str(tmp_path))
+        kwargs = httpx_peer_kwargs()
+        # No cert+key on disk and no CA bundle -> verify=True (system
+        # trust). The forgather peer will fail-closed against the
+        # system trust store, which is the correct failure mode.
+        assert kwargs == {"verify": True}
+
+
 class TestCliClientToken:
     def test_loads_from_env(self, monkeypatch):
         from forgather.cli.server_client import _load_auth_token

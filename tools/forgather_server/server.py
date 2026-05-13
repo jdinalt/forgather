@@ -169,6 +169,18 @@ def main():
 
     scheme = "https" if tls_on else "http"
     logging.info(f"Starting Forgather server on {scheme}://{args.host}:{args.port}")
+    # Pin the HTTP protocol to our subclass so peer client certs are
+    # surfaced on the ASGI scope for mTLS-aware auth (issue #31).
+    # Falls back to the default protocol when TLS is off — no point
+    # paying the import / hook cost. The helper picks httptools when
+    # available, h11 otherwise (matching uvicorn's own selection).
+    extra: dict = {}
+    if tls_on:
+        if __package__ is None:
+            from forgather_server.asgi_tls_protocol import ForgatherProtocol
+        else:
+            from .asgi_tls_protocol import ForgatherProtocol
+        extra["http"] = ForgatherProtocol
     uvicorn.run(
         app,
         host=args.host,
@@ -177,6 +189,7 @@ def main():
         access_log=True,
         reload=args.reload,
         **ssl_kwargs,
+        **extra,
     )
 
 

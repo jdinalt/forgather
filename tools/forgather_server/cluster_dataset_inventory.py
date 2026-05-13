@@ -38,7 +38,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from forgather.tls import httpx_verify
+from forgather.tls import httpx_peer_kwargs, httpx_verify
 
 from . import cluster, dataset_server_registry, job_records
 
@@ -1113,7 +1113,7 @@ async def master_collect_servers_loop(
     )
     log.info("master collect-servers loop starting (interval=%.1fs)", interval)
     wake = _register_wake_event()
-    async with httpx.AsyncClient(verify=httpx_verify()) as client:
+    async with httpx.AsyncClient(**httpx_peer_kwargs()) as client:
         try:
             while True:
                 try:
@@ -1136,7 +1136,7 @@ async def master_health_loop(
     )
     log.info("master health loop starting (interval=%.1fs)", interval)
     wake = _register_wake_event()
-    async with httpx.AsyncClient(verify=httpx_verify()) as client:
+    async with httpx.AsyncClient(**httpx_peer_kwargs()) as client:
         try:
             while True:
                 try:
@@ -1175,7 +1175,7 @@ async def master_dataset_refresh_loop(
         steady,
     )
     wake = _register_wake_event()
-    async with httpx.AsyncClient(verify=httpx_verify()) as client:
+    async with httpx.AsyncClient(**httpx_peer_kwargs()) as client:
         try:
             while True:
                 interval = steady if master_inventory.is_warmed_up() else fast

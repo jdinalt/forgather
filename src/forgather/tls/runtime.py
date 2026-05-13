@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import ssl
 from pathlib import Path
 from typing import Optional
 
@@ -60,12 +61,21 @@ def _resolve_state(
 def uvicorn_ssl_kwargs(
     args: Optional[argparse.Namespace] = None, cfg: Optional[TLSConfig] = None
 ) -> dict:
-    """Return ``{"ssl_keyfile": …, "ssl_certfile": …}`` or ``{}``.
+    """Return uvicorn TLS kwargs, or ``{}`` when TLS is off for this invocation.
 
-    Empty dict ⇒ caller skips TLS for this invocation. Raises
-    :class:`FileNotFoundError` if TLS is requested but cert/key are
-    missing from disk.
+    When TLS is on and a CA bundle exists, also requests (but does not
+    require) a client cert from the connecting peer:
+    ``ssl_cert_reqs=ssl.CERT_OPTIONAL`` + ``ssl_ca_certs=<bundle>``.
+    The TLS handshake validates any presented cert against the cluster
+    CA; the ASGI auth gate then decides whether cert-presence is
+    sufficient for the request's path. Browser/CLI bearer clients that
+    don't present a cert are unaffected.
+
+    Raises :class:`FileNotFoundError` if TLS is requested but cert/key
+    are missing from disk.
     """
+    import ssl
+
     cfg, on, cert, key = _resolve_state(args, cfg)
     if not on:
         return {}
@@ -78,7 +88,56 @@ def uvicorn_ssl_kwargs(
         raise FileNotFoundError(f"TLS cert not found: {cert}")
     if not Path(key).is_file():
         raise FileNotFoundError(f"TLS key not found: {key}")
-    return {"ssl_keyfile": key, "ssl_certfile": cert}
+    kwargs: dict = {"ssl_keyfile": key, "ssl_certfile": cert}
+    bundle = cfg.effective_bundle()
+    if bundle is not None:
+        kwargs["ssl_cert_reqs"] = ssl.CERT_OPTIONAL
+        kwargs["ssl_ca_certs"] = str(bundle)
+    return kwargs
+
+
+def httpx_client_cert(
+    cfg: Optional[TLSConfig] = None,
+) -> Optional[tuple[str, str]]:
+    """Return ``(cert_path, key_path)`` for httpx ``cert=`` or ``None``.
+
+    Prefer :func:`httpx_peer_kwargs` for new code — httpx's ``cert=``
+    parameter is deprecated and will be removed; the SSLContext-based
+    approach (cert chain loaded into the same context as the CA
+    bundle) keeps working across that transition.
+    """
+    cfg = cfg or load_config()
+    if not cfg.is_provisioned():
+        return None
+    return (str(cfg.server_cert), str(cfg.server_key))
+
+
+def httpx_peer_kwargs(cfg: Optional[TLSConfig] = None) -> dict:
+    """Return kwargs for an inter-node ``httpx.AsyncClient(...)``.
+
+    Builds a single ``ssl.SSLContext`` that carries both the cluster
+    CA bundle (for verifying the *peer's* cert) and this node's
+    cert+key (for presenting *our* identity via mTLS). The context
+    is passed via ``verify=``; the deprecated ``cert=`` kwarg is not
+    used.
+
+    Failure modes:
+
+    * No CA bundle present → ``{"verify": True}`` (system trust; will
+      fail closed against forgather peers, which is the right outcome
+      — we never silently disable verification).
+    * CA bundle present but cert+key missing → ``{"verify": <ctx>}``
+      with the CA loaded; the call will reach the peer but can't
+      authenticate via mTLS, and the peer will 401 if it's the
+      inter-node path. Bearer-token clients pick this branch.
+    """
+    cfg = cfg or load_config()
+    verify = httpx_verify(cfg)
+    cert_pair = httpx_client_cert(cfg)
+    if cert_pair is not None and isinstance(verify, ssl.SSLContext):
+        cert_path, key_path = cert_pair
+        verify.load_cert_chain(cert_path, key_path)
+    return {"verify": verify}
 
 
 def is_tls_active(
