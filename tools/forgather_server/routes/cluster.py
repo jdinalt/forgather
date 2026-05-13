@@ -610,14 +610,21 @@ async def dataset_servers() -> List[ClusterDatasetServerModel]:
 )
 async def dataset_router_resolve(
     response: Response,
-    path: str = Query(..., description="Dataset path the client wants to load."),
+    dataset_id: str = Query(
+        ...,
+        description=(
+            "Logical dataset id the client wants to load — an HF "
+            "dataset path like ``roneneldan/TinyStories`` or a "
+            "``local/<name>`` string. Split / data_files / revision "
+            "don't enter the routing decision."
+        ),
+    ),
 ) -> DatasetRouterResolveResponse:
-    """Pick a healthy server for the given dataset request.
+    """Pick a healthy server for the given ``dataset_id``.
 
     Cluster ``auto`` routing (Phase 4) calls this from the training
-    process: the client passes its ``path`` (``local/<name>``, an HF
-    id, or a filesystem path) and the master returns the URL + token
-    of a healthy server.
+    process: the client passes its ``dataset_id`` and the master
+    returns the URL + token of a healthy server.
 
     Non-master nodes proxy to the master so the call works from any
     cluster member — the training container only ever talks to its
@@ -626,10 +633,10 @@ async def dataset_router_resolve(
     Returns:
       * **200** with ``{base_url, auth_token, server_id}`` on success.
       * **503** ``Retry-After: 5`` when the inventory is still warming
-        up (no completed dataset-refresh pass yet) — fresh master,
-        loops haven't finished their first cycle.
-      * **410** when warmed but no healthy server can serve ``path``
-        (operator config issue — retrying won't help).
+        up (no completed dataset-refresh pass yet, or zero healthy
+        servers ever observed).
+      * **410** when warmed but no healthy server can serve
+        ``dataset_id`` (operator config issue — retrying won't help).
     """
     if _self_is_master():
         inv = cluster_dataset_inventory.master_inventory
@@ -644,25 +651,19 @@ async def dataset_router_resolve(
                 ),
                 headers={"Retry-After": "5"},
             )
-        pick = inv.resolve(path)
-        if pick is None:
+        chosen = inv.resolve(dataset_id)
+        if chosen is None:
             raise HTTPException(
                 status_code=410,
                 detail=(
-                    f"No healthy dataset_server can serve {path!r} in the "
-                    "current cluster."
+                    f"No healthy dataset_server can serve "
+                    f"{dataset_id!r} in the current cluster."
                 ),
             )
-        base_url, token = pick
-        # Find the server_id matching the chosen base_url for client
-        # diagnostics (logged when training resumes).
-        sid = ""
-        for s in inv.servers_snapshot():
-            if s.base_url == base_url and s.auth_token == token:
-                sid = s.server_id
-                break
         return DatasetRouterResolveResponse(
-            base_url=base_url, auth_token=token, server_id=sid
+            base_url=chosen.base_url,
+            auth_token=chosen.auth_token,
+            server_id=chosen.server_id,
         )
 
     # Not master — proxy to master.
@@ -676,7 +677,7 @@ async def dataset_router_resolve(
     url = _peer_url(master, "/api/cluster/dataset_router/resolve")
     try:
         async with _peer_client(timeout=5.0) as client:
-            r = await client.get(url, params={"path": path})
+            r = await client.get(url, params={"dataset_id": dataset_id})
     except (httpx.HTTPError, OSError) as e:
         raise HTTPException(
             status_code=502,

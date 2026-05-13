@@ -424,7 +424,7 @@ class ServerClient:
         """
         return self._get("/cluster/dataset_inventory").json()
 
-    def cluster_dataset_resolve(self, path):
+    def cluster_dataset_resolve(self, dataset_id):
         """Ask the master's router which server it would pick for ``path``.
 
         Returns the response body (which contains
@@ -435,7 +435,7 @@ class ServerClient:
         prints the message.
         """
         return self._get(
-            f"/cluster/dataset_router/resolve?path={quote(path, safe='')}"
+            f"/cluster/dataset_router/resolve?dataset_id={quote(dataset_id, safe='')}"
         ).json()
 
     def cluster_server_proxy_get(self, server_id, op):

@@ -592,7 +592,7 @@ class TestDatasetInventoryRoutes:
         client = TestClient(_make_app())
         r = client.get(
             "/api/cluster/dataset_router/resolve",
-            params={"path": "local/stories"},
+            params={"dataset_id": "local/stories"},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert r.status_code == 200, r.text
@@ -613,7 +613,7 @@ class TestDatasetInventoryRoutes:
         client = TestClient(_make_app())
         r = client.get(
             "/api/cluster/dataset_router/resolve",
-            params={"path": "local/stories"},
+            params={"dataset_id": "local/stories"},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert r.status_code == 503
@@ -634,7 +634,7 @@ class TestDatasetInventoryRoutes:
         client = TestClient(_make_app())
         r = client.get(
             "/api/cluster/dataset_router/resolve",
-            params={"path": "local/missing"},
+            params={"dataset_id": "local/missing"},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert r.status_code == 410

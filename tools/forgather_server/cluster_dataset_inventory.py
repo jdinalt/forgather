@@ -494,37 +494,43 @@ class MasterInventory:
                 "server_count": len(self._servers),
             }
 
-    def resolve(self, path: str) -> Optional[Tuple[str, str]]:
-        """Pick a healthy server for the given dataset request.
+    def resolve(self, dataset_id: str) -> Optional[MasterServerEntry]:
+        """Pick a healthy server for the given ``dataset_id``.
+
+        ``dataset_id`` is the logical name of the dataset:
 
         * ``local/<name>``: filter by servers that advertise that name
           in their ``/v1/local`` snapshot. Two servers advertising
           ``local/stories`` are treated as interchangeable replicas
           (the operator's intent — global naming).
-        * Any other path (HF id, filesystem path): every healthy
-          server is a candidate. The server loads on demand; the
-          resilient client retries elsewhere on failure.
+        * Any other ``dataset_id`` (HF id, filesystem path): every
+          healthy server is a candidate. The server loads on demand;
+          the resilient client retries elsewhere on failure.
 
-        Returns ``(base_url, auth_token)`` or ``None`` if no candidate
-        is available. Auth-token may be empty for ``--no-auth``
-        servers.
+        Returns a deep-copy ``MasterServerEntry`` of the chosen
+        server (or ``None`` if no candidate is available). Returning
+        the entry rather than just ``(base_url, token)`` lets the
+        route handler emit ``server_id`` without re-walking the
+        snapshot — the resolve path is on the hot client retry loop.
 
         Selection is uniform random across the candidate set — crude
         load balancing across replicas.
         """
         with self._lock:
-            if path.startswith("local/"):
+            if dataset_id.startswith("local/"):
                 candidates = [
                     s
                     for s in self._servers.values()
-                    if s.healthy and path in s.available_keys
+                    if s.healthy and dataset_id in s.available_keys
                 ]
             else:
                 candidates = [s for s in self._servers.values() if s.healthy]
             if not candidates:
                 return None
             chosen = random.choice(candidates)
-            return chosen.base_url, chosen.auth_token
+            # Defensive copy so the caller can read the entry outside
+            # the lock without racing the next merge.
+            return MasterServerEntry(**asdict(chosen))
 
     def is_warmed_up(self) -> bool:
         """True once we have completed a dataset-refresh pass AND
@@ -798,42 +804,74 @@ async def _dataset_refresh_tick(client: httpx.AsyncClient) -> None:
 
 # ----- public loop entry points -----
 
-# A shared event the membership loop sets when this node's master
-# status changes, so the loops can act on the transition without
-# waiting out their normal sleep cadence. Set during a tick = "do
-# the work now"; the loops `.wait()` on this with a timeout.
-_wake_event = asyncio.Event()
+# Per-loop wake events. Each loop owns one event so a single
+# ``wake_loops()`` call from the membership listener fans out to all
+# three; using a single shared event was a bug — whichever loop woke
+# first cleared it, and the other two slept through the transition.
+#
+# Each event is created lazily on first ``wake_loops()`` so this
+# module is importable before any asyncio loop is running (the unit
+# tests rely on it).
+_wake_events: List[asyncio.Event] = []
+
+
+def _register_wake_event() -> asyncio.Event:
+    """Each loop calls this at startup to claim its wake event."""
+    ev = asyncio.Event()
+    _wake_events.append(ev)
+    return ev
 
 
 def wake_loops() -> None:
-    """Signal the master loops to run one immediate tick.
+    """Signal every registered master loop to run one immediate tick.
 
     Called from the membership loop on a master-role transition so a
     newly-elected master populates its inventory in seconds instead of
-    waiting up to ``REFRESH_INTERVAL_SECONDS``.
+    waiting up to ``REFRESH_INTERVAL_SECONDS``. Each loop owns its own
+    asyncio.Event; setting them all means *every* loop wakes, not just
+    whichever clears the shared event first.
+    """
+    for ev in _wake_events:
+        try:
+            ev.set()
+        except RuntimeError:
+            # The event's loop isn't running yet (very-early init /
+            # certain test fixtures). Wake-up is a latency hint, not
+            # correctness-critical — skip silently.
+            pass
+
+
+async def _await_or_wake(event: asyncio.Event, seconds: float) -> None:
+    """Sleep up to ``seconds`` or until ``event`` is set.
+
+    The event is cleared after wake so subsequent ticks resume on
+    their normal cadence. Per-loop event means a wake on this loop
+    doesn't accidentally skip another loop's sleep.
     """
     try:
-        _wake_event.set()
-    except RuntimeError:
-        # The default loop hasn't started yet (testing / very-early
-        # init). Safe to ignore — wake-up is just a latency hint, not
-        # correctness-critical.
-        pass
-
-
-async def _await_or_wake(seconds: float) -> None:
-    """Sleep up to ``seconds`` or until ``wake_loops`` fires.
-
-    Implemented with ``wait_for`` so an early wake cuts the sleep
-    short. The event is cleared after wake so subsequent ticks resume
-    on their normal cadence.
-    """
-    try:
-        await asyncio.wait_for(_wake_event.wait(), timeout=seconds)
+        await asyncio.wait_for(event.wait(), timeout=seconds)
     except asyncio.TimeoutError:
         return
     finally:
-        _wake_event.clear()
+        event.clear()
+
+
+def _sync_master_state() -> bool:
+    """Read the authoritative ``cluster.is_self_master()`` and reflect
+    it into the inventory's cached state. Returns the live value.
+
+    Every master loop calls this at the top of every tick — that way
+    if one loop dies the others keep the inventory's cached
+    ``is_master()`` consistent with reality. ``set_master_state`` is
+    idempotent on no-change.
+    """
+    if not cluster.is_active():
+        if master_inventory.is_master():
+            master_inventory.set_master_state(False)
+        return False
+    is_now = cluster.is_self_master()
+    master_inventory.set_master_state(is_now)
+    return is_now
 
 
 async def master_collect_servers_loop(
@@ -844,23 +882,16 @@ async def master_collect_servers_loop(
         interval_seconds if interval_seconds is not None else COLLECT_INTERVAL_SECONDS
     )
     log.info("master collect-servers loop starting (interval=%.1fs)", interval)
+    wake = _register_wake_event()
     async with httpx.AsyncClient(verify=httpx_verify()) as client:
         try:
             while True:
                 try:
-                    if cluster.is_active():
-                        was = master_inventory.is_master()
-                        is_now = cluster.is_self_master()
-                        master_inventory.set_master_state(is_now)
-                        if is_now:
-                            await _collect_servers_tick(client)
-                        elif was:
-                            # Transition out of master role — log was
-                            # already emitted in set_master_state.
-                            pass
+                    if _sync_master_state():
+                        await _collect_servers_tick(client)
                 except Exception:
                     log.exception("collect-servers tick failed")
-                await _await_or_wake(interval)
+                await _await_or_wake(wake, interval)
         except asyncio.CancelledError:
             log.info("master collect-servers loop cancelled")
             raise
@@ -874,15 +905,16 @@ async def master_health_loop(
         interval_seconds if interval_seconds is not None else HEALTH_INTERVAL_SECONDS
     )
     log.info("master health loop starting (interval=%.1fs)", interval)
+    wake = _register_wake_event()
     async with httpx.AsyncClient(verify=httpx_verify()) as client:
         try:
             while True:
                 try:
-                    if cluster.is_active() and master_inventory.is_master():
+                    if _sync_master_state():
                         await _health_tick(client)
                 except Exception:
                     log.exception("health tick failed")
-                await asyncio.sleep(interval)
+                await _await_or_wake(wake, interval)
         except asyncio.CancelledError:
             log.info("master health loop cancelled")
             raise
@@ -912,23 +944,24 @@ async def master_dataset_refresh_loop(
         fast,
         steady,
     )
+    wake = _register_wake_event()
     async with httpx.AsyncClient(verify=httpx_verify()) as client:
         try:
             while True:
                 interval = steady if master_inventory.is_warmed_up() else fast
                 try:
-                    if cluster.is_active() and master_inventory.is_master():
+                    if _sync_master_state():
                         await _dataset_refresh_tick(client)
                 except Exception:
                     log.exception("dataset-refresh tick failed")
-                await asyncio.sleep(interval)
+                await _await_or_wake(wake, interval)
         except asyncio.CancelledError:
             log.info("master dataset-refresh loop cancelled")
             raise
 
 
 def _reset_master_state_for_tests() -> None:
-    """Wipe the module-level singleton + wake event between tests.
+    """Wipe the module-level singleton + wake events between tests.
 
     Clears in place rather than reassigning so test code that
     imported ``master_inventory`` at module load (a common idiom)
@@ -940,7 +973,9 @@ def _reset_master_state_for_tests() -> None:
         master_inventory._last_servers_collect_ts = None
         master_inventory._last_health_pass_ts = None
         master_inventory._last_dataset_pass_ts = None
-    try:
-        _wake_event.clear()
-    except RuntimeError:
-        pass
+        master_inventory._ever_observed_healthy = False
+    # Loops register wake events on startup. Between tests the loops
+    # are not running, so accumulated stale events have nothing to
+    # tell — clear them so the next test's loops start with a clean
+    # list.
+    _wake_events.clear()

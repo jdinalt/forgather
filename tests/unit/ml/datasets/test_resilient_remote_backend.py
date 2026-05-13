@@ -249,7 +249,7 @@ class TestRetryReconnect:
 
         resolved_urls: list[str] = []
 
-        def resolver(load_args):
+        def resolver(dataset_id):
             # Alternate between two URLs to simulate cluster routing
             # picking a different replica each call.
             url = f"http://peer-{len(resolved_urls) + 1}"
@@ -285,7 +285,7 @@ class TestRetryReconnect:
         replica. Without this, a shuffle pins the dataset to the
         last-resolved peer and failover stops working."""
 
-        def resolver(load_args):
+        def resolver(dataset_id):
             return "http://peer-1:8766", "tok"
 
         rb = ResilientRemoteBackend(
@@ -307,7 +307,7 @@ class TestRetryReconnect:
     def test_seek_with_resolver_drops_handle(self):
         """Same contract as shuffle: seek() in cluster mode re-resolves."""
 
-        def resolver(load_args):
+        def resolver(dataset_id):
             return "http://peer-1:8766", "tok"
 
         rb = ResilientRemoteBackend(
@@ -331,7 +331,7 @@ class TestRetryReconnect:
 
         monkeypatch.setattr(rrb.time, "sleep", lambda *_: None)
 
-        def angry_resolver(load_args):
+        def angry_resolver(dataset_id):
             raise RuntimeError("Cluster router rejected request (410): no candidate")
 
         rb = ResilientRemoteBackend(
@@ -368,7 +368,7 @@ class TestRetryReconnect:
             ]
         )
 
-        def flaky_resolver(load_args):
+        def flaky_resolver(dataset_id):
             v = next(seq)
             if v == "raise-410":
                 raise RuntimeError(
@@ -517,8 +517,8 @@ class TestClusterAutoRouting:
 
             calls = []
 
-            def fake_resolver(load_args):
-                calls.append(dict(load_args))
+            def fake_resolver(dataset_id):
+                calls.append(dataset_id)
                 return srv.url, "srv-tok"
 
             monkeypatch.setattr(
@@ -530,7 +530,7 @@ class TestClusterAutoRouting:
             ids = [ex["id"] for ex in ds]
             assert ids == list(range(8))
             assert len(calls) >= 1
-            assert calls[0]["path"] == "local/stories"
+            assert calls[0] == "local/stories"
 
     def test_auto_resolver_503_retries(self, tmp_path, monkeypatch):
         """The cluster router returning 503 during cold-start must NOT
@@ -557,7 +557,7 @@ class TestClusterAutoRouting:
 
             attempts = {"n": 0}
 
-            def flaky_resolver(load_args):
+            def flaky_resolver(dataset_id):
                 attempts["n"] += 1
                 if attempts["n"] == 1:
                     raise DatasetServerUnreachable("cold-start 503")
@@ -597,7 +597,7 @@ class TestRouterResolverWire:
         app = FastAPI()
 
         @app.get("/api/cluster/dataset_router/resolve")
-        async def resolve(path: str):
+        async def resolve(dataset_id: str):
             if isinstance(body, Exception):
                 raise body
             return JSONResponse(content=body or {}, status_code=response_status)
@@ -644,7 +644,7 @@ class TestRouterResolverWire:
         )
         try:
             resolver = make_cluster_router_resolver(server_url=url, server_token=None)
-            base, tok = resolver({"path": "local/stories"})
+            base, tok = resolver("local/stories")
             assert base == "http://chosen:8766"
             assert tok == "chosen-tok"
         finally:
@@ -662,7 +662,7 @@ class TestRouterResolverWire:
         try:
             resolver = make_cluster_router_resolver(server_url=url, server_token=None)
             with pytest.raises(DatasetServerUnreachable):
-                resolver({"path": "local/stories"})
+                resolver("local/stories")
         finally:
             stop()
 
@@ -677,7 +677,7 @@ class TestRouterResolverWire:
         try:
             resolver = make_cluster_router_resolver(server_url=url, server_token=None)
             with pytest.raises(RuntimeError) as exc_info:
-                resolver({"path": "local/missing"})
+                resolver("local/missing")
             assert "no candidate" in str(exc_info.value)
         finally:
             stop()

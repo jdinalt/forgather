@@ -505,6 +505,9 @@ def _cmd_resolve(client, args):
     import json as _json
 
     try:
+        # CLI still accepts ``args.path`` for user-facing simplicity
+        # ("the dataset path you'd use in fast_load_iterable_dataset");
+        # the wire param it maps onto is ``dataset_id``.
         resp = client.cluster_dataset_resolve(args.path)
     except RuntimeError as e:
         # 503 / 410 / other server errors come back here. Print the

@@ -289,6 +289,11 @@ def _make_entry(*, server_id, base_url, healthy=True, locals_names=()):
 
 
 class TestResolve:
+    """``resolve()`` now returns a MasterServerEntry (or None) so the
+    route handler can read ``server_id`` without re-walking the
+    snapshot. Tests assert on entry fields rather than the old
+    ``(base_url, token)`` tuple shape."""
+
     def test_local_path_only_servers_with_that_name(self):
         a = _make_entry(server_id="a", base_url="http://a:8766",
                         locals_names=["stories"])
@@ -296,7 +301,10 @@ class TestResolve:
                         locals_names=["other"])
         inv = _seed_inventory([a, b])
         pick = inv.resolve("local/stories")
-        assert pick == ("http://a:8766", "tok-a")
+        assert pick is not None
+        assert pick.base_url == "http://a:8766"
+        assert pick.auth_token == "tok-a"
+        assert pick.server_id == "a"
 
     def test_local_returns_none_when_no_match(self):
         a = _make_entry(server_id="a", base_url="http://a:8766",
@@ -313,7 +321,7 @@ class TestResolve:
         b = _make_entry(server_id="b", base_url="http://b:8766",
                         locals_names=["stories"])
         inv = _seed_inventory([a, b])
-        urls = {inv.resolve("local/stories")[0] for _ in range(40)}
+        urls = {inv.resolve("local/stories").base_url for _ in range(40)}
         # Statistically vanishingly unlikely to be wrong; >40 calls of
         # uniform-random pick from {a, b} hits both with overwhelming
         # probability. The test's failure mode (single URL) is the bug.
@@ -327,7 +335,8 @@ class TestResolve:
         inv = _seed_inventory([a, b])
         for _ in range(20):
             pick = inv.resolve("local/stories")
-            assert pick == ("http://b:8766", "tok-b")
+            assert pick is not None
+            assert pick.base_url == "http://b:8766"
 
     def test_hf_path_picks_any_healthy_server(self):
         """For non-local requests, the master picks any healthy server
@@ -339,7 +348,7 @@ class TestResolve:
         b = _make_entry(server_id="b", base_url="http://b:8766",
                         locals_names=["bar"])
         inv = _seed_inventory([a, b])
-        urls = {inv.resolve("allenai/c4")[0] for _ in range(40)}
+        urls = {inv.resolve("allenai/c4").base_url for _ in range(40)}
         assert urls == {"http://a:8766", "http://b:8766"}
 
     def test_hf_path_returns_none_when_no_healthy_server(self):
@@ -620,6 +629,80 @@ class TestDatasetRefreshTick:
 # ---------------------------------------------------------------------------
 # Role-change listener hook
 # ---------------------------------------------------------------------------
+
+
+class TestMasterStateSync:
+    """CQ-2 regression: every loop must reconcile the inventory's
+    cached ``is_master()`` with the authoritative
+    ``cluster.is_self_master()`` at the top of every tick, so a crash
+    in one loop doesn't desync the others. ``_sync_master_state`` is
+    the shared helper."""
+
+    def test_sync_reflects_cluster_state(self):
+        _activate_cluster_as_master()
+        # We are master (lowest UUID among reachable). Sync should
+        # flip the inventory cache to is_master=True.
+        assert cluster_dataset_inventory._sync_master_state() is True
+        assert master_inventory.is_master() is True
+
+    def test_sync_clears_when_no_longer_master(self):
+        _activate_cluster_as_master()
+        cluster_dataset_inventory._sync_master_state()
+        assert master_inventory.is_master() is True
+        # Add a peer with a smaller UUID — we lose master.
+        smaller = "00000000-0000-0000-0000-000000000000"
+        cluster.update_member(
+            smaller,
+            hostname="peer",
+            address="10.0.0.5",
+            port=8765,
+            cluster_name="c",
+        )
+        assert cluster_dataset_inventory._sync_master_state() is False
+        assert master_inventory.is_master() is False
+
+    def test_sync_clears_when_cluster_inactive(self):
+        # Set up: we're master.
+        _activate_cluster_as_master()
+        cluster_dataset_inventory._sync_master_state()
+        assert master_inventory.is_master() is True
+        # Now deactivate the cluster (e.g., partition recovery).
+        cluster._reset_for_tests()
+        assert cluster_dataset_inventory._sync_master_state() is False
+        assert master_inventory.is_master() is False
+
+
+class TestWakeEvents:
+    """The per-loop wake-event registry: each loop owns its own
+    event so a single ``wake_loops()`` call from the membership
+    listener fans out to all of them, not just whichever one
+    consumed a shared event first."""
+
+    def test_wake_loops_sets_all_registered_events(self):
+        # Simulate a few loops registering their events at startup.
+        import asyncio
+
+        # asyncio.Event needs a running loop to set/get in Python
+        # 3.10+. Use asyncio.run to provide one.
+        async def go():
+            cluster_dataset_inventory._wake_events.clear()
+            e1 = cluster_dataset_inventory._register_wake_event()
+            e2 = cluster_dataset_inventory._register_wake_event()
+            e3 = cluster_dataset_inventory._register_wake_event()
+            # None set yet.
+            assert not e1.is_set()
+            assert not e2.is_set()
+            assert not e3.is_set()
+            # Fire once.
+            cluster_dataset_inventory.wake_loops()
+            # All set — that's the fix; a shared single event would
+            # only set one and any subsequent loop would miss the
+            # signal.
+            assert e1.is_set()
+            assert e2.is_set()
+            assert e3.is_set()
+
+        asyncio.run(go())
 
 
 class TestRoleChangeListener:

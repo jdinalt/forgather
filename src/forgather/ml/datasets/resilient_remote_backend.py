@@ -61,7 +61,14 @@ FORGATHER_SERVER_URL_ENV_VAR = "FORGATHER_SERVER_URL"
 FORGATHER_SERVER_TOKEN_ENV_VAR = "FORGATHER_SERVER_TOKEN"
 
 
-Resolver = Callable[[dict], tuple[str, Optional[str]]]
+#: Resolver callback for cluster auto-routing. Takes a logical
+#: ``dataset_id`` (an HF dataset path like ``"roneneldan/TinyStories"``
+#: or a ``"local/<name>"`` string) and returns the ``(base_url, token)``
+#: of a healthy server. Decoupling the resolver's input from the
+#: full ``load_args`` dict matches how cluster routing actually
+#: works: the dataset identity is the path, splits / data_files /
+#: revision don't affect which servers can serve it.
+Resolver = Callable[[str], tuple[str, Optional[str]]]
 
 
 def _do_load_once(
@@ -324,8 +331,13 @@ class ResilientRemoteBackend(IterableDatasetBackend):
             # or the operator interrupts. Pre-first-load
             # RuntimeErrors propagate (the dataset never existed —
             # retrying won't help).
+            dataset_id = self._load_args.get("path")
+            if not dataset_id:
+                raise RuntimeError(
+                    "Cluster routing requires a non-empty 'path' in load_args."
+                )
             try:
-                self._base_url, self._token = self._resolver(self._load_args)
+                self._base_url, self._token = self._resolver(dataset_id)
             except RuntimeError as exc:
                 if self._has_ever_loaded:
                     raise DatasetServerUnreachable(
@@ -469,20 +481,23 @@ def make_cluster_router_resolver(
     token = server_token if server_token is not None else _load_forgather_server_token()
     ssl_context = _make_ssl_context(base)
 
-    def resolve(load_args: dict) -> tuple[str, Optional[str]]:
-        path = load_args.get("path")
-        if not path:
+    def resolve(dataset_id: str) -> tuple[str, Optional[str]]:
+        """Ask the master to pick a healthy server for ``dataset_id``.
+
+        ``dataset_id`` is the logical name of the dataset — an HF
+        path like ``roneneldan/TinyStories`` or a ``local/<name>``
+        string. Split / data_files / revision don't enter the routing
+        decision; the wrapper handles them on the subsequent
+        ``/v1/load`` against the chosen server.
+        """
+        if not dataset_id:
             raise RuntimeError(
-                "Cluster routing requires a non-empty 'path' in load_args."
+                "Cluster routing requires a non-empty dataset_id."
             )
-        # Only ``path`` is consulted by the master's resolver in v1
-        # (the dataset_key for local/<name> is the path itself; for
-        # HF/path the master picks any healthy server and the server
-        # loads on demand via the resilient client's /v1/load).
         url = (
             base
             + "/api/cluster/dataset_router/resolve?"
-            + urlencode({"path": path})
+            + urlencode({"dataset_id": dataset_id})
         )
         headers: dict[str, str] = {}
         if token:
@@ -506,7 +521,7 @@ def make_cluster_router_resolver(
             except Exception:
                 pass
             raise RuntimeError(
-                f"Cluster router rejected request for {path!r} "
+                f"Cluster router rejected request for {dataset_id!r} "
                 f"({exc.code}): {detail}"
             ) from exc
         except (URLError, TimeoutError, ConnectionError) as exc:
