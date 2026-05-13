@@ -600,6 +600,10 @@ def get_default_loader() -> FastDatasetLoaderSimple:
 #: must be running with ``allow_load=True`` (CLI: ``--allow-load``).
 DATASET_SERVER_ENV_VAR = "FORGATHER_DATASET_SERVER"
 
+#: Sentinel value of ``FORGATHER_DATASET_SERVER`` that asks the local
+#: forgather_server to route each load to a healthy cluster member.
+DATASET_SERVER_AUTO_SENTINEL = "auto"
+
 
 def _local_load_iterable_dataset(
     path: str,
@@ -662,11 +666,14 @@ def _remote_load_iterable_dataset(
     construction — the server only loads the base split, exactly
     matching the local-loader behavior.
     """
-    import json
-    from urllib.error import HTTPError, URLError
-    from urllib.request import Request, urlopen
-
-    from .remote_backend import RemoteBackend, _make_ssl_context, resolve_auth_token
+    from .remote_backend import (
+        DatasetServerUnreachable,
+        resolve_auth_token,
+    )
+    from .resilient_remote_backend import (
+        ResilientRemoteBackend,
+        _do_load_once,
+    )
 
     base_split, slice_start, slice_end = (
         _parse_split_notation(split) if split else (split, None, None)
@@ -679,42 +686,81 @@ def _remote_load_iterable_dataset(
         "data_files": data_files,
         "revision": revision,
     }
-    payload = json.dumps({k: v for k, v in load_args.items() if v is not None}).encode(
-        "utf-8"
-    )
-    url = server_url.rstrip("/") + "/v1/load"
-    headers: dict[str, str] = {"Content-Type": "application/json"}
     token = resolve_auth_token(server_url, explicit=None)
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = Request(url, data=payload, method="POST", headers=headers)
-    # SSLContext is built from the shared CA bundle for https:// URLs;
-    # None for http://. Without this, urlopen falls back to the system
-    # trust store and rejects our self-signed certs.
-    ssl_context = _make_ssl_context(server_url)
+    # Eager initial load: a permanent failure (bad URL, wrong token,
+    # malformed args) should fault early rather than spin under
+    # `ResilientRemoteBackend`'s retry. Transient (network / 5xx)
+    # errors here still propagate as DatasetServerUnreachable so
+    # callers can handle them; the resilient wrapper covers the
+    # mid-iteration / post-load failure window.
     try:
-        with urlopen(req, timeout=300.0, context=ssl_context) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except HTTPError as exc:
-        # Surface the server's error message for debuggability.
-        try:
-            err_body = exc.read().decode("utf-8")
-        except Exception:
-            err_body = ""
+        body = _do_load_once(server_url, token, load_args)
+    except DatasetServerUnreachable as exc:
         raise RuntimeError(
-            f"Dataset server load failed ({exc.code}): {err_body or exc.reason}"
+            f"Could not reach dataset server at {server_url}: {exc}"
         ) from exc
-    except URLError as exc:
-        raise RuntimeError(
-            f"Could not reach dataset server at {server_url}: {exc.reason}"
-        ) from exc
-
-    handle = body["handle"]
-    backend = RemoteBackend(
+    backend = ResilientRemoteBackend(
         server_url,
-        handle,
-        token=token,
+        token,
+        load_args,
+        handle=body["handle"],
+        length=body.get("length"),
         column_names=body.get("column_names"),
+    )
+    ds = ComposableIterableDataset(
+        backend,
+        length_estimate=length_estimate,
+        reset_length_on_iter=reset_length_on_iter,
+    )
+    if slice_start is not None or slice_end is not None:
+        ds = ds.slice(slice_start, slice_end)
+    return ds
+
+
+def _auto_load_iterable_dataset(
+    *,
+    path: str,
+    name: Optional[str] = None,
+    split: Optional[str] = None,
+    data_files: Optional[Union[str, list]] = None,
+    revision: Optional[str] = None,
+    length_estimate: str = "dynamic",
+    reset_length_on_iter: bool = False,
+) -> ComposableIterableDataset:
+    """Cluster ``auto`` routing entry point.
+
+    Builds a :class:`ResilientRemoteBackend` whose resolver calls the
+    local forgather_server's ``/api/cluster/dataset_router/resolve``
+    every time the underlying connection has to be (re)established.
+    No eager load — the first ``__iter__`` / ``__len__`` triggers the
+    initial resolve. Cold-start 503 responses from the master are
+    treated as transient and retried within the resilient wrapper's
+    backoff loop.
+    """
+    from .resilient_remote_backend import (
+        ResilientRemoteBackend,
+        make_cluster_router_resolver,
+    )
+
+    base_split, slice_start, slice_end = (
+        _parse_split_notation(split) if split else (split, None, None)
+    )
+
+    load_args = {
+        "path": path,
+        "name": name,
+        "split": base_split,
+        "data_files": data_files,
+        "revision": revision,
+    }
+    resolver = make_cluster_router_resolver()
+    backend = ResilientRemoteBackend(
+        # Placeholder URL — the resolver supplies the real one on the
+        # first connection attempt inside `_ensure_inner`.
+        base_url="cluster-auto://pending",
+        token=None,
+        load_args=load_args,
+        resolver=resolver,
     )
     ds = ComposableIterableDataset(
         backend,
@@ -817,6 +863,19 @@ def fast_load_iterable_dataset(
                 "%s — server-only on the local path.",
                 list(load_dataset_kwargs.keys()),
                 DATASET_SERVER_ENV_VAR,
+            )
+        if server_url.strip().lower() == DATASET_SERVER_AUTO_SENTINEL:
+            # Cluster auto-routing: ask the local forgather_server for
+            # a healthy dataset_server. The resolver also handles
+            # re-routing on failure during long-running iteration.
+            return _auto_load_iterable_dataset(
+                path=path,
+                name=name,
+                split=split,
+                data_files=data_files,
+                revision=revision,
+                length_estimate=length_estimate,
+                reset_length_on_iter=reset_length_on_iter,
             )
         return _remote_load_iterable_dataset(
             server_url,

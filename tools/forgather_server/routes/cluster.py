@@ -13,16 +13,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Response
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from forgather.tls import httpx_verify
 
-from .. import cluster, cluster_jobs, dataset_source
+from .. import cluster, cluster_dataset_inventory, cluster_jobs, dataset_source
 from ..dataset_source import DatasetSourceError
 from .gpus import GpuInfoModel, GpuPolicyModel, SetGpuPolicyRequest, _to_model
 
@@ -209,6 +209,633 @@ def gpus_local(response: Response):
     if ident is not None:
         response.headers["X-Forgather-Node-Id"] = ident.node_id
     return [_to_model(g) for g in gpu_monitor.snapshot()]
+
+
+# ---------------------------------------------------------------------------
+# Dataset-server inventory (peer-local)
+# ---------------------------------------------------------------------------
+
+
+class LocalDatasetServerModel(BaseModel):
+    """A dataset_server this peer attests to.
+
+    Includes ``auth_token`` — the cluster carve-out gates this surface
+    to known cluster peers, so the master's aggregator can poll
+    upstream dataset_servers without an extra credential exchange.
+    Anything that surfaces this to a browser must strip the token
+    first (handled by the master-side webui endpoints in Phase 3 / 6).
+    """
+
+    server_id: str
+    base_url: str
+    auth_token: str
+    label: str
+    source: str  # "local" or "user"
+    peer_node_id: Optional[str] = None
+    # False = chain validation off for outbound calls to this URL
+    # (SSH-tunneled / out-of-band-secured upstreams). Default True so
+    # mixed-version clusters get secure-by-default behavior.
+    verify_tls: bool = True
+    # Source-side identifier on the owning peer (JobRecord queue_id
+    # for ``source="local"``; registry entry id for ``source="user"``).
+    # Used by the webui to target a DELETE at the owning peer.
+    source_id: Optional[str] = None
+    # True when the URL's host is loopback. Cluster auto-routing
+    # skips these; the webui still surfaces them with a "node-local"
+    # badge.
+    loopback: bool = False
+
+
+class LocalDatasetServersResponse(BaseModel):
+    self_node_id: Optional[str] = None
+    servers: List[LocalDatasetServerModel] = []
+
+
+@router.get(
+    "/dataset_servers_local", response_model=LocalDatasetServersResponse
+)
+def dataset_servers_local(response: Response):
+    """Per-peer dataset_server inventory.
+
+    Counterpart of ``/api/cluster/gpus_local`` for the dataset-server
+    routing infrastructure: the master fans GETs to this endpoint
+    every aggregation tick (Phase 3) to build the cluster-wide server
+    set. Carved out of the bearer-token gate for known cluster peers.
+
+    Tokens are returned in the body — the carve-out is peer-only and
+    the cluster bearer protects the rest of the surface. See
+    ``auth._PEER_ALLOWED_PATHS`` for the trust assumptions.
+    """
+    ident = cluster.self_identity()
+    if ident is not None:
+        response.headers["X-Forgather-Node-Id"] = ident.node_id
+    servers = cluster_dataset_inventory.local_servers()
+    return LocalDatasetServersResponse(
+        self_node_id=ident.node_id if ident is not None else None,
+        servers=[
+            LocalDatasetServerModel(
+                server_id=s.server_id,
+                base_url=s.base_url,
+                auth_token=s.auth_token,
+                label=s.label,
+                source=s.source,
+                peer_node_id=s.peer_node_id,
+                verify_tls=s.verify_tls,
+                source_id=s.source_id,
+                loopback=s.loopback,
+            )
+            for s in servers
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dataset-server inventory (master-side aggregation + router)
+# ---------------------------------------------------------------------------
+
+
+class ClusterDatasetServerModel(BaseModel):
+    """Master-aggregated server entry, token stripped.
+
+    Token-free shape is the only one we ever return to a browser; the
+    cluster carve-out (``/dataset_servers_local``) is the *only*
+    surface that ships bearer tokens, and only to known cluster peers.
+    """
+
+    server_id: str
+    base_url: str
+    label: str
+    source: str
+    peer_node_id: Optional[str] = None
+    healthy: bool
+    # Per-entry TLS verification policy. False = chain validation off
+    # for outbound calls to this URL — surfaced so the webui can show
+    # an "insecure TLS" badge.
+    verify_tls: bool = True
+    # Source-side id on the owning peer (queue_id for ``local``,
+    # registry id for ``user``) so the webui can target a DELETE.
+    source_id: Optional[str] = None
+    # True when the URL's host is loopback. Cluster auto-routing
+    # skips these; the webui shows them with a "node-local" badge.
+    loopback: bool = False
+    last_health_check: float
+    last_health_error: str
+    last_dataset_refresh: float
+    last_dataset_error: str
+    # Polling counters. ``consecutive_*_failures`` is 0 on a current-
+    # success / never-polled server and non-zero exactly when the
+    # server is currently in trouble — useful for the webui's "is this
+    # stuck or transient" decision.
+    total_health_polls: int = 0
+    health_failures: int = 0
+    consecutive_health_failures: int = 0
+    total_dataset_polls: int = 0
+    dataset_failures: int = 0
+    consecutive_dataset_failures: int = 0
+
+
+class ClusterDatasetEntryModel(BaseModel):
+    """One unique dataset in the cluster (deduped across servers).
+
+    ``dataset_id`` is the canonical key:
+      - ``local/<name>`` for entries from ``/v1/local`` (one global
+        key per local name — two servers advertising the same name
+        are treated as interchangeable replicas);
+      - the server-side handle hash (``sha256(canonical(resolved_args))[:16]``)
+        for HF / path datasets already loaded somewhere in the
+        cluster.
+    """
+
+    dataset_id: str
+    source: str  # "local" | "hf" | "path"
+    name: Optional[str] = None  # local name, when applicable
+    load_args: Optional[Dict[str, Any]] = None
+    length: Optional[int] = None
+    column_names: Optional[List[str]] = None
+    server_ids: List[str] = []
+    # Total on-disk size in bytes (cache + locals). Used by the
+    # Cluster tab to render a human-readable size column matching
+    # the Servers tab's HF-cache display.
+    size_bytes: Optional[int] = None
+    # For local/<name> entries: the set of distinct ``meta_hash``
+    # values observed across servers advertising this name. One
+    # value = content-equivalent replicas (the intended redundancy
+    # case). Two or more = a collision — operators have named
+    # genuinely distinct datasets the same thing on different nodes.
+    # The router still picks at random among them; the UI surfaces
+    # the collision so the operator can fix the config.
+    meta_hashes: List[str] = []
+
+
+class ClusterDatasetInventoryMetrics(BaseModel):
+    """Aggregate counters across the master's collect / health /
+    dataset-refresh loops. Useful for catching "everything's quiet
+    but no data is flowing" failure modes from a single GET."""
+
+    healthy_servers: int = 0
+    unhealthy_servers: int = 0
+    total_servers: int = 0
+    total_datasets: int = 0
+    total_health_polls: int = 0
+    total_health_failures: int = 0
+    total_dataset_polls: int = 0
+    total_dataset_failures: int = 0
+    # How long ago this node became master, in seconds. None when the
+    # node isn't master.
+    master_age_seconds: Optional[float] = None
+
+
+class ClusterDatasetInventoryResponse(BaseModel):
+    is_master: bool
+    master_become_ts: Optional[float] = None
+    last_servers_collect_ts: Optional[float] = None
+    last_health_pass_ts: Optional[float] = None
+    last_dataset_pass_ts: Optional[float] = None
+    servers: List[ClusterDatasetServerModel] = []
+    datasets: List[ClusterDatasetEntryModel] = []
+    metrics: ClusterDatasetInventoryMetrics = ClusterDatasetInventoryMetrics()
+
+
+class DatasetRouterResolveResponse(BaseModel):
+    base_url: str
+    auth_token: str = ""
+    server_id: str
+
+
+def _master_member() -> Optional[cluster.MemberInfo]:
+    """Return the cluster member that's currently master, or None.
+
+    ``None`` means either cluster is inactive, no master has been
+    elected yet (empty/unreachable cluster), or the master entry has
+    no peer-routable address.
+    """
+    master_id = cluster.master_node_id()
+    if master_id is None:
+        return None
+    self_ident = cluster.self_identity()
+    if self_ident is not None and master_id == self_ident.node_id:
+        return None
+    for m in cluster.members():
+        if m.node_id == master_id and m.reachable and m.address:
+            return m
+    return None
+
+
+def _self_is_master() -> bool:
+    if not cluster.is_active():
+        return False
+    return cluster.is_self_master()
+
+
+def _to_dataset_server_model(
+    e: "cluster_dataset_inventory.MasterServerEntry",
+) -> ClusterDatasetServerModel:
+    return ClusterDatasetServerModel(
+        server_id=e.server_id,
+        base_url=e.base_url,
+        label=e.label,
+        source=e.source,
+        peer_node_id=e.peer_node_id,
+        healthy=e.healthy,
+        verify_tls=e.verify_tls,
+        source_id=e.source_id,
+        loopback=e.loopback,
+        last_health_check=e.last_health_check,
+        last_health_error=e.last_health_error,
+        last_dataset_refresh=e.last_dataset_refresh,
+        last_dataset_error=e.last_dataset_error,
+        total_health_polls=e.total_health_polls,
+        health_failures=e.health_failures,
+        consecutive_health_failures=e.consecutive_health_failures,
+        total_dataset_polls=e.total_dataset_polls,
+        dataset_failures=e.dataset_failures,
+        consecutive_dataset_failures=e.consecutive_dataset_failures,
+    )
+
+
+def _build_inventory_response() -> ClusterDatasetInventoryResponse:
+    """Read the master singleton and shape it for the webui.
+
+    Datasets are deduped across servers by ``dataset_id``:
+      - Local entries (``/v1/local`` results) key on ``local/<name>``.
+      - Handle entries (``/v1/datasets`` results) key on the handle
+        hash; entries whose source is ``"local"`` are skipped because
+        they already appear under their local name (avoids double-
+        counting the same logical dataset).
+    """
+    servers = cluster_dataset_inventory.master_inventory.servers_snapshot()
+    status = cluster_dataset_inventory.master_inventory.status()
+
+    by_id: Dict[str, ClusterDatasetEntryModel] = {}
+    for s in servers:
+        # Local entries — `/v1/local` shape varies by server build; we
+        # tolerate ``[{"name": "stories", "length": ...}, ...]`` and
+        # similar.
+        for li in s.locals_info:
+            if not isinstance(li, dict):
+                continue
+            name = li.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            dataset_id = f"local/{name}"
+            entry = by_id.get(dataset_id)
+            if entry is None:
+                # ``/v1/local`` shape: ``splits=[{name, num_examples,
+                # num_bytes}, ...]`` and ``features=[col, ...]``.
+                # Sum num_examples across splits to get a row count;
+                # use features as the column-names list.
+                rows: Optional[int] = None
+                for sp in li.get("splits") or []:
+                    if not isinstance(sp, dict):
+                        continue
+                    n = sp.get("num_examples")
+                    if isinstance(n, (int, float)):
+                        rows = (rows or 0) + int(n)
+                cols = li.get("features") or li.get("column_names")
+                size = li.get("size_bytes")
+                entry = ClusterDatasetEntryModel(
+                    dataset_id=dataset_id,
+                    source="local",
+                    name=name,
+                    length=rows,
+                    column_names=(list(cols) if isinstance(cols, list) else None),
+                    server_ids=[],
+                    size_bytes=(
+                        int(size) if isinstance(size, (int, float)) else None
+                    ),
+                )
+                by_id[dataset_id] = entry
+            if s.server_id not in entry.server_ids:
+                entry.server_ids.append(s.server_id)
+            # Track the meta_hash this server reported for the name.
+            # Multiple distinct hashes under the same name = the
+            # collision case the master logs a WARNING about.
+            meta = li.get("meta_hash")
+            if isinstance(meta, str) and meta not in entry.meta_hashes:
+                entry.meta_hashes.append(meta)
+
+        # HF cache: every repo that's *available* on this server,
+        # whether or not it has been loaded yet. Keyed by the HF repo
+        # path (``allenai/c4``, ``roneneldan/TinyStories``) so the
+        # cluster view shows one row per repo regardless of how many
+        # configs/splits the cache has. The user's "unified Datasets
+        # tab" view: HF + local in one list, sourced from each
+        # server's `/v1/cache/hf` snapshot rather than waiting for a
+        # client to trigger /v1/load.
+        for repo in s.hf_cache:
+            if not isinstance(repo, dict):
+                continue
+            repo_id = repo.get("repo")
+            if not isinstance(repo_id, str) or not repo_id:
+                continue
+            entry = by_id.get(repo_id)
+            if entry is None:
+                # Aggregate length + size across all splits across all
+                # configs — a rough "how big is this dataset on the
+                # cluster" signal. Individual splits are visible in
+                # the Explore tab; this is the cluster-level summary.
+                total_rows: Optional[int] = None
+                for cfg in repo.get("configs") or []:
+                    if not isinstance(cfg, dict):
+                        continue
+                    for sp in cfg.get("splits") or []:
+                        if not isinstance(sp, dict):
+                            continue
+                        n = sp.get("num_examples")
+                        if isinstance(n, (int, float)):
+                            total_rows = (total_rows or 0) + int(n)
+                size = repo.get("size_bytes")
+                entry = ClusterDatasetEntryModel(
+                    dataset_id=repo_id,
+                    source="hf",
+                    name=repo_id,
+                    load_args=None,
+                    length=total_rows,
+                    column_names=None,
+                    server_ids=[],
+                    size_bytes=(
+                        int(size) if isinstance(size, (int, float)) else None
+                    ),
+                )
+                by_id[repo_id] = entry
+            if s.server_id not in entry.server_ids:
+                entry.server_ids.append(s.server_id)
+
+        # Already-loaded handles. The HF-cache loop above covers HF
+        # repos that are *available*; surface remaining loaded
+        # handles whose source isn't "local" or "hf" (i.e., path-
+        # based datasets loaded via --allow-paths — there's no
+        # cluster-level "available" listing for those, so the loaded
+        # handle is the best signal we have).
+        for h in s.handles:
+            if not isinstance(h, dict):
+                continue
+            handle_id = h.get("handle")
+            if not isinstance(handle_id, str) or not handle_id:
+                continue
+            src = str(h.get("source") or "hf")
+            # local handles are subsumed by /v1/local entries; hf
+            # handles are subsumed by the /v1/cache/hf loop above.
+            if src in ("local", "hf"):
+                continue
+            entry = by_id.get(handle_id)
+            if entry is None:
+                load_args = h.get("load_args")
+                entry = ClusterDatasetEntryModel(
+                    dataset_id=handle_id,
+                    source=src,
+                    name=(
+                        load_args.get("name")
+                        if isinstance(load_args, dict)
+                        else None
+                    ),
+                    load_args=(
+                        load_args if isinstance(load_args, dict) else None
+                    ),
+                    length=(
+                        int(h["length"])
+                        if isinstance(h.get("length"), (int, float))
+                        else None
+                    ),
+                    column_names=(
+                        list(h["column_names"])
+                        if isinstance(h.get("column_names"), list)
+                        else None
+                    ),
+                    server_ids=[],
+                )
+                by_id[handle_id] = entry
+            if s.server_id not in entry.server_ids:
+                entry.server_ids.append(s.server_id)
+
+    healthy = sum(1 for s in servers if s.healthy)
+    master_age = (
+        time.time() - status["master_become_ts"]
+        if status["master_become_ts"] is not None
+        else None
+    )
+    metrics = ClusterDatasetInventoryMetrics(
+        total_servers=len(servers),
+        healthy_servers=healthy,
+        unhealthy_servers=len(servers) - healthy,
+        total_datasets=len(by_id),
+        total_health_polls=sum(s.total_health_polls for s in servers),
+        total_health_failures=sum(s.health_failures for s in servers),
+        total_dataset_polls=sum(s.total_dataset_polls for s in servers),
+        total_dataset_failures=sum(s.dataset_failures for s in servers),
+        master_age_seconds=master_age,
+    )
+
+    return ClusterDatasetInventoryResponse(
+        is_master=status["is_master"],
+        master_become_ts=status["master_become_ts"],
+        last_servers_collect_ts=status["last_servers_collect_ts"],
+        last_health_pass_ts=status["last_health_pass_ts"],
+        last_dataset_pass_ts=status["last_dataset_pass_ts"],
+        servers=[_to_dataset_server_model(s) for s in servers],
+        datasets=list(by_id.values()),
+        metrics=metrics,
+    )
+
+
+async def _proxy_inventory_to_master() -> Optional[Dict[str, Any]]:
+    """Non-master nodes proxy ``/dataset_inventory`` to the master so
+    every webui sees the same view. Returns ``None`` when there's no
+    master to proxy to (caller surfaces an "uninitialized" payload)."""
+    master = _master_member()
+    if master is None:
+        return None
+    url = _peer_url(master, "/api/cluster/dataset_inventory")
+    try:
+        async with _peer_client(timeout=5.0) as client:
+            r = await client.get(url)
+    except (httpx.HTTPError, OSError) as e:
+        log.warning("dataset_inventory proxy: %s -> %s", master.hostname, e)
+        return None
+    if r.status_code != 200:
+        log.warning(
+            "dataset_inventory proxy non-200: %s status=%d",
+            master.hostname,
+            r.status_code,
+        )
+        return None
+    try:
+        return r.json()
+    except ValueError:
+        return None
+
+
+@router.get(
+    "/dataset_inventory", response_model=ClusterDatasetInventoryResponse
+)
+async def dataset_inventory() -> ClusterDatasetInventoryResponse:
+    """Master-aggregated dataset inventory.
+
+    Webui-facing: tokens are stripped, the response carries the
+    deduped dataset list + the per-server health/refresh state.
+    Non-master nodes proxy to the master so every webui instance
+    sees the same view.
+    """
+    if _self_is_master():
+        return _build_inventory_response()
+    proxied = await _proxy_inventory_to_master()
+    if proxied is not None:
+        # Re-validate through the pydantic model so the wire schema
+        # stays consistent regardless of mixed-version clusters.
+        return ClusterDatasetInventoryResponse(**proxied)
+    # No master reachable — emit an empty "uninitialized" shape so the
+    # webui can render the cold-start hint rather than a 5xx.
+    return ClusterDatasetInventoryResponse(is_master=False)
+
+
+@router.post("/dataset_servers/refresh", status_code=204)
+async def refresh_dataset_servers() -> Response:
+    """Wake the master's collect loop on demand.
+
+    Called by the webui right after an add/delete on the
+    user-registry so the cluster inventory reflects the change
+    within ~1s instead of waiting up to ``COLLECT_INTERVAL_SECONDS``.
+    Non-master nodes proxy the call to the master via the peer
+    carve-out so a webui served from any cluster member can trigger
+    the refresh.
+
+    Best-effort: the response is 204 regardless of whether the
+    master was reachable. Worst case is the operator waits one
+    collect tick — the inventory eventually converges either way.
+    """
+    cluster_dataset_inventory.wake_loops()
+    if not _self_is_master():
+        master = _master_member()
+        if master is not None:
+            url = _peer_url(master, "/api/cluster/dataset_servers/refresh")
+            try:
+                async with _peer_client(timeout=2.0) as client:
+                    await client.post(url)
+            except (httpx.HTTPError, OSError):
+                pass
+    return Response(status_code=204)
+
+
+@router.get(
+    "/dataset_servers", response_model=List[ClusterDatasetServerModel]
+)
+async def dataset_servers() -> List[ClusterDatasetServerModel]:
+    """Master-aggregated server list (token-stripped).
+
+    Same provenance as ``/dataset_inventory.servers`` but a smaller
+    payload — the Explore tab + Servers tab use this directly without
+    pulling the full dataset listing.
+    """
+    if _self_is_master():
+        return [
+            _to_dataset_server_model(s)
+            for s in cluster_dataset_inventory.master_inventory.servers_snapshot()
+        ]
+    inv = await _proxy_inventory_to_master()
+    if inv is None:
+        return []
+    raw = inv.get("servers") if isinstance(inv, dict) else None
+    if not isinstance(raw, list):
+        return []
+    return [ClusterDatasetServerModel(**item) for item in raw]
+
+
+@router.get(
+    "/dataset_router/resolve", response_model=DatasetRouterResolveResponse
+)
+async def dataset_router_resolve(
+    response: Response,
+    dataset_id: str = Query(
+        ...,
+        description=(
+            "Logical dataset id the client wants to load — an HF "
+            "dataset path like ``roneneldan/TinyStories`` or a "
+            "``local/<name>`` string. Split / data_files / revision "
+            "don't enter the routing decision."
+        ),
+    ),
+) -> DatasetRouterResolveResponse:
+    """Pick a healthy server for the given ``dataset_id``.
+
+    Cluster ``auto`` routing (Phase 4) calls this from the training
+    process: the client passes its ``dataset_id`` and the master
+    returns the URL + token of a healthy server.
+
+    Non-master nodes proxy to the master so the call works from any
+    cluster member — the training container only ever talks to its
+    local forgather_server.
+
+    Returns:
+      * **200** with ``{base_url, auth_token, server_id}`` on success.
+      * **503** ``Retry-After: 5`` when the inventory is still warming
+        up (no completed dataset-refresh pass yet, or zero healthy
+        servers ever observed).
+      * **410** when warmed but no healthy server can serve
+        ``dataset_id`` (operator config issue — retrying won't help).
+    """
+    if _self_is_master():
+        inv = cluster_dataset_inventory.master_inventory
+        if not inv.is_warmed_up():
+            response.status_code = 503
+            response.headers["Retry-After"] = "5"
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Dataset-server inventory is still warming up; "
+                    "retry shortly."
+                ),
+                headers={"Retry-After": "5"},
+            )
+        chosen = inv.resolve(dataset_id)
+        if chosen is None:
+            raise HTTPException(
+                status_code=410,
+                detail=(
+                    f"No healthy dataset_server can serve "
+                    f"{dataset_id!r} in the current cluster."
+                ),
+            )
+        return DatasetRouterResolveResponse(
+            base_url=chosen.base_url,
+            auth_token=chosen.auth_token,
+            server_id=chosen.server_id,
+        )
+
+    # Not master — proxy to master.
+    master = _master_member()
+    if master is None:
+        raise HTTPException(
+            status_code=503,
+            detail="No cluster master is currently reachable.",
+            headers={"Retry-After": "5"},
+        )
+    url = _peer_url(master, "/api/cluster/dataset_router/resolve")
+    try:
+        async with _peer_client(timeout=5.0) as client:
+            r = await client.get(url, params={"dataset_id": dataset_id})
+    except (httpx.HTTPError, OSError) as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not reach cluster master: {e}",
+        )
+    if r.status_code == 200:
+        body = r.json()
+        return DatasetRouterResolveResponse(**body)
+    # Forward the master's error verbatim (including 503 Retry-After).
+    detail = r.text
+    try:
+        detail = r.json().get("detail", detail)
+    except ValueError:
+        pass
+    raise HTTPException(
+        status_code=r.status_code,
+        detail=detail,
+        headers=(
+            {"Retry-After": r.headers["Retry-After"]}
+            if "Retry-After" in r.headers
+            else None
+        ),
+    )
 
 
 async def _fetch_peer_gpus(
@@ -889,6 +1516,13 @@ class ClusterJobModel(BaseModel):
     # ``status`` only flips to "cancelled" when the master fans out
     # a cancel.
     rolled_up_status: str = "submitted"
+    # Dataset-source choice from the submit request — None /
+    # ``{"kind": "local"}`` for the in-process loader, ``{"kind":
+    # "auto"}`` for cluster auto-routing, ``{"kind": "server",
+    # "server_id": ...}`` for a pinned URL. Surfaced verbatim so the
+    # operator can see "did this bundle actually use auto-routing"
+    # without consulting per-rank env logs.
+    dataset_source: Optional[Dict[str, Any]] = None
 
 
 class ClusterJobSubmitResponse(BaseModel):
@@ -936,6 +1570,7 @@ def _to_cluster_job_model(
         rdzv_node_id=job.rdzv_node_id,
         members=member_models,
         status=job.status,
+        dataset_source=job.dataset_source,
         cancelled_at=job.cancelled_at,
         rolled_up_status=_rollup_cluster_status(
             job, [m.current_status for m in member_models]
@@ -1370,6 +2005,7 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
         rdzv_id=rdzv_id,
         rdzv_node_id=rdzv_node_id,
         members=assignments,
+        dataset_source=req.dataset_source,
     )
     cluster_jobs.add_job(job)
     return ClusterJobSubmitResponse(
@@ -1581,3 +2217,353 @@ async def cancel_cluster_job(cluster_job_id: str):
         cancelled=cancelled,
         per_member=per_member,
     )
+
+
+# ---------------------------------------------------------------------------
+# Master-side dataset-server proxy
+# ---------------------------------------------------------------------------
+#
+# The webui's Explore + Cluster tabs need to reach dataset_servers
+# known anywhere in the cluster — not just the ones registered on
+# the local node. ``/api/cluster/dataset_server_proxy/{server_id}/{op}``
+# is the cluster-wide equivalent of ``/api/dataset-server/proxy/*``:
+#
+#   * the master looks up the ``server_id`` in its inventory (built
+#     by the Phase 3 loops), pulls the matching ``(base_url, token)``,
+#     and calls the upstream dataset_server directly;
+#   * non-master nodes forward the same path to the master so every
+#     webui sees the same surface regardless of which node serves it.
+#
+# The inventory itself is the SSRF allowlist — only servers that
+# survived the master's collect + health gates appear there, and the
+# auth token never crosses out to the browser.
+
+_PROXY_OP_TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
+
+# Map op name (URL segment) -> (upstream method, upstream path template
+# or builder, body-passthrough?). Listed explicitly so an unknown op
+# returns 404 immediately rather than smuggling traffic through.
+_OP_HEALTH = "health"
+_OP_AUTH_STATUS = "auth-status"
+_OP_DATASETS = "datasets"
+_OP_CACHE = "cache"
+_OP_LOCAL = "local"
+_OP_LOAD = "load"
+_OP_LENGTH = "length"
+_OP_ITER = "iter"
+_ALLOWED_PROXY_OPS = frozenset(
+    {
+        _OP_HEALTH,
+        _OP_AUTH_STATUS,
+        _OP_DATASETS,
+        _OP_CACHE,
+        _OP_LOCAL,
+        _OP_LOAD,
+        _OP_LENGTH,
+        _OP_ITER,
+    }
+)
+
+
+def _proxy_auth_headers(token: str) -> Dict[str, str]:
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _verify_for_proxy(target: str, verify_tls: bool = True) -> object:
+    """Pick the ``verify=`` for an outbound proxy call.
+
+    ``verify_tls=False`` mirrors what the registry entry says: chain
+    + hostname validation off, for SSH-tunneled or otherwise out-of-
+    band-secured upstreams.
+    """
+    if not verify_tls:
+        return False
+    try:
+        from forgather.tls import httpx_verify_for_url
+
+        return httpx_verify_for_url(target)
+    except Exception:
+        return True
+
+
+def _safe_json_proxy(r: httpx.Response) -> Any:
+    try:
+        return r.json()
+    except ValueError:
+        return {"error": "non-json response from upstream", "body": r.text}
+
+
+def _upstream_failed_headers(status: int) -> Dict[str, str]:
+    """Forward an upstream-auth-failure marker so the webui surfaces a
+    clear "your saved token is wrong" message rather than the
+    generic forgather-server 401 it would otherwise see."""
+    if status in (401, 403):
+        return {"x-upstream-auth-failed": "1"}
+    return {}
+
+
+async def _forward_get_to_upstream(
+    target: str, token: str, verify_tls: bool = True
+) -> JSONResponse:
+    headers = _proxy_auth_headers(token)
+    async with httpx.AsyncClient(
+        timeout=_PROXY_OP_TIMEOUT,
+        verify=_verify_for_proxy(target, verify_tls=verify_tls),
+    ) as client:
+        try:
+            r = await client.get(target, headers=headers or None)
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
+    return JSONResponse(
+        status_code=r.status_code,
+        content=_safe_json_proxy(r),
+        headers=_upstream_failed_headers(r.status_code),
+    )
+
+
+async def _forward_post_to_upstream(
+    target: str,
+    token: str,
+    body: bytes,
+    content_type: str,
+    verify_tls: bool = True,
+) -> JSONResponse:
+    headers = _proxy_auth_headers(token)
+    headers["content-type"] = content_type
+    async with httpx.AsyncClient(
+        timeout=_PROXY_OP_TIMEOUT,
+        verify=_verify_for_proxy(target, verify_tls=verify_tls),
+    ) as client:
+        try:
+            r = await client.post(target, content=body, headers=headers)
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
+    return JSONResponse(
+        status_code=r.status_code,
+        content=_safe_json_proxy(r),
+        headers=_upstream_failed_headers(r.status_code),
+    )
+
+
+async def _stream_iter_window(
+    target: str, token: str, limit: int, verify_tls: bool = True
+) -> JSONResponse:
+    """Materialize a bounded ``/v1/datasets/{handle}/iter`` NDJSON
+    window into ``{"rows": [...]}``.
+
+    Same bounded-buffering approach as
+    :func:`routes.dataset_server.proxy_iter` — the upstream is asked
+    for ``limit`` rows but we stop reading at exactly ``limit`` in case
+    a misbehaving server ignores the cap.
+    """
+    headers = _proxy_auth_headers(token)
+    rows: List[Any] = []
+    import json as _json
+
+    async with httpx.AsyncClient(
+        timeout=_PROXY_OP_TIMEOUT,
+        verify=_verify_for_proxy(target, verify_tls=verify_tls),
+    ) as client:
+        try:
+            async with client.stream("GET", target, headers=headers or None) as r:
+                if r.status_code >= 400:
+                    body = await r.aread()
+                    detail = body.decode("utf-8", errors="replace")
+                    return JSONResponse(
+                        status_code=r.status_code,
+                        content={"detail": detail},
+                        headers=_upstream_failed_headers(r.status_code),
+                    )
+                async for line in r.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        rows.append(_json.loads(line))
+                    except ValueError:
+                        rows.append({"_parse_error": line})
+                    if len(rows) >= limit:
+                        break
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
+    return JSONResponse({"rows": rows})
+
+
+def _lookup_proxy_target(server_id: str) -> Tuple[str, str, bool]:
+    """Resolve ``server_id`` to ``(base_url, auth_token, verify_tls)``
+    from the master inventory. Raises 404 if unknown — keeps the
+    master from being turned into an open relay by a fabricated
+    server_id.
+
+    ``verify_tls`` reflects the operator's per-entry TLS verification
+    policy: False means chain + hostname validation off for outbound
+    calls to this server.
+    """
+    entry = cluster_dataset_inventory.master_inventory.get_server(server_id)
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown cluster dataset_server: {server_id!r}",
+        )
+    return entry.base_url, entry.auth_token, entry.verify_tls
+
+
+async def _proxy_via_master(
+    server_id: str, op: str, request: Request
+) -> Response:
+    """Forward a proxy request to the master node, preserving method,
+    query params, and body."""
+    master = _master_member()
+    if master is None:
+        raise HTTPException(
+            status_code=503,
+            detail="No cluster master is currently reachable.",
+            headers={"Retry-After": "5"},
+        )
+    base = _peer_base(master)
+    path = f"/api/cluster/dataset_server_proxy/{server_id}/{op}"
+    target = f"{base}{path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    body = await request.body() if request.method == "POST" else None
+    async with _peer_client(timeout=_PROXY_OP_TIMEOUT) as client:
+        try:
+            if request.method == "GET":
+                r = await client.get(target)
+            else:
+                content_type = request.headers.get(
+                    "content-type", "application/json"
+                )
+                r = await client.post(
+                    target,
+                    content=body,
+                    headers={"content-type": content_type},
+                )
+        except httpx.RequestError as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"master proxy: {type(e).__name__}: {e}",
+            )
+    return JSONResponse(
+        status_code=r.status_code,
+        content=_safe_json_proxy(r),
+        headers=_upstream_failed_headers(r.status_code),
+    )
+
+
+@router.api_route(
+    "/dataset_server_proxy/{server_id}/{op}", methods=["GET", "POST"]
+)
+async def dataset_server_proxy(
+    server_id: str, op: str, request: Request
+) -> Response:
+    """Cluster-wide proxy to a dataset_server known anywhere in the
+    cluster.
+
+    Resolves ``server_id`` against the master's inventory and forwards
+    the call to the upstream dataset_server with the inventory's
+    bearer token. Non-master nodes forward the call to the master so
+    every webui instance can use a single path.
+
+    Supported ops (mirrors the per-node ``/api/dataset-server/proxy``):
+      * ``health``, ``auth-status``, ``datasets``, ``cache``, ``local`` (GET)
+      * ``load`` (POST)
+      * ``length`` (GET, ``handle`` query)
+      * ``iter`` (GET, ``handle``/``position``/``limit``/``seed`` query;
+        the NDJSON stream is materialized into ``{"rows": [...]}``)
+    """
+    if op not in _ALLOWED_PROXY_OPS:
+        raise HTTPException(status_code=404, detail=f"unknown op: {op!r}")
+
+    if not _self_is_master():
+        return await _proxy_via_master(server_id, op, request)
+
+    base_url, token, verify_tls = _lookup_proxy_target(server_id)
+    base = base_url.rstrip("/")
+
+    if op == _OP_HEALTH:
+        return await _forward_get_to_upstream(
+            base + "/v1/health", token, verify_tls=verify_tls
+        )
+    if op == _OP_AUTH_STATUS:
+        return await _forward_get_to_upstream(
+            base + "/v1/auth/status", token, verify_tls=verify_tls
+        )
+    if op == _OP_DATASETS:
+        return await _forward_get_to_upstream(
+            base + "/v1/datasets", token, verify_tls=verify_tls
+        )
+    if op == _OP_CACHE:
+        return await _forward_get_to_upstream(
+            base + "/v1/cache/hf", token, verify_tls=verify_tls
+        )
+    if op == _OP_LOCAL:
+        return await _forward_get_to_upstream(
+            base + "/v1/local", token, verify_tls=verify_tls
+        )
+
+    if op == _OP_LOAD:
+        if request.method != "POST":
+            raise HTTPException(status_code=405, detail="load requires POST")
+        body = await request.body()
+        content_type = request.headers.get("content-type", "application/json")
+        return await _forward_post_to_upstream(
+            base + "/v1/load", token, body, content_type, verify_tls=verify_tls
+        )
+
+    if op == _OP_LENGTH:
+        handle = request.query_params.get("handle")
+        if not handle:
+            raise HTTPException(
+                status_code=400, detail="handle query parameter required"
+            )
+        from urllib.parse import quote as _quote
+
+        return await _forward_get_to_upstream(
+            base + f"/v1/datasets/{_quote(handle, safe='')}/length",
+            token,
+            verify_tls=verify_tls,
+        )
+
+    if op == _OP_ITER:
+        handle = request.query_params.get("handle")
+        if not handle:
+            raise HTTPException(
+                status_code=400, detail="handle query parameter required"
+            )
+        try:
+            position = int(request.query_params.get("position", "0"))
+            limit = int(request.query_params.get("limit", "25"))
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="position and limit must be integers",
+            )
+        if position < 0:
+            raise HTTPException(
+                status_code=400, detail="position must be >= 0"
+            )
+        if limit < 1 or limit > 500:
+            raise HTTPException(
+                status_code=400, detail="limit must be in [1, 500]"
+            )
+        seed = request.query_params.get("seed")
+        qs = f"?position={position}&limit={limit}"
+        if seed is not None:
+            try:
+                qs += f"&seed={int(seed)}"
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400, detail="seed must be an integer"
+                )
+        from urllib.parse import quote as _quote
+
+        return await _stream_iter_window(
+            base + f"/v1/datasets/{_quote(handle, safe='')}/iter" + qs,
+            token,
+            limit,
+            verify_tls=verify_tls,
+        )
+
+    raise HTTPException(status_code=500, detail="unreachable")

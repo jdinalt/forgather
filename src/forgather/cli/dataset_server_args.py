@@ -47,6 +47,18 @@ def _add_client_args(p: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Emit JSON instead of human-readable output.",
     )
+    p.add_argument(
+        "--insecure",
+        action="store_true",
+        help=(
+            "Skip TLS chain + hostname validation for the upstream "
+            "HTTPS request. Use when the channel is secured by some "
+            "other means (SSH tunnel, VPN, air-gapped LAN) so the "
+            "remote's cert won't validate against your local CA. "
+            "You are explicitly opting out of cert validation — "
+            "responses are no longer authenticated by TLS."
+        ),
+    )
 
 
 def create_dataset_server_parser(global_args):

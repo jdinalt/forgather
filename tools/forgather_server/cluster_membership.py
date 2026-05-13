@@ -52,6 +52,57 @@ TICK_SECONDS = 5.0
 PEER_TIMEOUT_SECONDS = 3.0
 
 
+# Role-change listener registry.
+#
+# After each membership tick we recompute the master node ID. If it
+# changed (including transitions in/out of cluster activity), every
+# registered listener is invoked with (prev_master_id, new_master_id).
+# Listeners may run anything that doesn't block the membership tick
+# more than briefly — for the master dataset-inventory loops, the hook
+# just sets an asyncio.Event so the next tick fires immediately.
+_RoleChangeCallback = "Callable[[Optional[str], Optional[str]], None]"
+_role_change_listeners: list = []
+_last_observed_master_id: Optional[str] = None
+
+
+def register_role_change_listener(cb) -> None:
+    """Register a callback fired on master-id transitions.
+
+    Callbacks receive ``(prev_master_id, new_master_id)`` strings (or
+    ``None`` for "no master"). Exceptions inside callbacks are caught
+    so a misbehaving listener can't break the membership tick.
+    """
+    _role_change_listeners.append(cb)
+
+
+def _reset_role_listeners_for_tests() -> None:
+    global _last_observed_master_id
+    _role_change_listeners.clear()
+    _last_observed_master_id = None
+
+
+def _notify_role_change_if_needed() -> None:
+    """Compare the latest master_node_id to the prior tick and fire
+    listeners on a change. Called at the end of each membership tick.
+    """
+    global _last_observed_master_id
+    new_master = cluster.master_node_id() if cluster.is_active() else None
+    prev_master = _last_observed_master_id
+    if new_master == prev_master:
+        return
+    _last_observed_master_id = new_master
+    log.info(
+        "cluster master changed: %s -> %s",
+        prev_master,
+        new_master,
+    )
+    for cb in list(_role_change_listeners):
+        try:
+            cb(prev_master, new_master)
+        except Exception:
+            log.exception("role-change listener raised")
+
+
 async def _pull_one_peer(
     client: httpx.AsyncClient, member: cluster.MemberInfo
 ) -> bool:
@@ -168,6 +219,7 @@ async def _tick(client: httpx.AsyncClient) -> None:
     ]
     if not targets:
         cluster.sweep_unreachable()
+        _notify_role_change_if_needed()
         return
     results = await asyncio.gather(
         *[_pull_one_peer(client, m) for m in targets],
@@ -197,6 +249,7 @@ async def _tick(client: httpx.AsyncClient) -> None:
                     member.node_id,
                 )
     cluster.sweep_unreachable()
+    _notify_role_change_if_needed()
 
 
 async def membership_loop(

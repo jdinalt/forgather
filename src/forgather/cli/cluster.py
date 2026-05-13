@@ -14,6 +14,11 @@ def _format_delta(ts_or_none):
         epoch = float(ts_or_none)
     except (ValueError, TypeError):
         return str(ts_or_none)
+    # 0 is the dataclass default for "never set yet" — render as
+    # ``never`` rather than "55 years ago", which would falsely
+    # suggest a stuck loop.
+    if epoch <= 0:
+        return "never"
     ts = datetime.datetime.fromtimestamp(epoch, tz=datetime.timezone.utc)
     now = datetime.datetime.now(datetime.timezone.utc)
     delta = int((now - ts).total_seconds())
@@ -197,6 +202,16 @@ def _print_bundle_detail(bundle):
     print(f"submitted:        {_format_delta(bundle.get('submitted_at'))}")
     if bundle.get("cancelled_at"):
         print(f"cancelled:        {_format_delta(bundle.get('cancelled_at'))}")
+    ds = bundle.get("dataset_source")
+    if ds:
+        # Render the kind plus a compact key=val tail when relevant
+        # (server_id for the pinned-server case). "local" / None is
+        # the default loader — same convention as the submit modal.
+        kind = ds.get("kind", "?")
+        extra = ""
+        if kind == "server" and ds.get("server_id"):
+            extra = f"  server_id={ds['server_id']}"
+        print(f"dataset source:   {kind}{extra}")
     print()
     print("Members:")
     for m in bundle.get("members") or []:
@@ -230,6 +245,36 @@ def _parse_member_spec(spec):
     if n < 1:
         raise RuntimeError(f"GPU count must be >= 1 in --member {spec!r}")
     return host, n, (iface or None)
+
+
+def _parse_dataset_source(spec):
+    """Translate the CLI ``--dataset-source`` value to the dict shape
+    the forgather_server expects in the submit body.
+
+    Accepted values:
+      ``None`` / ``"local"`` / ``""``: omit (training script default).
+      ``"auto"``: cluster auto-routing.
+      ``"server:<server_id>"``: pin to a specific known server (run
+        ``forgather cluster datasets`` for ids).
+    """
+    if spec is None:
+        return None
+    spec = spec.strip()
+    if spec in ("", "local"):
+        return None
+    if spec == "auto":
+        return {"kind": "auto"}
+    if spec.startswith("server:"):
+        sid = spec[len("server:") :].strip()
+        if not sid:
+            raise RuntimeError(
+                "--dataset-source server:<id> requires a non-empty id"
+            )
+        return {"kind": "server", "server_id": sid}
+    raise RuntimeError(
+        f"unknown --dataset-source value: {spec!r} "
+        "(expected 'auto', 'local', or 'server:<id>')"
+    )
 
 
 def _parse_dynamic_args(specs):
@@ -367,6 +412,7 @@ def _cmd_submit(client, args):
         rdzv_node_id = _resolve_host_to_node_id(members, args.rdzv_host)["node_id"]
 
     dynamic_args = _parse_dynamic_args(args.dynamic_arg)
+    dataset_source = _parse_dataset_source(getattr(args, "dataset_source", None))
 
     resp = client.cluster_jobs_submit(
         project_dir=project_dir,
@@ -377,6 +423,7 @@ def _cmd_submit(client, args):
         rdzv_node_id=rdzv_node_id,
         rdzv_port=args.rdzv_port,
         allow_version_mismatch=args.allow_version_mismatch,
+        dataset_source=dataset_source,
     )
 
     bundle = resp.get("cluster_job") or {}
@@ -449,6 +496,256 @@ def _cmd_cancel(client, args):
     return 0 if cancelled else 1
 
 
+def _cmd_resolve(client, args):
+    """Dry-run the cluster dataset router for a given path.
+
+    Useful smoke test before launching training — if this returns 503
+    or 410, training would have the same outcome (modulo retry).
+    """
+    import json as _json
+
+    try:
+        # CLI still accepts ``args.path`` for user-facing simplicity
+        # ("the dataset path you'd use in fast_load_iterable_dataset");
+        # the wire param it maps onto is ``dataset_id``.
+        resp = client.cluster_dataset_resolve(args.path)
+    except RuntimeError as e:
+        # 503 / 410 / other server errors come back here. Print the
+        # detail and exit non-zero so scripts can branch on it.
+        print(f"resolve failed: {e}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(_json.dumps(resp, indent=2))
+        return 0
+    print(f"server_id: {resp.get('server_id', '?')}")
+    print(f"base_url:  {resp.get('base_url', '?')}")
+    has_token = bool(resp.get("auth_token"))
+    print(f"token:     {'(set)' if has_token else '(no-auth)'}")
+    return 0
+
+
+def _cmd_server(client, args):
+    """Cluster-proxied diagnostics for a single dataset_server.
+
+    Mirrors the per-server ``forgather dataset-server status|list|cache|local``
+    CLI but routes through the master so the operator only needs the
+    cluster bearer, not each peer's dataset_server bearer.
+    """
+    import json as _json
+
+    op = args.op
+    if op == "status":
+        try:
+            health = client.cluster_server_proxy_get(args.server_id, "health")
+            auth_status = client.cluster_server_proxy_get(
+                args.server_id, "auth-status"
+            )
+        except RuntimeError as e:
+            print(f"status failed: {e}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(_json.dumps({"health": health, "auth_status": auth_status}, indent=2))
+            return 0
+        print(f"service: {health.get('service', '?')}  version: {health.get('version', '?')}")
+        print(f"status:  {health.get('status', '?')}")
+        policy = health.get("policy") or {}
+        if policy:
+            print("policy:")
+            for k, v in policy.items():
+                print(f"  {k:<20}{v}")
+        print(f"auth_required: {auth_status.get('auth_required')}")
+        return 0
+
+    # list / cache / local: fetch + render.
+    upstream_op = {"list": "datasets", "cache": "cache", "local": "local"}[op]
+    try:
+        body = client.cluster_server_proxy_get(args.server_id, upstream_op)
+    except RuntimeError as e:
+        print(f"{op} failed: {e}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(_json.dumps(body, indent=2))
+        return 0
+
+    if op == "list":
+        handles = body.get("handles") if isinstance(body, dict) else body
+        if not handles:
+            print("(no datasets loaded on this server)")
+            return 0
+        print(f"{len(handles)} dataset handle(s):")
+        for h in handles:
+            la = h.get("load_args") or {}
+            print(
+                f"  {h.get('handle', '?')[:16]:<17} "
+                f"src={h.get('source', '?'):<6} "
+                f"len={h.get('length', '?'):<10} "
+                f"args={la}"
+            )
+        return 0
+
+    if op == "cache":
+        datasets = body.get("datasets") if isinstance(body, dict) else None
+        if not datasets:
+            print("(HF cache empty or unreadable)")
+            return 0
+        print(f"cache_root: {body.get('cache_root', '?')}")
+        print(f"{len(datasets)} cached repo(s):")
+        for d in datasets:
+            cfgs = d.get("configs") or []
+            size_mb = (d.get("size_bytes") or 0) / (1024 * 1024)
+            print(f"  {d.get('repo', '?')}  ({size_mb:.1f} MB, {len(cfgs)} config(s))")
+            for c in cfgs:
+                splits = c.get("splits") or []
+                split_names = ", ".join(s.get("name", "?") for s in splits)
+                print(f"    {c.get('config', '?')}: splits=[{split_names}]")
+        return 0
+
+    if op == "local":
+        entries = body.get("local") if isinstance(body, dict) else body
+        if not entries:
+            print("(no local/<name> mappings registered)")
+            return 0
+        if isinstance(entries, dict):
+            entries = [{"name": k, **(v if isinstance(v, dict) else {})}
+                       for k, v in entries.items()]
+        print(f"{len(entries)} local mapping(s):")
+        for e in entries:
+            print(
+                f"  local/{e.get('name', '?'):<20} "
+                f"path={e.get('path', '?')} "
+                f"len={e.get('length', '?')}"
+            )
+        return 0
+
+    return 1  # unreachable — argparse already restricts choices
+
+
+def _cmd_datasets(client, args):
+    """Cluster-wide dataset-server inventory: which servers the master
+    has aggregated, which datasets are routable, where each one lives.
+
+    Useful as a smoke test before launching cluster auto-routing
+    training — if a dataset doesn't show up here, the router can't
+    serve it to a training client.
+    """
+    import json as _json
+
+    inv = client.cluster_dataset_inventory()
+    if args.json:
+        print(_json.dumps(inv, indent=2))
+        return 0
+
+    is_master = inv.get("is_master")
+    warm_ts = inv.get("last_dataset_pass_ts")
+    print(
+        f"is_master={is_master} "
+        f"servers={len(inv.get('servers', []))} "
+        f"datasets={len(inv.get('datasets', []))} "
+        f"last_pass={_format_delta(warm_ts)}"
+    )
+    if not is_master:
+        print(
+            "Note: this node is not master. Values were proxied from the "
+            "master if reachable; an empty payload means the master is "
+            "unreachable.",
+            file=sys.stderr,
+        )
+    if args.verbose:
+        m = inv.get("metrics") or {}
+        # Master age (seconds since this node became master), and
+        # the cumulative poll/failure counts across all servers —
+        # quickest "is the inventory keeping up" signal from one
+        # glance.
+        master_age = m.get("master_age_seconds")
+        master_age_str = (
+            f"{int(master_age)}s" if isinstance(master_age, (int, float)) else "n/a"
+        )
+        print(
+            f"  healthy={m.get('healthy_servers', 0)}/{m.get('total_servers', 0)}  "
+            f"polls(health)={m.get('total_health_failures', 0)}/{m.get('total_health_polls', 0)} failed  "
+            f"polls(datasets)={m.get('total_dataset_failures', 0)}/{m.get('total_dataset_polls', 0)} failed  "
+            f"master_age={master_age_str}"
+        )
+
+    verbose = getattr(args, "verbose", False)
+
+    servers = inv.get("servers", [])
+    if servers:
+        print()
+        print("SERVERS")
+        for s in servers:
+            health = "ok" if s.get("healthy") else "DOWN"
+            err = s.get("last_health_error") or ""
+            err_suffix = f"  err={err}" if err else ""
+            print(
+                f"  {s.get('server_id', '?')[:14]:<14} "
+                f"{s.get('base_url', '?'):<45} "
+                f"{s.get('source', '?'):<6} "
+                f"peer={(s.get('peer_node_id') or '-')[:8]:<8} "
+                f"{health}{err_suffix}"
+            )
+            if verbose:
+                # Show per-server health + refresh ages so an
+                # operator can spot a stuck loop. Errors carry through
+                # untruncated so the failure mode is obvious.
+                print(
+                    f"      last_health_check:    {_format_delta(s.get('last_health_check'))}"
+                )
+                print(
+                    f"      last_dataset_refresh: {_format_delta(s.get('last_dataset_refresh'))}"
+                )
+                if s.get("last_dataset_error"):
+                    print(f"      last_dataset_error:   {s['last_dataset_error']}")
+                # Poll counts. ``consecutive_*`` is the "currently
+                # stuck?" signal independent of total counts.
+                h_total = s.get("total_health_polls", 0) or 0
+                h_fail = s.get("health_failures", 0) or 0
+                h_streak = s.get("consecutive_health_failures", 0) or 0
+                d_total = s.get("total_dataset_polls", 0) or 0
+                d_fail = s.get("dataset_failures", 0) or 0
+                d_streak = s.get("consecutive_dataset_failures", 0) or 0
+                streak = ""
+                if h_streak > 0 or d_streak > 0:
+                    streak = (
+                        f" (streak: health={h_streak} datasets={d_streak})"
+                    )
+                print(
+                    f"      polls: health={h_fail}/{h_total} failed, "
+                    f"datasets={d_fail}/{d_total} failed{streak}"
+                )
+    datasets = inv.get("datasets", [])
+    if datasets:
+        print()
+        print("DATASETS")
+        server_id_to_url = {s["server_id"]: s["base_url"] for s in servers}
+        for d in datasets:
+            ids = d.get("server_ids", [])
+            hosts = [
+                server_id_to_url.get(sid, sid)[:30] for sid in ids
+            ]
+            length = d.get("length")
+            length_str = str(length) if length is not None else "?"
+            print(
+                f"  {d.get('dataset_id', '?'):<28} "
+                f"{d.get('source', '?'):<6} "
+                f"len={length_str:<10} "
+                f"hosts={', '.join(hosts)}"
+            )
+            if verbose:
+                # load_args is the resolved descriptor on /v1/datasets
+                # — exactly what the server saw at load time. Useful
+                # for distinguishing handles that hash the same path
+                # but differ on revision / split / data_files.
+                la = d.get("load_args")
+                if la:
+                    print(f"      load_args: {la}")
+                cols = d.get("column_names")
+                if cols:
+                    print(f"      columns:   {cols}")
+    return 0
+
+
 def cluster_cmd(args):
     from .server_client import ServerClient, ServerUnreachable
 
@@ -456,7 +753,8 @@ def cluster_cmd(args):
     sub = getattr(args, "cluster_subcommand", None)
     if sub is None:
         print(
-            "error: specify a subcommand (nodes, jobs, submit, cancel)",
+            "error: specify a subcommand "
+            "(nodes, jobs, submit, cancel, datasets, resolve, server)",
             file=sys.stderr,
         )
         return 1
@@ -470,6 +768,12 @@ def cluster_cmd(args):
             return _cmd_submit(client, args)
         if sub == "cancel":
             return _cmd_cancel(client, args)
+        if sub == "datasets":
+            return _cmd_datasets(client, args)
+        if sub == "resolve":
+            return _cmd_resolve(client, args)
+        if sub == "server":
+            return _cmd_server(client, args)
         print(f"error: unknown subcommand {sub!r}", file=sys.stderr)
         return 1
     except ServerUnreachable as e:

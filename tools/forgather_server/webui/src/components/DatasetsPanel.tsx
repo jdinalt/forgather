@@ -3,6 +3,9 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   AddDatasetServerRequest,
+  ClusterDatasetEntry,
+  ClusterDatasetInventoryResponse,
+  ClusterDatasetServer,
   DatasetHandleRow,
   DatasetHandlesResponse,
   DatasetServerHealth,
@@ -19,14 +22,17 @@ import {
 } from "./DatasetsExploreTab";
 import { ModalBackdrop } from "./ModalBackdrop";
 
-type SubTab = "servers" | "explore";
+type SubTab = "cluster" | "servers" | "explore";
 
 /** Identifier the panel uses to refer to either kind of server uniformly.
  *  Local servers key by ``queue_id`` (stable across the run), user
- *  entries key by registry ``id`` (8 hex chars). */
+ *  entries key by registry ``id`` (8 hex chars), cluster servers by
+ *  the master's ``server_id`` (12 hex chars; sha256-derived from
+ *  base_url). */
 type ServerKey =
   | { kind: "local"; queue_id: string }
-  | { kind: "user"; id: string };
+  | { kind: "user"; id: string }
+  | { kind: "cluster"; server_id: string };
 
 interface SelectedServer {
   key: ServerKey;
@@ -38,15 +44,37 @@ interface SelectedServer {
 
 function keyMatches(a: ServerKey, b: ServerKey): boolean {
   if (a.kind !== b.kind) return false;
-  return a.kind === "local"
-    ? b.kind === "local" && a.queue_id === b.queue_id
-    : b.kind === "user" && (a as { id: string }).id === (b as { id: string }).id;
+  if (a.kind === "local") {
+    return b.kind === "local" && a.queue_id === b.queue_id;
+  }
+  if (a.kind === "user") {
+    return b.kind === "user" && a.id === (b as { id: string }).id;
+  }
+  return (
+    b.kind === "cluster" &&
+    a.server_id === (b as { server_id: string }).server_id
+  );
 }
 
-/** Top-level Datasets view. Tabs: Servers (CRUD + status/handles/cache),
- *  Explore (tree of dataset → split → table of rows). */
+/** Top-level Datasets view. Tabs:
+ *  - Cluster (read-only, only when the forgather_server is in
+ *    cluster mode): master-aggregated view of every dataset_server
+ *    and every unique dataset across the cluster.
+ *  - Servers: CRUD + status/handles/cache.
+ *  - Explore: tree of dataset → split → table of rows.
+ */
 export function DatasetsPanel() {
-  const [tab, setTab] = useState<SubTab>("servers");
+  // Detect cluster mode via the same query the App-level gate uses.
+  // TanStack dedups by ``queryKey`` so this doesn't cost an extra HTTP
+  // request — App.tsx's polling and this one share the same cache.
+  const clusterSelfQ = useQuery({
+    queryKey: ["cluster-self"],
+    queryFn: api.getClusterSelf,
+    refetchInterval: 30000,
+  });
+  const clusterActive = !!clusterSelfQ.data;
+
+  const [tab, setTab] = useState<SubTab>(clusterActive ? "cluster" : "servers");
   // Pending pre-selection for the Explore tab. Set when a row in the
   // Servers tab is clicked (handles row / cache split / local split);
   // the Explore tab consumes it once and signals back to clear.
@@ -68,14 +96,32 @@ export function DatasetsPanel() {
     queryKey: ["dataset-servers-user"],
     queryFn: api.listUserDatasetServers,
   });
+  // Cluster-wide servers from the master inventory — used by the
+  // Cluster tab, by the cluster-aware Servers fold, and by the
+  // Explore tab's host list in cluster mode.
+  const clusterServersQ = useQuery({
+    queryKey: ["cluster", "dataset_servers"],
+    queryFn: api.getClusterDatasetServers,
+    refetchInterval: 5000,
+    enabled: clusterActive,
+  });
   const localServers = localsQ.data ?? [];
   const userServers = usersQ.data ?? [];
+  const clusterServers = clusterServersQ.data ?? [];
   return (
     <div className="inference-panel">
       <header className="viewer-header inference-header">
         <div className="inference-header-title">
           <strong>Datasets</strong>
           <nav className="tabs">
+            {clusterActive && (
+              <button
+                className={tab === "cluster" ? "active" : ""}
+                onClick={() => setTab("cluster")}
+              >
+                cluster
+              </button>
+            )}
             <button
               className={tab === "servers" ? "active" : ""}
               onClick={() => setTab("servers")}
@@ -92,6 +138,18 @@ export function DatasetsPanel() {
         </div>
       </header>
 
+      {clusterActive && (
+        <div
+          style={{
+            display: tab === "cluster" ? "block" : "none",
+            flex: 1,
+            minHeight: 0,
+            overflow: "auto",
+          }}
+        >
+          <DatasetsClusterTab />
+        </div>
+      )}
       <div
         style={{
           display: tab === "servers" ? "block" : "none",
@@ -112,11 +170,544 @@ export function DatasetsPanel() {
         <DatasetsExploreTab
           localServers={localServers}
           userServers={userServers}
+          clusterServers={clusterServers}
+          clusterActive={clusterActive}
           preselect={pendingExplore}
           onPreselectConsumed={() => setPendingExplore(null)}
         />
       </div>
     </div>
+  );
+}
+
+// ---------- Cluster tab ----------
+
+type ClusterDatasetSortKey =
+  | "dataset_id"
+  | "source"
+  | "length"
+  | "size_bytes"
+  | "host_count";
+
+/** Format an epoch-seconds timestamp as a ``Ns / Nm / Nh ago`` delta. */
+function formatAgo(ts: number | null): string {
+  if (ts === null || ts === undefined || ts <= 0) return "never";
+  const now = Date.now() / 1000;
+  const delta = Math.max(0, Math.floor(now - ts));
+  if (delta < 60) return `${delta}s ago`;
+  if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
+  return `${Math.floor(delta / 3600)}h ago`;
+}
+
+/** Read-only cluster inventory view. Polls /api/cluster/dataset_inventory
+ *  every 5s. The master self-gates the loops, so this surface stays
+ *  consistent across master failover (the new master rebuilds its
+ *  inventory from peers within ~10s of taking over). */
+function DatasetsClusterTab() {
+  const inventoryQ = useQuery<ClusterDatasetInventoryResponse>({
+    queryKey: ["cluster", "dataset_inventory"],
+    queryFn: api.getClusterDatasetInventory,
+    refetchInterval: 5000,
+  });
+  const inv = inventoryQ.data;
+
+  const [serverSort, setServerSort] = useState<SortState<"label" | "healthy">>({
+    by: "healthy",
+    dir: "desc",
+  });
+  const [dsSort, setDsSort] = useState<SortState<ClusterDatasetSortKey>>({
+    by: "dataset_id",
+    dir: "asc",
+  });
+  const toggleServer = makeSortToggle(serverSort, setServerSort);
+  const toggleDs = makeSortToggle(dsSort, setDsSort);
+
+  const servers = inv?.servers ?? [];
+  const datasets = inv?.datasets ?? [];
+
+  // server_id -> {base_url, label} for rendering "hosts" column on
+  // dataset rows. Built once per render — cheap (a few dozen entries).
+  const serverIdMap: Map<string, ClusterDatasetServer> = useMemo(() => {
+    const m = new Map<string, ClusterDatasetServer>();
+    for (const s of servers) m.set(s.server_id, s);
+    return m;
+  }, [servers]);
+
+  const sortedServers = useMemo(() => {
+    const arr = [...servers];
+    arr.sort((a, b) => {
+      let cmp = 0;
+      if (serverSort.by === "label") {
+        cmp = a.base_url.localeCompare(b.base_url);
+      } else {
+        // "healthy" desc puts healthy servers first; secondary sort
+        // by label for stable order across refreshes.
+        cmp =
+          Number(b.healthy) - Number(a.healthy) ||
+          a.base_url.localeCompare(b.base_url);
+      }
+      return serverSort.dir === "asc" ? cmp : -cmp;
+    });
+    return arr;
+  }, [servers, serverSort]);
+
+  const sortedDatasets = useMemo(() => {
+    const arr = [...datasets];
+    arr.sort((a, b) => {
+      let cmp = 0;
+      if (dsSort.by === "dataset_id") {
+        cmp = a.dataset_id.localeCompare(b.dataset_id);
+      } else if (dsSort.by === "source") {
+        cmp = a.source.localeCompare(b.source) ||
+          a.dataset_id.localeCompare(b.dataset_id);
+      } else if (dsSort.by === "length") {
+        cmp = (a.length ?? -1) - (b.length ?? -1);
+      } else if (dsSort.by === "size_bytes") {
+        cmp = (a.size_bytes ?? -1) - (b.size_bytes ?? -1);
+      } else if (dsSort.by === "host_count") {
+        cmp = a.server_ids.length - b.server_ids.length;
+      }
+      return dsSort.dir === "asc" ? cmp : -cmp;
+    });
+    return arr;
+  }, [datasets, dsSort]);
+
+  if (inventoryQ.isLoading && !inv) {
+    return (
+      <div className="pane-state-small muted" style={{ padding: 16 }}>
+        Loading cluster inventory…
+      </div>
+    );
+  }
+  if (inventoryQ.isError) {
+    const msg = inventoryQ.error instanceof Error
+      ? inventoryQ.error.message
+      : "request failed";
+    return (
+      <div className="pane-state-small" style={{ padding: 16, color: "var(--danger, #b00)" }}>
+        Could not load cluster inventory: {msg}
+      </div>
+    );
+  }
+  const isMaster = inv?.is_master ?? false;
+  const lastPass = inv?.last_dataset_pass_ts ?? null;
+
+  return (
+    <div className="inference-model-panel" style={{ padding: "0 12px" }}>
+      <section>
+        <h4 className="dyn-heading">
+          Cluster inventory
+          <span className="muted" style={{ marginLeft: 8 }}>
+            ({servers.length} server{servers.length === 1 ? "" : "s"},{" "}
+            {datasets.length} dataset{datasets.length === 1 ? "" : "s"})
+          </span>
+        </h4>
+        <div className="muted" style={{ marginBottom: 8 }}>
+          {isMaster
+            ? "This node is the cluster master. Inventory is computed locally."
+            : "Inventory proxied from the cluster master."}
+          {" · "}
+          last dataset refresh: {formatAgo(lastPass)}
+        </div>
+        {inv?.metrics && (
+          // Cumulative poll counters across all servers. Surfaces
+          // "the master is running but everything's failing" cases —
+          // total_health_failures climbing without any healthy
+          // server is the obvious signal.
+          <div className="muted" style={{ marginBottom: 8, fontSize: "0.9em" }}>
+            healthy:{" "}
+            <strong>
+              {inv.metrics.healthy_servers}/{inv.metrics.total_servers}
+            </strong>
+            {" · "}
+            health polls: {inv.metrics.total_health_failures} failed /{" "}
+            {inv.metrics.total_health_polls}
+            {" · "}
+            dataset polls: {inv.metrics.total_dataset_failures} failed /{" "}
+            {inv.metrics.total_dataset_polls}
+            {typeof inv.metrics.master_age_seconds === "number" && (
+              <>
+                {" · "}
+                master age: {Math.floor(inv.metrics.master_age_seconds)}s
+              </>
+            )}
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h4 className="dyn-heading">
+          Servers
+          <span className="muted"> ({servers.length})</span>
+        </h4>
+        {servers.length === 0 ? (
+          <div className="muted pane-state-small">
+            No dataset_servers reported. Start one or add a user entry on
+            any cluster node — the master will pick it up within ~10s.
+          </div>
+        ) : (
+          <div className="preview-table-wrap">
+            <table className="preview-table">
+              <thead>
+                <tr>
+                  <SortableHeader<"label" | "healthy">
+                    col="label"
+                    label="server"
+                    current={serverSort}
+                    toggle={toggleServer}
+                  />
+                  <th>source</th>
+                  <th>peer</th>
+                  <SortableHeader<"label" | "healthy">
+                    col="healthy"
+                    label="health"
+                    current={serverSort}
+                    toggle={toggleServer}
+                    defaultDir="desc"
+                  />
+                  <th>last refresh</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedServers.map((s) => (
+                  <tr key={s.server_id}>
+                    <td>
+                      <span style={{ fontFamily: "monospace" }}>
+                        {s.base_url}
+                      </span>
+                      <span className="muted" style={{ marginLeft: 8 }}>
+                        · {s.label}
+                      </span>
+                    </td>
+                    <td>{s.source}</td>
+                    <td>
+                      <span
+                        style={{ fontFamily: "monospace" }}
+                        title={s.peer_node_id ?? ""}
+                      >
+                        {s.peer_node_id ? s.peer_node_id.slice(0, 8) : "-"}
+                      </span>
+                    </td>
+                    <td>
+                      <span
+                        className={
+                          "queue-status " +
+                          (s.healthy ? "status-running" : "status-done")
+                        }
+                      >
+                        {s.healthy ? "OK" : "DOWN"}
+                      </span>
+                      {!s.healthy && s.last_health_error && (
+                        <span
+                          className="muted"
+                          style={{ marginLeft: 6 }}
+                          title={s.last_health_error}
+                        >
+                          ({s.last_health_error.slice(0, 40)}
+                          {s.last_health_error.length > 40 ? "…" : ""})
+                        </span>
+                      )}
+                    </td>
+                    <td>{formatAgo(s.last_dataset_refresh)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h4 className="dyn-heading">
+          Datasets
+          <span className="muted"> ({datasets.length})</span>
+        </h4>
+        {datasets.length === 0 ? (
+          <div className="muted pane-state-small">
+            No datasets indexed yet. Local mappings (``--local NAME=PATH``)
+            show up automatically; HF / path datasets appear once a
+            client (training run) has issued a ``/v1/load`` for them.
+          </div>
+        ) : (
+          <div className="preview-table-wrap">
+            <table className="preview-table">
+              <thead>
+                <tr>
+                  <SortableHeader<ClusterDatasetSortKey>
+                    col="dataset_id"
+                    label="dataset"
+                    current={dsSort}
+                    toggle={toggleDs}
+                  />
+                  <SortableHeader<ClusterDatasetSortKey>
+                    col="source"
+                    label="source"
+                    current={dsSort}
+                    toggle={toggleDs}
+                  />
+                  <SortableHeader<ClusterDatasetSortKey>
+                    col="length"
+                    label="rows"
+                    current={dsSort}
+                    toggle={toggleDs}
+                    defaultDir="desc"
+                  />
+                  <SortableHeader<ClusterDatasetSortKey>
+                    col="size_bytes"
+                    label="size"
+                    current={dsSort}
+                    toggle={toggleDs}
+                    defaultDir="desc"
+                  />
+                  <SortableHeader<ClusterDatasetSortKey>
+                    col="host_count"
+                    label="hosts"
+                    current={dsSort}
+                    toggle={toggleDs}
+                    defaultDir="desc"
+                  />
+                  <th>load args / name</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedDatasets.map((d) => (
+                  <ClusterDatasetRow
+                    key={d.dataset_id}
+                    entry={d}
+                    serverIdMap={serverIdMap}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+/** Single row in the cluster datasets table. Extracted so the hosts
+ *  cell can carry a useful tooltip without bloating the parent. */
+function ClusterDatasetRow({
+  entry,
+  serverIdMap,
+}: {
+  entry: ClusterDatasetEntry;
+  serverIdMap: Map<string, ClusterDatasetServer>;
+}) {
+  const hostBaseUrls = entry.server_ids
+    .map((sid) => serverIdMap.get(sid)?.base_url ?? sid)
+    .filter((url): url is string => !!url);
+  const hostsTooltip = hostBaseUrls.join("\n");
+  // Human-friendly handle: for `local/<name>` entries the ID is
+  // already the human name; for HF/path entries the ID is the 16-hex
+  // canonical hash — show the load_args.path beside it for context.
+  const friendlyName =
+    entry.name ??
+    (entry.load_args && typeof entry.load_args["path"] === "string"
+      ? (entry.load_args["path"] as string)
+      : null);
+  return (
+    <tr>
+      <td style={{ fontFamily: "monospace" }}>
+        {entry.dataset_id}
+        {friendlyName && friendlyName !== entry.dataset_id && (
+          <span className="muted" style={{ marginLeft: 6 }}>
+            ({friendlyName})
+          </span>
+        )}
+      </td>
+      <td>{entry.source}</td>
+      <td title={entry.length != null ? fmtCount(entry.length) : ""}>
+        {fmtCountCompact(entry.length)}
+      </td>
+      <td>{fmtBytes(entry.size_bytes)}</td>
+      <td title={hostsTooltip}>
+        {entry.server_ids.length}
+        {hostBaseUrls.length > 0 && (
+          <span
+            className="muted"
+            style={{
+              marginLeft: 6,
+              fontSize: "0.85em",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              maxWidth: 240,
+              display: "inline-block",
+              verticalAlign: "middle",
+            }}
+          >
+            ({hostBaseUrls.join(", ")})
+          </span>
+        )}
+      </td>
+      <td style={{ fontFamily: "monospace", fontSize: "0.85em" }}>
+        {entry.load_args ? JSON.stringify(entry.load_args) : "-"}
+      </td>
+    </tr>
+  );
+}
+
+interface ClusterServerSectionProps {
+  title: string;
+  servers: ClusterDatasetServer[];
+  emptyHint: string;
+  headerAction?: React.ReactNode;
+  selected: SelectedServer | null;
+  /** This node's cluster node_id. Entries whose ``peer_node_id``
+   *  matches are managed locally — DELETE goes to this node's
+   *  ``/api/dataset-servers/user/<id>``. */
+  selfNodeId: string | null;
+  onPick: (s: ClusterDatasetServer) => void;
+  /** Called after a successful delete so the parent can invalidate
+   *  the local + cluster queries. */
+  onDeleted: () => void;
+}
+
+/** A single sub-section of the cluster-mode Servers tab — either
+ *  "Spawned" or "User-added", same shape so the two render
+ *  consistently. The standalone-mode list keeps its old per-row
+ *  rendering; this component is cluster-only. */
+function ClusterServerSection({
+  title,
+  servers,
+  emptyHint,
+  headerAction,
+  selected,
+  selfNodeId,
+  onPick,
+  onDeleted,
+}: ClusterServerSectionProps) {
+  const removeUser = useMutation({
+    mutationFn: (entryId: string) => api.deleteUserDatasetServer(entryId),
+    onSuccess: () => {
+      // Kick the master's collect loop so the cluster inventory
+      // drops the entry within ~1s instead of one collect tick.
+      // Fire-and-forget — onDeleted's invalidate will trigger the
+      // refetch.
+      void api.refreshClusterDatasetServers();
+      onDeleted();
+    },
+  });
+  return (
+    <section>
+      <h4 className="dyn-heading">
+        {title}
+        <span className="muted"> ({servers.length})</span>
+        {headerAction}
+      </h4>
+      {servers.length === 0 && (
+        <div className="muted pane-state-small">{emptyHint}</div>
+      )}
+      <ul className="inference-server-list">
+        {servers.map((s) => {
+          const sel =
+            selected !== null &&
+            keyMatches(selected.key, {
+              kind: "cluster",
+              server_id: s.server_id,
+            });
+          const ownedHere =
+            s.source === "user" &&
+            !!selfNodeId &&
+            s.peer_node_id === selfNodeId &&
+            !!s.source_id;
+          return (
+            <li
+              key={s.server_id}
+              className={
+                "inference-server-row" + (sel ? " selected" : "")
+              }
+              onClick={() => onPick(s)}
+              title={
+                s.last_health_error
+                  ? `health error: ${s.last_health_error}`
+                  : ""
+              }
+            >
+              <div className="inference-server-row-line">
+                <span
+                  className={
+                    "queue-status " +
+                    (s.healthy ? "status-running" : "status-done")
+                  }
+                >
+                  {s.healthy ? "OK" : "DOWN"}
+                </span>
+                <span className="inference-server-url">{s.base_url}</span>
+                <span className="muted">· {s.label}</span>
+                {s.peer_node_id && (
+                  <span
+                    className="muted"
+                    title={`peer node_id: ${s.peer_node_id}`}
+                  >
+                    · peer {s.peer_node_id.slice(0, 8)}
+                  </span>
+                )}
+                {s.loopback && (
+                  <span
+                    className="muted"
+                    style={{ color: "var(--warning, #b87000)" }}
+                    title={
+                      "Host is loopback. The cluster master skips this " +
+                      "entry for auto-routing because other peers can't " +
+                      "reach it. Still usable for node-local training " +
+                      "when picked explicitly in the submit modal."
+                    }
+                  >
+                    · node-local
+                  </span>
+                )}
+                {s.verify_tls === false && (
+                  <span
+                    className="muted"
+                    style={{ color: "var(--warning, #b87000)" }}
+                    title="TLS chain validation off for this entry"
+                  >
+                    · insecure TLS
+                  </span>
+                )}
+                {ownedHere ? (
+                  <button
+                    className="tiny"
+                    style={{ marginLeft: "auto" }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (
+                        window.confirm(
+                          `Remove ${s.label} from this node's registry?`,
+                        )
+                      ) {
+                        removeUser.mutate(s.source_id as string);
+                      }
+                    }}
+                    title="Remove this entry from the local registry"
+                  >
+                    ×
+                  </button>
+                ) : (
+                  s.source === "user" &&
+                  s.peer_node_id && (
+                    <span
+                      className="muted"
+                      style={{ marginLeft: "auto" }}
+                      title={
+                        `Registered on peer ${s.peer_node_id.slice(0, 8)}. ` +
+                        "Open that node's webui to delete — v1 doesn't " +
+                        "proxy DELETE through the master."
+                      }
+                    >
+                      managed by peer
+                    </span>
+                  )
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 
@@ -137,15 +728,40 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
     queryKey: ["dataset-servers-user"],
     queryFn: api.listUserDatasetServers,
   });
+  // Cluster-mode gate (TanStack dedups by queryKey — see top of file).
+  const clusterSelfQ = useQuery({
+    queryKey: ["cluster-self"],
+    queryFn: api.getClusterSelf,
+    refetchInterval: 30000,
+  });
+  const clusterActive = !!clusterSelfQ.data;
+  // Cluster-wide deduped server list (token-stripped) — used for the
+  // unified "Cluster dataset servers" section that replaces the per-
+  // node Local / User sections in cluster mode.
+  const clusterServersQ = useQuery({
+    queryKey: ["cluster", "dataset_servers"],
+    queryFn: api.getClusterDatasetServers,
+    refetchInterval: 5000,
+    enabled: clusterActive,
+  });
 
   const [selected, setSelected] = useState<SelectedServer | null>(null);
   const [addOpen, setAddOpen] = useState(false);
 
   const localServers = localsQ.data ?? [];
   const userServers = usersQ.data ?? [];
+  const clusterServers = clusterServersQ.data ?? [];
+  // The local node's cluster node_id, used to decide which cluster
+  // entries we can delete directly. Entries with a matching
+  // ``peer_node_id`` were registered here — DELETE goes to the
+  // local registry. Entries owned by other peers get a tooltip
+  // explaining where to manage them; v1 doesn't proxy the delete
+  // through the master.
+  const selfNodeId = clusterSelfQ.data?.node_id ?? null;
 
-  // When the selected entry disappears (e.g. a local server exits, or
-  // the user deletes their entry), clear the selection so the action
+  // When the selected entry disappears (e.g. a local server exits,
+  // the user deletes their entry, or a cluster server stops being
+  // reported by the master), clear the selection so the action
   // buttons don't fire against a stale URL. useEffect so the setState
   // happens after commit rather than during render.
   useEffect(() => {
@@ -166,14 +782,47 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
           alive: found.alive,
         });
       }
-    } else {
+    } else if (selected.key.kind === "user") {
       const found = userServers.find(
         (s) => selected.key.kind === "user" && s.id === selected.key.id,
       );
       if (!found) setSelected(null);
+    } else {
+      // cluster — the master may drop the entry on a peer going away
+      // or rename it (re-collect). Drop selection in that case.
+      const found = clusterServers.find(
+        (s) =>
+          selected.key.kind === "cluster" &&
+          s.server_id === selected.key.server_id,
+      );
+      if (!found) setSelected(null);
+      else if (
+        found.base_url !== selected.base_url ||
+        found.healthy !== (selected.alive ?? false)
+      ) {
+        setSelected({
+          key: { kind: "cluster", server_id: found.server_id },
+          base_url: found.base_url,
+          label: found.label,
+          has_auth_token: true, // cluster proxy injects bearer server-side
+          alive: found.healthy,
+        });
+      }
     }
-  }, [selected, localServers, userServers]);
+  }, [selected, localServers, userServers, clusterServers]);
 
+  const onPickCluster = (s: ClusterDatasetServer) => {
+    setSelected({
+      key: { kind: "cluster", server_id: s.server_id },
+      base_url: s.base_url,
+      label: s.label,
+      // Cluster proxy resolves the bearer server-side from the master's
+      // inventory — the browser never sees the token, so as far as the
+      // UI is concerned the auth indicator is always implicit.
+      has_auth_token: true,
+      alive: s.healthy,
+    });
+  };
   const onPickLocal = (s: DatasetServerLocal) => {
     setSelected({
       key: { kind: "local", queue_id: s.queue_id },
@@ -218,126 +867,192 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
 
   return (
     <div className="inference-model-panel">
-      <section>
-        <h4 className="dyn-heading">
-          Local dataset servers
-          <span className="muted"> ({localServers.length})</span>
-        </h4>
-        {localServers.length === 0 && (
-          <div className="muted pane-state-small">
-            No dataset_server jobs — start one from Tools → Start Dataset Server…
-          </div>
-        )}
-        <ul className="inference-server-list">
-          {localServers.map((s) => {
-            const sel =
-              selected !== null &&
-              keyMatches(selected.key, { kind: "local", queue_id: s.queue_id });
-            return (
-              <li
-                key={s.queue_id}
-                className={
-                  "inference-server-row" + (sel ? " selected" : "")
-                }
-                onClick={() => onPickLocal(s)}
+      {clusterActive ? (
+        // Cluster mode: split the master-aggregated list into
+        // Spawned (JobRecord-owned) + User-added sub-sections, same
+        // shape as standalone but sourced cluster-wide. Loopback
+        // entries are shown with a "node-local" badge — they're
+        // legitimate for non-cluster training, just excluded from
+        // auto-routing because other peers can't reach them.
+        <>
+          <ClusterServerSection
+            title="Spawned dataset servers"
+            servers={clusterServers.filter((s) => s.source === "local")}
+            emptyHint={
+              "No spawned dataset_servers in the cluster yet. " +
+              "Start one from Tools → Start Dataset Server…"
+            }
+            selected={selected}
+            selfNodeId={selfNodeId}
+            onPick={onPickCluster}
+            onDeleted={() => {
+              qc.invalidateQueries({ queryKey: ["dataset-servers-user"] });
+              qc.invalidateQueries({
+                queryKey: ["cluster", "dataset_servers"],
+              });
+            }}
+          />
+          <ClusterServerSection
+            title="User-added servers"
+            servers={clusterServers.filter((s) => s.source === "user")}
+            emptyHint={
+              "No user-added servers in the cluster yet. " +
+              "Use “+ Add server” — entries register on this node " +
+              "and the cluster master picks them up on the next tick."
+            }
+            headerAction={
+              <button
+                style={{ marginLeft: 12 }}
+                onClick={() => setAddOpen(true)}
+                title="Register a remote dataset_server URL with this node"
               >
-                <div className="inference-server-row-line">
-                  <span
+                + Add server
+              </button>
+            }
+            selected={selected}
+            selfNodeId={selfNodeId}
+            onPick={onPickCluster}
+            onDeleted={() => {
+              qc.invalidateQueries({ queryKey: ["dataset-servers-user"] });
+              qc.invalidateQueries({
+                queryKey: ["cluster", "dataset_servers"],
+              });
+            }}
+          />
+        </>
+      ) : (
+        // Standalone mode: per-node Local + User sections, unchanged.
+        <>
+          <section>
+            <h4 className="dyn-heading">
+              Local dataset servers
+              <span className="muted"> ({localServers.length})</span>
+            </h4>
+            {localServers.length === 0 && (
+              <div className="muted pane-state-small">
+                No dataset_server jobs — start one from Tools → Start Dataset Server…
+              </div>
+            )}
+            <ul className="inference-server-list">
+              {localServers.map((s) => {
+                const sel =
+                  selected !== null &&
+                  keyMatches(selected.key, {
+                    kind: "local",
+                    queue_id: s.queue_id,
+                  });
+                return (
+                  <li
+                    key={s.queue_id}
                     className={
-                      "queue-status " +
-                      (s.alive ? "status-running" : "status-done")
+                      "inference-server-row" + (sel ? " selected" : "")
                     }
+                    onClick={() => onPickLocal(s)}
                   >
-                    {s.alive ? "ALIVE" : "DEAD"}
-                  </span>
-                  <span className="inference-server-url">{s.base_url}</span>
-                  <span className="muted">· {s.label}</span>
-                  {s.has_auth_token && (
-                    <span className="muted">· auth ✓</span>
-                  )}
-                  {s.alive && (
-                    <button
-                      className="secondary"
-                      style={{ marginLeft: "auto" }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void copyLocalBundle(s.queue_id);
-                      }}
-                      title={
-                        "Copy a forgather-dataset:// URI containing the URL " +
-                        "and token. Paste it into '+ Add server' on another node."
-                      }
-                    >
-                      Copy bundle
-                    </button>
-                  )}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      </section>
+                    <div className="inference-server-row-line">
+                      <span
+                        className={
+                          "queue-status " +
+                          (s.alive ? "status-running" : "status-done")
+                        }
+                      >
+                        {s.alive ? "ALIVE" : "DEAD"}
+                      </span>
+                      <span className="inference-server-url">
+                        {s.base_url}
+                      </span>
+                      <span className="muted">· {s.label}</span>
+                      {s.has_auth_token && (
+                        <span className="muted">· auth ✓</span>
+                      )}
+                      {s.alive && (
+                        <button
+                          className="secondary"
+                          style={{ marginLeft: "auto" }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void copyLocalBundle(s.queue_id);
+                          }}
+                          title={
+                            "Copy a forgather-dataset:// URI containing the " +
+                            "URL and token. Paste it into '+ Add server' on " +
+                            "another node."
+                          }
+                        >
+                          Copy bundle
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
 
-      <section>
-        <h4 className="dyn-heading">
-          User-added servers
-          <span className="muted"> ({userServers.length})</span>
-          <button
-            style={{ marginLeft: 12 }}
-            onClick={() => setAddOpen(true)}
-            title="Register a remote dataset_server URL"
-          >
-            + Add server
-          </button>
-        </h4>
-        {userServers.length === 0 && (
-          <div className="muted pane-state-small">
-            No user-added servers. Use “+ Add server” to register a remote URL.
-          </div>
-        )}
-        <ul className="inference-server-list">
-          {userServers.map((s) => {
-            const sel =
-              selected !== null &&
-              keyMatches(selected.key, { kind: "user", id: s.id });
-            return (
-              <li
-                key={s.id}
-                className={
-                  "inference-server-row" + (sel ? " selected" : "")
-                }
-                onClick={() => onPickUser(s)}
+          <section>
+            <h4 className="dyn-heading">
+              User-added servers
+              <span className="muted"> ({userServers.length})</span>
+              <button
+                style={{ marginLeft: 12 }}
+                onClick={() => setAddOpen(true)}
+                title="Register a remote dataset_server URL"
               >
-                <div className="inference-server-row-line">
-                  <span className="queue-status status-unknown">USER</span>
-                  <span className="inference-server-url">{s.base_url}</span>
-                  <span className="muted">· {s.label}</span>
-                  {s.has_auth_token && (
-                    <span className="muted">· auth ✓</span>
-                  )}
-                  <button
-                    className="tiny"
-                    style={{ marginLeft: "auto" }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (
-                        window.confirm(
-                          `Remove ${s.label} from the registry?`,
-                        )
-                      ) {
-                        removeUser.mutate(s.id);
-                      }
-                    }}
-                    title="Remove this entry"
+                + Add server
+              </button>
+            </h4>
+            {userServers.length === 0 && (
+              <div className="muted pane-state-small">
+                No user-added servers. Use “+ Add server” to register a remote URL.
+              </div>
+            )}
+            <ul className="inference-server-list">
+              {userServers.map((s) => {
+                const sel =
+                  selected !== null &&
+                  keyMatches(selected.key, { kind: "user", id: s.id });
+                return (
+                  <li
+                    key={s.id}
+                    className={
+                      "inference-server-row" + (sel ? " selected" : "")
+                    }
+                    onClick={() => onPickUser(s)}
                   >
-                    ×
-                  </button>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      </section>
+                    <div className="inference-server-row-line">
+                      <span className="queue-status status-unknown">USER</span>
+                      <span className="inference-server-url">
+                        {s.base_url}
+                      </span>
+                      <span className="muted">· {s.label}</span>
+                      {s.has_auth_token && (
+                        <span className="muted">· auth ✓</span>
+                      )}
+                      <button
+                        className="tiny"
+                        style={{ marginLeft: "auto" }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (
+                            window.confirm(
+                              `Remove ${s.label} from the registry?`,
+                            )
+                          ) {
+                            removeUser.mutate(s.id);
+                          }
+                        }}
+                        title="Remove this entry"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        </>
+      )}
 
       {selected && (
         // Key on base_url so switching to a different server (or one
@@ -356,7 +1071,19 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
         <AddServerModal
           onClose={() => setAddOpen(false)}
           onAdded={() => {
+            // Kick the master collect/refresh loops so the cluster
+            // inventory reflects the new entry within ~1s instead
+            // of waiting up to one collect tick. Both queries get
+            // invalidated; the cluster query waits a beat for the
+            // master to re-poll before refetching.
+            void api.refreshClusterDatasetServers();
             qc.invalidateQueries({ queryKey: ["dataset-servers-user"] });
+            qc.invalidateQueries({
+              queryKey: ["cluster", "dataset_servers"],
+            });
+            qc.invalidateQueries({
+              queryKey: ["cluster", "dataset_inventory"],
+            });
             setAddOpen(false);
           }}
         />
@@ -395,18 +1122,34 @@ function ServerActions({ selected, onOpenInExplore }: ServerActionsProps) {
     setResult(null);
     try {
       const base = selected.base_url;
+      // Cluster selection: route through the master proxy
+      // (/api/cluster/dataset_server_proxy/{server_id}/{op}). That
+      // path looks up the bearer in the master's inventory, so the
+      // browser never needs the upstream token. For local + user
+      // selections, keep the existing per-node proxy.
+      const isCluster = selected.key.kind === "cluster";
+      const clusterServerId =
+        selected.key.kind === "cluster" ? selected.key.server_id : null;
       let r: FetchResult;
       if (kind === "status") {
-        const data = await api.datasetServerHealth(base, tokenToUse);
+        const data = isCluster && clusterServerId
+          ? await api.clusterDatasetServerHealth(clusterServerId)
+          : await api.datasetServerHealth(base, tokenToUse);
         r = { kind, data, fetched_at: Date.now() };
       } else if (kind === "datasets") {
-        const data = await api.datasetServerDatasets(base, tokenToUse);
+        const data = isCluster && clusterServerId
+          ? await api.clusterDatasetServerDatasets(clusterServerId)
+          : await api.datasetServerDatasets(base, tokenToUse);
         r = { kind, data, fetched_at: Date.now() };
       } else if (kind === "cache") {
-        const data = await api.datasetServerCache(base, tokenToUse);
+        const data = isCluster && clusterServerId
+          ? await api.clusterDatasetServerCache(clusterServerId)
+          : await api.datasetServerCache(base, tokenToUse);
         r = { kind, data, fetched_at: Date.now() };
       } else {
-        const data = await api.datasetServerLocal(base, tokenToUse);
+        const data = isCluster && clusterServerId
+          ? await api.clusterDatasetServerLocal(clusterServerId)
+          : await api.datasetServerLocal(base, tokenToUse);
         r = { kind, data, fetched_at: Date.now() };
       }
       setResult(r);
@@ -603,6 +1346,22 @@ function fmtCount(n: number | null | undefined): string {
   return n.toLocaleString();
 }
 
+/** Compact human form of a row count: ``1234`` → ``1.2K``, ``2119719`` →
+ *  ``2.1M``. Used for the Cluster tab's Datasets summary column where
+ *  the full locale-formatted number would crowd the layout. */
+function fmtCountCompact(n: number | null | undefined): string {
+  if (n == null) return "—";
+  if (n < 1000) return String(n);
+  const units = ["", "K", "M", "B", "T"];
+  let i = 0;
+  let v = n;
+  while (v >= 1000 && i < units.length - 1) {
+    v /= 1000;
+    i++;
+  }
+  return `${v.toFixed(v < 10 ? 1 : 0)}${units[i]}`;
+}
+
 /** Truncate a string to ``max`` chars, appending "…" when cut. */
 function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + "…" : s;
@@ -765,6 +1524,8 @@ function HandlesTable({
     onOpenInExplore({
       server_label: server.label,
       server_base_url: server.base_url,
+      cluster_server_id:
+        server.key.kind === "cluster" ? server.key.server_id : undefined,
       load: { path, name, split },
       display: bits.join(" · "),
       hint_rows: row.length,
@@ -923,6 +1684,8 @@ function HFCacheTable({
     onOpenInExplore({
       server_label: server.label,
       server_base_url: server.base_url,
+      cluster_server_id:
+        server.key.kind === "cluster" ? server.key.server_id : undefined,
       load: { path: row.repo, name: row.config, split: splitName },
       display: `${row.repo} · ${row.config} · ${splitName}`,
       hint_rows: splitRows,
@@ -1199,6 +1962,8 @@ function LocalTable({
     onOpenInExplore({
       server_label: server.label,
       server_base_url: server.base_url,
+      cluster_server_id:
+        server.key.kind === "cluster" ? server.key.server_id : undefined,
       load: { path: `local/${row.name}`, split: splitName },
       display: `local/${row.name}${row.config_name ? ` · ${row.config_name}` : ""} · ${splitName}`,
       hint_rows: splitRows,
@@ -1385,6 +2150,10 @@ function AddServerModal({
   const [baseUrl, setBaseUrl] = useState("");
   const [authToken, setAuthToken] = useState("");
   const [showAuthToken, setShowAuthToken] = useState(false);
+  // Per-entry TLS policy. Default secure (verify chain + hostname);
+  // operator can opt out for SSH-tunneled / out-of-band-secured
+  // remotes whose cert doesn't validate against the local CA.
+  const [verifyTls, setVerifyTls] = useState(true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1412,6 +2181,7 @@ function AddServerModal({
         label: label.trim(),
         base_url: baseUrl.trim(),
         auth_token: authToken.trim(),
+        verify_tls: verifyTls,
       };
       await api.addUserDatasetServer(req);
       onAdded();
@@ -1543,6 +2313,41 @@ function AddServerModal({
                 </button>
               </div>
             </label>
+          </div>
+          <div className="submit-row">
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                cursor: "pointer",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={verifyTls}
+                onChange={(e) => setVerifyTls(e.target.checked)}
+              />
+              <span>Verify TLS chain + hostname</span>
+            </label>
+            {!verifyTls && (
+              <div
+                className="muted"
+                style={{
+                  marginTop: 4,
+                  paddingLeft: 24,
+                  // Make the warning visually distinct without
+                  // shouting — operator already chose this.
+                  color: "var(--warning, #b87000)",
+                }}
+              >
+                ⚠ Chain validation off. The upstream cert is no longer
+                authenticated by TLS — only enable this when the
+                channel is secured by other means (SSH tunnel, VPN,
+                air-gapped LAN). Bearer auth and any downstream load
+                policy still apply.
+              </div>
+            )}
           </div>
         </form>
         <footer className="modal-footer">

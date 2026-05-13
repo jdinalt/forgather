@@ -70,6 +70,13 @@ class ClusterJob:
     # status is reported separately and aggregated for the UI.
     status: str = "submitted"
     cancelled_at: Optional[float] = None
+    # The dataset_source choice from the submit request — None /
+    # ``{"kind":"local"}`` for the training script's default loader,
+    # ``{"kind":"auto"}`` for cluster routing, or ``{"kind":"server",
+    # "server_id": ...}`` for a pinned URL. Persisted so the CLI and
+    # webui can render "what dataset routing did this bundle use"
+    # after the fact.
+    dataset_source: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -93,6 +100,7 @@ class ClusterJob:
             members=members,
             status=data.get("status", "submitted"),
             cancelled_at=data.get("cancelled_at"),
+            dataset_source=data.get("dataset_source"),
         )
 
 

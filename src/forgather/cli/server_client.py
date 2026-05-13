@@ -380,6 +380,7 @@ class ServerClient:
         rdzv_node_id=None,
         rdzv_port=None,
         allow_version_mismatch=False,
+        dataset_source=None,
     ):
         """Fan out a multi-node training submit.
 
@@ -388,6 +389,11 @@ class ServerClient:
         server matches each member to a known cluster peer, derives
         the iface from the member's advertised IP when omitted, and
         spawns torchrun with the right rdzv args on every peer.
+
+        ``dataset_source`` mirrors the webui submit modal's
+        dataset-source choice — e.g. ``{"kind": "auto"}`` for cluster
+        auto-routing or ``{"kind": "server", "server_id": "..."}`` to
+        pin to a specific known server.
         """
         body = {
             "project_dir": project_dir,
@@ -401,8 +407,43 @@ class ServerClient:
             body["rdzv_node_id"] = rdzv_node_id
         if rdzv_port is not None:
             body["rdzv_port"] = rdzv_port
+        if dataset_source is not None:
+            body["dataset_source"] = dataset_source
         return self._post("/cluster/jobs/submit", body).json()
 
     def cluster_job_cancel(self, cluster_job_id):
         """Fan out cancel to every participant of the bundle."""
         return self._post(f"/cluster/jobs/{cluster_job_id}/cancel").json()
+
+    def cluster_dataset_inventory(self):
+        """Master-aggregated dataset-server inventory + dataset listing.
+
+        Returns the same payload the webui Cluster + Servers tabs
+        consume — useful for verifying routing readiness from the CLI
+        before kicking off cluster-mode training.
+        """
+        return self._get("/cluster/dataset_inventory").json()
+
+    def cluster_dataset_resolve(self, dataset_id):
+        """Ask the master's router which server it would pick for ``path``.
+
+        Returns the response body (which contains
+        ``{base_url, auth_token, server_id}`` on success). Raises
+        ``RuntimeError`` on 503 (cold-start) / 410 (no candidate) /
+        other 4xx with the upstream detail message — same exception
+        shape as the rest of ServerClient, so the CLI handler just
+        prints the message.
+        """
+        return self._get(
+            f"/cluster/dataset_router/resolve?dataset_id={quote(dataset_id, safe='')}"
+        ).json()
+
+    def cluster_server_proxy_get(self, server_id, op):
+        """Cluster-proxied GET against a single dataset_server.
+
+        ``op`` is one of ``health``, ``auth-status``, ``datasets``,
+        ``cache``, ``local``. The master injects the bearer from its
+        inventory; the caller only needs the cluster bearer.
+        """
+        path = f"/cluster/dataset_server_proxy/{server_id}/{op}"
+        return self._get(path).json()

@@ -740,6 +740,62 @@ global-state mutation (queue, GPU policy, cluster jobs) through
 append-only events so master/backup replication can be added later
 without restructuring storage. v1 emits no events to the journal yet.
 
+#### Multi-node dataset routing (`FORGATHER_DATASET_SERVER=auto`)
+
+In cluster mode the master keeps a deduped inventory of every
+`dataset_server` known to any peer (both spawned via the webui's
+Tools menu and registered via the per-node user-registry). The
+inventory drives a tiny router exposed at
+
+```
+GET /api/cluster/dataset_router/resolve?path=<dataset path>
+```
+
+which picks a healthy server at random across the candidate set
+(crude load balance) and returns `{base_url, auth_token, server_id}`.
+Three master-only background loops, started from the lifespan and
+self-gated on `cluster.is_self_master`, keep the inventory live:
+
+| loop                              | interval               | what it does                                                                 |
+|-----------------------------------|------------------------|------------------------------------------------------------------------------|
+| `master_collect_servers_loop`     | 10 s                   | GET each peer's `/api/cluster/dataset_servers_local`, merge into the set     |
+| `master_health_loop`              | 10 s                   | GET `/v1/health` on every server, flip the per-server healthy flag           |
+| `master_dataset_refresh_loop`     | 10 s (warm-up) / 60 s  | GET `/v1/datasets` + `/v1/local`, rebuild the `local/<name>` routing index   |
+
+On a master transition the new master clears its inventory and the
+router returns `503 Retry-After: 5` until the first dataset-refresh
+pass completes. `local/<name>` is a **global** key — two servers
+advertising the same name are treated as interchangeable replicas
+(intentional, gives operators a knob for redundancy/load-balance).
+HF / path requests fall back to "any healthy server" and the
+`dataset_server` loads on demand; the resilient client retries on
+failure and re-routes to a different server on its next attempt.
+
+To use the router from a training job:
+
+```bash
+FORGATHER_DATASET_SERVER=auto forgather train …                # CLI
+forgather -p <proj> -t <cfg> cluster submit --dataset-source auto …
+```
+
+Or pick `Auto (cluster routing)` in any submit modal. The CLI flag
+and modal selector both encode `dataset_source={"kind":"auto"}` on
+the job_params; the scheduler's `dataset_source.resolve_to_env`
+expands that to `FORGATHER_DATASET_SERVER=auto` in the spawn env,
+and the resilient client in
+`forgather.ml.datasets.resilient_remote_backend` queries the local
+forgather_server's resolve endpoint on every (re)connect — so a
+peer that dies mid-iteration causes the next attempt to land on a
+different healthy peer with no operator intervention.
+
+Diagnostics: `forgather cluster datasets [-v]` prints the deduped
+inventory; `forgather cluster resolve <path>` dry-runs the router;
+`forgather cluster server <server_id> {status|list|cache|local}`
+talks to any cluster server via the master-proxy without needing
+the upstream bearer. The Datasets view's new **Cluster** tab in the
+webui surfaces the same payload — server health, refresh ages,
+per-server poll counters, and a deduped dataset table with hosts.
+
 **Known limits in v1.**
 
 - No global scheduler — peer scheduling decisions are still

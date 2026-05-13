@@ -51,7 +51,7 @@ async def lifespan(app: FastAPI):
     if cluster.is_active():
         # Lazy import: zeroconf and the membership module pull in net
         # subsystems we don't want loading on standalone servers.
-        from . import cluster_discovery, cluster_membership
+        from . import cluster_dataset_inventory, cluster_discovery, cluster_membership
 
         cluster_journal.init()
         discovery_handle = cluster_discovery.ClusterDiscovery()
@@ -69,7 +69,30 @@ async def lifespan(app: FastAPI):
                 "mDNS discovery failed to start; continuing without it"
             )
             discovery_handle = None
+        # Wake the master dataset-inventory loops on a master-role
+        # transition so a newly-elected master populates the routing
+        # index within ~5s rather than waiting on the steady-state
+        # cadence.
+        cluster_membership.register_role_change_listener(
+            lambda _prev, _new: cluster_dataset_inventory.wake_loops()
+        )
         tasks.append(asyncio.create_task(cluster_membership.membership_loop()))
+        # Dataset-server cluster-routing inventory. All three loops
+        # run on every node but self-gate on master status — failover
+        # to a new master is automatic.
+        tasks.append(
+            asyncio.create_task(
+                cluster_dataset_inventory.master_collect_servers_loop()
+            )
+        )
+        tasks.append(
+            asyncio.create_task(cluster_dataset_inventory.master_health_loop())
+        )
+        tasks.append(
+            asyncio.create_task(
+                cluster_dataset_inventory.master_dataset_refresh_loop()
+            )
+        )
 
     tasks.append(asyncio.create_task(scheduler.dispatcher_loop()))
     try:

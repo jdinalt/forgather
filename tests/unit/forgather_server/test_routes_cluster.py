@@ -37,11 +37,18 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(
         paths, "password_hash_file", lambda: server_dir / "password_hash"
     )
-    from forgather_server import cluster_jobs, cluster_journal
+    from forgather_server import (
+        cluster_dataset_inventory,
+        cluster_jobs,
+        cluster_journal,
+        cluster_membership,
+    )
 
     cluster._reset_for_tests()
     cluster_jobs._reset_for_tests()
     cluster_journal._reset_for_tests()
+    cluster_dataset_inventory._reset_master_state_for_tests()
+    cluster_membership._reset_role_listeners_for_tests()
     auth._reset_sessions_for_tests()
     yield
 
@@ -208,6 +215,54 @@ class TestPeerCarveOut:
         r = client.post("/api/cluster/gpu_policy_local")
         assert r.status_code == 200, r.text
 
+    def test_dataset_server_proxy_prefix_carved_out_for_peers(self):
+        """The cluster master proxy
+        ``/api/cluster/dataset_server_proxy/{server_id}/{op}`` lives
+        behind a path-prefix carve-out (the path is templated, so
+        exact-match wouldn't fit). A peer-IP GET on the prefix must
+        pass without a token; a non-peer source must still 401.
+        Regression for the Phase-7 review finding."""
+        cluster.activate("c", port=8765)
+        for addr in ("127.0.0.1", "testclient"):
+            cluster.update_member(
+                str(uuid.uuid4()),
+                hostname=f"peer-{addr}",
+                address=addr,
+                port=8765,
+                cluster_name="c",
+            )
+        app = FastAPI()
+        app.add_middleware(AuthMiddleware)
+
+        @app.get("/api/cluster/dataset_server_proxy/{server_id}/{op}")
+        async def fake_get(server_id: str, op: str):
+            return {"server_id": server_id, "op": op}
+
+        @app.post("/api/cluster/dataset_server_proxy/{server_id}/{op}")
+        async def fake_post(server_id: str, op: str):
+            return {"server_id": server_id, "op": op}
+
+        client = TestClient(app)
+        # GET: passes via peer-IP carve-out
+        r = client.get("/api/cluster/dataset_server_proxy/abc123/health")
+        assert r.status_code == 200, r.text
+        # POST: passes via mutation carve-out (used for the /load op)
+        r = client.post("/api/cluster/dataset_server_proxy/abc123/load")
+        assert r.status_code == 200, r.text
+        # Unknown-prefix path must NOT be swept up by the carve-out —
+        # belt-and-suspenders against the prefix accidentally being
+        # too broad.
+        @app.get("/api/cluster/dataset_server_proxy_evil/x/y")
+        async def fake_evil():
+            return {"ok": True}
+
+        # Add a non-peer member-table entry for the test source so the
+        # carve-out predicate fires.
+        r = client.get("/api/cluster/dataset_server_proxy_evil/x/y")
+        # Path doesn't start with ``/api/cluster/dataset_server_proxy/``
+        # (note the trailing slash) — should 401.
+        assert r.status_code == 401
+
     def test_normal_token_still_works(self):
         cluster.activate("c", port=8765)
         token = auth.load_token()
@@ -356,6 +411,437 @@ class TestBandwidth:
         client = TestClient(_make_app())
         r = client.get("/api/cluster/bandwidth_local?bytes=4096")
         assert r.status_code == 200, r.text
+
+
+class TestDatasetServersLocal:
+    """Verifies `GET /api/cluster/dataset_servers_local` returns the
+    inventory module's view of this peer's dataset_servers and is
+    reachable via the peer carve-out."""
+
+    def _patch_inventory(self, monkeypatch, servers):
+        from forgather_server import cluster_dataset_inventory
+
+        monkeypatch.setattr(
+            cluster_dataset_inventory, "local_servers", lambda: list(servers)
+        )
+
+    def test_returns_servers_with_tokens(self, monkeypatch):
+        from forgather_server.cluster_dataset_inventory import LocalServer
+
+        cluster.activate("c", port=8765)
+        self._patch_inventory(
+            monkeypatch,
+            [
+                LocalServer(
+                    server_id="abc123",
+                    base_url="http://node-a:8766",
+                    auth_token="tok",
+                    label="config.yaml:8766",
+                    source="local",
+                    peer_node_id=cluster.self_identity().node_id,
+                )
+            ],
+        )
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_servers_local",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["self_node_id"] == cluster.self_identity().node_id
+        assert len(body["servers"]) == 1
+        s = body["servers"][0]
+        assert s["base_url"] == "http://node-a:8766"
+        assert s["auth_token"] == "tok"  # bearer included over carve-out
+        assert s["source"] == "local"
+        # Node-id header for the master's sanity check.
+        assert r.headers.get("x-forgather-node-id") == cluster.self_identity().node_id
+
+    def test_carved_out_for_known_peers(self, monkeypatch):
+        cluster.activate("c", port=8765)
+        for addr in ("127.0.0.1", "testclient"):
+            cluster.update_member(
+                str(uuid.uuid4()),
+                hostname=f"peer-{addr}",
+                address=addr,
+                port=8765,
+                cluster_name="c",
+            )
+        self._patch_inventory(monkeypatch, [])
+        client = TestClient(_make_app())
+        # No Authorization header — must be accepted by carve-out.
+        r = client.get("/api/cluster/dataset_servers_local")
+        assert r.status_code == 200, r.text
+
+    def test_rejected_when_no_token_and_no_carve_out(self, monkeypatch):
+        # Cluster active but no peer registered at this source IP —
+        # the carve-out must not fire and the call must 401.
+        cluster.activate("c", port=8765)
+        ident = cluster.self_identity()
+        cluster._state._members[ident.node_id].address = "203.0.113.1"
+        self._patch_inventory(monkeypatch, [])
+        client = TestClient(_make_app())
+        r = client.get("/api/cluster/dataset_servers_local")
+        assert r.status_code == 401
+
+
+class TestDatasetInventoryRoutes:
+    """End-to-end shape of /dataset_inventory, /dataset_servers, and
+    /dataset_router/resolve when this node is master."""
+
+    def _seed_master_inventory(self):
+        from forgather_server import cluster_dataset_inventory as cdi
+
+        cdi.master_inventory.set_master_state(True)
+        cdi.master_inventory.merge_servers(
+            {
+                "srv-a": cdi.MasterServerEntry(
+                    server_id="srv-a",
+                    base_url="http://node-a:8766",
+                    auth_token="tok-a",
+                    label="cfg:8766",
+                    source="local",
+                    peer_node_id="peer-a",
+                    healthy=True,
+                ),
+                "srv-b": cdi.MasterServerEntry(
+                    server_id="srv-b",
+                    base_url="http://node-b:8766",
+                    auth_token="tok-b",
+                    label="user-entry",
+                    source="user",
+                    peer_node_id="peer-b",
+                    healthy=False,
+                    last_health_error="conn refused",
+                ),
+            }
+        )
+        cdi.master_inventory.update_datasets(
+            "srv-a",
+            handles=[
+                {
+                    "handle": "h-hf-1",
+                    "source": "hf",
+                    "load_args": {"path": "allenai/c4", "name": "en"},
+                    "length": 1000,
+                }
+            ],
+            locals_info=[{"name": "stories", "length": 20}],
+            # HF cache snapshot: ``allenai/c4`` is available on this
+            # server. The cluster inventory keys HF entries on repo
+            # path, not on the canonical load_args hash — so a
+            # cached-but-never-loaded repo still surfaces in the
+            # unified Datasets view.
+            hf_cache=[
+                {
+                    "repo": "allenai/c4",
+                    "size_bytes": 100,
+                    "configs": [
+                        {
+                            "config": "en",
+                            "splits": [
+                                {"name": "train", "num_examples": 1000}
+                            ],
+                        }
+                    ],
+                }
+            ],
+        )
+        # srv-b is unhealthy; refresh_tick won't touch it, but we
+        # can simulate stale data being present.
+        cdi.master_inventory.update_datasets(
+            "srv-b",
+            handles=[],
+            locals_info=[{"name": "stories", "length": 20}],
+            hf_cache=[],
+        )
+        # ≥1 healthy server in the seeded set, so flip the
+        # observed-healthy latch so ``is_warmed_up()`` reflects a
+        # fully-warmed master. Without this, /resolve would now
+        # correctly return 503 instead of 200, which is right for
+        # cold-start but wrong for these tests' setup intent.
+        cdi.master_inventory.mark_observed_healthy()
+        cdi.master_inventory.mark_dataset_pass_complete()
+
+    def test_dataset_inventory_returns_deduped_listing(self):
+        cluster.activate("c", port=8765)
+        self._seed_master_inventory()
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_inventory",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["is_master"] is True
+        assert len(body["servers"]) == 2
+        # Tokens MUST be absent from this webui-facing surface.
+        assert all("auth_token" not in s for s in body["servers"])
+        # local/stories is on both servers — dedup keeps one entry.
+        local_entries = [d for d in body["datasets"] if d["source"] == "local"]
+        assert len(local_entries) == 1
+        assert local_entries[0]["dataset_id"] == "local/stories"
+        assert set(local_entries[0]["server_ids"]) == {"srv-a", "srv-b"}
+        # HF entries are now keyed on repo path (sourced from
+        # /v1/cache/hf), so the unified Datasets view lists
+        # ``allenai/c4`` once whether or not any client has loaded it.
+        hf_entries = [d for d in body["datasets"] if d["source"] == "hf"]
+        assert len(hf_entries) == 1
+        assert hf_entries[0]["dataset_id"] == "allenai/c4"
+        assert hf_entries[0]["name"] == "allenai/c4"
+        assert hf_entries[0]["length"] == 1000  # sum across splits
+
+    def test_dataset_servers_token_stripped(self):
+        cluster.activate("c", port=8765)
+        self._seed_master_inventory()
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_servers",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert {s["server_id"] for s in body} == {"srv-a", "srv-b"}
+        for s in body:
+            assert "auth_token" not in s
+
+    def test_router_resolve_returns_token_to_training_client(self):
+        cluster.activate("c", port=8765)
+        self._seed_master_inventory()
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_router/resolve",
+            params={"dataset_id": "local/stories"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # Only srv-a is healthy + has stories, so the pick is
+        # deterministic here.
+        assert body["base_url"] == "http://node-a:8766"
+        assert body["auth_token"] == "tok-a"
+        assert body["server_id"] == "srv-a"
+
+    def test_router_resolve_503_until_warmed_up(self):
+        from forgather_server import cluster_dataset_inventory as cdi
+
+        cluster.activate("c", port=8765)
+        cdi.master_inventory.set_master_state(True)
+        # Do NOT mark_dataset_pass_complete — simulate cold start.
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_router/resolve",
+            params={"dataset_id": "local/stories"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 503
+        assert r.headers.get("retry-after") == "5"
+
+    def test_router_resolve_410_when_no_candidate(self):
+        from forgather_server import cluster_dataset_inventory as cdi
+
+        cluster.activate("c", port=8765)
+        cdi.master_inventory.set_master_state(True)
+        # Mark fully warmed (observed a healthy server at some point)
+        # so /resolve goes past the 503 cold-start gate. The actual
+        # path requested doesn't match any server, so the response
+        # should be 410 "no candidate" — operator config error.
+        cdi.master_inventory.mark_observed_healthy()
+        cdi.master_inventory.mark_dataset_pass_complete()
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_router/resolve",
+            params={"dataset_id": "local/missing"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 410
+
+
+class TestDatasetServerProxy:
+    """Master-side cluster proxy: /api/cluster/dataset_server_proxy/{server_id}/{op}
+    looks up the server in the master inventory, applies the bearer
+    token, and forwards to the upstream dataset_server.
+
+    Upstream calls are intercepted with `monkeypatch` so we exercise
+    the routing/auth/SSRF-allowlist logic without booting a real
+    dataset_server.
+    """
+
+    def _seed(self, *, server_id="srv-1", base_url="http://upstream:8766",
+              token="tok-1"):
+        from forgather_server import cluster_dataset_inventory as cdi
+
+        cdi.master_inventory.set_master_state(True)
+        cdi.master_inventory.merge_servers(
+            {
+                server_id: cdi.MasterServerEntry(
+                    server_id=server_id,
+                    base_url=base_url,
+                    auth_token=token,
+                    label="x",
+                    source="local",
+                    peer_node_id="self",
+                    healthy=True,
+                )
+            }
+        )
+
+    def _intercept_httpx(self, monkeypatch, fake):
+        """Patch httpx.AsyncClient so every call goes to `fake(method,
+        target, headers, body)` and returns httpx.Response."""
+        import httpx as _httpx
+        from forgather_server.routes import cluster as cluster_routes
+
+        class _FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, target, headers=None):
+                return fake("GET", target, headers, None)
+
+            async def post(self, target, content=None, headers=None):
+                return fake("POST", target, headers, content)
+
+            def stream(self, method, target, headers=None):
+                fake_resp = fake(method, target, headers, None)
+                return _FakeStreamCtx(fake_resp)
+
+        class _FakeStreamCtx:
+            def __init__(self, resp):
+                self._resp = resp
+
+            async def __aenter__(self):
+                return self._resp
+
+            async def __aexit__(self, *a):
+                return False
+
+        monkeypatch.setattr(_httpx, "AsyncClient", _FakeAsyncClient)
+
+    def test_health_forwards_with_token(self, monkeypatch):
+        import httpx as _httpx
+
+        cluster.activate("c", port=8765)
+        self._seed()
+        calls = []
+
+        def fake(method, target, headers, body):
+            calls.append((method, target, headers, body))
+            return _httpx.Response(200, json={"status": "ok"})
+
+        self._intercept_httpx(monkeypatch, fake)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_server_proxy/srv-1/health",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        assert r.json() == {"status": "ok"}
+        # One upstream call, /v1/health on the inventory's base_url,
+        # with the inventory's token in the Authorization header.
+        assert calls[0][0] == "GET"
+        assert calls[0][1] == "http://upstream:8766/v1/health"
+        assert calls[0][2] == {"Authorization": "Bearer tok-1"}
+
+    def test_unknown_server_id_returns_404(self):
+        cluster.activate("c", port=8765)
+        # Inventory empty → server_id doesn't exist.
+        from forgather_server import cluster_dataset_inventory as cdi
+
+        cdi.master_inventory.set_master_state(True)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_server_proxy/nonexistent/health",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 404
+
+    def test_unknown_op_returns_404(self):
+        cluster.activate("c", port=8765)
+        self._seed()
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_server_proxy/srv-1/evil",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 404
+
+    def test_load_post_passes_body(self, monkeypatch):
+        import httpx as _httpx
+
+        cluster.activate("c", port=8765)
+        self._seed()
+        calls = []
+
+        def fake(method, target, headers, body):
+            calls.append((method, target, headers, body))
+            return _httpx.Response(200, json={"handle": "h", "length": 3})
+
+        self._intercept_httpx(monkeypatch, fake)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.post(
+            "/api/cluster/dataset_server_proxy/srv-1/load",
+            content='{"path":"local/stories"}',
+            headers={
+                "Authorization": f"Bearer {token}",
+                "content-type": "application/json",
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["handle"] == "h"
+        assert calls[0][0] == "POST"
+        assert calls[0][1] == "http://upstream:8766/v1/load"
+        assert calls[0][3] == b'{"path":"local/stories"}'
+
+    def test_length_requires_handle_param(self):
+        cluster.activate("c", port=8765)
+        self._seed()
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_server_proxy/srv-1/length",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 400
+
+    def test_upstream_401_forwarded_with_marker(self, monkeypatch):
+        import httpx as _httpx
+
+        cluster.activate("c", port=8765)
+        self._seed()
+
+        def fake(method, target, headers, body):
+            return _httpx.Response(401, json={"detail": "bad token"})
+
+        self._intercept_httpx(monkeypatch, fake)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_server_proxy/srv-1/health",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        # Upstream's 401 surfaces verbatim plus the marker header so
+        # the webui can show "your saved token is wrong" instead of
+        # the generic "forgather-server auth failed."
+        assert r.status_code == 401
+        assert r.headers.get("x-upstream-auth-failed") == "1"
 
 
 class TestClusterJobSubmit:

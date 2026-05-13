@@ -486,7 +486,8 @@ export interface MultinodeOverrides {
  *  a local server invalidates the choice and surfaces as a 400. */
 export type DatasetSource =
   | { kind: "local" }
-  | { kind: "server"; server_id: string };
+  | { kind: "server"; server_id: string }
+  | { kind: "auto" };
 
 export interface OverridesData {
   values: Record<string, unknown>;
@@ -709,12 +710,92 @@ async function datasetServerProxyGet<T>(
   return r.json() as Promise<T>;
 }
 
+/** Cluster-aggregated dataset_server entry. Tokens are stripped by
+ *  the master before responding; this shape is safe for the browser. */
+export interface ClusterDatasetServer {
+  server_id: string;
+  base_url: string;
+  label: string;
+  source: string; // "local" | "user"
+  peer_node_id: string | null;
+  healthy: boolean;
+  last_health_check: number;
+  last_health_error: string;
+  last_dataset_refresh: number;
+  last_dataset_error: string;
+  // Polling counters from the master's loops.
+  total_health_polls?: number;
+  health_failures?: number;
+  consecutive_health_failures?: number;
+  total_dataset_polls?: number;
+  dataset_failures?: number;
+  consecutive_dataset_failures?: number;
+  /** Per-entry TLS verification policy. False = chain validation off
+   *  for outbound calls. Used for SSH-tunneled / out-of-band-secured
+   *  upstreams; surfaced so the webui can show an "insecure TLS"
+   *  badge. */
+  verify_tls?: boolean;
+  /** Source-side identifier on the owning peer — JobRecord
+   *  ``queue_id`` for ``source === "local"``, registry entry id for
+   *  ``source === "user"``. Used by the webui to target a DELETE
+   *  for user-added entries owned by the local node. */
+  source_id?: string | null;
+  /** True when the URL's host is loopback. Cluster auto-routing
+   *  skips these; the webui shows them with a "node-local" badge. */
+  loopback?: boolean;
+}
+
+/** Aggregate counters across the inventory. */
+export interface ClusterDatasetInventoryMetrics {
+  healthy_servers: number;
+  unhealthy_servers: number;
+  total_servers: number;
+  total_datasets: number;
+  total_health_polls: number;
+  total_health_failures: number;
+  total_dataset_polls: number;
+  total_dataset_failures: number;
+  master_age_seconds: number | null;
+}
+
+/** One unique dataset in the cluster (deduped across servers). */
+export interface ClusterDatasetEntry {
+  dataset_id: string;
+  source: string; // "local" | "hf" | "path"
+  name: string | null;
+  load_args: Record<string, unknown> | null;
+  length: number | null;
+  column_names: string[] | null;
+  server_ids: string[];
+  /** Total on-disk size in bytes across the dataset (sum of splits
+   *  for HF / cluster-aggregated local entries). Null when unknown. */
+  size_bytes?: number | null;
+  /** Distinct ``meta_hash`` values observed across servers
+   *  advertising this name. Multiple values = collision. */
+  meta_hashes?: string[];
+}
+
+export interface ClusterDatasetInventoryResponse {
+  is_master: boolean;
+  master_become_ts: number | null;
+  last_servers_collect_ts: number | null;
+  last_health_pass_ts: number | null;
+  last_dataset_pass_ts: number | null;
+  servers: ClusterDatasetServer[];
+  datasets: ClusterDatasetEntry[];
+  metrics?: ClusterDatasetInventoryMetrics;
+}
+
 /** Dataset server registered as a user-added entry. */
 export interface DatasetServerUser {
   id: string;
   label: string;
   base_url: string;
   has_auth_token: boolean;
+  /** False = TLS chain + hostname validation off for outbound calls
+   *  to this URL. Operator-asserted for SSH-tunneled / out-of-band-
+   *  secured upstreams. Default true (secure-by-default). */
+  verify_tls?: boolean;
 }
 
 /** Dataset server spawned by the forgather_server itself. */
@@ -732,6 +813,11 @@ export interface AddDatasetServerRequest {
   label?: string;
   base_url: string;
   auth_token?: string;
+  /** False = TLS chain + hostname validation off for outbound calls
+   *  to this URL. Operator-asserted for SSH-tunneled / out-of-band-
+   *  secured upstreams. Defaults to true on the server side when
+   *  omitted. */
+  verify_tls?: boolean;
 }
 
 /** One row from ``GET /v1/datasets``. Field set tracks what the
@@ -1518,6 +1604,88 @@ export const api = {
       base,
       token,
     ),
+
+  // ---- Cluster-aggregated dataset inventory + master proxy ----
+
+  /** Master-aggregated dataset-server inventory + dataset listing.
+   *  Same shape the ``forgather cluster datasets`` CLI consumes. */
+  getClusterDatasetInventory: () =>
+    fetchJson<ClusterDatasetInventoryResponse>(
+      "/api/cluster/dataset_inventory",
+    ),
+  /** Token-stripped server list — same as ``inventory.servers`` but
+   *  a smaller payload for the Explore + Servers tabs. */
+  getClusterDatasetServers: () =>
+    fetchJson<ClusterDatasetServer[]>("/api/cluster/dataset_servers"),
+  /** Wake the master's collect/health/refresh loops on demand.
+   *  Best-effort — fire-and-forget. Used right after a registry
+   *  add/delete so the cluster inventory reflects the change within
+   *  ~1s rather than waiting up to one collect tick. */
+  refreshClusterDatasetServers: async (): Promise<void> => {
+    try {
+      await fetch("/api/cluster/dataset_servers/refresh", {
+        method: "POST",
+      });
+    } catch {
+      // Latency hint only — silently ignore failures.
+    }
+  },
+
+  /** Cluster-proxied probes against a single dataset_server. The master
+   *  injects the bearer from its inventory, so the browser only needs
+   *  the cluster bearer. ``server_id`` comes from the cluster inventory. */
+  clusterDatasetServerHealth: (server_id: string) =>
+    fetchJson<DatasetServerHealth>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/health`,
+    ),
+  clusterDatasetServerAuthStatus: (server_id: string) =>
+    fetchJson<{ auth_required: boolean }>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/auth-status`,
+    ),
+  clusterDatasetServerDatasets: (server_id: string) =>
+    fetchJson<DatasetHandlesResponse>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/datasets`,
+    ),
+  clusterDatasetServerCache: (server_id: string) =>
+    fetchJson<HFCacheResponse>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/cache`,
+    ),
+  clusterDatasetServerLocal: (server_id: string) =>
+    fetchJson<LocalListResponse>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/local`,
+    ),
+  clusterDatasetServerLoad: async (
+    server_id: string,
+    body: LoadRequest,
+  ): Promise<LoadResponse> => {
+    const u = `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/load`;
+    const r = await fetch(u, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<LoadResponse>;
+  },
+  clusterDatasetServerLength: (server_id: string, handle: string) =>
+    fetchJson<{ length: number }>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/length` +
+        `?handle=${encodeURIComponent(handle)}`,
+    ),
+  clusterDatasetServerIter: (
+    server_id: string,
+    handle: string,
+    position: number,
+    limit: number,
+  ) =>
+    fetchJson<IterResponse>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/iter` +
+        `?handle=${encodeURIComponent(handle)}` +
+        `&position=${position}&limit=${limit}`,
+    ),
+
   docsFile: (path: string) =>
     fetchJson<DocsFile>(`/api/docs/file?path=${encodeURIComponent(path)}`),
   docsAssetUrl: (path: string): string =>

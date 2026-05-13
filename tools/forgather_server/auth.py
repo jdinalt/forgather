@@ -92,6 +92,19 @@ _PEER_ALLOWED_PATHS = frozenset(
         # bundle catalogue across the LAN is consistent with the
         # trusted-peer security contract.
         "/api/cluster/jobs",
+        # Dataset-server inventory: each peer's local list of
+        # dataset_servers (JobRecord-spawned + user-registered),
+        # including the bearer token. The master aggregator polls
+        # this every ~10s to build the cluster-wide routing index.
+        # Tokens leaving this surface stay within the cluster bearer
+        # trust boundary — see cluster_dataset_inventory.py.
+        "/api/cluster/dataset_servers_local",
+        # Master-aggregated dataset inventory + router. Non-master
+        # nodes proxy these GETs to master so every webui and every
+        # training client sees the same cluster-wide view.
+        "/api/cluster/dataset_inventory",
+        "/api/cluster/dataset_servers",
+        "/api/cluster/dataset_router/resolve",
     }
 )
 
@@ -118,6 +131,38 @@ _PEER_ALLOWED_MUTATIONS = frozenset(
         # as POST so the carve-out (which only allows GET / POST)
         # applies cleanly without widening it to DELETE.
         "/api/cluster/training_cancel_local",
+        # On-demand wake for the master's dataset-server collect
+        # loop. Non-master nodes proxy here so an add/delete on a
+        # peer's user-registry surfaces in the cluster inventory
+        # within ~1 s instead of one collect tick. Read-only-ish:
+        # the handler just sets an asyncio.Event.
+        "/api/cluster/dataset_servers/refresh",
+    }
+)
+
+# Peer-allowed path *prefixes* for endpoints whose final segments are
+# templated by server_id, queue_id, etc. Exact-match doesn't fit
+# templated routes; matching by prefix keeps the gate narrow as long
+# as the prefix itself is unambiguous (every entry here must be a
+# string no other API endpoint can start with).
+_PEER_ALLOWED_PATH_PREFIXES = frozenset(
+    {
+        # Master-side cluster dataset_server proxy. Non-master nodes
+        # forward webui ``/api/cluster/dataset_server_proxy/{id}/...``
+        # GETs (status / datasets / cache / local / length / iter) to
+        # the master via the existing peer-IP carve-out. The op set is
+        # validated against ``_ALLOWED_PROXY_OPS`` in
+        # routes/cluster.py before any forwarding happens.
+        "/api/cluster/dataset_server_proxy/",
+    }
+)
+
+_PEER_ALLOWED_MUTATION_PREFIXES = frozenset(
+    {
+        # Same family as above; the ``load`` op is POST. Anything
+        # else under this prefix is rejected by _ALLOWED_PROXY_OPS in
+        # routes/cluster.py.
+        "/api/cluster/dataset_server_proxy/",
     }
 )
 
@@ -339,12 +384,16 @@ def path_allows_peer(path: str) -> bool:
 
     See ``_PEER_ALLOWED_PATHS`` for the rationale.
     """
-    return path in _PEER_ALLOWED_PATHS
+    if path in _PEER_ALLOWED_PATHS:
+        return True
+    return any(path.startswith(p) for p in _PEER_ALLOWED_PATH_PREFIXES)
 
 
 def path_allows_peer_mutation(path: str) -> bool:
     """True if a known cluster peer may POST ``path`` without auth."""
-    return path in _PEER_ALLOWED_MUTATIONS
+    if path in _PEER_ALLOWED_MUTATIONS:
+        return True
+    return any(path.startswith(p) for p in _PEER_ALLOWED_MUTATION_PREFIXES)
 
 
 def _request_is_from_peer(scope) -> bool:
