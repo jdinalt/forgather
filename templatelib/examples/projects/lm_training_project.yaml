@@ -93,6 +93,7 @@
 ##                          (str)   Approximate float32 matmul with bf16. Choices: highest, high, medium
 ##   mixed_precision        (str)   AMP dtype.                      Choices: bf16, fp16, no
 ##   fp8_recipe             (str)   FP8 recipe for linear layers.   Choices: tensorwise, rowwise, rowwise_with_gw_hp
+##   qat_recipe             (str)   QAT recipe for linear layers.   Choices: int8-dynamic-act-int4-weight, int4-weight-only, float8-dynamic-act-float8-weight, float8-dynamic-act-int4-weight
 ##   compile                (bool)  Enable torch.compile.           Default: False
 ##   torch_compile_mode     (str)   torch.compile mode.             Default: default
 ##                                  Choices: default, max-autotune, max-autotune-no-cudagraphs.
@@ -469,6 +470,7 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     default_dtype: {{ default_dtype | toyaml(None) }}
     mixed_precision: {{ mixed_precision | toyaml(None) }}
     fp8_recipe: {{ fp8_recipe | toyaml(None) }}
+    qat_recipe: {{ qat_recipe | toyaml(None) }}
     gradient_checkpointing: {{ gradient_checkpointing | default(False) }}
     fuse_optim_with_backward: {{ fuse_optim_with_backward | default(False) }}
     enable_activation_offloading: {{ activation_offloading | default(False) }}
@@ -695,6 +697,11 @@ optimizer_groups: &optimizer_groups
         choices: [ "tensorwise", "rowwise", "rowwise_with_gw_hp" ]
         group: "Precision"
         help: "FP8 training recipe (torchao Float8Linear)"
+    qat_recipe:
+        names: "--qat-recipe"
+        choices: [ "int8-dynamic-act-int4-weight", "int4-weight-only", "float8-dynamic-act-float8-weight", "float8-dynamic-act-int4-weight" ]
+        group: "Precision"
+        help: "Quantization-aware training recipe (torchao QAT prepare; run `forgather finalize --qat-convert <recipe>` after training)"
     compile:
         names: "--compile"
         type: bool

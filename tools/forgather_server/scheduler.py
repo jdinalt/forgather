@@ -454,6 +454,7 @@ def _build_finalize(item, gpu_indices, tty_path):
         device=p.get("device"),
         dry_run=bool(p.get("dry_run", False)),
         log_level=p.get("log_level", "INFO"),
+        qat_convert=p.get("qat_convert"),
         gpu_indices=gpu_indices,
         tty_log_path=tty_path,
     )

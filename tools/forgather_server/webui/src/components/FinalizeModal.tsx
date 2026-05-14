@@ -31,7 +31,16 @@ interface PersistedFinalize {
   dryRun: boolean;
   logLevel: string;
   requestedGpus: number;
+  /** Torchao QAT convert recipe. Empty string means "skip QAT convert". */
+  qatConvert: string;
 }
+
+const QAT_CONVERT_RECIPES = [
+  "int8-dynamic-act-int4-weight",
+  "int4-weight-only",
+  "float8-dynamic-act-float8-weight",
+  "float8-dynamic-act-int4-weight",
+] as const;
 
 const STORAGE_KEY = "forgather-global-finalize-v1";
 
@@ -56,6 +65,7 @@ const DEFAULTS: PersistedFinalize = {
   dryRun: false,
   logLevel: "INFO",
   requestedGpus: 0,
+  qatConvert: "",
 };
 
 function loadPersisted(): Partial<PersistedFinalize> {
@@ -200,6 +210,7 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
   const [requestedGpus, setRequestedGpus] = useState<number>(
     initial.requestedGpus ?? 0,
   );
+  const [qatConvert, setQatConvert] = useState(initial.qatConvert ?? "");
   const [priority, setPriority] = useState<number>(0);
 
   // Backfill tokenizer defaults once quick-paths resolves, but only
@@ -248,6 +259,7 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
     setDryRun(DEFAULTS.dryRun);
     setLogLevel(DEFAULTS.logLevel);
     setRequestedGpus(DEFAULTS.requestedGpus);
+    setQatConvert(DEFAULTS.qatConvert);
   };
 
   const enqueue = useMutation({
@@ -289,6 +301,7 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
       dryRun,
       logLevel,
       requestedGpus,
+      qatConvert,
     });
 
     const job_params: Record<string, unknown> = {
@@ -317,6 +330,7 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
     if (dtype && dtype !== "keep") job_params.dtype = dtype;
     const dev = device.trim();
     if (dev) job_params.device = dev;
+    if (qatConvert) job_params.qat_convert = qatConvert;
 
     enqueue.mutate({
       // project_dir isn't meaningful for finalize; use the dest path so
@@ -570,6 +584,26 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
               />
               <code>--dry-run</code>
               <span className="muted">resolve only; don't write</span>
+            </label>
+          </div>
+          <div className="submit-row">
+            <label className="wide">
+              <code>--qat-convert</code>
+              <select
+                value={qatConvert}
+                onChange={(e) => setQatConvert(e.target.value)}
+                title="Run torchao QAT convert step on a QAT-trained model. Recipe must match what was used at training time."
+              >
+                <option value="">(none — skip QAT convert)</option>
+                {QAT_CONVERT_RECIPES.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+              <span className="muted">
+                only set for models trained with <code>--qat-recipe</code>
+              </span>
             </label>
           </div>
 

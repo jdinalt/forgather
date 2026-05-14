@@ -138,6 +138,14 @@ class BaseTrainingArguments(MinimalTrainingArguments):
         Minimum alignment for FP8 ``Linear`` layer dimensions. Layers whose
         ``in_features`` or ``out_features`` are not divisible by this value are
         skipped. Hardware requires 16. Default is ``16``.
+    qat_recipe : str or None, optional
+        Quantization-aware training recipe via ``torchao``. Inserts
+        ``FakeQuantizedLinear`` modules so the forward pass simulates the
+        target low-bit precision while backward stays in full precision.
+        After training, run ``forgather finalize --qat-convert <recipe>`` to
+        produce the real low-bit deployment artifact. Mutually exclusive with
+        ``fp8_recipe``. See ``docs/trainers/qat-training.md`` for the recipe
+        list. Default is ``None``.
     """
 
     # Default torch dtype for model construction (e.g., "float32", "bfloat16", "float16")
@@ -203,6 +211,12 @@ class BaseTrainingArguments(MinimalTrainingArguments):
     # out_features not divisible by this value are skipped. Hardware requires 16.
     fp8_dim_alignment: int = 16
 
+    # Quantization-aware training (QAT) via torchao. Inserts FakeQuantizedLinear
+    # modules in the prepare phase; convert is done post-training via
+    # `forgather finalize --qat-convert <recipe>`. Mutually exclusive with fp8_recipe.
+    # See src/forgather/ml/qat_recipes.py for the recipe table.
+    qat_recipe: str | None = None
+
     def __post_init__(self):
         if self.logging_dir is None:
             self.logging_dir = os.path.join(
@@ -236,6 +250,20 @@ class BaseTrainingArguments(MinimalTrainingArguments):
             if self.fp8_recipe not in _FP8_RECIPES:
                 raise ValueError(
                     f"fp8_recipe must be one of {_FP8_RECIPES}, got '{self.fp8_recipe}'"
+                )
+
+        # Validate qat_recipe
+        if self.qat_recipe is not None:
+            from forgather.ml.qat_recipes import QAT_RECIPES
+
+            if self.qat_recipe not in QAT_RECIPES:
+                raise ValueError(
+                    f"qat_recipe must be one of {QAT_RECIPES}, got '{self.qat_recipe}'"
+                )
+            if self.fp8_recipe is not None:
+                raise ValueError(
+                    "fp8_recipe and qat_recipe are mutually exclusive "
+                    "(both transform nn.Linear). Set at most one."
                 )
 
 

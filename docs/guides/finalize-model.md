@@ -99,6 +99,21 @@ the (possibly-updated) tokenizer last.
 | `--dtype {bfloat16,float16,float32}` | Cast weights to this dtype before saving. Default: keep the dtype the source checkpoint was saved in. |
 | `--device STR` | Device for loading the model during finalize (default `cpu`). |
 
+### Quantization
+
+| Option | Description |
+|--------|-------------|
+| `--qat-convert RECIPE` | Run the torchao QAT convert step before saving: swap `FakeQuantizedLinear` modules for the real low-bit quantized linear ops described by `RECIPE`. Use the same recipe string that was used at training time (`--qat-recipe`). On models without fake-quantized modules this is a no-op with a warning. See [QAT Training](../trainers/qat-training.md) for the recipe list. |
+
+Example:
+
+```bash
+# After training with --qat-recipe int8-dynamic-act-int4-weight, produce the
+# deployable quantized artifact:
+forgather finalize output_models/qat_run out/qat_int8_int4 \
+    --qat-convert int8-dynamic-act-int4-weight --safetensors
+```
+
 ### Misc
 
 | Option | Description |
