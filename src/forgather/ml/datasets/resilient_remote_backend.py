@@ -44,6 +44,7 @@ from .iterable_backend import IterableDatasetBackend
 from .remote_backend import (
     DatasetServerUnreachable,
     RemoteBackend,
+    _dataset_urlopen,
     _make_ssl_context,
     _translate_request_error,
     resolve_auth_token,
@@ -92,9 +93,8 @@ def _do_load_once(
         "utf-8"
     )
     req = Request(url, data=body, method="POST", headers=headers)
-    ssl_context = _make_ssl_context(base_url)
     try:
-        with urlopen(req, timeout=timeout, context=ssl_context) as resp:
+        with _dataset_urlopen(req, timeout=timeout, url=base_url) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
         raise _translate_request_error(exc) from exc
