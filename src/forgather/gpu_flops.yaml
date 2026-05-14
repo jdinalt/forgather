@@ -23,6 +23,9 @@
 # Blackwell
 - { match: [B200],            tflops: 2250   }
 - { match: [B100],            tflops: 1750   }
+# GB10 -- DGX Spark Grace-Blackwell superchip.
+# NVIDIA spec: 1 PFLOPS FP4 sparse -> 125 TFLOPS BF16 dense (FP32 acc).
+- { match: [GB10],            tflops: 125    }
 
 # Hopper (H200 has the same compute die as H100 SXM; only memory differs)
 - { match: [H200],            tflops: 989    }

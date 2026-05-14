@@ -201,14 +201,25 @@ def _snapshot_nvml() -> Optional[List[GpuInfo]]:
             h = pynvml.nvmlDeviceGetHandleByIndex(i)
             raw_name = pynvml.nvmlDeviceGetName(h)
             name = raw_name.decode() if isinstance(raw_name, bytes) else str(raw_name)
-            mem = pynvml.nvmlDeviceGetMemoryInfo(h)
+            # nvmlDeviceGetMemoryInfo is best-effort: DGX Spark / GB10 has
+            # unified system memory and NVML returns "Not Supported" here.
+            # We still want to surface the GPU with name + policy + util,
+            # so a missing memory reading must not drop the whole device.
+            total_mem_bytes = 0
+            used_mem_bytes = 0
+            try:
+                mem = pynvml.nvmlDeviceGetMemoryInfo(h)
+                total_mem_bytes = int(mem.total)
+                used_mem_bytes = int(mem.used)
+            except Exception:
+                pass
             excluded = _ALLOWED_INDICES is not None and i not in _ALLOWED_INDICES
             policy = gpu_policy.get_policy(i)
             info = GpuInfo(
                 index=i,
                 name=name,
-                total_mem_bytes=int(mem.total),
-                used_mem_bytes=int(mem.used),
+                total_mem_bytes=total_mem_bytes,
+                used_mem_bytes=used_mem_bytes,
                 source="nvml",
                 excluded=excluded,
                 disabled=policy.disabled,

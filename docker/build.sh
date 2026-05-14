@@ -18,10 +18,14 @@
 #   docker/build.sh                    # tag: forgather-dev:<host-user>
 #   docker/build.sh my-tag             # custom tag
 #   docker/build.sh --claude           # also bake in Claude Code (npm global)
+#   docker/build.sh --cpu              # CPU-only torch (much smaller image,
+#                                      # no nvidia-* libs; for CI / docs /
+#                                      # GPU-less hosts)
 #   docker/build.sh -- --no-cache      # pass extra args to docker build
 #
 # Flags can be combined with the tag:
 #   docker/build.sh forgather-dev:claude --claude
+#   docker/build.sh --cpu forgather-dev:cpu
 #   docker/build.sh --claude my-tag -- --no-cache
 #
 # Skip the webui post-step (e.g. you'll iterate on the SPA via
@@ -52,10 +56,12 @@ done
 # Pre-parse our own flags out of argv so they compose with the
 # positional TAG and the ``--`` passthrough cleanly.
 INSTALL_CLAUDE=0
+TORCH_VARIANT=cuda
 ARGV=()
 for tok in "$@"; do
     case "${tok}" in
         --claude) INSTALL_CLAUDE=1 ;;
+        --cpu)    TORCH_VARIANT=cpu ;;
         *)        ARGV+=("${tok}") ;;
     esac
 done
@@ -92,6 +98,7 @@ if [[ "${1:-}" == "--" ]]; then shift; fi
 
 echo "Building ${TAG}"
 echo "  in-container user: ${HOST_USER} (uid=${HOST_UID}, gid=${HOST_GID})"
+echo "  torch variant: ${TORCH_VARIANT}"
 if [[ "${INSTALL_CLAUDE}" = "1" ]]; then
     echo "  --claude: also installing Claude Code (npm global)"
 fi
@@ -99,6 +106,7 @@ fi
 docker build \
     -t "${TAG}" \
     --build-arg "INSTALL_CLAUDE=${INSTALL_CLAUDE}" \
+    --build-arg "TORCH_VARIANT=${TORCH_VARIANT}" \
     --build-arg "USER_NAME=${HOST_USER}" \
     --build-arg "USER_UID=${HOST_UID}" \
     --build-arg "USER_GID=${HOST_GID}" \
