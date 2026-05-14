@@ -10,6 +10,7 @@ network.
 import logging
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -543,5 +544,37 @@ def delete_dir(req: DeleteDirRequest):
         shutil.rmtree(target)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"rmtree failed: {e}")
+
+    # On NFS-shared trees the operator typically follows Clean Output with a
+    # restart of training on another node. That node's NFS client caches the
+    # parent directory's attributes / negative lookups for up to ``acdirmax``
+    # seconds (Linux default ~60s), so the just-deleted contents can briefly
+    # appear to "still be there" — or, after a re-create, the re-created
+    # contents can briefly look "missing". There is no NFS-level way for the
+    # server to push cache invalidations to clients; the best we can do is:
+    #
+    #   1. ``os.sync()`` — flushes writeback so a server crash mid-cleanup
+    #      doesn't leave half-deleted state on disk. Doesn't touch client
+    #      caches but it's cheap insurance on the storage side.
+    #   2. ``os.utime`` on the parent dir — bumps mtime so the next client
+    #      lookup that *does* go over the wire (e.g. after acdirmin expires)
+    #      sees a fresher value and is more likely to invalidate its cached
+    #      child list. Already implicit in the rmtree of a leaf; re-issuing
+    #      it explicitly is belt-and-suspenders.
+    #
+    # The real fix for cross-node "I just deleted that, why is it back?"
+    # remains an NFS mount-side knob (``actimeo=1`` / ``noac`` / equivalent)
+    # — see docs/operations/nfs-caching.md if/when that page exists.
+    try:
+        os.sync()
+    except Exception as e:
+        log.debug("post-rmtree os.sync() failed (non-fatal): %s", e)
+    try:
+        parent = target.parent
+        if parent.is_dir():
+            now = time.time()
+            os.utime(parent, (now, now))
+    except Exception as e:
+        log.debug("post-rmtree parent utime failed (non-fatal): %s", e)
 
     return DeleteDirResponse(deleted=str(target), removed_bytes=removed_bytes)

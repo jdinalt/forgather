@@ -77,30 +77,142 @@ def _translate_request_error(exc: BaseException) -> BaseException:
     return exc
 
 
-def _make_ssl_context(url: str) -> Optional[ssl.SSLContext]:
-    """SSLContext using the shared CA bundle for ``https://`` URLs.
+# Endpoints (host:port keys) whose certs we have observed cannot be
+# verified against the system + cluster CA bundles. Populated lazily on
+# first cert verification failure; subsequent calls to the same endpoint
+# skip verification (with a per-endpoint one-shot warning) instead of
+# paying for another failed handshake. Wiped on process restart.
+#
+# Rationale: dataset servers are authenticated at the application layer
+# by bearer token, and the webui's "add dataset server" flow already
+# flags untrusted certs to the operator before they're registered. The
+# transport layer should match that policy — warn loudly but never
+# block — so a registered server with an unverifiable cert stays usable.
+_insecure_endpoints: set[str] = set()
+_insecure_warned: set[str] = set()
 
-    Honors ``verify_hostname`` from the shared TLS config — defaults to
-    chain-only validation on a LAN with a private CA. See the comment
-    in :func:`forgather.tls.runtime.httpx_verify` for the rationale.
+
+def _endpoint_key(url: str) -> str:
+    """``host:port`` key for the insecure-endpoint cache.
+
+    Collapses path / query so the decision is per-server, not per-request.
+    """
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    return f"{host}:{parsed.port if parsed.port is not None else ''}"
+
+
+def _warn_insecure_endpoint(url: str) -> None:
+    key = _endpoint_key(url)
+    if key in _insecure_warned:
+        return
+    _insecure_warned.add(key)
+    logger.warning(
+        "TLS verification failed for dataset server %s; continuing without "
+        "verification. Traffic is still encrypted but the server's cert is "
+        "NOT validated against the system or cluster trust stores. Dataset "
+        "servers are flagged as insecure at registration time when their "
+        "certs aren't trusted, so this is expected when the operator "
+        "consented to an unverifiable peer. Sign the cert against a "
+        "trusted CA to silence the warning -- this decision is cached for "
+        "the process lifetime, so restart any running training process "
+        "after fixing the cert to retry verification. The cache is also "
+        "per-process: if you see N copies of this warning, you have N "
+        "dataloader workers each making their own first connection.",
+        url,
+    )
+
+
+def _build_ssl_context(url: str, verify: bool) -> Optional[ssl.SSLContext]:
+    """Build the SSLContext for a single dataset-server request.
+
+    ``verify=True`` returns a context that trusts the system store plus
+    any cluster CA bundle the operator has provisioned. ``verify=False``
+    returns a context that disables both chain and hostname checks —
+    used by :func:`_dataset_urlopen` after a verifying handshake fails.
     """
     if not url.lower().startswith("https://"):
         return None
+    if not verify:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    # System defaults first; this picks up publicly-trusted certs and
+    # any CAs the operator has installed in the OS trust store.
+    ctx = ssl.create_default_context()
     try:
-        from forgather.tls import httpx_verify
+        from forgather.tls import load_config as _tls_load_config
 
-        verify = httpx_verify()
+        cfg = _tls_load_config()
+        bundle = cfg.effective_bundle()
+        if bundle is not None:
+            # Additively trust the cluster CA so cluster-internal dataset
+            # servers (signed by the private CA) verify cleanly.
+            ctx.load_verify_locations(cafile=str(bundle))
+        if not cfg.verify_hostname:
+            # LAN deployments routinely use IPs / ephemeral hostnames;
+            # match the cluster mTLS helper's default of chain-only.
+            ctx.check_hostname = False
     except Exception:
-        verify = True
-    # httpx_verify already returns an SSLContext when a bundle is
-    # present (with hostname checking flipped per config); urlopen
-    # accepts that directly. The legacy string-path return shape is
-    # also still handled for safety.
-    if isinstance(verify, ssl.SSLContext):
-        return verify
-    if isinstance(verify, str):
-        return ssl.create_default_context(cafile=verify)
-    return ssl.create_default_context()
+        # No TLS config installed — system trust alone is the right default.
+        pass
+    return ctx
+
+
+def _is_cert_verify_error(exc: BaseException) -> bool:
+    """True when ``exc`` is (or wraps) an SSL cert verification failure."""
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        return True
+    if isinstance(exc, URLError):
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            return True
+        if isinstance(reason, ssl.SSLError) and "CERTIFICATE_VERIFY_FAILED" in str(
+            reason
+        ):
+            return True
+    return False
+
+
+def _dataset_urlopen(req: Request, *, timeout: float, url: str):
+    """``urlopen`` for dataset traffic with auto-downgrade on cert errors.
+
+    Builds a verifying context (system trust + cluster CA when present)
+    and issues the request. On cert verification failure, logs a per-
+    endpoint warning, marks the endpoint as insecure for the rest of
+    the process, and retries the request with verification disabled.
+    All other transport errors propagate unchanged — the downgrade
+    triggers only on TLS chain / hostname problems, not on network
+    failures, timeouts, or HTTP errors.
+
+    Callers should still use the result in a ``with`` block so the
+    response is properly closed.
+    """
+    key = _endpoint_key(url)
+    if key in _insecure_endpoints:
+        ctx = _build_ssl_context(url, verify=False)
+        return urlopen(req, timeout=timeout, context=ctx)
+    ctx = _build_ssl_context(url, verify=True)
+    try:
+        return urlopen(req, timeout=timeout, context=ctx)
+    except (URLError, ssl.SSLError) as exc:
+        if _is_cert_verify_error(exc):
+            _insecure_endpoints.add(key)
+            _warn_insecure_endpoint(url)
+            ctx = _build_ssl_context(url, verify=False)
+            return urlopen(req, timeout=timeout, context=ctx)
+        raise
+
+
+def _make_ssl_context(url: str) -> Optional[ssl.SSLContext]:
+    """Back-compat shim: build a verifying SSLContext for ``url``.
+
+    Prefer :func:`_dataset_urlopen`, which handles the cert-verify-then-
+    downgrade dance transparently. Direct callers of this function get
+    only the verifying context and must catch cert errors themselves.
+    """
+    return _build_ssl_context(url, verify=True)
 
 from .iterable_backend import IterableDatasetBackend
 
@@ -217,11 +329,6 @@ class RemoteBackend(IterableDatasetBackend):
         self._seed = seed
         self._position = position
         self._timeout = timeout
-        # SSLContext for ``https://`` URLs that uses the shared CA
-        # bundle (so self-signed forgather certs validate). For ``http://``
-        # this is None and the urllib call falls through to default
-        # plaintext handling.
-        self._ssl_context = _make_ssl_context(self._url)
         # Resolved once at construction; if you change tokens, build a
         # new client. Most callers won't notice.
         self._token = resolve_auth_token(self._url, token)
@@ -253,7 +360,7 @@ class RemoteBackend(IterableDatasetBackend):
         url = f"{self._url}/v1/datasets/{self._handle}/iter?{urlencode(params)}"
         req = Request(url, method="GET", headers=self._headers())
         try:
-            resp = urlopen(req, timeout=self._timeout, context=self._ssl_context)
+            resp = _dataset_urlopen(req, timeout=self._timeout, url=self._url)
         except Exception as exc:
             raise _translate_request_error(exc) from exc
         try:
@@ -283,8 +390,8 @@ class RemoteBackend(IterableDatasetBackend):
             url = f"{self._url}/v1/datasets/{self._handle}/length"
             req = Request(url, method="GET", headers=self._headers())
             try:
-                with urlopen(
-                    req, timeout=self._timeout, context=self._ssl_context
+                with _dataset_urlopen(
+                    req, timeout=self._timeout, url=self._url
                 ) as resp:
                     payload = json.loads(resp.read().decode("utf-8"))
             except Exception as exc:
@@ -356,7 +463,7 @@ class RemoteBackend(IterableDatasetBackend):
         url = f"{self._url}/v1/datasets/{self._handle}"
         req = Request(url, method="GET", headers=self._headers())
         try:
-            with urlopen(req, timeout=self._timeout, context=self._ssl_context) as resp:
+            with _dataset_urlopen(req, timeout=self._timeout, url=self._url) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
         except Exception as exc:
             logger.debug("column_names lookup failed: %s", exc)

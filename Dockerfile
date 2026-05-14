@@ -35,6 +35,12 @@ ARG VENV_DIR=/opt/forgather/venv
 # developers who use Claude Code; production builds shouldn't need
 # it. Installed globally so the in-container user can invoke ``claude``.
 ARG INSTALL_CLAUDE=0
+# torch variant for the build:
+#   cuda  (default) -- CUDA-enabled torch (PyPI x86_64; download.pytorch.org cu128 aarch64)
+#   cpu             -- CPU-only torch from download.pytorch.org/whl/cpu on both arches.
+#                      Yields a much smaller image (no nvidia-* libs) -- appropriate for
+#                      CI / docs / arbitrary host installs that won't run GPU workloads.
+ARG TORCH_VARIANT=cuda
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -173,6 +179,34 @@ USER ${USER_NAME}
 RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
     export UV_CACHE_DIR=/root/.cache/uv \
     && uv venv --python python3.12 --seed ${VENV_DIR}
+
+# Pre-install torch + torchvision from the right PyTorch index so the
+# subsequent ``/tmp/src`` install sees the constraint already
+# satisfied and doesn't overwrite them with whatever PyPI ships:
+#
+#   * TORCH_VARIANT=cuda + aarch64 -> cu128 (PyPI's aarch64 torch is CPU-only;
+#                                            CUDA wheels live on the PyTorch index)
+#   * TORCH_VARIANT=cuda + x86_64  -> no-op (PyPI's x86_64 torch IS CUDA-enabled)
+#   * TORCH_VARIANT=cpu  + *       -> cpu index (forces CPU build on every arch)
+#
+# ``torchao`` is *not* pre-installed: it has no CUDA aarch64 wheels on
+# the PyTorch index — the main /tmp/src install resolves it from PyPI.
+ARG TORCH_VARIANT
+RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
+    export UV_CACHE_DIR=/root/.cache/uv \
+    && case "${TORCH_VARIANT}:$(uname -m)" in \
+        cuda:aarch64) \
+            uv pip install --python ${VENV_DIR}/bin/python \
+                --index-url https://download.pytorch.org/whl/cu128 \
+                "torch==2.10.0+cu128" torchvision ;; \
+        cuda:x86_64) ;; \
+        cpu:*) \
+            uv pip install --python ${VENV_DIR}/bin/python \
+                --index-url https://download.pytorch.org/whl/cpu \
+                "torch==2.10.0+cpu" torchvision ;; \
+        *) \
+            echo "[Dockerfile] unknown TORCH_VARIANT='${TORCH_VARIANT}'" >&2; exit 2 ;; \
+    esac
 
 # Install Forgather + every dependency from pyproject.toml. We bind-
 # mount the build context read-only and then copy it into a user-

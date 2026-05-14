@@ -37,6 +37,72 @@ logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG)
 
 
+def _flush_for_peers(target: str | os.PathLike) -> None:
+    """Flush filesystem state so peer ranks see the builder's writes.
+
+    Called on the builder rank inside build_sync after the recipe completes
+    and before the barrier / lock release that lets peers proceed. The
+    recipe typically wrote multiple files (a ``config.json`` plus the
+    auto_map module's ``.py`` files via ``copy_package_files``); peers
+    next call ``from_pretrained(trust_remote_code=True)`` which both
+    reads the config and ``importlib``-loads the referenced modules.
+
+    Without the flush we have seen sporadic "Unrecognized model — should
+    have a model_type key" failures on peer ranks, even within a single
+    node. The kernel's page cache IS coherent across processes on Linux,
+    but the chain of "file just got close()d → directory mtime → child
+    `importlib` finder cache" can miss freshly-written files when the
+    barrier releases peers within milliseconds of the writes.
+
+    The flush is best-effort: ``os.sync()`` covers global writeback;
+    fsync on the target directory's fd covers the directory-entry
+    update specifically (without it, the rename of any tmp files used
+    by the writer can outlive the data flush). On NFS this also nudges
+    the server to commit; clients still need to invalidate their own
+    cache (handled by :func:`_invalidate_module_caches` on peers).
+    """
+    target_path = os.fspath(target)
+    # Best-effort global flush of buffered writes.
+    try:
+        os.sync()
+    except Exception as exc:
+        logger.debug("os.sync() failed in build_sync flush: %s", exc)
+    # fsync the directory containing the target so its entries are durable.
+    parent = os.path.dirname(target_path) or "."
+    try:
+        dirfd = os.open(parent, os.O_RDONLY)
+    except OSError as exc:
+        logger.debug("could not open %r for dirsync: %s", parent, exc)
+        return
+    try:
+        os.fsync(dirfd)
+    except OSError as exc:
+        # Some filesystems / mount options don't permit fsync on a dir fd.
+        # Not fatal — os.sync() above has already done the heavy lifting.
+        logger.debug("dirfd fsync(%r) failed (non-fatal): %s", parent, exc)
+    finally:
+        os.close(dirfd)
+
+
+def _invalidate_module_caches() -> None:
+    """Drop importlib's finder caches on a non-builder rank.
+
+    The waiter ranks are about to execute ``from_pretrained`` with
+    ``trust_remote_code=True``, which ``importlib``-loads the
+    auto_map module from the freshly-built output directory. If any
+    finder cached a "directory contents" listing from BEFORE the
+    builder dropped its ``.py`` files there, the import sees "no
+    such module" — and transformers maps that to the misleading
+    "Unrecognized model … should have a `model_type` key" error.
+    """
+    try:
+        import importlib
+
+        importlib.invalidate_caches()
+    except Exception as exc:
+        logger.debug("importlib.invalidate_caches failed (non-fatal): %s", exc)
+
+
 @contextmanager
 def file_lock_build(
     target: str | os.PathLike, timeout: float = 300.0, force_lock: bool = False
@@ -159,11 +225,17 @@ def build_sync(target: str | os.PathLike, local: bool = False, timeout: float = 
 
     1. When torch.distributed is initialized: Uses barrier-based synchronization.
        Rank 0 of the process group builds while others wait at a barrier.
-       After rank 0 completes, all processes proceed together.
+       After rank 0 completes, all processes proceed together. The builder
+       calls ``os.sync()`` + fsync the target's parent directory before
+       releasing the barrier so peers don't race the just-written files;
+       waiters call ``importlib.invalidate_caches()`` after the barrier so
+       a subsequent ``trust_remote_code`` load sees the fresh modules.
 
     2. When torch.distributed is not initialized: Falls back to file-based locking.
        The first process to acquire the lock builds, others wait for the lock
-       to be released before proceeding.
+       to be released before proceeding. The same flush + cache-invalidate
+       dance applies (builder flushes before fcntl release; waiters that
+       observe ``target_was_built`` invalidate caches).
 
     Parameters
     ----------
@@ -211,11 +283,21 @@ def build_sync(target: str | os.PathLike, local: bool = False, timeout: float = 
             barrier = get_barrier_fn(group)
 
             if group_rank == 0:
-                # Main process: build first, then signal completion
+                # Main process: build first, sync filesystem, then signal completion
                 logger.debug(
                     f"[Rank {get_rank()}] build_sync: builder (rank 0 in group)"
                 )
                 yield True
+                # Flush writeback BEFORE releasing peers. The recipe may have
+                # written files (e.g., copy_package_files dropping a model's
+                # .py modules into output_dir) that peers will read seconds
+                # later via from_pretrained / importlib. Without an explicit
+                # flush, peers can race the writeback on both NFS (server
+                # has the bytes but client cache is stale) and on local
+                # filesystems where the page cache hasn't yet propagated
+                # through importlib's directory listing. Cheap insurance —
+                # only the builder pays the cost, only once per build.
+                _flush_for_peers(target)
                 barrier()
             else:
                 # Other processes: wait for main process to complete
@@ -224,6 +306,11 @@ def build_sync(target: str | os.PathLike, local: bool = False, timeout: float = 
                 )
                 barrier()
                 yield False
+                # Invalidate importlib's finder cache so a later
+                # ``from_pretrained(trust_remote_code=True)`` doesn't reuse
+                # a stale "this directory has no foo.py" cache entry from
+                # before the builder wrote the auto_map modules.
+                _invalidate_module_caches()
             # Final barrier ensures all processes are synchronized before continuing
             barrier()
             logger.debug(f"[Rank {get_rank()}] build_sync: exiting after barriers")
@@ -234,6 +321,19 @@ def build_sync(target: str | os.PathLike, local: bool = False, timeout: float = 
                 f"{'local' if local else 'global'} process group is None, "
                 f"falling back to file locking"
             )
+
+    # File-lock fallback below is what torch-titan-style flows hit when
+    # they init distributed AFTER trainer construction. Flag it loudly so
+    # the same race that motivated this commit doesn't get silently
+    # papered over by the (cross-node-flaky) fcntl path.
+    if dist.is_available() and not dist.is_initialized() and get_world_size() > 1:
+        logger.warning(
+            f"[Rank {get_rank()}] build_sync: distributed not initialized "
+            f"at build time but world_size={get_world_size()} > 1. Falling "
+            f"back to fcntl file locking, which is best-effort across NFS / "
+            f"non-shared filesystems. If you see model-load races later, "
+            f"ensure distributed_env is materialized before the trainer/model."
+        )
 
     # Fallback: file locking (distributed not available, not initialized, or single process)
     #
@@ -311,10 +411,18 @@ def build_sync(target: str | os.PathLike, local: bool = False, timeout: float = 
                 f"[Rank {get_rank()}] build_sync: target was built by another process"
             )
             yield False
+            # Same rationale as the distributed waiter branch — drop
+            # importlib's finder cache so a later trust_remote_code load
+            # doesn't see a stale "this dir has no foo.py".
+            _invalidate_module_caches()
         else:
             # We're the builder
             logger.debug(f"[Rank {get_rank()}] build_sync: we are the builder")
             yield True
+            # Flush before releasing the fcntl lock so waiters that read
+            # next see the builder's writes — not just the file the
+            # writer happened to close-and-flush itself.
+            _flush_for_peers(target)
 
     finally:
         if lock_fd is not None:

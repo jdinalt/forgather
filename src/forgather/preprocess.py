@@ -37,6 +37,16 @@ def forgather_config_dir():
 _HARDWARE_YAML = "hardware.yaml"
 _GPU_FLOPS_YAML = Path(__file__).with_name("gpu_flops.yaml")
 
+# Stand-in peak FLOPS used when no GPU is detected and no manual override
+# is present. Keeps preprocessing functional (MFU-style derived values stay
+# numeric) without pretending we know the real hardware. Deliberately set
+# to a *pessimistic* placeholder (~RTX 4060 / L4 BF16 dense): an operator
+# who silently lands here gets MFU > 100% on any real GPU, which is loud
+# enough to notice in dashboards. A 4090-class default would produce
+# plausible-looking numbers that hide the misconfiguration. Users on real
+# hardware get the auto-detected value cached in ``hardware.yaml`` instead.
+_FALLBACK_PEAK_HARDWARE_FLOPS: float = 30e12
+
 # Loaded lazily by _get_gpu_flops_table().
 _gpu_flops_table: list[tuple[list[str], float]] | None = None
 
@@ -74,7 +84,7 @@ def _detect_gpu_flops() -> tuple[str | None, float | None]:
         return None, None
 
 
-def get_peak_hardware_flops() -> float | None:
+def get_peak_hardware_flops() -> float:
     """
     Return the peak BF16 FLOP/s (FP32 accumulation) for a single GPU.
 
@@ -86,11 +96,11 @@ def get_peak_hardware_flops() -> float | None:
        look it up in the built-in reference table.
     3. If found, write the result to ``<forgather_config_dir>/hardware.yaml``
        so subsequent calls (and other sessions) skip detection.
-
-    Returns ``None`` when no GPU is available or the GPU is not in the
-    reference table. In that case the user can create
-    ``<forgather_config_dir>/hardware.yaml`` manually -- see
-    ``docs/trainers/training-performance-metrics.md`` for values.
+    4. Otherwise return a static stand-in (``_FALLBACK_PEAK_HARDWARE_FLOPS``)
+       so preprocessing stays functional on hosts without a recognized GPU.
+       MFU computed against the stand-in is meaningless -- override it by
+       creating ``<forgather_config_dir>/hardware.yaml`` with a real value
+       (see ``docs/trainers/training-performance-metrics.md``).
     """
     home_dir = Path(forgather_config_dir())
     hardware_file = home_dir / _HARDWARE_YAML
@@ -122,8 +132,19 @@ def get_peak_hardware_flops() -> float | None:
             )
         except OSError as exc:
             logger.debug("Could not write %s: %s", hardware_file, exc)
+        return flops
 
-    return flops
+    # 4. No GPU recognized -- keep preprocessing functional with a stand-in.
+    logger.warning(
+        "peak_hardware_flops not set and no recognized GPU detected"
+        " (device_name=%r); using deliberately pessimistic placeholder"
+        " %.1f TFLOPS. MFU > 100%% in your dashboards = this fallback"
+        " fired and you need to override it via %s.",
+        device_name,
+        _FALLBACK_PEAK_HARDWARE_FLOPS / 1e12,
+        hardware_file,
+    )
+    return _FALLBACK_PEAK_HARDWARE_FLOPS
 
 
 def split_templates(template, name=None):

@@ -11,6 +11,7 @@ import {
   ClusterProbeInterface,
   GpuInfo,
   Job,
+  RUNNING_JOB_STATUSES,
 } from "../api";
 import { GpuPanel, GpuCard } from "./GpuPanel";
 
@@ -451,8 +452,24 @@ export function NodesPanel() {
   }
 
   const jobByPid = new Map<number, Job>();
+  // Per-node reserved GPU sets: a GPU is reserved by Forgather when any
+  // running job lists it under gpu_indices. Keyed by node hostname so the
+  // cluster nodes panel can mark a peer's GPU "busy" when it actually is.
+  const reservedByNode = new Map<string, Set<number>>();
   for (const j of jobsQ.data ?? []) {
     if (j.pid != null) jobByPid.set(j.pid, j);
+    if (
+      RUNNING_JOB_STATUSES.has(j.status) &&
+      j.gpu_indices &&
+      j.node
+    ) {
+      let set = reservedByNode.get(j.node);
+      if (!set) {
+        set = new Set<number>();
+        reservedByNode.set(j.node, set);
+      }
+      for (const idx of j.gpu_indices) set.add(idx);
+    }
   }
 
   const sortedMembers = [...data.members].sort((a, b) => {
@@ -521,6 +538,7 @@ export function NodesPanel() {
               gpus={gpuEntry?.gpus ?? null}
               gpusError={gpuEntry?.error ?? null}
               jobByPid={jobByPid}
+              reservedGpus={reservedByNode.get(m.hostname) ?? null}
               versionConsensus={versionConsensus}
             />
           );
@@ -537,6 +555,7 @@ function NodeGroup({
   gpus,
   gpusError,
   jobByPid,
+  reservedGpus,
   versionConsensus,
 }: {
   member: ClusterMember;
@@ -545,6 +564,9 @@ function NodeGroup({
   gpus: GpuInfo[] | null;
   gpusError: string | null;
   jobByPid: Map<number, Job>;
+  /** GPU indices on this node currently held by a running Forgather job.
+   *  ``null`` when no reservations apply (e.g. peer node with no jobs). */
+  reservedGpus: Set<number> | null;
   versionConsensus: Record<string, string>;
 }) {
   const qc = useQueryClient();
@@ -627,6 +649,7 @@ function NodeGroup({
                 key={g.index}
                 g={g}
                 jobByPid={jobByPid}
+                reserved={reservedGpus?.has(g.index) ?? false}
                 onToggleDisabled={() =>
                   togglePolicy.mutate({
                     gpu_index: g.index,

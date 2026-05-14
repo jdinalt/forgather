@@ -44,6 +44,7 @@ from .iterable_backend import IterableDatasetBackend
 from .remote_backend import (
     DatasetServerUnreachable,
     RemoteBackend,
+    _dataset_urlopen,
     _make_ssl_context,
     _translate_request_error,
     resolve_auth_token,
@@ -92,9 +93,8 @@ def _do_load_once(
         "utf-8"
     )
     req = Request(url, data=body, method="POST", headers=headers)
-    ssl_context = _make_ssl_context(base_url)
     try:
-        with urlopen(req, timeout=timeout, context=ssl_context) as resp:
+        with _dataset_urlopen(req, timeout=timeout, url=base_url) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
         raise _translate_request_error(exc) from exc
@@ -375,21 +375,30 @@ class ResilientRemoteBackend(IterableDatasetBackend):
     def _sleep_or_raise(
         self, exc: DatasetServerUnreachable, attempt: int, elapsed: float
     ) -> tuple[int, float]:
+        # ``self._base_url`` is whichever server we just tried — either
+        # the sticky URL from the constructor or the most recent
+        # router pick. Surfacing it in every retry / abort log line
+        # lets operators tell which dataset server is failing when a
+        # cluster has several behind the resolver.
+        target = self._base_url or "<unset>"
         delay = min(30.0, 2.0**attempt)
         if (
             self._max_retry_seconds is not None
             and elapsed + delay > self._max_retry_seconds
         ):
             logger.error(
-                "dataset_server unreachable after %.0fs (cap %.0fs); aborting: %s",
+                "dataset_server %s unreachable after %.0fs (cap %.0fs); "
+                "aborting: %s",
+                target,
                 elapsed,
                 self._max_retry_seconds,
                 exc,
             )
             raise exc
         logger.warning(
-            "dataset_server unreachable (%s); retrying in %.1fs (attempt %d, "
-            "elapsed %.0fs)",
+            "dataset_server %s unreachable (%s); retrying in %.1fs "
+            "(attempt %d, elapsed %.0fs)",
+            target,
             exc,
             delay,
             attempt + 1,

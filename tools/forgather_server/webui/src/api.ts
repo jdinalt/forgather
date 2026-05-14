@@ -201,6 +201,11 @@ export interface GpuInfo {
   /** Minimum queue priority required to schedule on this GPU (inclusive).
    *  0 means no restriction. */
   min_priority: number;
+  /** True when total_mem_bytes reports host system RAM rather than a
+   *  discrete VRAM pool — set for GPUs like GB10 / Jetson where NVML
+   *  returns "Not Supported" for memory info and the device shares
+   *  system memory. */
+  unified_memory?: boolean;
 }
 
 export interface GpuPolicy {
@@ -415,6 +420,16 @@ export interface Job {
   auth_token: string | null;
   source: "record" | "endpoint" | "merged";
 }
+
+/** Job statuses for which the scheduler considers the job to be holding its
+ *  reserved GPUs. Mirrors ``job_records.RUNNING_STATUSES`` on the backend;
+ *  keep in sync when adding a new status. The UI consults this set to
+ *  decide whether a GPU card should render as "busy" (a Forgather job has
+ *  the device) vs "idle" (available for dispatch). */
+export const RUNNING_JOB_STATUSES: ReadonlySet<string> = new Set([
+  "starting",
+  "running",
+]);
 
 export interface ControlResponse {
   success: boolean;
