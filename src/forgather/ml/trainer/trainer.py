@@ -905,6 +905,17 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         from torchao.float8.float8_linear import Float8Linear
 
         assert self.args.fp8_recipe is not None
+        if self.args.fp8_recipe == "rowwise_with_gw_hp":
+            # torchao 0.16.0: matmul_with_hp_or_float8_args reshapes axiswise-scaled
+            # inputs in forward(), which trips an assertion in float8_ops. ND inputs
+            # (e.g. transformer hidden states of shape (B, S, H)) cannot be used with
+            # this recipe. Plain "rowwise" and "tensorwise" are unaffected.
+            logger.warning(
+                "fp8_recipe='rowwise_with_gw_hp' is currently broken in torchao for "
+                "ND inputs (transformer hidden states): reshape on axiswise-scaled "
+                "Float8Tensor raises 'aten.reshape.default with axiswise scaling is "
+                "not supported yet'. Use 'rowwise' or 'tensorwise' instead."
+            )
         config = Float8LinearConfig.from_recipe_name(self.args.fp8_recipe)
 
         module_filter_fn = None

@@ -189,8 +189,15 @@ RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sh
 #   * TORCH_VARIANT=cuda + x86_64  -> no-op (PyPI's x86_64 torch IS CUDA-enabled)
 #   * TORCH_VARIANT=cpu  + *       -> cpu index (forces CPU build on every arch)
 #
-# ``torchao`` is *not* pre-installed: it has no CUDA aarch64 wheels on
-# the PyTorch index — the main /tmp/src install resolves it from PyPI.
+# ``torchao`` is *not* pre-installed here: it ships as a pure-Python
+# (``py3-none-any``) wheel that delegates its float8/quant ops to
+# torch's built-in kernels (e.g. ``torch._scaled_mm``), so the main
+# /tmp/src install resolves it from PyPI on every arch. (The PyTorch
+# index has no aarch64 torchao wheel, and we don't need one.) FP8
+# ``tensorwise`` exercises this path end-to-end on GB10/aarch64 with
+# no extra build steps; see docs/trainers/fp8-training.md for the
+# known ``rowwise`` limitation on SM 12.1 (NVRTC in torch 2.10/cu128
+# can't compile for SM > 12.0 yet).
 ARG TORCH_VARIANT
 RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
     export UV_CACHE_DIR=/root/.cache/uv \

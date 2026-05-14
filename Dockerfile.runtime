@@ -27,6 +27,13 @@ ARG REPO_DIR=/opt/forgather/repo
 ARG USER_NAME=forgather
 ARG USER_UID=1000
 ARG USER_GID=1000
+# torch variant for the build (mirrors Dockerfile, the dev image):
+#   cuda  (default) -- CUDA-enabled torch (PyPI x86_64 ships it; aarch64 wheels live on
+#                      download.pytorch.org/whl/cu128 so we pre-install from there)
+#   cpu             -- CPU-only torch from download.pytorch.org/whl/cpu on both arches.
+#                      Yields a much smaller image (no nvidia-* libs) -- appropriate for
+#                      CI / docs / hosts that won't run GPU workloads.
+ARG TORCH_VARIANT=cuda
 # Source tree is fetched fresh from git at build time — no host
 # checkout is baked in, so the image is fully reproducible. Override
 # FORGATHER_GIT_REF to pin a release tag or commit sha.
@@ -232,6 +239,38 @@ RUN --mount=type=bind,target=/build-context \
                 && git clone "${FORGATHER_GIT_URL}" "${REPO_DIR}" \
                 && cd "${REPO_DIR}" && git checkout "${FORGATHER_GIT_REF}" ); \
     fi
+
+# Pre-install torch + torchvision from the right PyTorch index so the
+# subsequent editable install sees the constraint already satisfied
+# and doesn't overwrite them with whatever PyPI ships. Same logic as
+# Dockerfile (the dev image):
+#
+#   * TORCH_VARIANT=cuda + aarch64 -> cu128 (PyPI's aarch64 torch is CPU-only;
+#                                            CUDA wheels live on the PyTorch index)
+#   * TORCH_VARIANT=cuda + x86_64  -> no-op (PyPI's x86_64 torch IS CUDA-enabled)
+#   * TORCH_VARIANT=cpu  + *       -> cpu index (forces CPU build on every arch)
+#
+# ``torchao`` is not pre-installed here: it ships as a pure-Python
+# (``py3-none-any``) wheel and delegates its float8/quant ops to
+# torch's built-in kernels (e.g. ``torch._scaled_mm``), so the editable
+# install below resolves it from PyPI on every arch.
+ARG TORCH_VARIANT
+RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
+    export UV_CACHE_DIR=/root/.cache/uv \
+    && umask 0002 \
+    && case "${TORCH_VARIANT}:$(uname -m)" in \
+        cuda:aarch64) \
+            uv pip install --python ${VENV_DIR}/bin/python \
+                --index-url https://download.pytorch.org/whl/cu128 \
+                "torch==2.10.0+cu128" torchvision ;; \
+        cuda:x86_64) ;; \
+        cpu:*) \
+            uv pip install --python ${VENV_DIR}/bin/python \
+                --index-url https://download.pytorch.org/whl/cpu \
+                "torch==2.10.0+cpu" torchvision ;; \
+        *) \
+            echo "[Dockerfile.runtime] unknown TORCH_VARIANT='${TORCH_VARIANT}'" >&2; exit 2 ;; \
+    esac
 
 # Install Forgather (editable) from the cloned tree. Editable mode
 # is required so that the file-walk in `forgather server` resolves
