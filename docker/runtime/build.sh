@@ -19,6 +19,9 @@
 #   FORGATHER_GIT_URL=https://my.fork.example/forgather.git \
 #       FORGATHER_GIT_REF=feature/foo docker/runtime/build.sh
 #                                                 # build from a fork/branch
+#   docker/runtime/build.sh --cpu                 # CPU-only torch (much smaller image,
+#                                                 # no nvidia-* libs; for CI / docs /
+#                                                 # GPU-less hosts)
 #   docker/runtime/build.sh -- --no-cache         # pass extra args to docker build
 #
 # TLS seed (optional, for build-once-distribute-everywhere clusters):
@@ -69,6 +72,18 @@ for tok in "$@"; do
             ;;
     esac
 done
+
+# Pre-parse our own flags out of argv so they compose with the
+# positional TAG and the ``--`` passthrough cleanly.
+TORCH_VARIANT=cuda
+ARGV=()
+for tok in "$@"; do
+    case "${tok}" in
+        --cpu) TORCH_VARIANT=cpu ;;
+        *)     ARGV+=("${tok}") ;;
+    esac
+done
+set -- "${ARGV[@]}"
 
 TAG="${1:-forgather:latest}"
 shift || true
@@ -154,6 +169,7 @@ fi
 echo "Building runtime image ${TAG}"
 echo "  git url: ${GIT_URL}"
 echo "  git ref: ${GIT_REF}"
+echo "  torch variant: ${TORCH_VARIANT}"
 if [[ -n "${TLS_SEED_ARG}" ]]; then
     echo "  tls seed: ${TLS_SEED_ARG} (from ${TLS_SRC})"
 fi
@@ -169,6 +185,7 @@ docker build \
     -f "${REPO_ROOT}/Dockerfile.runtime" \
     --build-arg "FORGATHER_GIT_URL=${GIT_URL}" \
     --build-arg "FORGATHER_GIT_REF=${GIT_REF}" \
+    --build-arg "TORCH_VARIANT=${TORCH_VARIANT}" \
     "${EXTRA_BUILD_ARGS[@]}" \
     "$@" \
     "${REPO_ROOT}"
