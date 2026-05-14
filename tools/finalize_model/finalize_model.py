@@ -175,6 +175,19 @@ def parse_args(argv=None):
         help="Device to load the model onto during finalize (default: cpu)",
     )
     parser.add_argument(
+        "--qat-convert",
+        type=str,
+        default=None,
+        help=(
+            "Run the torchao QAT convert step before saving: swaps "
+            "FakeQuantizedLinear modules for real low-bit quantized linear "
+            "ops. Pass the same recipe string that was used at training "
+            "time (e.g. 'int8-dynamic-act-int4-weight'). On models that "
+            "were not QAT-trained this is a no-op with a warning. See "
+            "docs/trainers/qat-training.md."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Resolve and report what would be done; do not write anything",
@@ -196,6 +209,66 @@ def _resolve_dtype(dtype_str: Optional[str]):
     from forgather.ml.construct import torch_dtype
 
     return torch_dtype(dtype_str)
+
+
+def _apply_qat_convert(model, recipe: str) -> None:
+    """Run torchao's QAT prepare-then-convert pipeline in-place on a loaded model.
+
+    The loaded model's state_dict contains plain float weights (Forgather's
+    sharded saver doesn't persist FakeQuantizedLinear inner state), so we
+    re-install fake quantizers on top of the trained weights via
+    ``step="prepare"``, then swap them for the real low-bit quantized linear
+    ops via ``step="convert"``. The scales/zero-points the convert step
+    computes are derived from the (QAT-trained) weight statistics.
+
+    Running this on a model that was *not* trained with ``--qat-recipe`` is
+    functionally a post-training-quantization (PTQ) pass: the recipe will
+    still be applied, but the result lacks the QAT training-time accuracy
+    benefit. A future ``--ptq-quantize`` flag (tracked separately) will make
+    that PTQ-on-plain-model intent explicit.
+    """
+    import torch
+    from torchao.quantization import quantize_
+    from torchao.quantization.qat import FakeQuantizedLinear, QATConfig
+
+    from forgather.ml.qat_recipes import QAT_RECIPES, recipe_to_base_config
+
+    if recipe not in QAT_RECIPES:
+        raise ValueError(
+            f"--qat-convert must be one of {QAT_RECIPES}, got {recipe!r}"
+        )
+
+    base_config = recipe_to_base_config(recipe)
+
+    # If the loaded model already has FakeQuantizedLinear modules (e.g. a
+    # future Forgather saver that preserves them), skip prepare and go
+    # straight to convert.
+    fq_count = sum(1 for m in model.modules() if isinstance(m, FakeQuantizedLinear))
+    if fq_count == 0:
+        linear_count = sum(
+            1 for m in model.modules() if isinstance(m, torch.nn.Linear)
+        )
+        if linear_count == 0:
+            logger.warning(
+                "--qat-convert %r requested but model has no nn.Linear "
+                "modules to quantize; skipping convert step.",
+                recipe,
+            )
+            return
+        logger.info(
+            f"QAT convert ({recipe}): re-installing fake quantizers on "
+            f"{linear_count} nn.Linear modules before convert"
+        )
+        quantize_(model, QATConfig(base_config, step="prepare"))
+        fq_count = sum(
+            1 for m in model.modules() if isinstance(m, FakeQuantizedLinear)
+        )
+
+    quantize_(model, QATConfig(base_config, step="convert"))
+    logger.info(
+        f"QAT convert ({recipe}): converted {fq_count} FakeQuantizedLinear "
+        f"modules to real quantized linear ops"
+    )
 
 
 def main(argv=None):
@@ -351,9 +424,28 @@ def main(argv=None):
             logger.info(
                 f"Would write generation_config.json (mode={args.generation_config})"
             )
+        if args.qat_convert:
+            logger.info(
+                f"Would run QAT convert step with recipe '{args.qat_convert}'"
+            )
         return 0
 
-    # ---- 6. Materialize destination ------------------------------------
+    # ---- 6. QAT convert (optional) -------------------------------------
+    if args.qat_convert:
+        _apply_qat_convert(model, args.qat_convert)
+        if args.safetensors:
+            # torchao's quantized tensor subclasses wrap multiple inner
+            # tensors and do not expose a single .storage().data_ptr(),
+            # so safetensors saves fail with "Attempted to access the
+            # data pointer on an invalid python storage". Force .bin.
+            logger.warning(
+                "--safetensors is incompatible with QAT-converted models "
+                "(torchao subclass tensors lack a single storage pointer). "
+                "Saving as PyTorch (.bin) instead."
+            )
+            args.safetensors = False
+
+    # ---- 7. Materialize destination ------------------------------------
     os.makedirs(dest, exist_ok=False)
     copy_model_source(source, dest)
 

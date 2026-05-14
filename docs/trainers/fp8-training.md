@@ -186,3 +186,11 @@ performance. Update torchao to match your PyTorch version.
 **No speedup observed**: Ensure `torch_compile=True` is set. Without compilation, the
 overhead of FP8 scale computation and casting can offset the matmul speedup, especially
 for small models.
+
+## See Also
+
+- **[QAT Training](qat-training.md)** -- the other torchao Linear-swap recipe. Mutually
+  exclusive with FP8: QAT inserts `FakeQuantizedLinear` for low-bit deployment, while
+  FP8 swaps to `Float8Linear` for faster training compute.
+- **[Finalizing a Trained Model](../guides/finalize-model.md)** -- post-training packaging.
+  No FP8-specific options today; the deployable artifact retains the original FP precision.
