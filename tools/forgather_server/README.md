@@ -312,12 +312,14 @@ handles the install gate and a per-arch quirk you'll otherwise hit:
 host), so a tree populated on x86_64 won't link on aarch64 and vice
 versa. To keep both arches happy on the same checkout (e.g. a repo
 shared over NFS between hosts, or a developer who builds in both an x86
-container and an ARM container), `build-webui.sh` stores the install in
-a sibling directory `.node_modules-$(uname -m)/` and points
-`node_modules` at it via a symlink. Both `.node_modules-*/` directories
-are gitignored. The committed `package-lock.json` already pins every
-platform's optional native dep, so each arch installs cleanly without
-edits to the lockfile.
+container and an ARM container), `build-webui.sh` parks the inactive
+arch's install in a sibling directory `.node_modules-<that-arch>/` and
+rotates the matching arch's stash back into `node_modules/` before each
+build. `node_modules/` is always a real directory at install time (npm's
+reify step replaces symlinks). The `.node_modules-*/` sibling
+directories are gitignored, and the committed `package-lock.json`
+already pins every platform's optional native dep so each arch installs
+cleanly without lockfile edits.
 
 Do not `cp -r` a `node_modules/` across hosts of different arch — let
 `build-webui.sh` install per-arch.
