@@ -47,10 +47,13 @@ so the trainer rejects the combination at startup.
 
 | Recipe | Activations | Weights | torchao base config |
 |--------|-------------|---------|---------------------|
-| `int8-dynamic-act-int4-weight` | int8 per-token dynamic | int4 per-group (group_size=32) | `Int8DynamicActivationInt4WeightConfig` |
+| `int8-dynamic-act-int4-weight` | int8 per-token dynamic | int4 per-group (group_size=32) | `Int8DynamicActivationIntxWeightConfig` |
 | `int4-weight-only` | full precision | int4 per-group (group_size=128) | `Int4WeightOnlyConfig` |
 | `float8-dynamic-act-float8-weight` | float8 per-row dynamic | float8 per-row | `Float8DynamicActivationFloat8WeightConfig` |
-| `float8-dynamic-act-int4-weight` | float8 per-row dynamic | int4 per-group | `Float8DynamicActivationInt4WeightConfig` |
+
+`float8-dynamic-act-int4-weight` is *not* exposed in v1 — torchao gates its
+underlying kernel to the `preshuffled` int4 packing format which is Hopper-only
+(SM90+ / FBGEMM). It will be added back behind a runtime capability check.
 
 Recommended default: `int8-dynamic-act-int4-weight`. It's the most
 broadly-validated production path -- the same recipe Meta and NVIDIA use

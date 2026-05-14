@@ -35,11 +35,11 @@ interface PersistedFinalize {
   qatConvert: string;
 }
 
+// Keep in sync with QAT_RECIPES in src/forgather/ml/qat_recipes.py.
 const QAT_CONVERT_RECIPES = [
   "int8-dynamic-act-int4-weight",
   "int4-weight-only",
   "float8-dynamic-act-float8-weight",
-  "float8-dynamic-act-int4-weight",
 ] as const;
 
 const STORAGE_KEY = "forgather-global-finalize-v1";

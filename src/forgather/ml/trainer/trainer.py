@@ -859,6 +859,12 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             case _:
                 raise ValueError("Requires one of: default|meta|device")
         assert self.model is not None
+        # Linear-swap recipes (fp8 / qat) are mutually exclusive — see the
+        # _LINEAR_SWAP_RECIPES check in BaseTrainingArguments.__post_init__.
+        # The if-chain is sequential rather than elif so a future relaxed
+        # mutex still surfaces a clear error (the second swap would find
+        # no nn.Linear left and report 0/N converted) instead of silently
+        # producing a single-recipe model.
         if self.args.fp8_recipe:
             self.model = self._apply_fp8_training(self.model)
         if self.args.qat_recipe:

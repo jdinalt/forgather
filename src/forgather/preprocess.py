@@ -84,6 +84,18 @@ def _detect_gpu_flops() -> tuple[str | None, float | None]:
         return None, None
 
 
+def _qat_recipes_global() -> list[str]:
+    """Return the QAT recipe list for use as a Jinja global.
+
+    Renders to YAML via the ``toyaml`` filter so the template's
+    ``--qat-recipe`` ``choices:`` list stays in sync with the Python source
+    of truth (``forgather.ml.qat_recipes.QAT_RECIPES``).
+    """
+    from forgather.ml.qat_recipes import QAT_RECIPES
+
+    return list(QAT_RECIPES)
+
+
 def get_peak_hardware_flops() -> float:
     """
     Return the peak BF16 FLOP/s (FP32 accumulation) for a single GPU.
@@ -577,6 +589,7 @@ class PPEnvironment(SandboxedEnvironment):
         "getcwd": os.getcwd,
         "forgather_config_dir": forgather_config_dir,
         "get_peak_hardware_flops": get_peak_hardware_flops,
+        "qat_recipes": _qat_recipes_global,
         # https://pypi.org/project/platformdirs/
         "user_data_dir": user_data_dir,
         "user_cache_dir": user_cache_dir,

@@ -93,7 +93,7 @@
 ##                          (str)   Approximate float32 matmul with bf16. Choices: highest, high, medium
 ##   mixed_precision        (str)   AMP dtype.                      Choices: bf16, fp16, no
 ##   fp8_recipe             (str)   FP8 recipe for linear layers.   Choices: tensorwise, rowwise, rowwise_with_gw_hp
-##   qat_recipe             (str)   QAT recipe for linear layers.   Choices: int8-dynamic-act-int4-weight, int4-weight-only, float8-dynamic-act-float8-weight, float8-dynamic-act-int4-weight
+##   qat_recipe             (str)   QAT recipe for linear layers.   Choices: see forgather.ml.qat_recipes.QAT_RECIPES (rendered into --qat-recipe --help)
 ##   compile                (bool)  Enable torch.compile.           Default: False
 ##   torch_compile_mode     (str)   torch.compile mode.             Default: default
 ##                                  Choices: default, max-autotune, max-autotune-no-cudagraphs.
@@ -699,7 +699,7 @@ optimizer_groups: &optimizer_groups
         help: "FP8 training recipe (torchao Float8Linear)"
     qat_recipe:
         names: "--qat-recipe"
-        choices: [ "int8-dynamic-act-int4-weight", "int4-weight-only", "float8-dynamic-act-float8-weight", "float8-dynamic-act-int4-weight" ]
+        choices: {{ qat_recipes() | toyaml }}
         group: "Precision"
         help: "Quantization-aware training recipe (torchao QAT prepare; run `forgather finalize --qat-convert <recipe>` after training)"
     compile:

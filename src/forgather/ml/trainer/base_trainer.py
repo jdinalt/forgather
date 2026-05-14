@@ -260,11 +260,17 @@ class BaseTrainingArguments(MinimalTrainingArguments):
                 raise ValueError(
                     f"qat_recipe must be one of {QAT_RECIPES}, got '{self.qat_recipe}'"
                 )
-            if self.fp8_recipe is not None:
-                raise ValueError(
-                    "fp8_recipe and qat_recipe are mutually exclusive "
-                    "(both transform nn.Linear). Set at most one."
-                )
+
+        # Linear-swap recipes are mutually exclusive (each replaces nn.Linear
+        # with a different specialised class). Add new recipes here to keep
+        # the check single-source.
+        _LINEAR_SWAP_RECIPES = ("fp8_recipe", "qat_recipe")
+        _active = [name for name in _LINEAR_SWAP_RECIPES if getattr(self, name)]
+        if len(_active) > 1:
+            raise ValueError(
+                f"Linear-swap recipes are mutually exclusive "
+                f"(each replaces nn.Linear); set at most one. Got: {_active}"
+            )
 
 
 TBaseTrainingArguments = TypeVar("TBaseTrainingArguments", bound=BaseTrainingArguments)

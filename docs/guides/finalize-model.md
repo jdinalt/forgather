@@ -111,8 +111,13 @@ Example:
 # After training with --qat-recipe int8-dynamic-act-int4-weight, produce the
 # deployable quantized artifact:
 forgather finalize output_models/qat_run out/qat_int8_int4 \
-    --qat-convert int8-dynamic-act-int4-weight --safetensors
+    --qat-convert int8-dynamic-act-int4-weight
 ```
+
+When `--qat-convert` is set, finalize always writes `.bin`: torchao's
+quantized tensor subclasses don't expose a single `.storage().data_ptr()`,
+which the safetensors writer requires. If `--safetensors` is passed
+alongside `--qat-convert`, it is silently disabled with a warning.
 
 ### Misc
 
