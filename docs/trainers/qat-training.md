@@ -41,8 +41,8 @@ forgather finalize output_models/my_run out/my_run_int8_int4 \
     --quantize int8-dynamic-act-int4-weight
 ```
 
-(`--safetensors` is silently disabled when `--quantize` is set — see
-[Save Format](#save-format).)
+The converted artifact is always written as `.bin` — see
+[Save Format](#save-format) below.
 
 The recipe string passed to `--qat-recipe` and `--quantize` must be the
 **same** -- the convert step needs the matching base config to know what

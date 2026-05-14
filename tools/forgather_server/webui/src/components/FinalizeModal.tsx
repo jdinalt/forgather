@@ -594,7 +594,7 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
                 onChange={(e) => setQuantize(e.target.value)}
                 title="Quantize the model via torchao. QAT-trained sources keep the QAT accuracy benefit; plain bf16 sources get standard PTQ."
               >
-                <option value="">(none — skip quantize)</option>
+                <option value="">(none — no quantization)</option>
                 {QUANTIZE_RECIPES.map((r) => (
                   <option key={r} value={r}>
                     {r}
