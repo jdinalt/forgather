@@ -13,10 +13,16 @@ QAT is a two-phase workflow:
    quantizers into the model. Training proceeds normally (the optimizer
    updates full-precision master weights; the fake-quant scales/zero-points
    are recomputed each step).
-2. **Convert** -- done after training via `forgather finalize --qat-convert
+2. **Convert** -- done after training via `forgather finalize --quantize
    <recipe>`. Swaps each `FakeQuantizedLinear` for the real low-bit
    quantized linear op described by the recipe, producing a deployable
    artifact.
+
+`forgather finalize --quantize` also works on **plain bf16 models**, in which
+case it performs standard post-training quantization (PTQ) instead of the
+QAT round-trip. Same flag, same recipes; the only difference is whether the
+source weights were shaped under fake-quant noise during training. See
+[PTQ Mode](#ptq-mode) below.
 
 ## Requirements
 
@@ -32,10 +38,13 @@ forgather -t config.yaml train --qat-recipe int8-dynamic-act-int4-weight
 
 # 2. After training, produce the deployable quantized artifact
 forgather finalize output_models/my_run out/my_run_int8_int4 \
-    --qat-convert int8-dynamic-act-int4-weight --safetensors
+    --quantize int8-dynamic-act-int4-weight
 ```
 
-The recipe string passed to `--qat-recipe` and `--qat-convert` must be the
+(`--safetensors` is silently disabled when `--quantize` is set — see
+[Save Format](#save-format).)
+
+The recipe string passed to `--qat-recipe` and `--quantize` must be the
 **same** -- the convert step needs the matching base config to know what
 scales and dtypes to use. Recipe strings are validated against the registry
 in `src/forgather/ml/qat_recipes.py`.
@@ -86,7 +95,7 @@ the original full-precision weights. The fake quantizers don't have learned
 parameters by default -- their scales and zero-points are derived from the
 current weight/activation statistics every step.
 
-At finalize, when `--qat-convert <recipe>` is set:
+At finalize, when `--quantize <recipe>` is set:
 
 ```python
 # 1. Re-install fake quantizers on top of the loaded float weights
@@ -148,7 +157,7 @@ needs `forgather eval` + inference-server support for quantized models
 
 ## Save Format
 
-`forgather finalize --qat-convert` always writes the converted artifact in
+`forgather finalize --quantize` always writes the converted artifact in
 PyTorch (`.bin`) format. The `--safetensors` flag is silently disabled with
 a warning when both are set: torchao's quantized tensor subclasses
 (`Int8DynActInt4WeightLinear`, `Int4Tensor`, etc.) wrap multiple inner
@@ -160,16 +169,40 @@ The default `.bin` artifact loads cleanly through `torch.load` + the
 torchao `quantize_(model, QATConfig(base_config, step="convert"))` re-cast
 applied at load time. See the programmatic example below.
 
-## Behavior on Models Without QAT
+## PTQ Mode
 
-If you pass `--qat-convert <recipe>` to `forgather finalize` on a model
-that wasn't trained with `--qat-recipe`, the same prepare-then-convert
-pipeline runs anyway -- which is functionally **post-training
-quantization (PTQ)**: the recipe is applied, but the result lacks the
-QAT training-time accuracy benefit. The deployable artifact is still
-valid and loadable. A future `--ptq-quantize` flag (tracked in #40) will
-make that PTQ-on-plain-model intent explicit, but until then
-`--qat-convert` is the single entry point for both flows.
+`forgather finalize --quantize <recipe>` accepts any source model — it
+does not require `--qat-recipe` at training time. The same
+prepare-then-convert pipeline runs regardless; what changes is the
+quality of the result:
+
+- **QAT round-trip** (source was trained with `--qat-recipe`): the
+  weights were already shaped under fake-quantization noise during
+  training. The convert step recovers the QAT training-time accuracy
+  benefit. This is the full intended workflow.
+- **PTQ** (plain bf16 source, no QAT at training time): the recipe is
+  applied to weights that have not seen quantization noise. The result
+  is bog-standard post-training quantization — a valid, deployable
+  low-bit artifact, but without the QAT accuracy benefit.
+
+PTQ example:
+
+```bash
+# Plain bf16 training, no --qat-recipe
+forgather -t config.yaml train
+
+# Same finalize flag, plain source — this is PTQ
+forgather finalize output_models/my_bf16_run out/my_bf16_run_int8_int4 \
+    --quantize int8-dynamic-act-int4-weight
+```
+
+This is the path used for the AMP-baseline / PTQ / QAT three-way
+comparison: train the same model once in plain bf16, then run finalize
+twice (one source bf16, one source QAT) with the same `--quantize`
+recipe and compare the eval results. PTQ on a model that was not
+QAT-trained typically pays a larger accuracy penalty than the
+`~+0.017` eval-loss premium QAT does (see [Loss Trajectory](#loss-trajectory-1-chinchilla-tiny-llama)
+above for the QAT numbers); how much depends on the model and recipe.
 
 ## Programmatic Usage
 
@@ -221,4 +254,4 @@ needed for the common case:
 - [FP8 Training](fp8-training.md) -- the other torchao Linear-swap recipe;
   mutually exclusive with QAT.
 - [Finalizing a Trained Model](../guides/finalize-model.md) -- the
-  `forgather finalize` reference (including `--qat-convert`).
+  `forgather finalize` reference (including `--quantize`).

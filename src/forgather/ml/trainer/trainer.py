@@ -965,7 +965,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         quantizers while the backward pass stays in full precision, letting
         the model learn to be robust to quantization noise. The convert phase
         (real low-bit ops) is run post-training by ``forgather finalize
-        --qat-convert <recipe>``.
+        --quantize <recipe>``.
         """
         from torchao.quantization import quantize_
         from torchao.quantization.qat import FakeQuantizedLinear, QATConfig
@@ -987,7 +987,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         logger.info(
             f"QAT training ({self.args.qat_recipe}): "
             f"converted {converted}/{total_linear} Linear layers to FakeQuantizedLinear. "
-            f"Run `forgather finalize --qat-convert {self.args.qat_recipe}` "
+            f"Run `forgather finalize --quantize {self.args.qat_recipe}` "
             f"after training to produce a deployable quantized artifact."
         )
 

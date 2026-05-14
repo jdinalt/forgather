@@ -103,21 +103,24 @@ the (possibly-updated) tokenizer last.
 
 | Option | Description |
 |--------|-------------|
-| `--qat-convert RECIPE` | Run the torchao QAT convert step before saving: swap `FakeQuantizedLinear` modules for the real low-bit quantized linear ops described by `RECIPE`. Use the same recipe string that was used at training time (`--qat-recipe`). On models without fake-quantized modules this is a no-op with a warning. See [QAT Training](../trainers/qat-training.md) for the recipe list. |
+| `--quantize RECIPE` | Quantize the model before saving using the named torchao recipe. Works on any source. If the source was trained with `--qat-recipe`, this completes the QAT round-trip and keeps the QAT training-time accuracy benefit. If the source is plain bf16, this is standard post-training quantization (PTQ). See [QAT Training](../trainers/qat-training.md) for the recipe list and the QAT-vs-PTQ tradeoff. |
 
-Example:
+Examples:
 
 ```bash
-# After training with --qat-recipe int8-dynamic-act-int4-weight, produce the
-# deployable quantized artifact:
+# QAT round-trip: source was trained with --qat-recipe
 forgather finalize output_models/qat_run out/qat_int8_int4 \
-    --qat-convert int8-dynamic-act-int4-weight
+    --quantize int8-dynamic-act-int4-weight
+
+# PTQ: plain bf16 source, same flag
+forgather finalize output_models/bf16_run out/bf16_int8_int4_ptq \
+    --quantize int8-dynamic-act-int4-weight
 ```
 
-When `--qat-convert` is set, finalize always writes `.bin`: torchao's
+When `--quantize` is set, finalize always writes `.bin`: torchao's
 quantized tensor subclasses don't expose a single `.storage().data_ptr()`,
 which the safetensors writer requires. If `--safetensors` is passed
-alongside `--qat-convert`, it is silently disabled with a warning.
+alongside `--quantize`, it is silently disabled with a warning.
 
 ### Misc
 
@@ -186,5 +189,6 @@ pad_token:
 - **[EOS Tokens and `generate()` Stopping Criteria](eos-and-generate-stopping.md)** --
   theory of operation: how HF's `generate()` resolves stopping across the
   multiple files that carry EOS information.
-- **[QAT Training](../trainers/qat-training.md)** -- pair `--qat-convert` here
-  with `--qat-recipe` at training time to produce a low-bit deployable artifact.
+- **[QAT Training](../trainers/qat-training.md)** -- pair `--quantize` here
+  with `--qat-recipe` at training time for the full QAT round-trip, or use
+  `--quantize` alone on a plain bf16 source for post-training quantization.
