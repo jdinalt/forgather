@@ -174,6 +174,22 @@ RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sh
     export UV_CACHE_DIR=/root/.cache/uv \
     && uv venv --python python3.12 --seed ${VENV_DIR}
 
+# On aarch64, PyPI's ``torch`` wheel is CPU-only — NVIDIA hosts CUDA-
+# enabled aarch64 wheels (Blackwell sm_120 / GB10, Grace Hopper, etc.)
+# on the PyTorch download server, not on PyPI. Pre-install the CUDA
+# torch / torchvision / torchao trio from that index so the
+# subsequent ``/tmp/src`` install sees the constraint already
+# satisfied and doesn't overwrite them with PyPI's CPU build. On
+# x86_64 PyPI itself ships CUDA-enabled torch wheels, so this step is
+# a no-op there.
+RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
+    export UV_CACHE_DIR=/root/.cache/uv \
+    && if [ "$(uname -m)" = "aarch64" ]; then \
+        uv pip install --python ${VENV_DIR}/bin/python \
+            --index-url https://download.pytorch.org/whl/cu128 \
+            "torch==2.10.0+cu128" torchvision torchao ; \
+    fi
+
 # Install Forgather + every dependency from pyproject.toml. We bind-
 # mount the build context read-only and then copy it into a user-
 # writable scratch dir at /tmp/src — setuptools insists on writing
