@@ -304,6 +304,24 @@ npm run build        # produces webui/dist/
 `node`/`npm` are only needed for the build step. The running server has
 no Node dependency.
 
+**Prefer `./build-webui.sh`** at the repo root for everyday use — it
+handles the install gate and a per-arch quirk you'll otherwise hit:
+
+`node_modules/` is platform-specific (npm only fetches the
+`@rollup/rollup-<os>-<arch>-*` native binary that matches the install
+host), so a tree populated on x86_64 won't link on aarch64 and vice
+versa. To keep both arches happy on the same checkout (e.g. a repo
+shared over NFS between hosts, or a developer who builds in both an x86
+container and an ARM container), `build-webui.sh` stores the install in
+a sibling directory `.node_modules-$(uname -m)/` and points
+`node_modules` at it via a symlink. Both `.node_modules-*/` directories
+are gitignored. The committed `package-lock.json` already pins every
+platform's optional native dep, so each arch installs cleanly without
+edits to the lockfile.
+
+Do not `cp -r` a `node_modules/` across hosts of different arch — let
+`build-webui.sh` install per-arch.
+
 **Cache headers.** The static-files mount is wrapped in a
 `CachingStaticFiles` subclass that pins the SPA cache policy to:
 

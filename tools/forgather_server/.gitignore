@@ -1,4 +1,6 @@
+webui/node_modules
 webui/node_modules/
+webui/.node_modules-*/
 webui/dist/
 webui/*.tsbuildinfo
 webui/vite.config.js
