@@ -89,35 +89,62 @@ current weight/activation statistics every step.
 At finalize, when `--qat-convert <recipe>` is set:
 
 ```python
+# 1. Re-install fake quantizers on top of the loaded float weights
+quantize_(model, QATConfig(base_config, step="prepare"))
+# 2. Swap them for the real low-bit quantized linear ops
 quantize_(model, QATConfig(base_config, step="convert"))
 ```
 
-This swaps each `FakeQuantizedLinear` for the real low-bit quantized linear
-op (e.g. `Int8DynActInt4WeightLinear`). The resulting state_dict contains
-torchao's quantized parameter format; `save_pretrained` writes it through
-torchao's registered serialization hooks.
+The first call is necessary because Forgather's sharded checkpoint saver
+serialises `state_dict()` which returns *float* weights — the
+`FakeQuantizedLinear` modules' scale/zero-point inner state is not
+persistent. We re-install fake quantizers from the float weights and then
+let convert compute the final low-bit weights and scales. The scales the
+convert step picks are derived from the QAT-trained weight statistics, so
+the QAT training-time accuracy benefit is preserved.
 
-## Loss Trajectory Smoke Test
+The result is a model whose `nn.Linear` modules are now torchao subclasses
+(`Int8DynActInt4WeightLinear`, etc.). Forgather's `save_checkpoint` writes
+the resulting state_dict as PyTorch `.bin` (safetensors is incompatible —
+see below).
 
-500-step from-scratch runs of `examples/tutorials/tiny_llama:v2.yaml` on
-hal9000 (RTX 4090), same model, same seed.
+## Loss Trajectory: 1-Chinchilla Tiny Llama
 
-*Trajectory numbers will be filled in by the verification step.*
+Full-length training run of `examples/tutorials/tiny_llama:v2.yaml` (Tiny
+Llama, 4.43M params, ~82.6M training tokens — chinchilla-optimal at
+~20 tokens/param), single GPU (RTX 3090, sm_86, wopr), same seed, same
+config. The baseline run uses the v2.yaml default precision settings (bf16
+AMP via `mixed_precision: "bf16"`); the QAT run adds `--qat-recipe
+int8-dynamic-act-int4-weight` on top.
 
-| step | bf16 | int8-dyn-int4 | int4-weight-only | delta int8 | delta int4-wo |
-|------|------|---------------|------------------|------------|---------------|
-| 64   |      |               |                  |            |               |
-| 128  |      |               |                  |            |               |
-| 192  |      |               |                  |            |               |
-| 256  |      |               |                  |            |               |
-| 320  |      |               |                  |            |               |
-| 384  |      |               |                  |            |               |
-| 448  |      |               |                  |            |               |
+| Eval step | bf16 AMP baseline (eval_loss) | QAT int8-act-int4-wt (eval_loss) | Δ (QAT − baseline) |
+|-----------|-------------------------------|----------------------------------|--------------------|
+| 642       | 2.0651                        | 2.0789                           | +0.0138            |
+| 1284      | 1.6999                        | 1.7142                           | +0.0143            |
+| 1926      | 1.5658                        | 1.5799                           | +0.0141            |
+| 4494      | 1.3725                        | 1.3896                           | +0.0171            |
+| 5136      | 1.3602                        | 1.3776                           | +0.0174            |
+| **5140 (final)** | **1.3601**             | **1.3774**                       | **+0.0173**        |
 
-Expected: QAT recipes track bf16 within ~+0.05 loss at step 448. A larger
-gap would mean the fake-quant noise is overwhelming the optimization signal
-for this model size / learning rate, in which case a longer warmup or
-shorter group sizes are the usual remedies.
+Final train loss at step 5120 was 1.3352 vs 1.3534 (Δ +0.0182). The two
+trajectories track each other from the very first eval through to
+completion — QAT pays a stable ~+0.017 eval-loss premium throughout
+training rather than a divergent late-training gap, which is the
+encouraging signal: the model is learning under the fake-quant noise, not
+just accumulating it.
+
+**Wall-clock overhead.** Same GPU, same model, same data:
+
+| Run | Wall time | Steps/sec | Tokens/sec |
+|-----|-----------|-----------|------------|
+| bf16 AMP baseline | 197 s | 26.1 | 419K |
+| QAT int8-act-int4-wt | 329 s | 15.6 | 251K |
+
+QAT is ~1.67× slower than the bf16 baseline (the cost of running the fake
+quantizers in pure PyTorch in the forward pass). Whether it pays for
+itself depends on what the converted artifact recovers — that comparison
+needs `forgather eval` + inference-server support for quantized models
+(tracked in #41 and #42).
 
 ## Save Format
 
@@ -136,10 +163,13 @@ applied at load time. See the programmatic example below.
 ## Behavior on Models Without QAT
 
 If you pass `--qat-convert <recipe>` to `forgather finalize` on a model
-that wasn't trained with `--qat-recipe`, the convert step is a no-op with
-a logged warning -- finalize still produces a valid (un-quantized)
-artifact. This is by design so finalize remains a single entry point
-regardless of whether QAT was used.
+that wasn't trained with `--qat-recipe`, the same prepare-then-convert
+pipeline runs anyway -- which is functionally **post-training
+quantization (PTQ)**: the recipe is applied, but the result lacks the
+QAT training-time accuracy benefit. The deployable artifact is still
+valid and loadable. A future `--ptq-quantize` flag (tracked in #40) will
+make that PTQ-on-plain-model intent explicit, but until then
+`--qat-convert` is the single entry point for both flows.
 
 ## Programmatic Usage
 

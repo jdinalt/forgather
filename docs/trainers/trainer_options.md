@@ -214,11 +214,13 @@ On any GPU that supports TF32 (Ampere or newer), you usually want
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `mixed_precision` | str \| None | None | `None` / `"no"` disabled, `"bf16"` (no GradScaler), or `"fp16"` (with GradScaler). |
-| `fp8_recipe` | str \| None | None | `"tensorwise"`, `"rowwise"`, or `"rowwise_with_gw_hp"`. Converts `nn.Linear` to `Float8Linear` via torchao. Orthogonal to `mixed_precision`. |
+| `fp8_recipe` | str \| None | None | `"tensorwise"`, `"rowwise"`, or `"rowwise_with_gw_hp"`. Converts `nn.Linear` to `Float8Linear` via torchao. Orthogonal to `mixed_precision`. Mutually exclusive with `qat_recipe`. |
 | `fp8_dim_alignment` | int | 16 | Minimum alignment for FP8 Linear layer dimensions; non-conforming layers are skipped. |
+| `qat_recipe` | str \| None | None | `"int8-dynamic-act-int4-weight"`, `"int4-weight-only"`, or `"float8-dynamic-act-float8-weight"`. Installs `FakeQuantizedLinear` via torchao QAT (prepare phase). Run `forgather finalize --qat-convert <recipe>` after training to produce the deployable low-bit artifact. Mutually exclusive with `fp8_recipe`. |
 
 FP8 requires CUDA SM >= 8.9 (RTX 4090, H100, etc.). See
-[`fp8-training.md`](fp8-training.md).
+[`fp8-training.md`](fp8-training.md). QAT has no hardware gate (runs on any
+CUDA GPU or CPU); see [`qat-training.md`](qat-training.md).
 
 ---
 

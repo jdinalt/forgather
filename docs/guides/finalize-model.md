@@ -186,3 +186,5 @@ pad_token:
 - **[EOS Tokens and `generate()` Stopping Criteria](eos-and-generate-stopping.md)** --
   theory of operation: how HF's `generate()` resolves stopping across the
   multiple files that carry EOS information.
+- **[QAT Training](../trainers/qat-training.md)** -- pair `--qat-convert` here
+  with `--qat-recipe` at training time to produce a low-bit deployable artifact.

@@ -212,14 +212,22 @@ def _resolve_dtype(dtype_str: Optional[str]):
 
 
 def _apply_qat_convert(model, recipe: str) -> None:
-    """Run torchao's QAT convert step in-place on a loaded model.
+    """Run torchao's QAT prepare-then-convert pipeline in-place on a loaded model.
 
-    Swaps every ``FakeQuantizedLinear`` for the real low-bit quantized linear
-    op described by ``recipe``. If the model has no fake-quantized modules
-    (i.e. it was not QAT-trained), logs a warning and returns without
-    modifying the model so finalize still produces a valid (just non-
-    quantized) artifact.
+    The loaded model's state_dict contains plain float weights (Forgather's
+    sharded saver doesn't persist FakeQuantizedLinear inner state), so we
+    re-install fake quantizers on top of the trained weights via
+    ``step="prepare"``, then swap them for the real low-bit quantized linear
+    ops via ``step="convert"``. The scales/zero-points the convert step
+    computes are derived from the (QAT-trained) weight statistics.
+
+    Running this on a model that was *not* trained with ``--qat-recipe`` is
+    functionally a post-training-quantization (PTQ) pass: the recipe will
+    still be applied, but the result lacks the QAT training-time accuracy
+    benefit. A future ``--ptq-quantize`` flag (tracked separately) will make
+    that PTQ-on-plain-model intent explicit.
     """
+    import torch
     from torchao.quantization import quantize_
     from torchao.quantization.qat import FakeQuantizedLinear, QATConfig
 
@@ -230,17 +238,32 @@ def _apply_qat_convert(model, recipe: str) -> None:
             f"--qat-convert must be one of {QAT_RECIPES}, got {recipe!r}"
         )
 
+    base_config = recipe_to_base_config(recipe)
+
+    # If the loaded model already has FakeQuantizedLinear modules (e.g. a
+    # future Forgather saver that preserves them), skip prepare and go
+    # straight to convert.
     fq_count = sum(1 for m in model.modules() if isinstance(m, FakeQuantizedLinear))
     if fq_count == 0:
-        logger.warning(
-            "--qat-convert %r requested but model has no FakeQuantizedLinear "
-            "modules. Was this model trained with --qat-recipe? Skipping "
-            "convert step; the saved artifact will be the un-quantized model.",
-            recipe,
+        linear_count = sum(
+            1 for m in model.modules() if isinstance(m, torch.nn.Linear)
         )
-        return
+        if linear_count == 0:
+            logger.warning(
+                "--qat-convert %r requested but model has no nn.Linear "
+                "modules to quantize; skipping convert step.",
+                recipe,
+            )
+            return
+        logger.info(
+            f"QAT convert ({recipe}): re-installing fake quantizers on "
+            f"{linear_count} nn.Linear modules before convert"
+        )
+        quantize_(model, QATConfig(base_config, step="prepare"))
+        fq_count = sum(
+            1 for m in model.modules() if isinstance(m, FakeQuantizedLinear)
+        )
 
-    base_config = recipe_to_base_config(recipe)
     quantize_(model, QATConfig(base_config, step="convert"))
     logger.info(
         f"QAT convert ({recipe}): converted {fq_count} FakeQuantizedLinear "
