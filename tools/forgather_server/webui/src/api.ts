@@ -421,6 +421,16 @@ export interface Job {
   source: "record" | "endpoint" | "merged";
 }
 
+/** Job statuses for which the scheduler considers the job to be holding its
+ *  reserved GPUs. Mirrors ``job_records.RUNNING_STATUSES`` on the backend;
+ *  keep in sync when adding a new status. The UI consults this set to
+ *  decide whether a GPU card should render as "busy" (a Forgather job has
+ *  the device) vs "idle" (available for dispatch). */
+export const RUNNING_JOB_STATUSES: ReadonlySet<string> = new Set([
+  "starting",
+  "running",
+]);
+
 export interface ControlResponse {
   success: boolean;
   message: string;

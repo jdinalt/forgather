@@ -225,11 +225,17 @@ def build_sync(target: str | os.PathLike, local: bool = False, timeout: float = 
 
     1. When torch.distributed is initialized: Uses barrier-based synchronization.
        Rank 0 of the process group builds while others wait at a barrier.
-       After rank 0 completes, all processes proceed together.
+       After rank 0 completes, all processes proceed together. The builder
+       calls ``os.sync()`` + fsync the target's parent directory before
+       releasing the barrier so peers don't race the just-written files;
+       waiters call ``importlib.invalidate_caches()`` after the barrier so
+       a subsequent ``trust_remote_code`` load sees the fresh modules.
 
     2. When torch.distributed is not initialized: Falls back to file-based locking.
        The first process to acquire the lock builds, others wait for the lock
-       to be released before proceeding.
+       to be released before proceeding. The same flush + cache-invalidate
+       dance applies (builder flushes before fcntl release; waiters that
+       observe ``target_was_built`` invalidate caches).
 
     Parameters
     ----------

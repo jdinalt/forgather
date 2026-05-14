@@ -39,11 +39,13 @@ _GPU_FLOPS_YAML = Path(__file__).with_name("gpu_flops.yaml")
 
 # Stand-in peak FLOPS used when no GPU is detected and no manual override
 # is present. Keeps preprocessing functional (MFU-style derived values stay
-# numeric) without pretending we know the real hardware. Roughly the
-# BF16 throughput of a single RTX 4090 -- a reasonable middle-of-the-road
-# placeholder. Users on real hardware get the auto-detected value cached
-# in ``hardware.yaml`` instead.
-_FALLBACK_PEAK_HARDWARE_FLOPS: float = 165e12
+# numeric) without pretending we know the real hardware. Deliberately set
+# to a *pessimistic* placeholder (~RTX 4060 / L4 BF16 dense): an operator
+# who silently lands here gets MFU > 100% on any real GPU, which is loud
+# enough to notice in dashboards. A 4090-class default would produce
+# plausible-looking numbers that hide the misconfiguration. Users on real
+# hardware get the auto-detected value cached in ``hardware.yaml`` instead.
+_FALLBACK_PEAK_HARDWARE_FLOPS: float = 30e12
 
 # Loaded lazily by _get_gpu_flops_table().
 _gpu_flops_table: list[tuple[list[str], float]] | None = None
@@ -135,9 +137,9 @@ def get_peak_hardware_flops() -> float:
     # 4. No GPU recognized -- keep preprocessing functional with a stand-in.
     logger.warning(
         "peak_hardware_flops not set and no recognized GPU detected"
-        " (device_name=%r); using stand-in %.1f TFLOPS."
-        " MFU values will be meaningless until you override this via"
-        " %s.",
+        " (device_name=%r); using deliberately pessimistic placeholder"
+        " %.1f TFLOPS. MFU > 100%% in your dashboards = this fallback"
+        " fired and you need to override it via %s.",
         device_name,
         _FALLBACK_PEAK_HARDWARE_FLOPS / 1e12,
         hardware_file,

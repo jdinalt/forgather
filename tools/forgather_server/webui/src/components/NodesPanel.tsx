@@ -11,6 +11,7 @@ import {
   ClusterProbeInterface,
   GpuInfo,
   Job,
+  RUNNING_JOB_STATUSES,
 } from "../api";
 import { GpuPanel, GpuCard } from "./GpuPanel";
 
@@ -458,7 +459,7 @@ export function NodesPanel() {
   for (const j of jobsQ.data ?? []) {
     if (j.pid != null) jobByPid.set(j.pid, j);
     if (
-      (j.status === "starting" || j.status === "running") &&
+      RUNNING_JOB_STATUSES.has(j.status) &&
       j.gpu_indices &&
       j.node
     ) {

@@ -113,8 +113,12 @@ def _warn_insecure_endpoint(url: str) -> None:
         "NOT validated against the system or cluster trust stores. Dataset "
         "servers are flagged as insecure at registration time when their "
         "certs aren't trusted, so this is expected when the operator "
-        "consented to an unverifiable peer; sign the cert against a "
-        "trusted CA to silence the warning.",
+        "consented to an unverifiable peer. Sign the cert against a "
+        "trusted CA to silence the warning -- this decision is cached for "
+        "the process lifetime, so restart any running training process "
+        "after fixing the cert to retry verification. The cache is also "
+        "per-process: if you see N copies of this warning, you have N "
+        "dataloader workers each making their own first connection.",
         url,
     )
 

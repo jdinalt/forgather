@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { api, GpuInfo, GpuPolicy, Job } from "../api";
+import { api, GpuInfo, GpuPolicy, Job, RUNNING_JOB_STATUSES } from "../api";
 import { ContextMenu } from "./ContextMenu";
 
 interface GpuMenuTarget {
@@ -97,12 +97,9 @@ export function GpuPanel() {
   for (const j of jobsQ.data ?? []) {
     if (j.pid != null) jobByPid.set(j.pid, j);
     // Mirror scheduler._reserved_gpu_set: a GPU is reserved by Forgather
-    // whenever a JobRecord with status in RUNNING_STATUSES lists it under
-    // gpu_indices. Keep this in sync with job_records.RUNNING_STATUSES.
-    if (
-      (j.status === "starting" || j.status === "running") &&
-      j.gpu_indices
-    ) {
+    // whenever a JobRecord with status in RUNNING_JOB_STATUSES lists it
+    // under gpu_indices. Single source of truth in api.ts.
+    if (RUNNING_JOB_STATUSES.has(j.status) && j.gpu_indices) {
       for (const idx of j.gpu_indices) reservedGpus.add(idx);
     }
   }
