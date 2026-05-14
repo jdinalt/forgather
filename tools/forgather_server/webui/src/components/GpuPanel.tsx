@@ -373,7 +373,7 @@ export function GpuCard({
       </div>
 
       <Bar
-        label="memory"
+        label={g.unified_memory ? "memory (shared)" : "memory"}
         pct={memPct}
         right={`${fmtMiB(g.used_mem_bytes)} / ${fmtMiB(g.total_mem_bytes)}`}
       />

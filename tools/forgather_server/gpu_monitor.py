@@ -120,6 +120,12 @@ class GpuInfo:
     # Minimum queue priority required to schedule on this GPU (inclusive).
     # 0 means no restriction. Persists alongside disabled in gpu_policy.json.
     min_priority: int = 0
+    # True when total_mem_bytes is the host's system RAM rather than a
+    # discrete VRAM pool. Set for GPUs like GB10 / Jetson where NVML returns
+    # "Not Supported" for memory info and the device shares system memory.
+    # The UI can use this to render a "shared with host" hint instead of a
+    # discrete-VRAM bar.
+    unified_memory: bool = False
 
 
 _nvml_state: Optional[bool] = None  # True = ready, False = unavailable, None = untried
@@ -205,14 +211,27 @@ def _snapshot_nvml() -> Optional[List[GpuInfo]]:
             # unified system memory and NVML returns "Not Supported" here.
             # We still want to surface the GPU with name + policy + util,
             # so a missing memory reading must not drop the whole device.
+            # When NVML can't tell us, fall back to host RAM: on unified-
+            # memory platforms (GB10, Jetson) that's literally the GPU's
+            # memory pool. Mark the result with ``unified_memory=True`` so
+            # the UI can render it as shared rather than dedicated VRAM.
             total_mem_bytes = 0
             used_mem_bytes = 0
+            unified_memory = False
             try:
                 mem = pynvml.nvmlDeviceGetMemoryInfo(h)
                 total_mem_bytes = int(mem.total)
                 used_mem_bytes = int(mem.used)
             except Exception:
-                pass
+                try:
+                    import psutil  # type: ignore
+
+                    vm = psutil.virtual_memory()
+                    total_mem_bytes = int(vm.total)
+                    used_mem_bytes = int(vm.total - vm.available)
+                    unified_memory = True
+                except Exception:
+                    pass
             excluded = _ALLOWED_INDICES is not None and i not in _ALLOWED_INDICES
             policy = gpu_policy.get_policy(i)
             info = GpuInfo(
@@ -224,6 +243,7 @@ def _snapshot_nvml() -> Optional[List[GpuInfo]]:
                 excluded=excluded,
                 disabled=policy.disabled,
                 min_priority=policy.min_priority,
+                unified_memory=unified_memory,
             )
             try:
                 util = pynvml.nvmlDeviceGetUtilizationRates(h)

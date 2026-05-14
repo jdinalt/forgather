@@ -201,6 +201,11 @@ export interface GpuInfo {
   /** Minimum queue priority required to schedule on this GPU (inclusive).
    *  0 means no restriction. */
   min_priority: number;
+  /** True when total_mem_bytes reports host system RAM rather than a
+   *  discrete VRAM pool — set for GPUs like GB10 / Jetson where NVML
+   *  returns "Not Supported" for memory info and the device shares
+   *  system memory. */
+  unified_memory?: boolean;
 }
 
 export interface GpuPolicy {
