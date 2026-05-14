@@ -86,14 +86,19 @@ server tour.
 - **Node.js + npm** (optional, only for the Forgather server's web
   UI). The `forgather server` command serves a Vite/React SPA built
   from `tools/forgather_server/webui/`. The build artifact isn't
-  checked in, so you build it once after install — see
+  checked in, so you build it once after install via
+  `./build-webui.sh` at the repo root — see
   [Running the Forgather server](README.md#running-the-forgather-server).
   Any current LTS Node release works (tested on Node 20).
   ```bash
   sudo apt-get install nodejs npm
   ```
   None of this is needed if you only use the CLI; the running server
-  itself has no Node dependency once the dist bundle exists.
+  itself has no Node dependency once the dist bundle exists. On a
+  checkout shared between hosts of different platform (e.g. an NFS
+  share spanning x86_64 and aarch64), always invoke `./build-webui.sh`
+  — `node_modules/` is platform-specific and the script keeps each
+  platform's install in its own sibling directory.
 
 ## Host installation (pip / uv)
 

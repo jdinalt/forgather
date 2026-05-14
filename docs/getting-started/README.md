@@ -123,21 +123,31 @@ default and ships with no auth.
 ### Build the web UI
 
 The web UI is a Vite/React SPA and isn't pre-built into the repo.
-Before starting the server, build the dist bundle:
+Before starting the server, run the helper from the repo root:
 
 ```bash
-cd tools/forgather_server/webui
-npm install          # one-time, fetches Vite + React + Monaco + viz-js
-npm run build        # produces webui/dist/
+./build-webui.sh                      # one-shot install + build, idempotent
 ```
 
 This needs Node.js + npm installed (see
 [Installation prerequisites](installation.md#prerequisites)).
-`npm install` takes a couple of minutes on first run; the build
-itself is fast. The output is a static `dist/` directory the
-running server serves directly — no Node process at runtime.
-Re-run `npm run build` after pulling changes that touch
-`webui/src/`.
+The first run takes a couple of minutes (it runs `npm install`
+under the hood, fetching Vite + React + Monaco + viz-js); the
+incremental build itself is fast, and the script skips
+`npm install` on subsequent runs unless `package-lock.json` has
+changed. The output is a static `dist/` directory the running
+server serves directly — no Node process at runtime. Re-run
+`./build-webui.sh` after pulling changes that touch `webui/src/`.
+
+You can also run the underlying commands directly
+(`cd tools/forgather_server/webui && npm install && npm run build`)
+if you're on a single host with a single arch — but on a checkout
+shared between hosts of different platform (NFS, bind mounts), use
+`./build-webui.sh` so per-platform installs don't trample each other.
+The script keeps each platform's `node_modules` in a sibling
+`.node_modules-<platform>/` directory and rotates the matching one
+in before each build; see `tools/forgather_server/README.md` for
+the mechanics.
 
 The Docker image runs `./build-webui.sh` automatically as a
 post-step in `docker/build.sh`, so the dist bundle is already in

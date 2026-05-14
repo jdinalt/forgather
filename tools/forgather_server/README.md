@@ -305,24 +305,33 @@ npm run build        # produces webui/dist/
 no Node dependency.
 
 **Prefer `./build-webui.sh`** at the repo root for everyday use — it
-handles the install gate and a per-arch quirk you'll otherwise hit:
+handles the install gate and a per-platform quirk you'll otherwise hit:
 
 `node_modules/` is platform-specific (npm only fetches the
-`@rollup/rollup-<os>-<arch>-*` native binary that matches the install
-host), so a tree populated on x86_64 won't link on aarch64 and vice
-versa. To keep both arches happy on the same checkout (e.g. a repo
-shared over NFS between hosts, or a developer who builds in both an x86
-container and an ARM container), `build-webui.sh` parks the inactive
-arch's install in a sibling directory `.node_modules-<that-arch>/` and
-rotates the matching arch's stash back into `node_modules/` before each
-build. `node_modules/` is always a real directory at install time (npm's
-reify step replaces symlinks). The `.node_modules-*/` sibling
-directories are gitignored, and the committed `package-lock.json`
-already pins every platform's optional native dep so each arch installs
-cleanly without lockfile edits.
+`@rollup/rollup-<os>-<arch>-{gnu,musl,...}` native binary that matches
+the install host), so a tree populated on linux-x86_64 won't link on
+linux-aarch64 or darwin-arm64 and vice versa. To keep multiple
+platforms happy on the same checkout (e.g. a repo shared over NFS
+between hosts, or a developer who builds in both an x86 container and
+an ARM container), `build-webui.sh` renames the inactive platform's
+install to a sibling directory `.node_modules-<that-platform>/` and
+renames the matching platform's sibling (if any) back into
+`node_modules/` before each build. The mechanism is two `mv` calls —
+no git stash, no symlinks. `node_modules/` is always a real directory
+at install time (npm's reify step replaces symlinks). The
+`.node_modules-*/` sibling directories are gitignored, and the
+committed `package-lock.json` already pins every platform's optional
+native dep so each platform installs cleanly without lockfile edits.
 
-Do not `cp -r` a `node_modules/` across hosts of different arch — let
-`build-webui.sh` install per-arch.
+Platform tags are `<os>[-musl]-<arch>` — e.g. `linux-x86_64`,
+`linux-aarch64`, `linux-musl-aarch64`, `darwin-aarch64` — derived from
+`uname -s`/`uname -m` and a libc probe on Linux. The detector
+recognises Rollup's `linux-{x64,arm64}-{gnu,musl}` and
+`darwin-{x64,arm64}` variants; Windows isn't covered, and an install
+on an unrecognised platform falls through to a fresh `npm install`.
+
+Do not `cp -r` a `node_modules/` across hosts of different platform —
+let `build-webui.sh` install per-platform.
 
 **Cache headers.** The static-files mount is wrapped in a
 `CachingStaticFiles` subclass that pins the SPA cache policy to:

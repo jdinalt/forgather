@@ -260,7 +260,8 @@ RUN umask 0002 \
 # tools/forgather_server/app.py looks for it at runtime.
 RUN umask 0002 \
     && cd ${REPO_DIR} && ./build-webui.sh \
-    && rm -rf ${REPO_DIR}/tools/forgather_server/webui/node_modules
+    && rm -rf ${REPO_DIR}/tools/forgather_server/webui/node_modules \
+              ${REPO_DIR}/tools/forgather_server/webui/.node_modules-*
 
 # ---------------------------------------------------------------------------
 # Back to root for the entrypoint setup. The entrypoint runs as root

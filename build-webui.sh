@@ -12,19 +12,24 @@
 # state). To clean and then rebuild, run --clean and then re-run the
 # script with no flags.
 #
-# Per-arch node_modules: npm only installs the platform-matching
-# @rollup/rollup-<os>-<arch>-* optional native binary (the rest are filtered
-# by os/cpu), so a node_modules populated on x86 is missing the arm64 native
-# binary and vice versa. On a checkout shared between hosts of different
-# arch (NFS, bind mounts, etc.) that breaks the second host's build.
+# Per-platform node_modules: npm only installs the platform-matching
+# @rollup/rollup-<os>-<arch>-{gnu,musl,...} optional native binary (the rest
+# are filtered by os/cpu), so a node_modules populated on linux-x86_64 is
+# missing the linux-aarch64 or darwin-arm64 native binary and vice versa.
+# On a checkout shared between hosts of different platform (NFS, bind
+# mounts, etc.) that breaks the second host's build.
 #
 # This script handles it transparently: before every run it inspects the
 # current webui/node_modules/ and, if it was last installed for a different
-# arch, renames it to webui/.node_modules-<that-arch>/ and (if available)
-# rotates the matching arch's stashed install back into webui/node_modules/.
-# npm install then operates on a real, arch-matching node_modules — no
-# symlinks (npm's reify step replaces them with real dirs). Both
-# .node_modules-*/ sibling directories are gitignored.
+# platform, renames it to webui/.node_modules-<that-platform>/ and (if
+# available) rotates the matching platform's parked install back into
+# webui/node_modules/. npm install then operates on a real, platform-
+# matching node_modules — no symlinks (npm's reify step replaces them
+# with real dirs). All .node_modules-*/ sibling directories are gitignored.
+#
+# Platform tag format: `<os>[-musl]-<arch>` (e.g. linux-x86_64,
+# linux-aarch64, linux-musl-aarch64, darwin-aarch64). The libc tag is
+# only emitted on Linux/musl; glibc Linux and Darwin use the bare form.
 #
 # Run from anywhere — the script resolves paths relative to its own location.
 
@@ -32,8 +37,38 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WEBUI_DIR="$SCRIPT_DIR/tools/forgather_server/webui"
-ARCH="$(uname -m)"
-STASH_DIR=".node_modules-$ARCH"
+
+# Normalize uname -m output (x86_64/amd64 -> x86_64, aarch64/arm64 -> aarch64)
+# so the platform tag is identical whether `uname -m` says `arm64` (Darwin)
+# or `aarch64` (Linux).
+canonicalize_arch() {
+    case "$1" in
+        x86_64|amd64)   echo "x86_64" ;;
+        aarch64|arm64)  echo "aarch64" ;;
+        *)              echo "$1" ;;
+    esac
+}
+
+# Linux can be glibc or musl; the Rollup binary that npm installs differs
+# (-gnu vs -musl) and they are not interchangeable. Emit a `-musl` libc tag
+# only when we can confirm musl; otherwise empty (glibc is the default and
+# doesn't need a tag).
+detect_libc_tag() {
+    case "$(uname -s)" in
+        Linux)
+            if [[ -f /lib/ld-musl-x86_64.so.1 || -f /lib/ld-musl-aarch64.so.1 ]] \
+                    || ldd --version 2>&1 | grep -qi musl; then
+                echo "-musl"
+            fi
+            ;;
+    esac
+}
+
+OS_TAG="$(uname -s | tr '[:upper:]' '[:lower:]')"
+ARCH_TAG="$(canonicalize_arch "$(uname -m)")"
+LIBC_TAG="$(detect_libc_tag)"
+PLATFORM_TAG="${OS_TAG}${LIBC_TAG}-${ARCH_TAG}"
+PARKED_DIR=".node_modules-$PLATFORM_TAG"
 
 clean=false
 force_install=false
@@ -61,45 +96,42 @@ fi
 
 cd "$WEBUI_DIR"
 
-# Map (uname -s, uname -m) to the Rollup native package npm should have
-# installed for that host. Empty string = unknown platform.
+# Map a platform tag to the Rollup native package npm should have installed
+# for it. Empty string = platform tag we don't know about (in practice,
+# Windows or an unrecognised arch — npm install will still run, we just
+# can't perform the binary-presence sanity check or rotation).
 rollup_native_pkg_for() {
-    local os="$1" arch="$2"
-    case "$os" in
-        Linux)
-            case "$arch" in
-                x86_64)         echo "@rollup/rollup-linux-x64-gnu" ;;
-                aarch64|arm64)  echo "@rollup/rollup-linux-arm64-gnu" ;;
-                *)              echo "" ;;
-            esac
-            ;;
-        Darwin)
-            case "$arch" in
-                arm64)          echo "@rollup/rollup-darwin-arm64" ;;
-                x86_64)         echo "@rollup/rollup-darwin-x64" ;;
-                *)              echo "" ;;
-            esac
-            ;;
-        *) echo "" ;;
+    case "$1" in
+        linux-x86_64)        echo "@rollup/rollup-linux-x64-gnu" ;;
+        linux-aarch64)       echo "@rollup/rollup-linux-arm64-gnu" ;;
+        linux-musl-x86_64)   echo "@rollup/rollup-linux-x64-musl" ;;
+        linux-musl-aarch64)  echo "@rollup/rollup-linux-arm64-musl" ;;
+        darwin-x86_64)       echo "@rollup/rollup-darwin-x64" ;;
+        darwin-aarch64)      echo "@rollup/rollup-darwin-arm64" ;;
+        *)                   echo "" ;;
     esac
 }
-EXPECTED_ROLLUP_PKG="$(rollup_native_pkg_for "$(uname -s)" "$ARCH")"
+EXPECTED_ROLLUP_PKG="$(rollup_native_pkg_for "$PLATFORM_TAG")"
 
-# Detect which arch a populated node_modules/ was installed for, by looking
-# at which @rollup/rollup-<os>-<arch>-* native package is actually present
-# (npm only installs the one matching the install host). Returns the
-# `uname -m`-style arch, or empty string if we can't tell.
-detect_installed_arch() {
+# Detect which platform a populated node_modules/ was installed for, by
+# looking at which @rollup/rollup-* native package is actually present
+# (npm only installs the one matching the install host). Returns a
+# platform tag in the same format as $PLATFORM_TAG, or empty string if we
+# can't tell.
+detect_installed_platform() {
     [[ -d node_modules/@rollup ]] || return 0
-    if [[ -d node_modules/@rollup/rollup-linux-x64-gnu ]]; then echo "x86_64"; return; fi
-    if [[ -d node_modules/@rollup/rollup-linux-arm64-gnu ]]; then echo "aarch64"; return; fi
-    if [[ -d node_modules/@rollup/rollup-darwin-x64 ]]; then echo "x86_64-darwin"; return; fi
-    if [[ -d node_modules/@rollup/rollup-darwin-arm64 ]]; then echo "arm64-darwin"; return; fi
+    if [[ -d node_modules/@rollup/rollup-linux-x64-gnu ]];     then echo "linux-x86_64";       return 0; fi
+    if [[ -d node_modules/@rollup/rollup-linux-arm64-gnu ]];   then echo "linux-aarch64";      return 0; fi
+    if [[ -d node_modules/@rollup/rollup-linux-x64-musl ]];    then echo "linux-musl-x86_64";  return 0; fi
+    if [[ -d node_modules/@rollup/rollup-linux-arm64-musl ]];  then echo "linux-musl-aarch64"; return 0; fi
+    if [[ -d node_modules/@rollup/rollup-darwin-x64 ]];        then echo "darwin-x86_64";      return 0; fi
+    if [[ -d node_modules/@rollup/rollup-darwin-arm64 ]];      then echo "darwin-aarch64";     return 0; fi
+    return 0
 }
 
-# Migrate the previous symlink-based layout (if anyone is upgrading from
-# an earlier version of this script) — collapse the symlink so the rest
-# of this script can treat node_modules as a regular path.
+# Migrate the symlink-based layout used by an early version of this script.
+# `cd "$WEBUI_DIR"` above made CWD the webui dir, so a relative symlink
+# target like `.node_modules-x86_64` resolves correctly here.
 if [[ -L node_modules ]]; then
     link_target="$(readlink node_modules)"
     rm node_modules
@@ -108,50 +140,71 @@ if [[ -L node_modules ]]; then
     fi
 fi
 
-# Rotate per-arch stashes. If the currently-installed node_modules belongs
-# to a different arch, swap it out and (if available) swap our arch's
-# stashed copy in. After this block: node_modules/ is either absent (and
-# `npm install` below will populate it) or belongs to $ARCH.
-if [[ -d node_modules ]]; then
-    installed_arch="$(detect_installed_arch || true)"
-    if [[ -n "$installed_arch" && "$installed_arch" != "$ARCH" ]]; then
-        stash_other=".node_modules-$installed_arch"
-        echo "[build-webui] stashing $installed_arch install -> $stash_other/"
-        rm -rf "$stash_other"
-        mv node_modules "$stash_other"
-    fi
-fi
-if [[ ! -e node_modules && -d "$STASH_DIR" ]]; then
-    echo "[build-webui] restoring $ARCH install from $STASH_DIR/"
-    mv "$STASH_DIR" node_modules
+# Migrate the arch-only naming (.node_modules-<arch>/) used by the first
+# published version of this layout. We can only safely rename Linux ones —
+# bare `arm64` was ambiguous between Linux and Darwin in the previous
+# scheme, and a Darwin entry on a Linux host (or vice versa) isn't a
+# meaningful rename, so leave those alone.
+if [[ "$OS_TAG" == "linux" && -z "$LIBC_TAG" ]]; then
+    for old_name in .node_modules-x86_64 .node_modules-aarch64; do
+        new_name=".node_modules-linux${old_name#.node_modules}"
+        if [[ -d "$old_name" && ! -e "$new_name" ]]; then
+            mv "$old_name" "$new_name"
+        fi
+    done
 fi
 
-# --clean is a one-shot reset: wipe dist/ and Vite cache, then exit.
-# Doesn't touch node_modules (use `rm -rf node_modules .node_modules-*`
-# if you want to reset that too — but `npm install` is the slow part,
-# so skipping it on `--clean` keeps the next build fast).
+# Rotate per-platform installs by renaming. If the currently-active
+# node_modules/ belongs to a different platform, rename it out to its
+# sibling .node_modules-<that-platform>/ and (if a matching sibling for
+# our platform exists) rename that one into node_modules/. After this
+# block: node_modules/ is either absent (and `npm install` below will
+# populate it) or belongs to $PLATFORM_TAG. No git stash, no symlinks —
+# just plain mv.
+if [[ -d node_modules ]]; then
+    installed_platform="$(detect_installed_platform)"
+    if [[ -n "$installed_platform" && "$installed_platform" != "$PLATFORM_TAG" ]]; then
+        other_sibling=".node_modules-$installed_platform"
+        echo "[build-webui] renaming node_modules -> $other_sibling/ ($installed_platform)"
+        rm -rf "$other_sibling"
+        mv node_modules "$other_sibling"
+    fi
+fi
+if [[ ! -e node_modules && -d "$PARKED_DIR" ]]; then
+    echo "[build-webui] renaming $PARKED_DIR/ -> node_modules ($PLATFORM_TAG)"
+    mv "$PARKED_DIR" node_modules
+fi
+
+# --clean is a one-shot reset: wipe dist/ and the Vite cache of the active
+# node_modules plus every parked sibling so a subsequent build is fully
+# clean. Doesn't touch node_modules itself (use
+# `rm -rf node_modules .node_modules-*` if you want to reset that too —
+# but `npm install` is the slow part, so skipping it on `--clean` keeps
+# the next build fast).
 if $clean; then
-    echo "[build-webui] cleaning dist/ and Vite cache"
-    rm -rf dist node_modules/.vite
+    echo "[build-webui] cleaning dist/ and Vite cache(s)"
+    rm -rf dist node_modules/.vite .node_modules-*/.vite
     echo "[build-webui] done — re-run without --clean to rebuild"
     exit 0
 fi
 
 # `npm install` is the slow part; skip it when node_modules already exists
 # and package-lock.json hasn't changed since the last install. Also force
-# a repair if the arch-matching Rollup native binary is missing (catches
-# manual node_modules copies between archs and interrupted prior installs).
+# a repair if the platform-matching Rollup native binary is missing —
+# catches manual node_modules copies between platforms and interrupted
+# prior installs. The Rollup native binary is only used by `vite build`,
+# not by the dev server, so skip the check entirely in --watch mode.
 need_install=false
 if $force_install || [[ ! -d node_modules ]] \
         || [[ package-lock.json -nt node_modules/.package-lock.json ]]; then
     need_install=true
-elif [[ -n "$EXPECTED_ROLLUP_PKG" && ! -d "node_modules/$EXPECTED_ROLLUP_PKG" ]]; then
+elif ! $watch && [[ -n "$EXPECTED_ROLLUP_PKG" && ! -d "node_modules/$EXPECTED_ROLLUP_PKG" ]]; then
     echo "[build-webui] $EXPECTED_ROLLUP_PKG missing — forcing reinstall"
     need_install=true
 fi
 
 if $need_install; then
-    echo "[build-webui] npm install (arch=$ARCH)"
+    echo "[build-webui] npm install (platform=$PLATFORM_TAG)"
     npm install
 else
     echo "[build-webui] node_modules up-to-date — skipping npm install (use --install to force)"

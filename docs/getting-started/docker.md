@@ -94,13 +94,15 @@ is ready before `docker/run.sh` is invoked. Skip with
 `SKIP_WEBUI_BUILD=1` (e.g. when iterating on the SPA via
 `npm run dev`).
 
-The post-step parks the inactive arch's install in
-`tools/forgather_server/webui/.node_modules-<that-arch>/` and rotates
-the matching arch's stash back into `node_modules/` (which is always a
-real directory at npm-install time). On a multi-arch host pool sharing
-one checkout — including the NFS pattern the multi-node smoke test
-uses — x86 and arm64 builds keep separate installs side-by-side and
-don't have to re-run `npm install` when you switch hosts. The
+The post-step renames the inactive platform's install to
+`tools/forgather_server/webui/.node_modules-<that-platform>/` and
+renames the matching platform's sibling (if any) back into
+`node_modules/`, which is always a real directory at npm-install time.
+The mechanism is two `mv` calls — no git stash, no symlinks. On a
+multi-platform host pool sharing one checkout — including the NFS
+pattern the multi-node smoke test uses — `linux-x86_64`,
+`linux-aarch64`, etc. keep separate installs side-by-side and don't
+have to re-run `npm install` when you switch hosts. The
 `.node_modules-*/` siblings are gitignored.
 
 The default tag is `forgather-dev:<host-username>` so multiple
