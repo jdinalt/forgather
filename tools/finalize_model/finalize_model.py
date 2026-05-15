@@ -217,11 +217,10 @@ def _apply_quantize(model, recipe: str) -> None:
 
     The loaded model's state_dict contains plain float weights (Forgather's
     sharded saver doesn't persist FakeQuantizedLinear inner state, even for
-    QAT-trained models), so we run ``step="prepare"`` to install fake
-    quantizers on top of the trained weights, then swap them for the real
-    low-bit quantized linear ops via ``step="convert"``. The
-    scales/zero-points the convert step computes are derived from the
-    loaded weight statistics.
+    QAT-trained models), so we run prepare to install fake quantizers on
+    top of the trained weights, then convert to swap them for real low-bit
+    quantized linear ops. Scales/zero-points come from the loaded weight
+    statistics.
 
     Works on any input:
 
@@ -232,47 +231,29 @@ def _apply_quantize(model, recipe: str) -> None:
       for the AMP-baseline vs PTQ vs QAT comparison.
     """
     import torch
-    from torchao.quantization import quantize_
-    from torchao.quantization.qat import FakeQuantizedLinear, QATConfig
 
     from forgather.ml.qat_recipes import QAT_RECIPES, recipe_to_base_config
+    from forgather.ml.quantization_detect import install_torchao_quantization
 
     if recipe not in QAT_RECIPES:
         raise ValueError(
             f"--quantize must be one of {QAT_RECIPES}, got {recipe!r}"
         )
 
-    base_config = recipe_to_base_config(recipe)
+    linear_count = sum(1 for m in model.modules() if isinstance(m, torch.nn.Linear))
+    if linear_count == 0:
+        logger.warning(
+            "--quantize %r requested but model has no nn.Linear "
+            "modules to quantize; skipping quantize step.",
+            recipe,
+        )
+        return
 
-    # If the loaded model already has FakeQuantizedLinear modules (e.g. a
-    # future Forgather saver that preserves them), skip prepare and go
-    # straight to convert.
-    fq_count = sum(1 for m in model.modules() if isinstance(m, FakeQuantizedLinear))
-    if fq_count == 0:
-        linear_count = sum(
-            1 for m in model.modules() if isinstance(m, torch.nn.Linear)
-        )
-        if linear_count == 0:
-            logger.warning(
-                "--quantize %r requested but model has no nn.Linear "
-                "modules to quantize; skipping quantize step.",
-                recipe,
-            )
-            return
-        logger.info(
-            f"Quantize ({recipe}): installing fake quantizers on "
-            f"{linear_count} nn.Linear modules before convert"
-        )
-        quantize_(model, QATConfig(base_config, step="prepare"))
-        fq_count = sum(
-            1 for m in model.modules() if isinstance(m, FakeQuantizedLinear)
-        )
-
-    quantize_(model, QATConfig(base_config, step="convert"))
     logger.info(
-        f"Quantize ({recipe}): converted {fq_count} FakeQuantizedLinear "
-        f"modules to real quantized linear ops"
+        f"Quantize ({recipe}): running torchao prepare→convert on "
+        f"{linear_count} nn.Linear modules"
     )
+    install_torchao_quantization(model, recipe_to_base_config(recipe))
 
 
 def main(argv=None):

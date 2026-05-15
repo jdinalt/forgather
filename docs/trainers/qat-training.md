@@ -278,19 +278,26 @@ forgather -p examples/tutorials/tiny_llama eval test tinystories \
 ```
 
 How it works: at finalize time, `--quantize` writes a
-`quantization_config` block into `config.json` with the recipe. At eval
-time, `scripts/eval_script.py:resolve_checkpoint()` reads that field
-and forces the `from_pretrained()` load path, **ignoring** any
-`--checkpoint` / `--no-checkpoint` flag (an explicit `--checkpoint
-PATH` logs a warning before being overridden). The normal
-checkpoint-resume path uses `from_config()` + `load_state_dict()`,
-which does not run any quantizer hook and fails when the saved tensors
-are torchao quantized subclasses. Same mechanism applies to the
-inference server — no caller-side changes needed.
+`quantization_config` block into `config.json` with the recipe.
+Forgather's native checkpoint loader
+(`forgather.ml.sharded_checkpoint.load_checkpoint`) reads that block,
+or — as a fallback when the block is absent — scans the first shard for
+torchao tensor subclasses. When quantization is detected, the loader
+installs the matching quantized linear modules (`quantize_(model,
+QATConfig(base_config, step="convert"))`) on the constructed model
+*before* `load_state_dict` runs, so the saved tensor subclasses land in
+slots that know how to hold them.
 
-The check is purely additive: bf16 models keep using the
-checkpoint-resume path. Pass `--no-checkpoint` to opt into
-`from_pretrained()` manually for non-quantized models.
+This is built into the native loader, so it applies uniformly to every
+tool that loads via Forgather checkpoints (`-c`):
+
+- `forgather eval test ... -M <dir>` (and its `--checkpoint PATH` variant)
+- `forgather inf server -m <dir> --from-checkpoint`
+- Trainer resume (`resume_from_checkpoint`)
+
+No caller-side recipe flag, no marker file. The check is purely
+additive — bf16 models load through the exact same path with no
+quantization step.
 
 ### Three-Way Comparison: bf16 / PTQ / QAT
 

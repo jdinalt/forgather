@@ -85,6 +85,30 @@ def test_inference_with_perplexity(spec, output_dir):
     # 2. Find model directory
     model_dir = _find_model_dir(output_dir)
 
+    # 2b. Optional finalize step (e.g. --quantize for torchao quantized
+    # artifacts). Produces a sibling directory under output_dir; the
+    # server then loads from there instead of the raw training output.
+    if spec.finalize and spec.finalize.quantize:
+        finalize_dest = output_dir / "finalized"
+        finalize_proc = subprocess.run(
+            [
+                "forgather",
+                "finalize",
+                "--quantize",
+                spec.finalize.quantize,
+                str(model_dir),
+                str(finalize_dest),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert finalize_proc.returncode == 0, (
+            f"finalize --quantize failed: rc={finalize_proc.returncode}\n"
+            f"stdout: {finalize_proc.stdout[-2000:]}\n"
+            f"stderr: {finalize_proc.stderr[-2000:]}"
+        )
+        model_dir = finalize_dest
+
     # 3. Start inference server (load from checkpoint since training
     #    saves checkpoints, not standalone model weights)
     port = _find_free_port()

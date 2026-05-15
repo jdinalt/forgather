@@ -321,6 +321,48 @@ forgather inf server --model /path/to/model --dtype float32
 forgather inf server --model /path/to/model --stop-sequences "<|im_end|>" "</s>"
 ```
 
+### Loading Quantized Models
+
+The server transparently loads torchao-quantized artifacts produced by
+`forgather finalize --quantize`. No extra flag — the native checkpoint
+loader detects quantization (from `config.json`'s `quantization_config`
+block, or by scanning the saved state_dict) and installs the matching
+quantized linear modules before weights load. See [QAT Training §
+Evaluating Quantized Models](../../docs/trainers/qat-training.md#evaluating-quantized-models)
+for the underlying mechanism.
+
+```bash
+# Quantize a finalized model (one-time, after training)
+forgather finalize --quantize int8-dynamic-act-int4-weight \
+    output_models/my_run /serve/my_run_int4
+
+# Serve it — same invocation shape as for bf16 models
+forgather inf server -m /serve/my_run_int4 --from-checkpoint
+```
+
+**Throughput.** Quantized serving is currently slower than bf16 on
+small/medium models at batch size 1. Measured on the 4.43M Tiny Llama,
+single RTX 3090, greedy 64-token completion:
+
+| Variant | tok/s |
+|---------|-------|
+| bf16 baseline | 379.9 |
+| `int8-dynamic-act-int4-weight` | 61.9 |
+
+The slowdown is the per-matmul dequant overhead being a large fraction
+of the work in a small model. Quantization wins (memory footprint,
+longer context, larger batch) appear at scale; benchmark your own
+setup before deploying.
+
+**Dtype interaction.** `--dtype` controls the unquantized layers (norms,
+embeddings, residuals) and the dequant target. The recipe controls
+activation/weight precision for the quantized linears. The default
+`bfloat16` is the right choice unless you have a specific reason to
+override.
+
+**Device placement.** Quantized linears are CUDA-bound for the v1
+recipes. CPU serving of quantized models is not currently supported.
+
 ### Stop Sequences
 
 The server supports flexible stop sequence configuration to control when generation should halt:
