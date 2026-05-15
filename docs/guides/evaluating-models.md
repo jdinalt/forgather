@@ -121,8 +121,9 @@ same mechanism `forgather train` uses). Pass an explicit path with
 
 **Quantized models** (artifacts produced by `forgather finalize --quantize`)
 are autodetected: if `config.json` has a `quantization_config` block, eval
-forces the `from_pretrained()` path regardless of `--checkpoint` /
-`--no-checkpoint` flags. The checkpoint-resume path uses `from_config()` +
+forces the `from_pretrained()` path and ignores both `--checkpoint` and
+`--no-checkpoint`. An explicit `--checkpoint PATH` logs a warning before
+being overridden. The checkpoint-resume path uses `from_config()` +
 `load_state_dict()` which has no quantizer hook and fails on quantized
 tensor subclasses; `from_pretrained()` runs HF's `TorchAoHfQuantizer`
 pre-process so the right linear modules are in place before the weights

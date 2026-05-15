@@ -432,6 +432,9 @@ def main(argv=None):
             logger.info(
                 f"Would run quantize step with recipe '{args.quantize_recipe}'"
             )
+            logger.info(
+                "Would write 'quantization_config' block to config.json"
+            )
         return 0
 
     # ---- 6. Quantize (optional) ----------------------------------------

@@ -117,7 +117,7 @@ Whether that's worth it depends heavily on the recipe:
 
 | Recipe | QAT vs PTQ delta (expected) | Recommendation |
 |--------|---------------------------|----------------|
-| `int8-dynamic-act-int4-weight` | Largest QAT benefit — int4 weights are aggressive enough that plain PTQ can drift noticeably. | QAT if you care about the last point of eval loss; PTQ fine for prototyping. |
+| `int8-dynamic-act-int4-weight` | Largest QAT benefit — int4 weights are aggressive enough that plain PTQ can drift noticeably. Measured Δ at 4.43M params is small (0.0013, see [Three-Way Comparison](#three-way-comparison-bf16--ptq--qat)); the gap is expected to widen at larger scale. | QAT if you care about the last point of eval loss; PTQ fine for prototyping. |
 | `int4-weight-only` | Moderate QAT benefit. Per-group int4 + bf16 matmul is already quite robust. | PTQ first; reach for QAT only if eval drops more than you can absorb. |
 | `float8-dynamic-act-float8-weight` | Minimal — fp8 is already near-lossless. | PTQ. QAT is rarely justified for fp8. |
 
@@ -280,11 +280,13 @@ forgather -p examples/tutorials/tiny_llama eval test tinystories \
 How it works: at finalize time, `--quantize` writes a
 `quantization_config` block into `config.json` with the recipe. At eval
 time, `scripts/eval_script.py:resolve_checkpoint()` reads that field
-and forces the `from_pretrained()` load path (the normal
-checkpoint-resume path uses `from_config()` + `load_state_dict()`, which
-does not run any quantizer hook and fails when the saved tensors are
-torchao quantized subclasses). Same mechanism applies to the inference
-server — no caller-side changes needed.
+and forces the `from_pretrained()` load path, **ignoring** any
+`--checkpoint` / `--no-checkpoint` flag (an explicit `--checkpoint
+PATH` logs a warning before being overridden). The normal
+checkpoint-resume path uses `from_config()` + `load_state_dict()`,
+which does not run any quantizer hook and fails when the saved tensors
+are torchao quantized subclasses. Same mechanism applies to the
+inference server — no caller-side changes needed.
 
 The check is purely additive: bf16 models keep using the
 checkpoint-resume path. Pass `--no-checkpoint` to opt into
@@ -306,7 +308,7 @@ three using `int8-dynamic-act-int4-weight`:
 At this scale (4.43M params, recipe = int4 weights / int8 dynamic
 activations), QAT shaves about **0.0013 eval-loss** off PTQ — a real
 but small gain. Whether QAT's ~1.67× training-time overhead pays for
-that depends on your tolerance for the +0.025 perplexity premium that
+that depends on your tolerance for the +0.025 eval-loss premium that
 quantization itself imposes (PTQ buys you almost all of the win at zero
 training cost). QAT is expected to scale better at larger models and
 more aggressive recipes — measure your own setup before committing.
