@@ -192,7 +192,8 @@ therefore every peer's trust bundle) hasn't changed.
 > creates a *new* CA. Two CAs in one cluster means peers can't
 > validate each other's certs, peer-pull fails closed in both
 > directions, and you'll see "fetch failed" against every other
-> node in the Nodes view. Always use `mint` on the CA holder and
+> node in the Cluster view's Nodes tab (and red dots in the
+> sidebar Nodes group). Always use `mint` on the CA holder and
 > `install` on the peer.
 
 The general N-node setup is three steps:
@@ -394,9 +395,10 @@ forgather server -H 0.0.0.0 --cluster mycluster
 
 mDNS advertisements include a `tls=1` TXT record so peers know
 which scheme to use. The peer-pull loop dials `https://...` and
-uses the shared CA bundle to validate. Open the Nodes view in the
-webui on any node and you should see every other node listed and
-reachable within one tick (~5s).
+uses the shared CA bundle to validate. Open the Cluster view's
+Nodes tab in the webui on any node (or the sidebar Nodes group)
+and you should see every other node listed and reachable within
+one tick (~5s).
 
 ### Adding a node later
 
@@ -845,7 +847,8 @@ imports, and *diagnostic warnings* covering:
 
 **When to use:** "is TLS actually doing what I think it's doing?"
 First place to look when a connection refuses or a peer is shown
-unreachable in the Nodes view.
+unreachable (red dot in the sidebar Nodes group, or in the Cluster
+view's Nodes tab).
 
 ### `tls renew` — re-issue cert(s) from the existing CA
 
