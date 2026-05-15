@@ -160,6 +160,7 @@ export default function App() {
       window.removeEventListener("keydown", onKey, { capture: true } as any);
   }, []);
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [servicesOpen, setServicesOpen] = useState(false);
   const [searchRootsOpen, setSearchRootsOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
@@ -554,10 +555,14 @@ export default function App() {
     // implementation via filesApi/setView regardless.
   }, []);
 
-  const TOOLS: ToolEntry[] = [
+  // Long-running spawned processes the operator wants to launch and
+  // then forget about (inference, datasets, dashboards). Split out from
+  // TOOLS so the one-shot model-manipulation utilities aren't visually
+  // mixed with persistent services in the sidebar.
+  const SERVICES: ToolEntry[] = [
     {
       icon: "🔮",
-      label: "Serve Inference…",
+      label: "Inference…",
       title:
         "Serve an arbitrary model directory — project affiliation optional",
       onOpen: () => setStartServerOpen(true),
@@ -566,7 +571,7 @@ export default function App() {
     },
     {
       icon: "🗂",
-      label: "Start Dataset Server…",
+      label: "Dataset…",
       title:
         "Run the Forgather dataset server — clients route fast_load_iterable_dataset over HTTP via FORGATHER_DATASET_SERVER",
       onOpen: () => setDatasetServerOpen(true),
@@ -578,14 +583,6 @@ export default function App() {
           onChoose: onEditDatasetServerConfig,
         },
       ],
-    },
-    {
-      icon: "📐",
-      label: "Evaluate…",
-      title: "Run loss/perplexity evaluation against any model directory",
-      onOpen: () => setEvaluateOpen(true),
-      docRelpath: "docs/guides/evaluating-models.md",
-      mkdocsSlug: "guides/evaluating-models/",
     },
     {
       icon: "📊",
@@ -603,6 +600,20 @@ export default function App() {
       onOpen: () => setMkdocsOpen(true),
       docRelpath: "docs/guides/mkdocs.md",
       mkdocsSlug: "guides/mkdocs/",
+    },
+  ];
+
+  // One-shot model-manipulation utilities (evaluate / convert /
+  // finalize / update). Distinct from SERVICES which spawn long-running
+  // processes.
+  const TOOLS: ToolEntry[] = [
+    {
+      icon: "📐",
+      label: "Evaluate…",
+      title: "Run loss/perplexity evaluation against any model directory",
+      onOpen: () => setEvaluateOpen(true),
+      docRelpath: "docs/guides/evaluating-models.md",
+      mkdocsSlug: "guides/evaluating-models/",
     },
     {
       icon: "🔁",
@@ -796,6 +807,42 @@ export default function App() {
               ))}
               <div className="sidebar-tools-hint muted">
                 Right-click any tool for help.
+              </div>
+            </div>
+          </details>
+
+          <details
+            className="sidebar-tools"
+            open={servicesOpen}
+            onToggle={(e) =>
+              setServicesOpen((e.target as HTMLDetailsElement).open)
+            }
+          >
+            <summary>Services</summary>
+            <div className="sidebar-tools-body">
+              {SERVICES.map((tool) => (
+                <button
+                  key={tool.label}
+                  className="sidebar-tool-btn"
+                  onClick={tool.onOpen}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setToolHelpMenu({
+                      x: e.clientX,
+                      y: e.clientY,
+                      docRelpath: tool.docRelpath,
+                      mkdocsSlug: tool.mkdocsSlug,
+                      label: tool.label,
+                      extraItems: tool.extraItems,
+                    });
+                  }}
+                  title={tool.title}
+                >
+                  {tool.icon} {tool.label}
+                </button>
+              ))}
+              <div className="sidebar-tools-hint muted">
+                Right-click any service for help.
               </div>
             </div>
           </details>
