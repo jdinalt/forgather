@@ -70,6 +70,7 @@ class TestEndpointShapes:
             address="10.0.0.7",
             port=8765,
             cluster_name="c",
+            source="peer_pull",
         )
         token = auth.load_token()
         client = TestClient(_make_app())
@@ -150,6 +151,70 @@ class TestPeerCarveOut:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert r.status_code == 200
+
+
+class TestPeerSSO:
+    """The peer-SSO endpoints used to open a peer's webui in a new
+    tab without re-typing the bearer token."""
+
+    def test_issue_url_token_requires_auth(self):
+        cluster.activate("c", port=8765)
+        client = TestClient(_make_app())
+        r = client.get("/api/cluster/issue_url_token")
+        assert r.status_code == 401
+
+    def test_issue_url_token_mints_short_lived(self):
+        cluster.activate("c", port=8765)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/issue_url_token",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # Token must NOT be the persistent bearer — that's the whole
+        # point of the one-shot. Bearer leakage from an address-bar
+        # paste would otherwise expose ``~/.config/.../auth_token``.
+        assert body["token"] != token
+        assert auth.verify_url_token(body["token"]) is True
+        # Single-use: replayed verify rejects.
+        assert auth.verify_url_token(body["token"]) is False
+
+    def test_issue_url_token_503_when_no_cluster(self):
+        # Cluster not activated → the endpoint refuses rather than
+        # issuing a token that no peer can map back to this node.
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/issue_url_token",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 503
+
+    def test_peer_session_self_refused(self):
+        ident = cluster.activate("c", port=8765)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        # Asking for an SSO URL to ourselves is meaningless — the
+        # caller is already authenticated on this origin.
+        r = client.post(
+            "/api/cluster/peer_session",
+            json={"node_id": ident.node_id},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 400
+
+    def test_peer_session_unknown_node(self):
+        cluster.activate("c", port=8765)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.post(
+            "/api/cluster/peer_session",
+            json={"node_id": "00000000-0000-0000-0000-000000000099"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 404
 
 
 class TestClusterGpus:
@@ -738,6 +803,7 @@ class TestClusterJobSubmit:
                 },
                 "interfaces": peer_ifaces,
             },
+            source="peer_pull",
         )
         # Self's probe was set by activate() but with whatever was
         # importable at test time. Stamp a deterministic version dict
@@ -1133,6 +1199,7 @@ class TestClusterJobStatusRollup:
             address="192.168.1.10",
             port=8765,
             cluster_name="c",
+            source="peer_pull",
         )
         assert cluster.master_node_id() == master_id
         assert ident.node_id != master_id

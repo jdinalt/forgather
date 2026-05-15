@@ -180,6 +180,16 @@ _PEER_ALLOWED_MUTATION_PREFIXES = frozenset(
 # restart — both the bearer token and the password still work, so a
 # restart only forces a re-login for already-open browser tabs.
 _sessions: dict[str, float] = {}
+# Short-lived, single-use URL tokens used by the peer-SSO flow
+# (``/api/cluster/peer_session`` → ``?token=<one-shot>``). Distinct
+# from the persistent bearer at ``_token_path``: a URL that leaks
+# from the address bar / referer / clipboard exposes only this short
+# window, not the long-lived ``~/.config/forgather/server/auth_token``.
+# Tokens stored as ``token -> created_at``; consumed (deleted) on
+# verify so a captured URL can't be replayed.
+_url_tokens: dict[str, float] = {}
+URL_TOKEN_TTL_SECONDS = 60.0
+URL_TOKEN_LENGTH_BYTES = 32
 _auth_disabled: bool = False
 
 
@@ -332,6 +342,55 @@ def session_valid(sid: Optional[str]) -> bool:
 def _reset_sessions_for_tests() -> None:
     """Test helper: drop all in-memory sessions."""
     _sessions.clear()
+    _url_tokens.clear()
+
+
+# ---------------------------------------------------------------------------
+# Short-lived single-use URL tokens (peer-SSO)
+# ---------------------------------------------------------------------------
+
+
+def mint_url_token() -> str:
+    """Issue a one-shot URL-bound token for the peer-SSO flow.
+
+    Returned via ``/api/cluster/issue_url_token`` (gated to mTLS
+    peers in ``_PEER_ALLOWED_PATHS``) so the caller can fold it into
+    ``https://peer:port/?token=<one-shot>``. The peer's webui
+    consumes it on first paint via the existing ``/api/auth/login``
+    flow; ``verify_url_token`` deletes it on verify so a captured URL
+    can't be replayed past the first use.
+
+    Why one-shot rather than handing out the persistent bearer: an
+    address-bar / referer / clipboard leak would otherwise expose
+    the long-lived ``~/.config/forgather/server/auth_token``, which
+    survives process restarts and grants full API access. A 60 s
+    single-use credential is the smallest blast radius that still
+    lets the browser convert the URL into a session cookie before
+    the next render.
+    """
+    token = secrets.token_urlsafe(URL_TOKEN_LENGTH_BYTES)
+    _url_tokens[token] = time.time()
+    return token
+
+
+def verify_url_token(presented: Optional[str]) -> bool:
+    """Validate and *consume* a URL-bound token. Returns True on first
+    successful use; subsequent calls with the same value return False.
+    """
+    if not presented:
+        return False
+    created = _url_tokens.pop(presented, None)
+    if created is None:
+        return False
+    if time.time() - created > URL_TOKEN_TTL_SECONDS:
+        # Expired: deletion above already consumed it; nothing to do.
+        return False
+    return True
+
+
+def _url_tokens_count_for_tests() -> int:
+    """Test helper: number of outstanding URL tokens."""
+    return len(_url_tokens)
 
 
 # ---------------------------------------------------------------------------

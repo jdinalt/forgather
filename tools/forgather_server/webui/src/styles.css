@@ -1690,6 +1690,13 @@ li.config.selected button.link:hover {
   padding: 24px;
   color: var(--fg-muted);
 }
+.pane-state.warn {
+  /* Used when a cross-view preselect couldn't resolve (e.g. the
+   * chosen server doesn't have the dataset cached). Slightly warmer
+   * than the muted default so the user notices it's a hint, not the
+   * usual "nothing here" placeholder. */
+  color: #dcb450;
+}
 
 .templates-view {
   flex: 1;
@@ -4395,8 +4402,10 @@ li.config.selected button.link:hover {
   left: -4px;
   right: -4px;
 }
-.datasets-explore-resizer:hover {
+.datasets-explore-resizer:hover,
+.datasets-explore-resizer:focus-visible {
   background: var(--accent);
+  outline: none;
 }
 .preview-page-size {
   display: flex;

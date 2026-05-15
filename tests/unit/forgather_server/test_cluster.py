@@ -88,13 +88,40 @@ class TestMemberTable:
             port=8765,
             cluster_name="c",
             forgather_version="1.1.0",
+            source="peer_pull",
         )
         assert m.node_id == peer_id
+        # Only ``peer_pull`` is allowed to vouch for liveness on a new
+        # entry — see ``test_new_member_from_discovery_starts_unreachable``.
         assert m.reachable is True
         assert {x.node_id for x in cluster.members()} == {
             cluster.self_identity().node_id,
             peer_id,
         }
+
+    def test_new_member_from_discovery_starts_unreachable(self):
+        """A fresh entry created from mDNS or peer_report must NOT be
+        treated as alive until peer-pull confirms it.
+
+        Without this guard a third node restarting and reporting a
+        stale member list (or a zeroconf cache event for a dead peer)
+        would resurrect that peer for one sweep window — long enough
+        for master-election and GPU-aggregator probes to act on bad
+        liveness data.
+        """
+        self._act()
+        for source in ("discovery", "peer_report"):
+            peer_id = str(uuid.uuid4())
+            m = cluster.update_member(
+                peer_id,
+                hostname=f"peer-{source}",
+                address="10.0.0.42",
+                port=8765,
+                cluster_name="c",
+                source=source,
+            )
+            assert m.reachable is False, source
+            assert m.last_seen == 0.0, source
 
     def test_update_member_refreshes_existing(self):
         self._act()
@@ -330,6 +357,7 @@ class TestSweepUnreachable:
             port=8765,
             cluster_name="c",
             now=0.0,
+            source="peer_pull",
         )
         cluster._set_unreachable_after_for_tests(10.0)
         # Within window: still reachable.
@@ -364,6 +392,7 @@ class TestMasterSelection:
                 address="10.0.0.2",
                 port=8765,
                 cluster_name="c",
+                source="peer_pull",
             )
         all_ids = candidates + [ident.node_id]
         assert cluster.master_node_id() == min(all_ids)
@@ -383,6 +412,7 @@ class TestMasterSelection:
             address="10.0.0.2",
             port=8765,
             cluster_name="c",
+            source="peer_pull",
         )
         assert cluster.master_node_id() == peer_id
         cluster.mark_unreachable(peer_id)

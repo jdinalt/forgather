@@ -181,6 +181,9 @@ export default function App() {
     setPendingExplore(leaf);
     setView("datasets");
   }, []);
+  // Stable identity so the Explore tab's preselect-consume effect
+  // doesn't see a new callback on every App render.
+  const clearPendingExplore = useCallback(() => setPendingExplore(null), []);
 
   // Wired into every submit modal's onSubmitted prop. Reads the sticky
   // localStorage preference at submit time so a stale toggle from an earlier
@@ -282,11 +285,19 @@ export default function App() {
   });
   const clusterActive = !!clusterSelfQ.data;
   // Guard against being stranded on a cluster-only view when the
-  // server flips back to standalone (or the cluster query returns
-  // null transiently on first paint).
+  // server flips back to standalone. Only act on confirmed success
+  // with null data — a transient fetch error or in-flight refetch
+  // shouldn't bump the user off the Cluster view they're working
+  // on.
   useEffect(() => {
-    if (!clusterActive && view === "cluster") setView("gpus");
-  }, [clusterActive, view]);
+    if (
+      clusterSelfQ.isSuccess &&
+      clusterSelfQ.data === null &&
+      view === "cluster"
+    ) {
+      setView("gpus");
+    }
+  }, [clusterSelfQ.isSuccess, clusterSelfQ.data, view]);
   // Total node count for the Cluster view pill — only fetched when
   // we're actually in cluster mode. Shares the queryKey used by
   // ClusterPanel so the cache is reused once that view is opened.
@@ -932,7 +943,7 @@ export default function App() {
         >
           <DatasetsPanel
             pendingExplore={pendingExplore}
-            onPreselectConsumed={() => setPendingExplore(null)}
+            onPreselectConsumed={clearPendingExplore}
             onOpenInExplore={openInExplore}
           />
         </div>

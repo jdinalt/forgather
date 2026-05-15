@@ -199,9 +199,17 @@ export function DatasetsExploreTab({
   const [pendingResolve, setPendingResolve] = useState<SelectedLeaf | null>(
     null,
   );
+  // When a pending resolve runs out of input data — the chosen server
+  // didn't actually have the dataset cached, or has no enumerable
+  // configs/splits — we drop the resolve without setting ``selected``.
+  // Without surfacing that, the right pane just shows "No selection."
+  // which looks like the click did nothing. This hint replaces that
+  // placeholder until the user picks a split themselves.
+  const [resolveHint, setResolveHint] = useState<string | null>(null);
   useEffect(() => {
     if (!preselect) return;
     setSelected(null);
+    setResolveHint(null);
     setPendingResolve(preselect);
     const keys = deriveExpandKeys(preselect);
     setExpanded(new Set(keys));
@@ -242,7 +250,14 @@ export function DatasetsExploreTab({
       if (!data) return;
       const name = path.slice(6);
       const entry = data.local?.find((e) => e.name === name);
-      const split = entry?.splits?.[0];
+      if (!entry) {
+        setResolveHint(
+          `${path} isn't in this server's local registry. Expand a host below to pick a different one.`,
+        );
+        setPendingResolve(null);
+        return;
+      }
+      const split = entry.splits?.[0];
       // Local without a known split: load with no split arg — the
       // server picks its default. With a split: full leaf.
       setSelected({
@@ -277,11 +292,17 @@ export function DatasetsExploreTab({
           return next;
         });
       }
+    } else if (!repo) {
+      setResolveHint(
+        `${path} isn't cached on this server. Expand a host below to pick a different one.`,
+      );
+    } else {
+      // Repo present but no configs/splits enumerable — server may
+      // not have completed its first refresh yet.
+      setResolveHint(
+        `${path} is cached but doesn't expose any configs/splits yet. Try refreshing the server, or pick a split manually below.`,
+      );
     }
-    // If the repo isn't in this server's cache yet, or has no
-    // configs/splits, just leave the tree expanded and let the user
-    // navigate manually. ``selected`` stays null so the right pane
-    // shows the "Pick a dataset split…" hint instead of an error.
     setPendingResolve(null);
   }, [pendingResolve, resolveCacheQ.data, resolveLocalQ.data]);
   // Tree pane collapse — gives the preview pane the full width when the
@@ -341,6 +362,37 @@ export function DatasetsExploreTab({
     setTreeWidth(DEFAULT_TREE_WIDTH);
     persistSet(TREE_WIDTH_STORAGE_KEY, String(DEFAULT_TREE_WIDTH));
   }, []);
+  // Keyboard resizing: focusable separator + Arrow/Home/End keys.
+  // Step is 16px for arrows, 64px with shift — same idiom as the
+  // <input type="range"> spec. Page-level Home/End jump to the
+  // limits.
+  const onResizerKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      const step = e.shiftKey ? 64 : 16;
+      let next: number | null = null;
+      switch (e.key) {
+        case "ArrowLeft":
+          next = treeWidth - step;
+          break;
+        case "ArrowRight":
+          next = treeWidth + step;
+          break;
+        case "Home":
+          next = MIN_TREE_WIDTH;
+          break;
+        case "End":
+          next = MAX_TREE_WIDTH;
+          break;
+        default:
+          return;
+      }
+      e.preventDefault();
+      const clamped = Math.max(MIN_TREE_WIDTH, Math.min(MAX_TREE_WIDTH, next));
+      setTreeWidth(clamped);
+      persistSet(TREE_WIDTH_STORAGE_KEY, String(clamped));
+    },
+    [treeWidth],
+  );
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const [page, setPage] = useState<number>(0);
   // Reset page when the selection changes — different leaf, fresh state.
@@ -519,9 +571,14 @@ export function DatasetsExploreTab({
             onPointerUp={onResizerUp}
             onPointerCancel={onResizerUp}
             onDoubleClick={onResizerDoubleClick}
-            title="Drag to resize the browse pane · double-click to reset"
+            onKeyDown={onResizerKeyDown}
+            title="Drag to resize the browse pane · double-click to reset · arrows to nudge"
             role="separator"
             aria-orientation="vertical"
+            aria-valuenow={treeWidth}
+            aria-valuemin={MIN_TREE_WIDTH}
+            aria-valuemax={MAX_TREE_WIDTH}
+            tabIndex={0}
           />
         )}
         <main className="datasets-explore-preview">
@@ -536,6 +593,8 @@ export function DatasetsExploreTab({
               pageSize={pageSize}
               totalPages={totalPages}
             />
+          ) : resolveHint ? (
+            <div className="pane-state warn">{resolveHint}</div>
           ) : (
             <div className="pane-state muted">No selection.</div>
           )}

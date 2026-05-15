@@ -197,23 +197,32 @@ class IssueUrlTokenResponse(BaseModel):
 
 @router.get("/issue_url_token", response_model=IssueUrlTokenResponse)
 def issue_url_token(response: Response):
-    """Return this node's bearer token for cross-node SSO.
+    """Mint a short-lived, single-use URL token for cross-node SSO.
 
-    Listed in ``auth._PEER_ALLOWED_PATHS`` so a mTLS-authenticated peer
-    can fetch it without already holding the bearer. The local node
-    uses this when one tab opens a peer's webui — see ``peer_session``.
+    Listed in ``auth._PEER_ALLOWED_PATHS`` so a mTLS-authenticated
+    peer can fetch one without already holding the bearer. The local
+    node uses this when one tab opens a peer's webui — see
+    ``peer_session``.
 
-    A session-authed user can also reach this endpoint and obtain the
-    local bearer, which is fine: anyone able to submit jobs on this
-    node can already read ``~/.config/forgather/server/auth_token``
-    from disk via a job, so this is not a new escalation.
+    Returns a fresh one-shot token (60 s TTL, deleted on first verify
+    via ``auth.verify_url_token``) — *not* the persistent bearer at
+    ``~/.config/forgather/server/auth_token``. The persistent bearer
+    is forever; an address-bar / referer / clipboard leak of this
+    URL only exposes a 60 s window with one use.
     """
     from .. import auth as auth_module
 
     ident = cluster.self_identity()
-    if ident is not None:
-        response.headers["X-Forgather-Node-Id"] = ident.node_id
-    return IssueUrlTokenResponse(token=auth_module.load_token())
+    if ident is None:
+        # No cluster identity → nothing to authenticate against. 503
+        # rather than handing out a token that no peer can map back
+        # to "this node".
+        raise HTTPException(
+            status_code=503,
+            detail="cluster mode is not active on this node",
+        )
+    response.headers["X-Forgather-Node-Id"] = ident.node_id
+    return IssueUrlTokenResponse(token=auth_module.mint_url_token())
 
 
 class PeerSessionRequest(BaseModel):

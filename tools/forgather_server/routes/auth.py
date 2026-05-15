@@ -64,7 +64,13 @@ def auth_login(body: LoginRequest, request: Request, response: Response):
     ok = False
     if body.token:
         used_token = True
-        ok = auth_mod.verify_token(body.token)
+        # Persistent bearer first; fall back to the short-lived
+        # single-use URL token minted by ``/api/cluster/issue_url_token``
+        # for cross-node SSO. ``verify_url_token`` consumes on
+        # success, so a leaked URL is only valid once.
+        ok = auth_mod.verify_token(body.token) or auth_mod.verify_url_token(
+            body.token
+        )
     elif body.password:
         ok = auth_mod.verify_password(body.password)
 
