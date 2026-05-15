@@ -129,6 +129,23 @@ def build_model_init(model_path, dtype, attn_implementation, device, use_checkpo
     return init_model
 
 
+def _model_is_quantized(model_path: str) -> bool:
+    """True iff ``<model_path>/config.json`` carries a ``quantization_config`` block.
+
+    Written by ``forgather finalize --quantize``; HF's
+    ``from_pretrained()`` consumes it to install the TorchAoHfQuantizer
+    pre-process path. Unreadable or malformed config.json -> False.
+    """
+    cfg_path = os.path.join(model_path, "config.json")
+    if not os.path.isfile(cfg_path):
+        return False
+    try:
+        with open(cfg_path) as f:
+            return "quantization_config" in json.load(f)
+    except (OSError, ValueError):
+        return False
+
+
 def resolve_checkpoint(args):
     """Return (checkpoint_arg, use_checkpoint) for the trainer.
 
@@ -136,12 +153,42 @@ def resolve_checkpoint(args):
     - True: auto-find latest
     - str path: explicit
     - False: do not resume
+
+    Quantized models force ``(False, False)`` regardless of flags: only HF
+    `from_pretrained()` runs the TorchAoHfQuantizer pre-process that
+    installs the right quantized linear modules before weight load. The
+    checkpoint-resume path uses `from_config()` + `load_state_dict()`,
+    which has no quantizer hook and crashes with `'Parameter' object has
+    no attribute 'tensor_data_names'` on torchao tensor subclasses.
+
+    Cache the result on ``args`` so repeated calls don't re-log.
     """
-    if args.no_checkpoint:
-        return False, False
-    if args.checkpoint:
-        return args.checkpoint, True
-    return True, True
+    cached = getattr(args, "_resolved_checkpoint", None)
+    if cached is not None:
+        return cached
+
+    if _model_is_quantized(args.model):
+        if args.checkpoint:
+            logger.warning(
+                "Detected quantization_config in model config; ignoring "
+                "--checkpoint %r and loading via from_pretrained().",
+                args.checkpoint,
+            )
+        else:
+            logger.info(
+                "Detected quantization_config in model config; "
+                "loading via from_pretrained() (overrides default checkpoint resume)."
+            )
+        result = (False, False)
+    elif args.no_checkpoint:
+        result = (False, False)
+    elif args.checkpoint:
+        result = (args.checkpoint, True)
+    else:
+        result = (True, True)
+
+    args._resolved_checkpoint = result
+    return result
 
 
 def build_trainer(args, model_init, eval_dataset, data_collator, tokenizer, device):

@@ -432,11 +432,26 @@ def main(argv=None):
             logger.info(
                 f"Would run quantize step with recipe '{args.quantize_recipe}'"
             )
+            logger.info(
+                "Would write 'quantization_config' block to config.json"
+            )
         return 0
 
     # ---- 6. Quantize (optional) ----------------------------------------
     if args.quantize_recipe:
         _apply_quantize(model, args.quantize_recipe)
+        # Record the recipe on the config so HF `from_pretrained()` runs
+        # the TorchAoHfQuantizer pre-process path on reload — it installs
+        # the right quantized linear modules before `load_state_dict`, so
+        # the quantized tensor subclasses land in slots that know how to
+        # hold them. Without this block, reload via `from_pretrained()`
+        # fails with `'Parameter' object has no attribute 'tensor_data_names'`.
+        from transformers import TorchAoConfig
+        from forgather.ml.qat_recipes import recipe_to_base_config
+
+        config.quantization_config = TorchAoConfig(
+            quant_type=recipe_to_base_config(args.quantize_recipe)
+        )
         if args.safetensors:
             # torchao's quantized tensor subclasses wrap multiple inner
             # tensors and do not expose a single .storage().data_ptr(),
