@@ -1514,6 +1514,8 @@ export const api = {
     ),
   docsRoot: () => fetchJson<{ path: string | null }>("/api/docs/root"),
   docsRepoRoot: () => fetchJson<{ repo_root: string }>("/api/docs/repo-root"),
+  serverConfigPath: () =>
+    fetchJson<{ path: string | null }>("/api/server-config-path"),
   ensureDatasetServerConfigStub: async (): Promise<{
     path: string;
     created: boolean;

@@ -82,6 +82,27 @@ function SidebarIcon() {
   );
 }
 
+// Simple gear glyph for the sidebar settings bar. Stroked rather than
+// filled so it sits comfortably next to the other monochrome controls.
+function GearIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+    </svg>
+  );
+}
+
 type DocsBackEntry =
   | { kind: "doc"; path: string | null }
   | {
@@ -440,6 +461,18 @@ export default function App() {
     queryFn: api.docsRepoRoot,
     staleTime: Infinity,
   });
+
+  // Path to the YAML config the server loaded at startup. Used by the
+  // settings gear in the sidebar footer to open the file in the editor.
+  const serverConfigQ = useQuery({
+    queryKey: ["server-config-path"],
+    queryFn: api.serverConfigPath,
+    staleTime: Infinity,
+  });
+  const openServerConfig = useCallback(() => {
+    const p = serverConfigQ.data?.path;
+    if (p) openFileForEdit(p);
+  }, [serverConfigQ.data?.path]);
 
   const openHelp = useCallback(
     async (menu: ToolHelpMenu) => {
@@ -824,6 +857,25 @@ export default function App() {
               />
             </div>
           </details>
+
+          {/* Footer bar pinned to the bottom of the sidebar. Gear opens
+              the YAML config the server loaded at startup in the editor
+              so the operator can tweak persistent server defaults. */}
+          <div className="sidebar-footer">
+            <button
+              className="sidebar-footer-gear"
+              onClick={openServerConfig}
+              disabled={!serverConfigQ.data?.path}
+              title={
+                serverConfigQ.data?.path
+                  ? `Open server config: ${serverConfigQ.data.path}`
+                  : "Server config path unavailable"
+              }
+              aria-label="Open server config"
+            >
+              <GearIcon />
+            </button>
+          </div>
         </div>
       </aside>
 

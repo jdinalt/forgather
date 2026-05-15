@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.types import Scope
 
-from . import cluster, cluster_journal, scheduler, search_roots
+from . import cluster, cluster_journal, scheduler, search_roots, server_config
 from .auth import AuthMiddleware
 from .routes import auth as auth_routes
 from .routes import cluster as cluster_routes
@@ -163,6 +163,17 @@ def create_app() -> FastAPI:
     @app.get("/api/health")
     async def health():
         return {"status": "ok"}
+
+    @app.get("/api/server-config-path")
+    async def server_config_path():
+        """Path to the YAML config file loaded at server startup.
+
+        Returned as a string so the webui can open it in the embedded
+        editor. ``path`` is ``null`` only if startup never reached
+        ``server_config.load`` (shouldn't happen in normal operation).
+        """
+        p = server_config.loaded_path()
+        return {"path": str(p) if p is not None else None}
 
     @app.get("/api/server-identity")
     async def server_identity():

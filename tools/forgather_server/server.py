@@ -28,10 +28,10 @@ if __name__ == "__main__" and __package__ is None:
     parent_dir = script_dir.parent
     if str(parent_dir) not in sys.path:
         sys.path.insert(0, str(parent_dir))
-    from forgather_server import auth, cluster, paths
+    from forgather_server import auth, cluster, paths, server_config
     from forgather_server.app import create_app
 else:
-    from . import auth, cluster, paths
+    from . import auth, cluster, paths, server_config
     from .app import create_app
 
 import uvicorn
@@ -50,9 +50,35 @@ from forgather.tls.runtime import (
 
 
 def main():
+    # First pass: pull out --config so we can read defaults from disk
+    # before adding the rest of the arguments. ``parse_known_args`` so
+    # the rest of the command line is left for the real parser.
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", default=None)
+    pre_args, _ = pre.parse_known_args()
+
+    try:
+        cfg_path, cfg_data = server_config.load(pre_args.config)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(2)
+    cfg_arg_defaults = server_config.args_defaults(cfg_data)
+
     parser = argparse.ArgumentParser(
         formatter_class=RawTextHelpFormatter,
         description="Forgather web server (prototype)",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to a YAML config file. Defaults to "
+            f"{server_config.default_config_path()} (created with a "
+            "commented template if absent). Keys under 'args:' override "
+            "the CLI argument defaults; values passed on the command line "
+            "still win."
+        ),
     )
     parser.add_argument("-H", "--host", default="127.0.0.1", help="Host to bind to")
     parser.add_argument("-p", "--port", type=int, default=8765, help="Port to bind to")
@@ -117,6 +143,19 @@ def main():
             "Example: --cluster-address 192.168.1.27"
         ),
     )
+    if cfg_arg_defaults:
+        # ``set_defaults`` only overrides destinations parser actually
+        # knows about; quietly ignore unknown keys (with a warning) so a
+        # forward-compat config that names a future arg doesn't crash.
+        known = {a.dest for a in parser._actions}
+        applied = {k: v for k, v in cfg_arg_defaults.items() if k in known}
+        unknown = set(cfg_arg_defaults) - known
+        if unknown:
+            logging.getLogger("forgather_server").warning(
+                "ignoring unknown server-config args: %s", sorted(unknown)
+            )
+        parser.set_defaults(**applied)
+
     args = parser.parse_args()
 
     log_level = getattr(logging, args.log_level.upper(), logging.INFO)
@@ -169,6 +208,7 @@ def main():
 
     scheme = "https" if tls_on else "http"
     logging.info(f"Starting Forgather server on {scheme}://{args.host}:{args.port}")
+    logging.info(f"Server config: {cfg_path}")
     # Pin the HTTP protocol to our subclass so peer client certs are
     # surfaced on the ASGI scope for mTLS-aware auth (issue #31).
     # Falls back to the default protocol when TLS is off — no point

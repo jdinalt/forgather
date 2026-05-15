@@ -201,6 +201,45 @@ input {
   margin-bottom: 8px;
 }
 
+/* Bottom-of-sidebar bar. Sticks to the bottom of the scrolling
+   .sidebar-expanded-content container — auto top-margin pushes it past
+   any earlier sections that don't fill the height, and position:sticky
+   keeps it on screen while the user scrolls the project / files tree.
+   Gear glyph is right-aligned so it doesn't compete with the section
+   chevrons on the left edge. */
+.sidebar-footer {
+  margin-top: auto;
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-alt);
+  z-index: 1;
+}
+.sidebar-footer-gear {
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  padding: 3px 6px;
+  line-height: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.sidebar-footer-gear:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+  background: var(--bg);
+}
+.sidebar-footer-gear:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .sched-btn {
   background: transparent;
   color: var(--fg);
