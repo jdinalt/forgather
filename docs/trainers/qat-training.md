@@ -72,6 +72,68 @@ To add or tweak a recipe (e.g. change `group_size`), edit
 `src/forgather/ml/qat_recipes.py:recipe_to_base_config`. Both the trainer
 and finalize resolve through the same function, so they stay in sync.
 
+## Choosing a Recipe
+
+The three recipes hit different points on the memory / compute / accuracy
+triangle. Pick one by working backward from the deployment constraint
+that matters most.
+
+### Quick guide
+
+| Constraint | Recipe | Why |
+|-----------|--------|-----|
+| Smallest model on disk / smallest VRAM footprint | `int8-dynamic-act-int4-weight` | int4 weights = ~4× smaller than bf16; int8 activations dequant on the fly. |
+| Memory-bound inference, accuracy-sensitive | `int4-weight-only` | int4 weight storage, matmul still in bf16 — keeps the bf16 accuracy ceiling. |
+| Throughput on Hopper / Ada / Blackwell, near-lossless | `float8-dynamic-act-float8-weight` | Native fp8 tensor cores; ~2× weight memory savings, throughput parity or better with bf16. |
+| Don't know yet | `int8-dynamic-act-int4-weight` | The most broadly-validated production path (same recipe Meta/NVIDIA ship for edge LLMs). |
+
+### Tradeoffs in detail
+
+| Recipe | Weight bits | Activation bits | Storage vs bf16 | Compute path | Hardware floor | Typical accuracy cost |
+|--------|-------------|-----------------|-----------------|--------------|----------------|----------------------|
+| `int8-dynamic-act-int4-weight` | 4 | 8 (dynamic) | ~4× smaller | int8 matmul (where available); else dequant + bf16 | any CUDA / CPU | small-to-moderate; QAT closes most of it |
+| `int4-weight-only` | 4 | bf16 (unchanged) | ~4× smaller | weight dequant → bf16 matmul | any CUDA / CPU | small; matmul stays at bf16 precision |
+| `float8-dynamic-act-float8-weight` | 8 | 8 (dynamic) | ~2× smaller | native fp8 matmul on SM 8.9+; emulated below | SM 8.9+ (Ada, Hopper, Blackwell) for speed | near-zero on supported HW |
+
+Important nuances:
+
+- **`int4-weight-only` keeps the matmul in bf16.** It only quantizes the
+  *storage* — weights are dequantized to bf16 in the matmul. That makes
+  it the safest "I want a smaller model, not a slower one" choice for
+  memory-bound regimes. It won't speed up compute-bound regimes.
+- **`int8-dynamic-act-int4-weight` quantizes both sides.** Its win is
+  storage *and* (on hardware with int8 mma kernels) compute. Its risk is
+  the int8 activation path: dynamic per-token scaling is fairly robust,
+  but it's the recipe that benefits most from QAT.
+- **`float8-...` is the only recipe that needs specific hardware to be
+  fast.** On SM < 8.9 it emulates fp8 in software and is slower than
+  bf16. Use it on Ada (RTX 4090, L40), Hopper (H100), or Blackwell.
+
+### QAT vs PTQ for each recipe
+
+QAT pays a ~1.67× training-time overhead on small models (Tiny Llama,
+RTX 3090; see [Loss Trajectory](#loss-trajectory-1-chinchilla-tiny-llama)).
+Whether that's worth it depends heavily on the recipe:
+
+| Recipe | QAT vs PTQ delta (expected) | Recommendation |
+|--------|---------------------------|----------------|
+| `int8-dynamic-act-int4-weight` | Largest QAT benefit — int4 weights are aggressive enough that plain PTQ can drift noticeably. | QAT if you care about the last point of eval loss; PTQ fine for prototyping. |
+| `int4-weight-only` | Moderate QAT benefit. Per-group int4 + bf16 matmul is already quite robust. | PTQ first; reach for QAT only if eval drops more than you can absorb. |
+| `float8-dynamic-act-float8-weight` | Minimal — fp8 is already near-lossless. | PTQ. QAT is rarely justified for fp8. |
+
+### Recommended workflow
+
+1. Train bf16 first. Establish your baseline eval loss / perplexity.
+2. Run `forgather finalize --quantize <recipe>` on the bf16 model (PTQ).
+   Eval the converted model. Most of the time this is good enough.
+3. If PTQ eval is unacceptable, re-train with `--qat-recipe <recipe>` and
+   convert. Compare the QAT-converted artifact's eval against the PTQ
+   one. Decide if the training-time overhead is worth the gap.
+
+This ordering minimizes wasted training cycles: you only pay the QAT
+overhead when PTQ has already proven insufficient for *this specific
+model + recipe combination*.
+
 ## How It Works
 
 At trainer init, when `qat_recipe` is set:
