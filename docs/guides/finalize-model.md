@@ -123,11 +123,13 @@ which the safetensors writer requires. If `--safetensors` is passed
 alongside `--quantize`, it is silently disabled with a warning.
 
 Finalize also writes a `quantization_config` block into `config.json`
-with the recipe. This makes HF `AutoModelForCausalLM.from_pretrained()`
-auto-detect the quantization on reload and run the
-`TorchAoHfQuantizer` pre-process path — so `forgather eval` and the
-inference server load the artifact correctly without any caller-side
-flag. See [Evaluating Quantized
+with the recipe. Forgather's native checkpoint loader consumes this
+hint (with a state_dict scan as fallback) and installs the matching
+quantized linear modules before weights load — so `forgather eval`,
+the inference server, and any other tool using the native loader
+handle the artifact transparently with no caller-side flag. The same
+block also enables HF `AutoModelForCausalLM.from_pretrained()`
+auto-detection for non-Forgather consumers. See [Evaluating Quantized
 Models](../trainers/qat-training.md#evaluating-quantized-models).
 
 ### Misc
