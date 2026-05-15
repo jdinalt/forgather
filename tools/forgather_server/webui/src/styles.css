@@ -2237,7 +2237,8 @@ li.config.selected button.link:hover {
 .sidebar-tools > summary,
 .sidebar-search-roots-details > summary,
 .sidebar-projects-details > summary,
-.sidebar-files-details > summary {
+.sidebar-files-details > summary,
+.sidebar-cluster-details > summary {
   cursor: pointer;
   padding: 4px 8px;
   font-size: 11px;
@@ -2252,14 +2253,16 @@ li.config.selected button.link:hover {
 .sidebar-tools > summary::-webkit-details-marker,
 .sidebar-search-roots-details > summary::-webkit-details-marker,
 .sidebar-projects-details > summary::-webkit-details-marker,
-.sidebar-files-details > summary::-webkit-details-marker {
+.sidebar-files-details > summary::-webkit-details-marker,
+.sidebar-cluster-details > summary::-webkit-details-marker {
   display: none;
 }
 .sidebar-views-details > summary::before,
 .sidebar-tools > summary::before,
 .sidebar-search-roots-details > summary::before,
 .sidebar-projects-details > summary::before,
-.sidebar-files-details > summary::before {
+.sidebar-files-details > summary::before,
+.sidebar-cluster-details > summary::before {
   content: "▸ ";
   font-size: 10px;
 }
@@ -2267,15 +2270,92 @@ li.config.selected button.link:hover {
 .sidebar-tools[open] > summary::before,
 .sidebar-search-roots-details[open] > summary::before,
 .sidebar-projects-details[open] > summary::before,
-.sidebar-files-details[open] > summary::before {
+.sidebar-files-details[open] > summary::before,
+.sidebar-cluster-details[open] > summary::before {
   content: "▾ ";
 }
 .sidebar-views-details > summary:hover,
 .sidebar-tools > summary:hover,
 .sidebar-search-roots-details > summary:hover,
 .sidebar-projects-details > summary:hover,
-.sidebar-files-details > summary:hover {
+.sidebar-files-details > summary:hover,
+.sidebar-cluster-details > summary:hover {
   color: var(--fg);
+}
+
+/* ---------- Sidebar Cluster group ---------- */
+.sidebar-cluster-details {
+  flex: none;
+}
+.cluster-sidebar {
+  padding: 2px 6px 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.cluster-sidebar-empty {
+  padding: 4px 12px 8px 12px;
+  font-size: 12px;
+}
+.cluster-sidebar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--fg);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.cluster-sidebar-row:hover:not(:disabled) {
+  background: var(--bg-alt);
+}
+.cluster-sidebar-row:disabled {
+  cursor: default;
+  color: var(--fg-muted);
+}
+.cluster-sidebar-row.self {
+  font-style: italic;
+}
+.cluster-sidebar-row.unreachable .cluster-sidebar-host {
+  text-decoration: line-through;
+  color: var(--fg-muted);
+}
+.cluster-sidebar-row.errored {
+  border-color: var(--err, #c33);
+}
+.cluster-sidebar-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.cluster-sidebar-dot.ok {
+  background: var(--ok, #2c8a2c);
+}
+.cluster-sidebar-dot.down {
+  background: var(--err, #c33);
+}
+.cluster-sidebar-host {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cluster-sidebar-tag {
+  font-size: 10px;
+  color: var(--fg-muted);
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+.cluster-sidebar-pending {
+  font-size: 11px;
 }
 .sidebar-files {
   /* See .sidebar-projects: the parent scrolls, so let this grow. */

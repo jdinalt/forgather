@@ -5,6 +5,7 @@ import { getAutoWatchTty } from "./autoWatch";
 import { ContextMenu } from "./components/ContextMenu";
 import { ProjectTree } from "./components/ProjectTree";
 import { ConfigViewer } from "./components/ConfigViewer";
+import { ClusterSidebarPanel } from "./components/ClusterSidebarPanel";
 import { GpuPanel } from "./components/GpuPanel";
 import { NodesPanel } from "./components/NodesPanel";
 import { EvalModal } from "./components/EvalModal";
@@ -136,6 +137,9 @@ export default function App() {
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [viewsOpen, setViewsOpen] = useState(true);
+  // Cluster sidebar group — defaults open in cluster mode so the peer
+  // list is visible immediately; hidden entirely when standalone.
+  const [clusterOpen, setClusterOpen] = useState(true);
   const [startServerOpen, setStartServerOpen] = useState(false);
   const [datasetServerOpen, setDatasetServerOpen] = useState(false);
   const [tensorboardOpen, setTensorboardOpen] = useState(false);
@@ -753,6 +757,30 @@ export default function App() {
               />
             </div>
           </details>
+
+          {/* Cluster group: peer hostnames + health status. Hidden in
+              standalone mode. Clicking a peer opens its webui in a new
+              tab using a cluster-bearer SSO URL. */}
+          {clusterActive && (
+            <details
+              className="sidebar-cluster-details"
+              open={clusterOpen}
+              onToggle={(e) => {
+                if (e.target !== e.currentTarget) return;
+                setClusterOpen(
+                  (e.currentTarget as HTMLDetailsElement).open,
+                );
+              }}
+            >
+              <summary>Cluster</summary>
+              <ClusterSidebarPanel
+                selfNodeId={clusterSelfQ.data?.node_id ?? null}
+                masterNodeId={
+                  clusterMembersQ.data?.master_node_id ?? null
+                }
+              />
+            </details>
+          )}
         </div>
       </aside>
 

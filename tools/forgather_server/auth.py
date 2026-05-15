@@ -107,6 +107,15 @@ _PEER_ALLOWED_PATHS = frozenset(
         "/api/cluster/dataset_inventory",
         "/api/cluster/dataset_servers",
         "/api/cluster/dataset_router/resolve",
+        # Cross-node webui SSO. The local node calls this on the target
+        # peer over mTLS to obtain the peer's bearer token, which is
+        # then folded into a ``?token=...`` URL the browser opens in a
+        # new tab. The peer-trust boundary already concedes arbitrary
+        # code execution (see ``peer_session`` in routes/cluster.py),
+        # so handing out the bearer to a cluster peer is not a new
+        # escalation — it just removes the "re-enter your token in
+        # every tab" speed bump.
+        "/api/cluster/issue_url_token",
     }
 )
 
