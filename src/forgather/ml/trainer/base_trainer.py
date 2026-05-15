@@ -142,7 +142,7 @@ class BaseTrainingArguments(MinimalTrainingArguments):
         Quantization-aware training recipe via ``torchao``. Inserts
         ``FakeQuantizedLinear`` modules so the forward pass simulates the
         target low-bit precision while backward stays in full precision.
-        After training, run ``forgather finalize --qat-convert <recipe>`` to
+        After training, run ``forgather finalize --quantize <recipe>`` to
         produce the real low-bit deployment artifact. Mutually exclusive with
         ``fp8_recipe``. See ``docs/trainers/qat-training.md`` for the recipe
         list. Default is ``None``.
@@ -213,7 +213,7 @@ class BaseTrainingArguments(MinimalTrainingArguments):
 
     # Quantization-aware training (QAT) via torchao. Inserts FakeQuantizedLinear
     # modules in the prepare phase; convert is done post-training via
-    # `forgather finalize --qat-convert <recipe>`. Mutually exclusive with fp8_recipe.
+    # `forgather finalize --quantize <recipe>`. Mutually exclusive with fp8_recipe.
     # See src/forgather/ml/qat_recipes.py for the recipe table.
     qat_recipe: str | None = None
 

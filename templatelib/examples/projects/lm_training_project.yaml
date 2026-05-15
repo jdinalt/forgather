@@ -701,7 +701,7 @@ optimizer_groups: &optimizer_groups
         names: "--qat-recipe"
         choices: {{ qat_recipes() | toyaml }}
         group: "Precision"
-        help: "Quantization-aware training recipe (torchao QAT prepare; run `forgather finalize --qat-convert <recipe>` after training)"
+        help: "Quantization-aware training recipe (torchao QAT prepare; run `forgather finalize --quantize <recipe>` after training)"
     compile:
         names: "--compile"
         type: bool

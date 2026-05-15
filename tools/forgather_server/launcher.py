@@ -461,7 +461,7 @@ def spawn_finalize_process(
     device: Optional[str] = None,
     dry_run: bool = False,
     log_level: str = "INFO",
-    qat_convert: Optional[str] = None,
+    quantize: Optional[str] = None,
     extra_env: Optional[Dict[str, str]] = None,
 ) -> LaunchResult:
     """Spawn a ``forgather finalize`` run.
@@ -487,7 +487,7 @@ def spawn_finalize_process(
         device=device,
         dry_run=dry_run,
         log_level=log_level,
-        qat_convert=qat_convert,
+        quantize=quantize,
     )
     return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
 

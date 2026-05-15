@@ -34,7 +34,7 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 - **[Training Performance Metrics](trainers/training-performance-metrics.md)** - Token throughput, FLOP tracking, and MFU
 - **[DiLoCo](trainers/diloco.md)** - Distributed Local-SGD training across heterogeneous machines on LAN
 - **[FP8 Training](trainers/fp8-training.md)** - FP8 training via torchao
-- **[QAT Training](trainers/qat-training.md)** - Quantization-aware training via torchao; pair with `forgather finalize --qat-convert` for the deployable low-bit artifact
+- **[QAT Training](trainers/qat-training.md)** - Quantization-aware training via torchao; pair with `forgather finalize --quantize` (also works alone as post-training quantization)
 - **[Checkpointing](checkpointing/README.md)** - Distributed checkpoint system for multi-GPU and multi-node training
 - **[Torch Titan Integration](trainers/torchtitan.md)** - Forgather integration with PyTorch's Torch Titan training framework
 - **[Adafactor Triton Performance](trainers/adafactor-triton-performance.md)** - Performance analysis for the Triton-optimized Adafactor kernel

@@ -2,8 +2,10 @@
 
 The same recipe string is supplied at training time via ``qat_recipe`` (which
 inserts ``FakeQuantizedLinear`` modules) and at finalize time via
-``--qat-convert`` (which swaps them for real low-bit quantized linear ops).
+``--quantize`` (which swaps them for real low-bit quantized linear ops).
 Both call sites resolve the string through :func:`recipe_to_base_config`.
+``--quantize`` also accepts a plain bf16 source, in which case the same
+pipeline performs post-training quantization (PTQ).
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ from __future__ import annotations
 # Source of truth for QAT recipe names. Consumed by:
 #   - BaseTrainingArguments validator (src/forgather/ml/trainer/base_trainer.py)
 #   - the Forgather finalize CLI (src/forgather/cli/finalize.py)
-#   - finalize_model.py's --qat-convert (tools/finalize_model/finalize_model.py)
+#   - finalize_model.py's --quantize (tools/finalize_model/finalize_model.py)
 #   - the lm_training_project.yaml template's --qat-recipe `choices:` list,
 #     rendered from this tuple via the `qat_recipes` Jinja global
 #   - tools/forgather_server/webui/src/components/FinalizeModal.tsx
