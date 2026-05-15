@@ -1,5 +1,5 @@
 import { UseQueryResult, useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   ClusterDatasetServer,
@@ -16,11 +16,21 @@ import {
   LocalListResponse,
   api,
 } from "../api";
+import { persistGet, persistSet } from "../persist";
 
 const PAGE_SIZE_OPTIONS = [25, 100, 200] as const;
 const DEFAULT_PAGE_SIZE = 25;
 const CELL_TRUNCATE = 200;
 const EXPANDED_CELL_TRUNCATE = 5000;
+
+// Tree pane width — used to be a fixed 384px stylesheet value;
+// surfaced here so the user can drag a divider and the choice
+// persists in localStorage. Default bumped ~15% (442px) because the
+// HF/local tree rows easily run wide enough to wrap at 384.
+const DEFAULT_TREE_WIDTH = 442;
+const MIN_TREE_WIDTH = 240;
+const MAX_TREE_WIDTH = 900;
+const TREE_WIDTH_STORAGE_KEY = "datasets-explore-tree-width";
 
 /** Same glyph the main sidebar toggle uses. Inlined so we don't have
  *  to factor the icon out of App.tsx just for this re-use. */
@@ -277,6 +287,60 @@ export function DatasetsExploreTab({
   // Tree pane collapse — gives the preview pane the full width when the
   // user has already picked a leaf and just wants to read rows.
   const [treeCollapsed, setTreeCollapsed] = useState<boolean>(false);
+  // Tree pane width is operator-adjustable via the divider; persists
+  // across reloads. Initial read clamps in case localStorage holds a
+  // stale value outside the current bounds.
+  const [treeWidth, setTreeWidth] = useState<number>(() => {
+    const raw = persistGet(TREE_WIDTH_STORAGE_KEY);
+    const n = raw != null ? Number(raw) : NaN;
+    if (!Number.isFinite(n)) return DEFAULT_TREE_WIDTH;
+    return Math.max(MIN_TREE_WIDTH, Math.min(MAX_TREE_WIDTH, n));
+  });
+  // Drag state lives in refs so the pointer-move callback doesn't
+  // re-bind on every render (and so it sees the latest grab anchor
+  // without depending on stale closures). Mirrors the TemplatesView
+  // resizer pattern.
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const onResizerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      (e.currentTarget as Element).setPointerCapture(e.pointerId);
+      dragRef.current = { startX: e.clientX, startWidth: treeWidth };
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    },
+    [treeWidth],
+  );
+  const onResizerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      const next = drag.startWidth + (e.clientX - drag.startX);
+      setTreeWidth(Math.max(MIN_TREE_WIDTH, Math.min(MAX_TREE_WIDTH, next)));
+    },
+    [],
+  );
+  const onResizerUp = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!dragRef.current) return;
+      dragRef.current = null;
+      try {
+        (e.currentTarget as Element).releasePointerCapture(e.pointerId);
+      } catch {
+        // Capture may already be released if the pointer was cancelled.
+      }
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      persistSet(TREE_WIDTH_STORAGE_KEY, String(treeWidth));
+    },
+    [treeWidth],
+  );
+  // Double-click resets to the default — quick escape hatch if the
+  // user dragged the pane somewhere awkward.
+  const onResizerDoubleClick = useCallback(() => {
+    setTreeWidth(DEFAULT_TREE_WIDTH);
+    persistSet(TREE_WIDTH_STORAGE_KEY, String(DEFAULT_TREE_WIDTH));
+  }, []);
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const [page, setPage] = useState<number>(0);
   // Reset page when the selection changes — different leaf, fresh state.
@@ -421,6 +485,11 @@ export function DatasetsExploreTab({
           className={
             "datasets-explore-tree" + (treeCollapsed ? " collapsed" : "")
           }
+          style={
+            treeCollapsed
+              ? undefined
+              : { flex: `0 0 ${treeWidth}px`, width: treeWidth }
+          }
         >
           {servers.length === 0 ? (
             <div className="muted pane-state-small">
@@ -442,6 +511,19 @@ export function DatasetsExploreTab({
             </ul>
           )}
         </aside>
+        {!treeCollapsed && (
+          <div
+            className="datasets-explore-resizer"
+            onPointerDown={onResizerDown}
+            onPointerMove={onResizerMove}
+            onPointerUp={onResizerUp}
+            onPointerCancel={onResizerUp}
+            onDoubleClick={onResizerDoubleClick}
+            title="Drag to resize the browse pane · double-click to reset"
+            role="separator"
+            aria-orientation="vertical"
+          />
+        )}
         <main className="datasets-explore-preview">
           {selected ? (
             <PreviewPane

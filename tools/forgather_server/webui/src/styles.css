@@ -4361,7 +4361,10 @@ li.config.selected button.link:hover {
   min-height: 0;
 }
 .datasets-explore-tree {
-  flex: 0 0 384px;
+  /* Default flex-basis kept as a fallback; the component overrides
+   * width inline once the user drags the divider (or initialises
+   * from localStorage). */
+  flex: 0 0 442px;
   min-width: 240px;
   max-width: 60%;
   overflow: auto;
@@ -4371,6 +4374,29 @@ li.config.selected button.link:hover {
 }
 .datasets-explore-tree.collapsed {
   display: none;
+}
+/* Drag handle between the tree and the preview pane. Mirrors the
+ * .trefs-split-handle styling so the two resizers feel the same. */
+.datasets-explore-resizer {
+  flex: 0 0 6px;
+  background: var(--border);
+  cursor: col-resize;
+  position: relative;
+  touch-action: none;
+  align-self: stretch;
+}
+.datasets-explore-resizer::before {
+  /* Widen the hit area without expanding the visual stripe — easier
+   * to grab without making the divider visually heavy. */
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+}
+.datasets-explore-resizer:hover {
+  background: var(--accent);
 }
 .preview-page-size {
   display: flex;
