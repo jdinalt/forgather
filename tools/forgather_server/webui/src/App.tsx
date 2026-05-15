@@ -34,26 +34,31 @@ type View =
   | "edit"
   | "docs"
   | "gpus"
+  | "nodes"
   | "jobs"
   | "queue"
   | "inference"
   | "datasets";
 export type ConfigTab = "info" | "pp" | "code" | "graph" | "templates" | "debug";
 
-// View metadata. The "gpus" entry is dual-labelled at render time:
-// "GPUs" in standalone mode, "Nodes" when cluster mode is active. The
-// underlying view ID stays "gpus" so existing keyboard shortcuts and
-// persisted state continue to work without a migration.
-const VIEWS: { id: View; label: string; icon: string }[] = [
-  { id: "projects", label: "Projects", icon: "📁" },
-  { id: "edit", label: "Edit", icon: "✎" },
-  { id: "docs", label: "Docs", icon: "📚" },
-  { id: "gpus", label: "GPUs", icon: "🖥" },
-  { id: "queue", label: "Queue", icon: "📋" },
-  { id: "jobs", label: "Jobs", icon: "⚙" },
-  { id: "inference", label: "Inference", icon: "🔮" },
-  { id: "datasets", label: "Datasets", icon: "🗂" },
-];
+// View metadata. "GPUs" is always the local node's GPU panel; "Nodes"
+// is a separate cluster-only entry that's filtered out in standalone
+// mode (see ``visibleViews`` below).
+const VIEWS: { id: View; label: string; icon: string; clusterOnly?: boolean }[] =
+  [
+    // Nodes is the cluster-wide context — when it's present, it's the
+    // first thing the eye should land on; in standalone mode it's
+    // filtered out entirely, so this slot is invisible.
+    { id: "nodes", label: "Nodes", icon: "🖧", clusterOnly: true },
+    { id: "projects", label: "Projects", icon: "📁" },
+    { id: "edit", label: "Edit", icon: "✎" },
+    { id: "docs", label: "Docs", icon: "📚" },
+    { id: "gpus", label: "GPUs", icon: "🖥" },
+    { id: "queue", label: "Queue", icon: "📋" },
+    { id: "jobs", label: "Jobs", icon: "⚙" },
+    { id: "inference", label: "Inference", icon: "🔮" },
+    { id: "datasets", label: "Datasets", icon: "🗂" },
+  ];
 
 // A window glyph with a left-biased vertical divider — represents the
 // app canvas with the sidebar partition. Shown as the sidebar toggle so
@@ -262,6 +267,12 @@ export default function App() {
     staleTime: 30000,
   });
   const clusterActive = !!clusterSelfQ.data;
+  // Guard against being stranded on a cluster-only view when the
+  // server flips back to standalone (or the cluster query returns
+  // null transiently on first paint).
+  useEffect(() => {
+    if (!clusterActive && view === "nodes") setView("gpus");
+  }, [clusterActive, view]);
   // Total node count for the Nodes sidebar pill — only fetched when
   // we're actually in cluster mode. Shares the queryKey used by
   // NodesPanel so the cache is reused once that view is opened.
@@ -277,11 +288,13 @@ export default function App() {
   const viewCounts: Partial<Record<View, number>> = {
     queue: queuedCount,
     jobs: runningCount,
-    // "gpus" is the dual-labelled entry: shows GPUs in standalone
-    // mode and Nodes in cluster mode. The pill only makes sense as
-    // a node count, so we only set it when clusterActive.
-    gpus: clusterActive ? nodesCount : undefined,
+    // Nodes pill is the cluster-wide peer count; "GPUs" no longer
+    // doubles as a cluster surface so it carries no badge.
+    nodes: clusterActive ? nodesCount : undefined,
   };
+  // Cluster-only views (currently just "nodes") are filtered out of
+  // the sidebar in standalone mode.
+  const visibleViews = VIEWS.filter((v) => clusterActive || !v.clusterOnly);
   // Tab title: include the node hostname when in cluster mode so
   // the user can tell which node's webui a given browser tab is
   // talking to. Two-tab workflows are common — one tab per node —
@@ -579,20 +592,16 @@ export default function App() {
             <SidebarIcon />
           </button>
           <nav className="sidebar-views icon-only">
-            {VIEWS.map((v) => {
-              const label =
-                v.id === "gpus" && clusterActive ? "Nodes" : v.label;
-              return (
-                <button
-                  key={v.id}
-                  className={view === v.id ? "active" : ""}
-                  onClick={() => setView(v.id)}
-                  title={label}
-                >
-                  <span className="view-icon">{v.icon}</span>
-                </button>
-              );
-            })}
+            {visibleViews.map((v) => (
+              <button
+                key={v.id}
+                className={view === v.id ? "active" : ""}
+                onClick={() => setView(v.id)}
+                title={v.label}
+              >
+                <span className="view-icon">{v.icon}</span>
+              </button>
+            ))}
           </nav>
         </div>
         <div className="sidebar-expanded-content">
@@ -670,9 +679,7 @@ export default function App() {
           >
             <summary>Views</summary>
             <nav className="sidebar-views">
-              {VIEWS.map((v) => {
-                const label =
-                  v.id === "gpus" && clusterActive ? "Nodes" : v.label;
+              {visibleViews.map((v) => {
                 const count = viewCounts[v.id];
                 return (
                   <button
@@ -681,7 +688,7 @@ export default function App() {
                     onClick={() => setView(v.id)}
                   >
                     <span className="view-icon">{v.icon}</span>
-                    <span className="view-label">{label}</span>
+                    <span className="view-label">{v.label}</span>
                     {count != null && count > 0 && (
                       <span className="badge">{count}</span>
                     )}
@@ -866,8 +873,16 @@ export default function App() {
           className="view-panel"
           style={view === "gpus" ? undefined : { display: "none" }}
         >
-          {clusterActive ? <NodesPanel /> : <GpuPanel />}
+          <GpuPanel />
         </div>
+        {clusterActive && (
+          <div
+            className="view-panel"
+            style={view === "nodes" ? undefined : { display: "none" }}
+          >
+            <NodesPanel />
+          </div>
+        )}
         <div
           className="view-panel"
           style={view === "jobs" ? undefined : { display: "none" }}

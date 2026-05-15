@@ -13,7 +13,14 @@ import {
   Job,
   RUNNING_JOB_STATUSES,
 } from "../api";
-import { GpuPanel, GpuCard } from "./GpuPanel";
+/** Format a byte count as a compact MiB/GiB string. Local to the
+ *  Nodes panel so the cluster view doesn't depend on GpuPanel's
+ *  internal helper. */
+function fmtMiB(bytes: number): string {
+  const mib = bytes / (1024 * 1024);
+  if (mib >= 1024) return `${(mib / 1024).toFixed(1)} GiB`;
+  return `${Math.round(mib)} MiB`;
+}
 
 /** Cluster-aware Nodes view (Phase 2).
  *
@@ -631,36 +638,157 @@ function NodeGroup({
           <InterfaceList interfaces={member.probe.interfaces} />
         </details>
       )}
-      <div className="node-group-body">
-        {isSelf ? (
-          <GpuPanel />
-        ) : gpusError ? (
-          <div className="node-group-error">
-            GPUs unavailable: {gpusError}
-          </div>
-        ) : gpus === null ? (
-          <div className="muted">Loading GPUs…</div>
-        ) : gpus.length === 0 ? (
-          <div className="muted">No GPUs reported.</div>
-        ) : (
-          <div className="gpu-grid">
-            {gpus.map((g) => (
-              <GpuCard
-                key={g.index}
-                g={g}
-                jobByPid={jobByPid}
-                reserved={reservedGpus?.has(g.index) ?? false}
-                onToggleDisabled={() =>
-                  togglePolicy.mutate({
-                    gpu_index: g.index,
-                    disabled: !g.disabled,
-                  })
-                }
-              />
-            ))}
-          </div>
-        )}
-      </div>
+      <NodeGpuList
+        gpus={gpus}
+        gpusError={gpusError}
+        jobByPid={jobByPid}
+        reservedGpus={reservedGpus}
+        onToggleDisabled={(gpu_index, disabled) =>
+          togglePolicy.mutate({ gpu_index, disabled })
+        }
+      />
     </section>
+  );
+}
+
+/** Collapsible per-node GPU summary modelled on the Interfaces
+ *  control. Expanded by default; one row per GPU; the summary surface
+ *  carries the count + a one-line aggregate ("4 GPUs · 2 idle"). */
+function NodeGpuList({
+  gpus,
+  gpusError,
+  jobByPid,
+  reservedGpus,
+  onToggleDisabled,
+}: {
+  gpus: GpuInfo[] | null;
+  gpusError: string | null;
+  jobByPid: Map<number, Job>;
+  reservedGpus: Set<number> | null;
+  onToggleDisabled: (gpu_index: number, disabled: boolean) => void;
+}) {
+  if (gpusError) {
+    return (
+      <details className="node-group-gpus" open>
+        <summary>GPUs (—)</summary>
+        <div className="node-group-error">
+          GPUs unavailable: {gpusError}
+        </div>
+      </details>
+    );
+  }
+  if (gpus === null) {
+    return (
+      <details className="node-group-gpus" open>
+        <summary>GPUs (loading…)</summary>
+      </details>
+    );
+  }
+  const total = gpus.length;
+  const idleCount = gpus.filter(
+    (g) => !g.excluded && !g.disabled && !(reservedGpus?.has(g.index) ?? false),
+  ).length;
+  return (
+    <details className="node-group-gpus" open>
+      <summary>
+        GPUs ({total}){total > 0 ? ` · ${idleCount} idle` : ""}
+      </summary>
+      {total === 0 ? (
+        <div className="muted gpu-row-empty">No GPUs reported.</div>
+      ) : (
+        <table className="gpu-row-table">
+          <thead>
+            <tr>
+              <th>GPU</th>
+              <th>Name</th>
+              <th>Memory</th>
+              <th>Util</th>
+              <th>Temp</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {gpus.map((g) => {
+              const reserved = reservedGpus?.has(g.index) ?? false;
+              const idle = !g.excluded && !g.disabled && !reserved;
+              const statusLabel = g.excluded
+                ? "excluded"
+                : g.disabled
+                  ? "disabled"
+                  : reserved
+                    ? "busy"
+                    : idle
+                      ? "idle"
+                      : "active";
+              const procCount = g.processes.length;
+              const procTitle = procCount
+                ? g.processes
+                    .map((p) => {
+                      const job = jobByPid.get(p.pid);
+                      return (
+                        `pid ${p.pid}` +
+                        (job ? ` (${job.config ?? job.id})` : "") +
+                        ` · ${fmtMiB(p.used_mem_bytes)}`
+                      );
+                    })
+                    .join("\n")
+                : undefined;
+              const clickTitle = g.excluded
+                ? "Excluded via CUDA_VISIBLE_DEVICES — cannot toggle"
+                : g.disabled
+                  ? "Click to enable GPU (allow scheduling)"
+                  : "Click to disable GPU (block scheduling)";
+              return (
+                // ``gpu-list-row`` is the right class for this table
+                // row — avoid ``gpu-row`` which is used by GpuPanel
+                // for a flexbox layout and would clobber table-row
+                // display, breaking column alignment with the header.
+                <tr
+                  key={g.index}
+                  className={"gpu-list-row gpu-list-row-" + statusLabel}
+                  onClick={
+                    g.excluded
+                      ? undefined
+                      : () => onToggleDisabled(g.index, !g.disabled)
+                  }
+                  style={g.excluded ? undefined : { cursor: "pointer" }}
+                  title={clickTitle}
+                >
+                  <td className="gpu-row-idx">{g.index}</td>
+                  <td className="gpu-row-name">{g.name}</td>
+                  <td className="gpu-row-mem">
+                    {fmtMiB(g.used_mem_bytes)} / {fmtMiB(g.total_mem_bytes)}
+                  </td>
+                  <td className="gpu-row-util">
+                    {g.util_pct !== null ? `${g.util_pct}%` : "—"}
+                  </td>
+                  <td className="gpu-row-temp">
+                    {g.temp_c !== null ? `${g.temp_c}°C` : "—"}
+                  </td>
+                  <td className="gpu-row-status">
+                    <span className={"gpu-row-status-tag tag-" + statusLabel}>
+                      {statusLabel}
+                    </span>
+                    {procCount > 0 && (
+                      <span className="gpu-row-procs muted" title={procTitle}>
+                        · {procCount} proc{procCount === 1 ? "" : "s"}
+                      </span>
+                    )}
+                    {g.min_priority !== 0 && (
+                      <span
+                        className="gpu-row-priority muted"
+                        title={`Only jobs with priority ≥ ${g.min_priority} may use this GPU`}
+                      >
+                        · ≥{g.min_priority}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </details>
   );
 }

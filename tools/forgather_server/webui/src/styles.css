@@ -3922,6 +3922,95 @@ li.config.selected button.link:hover {
   padding: 4px 0;
 }
 
+/* Per-node collapsible GPU list (Nodes panel). Visually matches
+ * .node-group-interfaces / .iface-table but stays open by default. */
+.node-group-gpus {
+  padding: 4px 10px;
+  border-top: 1px solid var(--border, #2a2a2a);
+}
+.node-group-gpus summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted, #888);
+  padding: 2px 0;
+}
+.node-group-gpus summary:hover {
+  color: inherit;
+}
+.gpu-row-empty {
+  font-size: 11px;
+  padding: 4px 0;
+}
+.gpu-row-table {
+  /* width: auto so the table hugs its content from the left edge
+   * instead of stretching to fill the panel — at 100% the auto
+   * layout algorithm scatters the columns across the panel width,
+   * leaving big gaps between short headers like "Util" and "Temp". */
+  width: auto;
+  border-collapse: collapse;
+  font-size: 11px;
+  margin-top: 4px;
+}
+.gpu-row-table th,
+.gpu-row-table td {
+  text-align: left;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+}
+.gpu-row-table th {
+  color: var(--muted, #888);
+  font-weight: 500;
+}
+.gpu-row-table tr.gpu-list-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.gpu-row-idx {
+  font-family: monospace;
+  width: 3em;
+}
+.gpu-row-name {
+  max-width: 18em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gpu-row-mem,
+.gpu-row-util,
+.gpu-row-temp {
+  font-family: monospace;
+  white-space: nowrap;
+}
+.gpu-row-status-tag {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  background: rgba(140, 140, 140, 0.15);
+}
+.gpu-row-status-tag.tag-idle {
+  background: rgba(80, 180, 100, 0.18);
+  color: #6dc97f;
+}
+.gpu-row-status-tag.tag-busy,
+.gpu-row-status-tag.tag-active {
+  background: rgba(220, 180, 80, 0.18);
+  color: #dcb450;
+}
+.gpu-row-status-tag.tag-disabled {
+  background: rgba(180, 90, 90, 0.18);
+  color: #d07a7a;
+}
+.gpu-row-status-tag.tag-excluded {
+  background: rgba(140, 140, 140, 0.25);
+  color: var(--muted, #888);
+}
+.gpu-list-row.gpu-list-row-disabled .gpu-row-name,
+.gpu-list-row.gpu-list-row-excluded .gpu-row-name {
+  opacity: 0.6;
+}
+
 .bw-panel {
   margin: 0 0 8px 0;
   border: 1px solid var(--border, #2a2a2a);
