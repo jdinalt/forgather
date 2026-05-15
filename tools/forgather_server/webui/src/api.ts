@@ -1305,6 +1305,24 @@ export const api = {
     }
     return r.json() as Promise<ClusterJobCancelResponse>;
   },
+  /** Mint a one-click URL the browser can open to log into a peer node
+   *  via the cluster bearer carve-out. The peer's webui consumes the
+   *  ``?token=`` query and strips it from the address bar on first
+   *  paint, leaving a normal session cookie. */
+  peerSessionUrl: async (
+    node_id: string,
+  ): Promise<{ url: string; hostname: string }> => {
+    const r = await fetch("/api/cluster/peer_session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ node_id }),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json();
+  },
   refreshClusterBandwidth: async (): Promise<ClusterBandwidthResponse> => {
     const r = await fetch("/api/cluster/bandwidth/refresh", {
       method: "POST",

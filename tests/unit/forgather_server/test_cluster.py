@@ -88,13 +88,40 @@ class TestMemberTable:
             port=8765,
             cluster_name="c",
             forgather_version="1.1.0",
+            source="peer_pull",
         )
         assert m.node_id == peer_id
+        # Only ``peer_pull`` is allowed to vouch for liveness on a new
+        # entry — see ``test_new_member_from_discovery_starts_unreachable``.
         assert m.reachable is True
         assert {x.node_id for x in cluster.members()} == {
             cluster.self_identity().node_id,
             peer_id,
         }
+
+    def test_new_member_from_discovery_starts_unreachable(self):
+        """A fresh entry created from mDNS or peer_report must NOT be
+        treated as alive until peer-pull confirms it.
+
+        Without this guard a third node restarting and reporting a
+        stale member list (or a zeroconf cache event for a dead peer)
+        would resurrect that peer for one sweep window — long enough
+        for master-election and GPU-aggregator probes to act on bad
+        liveness data.
+        """
+        self._act()
+        for source in ("discovery", "peer_report"):
+            peer_id = str(uuid.uuid4())
+            m = cluster.update_member(
+                peer_id,
+                hostname=f"peer-{source}",
+                address="10.0.0.42",
+                port=8765,
+                cluster_name="c",
+                source=source,
+            )
+            assert m.reachable is False, source
+            assert m.last_seen == 0.0, source
 
     def test_update_member_refreshes_existing(self):
         self._act()
@@ -106,6 +133,7 @@ class TestMemberTable:
             port=8765,
             cluster_name="c",
             now=100.0,
+            source="peer_pull",
         )
         cluster.update_member(
             peer_id,
@@ -114,12 +142,103 @@ class TestMemberTable:
             port=9000,
             cluster_name="c",
             now=200.0,
+            source="peer_pull",
         )
         m = next(x for x in cluster.members() if x.node_id == peer_id)
         assert m.hostname == "peer1-renamed"
         assert m.address == "10.0.0.99"
         assert m.port == 9000
         assert m.last_seen == 200.0
+
+    def test_peer_report_does_not_resurrect_dead_peer(self):
+        """Transitive entries from another peer's member list must not
+        vouch for an existing peer's liveness.
+
+        When wopr pulls from kitt, kitt's response includes its full
+        member list — which may still contain stale entries (e.g. a
+        muthur that died before kitt started). Crediting those
+        transitive entries with ``peer_pull`` liveness would resurrect
+        them every time a third node joins or restarts. Only the
+        direct GET to muthur is allowed to mark muthur alive.
+        """
+        self._act()
+        peer_id = str(uuid.uuid4())
+        cluster.update_member(
+            peer_id,
+            hostname="muthur",
+            address="10.0.0.2",
+            port=8765,
+            cluster_name="c",
+            now=100.0,
+            source="peer_pull",
+        )
+        cluster.mark_unreachable(peer_id)
+        # Another peer's member list contains a stale muthur entry.
+        cluster.update_member(
+            peer_id,
+            hostname="muthur",
+            address="10.0.0.2",
+            port=8765,
+            cluster_name="c",
+            now=500.0,
+            source="peer_report",
+        )
+        m = next(x for x in cluster.members() if x.node_id == peer_id)
+        assert m.last_seen == 100.0
+        assert m.reachable is False
+
+    def test_discovery_does_not_refresh_liveness(self):
+        """mDNS-sourced updates must not vouch for an existing peer.
+
+        zeroconf re-fires update_service for cached records even after
+        the announcer is dead; if discovery refreshed ``last_seen`` and
+        flipped ``reachable=True``, dead peers would stay green
+        indefinitely. Liveness is peer-pull's job — only it has
+        evidence the peer actually answered HTTP just now.
+        """
+        self._act()
+        peer_id = str(uuid.uuid4())
+        # First contact via peer-pull establishes liveness.
+        cluster.update_member(
+            peer_id,
+            hostname="peer1",
+            address="10.0.0.2",
+            port=8765,
+            cluster_name="c",
+            now=100.0,
+            source="peer_pull",
+        )
+        # Peer dies — flag flips via sweep / mark_unreachable.
+        cluster.mark_unreachable(peer_id)
+        # Stale mDNS event arrives later. last_seen must NOT advance,
+        # and reachable must NOT flip back to True.
+        cluster.update_member(
+            peer_id,
+            hostname="peer1",
+            address="10.0.0.2",
+            port=8765,
+            cluster_name="c",
+            now=500.0,
+            source="discovery",
+        )
+        m = next(x for x in cluster.members() if x.node_id == peer_id)
+        assert m.last_seen == 100.0
+        assert m.reachable is False
+        # Mutable identity fields *are* updated — discovery still
+        # tells us a peer's address may have changed.
+        cluster.update_member(
+            peer_id,
+            hostname="peer1",
+            address="10.0.0.99",
+            port=8765,
+            cluster_name="c",
+            now=600.0,
+            source="discovery",
+        )
+        m = next(x for x in cluster.members() if x.node_id == peer_id)
+        assert m.address == "10.0.0.99"
+        assert m.last_seen == 100.0
+        assert m.reachable is False
 
     def test_update_member_rejects_other_cluster(self):
         self._act()
@@ -212,6 +331,7 @@ class TestMemberTable:
             address="10.0.0.2",
             port=8765,
             cluster_name="c",
+            source="peer_pull",
         )
         cluster.mark_unreachable(peer_id)
         cluster.update_member(
@@ -220,6 +340,7 @@ class TestMemberTable:
             address="10.0.0.2",
             port=8765,
             cluster_name="c",
+            source="peer_pull",
         )
         peer = next(x for x in cluster.members() if x.node_id == peer_id)
         assert peer.reachable is True
@@ -236,6 +357,7 @@ class TestSweepUnreachable:
             port=8765,
             cluster_name="c",
             now=0.0,
+            source="peer_pull",
         )
         cluster._set_unreachable_after_for_tests(10.0)
         # Within window: still reachable.
@@ -270,6 +392,7 @@ class TestMasterSelection:
                 address="10.0.0.2",
                 port=8765,
                 cluster_name="c",
+                source="peer_pull",
             )
         all_ids = candidates + [ident.node_id]
         assert cluster.master_node_id() == min(all_ids)
@@ -289,6 +412,7 @@ class TestMasterSelection:
             address="10.0.0.2",
             port=8765,
             cluster_name="c",
+            source="peer_pull",
         )
         assert cluster.master_node_id() == peer_id
         cluster.mark_unreachable(peer_id)

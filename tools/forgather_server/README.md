@@ -478,33 +478,106 @@ expect.
 
 **Membership.** Every 5 s each node GETs `/api/cluster/members` from
 every other known peer, merges the returned member tables, and marks
-silent peers as unreachable after 30 s. Unreachable peers are kept
-in the table (union-of-ever-seen view) — the user agreed model is to
-flag, not delete.
+silent peers as unreachable after 15 s (two full peer-pull cycles at
+the default 5 s cadence). Unreachable peers are kept in the table
+(union-of-ever-seen view) — the user agreed model is to flag, not
+delete. **Liveness is owned by the direct peer-pull alone**: mDNS
+discovery and transitively-reported members are tagged identity-only
+and never refresh `last_seen` / flip `reachable=True` on an existing
+entry. New members coming in via discovery / peer_report start
+`reachable=False` until a direct pull confirms them — otherwise a
+stale mDNS cache or a third node restarting with an old member
+table could resurrect a dead peer for one sweep window.
 
-**Security.** Inter-node API calls are unauthenticated by design. The
-threat model assumes a trusted LAN, consistent with the
-torch.distributed assumption that already underpins multi-host
-training. The carve-out is narrow:
+**Security.** Inter-node API calls authenticate via mTLS — every
+peer presents a CA-signed client certificate during the TLS
+handshake, and the auth middleware accepts the call without a
+bearer token only for paths on a narrow allow-list. The threat
+model assumes the cluster as a whole is trusted (consistent with
+the torch.distributed assumption that already underpins multi-host
+training — any peer can submit jobs, which is arbitrary code
+execution). The carve-out is:
 
-- GET on a small allow-list of read-only cluster endpoints from a
-  source IP that matches a known cluster member.
-- POST on an even smaller allow-list of mutation endpoints (currently
-  only `/api/cluster/gpu_policy_local`) from the same.
+- GET on the read-only inter-node endpoints (members, self,
+  master, gpus_local, bandwidth_local, training_status_local,
+  dataset_servers_local, dataset_inventory, dataset_servers,
+  dataset_router/resolve, issue_url_token) — see
+  `auth._PEER_ALLOWED_PATHS`.
+- POST on a smaller mutation allow-list (`gpu_policy_local`,
+  `training_local`, `training_cancel_local`,
+  `dataset_servers/refresh`) — see `auth._PEER_ALLOWED_MUTATIONS`.
 - Per-node webui auth (bearer token / browser session) is unchanged
-  — peer-call carve-out applies only to inter-node traffic, not to
+  — the mTLS carve-out applies only to inter-node traffic, not to
   browsers.
 
-If your LAN is not trusted, do not enable cluster mode.
+**Cross-node SSO.** Clicking a peer in the sidebar Nodes group calls
+`POST /api/cluster/peer_session` on the local node. The local node
+then GETs `/api/cluster/issue_url_token` on the target peer over
+mTLS; the peer mints a 60 s **single-use** URL token (distinct from
+its persistent bearer at `~/.config/forgather/server/auth_token`)
+and returns it. The browser opens `https://peer:port/?token=…` in
+a new tab, the peer's `LoginGate` consumes the token via
+`/api/auth/login`, strips it from the address bar, and replaces it
+with a session cookie. A leaked URL only exposes a 60 s single-use
+window, not the long-lived bearer.
 
-**Nodes view.** When cluster mode is active, the sidebar's "GPUs"
-entry is labelled "Nodes" and renders one bounded box per cluster
-member. The local node embeds the live single-host GpuPanel
-(WebSocket stream, kill, full context menu); peer nodes show the
-same rich GPU cards, polled at 5 s, with click-to-toggle wired
-through a master-side proxy. Peer right-click context menu (kill
-processes, set min-priority) is intentionally absent in v1 — those
-mutations route through future by-node proxy work.
+If you don't trust the operators of every node in your cluster,
+don't enable cluster mode.
+
+**Cluster view.** When cluster mode is active, a 🖧 **Cluster**
+entry appears in the sidebar (cluster-only — filtered out
+otherwise). The view is a Datasets-style tabbed panel with four
+tabs, all kept mounted so scroll position and in-flight queries
+survive switching:
+
+- **jobs** — the Cluster Jobs card (multi-node training bundles);
+  see *Cluster Jobs panel* below.
+- **network** — the pairwise bandwidth probe. Reserved for future
+  network diagnostics — `Refresh` runs a fresh single-stream
+  measurement to every reachable peer.
+- **nodes** — per-peer rollup: hostname, master/peer/this-server
+  tags, version chips (yellow on divergence), a collapsible
+  **Interfaces** list, and a collapsible **GPUs (N · M idle)** list
+  — one row per GPU with index/name/memory/util/temp/status. Click
+  a GPU row to toggle disabled; mutations route through the master
+  proxy.
+- **datasets** — the master-aggregated dataset_server / dataset
+  inventory previously under *Datasets → Cluster*. Click a dataset
+  row to navigate to *Datasets → Explore* with the first healthy
+  host's first split pre-selected (see *Cross-view click-through*
+  below).
+
+Peer right-click context menu (kill processes, set min-priority)
+is intentionally absent in v1 — those mutations route through
+future by-node proxy work.
+
+**Sidebar Nodes group.** A second cluster-only surface in the
+sidebar above Views lists every peer by hostname with a tri-state
+health dot (green / yellow / red — see *Node health* below) and
+hands one-click SSO to the peer's webui. Distinct from the
+Cluster view in Views: this surface is about *navigating between
+nodes*; the Cluster view is about the cluster's internal state.
+
+**Node health.** Each peer's dot reflects three states:
+
+- **green** — reachable and headline versions match the cluster
+  majority.
+- **yellow** — HTTP-reachable but at least one headline version
+  (`forgather`, `torch`, `nccl`, `transformers`) is missing on this
+  node or differs from the majority. Catches cases like a peer's
+  nvml/driver glitch silently dropping its `nccl` version while the
+  node otherwise stays up. The row tooltip lists the disagreements;
+  click still works so the operator can SSO in and investigate.
+- **red** — last peer-pull failed and `last_seen` exceeded the
+  unreachable threshold (15 s by default — two full peer-pull
+  cycles).
+
+The dot reflects the live `member.reachable` flag, which is only
+refreshed by a *direct* peer-pull GET to that node's
+`/api/cluster/members`. Transitive entries reported by other peers
+and mDNS-cached records are tagged as identity-only and never
+vouch for liveness — so a third node restarting with a stale
+member table can't resurrect a dead peer's dot to green.
 
 **Pre-flight probe (Phase 2).** Each member entry carries a
 ``probe`` payload computed once at startup and propagated via
@@ -528,12 +601,12 @@ peer-pull:
 - **CPU / RAM summary**: logical + physical core count and total
   RAM in GiB, shown in the node header next to the address.
 
-**Bandwidth probe (Phase 2).** A collapsible panel above the node
-list runs a single-stream HTTP throughput measurement from the
-local node to each reachable peer on demand. Triggered by a button
-("Refresh") to keep the network idle the rest of the time;
-sequential rather than parallel so co-tenant flows don't masquerade
-as bottlenecks. Results are cached for 1 hour.
+**Bandwidth probe (Phase 2).** Lives on the **Cluster view →
+network** tab. Runs a single-stream HTTP throughput measurement
+from the local node to each reachable peer on demand, triggered by
+the **Refresh** button so the network stays idle the rest of the
+time; sequential rather than parallel so co-tenant flows don't
+masquerade as bottlenecks. Results are cached for 1 hour.
 
 The endpoint at ``/api/cluster/bandwidth_local`` streams a
 deterministic byte blob (default 32 MiB, max 256 MiB) and is in the
@@ -581,7 +654,7 @@ per-config overrides cache as the dynamic-args, so a config "opens
 where you left off" for both submit modes. Reset to defaults
 clears multi-node state alongside the dynamic-args.
 
-The Cluster Jobs panel under **Nodes** lists the running and
+The **Cluster view → jobs** tab lists the running and
 recently-finished bundles, with status, per-rank assignment, and a
 Cancel action. There is no longer a "+ Multi-node training" button
 on that panel — the submit flow is the regular Run dialog.
@@ -827,9 +900,11 @@ Diagnostics: `forgather cluster datasets [-v]` prints the deduped
 inventory; `forgather cluster resolve <path>` dry-runs the router;
 `forgather cluster server <server_id> {status|list|cache|local}`
 talks to any cluster server via the master-proxy without needing
-the upstream bearer. The Datasets view's new **Cluster** tab in the
+the upstream bearer. The **Cluster view → datasets** tab in the
 webui surfaces the same payload — server health, refresh ages,
 per-server poll counters, and a deduped dataset table with hosts.
+Clicking a dataset row navigates to *Datasets → Explore* with the
+first healthy host's first split pre-selected.
 
 **Known limits in v1.**
 
@@ -849,11 +924,12 @@ per-server poll counters, and a deduped dataset table with hosts.
   running with a new master, but in-flight global state (queue
   mutations during the gap) is lost. Phase 4 + Phase 5 work.
 - No cross-architecture training (e.g. ARM Spark + x86_64 desktop):
-  the version probe surfaces a platform mismatch in the Nodes view
-  and the multi-node submit refuses unless the operator
-  acknowledges, but torch wheels and CUDA kernels won't actually
-  interoperate across architectures. The check is advisory; the
-  operator is on the hook for whether their cluster makes sense.
+  the version probe surfaces a platform mismatch in the Cluster
+  view's Nodes tab (and in the sidebar Nodes dot as yellow) and the
+  multi-node submit refuses unless the operator acknowledges, but
+  torch wheels and CUDA kernels won't actually interoperate across
+  architectures. The check is advisory; the operator is on the
+  hook for whether their cluster makes sense.
 
 ### Excluding misbehaving GPUs
 
@@ -998,18 +1074,26 @@ bottom:
   a scheduler `▶`/`⏸` play/pause button (toggles the dispatcher; green
   when running, muted when paused), and a window/sidebar SVG toggle
   that collapses the sidebar.
+- **Nodes** (cluster-only, sits above Views) — collapsible
+  `<details>` listing every cluster peer by hostname with a tri-state
+  health dot (green = reachable, yellow = reachable but a headline
+  version is missing / diverges from the cluster majority, red =
+  unreachable) and master/this-server tags. Clicking a peer mints a
+  short-lived single-use SSO URL (`/api/cluster/peer_session`) and
+  opens that peer's webui in a new tab with no login prompt — same
+  trust model as cluster bearer access. Hidden entirely when the
+  server is in standalone mode.
 - **Views** (collapsible `<details>`) — vertical tabs with icons:
-  📁 Projects, ✎ Edit, 🖥 GPUs, 📋 Queue, ⚙ Jobs, 🔮 Inference.
-  Selecting anything in the project tree routes back to the
-  Projects view automatically. The **Edit** view is the tabbed
-  Monaco editor (formerly named "Files"); it was renamed to free
-  the "Files" name for the new sidebar filesystem tree (see below).
-  When the server is in cluster mode (`--cluster <name>` at startup),
-  the **GPUs** entry is labelled **Nodes**: the same view, scoped
-  to one bounded box per cluster member. The local node embeds the
-  full live GpuPanel inside its box (WS stream, kill, context menu);
-  peer boxes show the same GPU cards polled at 5 s with click-to-
-  toggle routed via the master proxy. See [Cluster mode (multi-node, prototype)](#cluster-mode-multi-node-prototype).
+  🖧 Cluster (cluster-only), 📁 Projects, ✎ Edit, 📚 Docs, 🖥 GPUs,
+  📋 Queue, ⚙ Jobs, 🔮 Inference, 🗂 Datasets. Selecting anything
+  in the project tree routes back to the Projects view
+  automatically. The **Edit** view is the tabbed Monaco editor
+  (formerly named "Files"); it was renamed to free the "Files" name
+  for the new sidebar filesystem tree (see below). **GPUs** is
+  always the local node's live `GpuPanel` (WS stream, kill, context
+  menu), independent of cluster mode. **Cluster** is the
+  cluster-wide surface — see
+  [Cluster mode (multi-node, prototype)](#cluster-mode-multi-node-prototype).
 - **Tools** (collapsible `<details>`) — global actions that don't
   belong to a specific config. Each tool persists its last-submitted
   settings to localStorage so the next open defaults to those values
@@ -1715,20 +1799,25 @@ only) is unconditional regardless of lock state.
 
 Top-level webui tab (sidebar 🗂 **Datasets**) for inspecting and
 managing the dataset_servers a training run might pull from. Two
-sub-tabs sharing the local + user-added server lists:
+sub-tabs sharing the local + user-added server lists. The
+cluster-wide *Cluster* sub-tab was moved to the
+**Cluster view → datasets** tab — this surface is intentionally
+per-node only:
 
-- **Servers** — left list of locally-spawned dataset_server jobs
-  (auto-discovered from JobRecords) and user-registered remote
-  URLs. Add/delete dialog for user entries; **Copy bundle** on each
-  alive local row emits a `forgather-dataset://host:port/?token=…`
-  URI to the clipboard, and the *+ Add server* modal has a matching
-  **Paste bundle** affordance for one-step cross-host transfer.
-  Selecting a server reveals four typed renderers (no JSON dumps):
+- **Servers** — left list of **Spawned dataset servers** (locally-
+  launched JobRecords, auto-discovered) and **User-added servers**
+  (URLs registered via *+ Add server*). Add/delete dialog for user
+  entries; **Copy bundle** on each alive spawned row emits a
+  `forgather-dataset://host:port/?token=…` URI to the clipboard,
+  and the *+ Add server* modal has a matching **Paste bundle**
+  affordance for one-step cross-host transfer.
+
+  Selecting a server reveals three typed renderers loaded
+  concurrently, with a single **↻ Refresh** button that re-fetches
+  all three at once:
   - **Status** — colored policy chips (auth required/disabled, HF
     cache enabled/disabled, paths off/allowed, downloads off/
     allowed) with tooltips explaining each setting.
-  - **Handles** — sortable table; full-row click opens the handle's
-    leaf in the Explore tab.
   - **HF Cache** — sortable table with a horizontal stacked
     size-distribution bar above it. Each split name in the splits
     cell is a clickable link that opens that split in Explore.
@@ -1740,8 +1829,19 @@ sub-tabs sharing the local + user-added server lists:
   repo → config → split) with a paged preview table on the right
   for the selected split. Tree is lazily expanded; click-to-expand
   individual rows in the preview table bumps the per-cell
-  truncation cap. Pager elides the middle (`‹ Prev 1 … 42 43 44 …
-  588 Next ›`); 25 / 100 / 200 rows-per-page selector.
+  truncation cap. The browse pane has a draggable vertical
+  divider — drag to resize, double-click to reset, ←/→ to nudge
+  (Shift for x4); width persists in localStorage. Pager elides
+  the middle (`‹ Prev 1 … 42 43 44 … 588 Next ›`); 25 / 50 / 100
+  rows-per-page selector plus a **Go to** input for jumping
+  directly to a page number.
+
+  Cross-view click-through: clicking a row in the *Cluster view →
+  datasets* tab opens this Explore tab with the first healthy host's
+  first config/split pre-resolved and selected. If the chosen server
+  doesn't have the dataset cached (or has no enumerable splits yet),
+  the right pane shows a yellow `couldn't resolve` hint instead of
+  silently appearing empty.
 
 **Start Dataset Server… (sidebar Tools section)** — opens the
 DatasetServerModal: host, port, no-auth toggle, loading-policy
@@ -2269,6 +2369,8 @@ them is safe to mount unconditionally.
 | `POST /api/cluster/training_local` `{project_dir, config, dynamic_args?, requested_gpus, priority, rdzv_args, extra_env, cluster_job_id?}` | bearer / peer (only mutation path carved out for peers) | Per-rank training enqueue used by the master fanout. The peer's scheduler picks up the queue item and spawns torchrun in rdzv mode. |
 | `POST /api/cluster/training_cancel_local` `{queue_id}`             | bearer / peer              | Per-rank cancel used by the master cancel-fanout                          |
 | `GET /api/cluster/training_status_local?queue_id=...`              | bearer / peer              | Per-rank job-status snapshot used by the master to roll up cluster-job status. Read-only, scoped to one queue_id. |
+| `GET /api/cluster/issue_url_token`                                 | bearer / peer              | Mint a 60 s single-use URL token for cross-node SSO. Distinct from the persistent bearer; consumed by `verify_url_token` on first `/api/auth/login`. 503 when cluster mode is not active on this node. |
+| `POST /api/cluster/peer_session` `{node_id}`                       | bearer                     | Look up the named peer, fetch its `issue_url_token` over mTLS, return `{url: "https://addr:port/?token=…", hostname}` for the browser to open in a new tab. Refuses self (400) and unreachable peers (503). |
 
 The probe payload (versions + interfaces + CPU summary) is
 piggybacked on every member entry returned by `/api/cluster/members`
@@ -2276,8 +2378,9 @@ under the ``probe`` field. There is no separate `/api/cluster/probe`
 endpoint — peer-pull already brings the data with no extra
 round-trip.
 
-The "peer" auth column means a known cluster member's source IP can
-call the endpoint without the bearer token; see [Cluster mode (multi-node, prototype)](#cluster-mode-multi-node-prototype)
+The "peer" auth column means a known cluster member presenting a
+CA-signed client certificate (mTLS) can call the endpoint without
+the bearer token; see [Cluster mode (multi-node, prototype)](#cluster-mode-multi-node-prototype)
 for the threat model.
 
 ### Queue / scheduler

@@ -459,6 +459,7 @@ class TestCollectServersTick:
             address="10.0.0.7",
             port=8765,
             cluster_name="c",
+            source="peer_pull",
         )
         monkeypatch.setattr(
             cluster_dataset_inventory, "local_servers", lambda: []
@@ -841,6 +842,7 @@ class TestMasterStateSync:
             address="10.0.0.5",
             port=8765,
             cluster_name="c",
+            source="peer_pull",
         )
         assert cluster_dataset_inventory._sync_master_state() is False
         assert master_inventory.is_master() is False
@@ -918,6 +920,7 @@ class TestRoleChangeListener:
             address="10.0.0.5",
             port=8765,
             cluster_name="c",
+            source="peer_pull",
         )
         cluster_membership._notify_role_change_if_needed()
         assert len(events) == 2

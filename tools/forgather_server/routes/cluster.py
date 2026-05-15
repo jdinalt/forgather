@@ -172,6 +172,139 @@ def get_master():
 
 
 # ---------------------------------------------------------------------------
+# Peer single-sign-on
+# ---------------------------------------------------------------------------
+#
+# The cluster bearer model already concedes "if you can submit jobs on one
+# node you can run arbitrary code on any node," so cross-node webui SSO
+# doesn't introduce a new trust boundary — it just removes the need for
+# the operator to re-type each peer's token in a fresh browser tab. The
+# flow:
+#
+#   1. The user's tab (authenticated to node A) POSTs
+#      ``/api/cluster/peer_session`` with the target node_id.
+#   2. Node A calls the target peer's ``/api/cluster/issue_url_token``
+#      over mTLS — proof that the request originates inside the cluster.
+#   3. The peer returns its own bearer token. Node A wraps it into a
+#      ``?token=...`` URL and hands it back to the browser, which opens
+#      it in a new tab. The peer's LoginGate consumes the URL token and
+#      strips it from the address bar.
+
+
+class IssueUrlTokenResponse(BaseModel):
+    token: str
+
+
+@router.get("/issue_url_token", response_model=IssueUrlTokenResponse)
+def issue_url_token(response: Response):
+    """Mint a short-lived, single-use URL token for cross-node SSO.
+
+    Listed in ``auth._PEER_ALLOWED_PATHS`` so a mTLS-authenticated
+    peer can fetch one without already holding the bearer. The local
+    node uses this when one tab opens a peer's webui — see
+    ``peer_session``.
+
+    Returns a fresh one-shot token (60 s TTL, deleted on first verify
+    via ``auth.verify_url_token``) — *not* the persistent bearer at
+    ``~/.config/forgather/server/auth_token``. The persistent bearer
+    is forever; an address-bar / referer / clipboard leak of this
+    URL only exposes a 60 s window with one use.
+    """
+    from .. import auth as auth_module
+
+    ident = cluster.self_identity()
+    if ident is None:
+        # No cluster identity → nothing to authenticate against. 503
+        # rather than handing out a token that no peer can map back
+        # to "this node".
+        raise HTTPException(
+            status_code=503,
+            detail="cluster mode is not active on this node",
+        )
+    response.headers["X-Forgather-Node-Id"] = ident.node_id
+    return IssueUrlTokenResponse(token=auth_module.mint_url_token())
+
+
+class PeerSessionRequest(BaseModel):
+    node_id: str
+
+
+class PeerSessionResponse(BaseModel):
+    url: str
+    hostname: str
+
+
+@router.post("/peer_session", response_model=PeerSessionResponse)
+async def peer_session(req: PeerSessionRequest):
+    """Mint a one-click URL the browser can open to log into a peer.
+
+    Looks the peer up in the cluster member table, fetches its bearer
+    over mTLS via ``/api/cluster/issue_url_token``, and returns
+    ``{url}`` where the URL is ``https://addr:port/?token=<bearer>``
+    (or ``http://`` for an HTTP-only peer). The webui opens that URL
+    in a new tab; the peer's LoginGate consumes the token, strips it
+    from the address bar, and replaces it with a session cookie.
+    """
+    target = next((m for m in cluster.members() if m.node_id == req.node_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"unknown node {req.node_id}")
+    self_id = cluster.self_identity()
+    if self_id is not None and req.node_id == self_id.node_id:
+        # Self-SSO is meaningless — the caller is already authenticated
+        # on this origin. Refuse rather than handing out our own bearer
+        # via a fresh tab the user doesn't need.
+        raise HTTPException(
+            status_code=400,
+            detail="peer_session refused for self node — already authenticated here",
+        )
+    if not target.reachable:
+        raise HTTPException(
+            status_code=503,
+            detail=f"node {target.hostname} is currently unreachable",
+        )
+    url = _peer_url(target, "/api/cluster/issue_url_token")
+    async with _peer_client() as client:
+        try:
+            r = await client.get(url, timeout=PEER_GPU_TIMEOUT_SECONDS)
+        except (httpx.HTTPError, OSError) as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"fetch token from {target.hostname} failed: {e}",
+            )
+    if r.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"node {target.hostname} returned {r.status_code}: " f"{r.text[:200]}"
+            ),
+        )
+    served_by = r.headers.get("x-forgather-node-id") or r.headers.get(
+        "X-Forgather-Node-Id"
+    )
+    if served_by and served_by != req.node_id:
+        # mDNS/loopback regression guard, mirrors gpu_policy proxying.
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"address {target.address}:{target.port} answered as node "
+                f"{served_by[:8]}; refusing to expose its token"
+            ),
+        )
+    body = r.json()
+    token = body.get("token") if isinstance(body, dict) else None
+    if not token:
+        raise HTTPException(
+            status_code=502,
+            detail=f"node {target.hostname} returned no token",
+        )
+    base = _peer_base(target)
+    return PeerSessionResponse(
+        url=f"{base}/?token={token}",
+        hostname=target.hostname,
+    )
+
+
+# ---------------------------------------------------------------------------
 # GPU aggregation
 # ---------------------------------------------------------------------------
 

@@ -6,8 +6,6 @@ import {
   ClusterDatasetEntry,
   ClusterDatasetInventoryResponse,
   ClusterDatasetServer,
-  DatasetHandleRow,
-  DatasetHandlesResponse,
   DatasetServerHealth,
   DatasetServerLocal,
   DatasetServerUser,
@@ -22,17 +20,18 @@ import {
 } from "./DatasetsExploreTab";
 import { ModalBackdrop } from "./ModalBackdrop";
 
-type SubTab = "cluster" | "servers" | "explore";
+type SubTab = "servers" | "explore";
 
 /** Identifier the panel uses to refer to either kind of server uniformly.
  *  Local servers key by ``queue_id`` (stable across the run), user
- *  entries key by registry ``id`` (8 hex chars), cluster servers by
- *  the master's ``server_id`` (12 hex chars; sha256-derived from
- *  base_url). */
+ *  entries key by registry ``id`` (8 hex chars).
+ *
+ *  Cluster-wide server selection lives on the Cluster view's Datasets
+ *  tab; this surface is intentionally per-node only — spawned jobs on
+ *  this host plus servers the operator added by URL. */
 type ServerKey =
   | { kind: "local"; queue_id: string }
-  | { kind: "user"; id: string }
-  | { kind: "cluster"; server_id: string };
+  | { kind: "user"; id: string };
 
 interface SelectedServer {
   key: ServerKey;
@@ -47,23 +46,38 @@ function keyMatches(a: ServerKey, b: ServerKey): boolean {
   if (a.kind === "local") {
     return b.kind === "local" && a.queue_id === b.queue_id;
   }
-  if (a.kind === "user") {
-    return b.kind === "user" && a.id === (b as { id: string }).id;
-  }
-  return (
-    b.kind === "cluster" &&
-    a.server_id === (b as { server_id: string }).server_id
-  );
+  return b.kind === "user" && a.id === (b as { id: string }).id;
 }
 
 /** Top-level Datasets view. Tabs:
- *  - Cluster (read-only, only when the forgather_server is in
- *    cluster mode): master-aggregated view of every dataset_server
- *    and every unique dataset across the cluster.
  *  - Servers: CRUD + status/handles/cache.
  *  - Explore: tree of dataset → split → table of rows.
+ *
+ * Cluster-wide inventory (master-aggregated view of every
+ * dataset_server and every unique dataset) lives under the Cluster
+ * view's Datasets tab — see ClusterPanel.
  */
-export function DatasetsPanel() {
+interface DatasetsPanelProps {
+  /** Cross-view preselect: when the Cluster view's Datasets tab fires
+   *  a row click (or anything outside this panel routes a leaf here),
+   *  the parent sets this and we both switch to the Explore sub-tab
+   *  and pass the leaf down. Null in steady state. */
+  pendingExplore?: SelectedLeaf | null;
+  /** Called after the Explore tab consumes the preselect, so the
+   *  parent can clear it. */
+  onPreselectConsumed?: () => void;
+  /** Called when any source inside this panel wants to navigate to
+   *  Explore (Servers tab row clicks). Lifts the leaf to the parent
+   *  so the same flow works whether the trigger came from inside
+   *  this panel or from the Cluster view. */
+  onOpenInExplore?: (leaf: SelectedLeaf) => void;
+}
+
+export function DatasetsPanel({
+  pendingExplore,
+  onPreselectConsumed,
+  onOpenInExplore,
+}: DatasetsPanelProps = {}) {
   // Detect cluster mode via the same query the App-level gate uses.
   // TanStack dedups by ``queryKey`` so this doesn't cost an extra HTTP
   // request — App.tsx's polling and this one share the same cache.
@@ -74,16 +88,17 @@ export function DatasetsPanel() {
   });
   const clusterActive = !!clusterSelfQ.data;
 
-  const [tab, setTab] = useState<SubTab>(clusterActive ? "cluster" : "servers");
-  // Pending pre-selection for the Explore tab. Set when a row in the
-  // Servers tab is clicked (handles row / cache split / local split);
-  // the Explore tab consumes it once and signals back to clear.
-  const [pendingExplore, setPendingExplore] = useState<SelectedLeaf | null>(
-    null,
-  );
+  const [tab, setTab] = useState<SubTab>("servers");
+  // Switch to the Explore sub-tab whenever a preselect arrives from
+  // outside — Cluster view's Datasets tab, or anywhere else that
+  // hands a leaf to App. The Explore tab itself consumes the
+  // preselect and signals back via onPreselectConsumed.
+  useEffect(() => {
+    if (pendingExplore) setTab("explore");
+  }, [pendingExplore]);
   const openInExplore = (leaf: SelectedLeaf) => {
-    setPendingExplore(leaf);
     setTab("explore");
+    onOpenInExplore?.(leaf);
   };
   // Shared queries — both subtabs need the local+user lists. Same keys
   // mean TanStack Query serves them from one cache.
@@ -114,14 +129,6 @@ export function DatasetsPanel() {
         <div className="inference-header-title">
           <strong>Datasets</strong>
           <nav className="tabs">
-            {clusterActive && (
-              <button
-                className={tab === "cluster" ? "active" : ""}
-                onClick={() => setTab("cluster")}
-              >
-                cluster
-              </button>
-            )}
             <button
               className={tab === "servers" ? "active" : ""}
               onClick={() => setTab("servers")}
@@ -138,18 +145,6 @@ export function DatasetsPanel() {
         </div>
       </header>
 
-      {clusterActive && (
-        <div
-          style={{
-            display: tab === "cluster" ? "block" : "none",
-            flex: 1,
-            minHeight: 0,
-            overflow: "auto",
-          }}
-        >
-          <DatasetsClusterTab />
-        </div>
-      )}
       <div
         style={{
           display: tab === "servers" ? "block" : "none",
@@ -172,8 +167,8 @@ export function DatasetsPanel() {
           userServers={userServers}
           clusterServers={clusterServers}
           clusterActive={clusterActive}
-          preselect={pendingExplore}
-          onPreselectConsumed={() => setPendingExplore(null)}
+          preselect={pendingExplore ?? null}
+          onPreselectConsumed={onPreselectConsumed}
         />
       </div>
     </div>
@@ -202,8 +197,22 @@ function formatAgo(ts: number | null): string {
 /** Read-only cluster inventory view. Polls /api/cluster/dataset_inventory
  *  every 5s. The master self-gates the loops, so this surface stays
  *  consistent across master failover (the new master rebuilds its
- *  inventory from peers within ~10s of taking over). */
-function DatasetsClusterTab() {
+ *  inventory from peers within ~10s of taking over).
+ *
+ *  Exported so the Cluster view (ClusterPanel) can mount it as its
+ *  Datasets tab. Kept in DatasetsPanel.tsx because it shares helpers
+ *  (ClusterDatasetRow, SortableHeader, formatAgo, …) with the rest of
+ *  this file.
+ *
+ *  ``onOpenInExplore``, when wired, makes the dataset rows clickable:
+ *  the parent navigates the outer view to Datasets, switches to the
+ *  Explore sub-tab, and pre-selects the clicked dataset against the
+ *  first healthy server that advertises it. */
+export function DatasetsClusterTab({
+  onOpenInExplore,
+}: {
+  onOpenInExplore?: (leaf: SelectedLeaf) => void;
+} = {}) {
   const inventoryQ = useQuery<ClusterDatasetInventoryResponse>({
     queryKey: ["cluster", "dataset_inventory"],
     queryFn: api.getClusterDatasetInventory,
@@ -475,6 +484,7 @@ function DatasetsClusterTab() {
                     key={d.dataset_id}
                     entry={d}
                     serverIdMap={serverIdMap}
+                    onOpenInExplore={onOpenInExplore}
                   />
                 ))}
               </tbody>
@@ -491,9 +501,11 @@ function DatasetsClusterTab() {
 function ClusterDatasetRow({
   entry,
   serverIdMap,
+  onOpenInExplore,
 }: {
   entry: ClusterDatasetEntry;
   serverIdMap: Map<string, ClusterDatasetServer>;
+  onOpenInExplore?: (leaf: SelectedLeaf) => void;
 }) {
   const hostBaseUrls = entry.server_ids
     .map((sid) => serverIdMap.get(sid)?.base_url ?? sid)
@@ -507,8 +519,69 @@ function ClusterDatasetRow({
     (entry.load_args && typeof entry.load_args["path"] === "string"
       ? (entry.load_args["path"] as string)
       : null);
+  // Pick the source server we'll hand to the Explore tab. Prefer the
+  // first *healthy* server that advertises this dataset; fall back to
+  // the first server_id otherwise. If we picked an unhealthy peer the
+  // Explore tab would just surface the upstream error inline — the
+  // healthy-first preference is a UX shortcut, not a correctness gate.
+  const args = entry.load_args ?? {};
+  // Derive the load path by source. The backend only populates
+  // load_args for path-based handles; ``local`` and ``hf`` entries
+  // carry their identity in dataset_id directly:
+  //   - local: dataset_id is ``local/<name>``
+  //   - hf:    dataset_id is the HF repo (e.g., ``allenai/c4``)
+  //   - path:  dataset_id is the handle hash; load_args holds path
+  let path = "";
+  if (entry.source === "local" || entry.source === "hf") {
+    path = entry.dataset_id;
+  } else if (typeof args["path"] === "string") {
+    path = args["path"] as string;
+  }
+  const loadArgsName =
+    typeof args["name"] === "string" ? (args["name"] as string) : undefined;
+  const loadArgsSplit =
+    typeof args["split"] === "string"
+      ? (args["split"] as string)
+      : undefined;
+  const firstHealthyServerId = entry.server_ids.find(
+    (sid) => serverIdMap.get(sid)?.healthy,
+  );
+  const chosenServerId = firstHealthyServerId ?? entry.server_ids[0] ?? null;
+  const chosenServer = chosenServerId
+    ? serverIdMap.get(chosenServerId) ?? null
+    : null;
+  // Click is only meaningful when we have both a server to route to
+  // *and* a path. Either missing → render an inert row (no pointer
+  // cursor, no handler) so the user isn't misled.
+  const clickable = !!onOpenInExplore && !!chosenServer && !!path;
+  const onClick = clickable
+    ? () => {
+        onOpenInExplore!({
+          server_label: chosenServer!.label,
+          server_base_url: chosenServer!.base_url,
+          cluster_server_id: chosenServer!.server_id,
+          load: {
+            path,
+            name: loadArgsName,
+            split: loadArgsSplit,
+          },
+          display: friendlyName ?? entry.dataset_id,
+          hint_rows: entry.length,
+        });
+      }
+    : undefined;
+  const title = clickable
+    ? `Open in Explore via ${chosenServer!.base_url}` +
+      (entry.server_ids.length > 1
+        ? ` (first of ${entry.server_ids.length} hosts)`
+        : "")
+    : undefined;
   return (
-    <tr>
+    <tr
+      onClick={onClick}
+      style={clickable ? { cursor: "pointer" } : undefined}
+      title={title}
+    >
       <td style={{ fontFamily: "monospace" }}>
         {entry.dataset_id}
         {friendlyName && friendlyName !== entry.dataset_id && (
@@ -549,168 +622,6 @@ function ClusterDatasetRow({
   );
 }
 
-interface ClusterServerSectionProps {
-  title: string;
-  servers: ClusterDatasetServer[];
-  emptyHint: string;
-  headerAction?: React.ReactNode;
-  selected: SelectedServer | null;
-  /** This node's cluster node_id. Entries whose ``peer_node_id``
-   *  matches are managed locally — DELETE goes to this node's
-   *  ``/api/dataset-servers/user/<id>``. */
-  selfNodeId: string | null;
-  onPick: (s: ClusterDatasetServer) => void;
-  /** Called after a successful delete so the parent can invalidate
-   *  the local + cluster queries. */
-  onDeleted: () => void;
-}
-
-/** A single sub-section of the cluster-mode Servers tab — either
- *  "Spawned" or "User-added", same shape so the two render
- *  consistently. The standalone-mode list keeps its old per-row
- *  rendering; this component is cluster-only. */
-function ClusterServerSection({
-  title,
-  servers,
-  emptyHint,
-  headerAction,
-  selected,
-  selfNodeId,
-  onPick,
-  onDeleted,
-}: ClusterServerSectionProps) {
-  const removeUser = useMutation({
-    mutationFn: (entryId: string) => api.deleteUserDatasetServer(entryId),
-    onSuccess: () => {
-      // Kick the master's collect loop so the cluster inventory
-      // drops the entry within ~1s instead of one collect tick.
-      // Fire-and-forget — onDeleted's invalidate will trigger the
-      // refetch.
-      void api.refreshClusterDatasetServers();
-      onDeleted();
-    },
-  });
-  return (
-    <section>
-      <h4 className="dyn-heading">
-        {title}
-        <span className="muted"> ({servers.length})</span>
-        {headerAction}
-      </h4>
-      {servers.length === 0 && (
-        <div className="muted pane-state-small">{emptyHint}</div>
-      )}
-      <ul className="inference-server-list">
-        {servers.map((s) => {
-          const sel =
-            selected !== null &&
-            keyMatches(selected.key, {
-              kind: "cluster",
-              server_id: s.server_id,
-            });
-          const ownedHere =
-            s.source === "user" &&
-            !!selfNodeId &&
-            s.peer_node_id === selfNodeId &&
-            !!s.source_id;
-          return (
-            <li
-              key={s.server_id}
-              className={
-                "inference-server-row" + (sel ? " selected" : "")
-              }
-              onClick={() => onPick(s)}
-              title={
-                s.last_health_error
-                  ? `health error: ${s.last_health_error}`
-                  : ""
-              }
-            >
-              <div className="inference-server-row-line">
-                <span
-                  className={
-                    "queue-status " +
-                    (s.healthy ? "status-running" : "status-done")
-                  }
-                >
-                  {s.healthy ? "OK" : "DOWN"}
-                </span>
-                <span className="inference-server-url">{s.base_url}</span>
-                <span className="muted">· {s.label}</span>
-                {s.peer_node_id && (
-                  <span
-                    className="muted"
-                    title={`peer node_id: ${s.peer_node_id}`}
-                  >
-                    · peer {s.peer_node_id.slice(0, 8)}
-                  </span>
-                )}
-                {s.loopback && (
-                  <span
-                    className="muted"
-                    style={{ color: "var(--warning, #b87000)" }}
-                    title={
-                      "Host is loopback. The cluster master skips this " +
-                      "entry for auto-routing because other peers can't " +
-                      "reach it. Still usable for node-local training " +
-                      "when picked explicitly in the submit modal."
-                    }
-                  >
-                    · node-local
-                  </span>
-                )}
-                {s.verify_tls === false && (
-                  <span
-                    className="muted"
-                    style={{ color: "var(--warning, #b87000)" }}
-                    title="TLS chain validation off for this entry"
-                  >
-                    · insecure TLS
-                  </span>
-                )}
-                {ownedHere ? (
-                  <button
-                    className="tiny"
-                    style={{ marginLeft: "auto" }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (
-                        window.confirm(
-                          `Remove ${s.label} from this node's registry?`,
-                        )
-                      ) {
-                        removeUser.mutate(s.source_id as string);
-                      }
-                    }}
-                    title="Remove this entry from the local registry"
-                  >
-                    ×
-                  </button>
-                ) : (
-                  s.source === "user" &&
-                  s.peer_node_id && (
-                    <span
-                      className="muted"
-                      style={{ marginLeft: "auto" }}
-                      title={
-                        `Registered on peer ${s.peer_node_id.slice(0, 8)}. ` +
-                        "Open that node's webui to delete — v1 doesn't " +
-                        "proxy DELETE through the master."
-                      }
-                    >
-                      managed by peer
-                    </span>
-                  )
-                )}
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-    </section>
-  );
-}
-
 interface DatasetServersTabProps {
   /** Click-through for table rows / split links. Builds a SelectedLeaf
    *  in the right shape for the Explore tab to seed its own state. */
@@ -728,42 +639,17 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
     queryKey: ["dataset-servers-user"],
     queryFn: api.listUserDatasetServers,
   });
-  // Cluster-mode gate (TanStack dedups by queryKey — see top of file).
-  const clusterSelfQ = useQuery({
-    queryKey: ["cluster-self"],
-    queryFn: api.getClusterSelf,
-    refetchInterval: 30000,
-  });
-  const clusterActive = !!clusterSelfQ.data;
-  // Cluster-wide deduped server list (token-stripped) — used for the
-  // unified "Cluster dataset servers" section that replaces the per-
-  // node Local / User sections in cluster mode.
-  const clusterServersQ = useQuery({
-    queryKey: ["cluster", "dataset_servers"],
-    queryFn: api.getClusterDatasetServers,
-    refetchInterval: 5000,
-    enabled: clusterActive,
-  });
 
   const [selected, setSelected] = useState<SelectedServer | null>(null);
   const [addOpen, setAddOpen] = useState(false);
 
   const localServers = localsQ.data ?? [];
   const userServers = usersQ.data ?? [];
-  const clusterServers = clusterServersQ.data ?? [];
-  // The local node's cluster node_id, used to decide which cluster
-  // entries we can delete directly. Entries with a matching
-  // ``peer_node_id`` were registered here — DELETE goes to the
-  // local registry. Entries owned by other peers get a tooltip
-  // explaining where to manage them; v1 doesn't proxy the delete
-  // through the master.
-  const selfNodeId = clusterSelfQ.data?.node_id ?? null;
 
-  // When the selected entry disappears (e.g. a local server exits,
-  // the user deletes their entry, or a cluster server stops being
-  // reported by the master), clear the selection so the action
-  // buttons don't fire against a stale URL. useEffect so the setState
-  // happens after commit rather than during render.
+  // When the selected entry disappears (e.g. a spawned server exits,
+  // or the user deletes their entry), clear the selection so the
+  // action buttons don't fire against a stale URL. useEffect so the
+  // setState happens after commit rather than during render.
   useEffect(() => {
     if (!selected) return;
     if (selected.key.kind === "local") {
@@ -782,47 +668,14 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
           alive: found.alive,
         });
       }
-    } else if (selected.key.kind === "user") {
+    } else {
       const found = userServers.find(
         (s) => selected.key.kind === "user" && s.id === selected.key.id,
       );
       if (!found) setSelected(null);
-    } else {
-      // cluster — the master may drop the entry on a peer going away
-      // or rename it (re-collect). Drop selection in that case.
-      const found = clusterServers.find(
-        (s) =>
-          selected.key.kind === "cluster" &&
-          s.server_id === selected.key.server_id,
-      );
-      if (!found) setSelected(null);
-      else if (
-        found.base_url !== selected.base_url ||
-        found.healthy !== (selected.alive ?? false)
-      ) {
-        setSelected({
-          key: { kind: "cluster", server_id: found.server_id },
-          base_url: found.base_url,
-          label: found.label,
-          has_auth_token: true, // cluster proxy injects bearer server-side
-          alive: found.healthy,
-        });
-      }
     }
-  }, [selected, localServers, userServers, clusterServers]);
+  }, [selected, localServers, userServers]);
 
-  const onPickCluster = (s: ClusterDatasetServer) => {
-    setSelected({
-      key: { kind: "cluster", server_id: s.server_id },
-      base_url: s.base_url,
-      label: s.label,
-      // Cluster proxy resolves the bearer server-side from the master's
-      // inventory — the browser never sees the token, so as far as the
-      // UI is concerned the auth indicator is always implicit.
-      has_auth_token: true,
-      alive: s.healthy,
-    });
-  };
   const onPickLocal = (s: DatasetServerLocal) => {
     setSelected({
       key: { kind: "local", queue_id: s.queue_id },
@@ -867,199 +720,135 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
 
   return (
     <div className="inference-model-panel">
-      {clusterActive ? (
-        // Cluster mode: split the master-aggregated list into
-        // Spawned (JobRecord-owned) + User-added sub-sections, same
-        // shape as standalone but sourced cluster-wide. Loopback
-        // entries are shown with a "node-local" badge — they're
-        // legitimate for non-cluster training, just excluded from
-        // auto-routing because other peers can't reach them.
-        <>
-          <ClusterServerSection
-            title="Spawned dataset servers"
-            servers={clusterServers.filter((s) => s.source === "local")}
-            emptyHint={
-              "No spawned dataset_servers in the cluster yet. " +
-              "Start one from Tools → Start Dataset Server…"
-            }
-            selected={selected}
-            selfNodeId={selfNodeId}
-            onPick={onPickCluster}
-            onDeleted={() => {
-              qc.invalidateQueries({ queryKey: ["dataset-servers-user"] });
-              qc.invalidateQueries({
-                queryKey: ["cluster", "dataset_servers"],
+      <section>
+        <h4 className="dyn-heading">
+          Spawned dataset servers
+          <span className="muted"> ({localServers.length})</span>
+        </h4>
+        {localServers.length === 0 && (
+          <div className="muted pane-state-small">
+            No dataset_server jobs — start one from Tools → Start Dataset Server…
+          </div>
+        )}
+        <ul className="inference-server-list">
+          {localServers.map((s) => {
+            const sel =
+              selected !== null &&
+              keyMatches(selected.key, {
+                kind: "local",
+                queue_id: s.queue_id,
               });
-            }}
-          />
-          <ClusterServerSection
-            title="User-added servers"
-            servers={clusterServers.filter((s) => s.source === "user")}
-            emptyHint={
-              "No user-added servers in the cluster yet. " +
-              "Use “+ Add server” — entries register on this node " +
-              "and the cluster master picks them up on the next tick."
-            }
-            headerAction={
-              <button
-                style={{ marginLeft: 12 }}
-                onClick={() => setAddOpen(true)}
-                title="Register a remote dataset_server URL with this node"
+            return (
+              <li
+                key={s.queue_id}
+                className={
+                  "inference-server-row" + (sel ? " selected" : "")
+                }
+                onClick={() => onPickLocal(s)}
               >
-                + Add server
-              </button>
-            }
-            selected={selected}
-            selfNodeId={selfNodeId}
-            onPick={onPickCluster}
-            onDeleted={() => {
-              qc.invalidateQueries({ queryKey: ["dataset-servers-user"] });
-              qc.invalidateQueries({
-                queryKey: ["cluster", "dataset_servers"],
-              });
-            }}
-          />
-        </>
-      ) : (
-        // Standalone mode: per-node Local + User sections, unchanged.
-        <>
-          <section>
-            <h4 className="dyn-heading">
-              Local dataset servers
-              <span className="muted"> ({localServers.length})</span>
-            </h4>
-            {localServers.length === 0 && (
-              <div className="muted pane-state-small">
-                No dataset_server jobs — start one from Tools → Start Dataset Server…
-              </div>
-            )}
-            <ul className="inference-server-list">
-              {localServers.map((s) => {
-                const sel =
-                  selected !== null &&
-                  keyMatches(selected.key, {
-                    kind: "local",
-                    queue_id: s.queue_id,
-                  });
-                return (
-                  <li
-                    key={s.queue_id}
+                <div className="inference-server-row-line">
+                  <span
                     className={
-                      "inference-server-row" + (sel ? " selected" : "")
+                      "queue-status " +
+                      (s.alive ? "status-running" : "status-done")
                     }
-                    onClick={() => onPickLocal(s)}
                   >
-                    <div className="inference-server-row-line">
-                      <span
-                        className={
-                          "queue-status " +
-                          (s.alive ? "status-running" : "status-done")
-                        }
-                      >
-                        {s.alive ? "ALIVE" : "DEAD"}
-                      </span>
-                      <span className="inference-server-url">
-                        {s.base_url}
-                      </span>
-                      <span className="muted">· {s.label}</span>
-                      {s.has_auth_token && (
-                        <span className="muted">· auth ✓</span>
-                      )}
-                      {s.alive && (
-                        <button
-                          className="secondary"
-                          style={{ marginLeft: "auto" }}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void copyLocalBundle(s.queue_id);
-                          }}
-                          title={
-                            "Copy a forgather-dataset:// URI containing the " +
-                            "URL and token. Paste it into '+ Add server' on " +
-                            "another node."
-                          }
-                        >
-                          Copy bundle
-                        </button>
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
+                    {s.alive ? "ALIVE" : "DEAD"}
+                  </span>
+                  <span className="inference-server-url">{s.base_url}</span>
+                  <span className="muted">· {s.label}</span>
+                  {s.has_auth_token && (
+                    <span className="muted">· auth ✓</span>
+                  )}
+                  {s.alive && (
+                    <button
+                      className="secondary"
+                      style={{ marginLeft: "auto" }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void copyLocalBundle(s.queue_id);
+                      }}
+                      title={
+                        "Copy a forgather-dataset:// URI containing the " +
+                        "URL and token. Paste it into '+ Add server' on " +
+                        "another node."
+                      }
+                    >
+                      Copy bundle
+                    </button>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </section>
 
-          <section>
-            <h4 className="dyn-heading">
-              User-added servers
-              <span className="muted"> ({userServers.length})</span>
-              <button
-                style={{ marginLeft: 12 }}
-                onClick={() => setAddOpen(true)}
-                title="Register a remote dataset_server URL"
+      <section>
+        <h4 className="dyn-heading">
+          User-added servers
+          <span className="muted"> ({userServers.length})</span>
+          <button
+            style={{ marginLeft: 12 }}
+            onClick={() => setAddOpen(true)}
+            title="Register a remote dataset_server URL"
+          >
+            + Add server
+          </button>
+        </h4>
+        {userServers.length === 0 && (
+          <div className="muted pane-state-small">
+            No user-added servers. Use “+ Add server” to register a remote URL.
+          </div>
+        )}
+        <ul className="inference-server-list">
+          {userServers.map((s) => {
+            const sel =
+              selected !== null &&
+              keyMatches(selected.key, { kind: "user", id: s.id });
+            return (
+              <li
+                key={s.id}
+                className={
+                  "inference-server-row" + (sel ? " selected" : "")
+                }
+                onClick={() => onPickUser(s)}
               >
-                + Add server
-              </button>
-            </h4>
-            {userServers.length === 0 && (
-              <div className="muted pane-state-small">
-                No user-added servers. Use “+ Add server” to register a remote URL.
-              </div>
-            )}
-            <ul className="inference-server-list">
-              {userServers.map((s) => {
-                const sel =
-                  selected !== null &&
-                  keyMatches(selected.key, { kind: "user", id: s.id });
-                return (
-                  <li
-                    key={s.id}
-                    className={
-                      "inference-server-row" + (sel ? " selected" : "")
-                    }
-                    onClick={() => onPickUser(s)}
+                <div className="inference-server-row-line">
+                  <span className="queue-status status-unknown">USER</span>
+                  <span className="inference-server-url">{s.base_url}</span>
+                  <span className="muted">· {s.label}</span>
+                  {s.has_auth_token && (
+                    <span className="muted">· auth ✓</span>
+                  )}
+                  <button
+                    className="tiny"
+                    style={{ marginLeft: "auto" }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (
+                        window.confirm(
+                          `Remove ${s.label} from the registry?`,
+                        )
+                      ) {
+                        removeUser.mutate(s.id);
+                      }
+                    }}
+                    title="Remove this entry"
                   >
-                    <div className="inference-server-row-line">
-                      <span className="queue-status status-unknown">USER</span>
-                      <span className="inference-server-url">
-                        {s.base_url}
-                      </span>
-                      <span className="muted">· {s.label}</span>
-                      {s.has_auth_token && (
-                        <span className="muted">· auth ✓</span>
-                      )}
-                      <button
-                        className="tiny"
-                        style={{ marginLeft: "auto" }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (
-                            window.confirm(
-                              `Remove ${s.label} from the registry?`,
-                            )
-                          ) {
-                            removeUser.mutate(s.id);
-                          }
-                        }}
-                        title="Remove this entry"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-        </>
-      )}
+                    ×
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </section>
 
       {selected && (
         // Key on base_url so switching to a different server (or one
         // whose host/port changed) remounts the component — the old
-        // metadata + ↻-refresh button would otherwise point at the
-        // wrong server. Also nukes any in-flight fetch's resolved
-        // setState (the unmounted instance is GC'd).
+        // queries would otherwise be associated with the wrong server.
         <ServerActions
           key={selected.base_url}
           selected={selected}
@@ -1097,165 +886,131 @@ interface ServerActionsProps {
   onOpenInExplore: (leaf: SelectedLeaf) => void;
 }
 
-type ResultKind = "status" | "datasets" | "cache" | "local";
-
-/** Tagged union so per-kind renderers can destructure typed data. */
-type FetchResult =
-  | { kind: "status"; data: DatasetServerHealth; fetched_at: number }
-  | { kind: "datasets"; data: DatasetHandlesResponse; fetched_at: number }
-  | { kind: "cache"; data: HFCacheResponse; fetched_at: number }
-  | { kind: "local"; data: LocalListResponse; fetched_at: number }
-  | { kind: ResultKind; data: null; error: string; fetched_at: number };
-
+/** Stacked detail view for a selected dataset_server. Renders three
+ *  panels concurrently — Status, HF Cache, Local — each driven by its
+ *  own query so a slow upstream on one endpoint doesn't block the
+ *  others. The single "↻ Refresh" button re-fetches all three at
+ *  once; the auth-token lookup (JobRecord for spawned servers,
+ *  registry for user-added) happens server-side in the proxy. */
 function ServerActions({ selected, onOpenInExplore }: ServerActionsProps) {
-  const [result, setResult] = useState<FetchResult | null>(null);
-  const [pending, setPending] = useState<ResultKind | null>(null);
+  const qc = useQueryClient();
+  const base = selected.base_url;
+  // Token argument is empty: the proxy resolves auth from JobRecord
+  // (spawned) or the user registry (added). The override-token
+  // input was removed when tokens started persisting across restarts.
+  const tok = "";
 
-  // Auth is resolved by the proxy: JobRecord auto-lookup for local
-  // servers, registry lookup for user-added entries. The "override
-  // token" input is gone now that tokens persist across restarts —
-  // delete + re-add the entry to change a stored token.
-  const tokenToUse = "";
+  const statusQ = useQuery({
+    queryKey: ["dataset-server", base, "status"],
+    queryFn: () => api.datasetServerHealth(base, tok),
+  });
+  const cacheQ = useQuery({
+    queryKey: ["dataset-server", base, "cache"],
+    queryFn: () => api.datasetServerCache(base, tok),
+  });
+  const localQ = useQuery({
+    queryKey: ["dataset-server", base, "local"],
+    queryFn: () => api.datasetServerLocal(base, tok),
+  });
 
-  const runFetch = async (kind: ResultKind) => {
-    setPending(kind);
-    setResult(null);
-    try {
-      const base = selected.base_url;
-      // Cluster selection: route through the master proxy
-      // (/api/cluster/dataset_server_proxy/{server_id}/{op}). That
-      // path looks up the bearer in the master's inventory, so the
-      // browser never needs the upstream token. For local + user
-      // selections, keep the existing per-node proxy.
-      const isCluster = selected.key.kind === "cluster";
-      const clusterServerId =
-        selected.key.kind === "cluster" ? selected.key.server_id : null;
-      let r: FetchResult;
-      if (kind === "status") {
-        const data = isCluster && clusterServerId
-          ? await api.clusterDatasetServerHealth(clusterServerId)
-          : await api.datasetServerHealth(base, tokenToUse);
-        r = { kind, data, fetched_at: Date.now() };
-      } else if (kind === "datasets") {
-        const data = isCluster && clusterServerId
-          ? await api.clusterDatasetServerDatasets(clusterServerId)
-          : await api.datasetServerDatasets(base, tokenToUse);
-        r = { kind, data, fetched_at: Date.now() };
-      } else if (kind === "cache") {
-        const data = isCluster && clusterServerId
-          ? await api.clusterDatasetServerCache(clusterServerId)
-          : await api.datasetServerCache(base, tokenToUse);
-        r = { kind, data, fetched_at: Date.now() };
-      } else {
-        const data = isCluster && clusterServerId
-          ? await api.clusterDatasetServerLocal(clusterServerId)
-          : await api.datasetServerLocal(base, tokenToUse);
-        r = { kind, data, fetched_at: Date.now() };
-      }
-      setResult(r);
-    } catch (e) {
-      setResult({
-        kind,
-        data: null,
-        error: e instanceof Error ? e.message : String(e),
-        fetched_at: Date.now(),
-      });
-    } finally {
-      setPending(null);
-    }
+  const refreshing =
+    statusQ.isFetching || cacheQ.isFetching || localQ.isFetching;
+  const refresh = () => {
+    void qc.invalidateQueries({ queryKey: ["dataset-server", base] });
   };
 
   return (
     <section>
-      <h4 className="dyn-heading">
-        Selected:{" "}
-        <code style={{ marginLeft: 6 }}>{selected.base_url}</code>
+      <h4 className="dyn-heading" style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <span>
+          Selected:{" "}
+          <code style={{ marginLeft: 6 }}>{selected.base_url}</code>
+        </span>
+        <button
+          onClick={refresh}
+          disabled={refreshing}
+          title="Re-fetch Status, HF Cache, and Local for the selected server"
+        >
+          {refreshing ? "Refreshing…" : "↻ Refresh"}
+        </button>
       </h4>
 
-      <div className="submit-row">
-        {(
-          [
-            { kind: "status", label: "Status", title: "GET /v1/health" },
-            {
-              kind: "datasets",
-              label: "Handles",
-              title: "GET /v1/datasets — currently loaded handles",
-            },
-            {
-              kind: "cache",
-              label: "HF Cache",
-              title: "GET /v1/cache/hf — HF cache contents on the server host",
-            },
-            {
-              kind: "local",
-              label: "Local",
-              title: "GET /v1/local — registered local/* dataset mappings",
-            },
-          ] as { kind: ResultKind; label: string; title: string }[]
-        ).map(({ kind, label, title }) => {
-          // Visual states:
-          // - pending === kind            → "Refreshing…"
-          // - result.kind === kind        → ↻ prefix (click again to refresh)
-          // - otherwise                    → bare label
-          const active = result?.kind === kind;
-          const refreshing = pending === kind;
-          const text = refreshing
-            ? `${label}…`
-            : active
-              ? `↻ ${label}`
-              : label;
-          return (
-            <button
-              key={kind}
-              className={active ? "active" : ""}
-              onClick={() => runFetch(kind)}
-              disabled={pending !== null}
-              title={
-                title +
-                (active ? "  (click to refresh)" : "")
-              }
-            >
-              {text}
-            </button>
-          );
-        })}
-      </div>
-
-      {result && (
-        <div style={{ marginTop: 8 }}>
-          <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>
-            {result.kind} · fetched{" "}
-            {new Date(result.fetched_at).toLocaleTimeString()}
-            {"error" in result ? " · error" : ""}
-          </div>
-          {"error" in result ? (
-            <pre className="pane-state err" style={{ whiteSpace: "pre-wrap" }}>
-              {result.error}
-            </pre>
-          ) : result.kind === "status" ? (
-            <StatusCard data={result.data} />
-          ) : result.kind === "datasets" ? (
-            <HandlesTable
-              data={result.data}
-              server={selected}
-              onOpenInExplore={onOpenInExplore}
-            />
-          ) : result.kind === "cache" ? (
-            <HFCacheTable
-              data={result.data}
-              server={selected}
-              onOpenInExplore={onOpenInExplore}
-            />
-          ) : (
-            <LocalTable
-              data={result.data}
-              server={selected}
-              onOpenInExplore={onOpenInExplore}
-            />
-          )}
-        </div>
-      )}
+      <PanelBlock title="Status" query={statusQ}>
+        {(data) => <StatusCard data={data} />}
+      </PanelBlock>
+      <PanelBlock title="HF Cache" query={cacheQ}>
+        {(data) => (
+          <HFCacheTable
+            data={data}
+            server={selected}
+            onOpenInExplore={onOpenInExplore}
+          />
+        )}
+      </PanelBlock>
+      <PanelBlock title="Local" query={localQ}>
+        {(data) => (
+          <LocalTable
+            data={data}
+            server={selected}
+            onOpenInExplore={onOpenInExplore}
+          />
+        )}
+      </PanelBlock>
     </section>
+  );
+}
+
+/** Heading + loading/error/success boilerplate shared by the three
+ *  per-server panels. ``children`` is the success-state renderer; we
+ *  hand it the unwrapped data once the query resolves. */
+function PanelBlock<T>({
+  title,
+  query,
+  children,
+}: {
+  title: string;
+  query: { data: T | undefined; isLoading: boolean; isFetching: boolean; error: unknown; dataUpdatedAt: number };
+  children: (data: T) => React.ReactNode;
+}) {
+  const errMsg =
+    query.error instanceof Error
+      ? query.error.message
+      : query.error
+        ? String(query.error)
+        : null;
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div
+        className="muted"
+        style={{
+          fontSize: 11,
+          marginBottom: 4,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+        }}
+      >
+        <strong style={{ color: "inherit" }}>{title}</strong>
+        {query.dataUpdatedAt > 0 && (
+          <span>
+            · fetched{" "}
+            {new Date(query.dataUpdatedAt).toLocaleTimeString()}
+          </span>
+        )}
+        {query.isFetching && <span>· refreshing…</span>}
+      </div>
+      {errMsg ? (
+        <pre className="pane-state err" style={{ whiteSpace: "pre-wrap" }}>
+          {errMsg}
+        </pre>
+      ) : query.data === undefined ? (
+        query.isLoading ? (
+          <div className="muted pane-state-small">Loading…</div>
+        ) : null
+      ) : (
+        children(query.data)
+      )}
+    </div>
   );
 }
 
@@ -1440,158 +1195,6 @@ function StatusCard({ data }: { data: DatasetServerHealth }) {
   );
 }
 
-/** Compact rendering of a load_args dict for the Handles table.
- *  ``path`` is the only required key; ``name`` and ``split`` follow
- *  when present. Other keys (data_files, revision) are appended
- *  generically. Keeps to one line so the table doesn't grow per-row
- *  heights. */
-function formatLoadArgs(args: Record<string, unknown>): string {
-  const ordered: string[] = [];
-  if (args.path) ordered.push(String(args.path));
-  if (args.name) ordered.push(`name=${String(args.name)}`);
-  if (args.split) ordered.push(`split=${String(args.split)}`);
-  for (const [k, v] of Object.entries(args)) {
-    if (k === "path" || k === "name" || k === "split") continue;
-    if (v == null) continue;
-    ordered.push(`${k}=${typeof v === "object" ? JSON.stringify(v) : String(v)}`);
-  }
-  return ordered.join(" · ");
-}
-
-type HandleSortKey = "handle" | "length" | "source" | "args";
-
-function HandlesTable({
-  data,
-  server,
-  onOpenInExplore,
-}: {
-  data: DatasetHandlesResponse;
-  server: SelectedServer;
-  onOpenInExplore: (leaf: SelectedLeaf) => void;
-}) {
-  const rows = data.handles ?? [];
-  const [sort, setSort] = useState<SortState<HandleSortKey>>({
-    by: "length",
-    dir: "desc",
-  });
-  const toggle = makeSortToggle(sort, setSort);
-
-  const sorted = useMemo(() => {
-    const cmp = (a: DatasetHandleRow, b: DatasetHandleRow): number => {
-      let r = 0;
-      switch (sort.by) {
-        case "handle":
-          r = a.handle.localeCompare(b.handle);
-          break;
-        case "length":
-          r = (a.length ?? 0) - (b.length ?? 0);
-          break;
-        case "source":
-          r = (a.source ?? "").localeCompare(b.source ?? "");
-          break;
-        case "args":
-          r = formatLoadArgs(a.load_args ?? {}).localeCompare(
-            formatLoadArgs(b.load_args ?? {}),
-          );
-          break;
-      }
-      return sort.dir === "asc" ? r : -r;
-    };
-    return [...rows].sort(cmp);
-  }, [rows, sort]);
-
-  if (rows.length === 0) {
-    return (
-      <div className="pane-state muted">
-        No datasets currently loaded on this server.
-        <div style={{ marginTop: 4 }}>
-          The handle cache fills as clients call POST /v1/load (typically
-          on first read of a training dataset).
-        </div>
-      </div>
-    );
-  }
-
-  const openLeaf = (row: DatasetHandleRow) => {
-    const args = row.load_args ?? {};
-    const path = String(args.path ?? "");
-    const name = args.name != null ? String(args.name) : undefined;
-    const split = args.split != null ? String(args.split) : undefined;
-    if (!path) return;
-    const bits = [path];
-    if (name) bits.push(name);
-    if (split) bits.push(split);
-    onOpenInExplore({
-      server_label: server.label,
-      server_base_url: server.base_url,
-      cluster_server_id:
-        server.key.kind === "cluster" ? server.key.server_id : undefined,
-      load: { path, name, split },
-      display: bits.join(" · "),
-      hint_rows: row.length,
-    });
-  };
-
-  return (
-    <div className="preview-table-wrap">
-      <table className="preview-table ds-handles-table">
-        <thead>
-          <tr>
-            <SortableHeader
-              col="handle"
-              label="Handle"
-              current={sort}
-              toggle={toggle}
-            />
-            <SortableHeader
-              col="length"
-              label="Length"
-              current={sort}
-              toggle={toggle}
-              defaultDir="desc"
-            />
-            <SortableHeader
-              col="source"
-              label="Source"
-              current={sort}
-              toggle={toggle}
-            />
-            <SortableHeader
-              col="args"
-              label="Load args"
-              current={sort}
-              toggle={toggle}
-            />
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((h) => (
-            <tr
-              key={h.handle}
-              onClick={() => openLeaf(h)}
-              title="Open in Explore"
-              style={{ cursor: "pointer" }}
-            >
-              <td>
-                <code title={h.handle}>{truncate(h.handle, 12)}</code>
-              </td>
-              <td className="row-index">{fmtCount(h.length)}</td>
-              <td>
-                <span className="muted">{h.source ?? "—"}</span>
-              </td>
-              <td title={JSON.stringify(h.load_args, null, 2)}>
-                <span className="preview-cell">
-                  {truncate(formatLoadArgs(h.load_args ?? {}), 120)}
-                </span>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 type HFCacheSortKey = "repo" | "config" | "version" | "splits" | "size";
 
 interface HFFlatRow {
@@ -1681,11 +1284,12 @@ function HFCacheTable({
   }, [rows, sort]);
 
   const openSplit = (row: HFFlatRow, splitName: string, splitRows: number | null) => {
+    // ``cluster_server_id`` is intentionally omitted — the Servers
+    // tab no longer routes through the cluster proxy. Cluster-wide
+    // selection lives on the Cluster view's Datasets tab.
     onOpenInExplore({
       server_label: server.label,
       server_base_url: server.base_url,
-      cluster_server_id:
-        server.key.kind === "cluster" ? server.key.server_id : undefined,
       load: { path: row.repo, name: row.config, split: splitName },
       display: `${row.repo} · ${row.config} · ${splitName}`,
       hint_rows: splitRows,
@@ -1959,11 +1563,11 @@ function LocalTable({
     splitName: string,
     splitRows: number | null,
   ) => {
+    // See HFCacheTable: cluster_server_id is gone with the cluster
+    // branch — Cluster-wide selection lives on the Cluster view.
     onOpenInExplore({
       server_label: server.label,
       server_base_url: server.base_url,
-      cluster_server_id:
-        server.key.kind === "cluster" ? server.key.server_id : undefined,
       load: { path: `local/${row.name}`, split: splitName },
       display: `local/${row.name}${row.config_name ? ` · ${row.config_name}` : ""} · ${splitName}`,
       hint_rows: splitRows,

@@ -100,8 +100,11 @@ username + matching UID/GID. The example cluster used `dinalt`
 ### Matching software versions
 
 Multi-node training is exquisitely sensitive to torch / NCCL version
-mismatches. The cluster's pre-flight probe surfaces these as
-"version mismatch" warnings in the Nodes view:
+mismatches. The cluster's pre-flight probe surfaces these in two
+places — the sidebar Nodes group flips the affected peer's dot to
+yellow with a tooltip naming the diverging version, and the Cluster
+view's Nodes tab shows the full per-key chip row with the cluster
+header carrying a `version mismatch` tag:
 
 - `forgather` — should match exactly.
 - `torch` — must match exactly. NCCL version is bundled with the
@@ -117,10 +120,13 @@ anyway"** checkbox in the Multi-node panel.
 ### Trusted LAN
 
 Inter-node API calls inside the cluster carve out auth for known
-peers — they're identified by source IP and don't need a bearer
-token. The threat model assumes the LAN is trusted (consistent with
-torch.distributed's own assumption). If your LAN is not trusted, do
-not enable cluster mode.
+peers — they're identified by a CA-signed TLS client certificate
+(mTLS, see `docs/operations/tls.md`) and don't need a bearer
+token. The threat model still assumes the cluster as a whole is
+trusted (consistent with torch.distributed's own assumption — any
+peer can submit jobs on any other peer, which is arbitrary code
+execution). If you don't trust the operators of every node in your
+cluster, don't enable cluster mode.
 
 ### Container PID 1
 
@@ -249,10 +255,10 @@ network stack and address advertisement Just Works.
 
 ### Optional: bandwidth probe
 
-The Nodes view has a collapsible **Bandwidth** panel above the node
-list with a **Refresh** button. It runs a single-stream HTTP
-throughput measurement from the local node to every reachable peer,
-sequentially. Results are cached for 1 hour.
+The Cluster view's **network** tab has a **Refresh** button that
+runs a single-stream HTTP throughput measurement from the local
+node to every reachable peer, sequentially. Results are cached for
+1 hour.
 
 This is a sanity check — if the measured bandwidth between two
 hosts is much lower than your link's nominal speed, you have a
@@ -472,8 +478,9 @@ need to compute it programmatically.
 
 ### Cluster Jobs panel
 
-Under **Nodes** in the sidebar, the **Cluster Jobs** panel lists
-running and recently-finished bundles. Each row shows:
+In the Cluster view's **jobs** tab (sidebar 🖧 **Cluster**), the
+Cluster Jobs card lists running and recently-finished bundles.
+Each row shows:
 
 - Truncated bundle id
 - Project / config

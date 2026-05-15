@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
@@ -13,30 +14,76 @@ import {
   Job,
   RUNNING_JOB_STATUSES,
 } from "../api";
-import { GpuPanel, GpuCard } from "./GpuPanel";
+import { DatasetsClusterTab } from "./DatasetsPanel";
+import type { SelectedLeaf } from "./DatasetsExploreTab";
+/** Format a byte count as a compact MiB/GiB string. Local to the
+ *  Nodes panel so the cluster view doesn't depend on GpuPanel's
+ *  internal helper. */
+function fmtMiB(bytes: number): string {
+  const mib = bytes / (1024 * 1024);
+  if (mib >= 1024) return `${(mib / 1024).toFixed(1)} GiB`;
+  return `${Math.round(mib)} MiB`;
+}
 
-/** Cluster-aware Nodes view (Phase 2).
+/** Cluster view — tabbed panel covering everything cluster-scoped:
  *
- *  Adds pre-flight surfaces on top of Phase 1's per-node GPU layout:
- *  package versions inline in each header (with diff-highlighting
- *  when a version drifts from the cluster majority), a collapsible
- *  network-interface list per node, and an on-demand pairwise
- *  bandwidth panel.
+ *   - jobs:     bundle records (multi-node training jobs)
+ *   - network:  pairwise bandwidth probe + (future) other network tools
+ *   - nodes:    per-peer rollup with versions, interfaces, and GPUs
+ *   - datasets: master-aggregated dataset_server / dataset inventory
+ *
+ *  Shown in the sidebar as "Cluster" (cluster-only). The sidebar
+ *  group labelled "Nodes" is a separate surface that lists peers
+ *  with SSO links.
  */
 
 // Versions we surface inline. Order = display order. ``python`` and
 // ``platform`` are intentionally not in the inline list — they go in
 // the tooltip — because they rarely drive a hang and would just
 // clutter the row.
-const HEADLINE_VERSION_KEYS: readonly string[] = [
+//
+// Exported so the sidebar Nodes group (ClusterSidebarPanel) can
+// classify each peer's health using the same divergence rules as
+// this view.
+export const HEADLINE_VERSION_KEYS: readonly string[] = [
   "forgather",
   "torch",
   "nccl",
   "transformers",
 ];
 
+/** Per-node health classification used by the sidebar dot.
+ *
+ *  - ``down``  — peer is not reachable over HTTP. Red.
+ *  - ``warn``  — peer answers, but a headline version is missing or
+ *                differs from the cluster majority. Yellow. This is
+ *                the state that flagged kitt's nvml/nccl going
+ *                AWOL after a driver glitch: the peer was still up
+ *                but its version row no longer matched.
+ *  - ``ok``    — reachable and no version mismatch (or the probe
+ *                hasn't returned yet, in which case we don't
+ *                preemptively warn). Green.
+ *
+ *  ``consensus`` is the dict from ``computeVersionConsensus``.
+ */
+export function nodeHealth(
+  m: ClusterMember,
+  consensus: Record<string, string>,
+): "ok" | "warn" | "down" {
+  if (!m.reachable) return "down";
+  const versions = m.probe?.versions;
+  if (!versions) return "ok";
+  for (const key of HEADLINE_VERSION_KEYS) {
+    const expected = consensus[key];
+    if (!expected) continue; // no node reports this key — nothing to compare
+    const value = versions[key];
+    const missing = !value || value === "unavailable";
+    if (missing || value !== expected) return "warn";
+  }
+  return "ok";
+}
 
-function computeVersionConsensus(
+export function computeVersionConsensus(
   members: ClusterMember[],
 ): Record<string, string> {
   // Most common reported value per version key. "Most common" rather
@@ -183,7 +230,7 @@ function InterfaceList({ interfaces }: { interfaces: ClusterProbeInterface[] }) 
   );
 }
 
-function BandwidthPanel({
+function NetworkTab({
   members,
   selfNodeId,
 }: {
@@ -215,21 +262,18 @@ function BandwidthPanel({
   // been probed.
   const peers = members.filter((m) => m.node_id !== selfNodeId);
   return (
-    <details className="bw-panel" open={false}>
-      <summary>
+    <div className="bw-panel cluster-tab-body">
+      <div className="cluster-tab-heading">
         <span>Bandwidth (this node → peers)</span>
         <button
           className="bw-refresh"
           disabled={refresh.isPending}
-          onClick={(e) => {
-            e.preventDefault();
-            refresh.mutate();
-          }}
+          onClick={() => refresh.mutate()}
           title="Run a fresh single-stream throughput measurement to each peer. Sequential — takes ~few seconds per peer."
         >
           {refresh.isPending ? "Measuring…" : "Refresh"}
         </button>
-      </summary>
+      </div>
       {peers.length === 0 ? (
         <div className="muted bw-empty">Only this node is in the cluster.</div>
       ) : (
@@ -280,11 +324,11 @@ function BandwidthPanel({
           </tbody>
         </table>
       )}
-    </details>
+    </div>
   );
 }
 
-function ClusterJobsPanel() {
+function ClusterJobsTab() {
   const qc = useQueryClient();
   const jobsQ = useQuery<ClusterJob[]>({
     queryKey: ["cluster", "jobs"],
@@ -308,8 +352,8 @@ function ClusterJobsPanel() {
   };
   const activeJobs = jobs.filter((j) => !isTerminal(j));
   return (
-    <details className="cluster-jobs-panel" open={activeJobs.length > 0}>
-      <summary>
+    <div className="cluster-jobs-panel cluster-tab-body">
+      <div className="cluster-tab-heading">
         <span>
           Cluster Jobs ({activeJobs.length} active
           {jobs.length > activeJobs.length
@@ -321,7 +365,7 @@ function ClusterJobsPanel() {
           Submit via the config's <strong>Run…</strong> action — the
           cluster panel appears at the top of the dialog.
         </span>
-      </summary>
+      </div>
       {jobs.length === 0 ? (
         <div className="muted cj-empty">
           {jobsQ.isError
@@ -401,11 +445,24 @@ function ClusterJobsPanel() {
           </tbody>
         </table>
       )}
-    </details>
+    </div>
   );
 }
 
-export function NodesPanel() {
+export function ClusterPanel({
+  onOpenInExplore,
+}: {
+  /** Wired by App.tsx so a click on a dataset row in the Datasets
+   *  tab here can navigate the outer view to Datasets and pre-select
+   *  the row in Explore. Optional — when omitted, the rows render
+   *  inert. */
+  onOpenInExplore?: (leaf: SelectedLeaf) => void;
+} = {}) {
+  // Tab state must live above the early-returns below — once the
+  // cluster comes online and the panel renders for the first time,
+  // we want the user's tab selection to persist across loading
+  // states (e.g. a transient membersQ.isLoading after a refetch).
+  const [tab, setTab] = useState<ClusterTab>("jobs");
   const membersQ = useQuery<ClusterMembersResponse>({
     queryKey: ["cluster", "members"],
     queryFn: api.getClusterMembers,
@@ -503,50 +560,124 @@ export function NodesPanel() {
   );
 
   return (
-    <div className="nodes-panel">
-      <header className="nodes-panel-header">
-        <h2>Cluster: {data.cluster_name}</h2>
-        <span className="nodes-panel-meta">
-          {data.members.length} node
-          {data.members.length === 1 ? "" : "s"} · master: {masterHostname}
-        </span>
-        {anyDivergence && (
-          <span
-            className="node-tag node-tag-warn"
-            title="At least one node reports a package version that does not match the cluster majority. Multi-node training is sensitive to this — see the per-node version chips below."
-          >
-            version mismatch
+    <div className="cluster-panel">
+      <header className="viewer-header cluster-panel-header">
+        <div className="cluster-panel-header-title">
+          <strong>Cluster</strong>
+          <span className="muted"> — {data.cluster_name}</span>
+          <span className="muted">
+            {" · "}
+            {data.members.length} node{data.members.length === 1 ? "" : "s"}
+            {" · master: "}
+            {masterHostname}
           </span>
-        )}
+          {anyDivergence && (
+            <span
+              className="node-tag node-tag-warn"
+              title="At least one node reports a package version that does not match the cluster majority. Multi-node training is sensitive to this — see the per-node version chips on the Nodes tab."
+            >
+              version mismatch
+            </span>
+          )}
+          <nav className="tabs">
+            <button
+              className={tab === "jobs" ? "active" : ""}
+              onClick={() => setTab("jobs")}
+            >
+              jobs
+            </button>
+            <button
+              className={tab === "network" ? "active" : ""}
+              onClick={() => setTab("network")}
+            >
+              network
+            </button>
+            <button
+              className={tab === "nodes" ? "active" : ""}
+              onClick={() => setTab("nodes")}
+            >
+              nodes
+            </button>
+            <button
+              className={tab === "datasets" ? "active" : ""}
+              onClick={() => setTab("datasets")}
+            >
+              datasets
+            </button>
+          </nav>
+        </div>
       </header>
-      <ClusterJobsPanel />
-      <BandwidthPanel
-        members={data.members}
-        selfNodeId={data.self_node_id}
-      />
-      <div className="nodes-panel-rows">
-        {sortedMembers.map((m) => {
-          const isSelf = m.node_id === data.self_node_id;
-          const isMaster = m.node_id === data.master_node_id;
-          const gpuEntry = gpusByNode.get(m.node_id);
-          return (
-            <NodeGroup
-              key={m.node_id}
-              member={m}
-              isSelf={isSelf}
-              isMaster={isMaster}
-              gpus={gpuEntry?.gpus ?? null}
-              gpusError={gpuEntry?.error ?? null}
-              jobByPid={jobByPid}
-              reservedGpus={reservedByNode.get(m.hostname) ?? null}
-              versionConsensus={versionConsensus}
-            />
-          );
-        })}
+
+      {/* All tab bodies stay mounted so each tab keeps its scroll
+          position / in-flight queries across a tab flip — same idiom
+          as InferencePanel / DatasetsPanel. */}
+      <div
+        style={{
+          display: tab === "jobs" ? "block" : "none",
+          flex: 1,
+          minHeight: 0,
+          overflow: "auto",
+        }}
+      >
+        <ClusterJobsTab />
+      </div>
+      <div
+        style={{
+          display: tab === "network" ? "block" : "none",
+          flex: 1,
+          minHeight: 0,
+          overflow: "auto",
+        }}
+      >
+        <NetworkTab
+          members={data.members}
+          selfNodeId={data.self_node_id}
+        />
+      </div>
+      <div
+        style={{
+          display: tab === "nodes" ? "block" : "none",
+          flex: 1,
+          minHeight: 0,
+          overflow: "auto",
+        }}
+      >
+        <div className="nodes-panel-rows">
+          {sortedMembers.map((m) => {
+            const isSelf = m.node_id === data.self_node_id;
+            const isMaster = m.node_id === data.master_node_id;
+            const gpuEntry = gpusByNode.get(m.node_id);
+            return (
+              <NodeGroup
+                key={m.node_id}
+                member={m}
+                isSelf={isSelf}
+                isMaster={isMaster}
+                gpus={gpuEntry?.gpus ?? null}
+                gpusError={gpuEntry?.error ?? null}
+                jobByPid={jobByPid}
+                reservedGpus={reservedByNode.get(m.hostname) ?? null}
+                versionConsensus={versionConsensus}
+              />
+            );
+          })}
+        </div>
+      </div>
+      <div
+        style={{
+          display: tab === "datasets" ? "block" : "none",
+          flex: 1,
+          minHeight: 0,
+          overflow: "auto",
+        }}
+      >
+        <DatasetsClusterTab onOpenInExplore={onOpenInExplore} />
       </div>
     </div>
   );
 }
+
+type ClusterTab = "jobs" | "network" | "nodes" | "datasets";
 
 function NodeGroup({
   member,
@@ -631,36 +762,157 @@ function NodeGroup({
           <InterfaceList interfaces={member.probe.interfaces} />
         </details>
       )}
-      <div className="node-group-body">
-        {isSelf ? (
-          <GpuPanel />
-        ) : gpusError ? (
-          <div className="node-group-error">
-            GPUs unavailable: {gpusError}
-          </div>
-        ) : gpus === null ? (
-          <div className="muted">Loading GPUs…</div>
-        ) : gpus.length === 0 ? (
-          <div className="muted">No GPUs reported.</div>
-        ) : (
-          <div className="gpu-grid">
-            {gpus.map((g) => (
-              <GpuCard
-                key={g.index}
-                g={g}
-                jobByPid={jobByPid}
-                reserved={reservedGpus?.has(g.index) ?? false}
-                onToggleDisabled={() =>
-                  togglePolicy.mutate({
-                    gpu_index: g.index,
-                    disabled: !g.disabled,
-                  })
-                }
-              />
-            ))}
-          </div>
-        )}
-      </div>
+      <NodeGpuList
+        gpus={gpus}
+        gpusError={gpusError}
+        jobByPid={jobByPid}
+        reservedGpus={reservedGpus}
+        onToggleDisabled={(gpu_index, disabled) =>
+          togglePolicy.mutate({ gpu_index, disabled })
+        }
+      />
     </section>
+  );
+}
+
+/** Collapsible per-node GPU summary modelled on the Interfaces
+ *  control. Expanded by default; one row per GPU; the summary surface
+ *  carries the count + a one-line aggregate ("4 GPUs · 2 idle"). */
+function NodeGpuList({
+  gpus,
+  gpusError,
+  jobByPid,
+  reservedGpus,
+  onToggleDisabled,
+}: {
+  gpus: GpuInfo[] | null;
+  gpusError: string | null;
+  jobByPid: Map<number, Job>;
+  reservedGpus: Set<number> | null;
+  onToggleDisabled: (gpu_index: number, disabled: boolean) => void;
+}) {
+  if (gpusError) {
+    return (
+      <details className="node-group-gpus" open>
+        <summary>GPUs (—)</summary>
+        <div className="node-group-error">
+          GPUs unavailable: {gpusError}
+        </div>
+      </details>
+    );
+  }
+  if (gpus === null) {
+    return (
+      <details className="node-group-gpus" open>
+        <summary>GPUs (loading…)</summary>
+      </details>
+    );
+  }
+  const total = gpus.length;
+  const idleCount = gpus.filter(
+    (g) => !g.excluded && !g.disabled && !(reservedGpus?.has(g.index) ?? false),
+  ).length;
+  return (
+    <details className="node-group-gpus" open>
+      <summary>
+        GPUs ({total}){total > 0 ? ` · ${idleCount} idle` : ""}
+      </summary>
+      {total === 0 ? (
+        <div className="muted gpu-row-empty">No GPUs reported.</div>
+      ) : (
+        <table className="gpu-row-table">
+          <thead>
+            <tr>
+              <th>GPU</th>
+              <th>Name</th>
+              <th>Memory</th>
+              <th>Util</th>
+              <th>Temp</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {gpus.map((g) => {
+              const reserved = reservedGpus?.has(g.index) ?? false;
+              const idle = !g.excluded && !g.disabled && !reserved;
+              const statusLabel = g.excluded
+                ? "excluded"
+                : g.disabled
+                  ? "disabled"
+                  : reserved
+                    ? "busy"
+                    : idle
+                      ? "idle"
+                      : "active";
+              const procCount = g.processes.length;
+              const procTitle = procCount
+                ? g.processes
+                    .map((p) => {
+                      const job = jobByPid.get(p.pid);
+                      return (
+                        `pid ${p.pid}` +
+                        (job ? ` (${job.config ?? job.id})` : "") +
+                        ` · ${fmtMiB(p.used_mem_bytes)}`
+                      );
+                    })
+                    .join("\n")
+                : undefined;
+              const clickTitle = g.excluded
+                ? "Excluded via CUDA_VISIBLE_DEVICES — cannot toggle"
+                : g.disabled
+                  ? "Click to enable GPU (allow scheduling)"
+                  : "Click to disable GPU (block scheduling)";
+              return (
+                // ``gpu-list-row`` is the right class for this table
+                // row — avoid ``gpu-row`` which is used by GpuPanel
+                // for a flexbox layout and would clobber table-row
+                // display, breaking column alignment with the header.
+                <tr
+                  key={g.index}
+                  className={"gpu-list-row gpu-list-row-" + statusLabel}
+                  onClick={
+                    g.excluded
+                      ? undefined
+                      : () => onToggleDisabled(g.index, !g.disabled)
+                  }
+                  style={g.excluded ? undefined : { cursor: "pointer" }}
+                  title={clickTitle}
+                >
+                  <td className="gpu-row-idx">{g.index}</td>
+                  <td className="gpu-row-name">{g.name}</td>
+                  <td className="gpu-row-mem">
+                    {fmtMiB(g.used_mem_bytes)} / {fmtMiB(g.total_mem_bytes)}
+                  </td>
+                  <td className="gpu-row-util">
+                    {g.util_pct !== null ? `${g.util_pct}%` : "—"}
+                  </td>
+                  <td className="gpu-row-temp">
+                    {g.temp_c !== null ? `${g.temp_c}°C` : "—"}
+                  </td>
+                  <td className="gpu-row-status">
+                    <span className={"gpu-row-status-tag tag-" + statusLabel}>
+                      {statusLabel}
+                    </span>
+                    {procCount > 0 && (
+                      <span className="gpu-row-procs muted" title={procTitle}>
+                        · {procCount} proc{procCount === 1 ? "" : "s"}
+                      </span>
+                    )}
+                    {g.min_priority !== 0 && (
+                      <span
+                        className="gpu-row-priority muted"
+                        title={`Only jobs with priority ≥ ${g.min_priority} may use this GPU`}
+                      >
+                        · ≥{g.min_priority}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </details>
   );
 }

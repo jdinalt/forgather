@@ -1,5 +1,5 @@
 import { UseQueryResult, useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   ClusterDatasetServer,
@@ -16,11 +16,21 @@ import {
   LocalListResponse,
   api,
 } from "../api";
+import { persistGet, persistSet } from "../persist";
 
-const PAGE_SIZE_OPTIONS = [25, 100, 200] as const;
+const PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
 const DEFAULT_PAGE_SIZE = 25;
 const CELL_TRUNCATE = 200;
 const EXPANDED_CELL_TRUNCATE = 5000;
+
+// Tree pane width — used to be a fixed 384px stylesheet value;
+// surfaced here so the user can drag a divider and the choice
+// persists in localStorage. Default bumped ~15% (442px) because the
+// HF/local tree rows easily run wide enough to wrap at 384.
+const DEFAULT_TREE_WIDTH = 442;
+const MIN_TREE_WIDTH = 240;
+const MAX_TREE_WIDTH = 900;
+const TREE_WIDTH_STORAGE_KEY = "datasets-explore-tree-width";
 
 /** Same glyph the main sidebar toggle uses. Inlined so we don't have
  *  to factor the icon out of App.tsx just for this re-use. */
@@ -75,6 +85,34 @@ interface ServerOption {
   base_url: string;
   /** When set, this entry routes through the cluster proxy. */
   cluster_server_id?: string;
+}
+
+/** Compute the set of tree-node keys to add to the ``expanded`` set
+ *  so a preselect leaf becomes visible in the browse pane.
+ *
+ *  Tree key shape (mirroring CacheGroup / LocalGroup / RepoNode /
+ *  LocalEntryNode):
+ *
+ *    server:                      ``cluster:<sid>`` | ``local:<qid>`` | ``user:<id>``
+ *    HF cache group:              ``<server>:cache``
+ *    HF repo:                     ``<server>:cache:<path>``
+ *    Local group:                 ``<server>:local``
+ *    Local entry:                 ``<server>:local:<name>``
+ *
+ *  We currently only know how to derive keys for cluster servers —
+ *  per-node leaves coming from the Servers tab don't carry the
+ *  ``queue_id`` / ``id`` we'd need. That's fine; the Servers tab
+ *  flow has always relied on the right-pane load and not on tree
+ *  expansion.
+ */
+function deriveExpandKeys(leaf: SelectedLeaf): string[] {
+  if (!leaf.cluster_server_id) return [];
+  const serverKey = `cluster:${leaf.cluster_server_id}`;
+  const path = leaf.load.path;
+  if (path.startsWith("local/")) {
+    return [serverKey, `${serverKey}:local`, `${serverKey}:local:${path.slice(6)}`];
+  }
+  return [serverKey, `${serverKey}:cache`, `${serverKey}:cache:${path}`];
 }
 
 interface Props {
@@ -140,18 +178,221 @@ export function DatasetsExploreTab({
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<SelectedLeaf | null>(null);
 
-  // Cross-tab preselect: when the Servers tab fires a row click,
-  // DatasetsPanel sets ``preselect`` and switches the active tab here.
-  // Consume the value once, then tell the parent to clear it so a
-  // later tab switch doesn't re-seed an old selection.
+  // Cross-tab preselect: when the Servers tab or the Cluster view's
+  // Datasets tab fires a row click, the parent sets ``preselect`` and
+  // switches the active tab here.
+  //
+  // The cluster row only carries the dataset's ``path`` (and the
+  // server to route through) — not a fully-qualified path+name+split.
+  // Setting that directly as ``selected`` would trigger /v1/load on
+  // a partial leaf, which the HF backend rejects ("must pick a
+  // config"), wedging the right pane in "Loading dataset handle…".
+  // Instead, hold the preselect as ``pendingResolve``: fetch the
+  // chosen server's cache / local inventory, pick the first config +
+  // first split (or just the first split for local datasets), and
+  // *then* set ``selected`` to the fully-resolved leaf so the load
+  // succeeds and the right pane shows real rows.
+  //
+  // We also replace (not merge) the ``expanded`` set so previously-
+  // open branches collapse — otherwise the new path gets lost in the
+  // existing expansion noise.
+  const [pendingResolve, setPendingResolve] = useState<SelectedLeaf | null>(
+    null,
+  );
+  // When a pending resolve runs out of input data — the chosen server
+  // didn't actually have the dataset cached, or has no enumerable
+  // configs/splits — we drop the resolve without setting ``selected``.
+  // Without surfacing that, the right pane just shows "No selection."
+  // which looks like the click did nothing. This hint replaces that
+  // placeholder until the user picks a split themselves.
+  const [resolveHint, setResolveHint] = useState<string | null>(null);
   useEffect(() => {
     if (!preselect) return;
-    setSelected(preselect);
+    setSelected(null);
+    setResolveHint(null);
+    setPendingResolve(preselect);
+    const keys = deriveExpandKeys(preselect);
+    setExpanded(new Set(keys));
     onPreselectConsumed?.();
   }, [preselect, onPreselectConsumed]);
+
+  // Resolver queries — same query keys as CacheGroup / LocalGroup
+  // below so TanStack dedups: if the user already had this server's
+  // group open the data is in-cache and the resolve completes in one
+  // tick. ``enabled`` is gated on pendingResolve + the path shape so
+  // we don't fire spurious requests.
+  const resolvingLocal =
+    pendingResolve?.load.path.startsWith("local/") ?? false;
+  const resolveBase = pendingResolve
+    ? pendingResolve.cluster_server_id ?? pendingResolve.server_base_url
+    : null;
+  const resolveCacheQ = useQuery({
+    queryKey: ["ds-cache", resolveBase],
+    queryFn: () =>
+      pendingResolve!.cluster_server_id
+        ? api.clusterDatasetServerCache(pendingResolve!.cluster_server_id)
+        : api.datasetServerCache(pendingResolve!.server_base_url, ""),
+    enabled: !!pendingResolve && !resolvingLocal,
+  });
+  const resolveLocalQ = useQuery({
+    queryKey: ["ds-local", resolveBase],
+    queryFn: () =>
+      pendingResolve!.cluster_server_id
+        ? api.clusterDatasetServerLocal(pendingResolve!.cluster_server_id)
+        : api.datasetServerLocal(pendingResolve!.server_base_url, ""),
+    enabled: !!pendingResolve && resolvingLocal,
+  });
+  useEffect(() => {
+    if (!pendingResolve) return;
+    const path = pendingResolve.load.path;
+    if (path.startsWith("local/")) {
+      const data = resolveLocalQ.data as LocalListResponse | undefined;
+      if (!data) return;
+      const name = path.slice(6);
+      const entry = data.local?.find((e) => e.name === name);
+      if (!entry) {
+        setResolveHint(
+          `${path} isn't in this server's local registry. Expand a host below to pick a different one.`,
+        );
+        setPendingResolve(null);
+        return;
+      }
+      const split = entry.splits?.[0];
+      // Local without a known split: load with no split arg — the
+      // server picks its default. With a split: full leaf.
+      setSelected({
+        ...pendingResolve,
+        load: split ? { path, split: split.name } : { path },
+        display: split ? `${path} · ${split.name}` : path,
+        hint_rows: split?.num_examples ?? null,
+      });
+      setPendingResolve(null);
+      return;
+    }
+    // HF: resolve to first config + first split.
+    const data = resolveCacheQ.data as HFCacheResponse | undefined;
+    if (!data) return;
+    const repo = data.datasets?.find((r) => r.repo === path);
+    const cfg = repo?.configs?.[0];
+    const split = cfg?.splits?.[0];
+    if (cfg && split) {
+      setSelected({
+        ...pendingResolve,
+        load: { path, name: cfg.config, split: split.name },
+        display: `${path} · ${cfg.config} · ${split.name}`,
+        hint_rows: split.num_examples ?? null,
+      });
+      // Also expand the config row so the highlighted split sits
+      // under a visible parent.
+      if (pendingResolve.cluster_server_id) {
+        const cfgKey = `cluster:${pendingResolve.cluster_server_id}:cache:${path}:${cfg.config}`;
+        setExpanded((prev) => {
+          const next = new Set(prev);
+          next.add(cfgKey);
+          return next;
+        });
+      }
+    } else if (!repo) {
+      setResolveHint(
+        `${path} isn't cached on this server. Expand a host below to pick a different one.`,
+      );
+    } else {
+      // Repo present but no configs/splits enumerable — server may
+      // not have completed its first refresh yet.
+      setResolveHint(
+        `${path} is cached but doesn't expose any configs/splits yet. Try refreshing the server, or pick a split manually below.`,
+      );
+    }
+    setPendingResolve(null);
+  }, [pendingResolve, resolveCacheQ.data, resolveLocalQ.data]);
   // Tree pane collapse — gives the preview pane the full width when the
   // user has already picked a leaf and just wants to read rows.
   const [treeCollapsed, setTreeCollapsed] = useState<boolean>(false);
+  // Tree pane width is operator-adjustable via the divider; persists
+  // across reloads. Initial read clamps in case localStorage holds a
+  // stale value outside the current bounds.
+  const [treeWidth, setTreeWidth] = useState<number>(() => {
+    const raw = persistGet(TREE_WIDTH_STORAGE_KEY);
+    const n = raw != null ? Number(raw) : NaN;
+    if (!Number.isFinite(n)) return DEFAULT_TREE_WIDTH;
+    return Math.max(MIN_TREE_WIDTH, Math.min(MAX_TREE_WIDTH, n));
+  });
+  // Drag state lives in refs so the pointer-move callback doesn't
+  // re-bind on every render (and so it sees the latest grab anchor
+  // without depending on stale closures). Mirrors the TemplatesView
+  // resizer pattern.
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const onResizerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      (e.currentTarget as Element).setPointerCapture(e.pointerId);
+      dragRef.current = { startX: e.clientX, startWidth: treeWidth };
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    },
+    [treeWidth],
+  );
+  const onResizerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      const next = drag.startWidth + (e.clientX - drag.startX);
+      setTreeWidth(Math.max(MIN_TREE_WIDTH, Math.min(MAX_TREE_WIDTH, next)));
+    },
+    [],
+  );
+  const onResizerUp = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!dragRef.current) return;
+      dragRef.current = null;
+      try {
+        (e.currentTarget as Element).releasePointerCapture(e.pointerId);
+      } catch {
+        // Capture may already be released if the pointer was cancelled.
+      }
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      persistSet(TREE_WIDTH_STORAGE_KEY, String(treeWidth));
+    },
+    [treeWidth],
+  );
+  // Double-click resets to the default — quick escape hatch if the
+  // user dragged the pane somewhere awkward.
+  const onResizerDoubleClick = useCallback(() => {
+    setTreeWidth(DEFAULT_TREE_WIDTH);
+    persistSet(TREE_WIDTH_STORAGE_KEY, String(DEFAULT_TREE_WIDTH));
+  }, []);
+  // Keyboard resizing: focusable separator + Arrow/Home/End keys.
+  // Step is 16px for arrows, 64px with shift — same idiom as the
+  // <input type="range"> spec. Page-level Home/End jump to the
+  // limits.
+  const onResizerKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      const step = e.shiftKey ? 64 : 16;
+      let next: number | null = null;
+      switch (e.key) {
+        case "ArrowLeft":
+          next = treeWidth - step;
+          break;
+        case "ArrowRight":
+          next = treeWidth + step;
+          break;
+        case "Home":
+          next = MIN_TREE_WIDTH;
+          break;
+        case "End":
+          next = MAX_TREE_WIDTH;
+          break;
+        default:
+          return;
+      }
+      e.preventDefault();
+      const clamped = Math.max(MIN_TREE_WIDTH, Math.min(MAX_TREE_WIDTH, next));
+      setTreeWidth(clamped);
+      persistSet(TREE_WIDTH_STORAGE_KEY, String(clamped));
+    },
+    [treeWidth],
+  );
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const [page, setPage] = useState<number>(0);
   // Reset page when the selection changes — different leaf, fresh state.
@@ -296,6 +537,11 @@ export function DatasetsExploreTab({
           className={
             "datasets-explore-tree" + (treeCollapsed ? " collapsed" : "")
           }
+          style={
+            treeCollapsed
+              ? undefined
+              : { flex: `0 0 ${treeWidth}px`, width: treeWidth }
+          }
         >
           {servers.length === 0 ? (
             <div className="muted pane-state-small">
@@ -317,6 +563,24 @@ export function DatasetsExploreTab({
             </ul>
           )}
         </aside>
+        {!treeCollapsed && (
+          <div
+            className="datasets-explore-resizer"
+            onPointerDown={onResizerDown}
+            onPointerMove={onResizerMove}
+            onPointerUp={onResizerUp}
+            onPointerCancel={onResizerUp}
+            onDoubleClick={onResizerDoubleClick}
+            onKeyDown={onResizerKeyDown}
+            title="Drag to resize the browse pane · double-click to reset · arrows to nudge"
+            role="separator"
+            aria-orientation="vertical"
+            aria-valuenow={treeWidth}
+            aria-valuemin={MIN_TREE_WIDTH}
+            aria-valuemax={MAX_TREE_WIDTH}
+            tabIndex={0}
+          />
+        )}
         <main className="datasets-explore-preview">
           {selected ? (
             <PreviewPane
@@ -329,6 +593,8 @@ export function DatasetsExploreTab({
               pageSize={pageSize}
               totalPages={totalPages}
             />
+          ) : resolveHint ? (
+            <div className="pane-state warn">{resolveHint}</div>
           ) : (
             <div className="pane-state muted">No selection.</div>
           )}
@@ -989,6 +1255,21 @@ function Pager({ page, totalPages, setPage }: PagerProps) {
     return out;
   }, [page, totalPages]);
 
+  // Goto field tracks user input as a string so partial typing
+  // ("12") doesn't fight a numeric-state-driven re-render. The
+  // submit handler parses, clamps to [1..totalPages], and converts
+  // back to a 0-indexed page before calling setPage.
+  const [gotoText, setGotoText] = useState("");
+  const submitGoto = () => {
+    const raw = gotoText.trim();
+    if (!raw) return;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return;
+    const clamped = Math.max(1, Math.min(totalPages, Math.floor(n)));
+    setPage(clamped - 1);
+    setGotoText("");
+  };
+
   return (
     <div className="pager">
       <button
@@ -1020,6 +1301,34 @@ function Pager({ page, totalPages, setPage }: PagerProps) {
       >
         Next ›
       </button>
+      {totalPages > 1 && (
+        <form
+          className="pager-goto"
+          onSubmit={(e) => {
+            e.preventDefault();
+            submitGoto();
+          }}
+        >
+          <label className="muted">Go to</label>
+          <input
+            type="number"
+            min={1}
+            max={totalPages}
+            value={gotoText}
+            placeholder={String(page + 1)}
+            onChange={(e) => setGotoText(e.target.value)}
+            title={`Jump to a page between 1 and ${totalPages}`}
+          />
+          <button
+            className="secondary"
+            type="submit"
+            disabled={gotoText.trim() === ""}
+          >
+            Go
+          </button>
+          <span className="muted pager-goto-total">/ {totalPages}</span>
+        </form>
+      )}
     </div>
   );
 }

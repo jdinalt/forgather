@@ -1690,6 +1690,13 @@ li.config.selected button.link:hover {
   padding: 24px;
   color: var(--fg-muted);
 }
+.pane-state.warn {
+  /* Used when a cross-view preselect couldn't resolve (e.g. the
+   * chosen server doesn't have the dataset cached). Slightly warmer
+   * than the muted default so the user notices it's a hint, not the
+   * usual "nothing here" placeholder. */
+  color: #dcb450;
+}
 
 .templates-view {
   flex: 1;
@@ -2237,7 +2244,8 @@ li.config.selected button.link:hover {
 .sidebar-tools > summary,
 .sidebar-search-roots-details > summary,
 .sidebar-projects-details > summary,
-.sidebar-files-details > summary {
+.sidebar-files-details > summary,
+.sidebar-cluster-details > summary {
   cursor: pointer;
   padding: 4px 8px;
   font-size: 11px;
@@ -2252,14 +2260,16 @@ li.config.selected button.link:hover {
 .sidebar-tools > summary::-webkit-details-marker,
 .sidebar-search-roots-details > summary::-webkit-details-marker,
 .sidebar-projects-details > summary::-webkit-details-marker,
-.sidebar-files-details > summary::-webkit-details-marker {
+.sidebar-files-details > summary::-webkit-details-marker,
+.sidebar-cluster-details > summary::-webkit-details-marker {
   display: none;
 }
 .sidebar-views-details > summary::before,
 .sidebar-tools > summary::before,
 .sidebar-search-roots-details > summary::before,
 .sidebar-projects-details > summary::before,
-.sidebar-files-details > summary::before {
+.sidebar-files-details > summary::before,
+.sidebar-cluster-details > summary::before {
   content: "▸ ";
   font-size: 10px;
 }
@@ -2267,15 +2277,98 @@ li.config.selected button.link:hover {
 .sidebar-tools[open] > summary::before,
 .sidebar-search-roots-details[open] > summary::before,
 .sidebar-projects-details[open] > summary::before,
-.sidebar-files-details[open] > summary::before {
+.sidebar-files-details[open] > summary::before,
+.sidebar-cluster-details[open] > summary::before {
   content: "▾ ";
 }
 .sidebar-views-details > summary:hover,
 .sidebar-tools > summary:hover,
 .sidebar-search-roots-details > summary:hover,
 .sidebar-projects-details > summary:hover,
-.sidebar-files-details > summary:hover {
+.sidebar-files-details > summary:hover,
+.sidebar-cluster-details > summary:hover {
   color: var(--fg);
+}
+
+/* ---------- Sidebar Cluster group ---------- */
+.sidebar-cluster-details {
+  flex: none;
+}
+.cluster-sidebar {
+  padding: 2px 6px 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.cluster-sidebar-empty {
+  padding: 4px 12px 8px 12px;
+  font-size: 12px;
+}
+.cluster-sidebar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--fg);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.cluster-sidebar-row:hover:not(:disabled) {
+  background: var(--bg-alt);
+}
+.cluster-sidebar-row:disabled {
+  cursor: default;
+  color: var(--fg-muted);
+}
+.cluster-sidebar-row.self {
+  font-style: italic;
+}
+.cluster-sidebar-row.unreachable .cluster-sidebar-host {
+  text-decoration: line-through;
+  color: var(--fg-muted);
+}
+.cluster-sidebar-row.errored {
+  border-color: var(--err, #c33);
+}
+.cluster-sidebar-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.cluster-sidebar-dot.ok {
+  background: var(--ok, #2c8a2c);
+}
+.cluster-sidebar-dot.warn {
+  /* Same warm yellow the Cluster view's version-mismatch chip uses,
+   * so the two surfaces share a vocabulary. Distinct enough from
+   * green/red to be picked out at a glance. */
+  background: #dcb450;
+}
+.cluster-sidebar-dot.down {
+  background: var(--err, #c33);
+}
+.cluster-sidebar-host {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cluster-sidebar-tag {
+  font-size: 10px;
+  color: var(--fg-muted);
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+.cluster-sidebar-pending {
+  font-size: 11px;
 }
 .sidebar-files {
   /* See .sidebar-projects: the parent scrolls, so let this grow. */
@@ -3549,31 +3642,45 @@ li.config.selected button.link:hover {
  * new layout when the standalone install joins a cluster.
  * ============================================================ */
 
-.nodes-panel {
-  padding: 12px;
-}
-
-.nodes-panel-header {
+.cluster-panel {
+  flex: 1;
   display: flex;
-  align-items: baseline;
+  flex-direction: column;
+  min-height: 0;
+}
+.cluster-panel .viewer-header {
+  border-bottom: 1px solid var(--border);
+  padding: 6px 12px;
+}
+.cluster-panel-header-title {
+  display: flex;
+  align-items: center;
   gap: 12px;
-  margin-bottom: 12px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
-.nodes-panel-header h2 {
-  margin: 0;
-  font-size: 16px;
+/* Shared layout for ClusterJobsTab / NetworkTab — the heading line
+ * (which used to be the <details> summary) sits flush at the top of
+ * the tab body with the same indent as everything else. */
+.cluster-tab-body {
+  padding: 8px 12px;
 }
-
-.nodes-panel-meta {
-  font-size: 12px;
-  color: var(--muted, #888);
+.cluster-tab-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
 }
 
 .nodes-panel-rows {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  padding: 8px 12px;
 }
 
 .node-row {
@@ -3840,6 +3947,95 @@ li.config.selected button.link:hover {
 .iface-empty {
   font-size: 11px;
   padding: 4px 0;
+}
+
+/* Per-node collapsible GPU list (Nodes panel). Visually matches
+ * .node-group-interfaces / .iface-table but stays open by default. */
+.node-group-gpus {
+  padding: 4px 10px;
+  border-top: 1px solid var(--border, #2a2a2a);
+}
+.node-group-gpus summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted, #888);
+  padding: 2px 0;
+}
+.node-group-gpus summary:hover {
+  color: inherit;
+}
+.gpu-row-empty {
+  font-size: 11px;
+  padding: 4px 0;
+}
+.gpu-row-table {
+  /* width: auto so the table hugs its content from the left edge
+   * instead of stretching to fill the panel — at 100% the auto
+   * layout algorithm scatters the columns across the panel width,
+   * leaving big gaps between short headers like "Util" and "Temp". */
+  width: auto;
+  border-collapse: collapse;
+  font-size: 11px;
+  margin-top: 4px;
+}
+.gpu-row-table th,
+.gpu-row-table td {
+  text-align: left;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+}
+.gpu-row-table th {
+  color: var(--muted, #888);
+  font-weight: 500;
+}
+.gpu-row-table tr.gpu-list-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.gpu-row-idx {
+  font-family: monospace;
+  width: 3em;
+}
+.gpu-row-name {
+  max-width: 18em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gpu-row-mem,
+.gpu-row-util,
+.gpu-row-temp {
+  font-family: monospace;
+  white-space: nowrap;
+}
+.gpu-row-status-tag {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  background: rgba(140, 140, 140, 0.15);
+}
+.gpu-row-status-tag.tag-idle {
+  background: rgba(80, 180, 100, 0.18);
+  color: #6dc97f;
+}
+.gpu-row-status-tag.tag-busy,
+.gpu-row-status-tag.tag-active {
+  background: rgba(220, 180, 80, 0.18);
+  color: #dcb450;
+}
+.gpu-row-status-tag.tag-disabled {
+  background: rgba(180, 90, 90, 0.18);
+  color: #d07a7a;
+}
+.gpu-row-status-tag.tag-excluded {
+  background: rgba(140, 140, 140, 0.25);
+  color: var(--muted, #888);
+}
+.gpu-list-row.gpu-list-row-disabled .gpu-row-name,
+.gpu-list-row.gpu-list-row-excluded .gpu-row-name {
+  opacity: 0.6;
 }
 
 .bw-panel {
@@ -4178,7 +4374,10 @@ li.config.selected button.link:hover {
   min-height: 0;
 }
 .datasets-explore-tree {
-  flex: 0 0 384px;
+  /* Default flex-basis kept as a fallback; the component overrides
+   * width inline once the user drags the divider (or initialises
+   * from localStorage). */
+  flex: 0 0 442px;
   min-width: 240px;
   max-width: 60%;
   overflow: auto;
@@ -4188,6 +4387,31 @@ li.config.selected button.link:hover {
 }
 .datasets-explore-tree.collapsed {
   display: none;
+}
+/* Drag handle between the tree and the preview pane. Mirrors the
+ * .trefs-split-handle styling so the two resizers feel the same. */
+.datasets-explore-resizer {
+  flex: 0 0 6px;
+  background: var(--border);
+  cursor: col-resize;
+  position: relative;
+  touch-action: none;
+  align-self: stretch;
+}
+.datasets-explore-resizer::before {
+  /* Widen the hit area without expanding the visual stripe — easier
+   * to grab without making the divider visually heavy. */
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+}
+.datasets-explore-resizer:hover,
+.datasets-explore-resizer:focus-visible {
+  background: var(--accent);
+  outline: none;
 }
 .preview-page-size {
   display: flex;
@@ -4378,6 +4602,38 @@ li.config.selected button.link:hover {
 .pager-ellipsis {
   padding: 0 4px;
   font-size: 12px;
+}
+.pager-goto {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 12px;
+  font-size: 12px;
+}
+.pager-goto label {
+  font-size: 11px;
+}
+.pager-goto input {
+  width: 5em;
+  padding: 3px 6px;
+  font-size: 12px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+/* Hide the native number-input spinners — they squeeze the visible
+ * digit area and add no value over typing or the Prev/Next chevrons. */
+.pager-goto input::-webkit-inner-spin-button,
+.pager-goto input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.pager-goto input[type="number"] {
+  -moz-appearance: textfield;
+}
+.pager-goto-total {
+  font-size: 11px;
 }
 
 /* Datasets → Servers — typed result renderers ----------------------- */

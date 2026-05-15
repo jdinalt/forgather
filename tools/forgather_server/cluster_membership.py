@@ -184,6 +184,15 @@ async def _pull_one_peer(
         peer_tls = entry.get("tls")
         peer_tls = bool(peer_tls) if isinstance(peer_tls, bool) else None
         try:
+            # Only the polled peer literally answered HTTP just now;
+            # the other entries in its member list are transitive
+            # reports. Tagging them ``peer_pull`` would credit them
+            # with liveness they haven't proven — including dead
+            # peers the polled peer hasn't yet forgotten — which
+            # would defeat the sweep when a third node restarts (it
+            # would resurrect every peer in its own stale table).
+            # ``update_member`` treats anything other than
+            # ``peer_pull`` as identity-only for existing entries.
             cluster.update_member(
                 node_id,
                 hostname=str(entry.get("hostname") or ""),
@@ -193,7 +202,7 @@ async def _pull_one_peer(
                 forgather_version=str(
                     entry.get("forgather_version") or "unknown"
                 ),
-                source="peer_pull",
+                source="peer_report",
                 probe=peer_probe,
                 tls=peer_tls,
             )

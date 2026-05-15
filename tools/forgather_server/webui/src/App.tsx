@@ -5,13 +5,15 @@ import { getAutoWatchTty } from "./autoWatch";
 import { ContextMenu } from "./components/ContextMenu";
 import { ProjectTree } from "./components/ProjectTree";
 import { ConfigViewer } from "./components/ConfigViewer";
+import { ClusterSidebarPanel } from "./components/ClusterSidebarPanel";
+import { ClusterPanel } from "./components/ClusterPanel";
 import { GpuPanel } from "./components/GpuPanel";
-import { NodesPanel } from "./components/NodesPanel";
 import { EvalModal } from "./components/EvalModal";
 import { InferenceModal } from "./components/InferenceModal";
 import { DatasetServerModal } from "./components/DatasetServerModal";
 import { InferencePanel } from "./components/InferencePanel";
 import { DatasetsPanel } from "./components/DatasetsPanel";
+import type { SelectedLeaf } from "./components/DatasetsExploreTab";
 import { JobsPanel } from "./components/JobsPanel";
 import { QueuePanel } from "./components/QueuePanel";
 import { LogDetailPanel } from "./components/LogDetailPanel";
@@ -33,26 +35,31 @@ type View =
   | "edit"
   | "docs"
   | "gpus"
+  | "cluster"
   | "jobs"
   | "queue"
   | "inference"
   | "datasets";
 export type ConfigTab = "info" | "pp" | "code" | "graph" | "templates" | "debug";
 
-// View metadata. The "gpus" entry is dual-labelled at render time:
-// "GPUs" in standalone mode, "Nodes" when cluster mode is active. The
-// underlying view ID stays "gpus" so existing keyboard shortcuts and
-// persisted state continue to work without a migration.
-const VIEWS: { id: View; label: string; icon: string }[] = [
-  { id: "projects", label: "Projects", icon: "📁" },
-  { id: "edit", label: "Edit", icon: "✎" },
-  { id: "docs", label: "Docs", icon: "📚" },
-  { id: "gpus", label: "GPUs", icon: "🖥" },
-  { id: "queue", label: "Queue", icon: "📋" },
-  { id: "jobs", label: "Jobs", icon: "⚙" },
-  { id: "inference", label: "Inference", icon: "🔮" },
-  { id: "datasets", label: "Datasets", icon: "🗂" },
-];
+// View metadata. "GPUs" is always the local node's GPU panel; "Nodes"
+// is a separate cluster-only entry that's filtered out in standalone
+// mode (see ``visibleViews`` below).
+const VIEWS: { id: View; label: string; icon: string; clusterOnly?: boolean }[] =
+  [
+    // Cluster is the cluster-wide context — when it's present, it's
+    // the first thing the eye should land on; in standalone mode it's
+    // filtered out entirely, so this slot is invisible.
+    { id: "cluster", label: "Cluster", icon: "🖧", clusterOnly: true },
+    { id: "projects", label: "Projects", icon: "📁" },
+    { id: "edit", label: "Edit", icon: "✎" },
+    { id: "docs", label: "Docs", icon: "📚" },
+    { id: "gpus", label: "GPUs", icon: "🖥" },
+    { id: "queue", label: "Queue", icon: "📋" },
+    { id: "jobs", label: "Jobs", icon: "⚙" },
+    { id: "inference", label: "Inference", icon: "🔮" },
+    { id: "datasets", label: "Datasets", icon: "🗂" },
+  ];
 
 // A window glyph with a left-biased vertical divider — represents the
 // app canvas with the sidebar partition. Shown as the sidebar toggle so
@@ -136,6 +143,9 @@ export default function App() {
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [viewsOpen, setViewsOpen] = useState(true);
+  // Cluster sidebar group — collapsed by default to keep the sidebar
+  // tidy on first paint; hidden entirely when standalone.
+  const [clusterOpen, setClusterOpen] = useState(false);
   const [startServerOpen, setStartServerOpen] = useState(false);
   const [datasetServerOpen, setDatasetServerOpen] = useState(false);
   const [tensorboardOpen, setTensorboardOpen] = useState(false);
@@ -157,6 +167,23 @@ export default function App() {
   const [docsBackStack, setDocsBackStack] = useState<DocsBackEntry[]>([]);
   const filesApi = useFilesState();
   const qc = useQueryClient();
+
+  // Cross-view dataset preselect: the Cluster view's Datasets tab and
+  // the Datasets view's Servers tab both surface row clicks that
+  // should land the user in Datasets → Explore with the chosen leaf
+  // expanded. Lifting the leaf to App.tsx lets both call sites share
+  // one navigation path (the alternative — letting DatasetsPanel own
+  // it — couldn't be triggered from outside the panel).
+  const [pendingExplore, setPendingExplore] = useState<SelectedLeaf | null>(
+    null,
+  );
+  const openInExplore = useCallback((leaf: SelectedLeaf) => {
+    setPendingExplore(leaf);
+    setView("datasets");
+  }, []);
+  // Stable identity so the Explore tab's preselect-consume effect
+  // doesn't see a new callback on every App render.
+  const clearPendingExplore = useCallback(() => setPendingExplore(null), []);
 
   // Wired into every submit modal's onSubmitted prop. Reads the sticky
   // localStorage preference at submit time so a stale toggle from an earlier
@@ -247,10 +274,9 @@ export default function App() {
   });
   // Cluster identity is fetched once at app load and again every 30 s.
   // The payload is null in standalone mode and a small object in
-  // cluster mode; either way the response is cheap. The label of the
-  // "gpus" sidebar entry flips to "Nodes" when this is non-null, and
-  // the corresponding view-panel renders NodesPanel instead of
-  // GpuPanel — see below.
+  // cluster mode; either way the response is cheap. The "Cluster"
+  // view entry and the "Nodes" sidebar group are both gated on a
+  // non-null response — see below.
   const clusterSelfQ = useQuery({
     queryKey: ["cluster-self"],
     queryFn: api.getClusterSelf,
@@ -258,9 +284,23 @@ export default function App() {
     staleTime: 30000,
   });
   const clusterActive = !!clusterSelfQ.data;
-  // Total node count for the Nodes sidebar pill — only fetched when
+  // Guard against being stranded on a cluster-only view when the
+  // server flips back to standalone. Only act on confirmed success
+  // with null data — a transient fetch error or in-flight refetch
+  // shouldn't bump the user off the Cluster view they're working
+  // on.
+  useEffect(() => {
+    if (
+      clusterSelfQ.isSuccess &&
+      clusterSelfQ.data === null &&
+      view === "cluster"
+    ) {
+      setView("gpus");
+    }
+  }, [clusterSelfQ.isSuccess, clusterSelfQ.data, view]);
+  // Total node count for the Cluster view pill — only fetched when
   // we're actually in cluster mode. Shares the queryKey used by
-  // NodesPanel so the cache is reused once that view is opened.
+  // ClusterPanel so the cache is reused once that view is opened.
   const clusterMembersQ = useQuery({
     queryKey: ["cluster", "members"],
     queryFn: api.getClusterMembers,
@@ -273,11 +313,13 @@ export default function App() {
   const viewCounts: Partial<Record<View, number>> = {
     queue: queuedCount,
     jobs: runningCount,
-    // "gpus" is the dual-labelled entry: shows GPUs in standalone
-    // mode and Nodes in cluster mode. The pill only makes sense as
-    // a node count, so we only set it when clusterActive.
-    gpus: clusterActive ? nodesCount : undefined,
+    // The peer count belongs on the "Nodes" sidebar group (see
+    // below) rather than on the "Cluster" view — the group is the
+    // list of nodes, so it's the natural place to surface the count.
   };
+  // Cluster-only views (currently just "cluster") are filtered out of
+  // the sidebar in standalone mode.
+  const visibleViews = VIEWS.filter((v) => clusterActive || !v.clusterOnly);
   // Tab title: include the node hostname when in cluster mode so
   // the user can tell which node's webui a given browser tab is
   // talking to. Two-tab workflows are common — one tab per node —
@@ -575,20 +617,16 @@ export default function App() {
             <SidebarIcon />
           </button>
           <nav className="sidebar-views icon-only">
-            {VIEWS.map((v) => {
-              const label =
-                v.id === "gpus" && clusterActive ? "Nodes" : v.label;
-              return (
-                <button
-                  key={v.id}
-                  className={view === v.id ? "active" : ""}
-                  onClick={() => setView(v.id)}
-                  title={label}
-                >
-                  <span className="view-icon">{v.icon}</span>
-                </button>
-              );
-            })}
+            {visibleViews.map((v) => (
+              <button
+                key={v.id}
+                className={view === v.id ? "active" : ""}
+                onClick={() => setView(v.id)}
+                title={v.label}
+              >
+                <span className="view-icon">{v.icon}</span>
+              </button>
+            ))}
           </nav>
         </div>
         <div className="sidebar-expanded-content">
@@ -629,6 +667,41 @@ export default function App() {
             </div>
           </header>
 
+          {/* Nodes group: peer hostnames + health status. Hidden in
+              standalone mode. Clicking a peer opens its webui in a
+              new tab using a cluster-bearer SSO URL. Placed above
+              Views because it's the highest-level navigation context
+              — which node am I looking at — and most useful when it's
+              the first thing the eye lands on. Distinct from the
+              "Cluster" view in the Views section: this surface is
+              about navigating between nodes; that one is about the
+              cluster's internal state. */}
+          {clusterActive && (
+            <details
+              className="sidebar-cluster-details"
+              open={clusterOpen}
+              onToggle={(e) => {
+                if (e.target !== e.currentTarget) return;
+                setClusterOpen(
+                  (e.currentTarget as HTMLDetailsElement).open,
+                );
+              }}
+            >
+              <summary>
+                Nodes
+                {nodesCount > 0 && (
+                  <span className="badge">{nodesCount}</span>
+                )}
+              </summary>
+              <ClusterSidebarPanel
+                selfNodeId={clusterSelfQ.data?.node_id ?? null}
+                masterNodeId={
+                  clusterMembersQ.data?.master_node_id ?? null
+                }
+              />
+            </details>
+          )}
+
           <details
             className="sidebar-views-details"
             open={viewsOpen}
@@ -639,9 +712,7 @@ export default function App() {
           >
             <summary>Views</summary>
             <nav className="sidebar-views">
-              {VIEWS.map((v) => {
-                const label =
-                  v.id === "gpus" && clusterActive ? "Nodes" : v.label;
+              {visibleViews.map((v) => {
                 const count = viewCounts[v.id];
                 return (
                   <button
@@ -650,7 +721,7 @@ export default function App() {
                     onClick={() => setView(v.id)}
                   >
                     <span className="view-icon">{v.icon}</span>
-                    <span className="view-label">{label}</span>
+                    <span className="view-label">{v.label}</span>
                     {count != null && count > 0 && (
                       <span className="badge">{count}</span>
                     )}
@@ -835,8 +906,16 @@ export default function App() {
           className="view-panel"
           style={view === "gpus" ? undefined : { display: "none" }}
         >
-          {clusterActive ? <NodesPanel /> : <GpuPanel />}
+          <GpuPanel />
         </div>
+        {clusterActive && (
+          <div
+            className="view-panel"
+            style={view === "cluster" ? undefined : { display: "none" }}
+          >
+            <ClusterPanel onOpenInExplore={openInExplore} />
+          </div>
+        )}
         <div
           className="view-panel"
           style={view === "jobs" ? undefined : { display: "none" }}
@@ -862,7 +941,11 @@ export default function App() {
           className="view-panel"
           style={view === "datasets" ? undefined : { display: "none" }}
         >
-          <DatasetsPanel />
+          <DatasetsPanel
+            pendingExplore={pendingExplore}
+            onPreselectConsumed={clearPendingExplore}
+            onOpenInExplore={openInExplore}
+          />
         </div>
       </div>
 

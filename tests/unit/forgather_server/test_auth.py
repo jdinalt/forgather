@@ -140,6 +140,101 @@ class TestSessions:
         assert not auth.session_valid("")
 
 
+class TestUrlTokens:
+    """Short-lived single-use URL tokens used by peer-SSO.
+
+    These are minted by ``/api/cluster/issue_url_token`` (gated to
+    mTLS-peers + already-authed sessions) and exchanged for a session
+    cookie via ``/api/auth/login``. The invariants below are what
+    keep the cluster bearer concession from leaking a *persistent*
+    token through a one-click URL.
+    """
+
+    def test_mint_returns_unique_token(self, isolated_home):
+        from forgather_server import auth
+
+        a = auth.mint_url_token()
+        b = auth.mint_url_token()
+        assert a != b
+        assert len(a) >= 32
+
+    def test_verify_single_use(self, isolated_home):
+        from forgather_server import auth
+
+        token = auth.mint_url_token()
+        assert auth.verify_url_token(token) is True
+        # A replayed URL must NOT re-authenticate — the first verify
+        # consumed the token.
+        assert auth.verify_url_token(token) is False
+
+    def test_verify_rejects_unknown(self, isolated_home):
+        from forgather_server import auth
+
+        assert auth.verify_url_token("not-a-real-token") is False
+        assert auth.verify_url_token(None) is False
+        assert auth.verify_url_token("") is False
+
+    def test_verify_rejects_expired(self, isolated_home, monkeypatch):
+        from forgather_server import auth
+
+        # Mint at t=1000, advance the clock past the TTL.
+        monkeypatch.setattr(auth, "time", _ClockMock(1000.0))
+        token = auth.mint_url_token()
+        monkeypatch.setattr(
+            auth, "time", _ClockMock(1000.0 + auth.URL_TOKEN_TTL_SECONDS + 1.0)
+        )
+        assert auth.verify_url_token(token) is False
+        # Expired token is also consumed (so a clock-skew replay can't
+        # land it just inside the window on a retry).
+        assert auth._url_tokens_count_for_tests() == 0
+
+    def test_url_token_does_not_authenticate_directly(self, isolated_home):
+        """URL tokens must not satisfy the bearer/?token path — they
+        only flow through /api/auth/login. Otherwise a leaked URL
+        could call API endpoints directly for the full 60 s window
+        instead of just creating one session."""
+        from forgather_server import auth
+
+        url_tok = auth.mint_url_token()
+        # Direct credential paths only honor the persistent bearer.
+        assert not auth.authenticate({}, {"token": url_tok}, {})
+        assert not auth.authenticate(
+            {"authorization": f"Bearer {url_tok}"}, {}, {}
+        )
+        # The token survives — only ``verify_url_token`` consumes.
+        assert auth._url_tokens_count_for_tests() == 1
+
+    def test_login_route_accepts_url_token(self, client):
+        """End-to-end: mint a URL token, POST it to /api/auth/login,
+        receive a session cookie."""
+        from forgather_server import auth
+
+        url_tok = auth.mint_url_token()
+        r = client.post("/api/auth/login", json={"token": url_tok})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is True
+        # Cookie was set — subsequent requests succeed.
+        r = client.get("/api/auth/status")
+        assert r.status_code == 200
+        assert r.json()["authenticated"] is True
+        # And the URL token was consumed — a replay attempt fails.
+        r2 = client.post("/api/auth/login", json={"token": url_tok})
+        assert r2.status_code == 401
+
+
+class _ClockMock:
+    """Stub for monkeypatching ``auth.time`` so verify-TTL tests can
+    advance the clock without sleeping. Only exposes ``time()`` since
+    that's all auth.py uses."""
+
+    def __init__(self, now: float):
+        self._now = now
+
+    def time(self) -> float:
+        return self._now
+
+
 class TestAuthenticateDispatch:
     def test_bearer_header_accepted(self, isolated_home):
         from forgather_server import auth
