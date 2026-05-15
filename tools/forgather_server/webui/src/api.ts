@@ -367,6 +367,22 @@ export interface ClusterGpusResponse {
   server_time: number;
 }
 
+/** Configured auto-start service entry (from `services:` in the
+ *  server config) plus its current running status. */
+export interface ConfiguredService {
+  type: string;
+  name: string;
+  enabled: boolean;
+  args: Record<string, unknown>;
+  signature: string;
+}
+export interface ServiceStatus {
+  service: ConfiguredService;
+  running: boolean;
+  queue_id: string | null;
+  status: string | null; // "queued" | "starting" | "running" | null
+}
+
 /** Unified job model returned by /api/jobs.
  *
  *  ``id`` is the stable identifier the UI keys on. For server-launched jobs
@@ -1516,6 +1532,47 @@ export const api = {
   docsRepoRoot: () => fetchJson<{ repo_root: string }>("/api/docs/repo-root"),
   serverConfigPath: () =>
     fetchJson<{ path: string | null }>("/api/server-config-path"),
+  listServices: () => fetchJson<ServiceStatus[]>("/api/services"),
+  upsertService: async (
+    type: string,
+    name: string,
+    enabled: boolean,
+    args: Record<string, unknown>,
+  ) => {
+    const r = await fetch("/api/services", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type, name, enabled, args }),
+    });
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<ServiceStatus>;
+  },
+  deleteService: async (type: string, name: string) => {
+    const r = await fetch(
+      `/api/services/${encodeURIComponent(type)}/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    );
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json();
+  },
+  setServiceEnabled: async (type: string, name: string, enabled: boolean) => {
+    const r = await fetch(
+      `/api/services/${encodeURIComponent(type)}/${encodeURIComponent(name)}/enabled`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      },
+    );
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<ServiceStatus>;
+  },
   ensureDatasetServerConfigStub: async (): Promise<{
     path: string;
     created: boolean;

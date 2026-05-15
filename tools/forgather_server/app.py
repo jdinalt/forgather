@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.types import Scope
 
-from . import cluster, cluster_journal, scheduler, search_roots, server_config
+from . import cluster, cluster_journal, scheduler, search_roots, server_config, services
 from .auth import AuthMiddleware
 from .routes import auth as auth_routes
 from .routes import cluster as cluster_routes
@@ -27,6 +27,7 @@ from .routes import models as models_routes
 from .routes import projects as projects_routes
 from .routes import queue as queue_routes
 from .routes import search_roots as search_roots_routes
+from .routes import services as services_routes
 from .routes import tb_proxy as tb_proxy_routes
 
 log = logging.getLogger("forgather_server")
@@ -93,6 +94,20 @@ async def lifespan(app: FastAPI):
                 cluster_dataset_inventory.master_dataset_refresh_loop()
             )
         )
+
+    # Enqueue auto-start services declared in the server config before
+    # the dispatcher first ticks so they're picked up on the first pass
+    # rather than after a poll interval.
+    try:
+        started = services.autostart()
+        if started:
+            log.info(
+                "auto-started %d service(s): %s",
+                len(started),
+                ", ".join(s.id for s in started),
+            )
+    except Exception:
+        log.exception("services.autostart failed at lifespan startup")
 
     tasks.append(asyncio.create_task(scheduler.dispatcher_loop()))
     try:
@@ -215,6 +230,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs_routes.router, prefix="/api")
     app.include_router(models_routes.router, prefix="/api")
     app.include_router(queue_routes.router, prefix="/api")
+    app.include_router(services_routes.router, prefix="/api")
     # Auth-gated reverse proxy to spawned TensorBoard instances. Defaults
     # in tensorboard_ops bind TB to loopback so other local users can't
     # reach it directly; this proxy mounts it under /api/tb/{job_id}/...

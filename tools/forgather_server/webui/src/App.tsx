@@ -15,6 +15,7 @@ import { InferencePanel } from "./components/InferencePanel";
 import { DatasetsPanel } from "./components/DatasetsPanel";
 import type { SelectedLeaf } from "./components/DatasetsExploreTab";
 import { JobsPanel } from "./components/JobsPanel";
+import { ServicesPanel } from "./components/ServicesPanel";
 import { QueuePanel } from "./components/QueuePanel";
 import { LogDetailPanel } from "./components/LogDetailPanel";
 import { CheckpointDetailPanel } from "./components/CheckpointDetailPanel";
@@ -844,6 +845,7 @@ export default function App() {
               <div className="sidebar-tools-hint muted">
                 Right-click any service for help.
               </div>
+              <ServicesPanel />
             </div>
           </details>
 

@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 
 import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
+import { promptAndCreateService } from "../services-create";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
 import { ModalBackdrop } from "./ModalBackdrop";
@@ -184,6 +185,32 @@ export function InferenceModal({
     },
   });
 
+  // Single source of truth for the job_params shape, factored out so
+  // ``Create service…`` can persist the exact same args the modal
+  // would have submitted.
+  const buildArgs = (
+    finalPath: string,
+  ): Record<string, unknown> => {
+    const args: Record<string, unknown> = {
+      model_path: finalPath,
+      port,
+      host,
+      dtype,
+      from_checkpoint: fromCheckpoint,
+      compile: compileFlag,
+      disable_kv_cache: disableKvCache,
+    };
+    if (attn !== "default") args.attn_implementation = attn;
+    if (cacheImpl !== "default") args.cache_implementation = cacheImpl;
+    const ck = ckptPath.trim();
+    if (ck) args.checkpoint_path = ck;
+    const ct = chatTemplate.trim();
+    if (ct) args.chat_template = ct;
+    const ca = compileArgs.trim();
+    if (ca) args.compile_args = ca;
+    return args;
+  };
+
   const submit = () => {
     const finalPath = modelPath.trim();
     if (!finalPath) return;
@@ -213,24 +240,9 @@ export function InferenceModal({
       chatTemplate: chatTemplate.trim(),
       requestedGpus,
     });
-    const job_params: Record<string, unknown> = {
-      model_path: finalPath,
-      port,
-      host,
-      dtype,
-      from_checkpoint: fromCheckpoint,
-      compile: compileFlag,
-      disable_kv_cache: disableKvCache,
-    };
-    // "default" is UI-only — omit the key so the server picks its own.
-    if (attn !== "default") job_params.attn_implementation = attn;
-    if (cacheImpl !== "default") job_params.cache_implementation = cacheImpl;
-    const ck = ckptPath.trim();
-    if (ck) job_params.checkpoint_path = ck;
-    const ct = chatTemplate.trim();
-    if (ct) job_params.chat_template = ct;
-    const ca = compileArgs.trim();
-    if (ca) job_params.compile_args = ca;
+    // "default" attn / cache impl is UI-only — buildArgs omits the key
+    // so the server picks its own.
+    const job_params = buildArgs(finalPath);
 
     enqueue.mutate({
       project_dir: projectDir ?? finalPath,
@@ -492,6 +504,25 @@ export function InferenceModal({
             </button>
             <button className="secondary" onClick={onClose}>
               Cancel
+            </button>
+            <button
+              className="secondary"
+              onClick={async () => {
+                const finalPath = modelPath.trim();
+                if (!finalPath) return;
+                const args = {
+                  ...buildArgs(finalPath),
+                  // Inference services need at least one GPU; persist
+                  // the operator's choice so autostart respects it.
+                  requested_gpus: requestedGpus,
+                };
+                const ok = await promptAndCreateService(qc, "inference", args);
+                if (ok) onClose();
+              }}
+              disabled={!modelPath.trim()}
+              title="Persist these settings to the server config as an auto-start service"
+            >
+              Create service…
             </button>
             <button
               onClick={submit}

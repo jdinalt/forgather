@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { api, ConfigInfo, ProjectInfo } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
+import { promptAndCreateService } from "../services-create";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { ModalBackdrop } from "./ModalBackdrop";
 import { PathField } from "./PathField";
@@ -121,6 +122,27 @@ export function TensorBoardModal({
     },
   });
 
+  const buildArgs = (): Record<string, unknown> => {
+    const args: Record<string, unknown> = {
+      logdir,
+      port,
+      bind_all: bindAll,
+      reload_multifile: reloadMultifile,
+    };
+    const wt = windowTitle.trim();
+    if (wt) args.window_title = wt;
+    const h = host.trim();
+    if (!bindAll && h) args.host = h;
+    const ri = reloadInterval.trim();
+    if (ri !== "") {
+      const n = Number.parseInt(ri, 10);
+      if (Number.isFinite(n)) args.reload_interval = n;
+    }
+    const spp = samplesPerPlugin.trim();
+    if (spp) args.samples_per_plugin = spp;
+    return args;
+  };
+
   const submit = () => {
     if (global) {
       // Persist the user's choices so the next open of the global
@@ -136,23 +158,7 @@ export function TensorBoardModal({
         host: host.trim(),
       });
     }
-    const job_params: Record<string, unknown> = {
-      logdir,
-      port,
-      bind_all: bindAll,
-      reload_multifile: reloadMultifile,
-    };
-    const wt = windowTitle.trim();
-    if (wt) job_params.window_title = wt;
-    const h = host.trim();
-    if (!bindAll && h) job_params.host = h;
-    const ri = reloadInterval.trim();
-    if (ri !== "") {
-      const n = Number.parseInt(ri, 10);
-      if (Number.isFinite(n)) job_params.reload_interval = n;
-    }
-    const spp = samplesPerPlugin.trim();
-    if (spp) job_params.samples_per_plugin = spp;
+    const job_params = buildArgs();
 
     enqueue.mutate({
       project_dir: projectDir ?? logdir,
@@ -328,6 +334,22 @@ export function TensorBoardModal({
             )}
             <button className="secondary" onClick={onClose}>
               Cancel
+            </button>
+            <button
+              className="secondary"
+              onClick={async () => {
+                if (!logdir.trim()) return;
+                const ok = await promptAndCreateService(
+                  qc,
+                  "tensorboard",
+                  buildArgs(),
+                );
+                if (ok) onClose();
+              }}
+              disabled={!logdir.trim()}
+              title="Persist these settings to the server config as an auto-start service"
+            >
+              Create service…
             </button>
             <button
               onClick={submit}

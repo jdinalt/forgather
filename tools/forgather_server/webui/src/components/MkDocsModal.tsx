@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
+import { promptAndCreateService } from "../services-create";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
 import { ModalBackdrop } from "./ModalBackdrop";
@@ -121,6 +122,23 @@ export function MkDocsModal({ onClose, onSubmitted }: Props) {
     },
   });
 
+  const buildArgs = (finalConfig: string): Record<string, unknown> => {
+    const watch = watchDirs
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const args: Record<string, unknown> = {
+      config_file: finalConfig,
+      host: host.trim() || "localhost",
+      port,
+      strict,
+      livereload,
+      dirty,
+    };
+    if (watch.length > 0) args.watch = watch;
+    return args;
+  };
+
   const submit = () => {
     const finalConfig = configFile.trim();
     if (!finalConfig) return;
@@ -133,19 +151,7 @@ export function MkDocsModal({ onClose, onSubmitted }: Props) {
       dirty,
       watchDirs: watchDirs.trim(),
     });
-    const watch = watchDirs
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const job_params: Record<string, unknown> = {
-      config_file: finalConfig,
-      host: host.trim() || "localhost",
-      port,
-      strict,
-      livereload,
-      dirty,
-    };
-    if (watch.length > 0) job_params.watch = watch;
+    const job_params = buildArgs(finalConfig);
 
     enqueue.mutate({
       project_dir: finalConfig,
@@ -287,6 +293,23 @@ export function MkDocsModal({ onClose, onSubmitted }: Props) {
             </button>
             <button className="secondary" onClick={onClose}>
               Cancel
+            </button>
+            <button
+              className="secondary"
+              onClick={async () => {
+                const finalConfig = configFile.trim();
+                if (!finalConfig) return;
+                const ok = await promptAndCreateService(
+                  qc,
+                  "mkdocs",
+                  buildArgs(finalConfig),
+                );
+                if (ok) onClose();
+              }}
+              disabled={!configFile.trim()}
+              title="Persist these settings to the server config as an auto-start service"
+            >
+              Create service…
             </button>
             <button
               onClick={submit}

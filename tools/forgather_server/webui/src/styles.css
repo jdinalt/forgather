@@ -201,6 +201,124 @@ input {
   margin-bottom: 8px;
 }
 
+/* Configured-services list inside the Services sidebar section. Each
+   row carries a red/green dot, a play/pause toggle, and a delete X;
+   the disclosure chevron expands the row to show the entry's args. */
+.services-panel {
+  margin-top: 6px;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+.services-panel.muted {
+  color: var(--fg-muted);
+  font-size: 12px;
+  padding: 6px 4px;
+}
+.services-panel.err {
+  color: #f87171;
+  font-size: 12px;
+  padding: 6px 4px;
+}
+.services-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.service-row {
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  margin-bottom: 4px;
+  background: var(--bg);
+}
+.service-row.disabled .service-id {
+  color: var(--fg-muted);
+}
+.service-row-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+}
+.service-disclosure {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  width: 14px;
+  padding: 0;
+  font-size: 11px;
+  cursor: pointer;
+}
+.service-disclosure:hover {
+  color: var(--fg);
+}
+.service-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1px solid rgba(0, 0, 0, 0.4);
+}
+.service-dot.running {
+  background: #3fb950;
+  box-shadow: 0 0 4px rgba(63, 185, 80, 0.6);
+}
+.service-dot.stopped {
+  background: #f87171;
+}
+.service-id {
+  flex: 1;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.service-action {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 1;
+}
+.service-action:hover:not(:disabled) {
+  background: var(--bg-alt);
+  border-color: var(--fg-muted);
+}
+.service-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.service-delete {
+  color: #f87171;
+}
+.service-row-body {
+  padding: 4px 8px 6px 22px;
+  border-top: 1px dashed var(--border);
+  font-size: 11px;
+}
+.service-args {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.service-arg {
+  display: flex;
+  gap: 6px;
+  padding: 1px 0;
+}
+.service-arg-key {
+  color: var(--fg-muted);
+  min-width: 90px;
+}
+.service-arg-value {
+  font-family: var(--font-mono, monospace);
+  word-break: break-all;
+}
+.service-sig {
+  margin-top: 3px;
+  font-size: 10px;
+}
+
 /* Bottom-of-sidebar bar. Sticks to the bottom of the scrolling
    .sidebar-expanded-content container — auto top-margin pushes it past
    any earlier sections that don't fill the height, and position:sticky
