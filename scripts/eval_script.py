@@ -141,6 +141,24 @@ def resolve_checkpoint(args):
         return False, False
     if args.checkpoint:
         return args.checkpoint, True
+    # Quantized models can only load through HF `from_pretrained()` — that
+    # path installs TorchAoHfQuantizer pre-process, which swaps in the
+    # quantized linear modules so the saved tensor subclasses land in
+    # slots that know how to hold them. The checkpoint-resume path uses
+    # `from_config()` + `load_state_dict()`, which has no quantizer hook
+    # and fails with `'Parameter' object has no attribute 'tensor_data_names'`.
+    cfg_path = os.path.join(args.model, "config.json")
+    if os.path.isfile(cfg_path):
+        try:
+            with open(cfg_path) as f:
+                if "quantization_config" in json.load(f):
+                    logger.info(
+                        "Detected quantization_config in model config; "
+                        "loading via from_pretrained() instead of checkpoint resume."
+                    )
+                    return False, False
+        except (OSError, ValueError):
+            pass
     return True, True
 
 

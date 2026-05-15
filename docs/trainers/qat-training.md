@@ -261,10 +261,55 @@ forgather finalize output_models/my_bf16_run out/my_bf16_run_int8_int4 \
 This is the path used for the AMP-baseline / PTQ / QAT three-way
 comparison: train the same model once in plain bf16, then run finalize
 twice (one source bf16, one source QAT) with the same `--quantize`
-recipe and compare the eval results. PTQ on a model that was not
-QAT-trained typically pays a larger accuracy penalty than the
-`~+0.017` eval-loss premium QAT does (see [Loss Trajectory](#loss-trajectory-1-chinchilla-tiny-llama)
-above for the QAT numbers); how much depends on the model and recipe.
+recipe and compare the eval results. See [Three-Way
+Comparison](#three-way-comparison-bf16--ptq--qat) below for measured
+numbers on Tiny Llama.
+
+## Evaluating Quantized Models
+
+`forgather eval` loads `--quantize`-finalized models with no extra flag:
+
+```bash
+# Same invocation as for a bf16 model — eval autodetects the quantized
+# artifact and routes through HF `from_pretrained()` so the
+# TorchAoHfQuantizer pre-process path installs the right linear modules.
+forgather -p examples/tutorials/tiny_llama eval test tinystories \
+    -M /path/to/quantized_model
+```
+
+How it works: at finalize time, `--quantize` writes a
+`quantization_config` block into `config.json` with the recipe. At eval
+time, `scripts/eval_script.py:resolve_checkpoint()` reads that field
+and forces the `from_pretrained()` load path (the normal
+checkpoint-resume path uses `from_config()` + `load_state_dict()`, which
+does not run any quantizer hook and fails when the saved tensors are
+torchao quantized subclasses). Same mechanism applies to the inference
+server — no caller-side changes needed.
+
+The check is purely additive: bf16 models keep using the
+checkpoint-resume path. Pass `--no-checkpoint` to opt into
+`from_pretrained()` manually for non-quantized models.
+
+### Three-Way Comparison: bf16 / PTQ / QAT
+
+Full eval against the Tiny Stories test split for the 4.43M Tiny Llama
+trained at 1-Chinchilla on a single RTX 3090 (matching the [Loss
+Trajectory](#loss-trajectory-1-chinchilla-tiny-llama) setup above), all
+three using `int8-dynamic-act-int4-weight`:
+
+| Model | eval_loss | perplexity | Δ vs bf16 |
+|-------|-----------|------------|-----------|
+| bf16 baseline | 1.3656 | 3.918 | — |
+| PTQ on bf16 baseline | 1.3917 | 4.022 | +0.0262 |
+| QAT-trained + converted | 1.3905 | 4.017 | +0.0249 |
+
+At this scale (4.43M params, recipe = int4 weights / int8 dynamic
+activations), QAT shaves about **0.0013 eval-loss** off PTQ — a real
+but small gain. Whether QAT's ~1.67× training-time overhead pays for
+that depends on your tolerance for the +0.025 perplexity premium that
+quantization itself imposes (PTQ buys you almost all of the win at zero
+training cost). QAT is expected to scale better at larger models and
+more aggressive recipes — measure your own setup before committing.
 
 ## Programmatic Usage
 

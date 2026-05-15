@@ -119,6 +119,16 @@ same mechanism `forgather train` uses). Pass an explicit path with
 `--checkpoint PATH` to pin a specific one, or `--no-checkpoint` to load via
 `AutoModelForCausalLM.from_pretrained` on the model directory.
 
+**Quantized models** (artifacts produced by `forgather finalize --quantize`)
+are autodetected: if `config.json` has a `quantization_config` block, eval
+forces the `from_pretrained()` path regardless of `--checkpoint` /
+`--no-checkpoint` flags. The checkpoint-resume path uses `from_config()` +
+`load_state_dict()` which has no quantizer hook and fails on quantized
+tensor subclasses; `from_pretrained()` runs HF's `TorchAoHfQuantizer`
+pre-process so the right linear modules are in place before the weights
+load. See [QAT Training § Evaluating Quantized
+Models](../trainers/qat-training.md#evaluating-quantized-models).
+
 The tokenizer is always loaded directly from `--model` via
 `AutoTokenizer.from_pretrained`.
 

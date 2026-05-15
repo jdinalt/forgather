@@ -122,6 +122,14 @@ quantized tensor subclasses don't expose a single `.storage().data_ptr()`,
 which the safetensors writer requires. If `--safetensors` is passed
 alongside `--quantize`, it is silently disabled with a warning.
 
+Finalize also writes a `quantization_config` block into `config.json`
+with the recipe. This makes HF `AutoModelForCausalLM.from_pretrained()`
+auto-detect the quantization on reload and run the
+`TorchAoHfQuantizer` pre-process path — so `forgather eval` and the
+inference server load the artifact correctly without any caller-side
+flag. See [Evaluating Quantized
+Models](../trainers/qat-training.md#evaluating-quantized-models).
+
 ### Misc
 
 | Option | Description |
