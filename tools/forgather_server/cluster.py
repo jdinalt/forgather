@@ -45,11 +45,13 @@ log = logging.getLogger("forgather_server.cluster")
 
 
 # Treat a member as unreachable if we have not heard from it (or about
-# it via a peer's table) within this many seconds. 30s gives roughly
-# six missed peer-pull cycles at the default 5s cadence — long enough
-# to ride out a transient network blip, short enough to be useful for
-# master selection.
-DEFAULT_UNREACHABLE_AFTER_SECONDS = 30.0
+# it via a peer's table) within this many seconds. 10s gives roughly
+# two missed peer-pull cycles at the default 5s cadence — long enough
+# to ride out a single transient network blip, short enough that the
+# webui's health indicator flips red within ~10s of a peer stopping.
+# The cluster's health surfaces (sidebar dot, Nodes panel "unreachable"
+# tag) all read this flag, so anything looser feels unresponsive.
+DEFAULT_UNREACHABLE_AFTER_SECONDS = 10.0
 
 
 def _forgather_version() -> str:
@@ -266,7 +268,6 @@ class _ClusterState:
             existing.address = address
             existing.port = port
             existing.forgather_version = forgather_version
-            existing.last_seen = ts
             existing.last_source = source
             if tls is not None:
                 existing.tls = bool(tls)
@@ -275,9 +276,30 @@ class _ClusterState:
             # value it received.
             if probe is not None:
                 existing.probe = probe
-            if not existing.reachable:
-                log.info("cluster member back online: %s (%s)", hostname, node_id)
-            existing.reachable = True
+            # Liveness is the direct peer-pull's job. Two other paths
+            # also call into update_member and must NOT vouch for an
+            # existing peer's liveness:
+            #
+            #   - ``discovery``: zeroconf re-fires update_service for
+            #     cached mDNS records for up to ~75 minutes after the
+            #     announcer dies. Trusting it would keep dead peers
+            #     green indefinitely.
+            #   - ``peer_report``: transitive entries from another
+            #     peer's member list. The peer that answered our pull
+            #     is alive, but the others in its table may not be —
+            #     so a third node joining must not resurrect every
+            #     peer in its own (potentially stale) table.
+            #
+            # Only ``peer_pull`` — the source used by the membership
+            # tick after it directly GET-ed a peer's API — is allowed
+            # to refresh last_seen and flip reachable back to True.
+            if source == "peer_pull":
+                existing.last_seen = ts
+                if not existing.reachable:
+                    log.info(
+                        "cluster member back online: %s (%s)", hostname, node_id
+                    )
+                existing.reachable = True
             return existing
 
     def mark_unreachable(self, node_id: str) -> None:

@@ -137,9 +137,9 @@ export default function App() {
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [viewsOpen, setViewsOpen] = useState(true);
-  // Cluster sidebar group — defaults open in cluster mode so the peer
-  // list is visible immediately; hidden entirely when standalone.
-  const [clusterOpen, setClusterOpen] = useState(true);
+  // Cluster sidebar group — collapsed by default to keep the sidebar
+  // tidy on first paint; hidden entirely when standalone.
+  const [clusterOpen, setClusterOpen] = useState(false);
   const [startServerOpen, setStartServerOpen] = useState(false);
   const [datasetServerOpen, setDatasetServerOpen] = useState(false);
   const [tensorboardOpen, setTensorboardOpen] = useState(false);
@@ -633,6 +633,33 @@ export default function App() {
             </div>
           </header>
 
+          {/* Cluster group: peer hostnames + health status. Hidden in
+              standalone mode. Clicking a peer opens its webui in a new
+              tab using a cluster-bearer SSO URL. Placed above Views
+              because it's the highest-level navigation context — which
+              node am I looking at — and most useful when it's the
+              first thing the eye lands on. */}
+          {clusterActive && (
+            <details
+              className="sidebar-cluster-details"
+              open={clusterOpen}
+              onToggle={(e) => {
+                if (e.target !== e.currentTarget) return;
+                setClusterOpen(
+                  (e.currentTarget as HTMLDetailsElement).open,
+                );
+              }}
+            >
+              <summary>Cluster</summary>
+              <ClusterSidebarPanel
+                selfNodeId={clusterSelfQ.data?.node_id ?? null}
+                masterNodeId={
+                  clusterMembersQ.data?.master_node_id ?? null
+                }
+              />
+            </details>
+          )}
+
           <details
             className="sidebar-views-details"
             open={viewsOpen}
@@ -757,30 +784,6 @@ export default function App() {
               />
             </div>
           </details>
-
-          {/* Cluster group: peer hostnames + health status. Hidden in
-              standalone mode. Clicking a peer opens its webui in a new
-              tab using a cluster-bearer SSO URL. */}
-          {clusterActive && (
-            <details
-              className="sidebar-cluster-details"
-              open={clusterOpen}
-              onToggle={(e) => {
-                if (e.target !== e.currentTarget) return;
-                setClusterOpen(
-                  (e.currentTarget as HTMLDetailsElement).open,
-                );
-              }}
-            >
-              <summary>Cluster</summary>
-              <ClusterSidebarPanel
-                selfNodeId={clusterSelfQ.data?.node_id ?? null}
-                masterNodeId={
-                  clusterMembersQ.data?.master_node_id ?? null
-                }
-              />
-            </details>
-          )}
         </div>
       </aside>
 

@@ -90,7 +90,13 @@ class TestPullOnePeer:
         ids = {m.node_id for m in cluster.members()}
         assert third_id in ids
         third = next(m for m in cluster.members() if m.node_id == third_id)
-        assert third.last_source == "peer_pull"
+        # Transitive entries from another peer's member list are
+        # tagged ``peer_report`` — they tell us about identities the
+        # polled peer knows about, but the polled peer is the only
+        # one we actually heard from. The next peer-pull tick will
+        # try to GET from this address directly and stamp a real
+        # ``peer_pull`` source on success.
+        assert third.last_source == "peer_report"
         assert third.address == "10.0.0.8"
 
     def test_returns_false_on_http_error(self):
