@@ -18,7 +18,7 @@ import {
 } from "../api";
 import { persistGet, persistSet } from "../persist";
 
-const PAGE_SIZE_OPTIONS = [25, 100, 200] as const;
+const PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
 const DEFAULT_PAGE_SIZE = 25;
 const CELL_TRUNCATE = 200;
 const EXPANDED_CELL_TRUNCATE = 5000;
@@ -1196,6 +1196,21 @@ function Pager({ page, totalPages, setPage }: PagerProps) {
     return out;
   }, [page, totalPages]);
 
+  // Goto field tracks user input as a string so partial typing
+  // ("12") doesn't fight a numeric-state-driven re-render. The
+  // submit handler parses, clamps to [1..totalPages], and converts
+  // back to a 0-indexed page before calling setPage.
+  const [gotoText, setGotoText] = useState("");
+  const submitGoto = () => {
+    const raw = gotoText.trim();
+    if (!raw) return;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return;
+    const clamped = Math.max(1, Math.min(totalPages, Math.floor(n)));
+    setPage(clamped - 1);
+    setGotoText("");
+  };
+
   return (
     <div className="pager">
       <button
@@ -1227,6 +1242,34 @@ function Pager({ page, totalPages, setPage }: PagerProps) {
       >
         Next ›
       </button>
+      {totalPages > 1 && (
+        <form
+          className="pager-goto"
+          onSubmit={(e) => {
+            e.preventDefault();
+            submitGoto();
+          }}
+        >
+          <label className="muted">Go to</label>
+          <input
+            type="number"
+            min={1}
+            max={totalPages}
+            value={gotoText}
+            placeholder={String(page + 1)}
+            onChange={(e) => setGotoText(e.target.value)}
+            title={`Jump to a page between 1 and ${totalPages}`}
+          />
+          <button
+            className="secondary"
+            type="submit"
+            disabled={gotoText.trim() === ""}
+          >
+            Go
+          </button>
+          <span className="muted pager-goto-total">/ {totalPages}</span>
+        </form>
+      )}
     </div>
   );
 }

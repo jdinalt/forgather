@@ -4588,6 +4588,38 @@ li.config.selected button.link:hover {
   padding: 0 4px;
   font-size: 12px;
 }
+.pager-goto {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 12px;
+  font-size: 12px;
+}
+.pager-goto label {
+  font-size: 11px;
+}
+.pager-goto input {
+  width: 5em;
+  padding: 3px 6px;
+  font-size: 12px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+/* Hide the native number-input spinners — they squeeze the visible
+ * digit area and add no value over typing or the Prev/Next chevrons. */
+.pager-goto input::-webkit-inner-spin-button,
+.pager-goto input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.pager-goto input[type="number"] {
+  -moz-appearance: textfield;
+}
+.pager-goto-total {
+  font-size: 11px;
+}
 
 /* Datasets → Servers — typed result renderers ----------------------- */
 .ds-section {
