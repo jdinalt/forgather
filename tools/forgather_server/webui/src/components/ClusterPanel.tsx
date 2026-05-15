@@ -15,6 +15,7 @@ import {
   RUNNING_JOB_STATUSES,
 } from "../api";
 import { DatasetsClusterTab } from "./DatasetsPanel";
+import type { SelectedLeaf } from "./DatasetsExploreTab";
 /** Format a byte count as a compact MiB/GiB string. Local to the
  *  Nodes panel so the cluster view doesn't depend on GpuPanel's
  *  internal helper. */
@@ -414,7 +415,15 @@ function ClusterJobsTab() {
   );
 }
 
-export function ClusterPanel() {
+export function ClusterPanel({
+  onOpenInExplore,
+}: {
+  /** Wired by App.tsx so a click on a dataset row in the Datasets
+   *  tab here can navigate the outer view to Datasets and pre-select
+   *  the row in Explore. Optional — when omitted, the rows render
+   *  inert. */
+  onOpenInExplore?: (leaf: SelectedLeaf) => void;
+} = {}) {
   // Tab state must live above the early-returns below — once the
   // cluster comes online and the panel renders for the first time,
   // we want the user's tab selection to persist across loading
@@ -628,7 +637,7 @@ export function ClusterPanel() {
           overflow: "auto",
         }}
       >
-        <DatasetsClusterTab />
+        <DatasetsClusterTab onOpenInExplore={onOpenInExplore} />
       </div>
     </div>
   );

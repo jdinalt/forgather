@@ -13,6 +13,7 @@ import { InferenceModal } from "./components/InferenceModal";
 import { DatasetServerModal } from "./components/DatasetServerModal";
 import { InferencePanel } from "./components/InferencePanel";
 import { DatasetsPanel } from "./components/DatasetsPanel";
+import type { SelectedLeaf } from "./components/DatasetsExploreTab";
 import { JobsPanel } from "./components/JobsPanel";
 import { QueuePanel } from "./components/QueuePanel";
 import { LogDetailPanel } from "./components/LogDetailPanel";
@@ -167,6 +168,20 @@ export default function App() {
   const filesApi = useFilesState();
   const qc = useQueryClient();
 
+  // Cross-view dataset preselect: the Cluster view's Datasets tab and
+  // the Datasets view's Servers tab both surface row clicks that
+  // should land the user in Datasets → Explore with the chosen leaf
+  // expanded. Lifting the leaf to App.tsx lets both call sites share
+  // one navigation path (the alternative — letting DatasetsPanel own
+  // it — couldn't be triggered from outside the panel).
+  const [pendingExplore, setPendingExplore] = useState<SelectedLeaf | null>(
+    null,
+  );
+  const openInExplore = useCallback((leaf: SelectedLeaf) => {
+    setPendingExplore(leaf);
+    setView("datasets");
+  }, []);
+
   // Wired into every submit modal's onSubmitted prop. Reads the sticky
   // localStorage preference at submit time so a stale toggle from an earlier
   // modal can't trigger an unintended view switch.
@@ -287,9 +302,9 @@ export default function App() {
   const viewCounts: Partial<Record<View, number>> = {
     queue: queuedCount,
     jobs: runningCount,
-    // Cluster pill is the cluster-wide peer count; "GPUs" no longer
-    // doubles as a cluster surface so it carries no badge.
-    cluster: clusterActive ? nodesCount : undefined,
+    // The peer count belongs on the "Nodes" sidebar group (see
+    // below) rather than on the "Cluster" view — the group is the
+    // list of nodes, so it's the natural place to surface the count.
   };
   // Cluster-only views (currently just "cluster") are filtered out of
   // the sidebar in standalone mode.
@@ -661,7 +676,12 @@ export default function App() {
                 );
               }}
             >
-              <summary>Nodes</summary>
+              <summary>
+                Nodes
+                {nodesCount > 0 && (
+                  <span className="badge">{nodesCount}</span>
+                )}
+              </summary>
               <ClusterSidebarPanel
                 selfNodeId={clusterSelfQ.data?.node_id ?? null}
                 masterNodeId={
@@ -882,7 +902,7 @@ export default function App() {
             className="view-panel"
             style={view === "cluster" ? undefined : { display: "none" }}
           >
-            <ClusterPanel />
+            <ClusterPanel onOpenInExplore={openInExplore} />
           </div>
         )}
         <div
@@ -910,7 +930,11 @@ export default function App() {
           className="view-panel"
           style={view === "datasets" ? undefined : { display: "none" }}
         >
-          <DatasetsPanel />
+          <DatasetsPanel
+            pendingExplore={pendingExplore}
+            onPreselectConsumed={() => setPendingExplore(null)}
+            onOpenInExplore={openInExplore}
+          />
         </div>
       </div>
 

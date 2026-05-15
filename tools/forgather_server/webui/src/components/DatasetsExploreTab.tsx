@@ -77,6 +77,34 @@ interface ServerOption {
   cluster_server_id?: string;
 }
 
+/** Compute the set of tree-node keys to add to the ``expanded`` set
+ *  so a preselect leaf becomes visible in the browse pane.
+ *
+ *  Tree key shape (mirroring CacheGroup / LocalGroup / RepoNode /
+ *  LocalEntryNode):
+ *
+ *    server:                      ``cluster:<sid>`` | ``local:<qid>`` | ``user:<id>``
+ *    HF cache group:              ``<server>:cache``
+ *    HF repo:                     ``<server>:cache:<path>``
+ *    Local group:                 ``<server>:local``
+ *    Local entry:                 ``<server>:local:<name>``
+ *
+ *  We currently only know how to derive keys for cluster servers —
+ *  per-node leaves coming from the Servers tab don't carry the
+ *  ``queue_id`` / ``id`` we'd need. That's fine; the Servers tab
+ *  flow has always relied on the right-pane load and not on tree
+ *  expansion.
+ */
+function deriveExpandKeys(leaf: SelectedLeaf): string[] {
+  if (!leaf.cluster_server_id) return [];
+  const serverKey = `cluster:${leaf.cluster_server_id}`;
+  const path = leaf.load.path;
+  if (path.startsWith("local/")) {
+    return [serverKey, `${serverKey}:local`, `${serverKey}:local:${path.slice(6)}`];
+  }
+  return [serverKey, `${serverKey}:cache`, `${serverKey}:cache:${path}`];
+}
+
 interface Props {
   localServers: DatasetServerLocal[];
   userServers: DatasetServerUser[];
@@ -140,15 +168,112 @@ export function DatasetsExploreTab({
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<SelectedLeaf | null>(null);
 
-  // Cross-tab preselect: when the Servers tab fires a row click,
-  // DatasetsPanel sets ``preselect`` and switches the active tab here.
-  // Consume the value once, then tell the parent to clear it so a
-  // later tab switch doesn't re-seed an old selection.
+  // Cross-tab preselect: when the Servers tab or the Cluster view's
+  // Datasets tab fires a row click, the parent sets ``preselect`` and
+  // switches the active tab here.
+  //
+  // The cluster row only carries the dataset's ``path`` (and the
+  // server to route through) — not a fully-qualified path+name+split.
+  // Setting that directly as ``selected`` would trigger /v1/load on
+  // a partial leaf, which the HF backend rejects ("must pick a
+  // config"), wedging the right pane in "Loading dataset handle…".
+  // Instead, hold the preselect as ``pendingResolve``: fetch the
+  // chosen server's cache / local inventory, pick the first config +
+  // first split (or just the first split for local datasets), and
+  // *then* set ``selected`` to the fully-resolved leaf so the load
+  // succeeds and the right pane shows real rows.
+  //
+  // We also replace (not merge) the ``expanded`` set so previously-
+  // open branches collapse — otherwise the new path gets lost in the
+  // existing expansion noise.
+  const [pendingResolve, setPendingResolve] = useState<SelectedLeaf | null>(
+    null,
+  );
   useEffect(() => {
     if (!preselect) return;
-    setSelected(preselect);
+    setSelected(null);
+    setPendingResolve(preselect);
+    const keys = deriveExpandKeys(preselect);
+    setExpanded(new Set(keys));
     onPreselectConsumed?.();
   }, [preselect, onPreselectConsumed]);
+
+  // Resolver queries — same query keys as CacheGroup / LocalGroup
+  // below so TanStack dedups: if the user already had this server's
+  // group open the data is in-cache and the resolve completes in one
+  // tick. ``enabled`` is gated on pendingResolve + the path shape so
+  // we don't fire spurious requests.
+  const resolvingLocal =
+    pendingResolve?.load.path.startsWith("local/") ?? false;
+  const resolveBase = pendingResolve
+    ? pendingResolve.cluster_server_id ?? pendingResolve.server_base_url
+    : null;
+  const resolveCacheQ = useQuery({
+    queryKey: ["ds-cache", resolveBase],
+    queryFn: () =>
+      pendingResolve!.cluster_server_id
+        ? api.clusterDatasetServerCache(pendingResolve!.cluster_server_id)
+        : api.datasetServerCache(pendingResolve!.server_base_url, ""),
+    enabled: !!pendingResolve && !resolvingLocal,
+  });
+  const resolveLocalQ = useQuery({
+    queryKey: ["ds-local", resolveBase],
+    queryFn: () =>
+      pendingResolve!.cluster_server_id
+        ? api.clusterDatasetServerLocal(pendingResolve!.cluster_server_id)
+        : api.datasetServerLocal(pendingResolve!.server_base_url, ""),
+    enabled: !!pendingResolve && resolvingLocal,
+  });
+  useEffect(() => {
+    if (!pendingResolve) return;
+    const path = pendingResolve.load.path;
+    if (path.startsWith("local/")) {
+      const data = resolveLocalQ.data as LocalListResponse | undefined;
+      if (!data) return;
+      const name = path.slice(6);
+      const entry = data.local?.find((e) => e.name === name);
+      const split = entry?.splits?.[0];
+      // Local without a known split: load with no split arg — the
+      // server picks its default. With a split: full leaf.
+      setSelected({
+        ...pendingResolve,
+        load: split ? { path, split: split.name } : { path },
+        display: split ? `${path} · ${split.name}` : path,
+        hint_rows: split?.num_examples ?? null,
+      });
+      setPendingResolve(null);
+      return;
+    }
+    // HF: resolve to first config + first split.
+    const data = resolveCacheQ.data as HFCacheResponse | undefined;
+    if (!data) return;
+    const repo = data.datasets?.find((r) => r.repo === path);
+    const cfg = repo?.configs?.[0];
+    const split = cfg?.splits?.[0];
+    if (cfg && split) {
+      setSelected({
+        ...pendingResolve,
+        load: { path, name: cfg.config, split: split.name },
+        display: `${path} · ${cfg.config} · ${split.name}`,
+        hint_rows: split.num_examples ?? null,
+      });
+      // Also expand the config row so the highlighted split sits
+      // under a visible parent.
+      if (pendingResolve.cluster_server_id) {
+        const cfgKey = `cluster:${pendingResolve.cluster_server_id}:cache:${path}:${cfg.config}`;
+        setExpanded((prev) => {
+          const next = new Set(prev);
+          next.add(cfgKey);
+          return next;
+        });
+      }
+    }
+    // If the repo isn't in this server's cache yet, or has no
+    // configs/splits, just leave the tree expanded and let the user
+    // navigate manually. ``selected`` stays null so the right pane
+    // shows the "Pick a dataset split…" hint instead of an error.
+    setPendingResolve(null);
+  }, [pendingResolve, resolveCacheQ.data, resolveLocalQ.data]);
   // Tree pane collapse — gives the preview pane the full width when the
   // user has already picked a leaf and just wants to read rows.
   const [treeCollapsed, setTreeCollapsed] = useState<boolean>(false);

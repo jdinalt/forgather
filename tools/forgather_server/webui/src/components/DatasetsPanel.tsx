@@ -57,7 +57,27 @@ function keyMatches(a: ServerKey, b: ServerKey): boolean {
  * dataset_server and every unique dataset) lives under the Cluster
  * view's Datasets tab — see ClusterPanel.
  */
-export function DatasetsPanel() {
+interface DatasetsPanelProps {
+  /** Cross-view preselect: when the Cluster view's Datasets tab fires
+   *  a row click (or anything outside this panel routes a leaf here),
+   *  the parent sets this and we both switch to the Explore sub-tab
+   *  and pass the leaf down. Null in steady state. */
+  pendingExplore?: SelectedLeaf | null;
+  /** Called after the Explore tab consumes the preselect, so the
+   *  parent can clear it. */
+  onPreselectConsumed?: () => void;
+  /** Called when any source inside this panel wants to navigate to
+   *  Explore (Servers tab row clicks). Lifts the leaf to the parent
+   *  so the same flow works whether the trigger came from inside
+   *  this panel or from the Cluster view. */
+  onOpenInExplore?: (leaf: SelectedLeaf) => void;
+}
+
+export function DatasetsPanel({
+  pendingExplore,
+  onPreselectConsumed,
+  onOpenInExplore,
+}: DatasetsPanelProps = {}) {
   // Detect cluster mode via the same query the App-level gate uses.
   // TanStack dedups by ``queryKey`` so this doesn't cost an extra HTTP
   // request — App.tsx's polling and this one share the same cache.
@@ -69,15 +89,16 @@ export function DatasetsPanel() {
   const clusterActive = !!clusterSelfQ.data;
 
   const [tab, setTab] = useState<SubTab>("servers");
-  // Pending pre-selection for the Explore tab. Set when a row in the
-  // Servers tab is clicked (handles row / cache split / local split);
-  // the Explore tab consumes it once and signals back to clear.
-  const [pendingExplore, setPendingExplore] = useState<SelectedLeaf | null>(
-    null,
-  );
+  // Switch to the Explore sub-tab whenever a preselect arrives from
+  // outside — Cluster view's Datasets tab, or anywhere else that
+  // hands a leaf to App. The Explore tab itself consumes the
+  // preselect and signals back via onPreselectConsumed.
+  useEffect(() => {
+    if (pendingExplore) setTab("explore");
+  }, [pendingExplore]);
   const openInExplore = (leaf: SelectedLeaf) => {
-    setPendingExplore(leaf);
     setTab("explore");
+    onOpenInExplore?.(leaf);
   };
   // Shared queries — both subtabs need the local+user lists. Same keys
   // mean TanStack Query serves them from one cache.
@@ -146,8 +167,8 @@ export function DatasetsPanel() {
           userServers={userServers}
           clusterServers={clusterServers}
           clusterActive={clusterActive}
-          preselect={pendingExplore}
-          onPreselectConsumed={() => setPendingExplore(null)}
+          preselect={pendingExplore ?? null}
+          onPreselectConsumed={onPreselectConsumed}
         />
       </div>
     </div>
@@ -181,8 +202,17 @@ function formatAgo(ts: number | null): string {
  *  Exported so the Cluster view (ClusterPanel) can mount it as its
  *  Datasets tab. Kept in DatasetsPanel.tsx because it shares helpers
  *  (ClusterDatasetRow, SortableHeader, formatAgo, …) with the rest of
- *  this file. */
-export function DatasetsClusterTab() {
+ *  this file.
+ *
+ *  ``onOpenInExplore``, when wired, makes the dataset rows clickable:
+ *  the parent navigates the outer view to Datasets, switches to the
+ *  Explore sub-tab, and pre-selects the clicked dataset against the
+ *  first healthy server that advertises it. */
+export function DatasetsClusterTab({
+  onOpenInExplore,
+}: {
+  onOpenInExplore?: (leaf: SelectedLeaf) => void;
+} = {}) {
   const inventoryQ = useQuery<ClusterDatasetInventoryResponse>({
     queryKey: ["cluster", "dataset_inventory"],
     queryFn: api.getClusterDatasetInventory,
@@ -454,6 +484,7 @@ export function DatasetsClusterTab() {
                     key={d.dataset_id}
                     entry={d}
                     serverIdMap={serverIdMap}
+                    onOpenInExplore={onOpenInExplore}
                   />
                 ))}
               </tbody>
@@ -470,9 +501,11 @@ export function DatasetsClusterTab() {
 function ClusterDatasetRow({
   entry,
   serverIdMap,
+  onOpenInExplore,
 }: {
   entry: ClusterDatasetEntry;
   serverIdMap: Map<string, ClusterDatasetServer>;
+  onOpenInExplore?: (leaf: SelectedLeaf) => void;
 }) {
   const hostBaseUrls = entry.server_ids
     .map((sid) => serverIdMap.get(sid)?.base_url ?? sid)
@@ -486,8 +519,69 @@ function ClusterDatasetRow({
     (entry.load_args && typeof entry.load_args["path"] === "string"
       ? (entry.load_args["path"] as string)
       : null);
+  // Pick the source server we'll hand to the Explore tab. Prefer the
+  // first *healthy* server that advertises this dataset; fall back to
+  // the first server_id otherwise. If we picked an unhealthy peer the
+  // Explore tab would just surface the upstream error inline — the
+  // healthy-first preference is a UX shortcut, not a correctness gate.
+  const args = entry.load_args ?? {};
+  // Derive the load path by source. The backend only populates
+  // load_args for path-based handles; ``local`` and ``hf`` entries
+  // carry their identity in dataset_id directly:
+  //   - local: dataset_id is ``local/<name>``
+  //   - hf:    dataset_id is the HF repo (e.g., ``allenai/c4``)
+  //   - path:  dataset_id is the handle hash; load_args holds path
+  let path = "";
+  if (entry.source === "local" || entry.source === "hf") {
+    path = entry.dataset_id;
+  } else if (typeof args["path"] === "string") {
+    path = args["path"] as string;
+  }
+  const loadArgsName =
+    typeof args["name"] === "string" ? (args["name"] as string) : undefined;
+  const loadArgsSplit =
+    typeof args["split"] === "string"
+      ? (args["split"] as string)
+      : undefined;
+  const firstHealthyServerId = entry.server_ids.find(
+    (sid) => serverIdMap.get(sid)?.healthy,
+  );
+  const chosenServerId = firstHealthyServerId ?? entry.server_ids[0] ?? null;
+  const chosenServer = chosenServerId
+    ? serverIdMap.get(chosenServerId) ?? null
+    : null;
+  // Click is only meaningful when we have both a server to route to
+  // *and* a path. Either missing → render an inert row (no pointer
+  // cursor, no handler) so the user isn't misled.
+  const clickable = !!onOpenInExplore && !!chosenServer && !!path;
+  const onClick = clickable
+    ? () => {
+        onOpenInExplore!({
+          server_label: chosenServer!.label,
+          server_base_url: chosenServer!.base_url,
+          cluster_server_id: chosenServer!.server_id,
+          load: {
+            path,
+            name: loadArgsName,
+            split: loadArgsSplit,
+          },
+          display: friendlyName ?? entry.dataset_id,
+          hint_rows: entry.length,
+        });
+      }
+    : undefined;
+  const title = clickable
+    ? `Open in Explore via ${chosenServer!.base_url}` +
+      (entry.server_ids.length > 1
+        ? ` (first of ${entry.server_ids.length} hosts)`
+        : "")
+    : undefined;
   return (
-    <tr>
+    <tr
+      onClick={onClick}
+      style={clickable ? { cursor: "pointer" } : undefined}
+      title={title}
+    >
       <td style={{ fontFamily: "monospace" }}>
         {entry.dataset_id}
         {friendlyName && friendlyName !== entry.dataset_id && (
