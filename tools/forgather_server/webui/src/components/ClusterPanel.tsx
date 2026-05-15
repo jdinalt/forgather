@@ -41,15 +41,49 @@ function fmtMiB(bytes: number): string {
 // ``platform`` are intentionally not in the inline list — they go in
 // the tooltip — because they rarely drive a hang and would just
 // clutter the row.
-const HEADLINE_VERSION_KEYS: readonly string[] = [
+//
+// Exported so the sidebar Nodes group (ClusterSidebarPanel) can
+// classify each peer's health using the same divergence rules as
+// this view.
+export const HEADLINE_VERSION_KEYS: readonly string[] = [
   "forgather",
   "torch",
   "nccl",
   "transformers",
 ];
 
+/** Per-node health classification used by the sidebar dot.
+ *
+ *  - ``down``  — peer is not reachable over HTTP. Red.
+ *  - ``warn``  — peer answers, but a headline version is missing or
+ *                differs from the cluster majority. Yellow. This is
+ *                the state that flagged kitt's nvml/nccl going
+ *                AWOL after a driver glitch: the peer was still up
+ *                but its version row no longer matched.
+ *  - ``ok``    — reachable and no version mismatch (or the probe
+ *                hasn't returned yet, in which case we don't
+ *                preemptively warn). Green.
+ *
+ *  ``consensus`` is the dict from ``computeVersionConsensus``.
+ */
+export function nodeHealth(
+  m: ClusterMember,
+  consensus: Record<string, string>,
+): "ok" | "warn" | "down" {
+  if (!m.reachable) return "down";
+  const versions = m.probe?.versions;
+  if (!versions) return "ok";
+  for (const key of HEADLINE_VERSION_KEYS) {
+    const expected = consensus[key];
+    if (!expected) continue; // no node reports this key — nothing to compare
+    const value = versions[key];
+    const missing = !value || value === "unavailable";
+    if (missing || value !== expected) return "warn";
+  }
+  return "ok";
+}
 
-function computeVersionConsensus(
+export function computeVersionConsensus(
   members: ClusterMember[],
 ): Record<string, string> {
   // Most common reported value per version key. "Most common" rather

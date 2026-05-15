@@ -2345,6 +2345,12 @@ li.config.selected button.link:hover {
 .cluster-sidebar-dot.ok {
   background: var(--ok, #2c8a2c);
 }
+.cluster-sidebar-dot.warn {
+  /* Same warm yellow the Cluster view's version-mismatch chip uses,
+   * so the two surfaces share a vocabulary. Distinct enough from
+   * green/red to be picked out at a glance. */
+  background: #dcb450;
+}
 .cluster-sidebar-dot.down {
   background: var(--err, #c33);
 }
