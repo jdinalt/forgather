@@ -22,7 +22,7 @@ import {
 } from "./DatasetsExploreTab";
 import { ModalBackdrop } from "./ModalBackdrop";
 
-type SubTab = "cluster" | "servers" | "explore";
+type SubTab = "servers" | "explore";
 
 /** Identifier the panel uses to refer to either kind of server uniformly.
  *  Local servers key by ``queue_id`` (stable across the run), user
@@ -57,11 +57,12 @@ function keyMatches(a: ServerKey, b: ServerKey): boolean {
 }
 
 /** Top-level Datasets view. Tabs:
- *  - Cluster (read-only, only when the forgather_server is in
- *    cluster mode): master-aggregated view of every dataset_server
- *    and every unique dataset across the cluster.
  *  - Servers: CRUD + status/handles/cache.
  *  - Explore: tree of dataset → split → table of rows.
+ *
+ * Cluster-wide inventory (master-aggregated view of every
+ * dataset_server and every unique dataset) lives under the Cluster
+ * view's Datasets tab — see ClusterPanel.
  */
 export function DatasetsPanel() {
   // Detect cluster mode via the same query the App-level gate uses.
@@ -74,7 +75,7 @@ export function DatasetsPanel() {
   });
   const clusterActive = !!clusterSelfQ.data;
 
-  const [tab, setTab] = useState<SubTab>(clusterActive ? "cluster" : "servers");
+  const [tab, setTab] = useState<SubTab>("servers");
   // Pending pre-selection for the Explore tab. Set when a row in the
   // Servers tab is clicked (handles row / cache split / local split);
   // the Explore tab consumes it once and signals back to clear.
@@ -114,14 +115,6 @@ export function DatasetsPanel() {
         <div className="inference-header-title">
           <strong>Datasets</strong>
           <nav className="tabs">
-            {clusterActive && (
-              <button
-                className={tab === "cluster" ? "active" : ""}
-                onClick={() => setTab("cluster")}
-              >
-                cluster
-              </button>
-            )}
             <button
               className={tab === "servers" ? "active" : ""}
               onClick={() => setTab("servers")}
@@ -138,18 +131,6 @@ export function DatasetsPanel() {
         </div>
       </header>
 
-      {clusterActive && (
-        <div
-          style={{
-            display: tab === "cluster" ? "block" : "none",
-            flex: 1,
-            minHeight: 0,
-            overflow: "auto",
-          }}
-        >
-          <DatasetsClusterTab />
-        </div>
-      )}
       <div
         style={{
           display: tab === "servers" ? "block" : "none",
@@ -202,8 +183,13 @@ function formatAgo(ts: number | null): string {
 /** Read-only cluster inventory view. Polls /api/cluster/dataset_inventory
  *  every 5s. The master self-gates the loops, so this surface stays
  *  consistent across master failover (the new master rebuilds its
- *  inventory from peers within ~10s of taking over). */
-function DatasetsClusterTab() {
+ *  inventory from peers within ~10s of taking over).
+ *
+ *  Exported so the Cluster view (ClusterPanel) can mount it as its
+ *  Datasets tab. Kept in DatasetsPanel.tsx because it shares helpers
+ *  (ClusterDatasetRow, SortableHeader, formatAgo, …) with the rest of
+ *  this file. */
+export function DatasetsClusterTab() {
   const inventoryQ = useQuery<ClusterDatasetInventoryResponse>({
     queryKey: ["cluster", "dataset_inventory"],
     queryFn: api.getClusterDatasetInventory,

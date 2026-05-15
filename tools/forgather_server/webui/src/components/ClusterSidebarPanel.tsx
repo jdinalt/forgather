@@ -37,7 +37,8 @@ export function ClusterSidebarPanel({
     return <div className="cluster-sidebar-empty muted">No nodes.</div>;
   }
   // Master first, then reachable peers by hostname, unreachable last.
-  // Same ordering as NodesPanel so the two views feel coherent.
+  // Same ordering as the Cluster view's Nodes tab so the two
+  // surfaces feel coherent.
   const sorted = [...data.members].sort((a, b) => {
     const score = (m: ClusterMember) => {
       if (m.node_id === masterNodeId) return 0;

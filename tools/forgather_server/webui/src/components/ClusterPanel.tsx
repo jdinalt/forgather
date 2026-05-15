@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
@@ -13,6 +14,7 @@ import {
   Job,
   RUNNING_JOB_STATUSES,
 } from "../api";
+import { DatasetsClusterTab } from "./DatasetsPanel";
 /** Format a byte count as a compact MiB/GiB string. Local to the
  *  Nodes panel so the cluster view doesn't depend on GpuPanel's
  *  internal helper. */
@@ -22,13 +24,16 @@ function fmtMiB(bytes: number): string {
   return `${Math.round(mib)} MiB`;
 }
 
-/** Cluster-aware Nodes view (Phase 2).
+/** Cluster view — tabbed panel covering everything cluster-scoped:
  *
- *  Adds pre-flight surfaces on top of Phase 1's per-node GPU layout:
- *  package versions inline in each header (with diff-highlighting
- *  when a version drifts from the cluster majority), a collapsible
- *  network-interface list per node, and an on-demand pairwise
- *  bandwidth panel.
+ *   - jobs:     bundle records (multi-node training jobs)
+ *   - network:  pairwise bandwidth probe + (future) other network tools
+ *   - nodes:    per-peer rollup with versions, interfaces, and GPUs
+ *   - datasets: master-aggregated dataset_server / dataset inventory
+ *
+ *  Shown in the sidebar as "Cluster" (cluster-only). The sidebar
+ *  group labelled "Nodes" is a separate surface that lists peers
+ *  with SSO links.
  */
 
 // Versions we surface inline. Order = display order. ``python`` and
@@ -190,7 +195,7 @@ function InterfaceList({ interfaces }: { interfaces: ClusterProbeInterface[] }) 
   );
 }
 
-function BandwidthPanel({
+function NetworkTab({
   members,
   selfNodeId,
 }: {
@@ -222,21 +227,18 @@ function BandwidthPanel({
   // been probed.
   const peers = members.filter((m) => m.node_id !== selfNodeId);
   return (
-    <details className="bw-panel" open={false}>
-      <summary>
+    <div className="bw-panel cluster-tab-body">
+      <div className="cluster-tab-heading">
         <span>Bandwidth (this node → peers)</span>
         <button
           className="bw-refresh"
           disabled={refresh.isPending}
-          onClick={(e) => {
-            e.preventDefault();
-            refresh.mutate();
-          }}
+          onClick={() => refresh.mutate()}
           title="Run a fresh single-stream throughput measurement to each peer. Sequential — takes ~few seconds per peer."
         >
           {refresh.isPending ? "Measuring…" : "Refresh"}
         </button>
-      </summary>
+      </div>
       {peers.length === 0 ? (
         <div className="muted bw-empty">Only this node is in the cluster.</div>
       ) : (
@@ -287,11 +289,11 @@ function BandwidthPanel({
           </tbody>
         </table>
       )}
-    </details>
+    </div>
   );
 }
 
-function ClusterJobsPanel() {
+function ClusterJobsTab() {
   const qc = useQueryClient();
   const jobsQ = useQuery<ClusterJob[]>({
     queryKey: ["cluster", "jobs"],
@@ -315,8 +317,8 @@ function ClusterJobsPanel() {
   };
   const activeJobs = jobs.filter((j) => !isTerminal(j));
   return (
-    <details className="cluster-jobs-panel" open={activeJobs.length > 0}>
-      <summary>
+    <div className="cluster-jobs-panel cluster-tab-body">
+      <div className="cluster-tab-heading">
         <span>
           Cluster Jobs ({activeJobs.length} active
           {jobs.length > activeJobs.length
@@ -328,7 +330,7 @@ function ClusterJobsPanel() {
           Submit via the config's <strong>Run…</strong> action — the
           cluster panel appears at the top of the dialog.
         </span>
-      </summary>
+      </div>
       {jobs.length === 0 ? (
         <div className="muted cj-empty">
           {jobsQ.isError
@@ -408,11 +410,16 @@ function ClusterJobsPanel() {
           </tbody>
         </table>
       )}
-    </details>
+    </div>
   );
 }
 
-export function NodesPanel() {
+export function ClusterPanel() {
+  // Tab state must live above the early-returns below — once the
+  // cluster comes online and the panel renders for the first time,
+  // we want the user's tab selection to persist across loading
+  // states (e.g. a transient membersQ.isLoading after a refetch).
+  const [tab, setTab] = useState<ClusterTab>("jobs");
   const membersQ = useQuery<ClusterMembersResponse>({
     queryKey: ["cluster", "members"],
     queryFn: api.getClusterMembers,
@@ -510,50 +517,124 @@ export function NodesPanel() {
   );
 
   return (
-    <div className="nodes-panel">
-      <header className="nodes-panel-header">
-        <h2>Cluster: {data.cluster_name}</h2>
-        <span className="nodes-panel-meta">
-          {data.members.length} node
-          {data.members.length === 1 ? "" : "s"} · master: {masterHostname}
-        </span>
-        {anyDivergence && (
-          <span
-            className="node-tag node-tag-warn"
-            title="At least one node reports a package version that does not match the cluster majority. Multi-node training is sensitive to this — see the per-node version chips below."
-          >
-            version mismatch
+    <div className="cluster-panel">
+      <header className="viewer-header cluster-panel-header">
+        <div className="cluster-panel-header-title">
+          <strong>Cluster</strong>
+          <span className="muted"> — {data.cluster_name}</span>
+          <span className="muted">
+            {" · "}
+            {data.members.length} node{data.members.length === 1 ? "" : "s"}
+            {" · master: "}
+            {masterHostname}
           </span>
-        )}
+          {anyDivergence && (
+            <span
+              className="node-tag node-tag-warn"
+              title="At least one node reports a package version that does not match the cluster majority. Multi-node training is sensitive to this — see the per-node version chips on the Nodes tab."
+            >
+              version mismatch
+            </span>
+          )}
+          <nav className="tabs">
+            <button
+              className={tab === "jobs" ? "active" : ""}
+              onClick={() => setTab("jobs")}
+            >
+              jobs
+            </button>
+            <button
+              className={tab === "network" ? "active" : ""}
+              onClick={() => setTab("network")}
+            >
+              network
+            </button>
+            <button
+              className={tab === "nodes" ? "active" : ""}
+              onClick={() => setTab("nodes")}
+            >
+              nodes
+            </button>
+            <button
+              className={tab === "datasets" ? "active" : ""}
+              onClick={() => setTab("datasets")}
+            >
+              datasets
+            </button>
+          </nav>
+        </div>
       </header>
-      <ClusterJobsPanel />
-      <BandwidthPanel
-        members={data.members}
-        selfNodeId={data.self_node_id}
-      />
-      <div className="nodes-panel-rows">
-        {sortedMembers.map((m) => {
-          const isSelf = m.node_id === data.self_node_id;
-          const isMaster = m.node_id === data.master_node_id;
-          const gpuEntry = gpusByNode.get(m.node_id);
-          return (
-            <NodeGroup
-              key={m.node_id}
-              member={m}
-              isSelf={isSelf}
-              isMaster={isMaster}
-              gpus={gpuEntry?.gpus ?? null}
-              gpusError={gpuEntry?.error ?? null}
-              jobByPid={jobByPid}
-              reservedGpus={reservedByNode.get(m.hostname) ?? null}
-              versionConsensus={versionConsensus}
-            />
-          );
-        })}
+
+      {/* All tab bodies stay mounted so each tab keeps its scroll
+          position / in-flight queries across a tab flip — same idiom
+          as InferencePanel / DatasetsPanel. */}
+      <div
+        style={{
+          display: tab === "jobs" ? "block" : "none",
+          flex: 1,
+          minHeight: 0,
+          overflow: "auto",
+        }}
+      >
+        <ClusterJobsTab />
+      </div>
+      <div
+        style={{
+          display: tab === "network" ? "block" : "none",
+          flex: 1,
+          minHeight: 0,
+          overflow: "auto",
+        }}
+      >
+        <NetworkTab
+          members={data.members}
+          selfNodeId={data.self_node_id}
+        />
+      </div>
+      <div
+        style={{
+          display: tab === "nodes" ? "block" : "none",
+          flex: 1,
+          minHeight: 0,
+          overflow: "auto",
+        }}
+      >
+        <div className="nodes-panel-rows">
+          {sortedMembers.map((m) => {
+            const isSelf = m.node_id === data.self_node_id;
+            const isMaster = m.node_id === data.master_node_id;
+            const gpuEntry = gpusByNode.get(m.node_id);
+            return (
+              <NodeGroup
+                key={m.node_id}
+                member={m}
+                isSelf={isSelf}
+                isMaster={isMaster}
+                gpus={gpuEntry?.gpus ?? null}
+                gpusError={gpuEntry?.error ?? null}
+                jobByPid={jobByPid}
+                reservedGpus={reservedByNode.get(m.hostname) ?? null}
+                versionConsensus={versionConsensus}
+              />
+            );
+          })}
+        </div>
+      </div>
+      <div
+        style={{
+          display: tab === "datasets" ? "block" : "none",
+          flex: 1,
+          minHeight: 0,
+          overflow: "auto",
+        }}
+      >
+        <DatasetsClusterTab />
       </div>
     </div>
   );
 }
+
+type ClusterTab = "jobs" | "network" | "nodes" | "datasets";
 
 function NodeGroup({
   member,

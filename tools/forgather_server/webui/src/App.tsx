@@ -6,8 +6,8 @@ import { ContextMenu } from "./components/ContextMenu";
 import { ProjectTree } from "./components/ProjectTree";
 import { ConfigViewer } from "./components/ConfigViewer";
 import { ClusterSidebarPanel } from "./components/ClusterSidebarPanel";
+import { ClusterPanel } from "./components/ClusterPanel";
 import { GpuPanel } from "./components/GpuPanel";
-import { NodesPanel } from "./components/NodesPanel";
 import { EvalModal } from "./components/EvalModal";
 import { InferenceModal } from "./components/InferenceModal";
 import { DatasetServerModal } from "./components/DatasetServerModal";
@@ -34,7 +34,7 @@ type View =
   | "edit"
   | "docs"
   | "gpus"
-  | "nodes"
+  | "cluster"
   | "jobs"
   | "queue"
   | "inference"
@@ -46,10 +46,10 @@ export type ConfigTab = "info" | "pp" | "code" | "graph" | "templates" | "debug"
 // mode (see ``visibleViews`` below).
 const VIEWS: { id: View; label: string; icon: string; clusterOnly?: boolean }[] =
   [
-    // Nodes is the cluster-wide context — when it's present, it's the
-    // first thing the eye should land on; in standalone mode it's
+    // Cluster is the cluster-wide context — when it's present, it's
+    // the first thing the eye should land on; in standalone mode it's
     // filtered out entirely, so this slot is invisible.
-    { id: "nodes", label: "Nodes", icon: "🖧", clusterOnly: true },
+    { id: "cluster", label: "Cluster", icon: "🖧", clusterOnly: true },
     { id: "projects", label: "Projects", icon: "📁" },
     { id: "edit", label: "Edit", icon: "✎" },
     { id: "docs", label: "Docs", icon: "📚" },
@@ -256,10 +256,9 @@ export default function App() {
   });
   // Cluster identity is fetched once at app load and again every 30 s.
   // The payload is null in standalone mode and a small object in
-  // cluster mode; either way the response is cheap. The label of the
-  // "gpus" sidebar entry flips to "Nodes" when this is non-null, and
-  // the corresponding view-panel renders NodesPanel instead of
-  // GpuPanel — see below.
+  // cluster mode; either way the response is cheap. The "Cluster"
+  // view entry and the "Nodes" sidebar group are both gated on a
+  // non-null response — see below.
   const clusterSelfQ = useQuery({
     queryKey: ["cluster-self"],
     queryFn: api.getClusterSelf,
@@ -271,11 +270,11 @@ export default function App() {
   // server flips back to standalone (or the cluster query returns
   // null transiently on first paint).
   useEffect(() => {
-    if (!clusterActive && view === "nodes") setView("gpus");
+    if (!clusterActive && view === "cluster") setView("gpus");
   }, [clusterActive, view]);
-  // Total node count for the Nodes sidebar pill — only fetched when
+  // Total node count for the Cluster view pill — only fetched when
   // we're actually in cluster mode. Shares the queryKey used by
-  // NodesPanel so the cache is reused once that view is opened.
+  // ClusterPanel so the cache is reused once that view is opened.
   const clusterMembersQ = useQuery({
     queryKey: ["cluster", "members"],
     queryFn: api.getClusterMembers,
@@ -288,11 +287,11 @@ export default function App() {
   const viewCounts: Partial<Record<View, number>> = {
     queue: queuedCount,
     jobs: runningCount,
-    // Nodes pill is the cluster-wide peer count; "GPUs" no longer
+    // Cluster pill is the cluster-wide peer count; "GPUs" no longer
     // doubles as a cluster surface so it carries no badge.
-    nodes: clusterActive ? nodesCount : undefined,
+    cluster: clusterActive ? nodesCount : undefined,
   };
-  // Cluster-only views (currently just "nodes") are filtered out of
+  // Cluster-only views (currently just "cluster") are filtered out of
   // the sidebar in standalone mode.
   const visibleViews = VIEWS.filter((v) => clusterActive || !v.clusterOnly);
   // Tab title: include the node hostname when in cluster mode so
@@ -642,12 +641,15 @@ export default function App() {
             </div>
           </header>
 
-          {/* Cluster group: peer hostnames + health status. Hidden in
-              standalone mode. Clicking a peer opens its webui in a new
-              tab using a cluster-bearer SSO URL. Placed above Views
-              because it's the highest-level navigation context — which
-              node am I looking at — and most useful when it's the
-              first thing the eye lands on. */}
+          {/* Nodes group: peer hostnames + health status. Hidden in
+              standalone mode. Clicking a peer opens its webui in a
+              new tab using a cluster-bearer SSO URL. Placed above
+              Views because it's the highest-level navigation context
+              — which node am I looking at — and most useful when it's
+              the first thing the eye lands on. Distinct from the
+              "Cluster" view in the Views section: this surface is
+              about navigating between nodes; that one is about the
+              cluster's internal state. */}
           {clusterActive && (
             <details
               className="sidebar-cluster-details"
@@ -659,7 +661,7 @@ export default function App() {
                 );
               }}
             >
-              <summary>Cluster</summary>
+              <summary>Nodes</summary>
               <ClusterSidebarPanel
                 selfNodeId={clusterSelfQ.data?.node_id ?? null}
                 masterNodeId={
@@ -878,9 +880,9 @@ export default function App() {
         {clusterActive && (
           <div
             className="view-panel"
-            style={view === "nodes" ? undefined : { display: "none" }}
+            style={view === "cluster" ? undefined : { display: "none" }}
           >
-            <NodesPanel />
+            <ClusterPanel />
           </div>
         )}
         <div

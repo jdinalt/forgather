@@ -3629,31 +3629,45 @@ li.config.selected button.link:hover {
  * new layout when the standalone install joins a cluster.
  * ============================================================ */
 
-.nodes-panel {
-  padding: 12px;
-}
-
-.nodes-panel-header {
+.cluster-panel {
+  flex: 1;
   display: flex;
-  align-items: baseline;
+  flex-direction: column;
+  min-height: 0;
+}
+.cluster-panel .viewer-header {
+  border-bottom: 1px solid var(--border);
+  padding: 6px 12px;
+}
+.cluster-panel-header-title {
+  display: flex;
+  align-items: center;
   gap: 12px;
-  margin-bottom: 12px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
-.nodes-panel-header h2 {
-  margin: 0;
-  font-size: 16px;
+/* Shared layout for ClusterJobsTab / NetworkTab — the heading line
+ * (which used to be the <details> summary) sits flush at the top of
+ * the tab body with the same indent as everything else. */
+.cluster-tab-body {
+  padding: 8px 12px;
 }
-
-.nodes-panel-meta {
-  font-size: 12px;
-  color: var(--muted, #888);
+.cluster-tab-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
 }
 
 .nodes-panel-rows {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  padding: 8px 12px;
 }
 
 .node-row {
