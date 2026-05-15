@@ -11,8 +11,6 @@ from datetime import datetime
 from pprint import pp
 from typing import Dict, List, Optional, Set, TypeAlias, Union, overload
 
-import pickle
-
 import torch
 from safetensors.torch import load_file as safetensors_load
 from safetensors.torch import save_file as safetensors_save
@@ -606,6 +604,17 @@ def load_checkpoint(
     See `torch.nn.Module.load_state_dict
     <https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html#torch.nn.Module.load_state_dict>`_
     for the semantics of the ``strict`` and ``assign`` flags.
+
+    When the checkpoint is torchao-quantized, this function installs the
+    matching quantized linear modules on ``module`` before
+    ``load_state_dict`` runs and forces ``assign=True`` (``Tensor.copy_``
+    does not handle quantized-to-quantized copies). In that branch the
+    ``device`` argument is silently overridden to the module's existing
+    device, so the ``assign``-rebound tensors don't migrate the model
+    off the caller's compute device. Tied weights are restored
+    post-load by the trainer's ``retie_parameters()`` step; eval /
+    inference paths that don't re-tie still produce correct outputs
+    because quantized inference doesn't grad-update tied tensors.
     """
     checkpoint_meta = get_checkpoint_metadata(model_dir)
 
@@ -669,11 +678,19 @@ def load_checkpoint(
 
 
 def _module_device(module: Module, *, fallback) -> "torch.device | str":
-    """Return the device of the module's first parameter, or ``fallback``."""
+    """Return the device of the module's first parameter, or ``fallback``.
+
+    Skips ``meta`` devices: a module constructed under ``torch.device("meta")``
+    has no storage, and inheriting that device would silently produce a
+    fully-meta model after ``load_state_dict(assign=True)``. In that
+    case, defer to the caller-passed ``fallback`` instead.
+    """
     for p in module.parameters():
-        return p.device
+        if p.device.type != "meta":
+            return p.device
     for b in module.buffers():
-        return b.device
+        if b.device.type != "meta":
+            return b.device
     return fallback
 
 
@@ -734,13 +751,16 @@ def _peek_first_shard(
 ) -> "Dict[str, Tensor]":
     """Load just one shard's state_dict for quantization detection.
 
-    Try ``weights_only=True`` first; fall back to ``weights_only=False`` on
-    ``UnpicklingError`` (raised when the shard contains torchao tensor
-    subclasses that aren't yet on PyTorch's safe-globals allowlist).
-    Once :func:`install_torchao_quantization` runs in the caller, the
-    safe-globals get registered process-wide and subsequent loads (the
-    main shard loop) succeed with the default ``weights_only=True``.
+    Eagerly register torchao tensor subclasses with PyTorch's
+    ``add_safe_globals`` before loading, so ``weights_only=True`` accepts
+    quantized shards. Registration is idempotent and cheap (a single
+    import + dedup against PyTorch's allowlist), and importantly keeps
+    the loader's safe-default posture: we never fall back to
+    ``weights_only=False`` on a `.bin` shard, which would permit
+    arbitrary pickled code execution.
     """
+    from forgather.ml.quantization_detect import _register_torchao_safe_globals
+
     weight_map = shard_index["weight_map"]
     # Unique shard files; pick the first deterministically (sorted) so
     # tests are reproducible.
@@ -750,14 +770,10 @@ def _peek_first_shard(
     shard_file_path = os.path.join(model_dir, shard_files[0])
     if safetensors:
         return safetensors_load(shard_file_path, device=device)
-    try:
-        return torch.load(
-            shard_file_path, map_location=device, weights_only=True, mmap=True
-        )
-    except pickle.UnpicklingError:
-        return torch.load(
-            shard_file_path, map_location=device, weights_only=False, mmap=True
-        )
+    _register_torchao_safe_globals()
+    return torch.load(
+        shard_file_path, map_location=device, weights_only=True, mmap=True
+    )
 
 
 @overload

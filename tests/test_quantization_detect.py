@@ -126,8 +126,50 @@ def test_detect_unknown_subclass_raises(monkeypatch):
 
     _UnknownTorchaoTensor.__module__ = "torchao.fake.module"
     fake = _UnknownTorchaoTensor()
-    with pytest.raises(ValueError, match="Re-finalize the model"):
+    with pytest.raises(ValueError, match="re-finalize the source model"):
         detect_torchao_quantization(state_dict={"x.weight": fake})
+
+
+@pytest.mark.parametrize(
+    "recipe",
+    [
+        "int8-dynamic-act-int4-weight",
+        "int4-weight-only",
+        # float8 omitted: requires SM ≥8.9 to run quantize_, and its
+        # state_dict reverse-lookup is intentionally not covered in v1.
+    ],
+)
+def test_forward_reverse_roundtrip(recipe: str):
+    """Reverse-lookup recovers the same base config that produced the tensor.
+
+    Locks down drift between :func:`recipe_to_base_config` (forward map,
+    used by trainer + finalize) and :func:`_base_config_from_tensor`
+    (reverse map, used by the native loader's state_dict scan). If
+    either side adds a parameter the other doesn't read, this test
+    flags it.
+    """
+    from forgather.ml.quantization_detect import _base_config_from_tensor
+
+    forward = recipe_to_base_config(recipe)
+    sd = _state_dict_for(recipe)
+    sample = next(
+        v for v in sd.values() if type(v).__module__.startswith("torchao")
+    )
+    reverse = _base_config_from_tensor(sample)
+
+    assert reverse is not None
+    assert type(reverse) is type(forward)
+    # Spot-check the user-facing fields the reverse lookup actually reads.
+    # We don't assert every attribute equals — torchao adds derived /
+    # internal state — but the constructor-visible ones must match.
+    if recipe == "int8-dynamic-act-int4-weight":
+        assert reverse.weight_dtype == forward.weight_dtype
+        assert (
+            reverse.weight_granularity.group_size
+            == forward.weight_granularity.group_size
+        )
+    elif recipe == "int4-weight-only":
+        assert reverse.group_size == forward.group_size
 
 
 def test_install_swaps_linear_for_quantized():

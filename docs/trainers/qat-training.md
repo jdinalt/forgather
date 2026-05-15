@@ -271,8 +271,7 @@ numbers on Tiny Llama.
 
 ```bash
 # Same invocation as for a bf16 model — eval autodetects the quantized
-# artifact and routes through HF `from_pretrained()` so the
-# TorchAoHfQuantizer pre-process path installs the right linear modules.
+# artifact and installs the right linear modules via the native loader.
 forgather -p examples/tutorials/tiny_llama eval test tinystories \
     -M /path/to/quantized_model
 ```

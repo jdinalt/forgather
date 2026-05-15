@@ -154,6 +154,16 @@ def _base_config_from_tensor(t):
 
     Recognises the v1 recipes in :data:`QAT_RECIPES`. Returns None for
     unknown subclasses so callers can produce their own error message.
+
+    Assumes the **canonical Forgather recipe** was used at finalize time
+    (defaults in :func:`recipe_to_base_config`). Non-default packing
+    formats, mapping types, or qparams algorithms saved into the tensor
+    will be silently coerced to defaults here; the config.json path
+    preserves them faithfully. For artifacts produced by Forgather's
+    ``--quantize`` flag, the two recover the same config. For
+    hand-crafted torchao configs without a ``quantization_config`` block
+    in ``config.json``, prefer to restore the block rather than rely on
+    this reverse-lookup.
     """
     import torch
 
@@ -221,13 +231,21 @@ def detect_torchao_quantization(
             cfg = _base_config_from_tensor(sample)
             if cfg is not None:
                 return cfg
+            cls_name = type(sample).__name__
+            float8_hint = ""
+            if "Float8" in cls_name:
+                float8_hint = (
+                    " (the v1 reverse-lookup does not cover float8 — float8 "
+                    "checkpoints must carry a `quantization_config` block.)"
+                )
             raise ValueError(
                 f"State dict contains a torchao quantized tensor subclass "
-                f"{type(sample).__name__!r} that this version of Forgather "
-                f"doesn't know how to reverse-engineer into a base config. "
-                f"Re-finalize the model with `forgather finalize --quantize "
-                f"<recipe>` to write a `quantization_config` block into "
-                f"`config.json`, then reload."
+                f"{cls_name!r} that this version of Forgather doesn't know "
+                f"how to reverse-engineer into a base config.{float8_hint} "
+                f"Restore the `quantization_config` block in "
+                f"`<model_dir>/config.json` (written by `forgather finalize "
+                f"--quantize <recipe>`), or re-finalize the source model "
+                f"with `--quantize`."
             )
 
     return None
