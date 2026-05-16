@@ -408,6 +408,16 @@ input {
   opacity: 0.5;
   cursor: not-allowed;
 }
+/* Scheduler-toggle row in the footer: green when running, muted when
+   paused. Mirrors the original .sched-btn tinting but layered onto
+   the icon-button frame the footer uses. */
+.sched-footer-btn.running {
+  color: #3fb950;
+  border-color: #3fb95066;
+}
+.sched-footer-btn.paused {
+  color: var(--fg-muted);
+}
 
 .sched-btn {
   background: transparent;

@@ -83,10 +83,33 @@ function SidebarIcon() {
   );
 }
 
-// Circular-arrow glyph matching the top-bar Refresh button (which uses
-// the "⟳" character). Inline SVG so disabled / hover styling matches
-// the gear button beside it without depending on the system font's
-// rendering of the unicode glyph.
+// Classic power-cycle glyph: vertical line through a three-quarter
+// arc. Visually distinct from the circular-arrow ReloadIcon next to
+// it so operators don't confuse "re-read disk" with "re-exec the
+// server process".
+function PowerIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3 v9" />
+      <path d="M6.3 7.7 A8 8 0 1 0 17.7 7.7" />
+    </svg>
+  );
+}
+
+// Circular-arrow glyph matching the old top-bar Refresh button (which
+// used the "⟳" character). Inline SVG so disabled / hover styling
+// matches the other icon buttons in the footer without depending on
+// the system font's rendering of the unicode glyph.
 function ReloadIcon() {
   return (
     <svg
@@ -822,28 +845,6 @@ export default function App() {
             <h1>Forgather Server</h1>
             <div className="sidebar-header-actions">
               <button
-                className="refresh-btn"
-                onClick={refresh}
-                title="Re-read projects, configs, and templates from disk"
-              >
-                ⟳ Refresh
-              </button>
-              <button
-                className={
-                  "sched-btn " + (schedEnabled ? "running" : "paused")
-                }
-                onClick={() => toggleSched.mutate(!schedEnabled)}
-                disabled={toggleSched.isPending || schedQ.isLoading}
-                title={
-                  schedEnabled
-                    ? "Scheduler running — click to pause"
-                    : "Scheduler paused — click to run"
-                }
-                aria-label={schedEnabled ? "Pause scheduler" : "Run scheduler"}
-              >
-                {schedEnabled ? "⏸" : "▶"}
-              </button>
-              <button
                 className="sidebar-toggle"
                 onClick={() => setSidebarCollapsed(true)}
                 title="Collapse sidebar (Ctrl+B)"
@@ -1100,6 +1101,30 @@ export default function App() {
           <div className="sidebar-footer">
             <button
               className="sidebar-footer-gear"
+              onClick={refresh}
+              title="Re-read projects, configs, and templates from disk"
+              aria-label="Refresh data"
+            >
+              <ReloadIcon />
+            </button>
+            <button
+              className={
+                "sidebar-footer-gear sched-footer-btn " +
+                (schedEnabled ? "running" : "paused")
+              }
+              onClick={() => toggleSched.mutate(!schedEnabled)}
+              disabled={toggleSched.isPending || schedQ.isLoading}
+              title={
+                schedEnabled
+                  ? "Scheduler running — click to pause"
+                  : "Scheduler paused — click to run"
+              }
+              aria-label={schedEnabled ? "Pause scheduler" : "Run scheduler"}
+            >
+              {schedEnabled ? "⏸" : "▶"}
+            </button>
+            <button
+              className="sidebar-footer-gear"
               onClick={restartServer}
               disabled={restarting}
               title={
@@ -1109,7 +1134,7 @@ export default function App() {
               }
               aria-label="Restart server"
             >
-              <ReloadIcon />
+              <PowerIcon />
             </button>
             <button
               className="sidebar-footer-gear"
