@@ -1025,7 +1025,10 @@ export default function App() {
                     </div>
                     {showChevron && open && (
                       <div className="services-category-body">
-                        <ServicesPanel filterType={t!} />
+                        <ServicesPanel
+                          filterType={t!}
+                          onSwitchView={(v) => setView(v)}
+                        />
                       </div>
                     )}
                   </div>

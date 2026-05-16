@@ -323,6 +323,24 @@ input {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* When the label is a clickable button (running services where we
+   have a useful default action — open URL or switch view) make it
+   look like a link without going full underline-on-hover noise. */
+button.service-id-active {
+  display: block;
+  flex: 1;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  font: inherit;
+  color: var(--accent, #58a6ff);
+  cursor: pointer;
+}
+button.service-id-active:hover {
+  text-decoration: underline;
+}
 .service-action {
   background: transparent;
   border: 1px solid var(--border);

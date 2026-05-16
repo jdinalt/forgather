@@ -19,8 +19,20 @@ function serviceId(s: ServiceStatus): string {
  *  When ``filterType`` is provided only entries of that service type
  *  are rendered — used to fan out the list under each category's
  *  launcher button (Inference, Dataset, …). Empty omitted filter
- *  shows every configured service. */
-export function ServicesPanel({ filterType }: { filterType?: string }) {
+ *  shows every configured service.
+ *
+ *  ``onSwitchView`` is used when a running instance's row is clicked
+ *  for a type whose useful action is "go look at the matching view"
+ *  rather than "open a URL" (inference / dataset). For mkdocs and
+ *  tensorboard we open the spawned server's URL in a new tab
+ *  directly. */
+export function ServicesPanel({
+  filterType,
+  onSwitchView,
+}: {
+  filterType?: string;
+  onSwitchView?: (view: "inference" | "datasets") => void;
+}) {
   const qc = useQueryClient();
   const q = useQuery({
     queryKey: ["services"],
@@ -51,6 +63,58 @@ export function ServicesPanel({ filterType }: { filterType?: string }) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const toggleOpen = (key: string) =>
     setExpanded((s) => ({ ...s, [key]: !s[key] }));
+
+  /** Action triggered by clicking a running service's label. Returns
+   *  the human-readable description of what we'll do, or ``null`` when
+   *  the row is inert (not running, or a service type with no useful
+   *  default action). The caller uses the description as the tooltip
+   *  and disables the click when this returns null. */
+  function describeActivate(s: ServiceStatus): {
+    title: string;
+    onClick: () => void;
+  } | null {
+    if (!s.running) return null;
+    const t = s.service.type;
+    const args = s.service.args;
+    const port = typeof args.port === "number" ? args.port : null;
+    const rawHost = typeof args.host === "string" ? args.host : "";
+    // Wildcard / empty bind → use the host the browser is already
+    // talking to. That's the only address we know is reachable from
+    // here, and matches what the JobsPanel does via routable_host but
+    // without needing a server-side stamp.
+    const isWildcard = !rawHost || rawHost === "0.0.0.0" || rawHost === "::";
+    const host = isWildcard
+      ? window.location.hostname || "localhost"
+      : rawHost;
+
+    if (t === "tensorboard" && port != null) {
+      const url = `http://${host}:${port}/`;
+      return {
+        title: `Open TensorBoard at ${url} in a new tab`,
+        onClick: () => window.open(url, "_blank", "noopener,noreferrer"),
+      };
+    }
+    if (t === "mkdocs" && port != null) {
+      const url = `http://${host}:${port}/`;
+      return {
+        title: `Open MkDocs at ${url} in a new tab`,
+        onClick: () => window.open(url, "_blank", "noopener,noreferrer"),
+      };
+    }
+    if (t === "inference" && onSwitchView) {
+      return {
+        title: "Open the Inference view to chat / complete against this server",
+        onClick: () => onSwitchView("inference"),
+      };
+    }
+    if (t === "dataset" && onSwitchView) {
+      return {
+        title: "Open the Datasets view to browse this server",
+        onClick: () => onSwitchView("datasets"),
+      };
+    }
+    return null;
+  }
 
   if (q.isLoading) {
     return <div className="services-panel muted">Loading services…</div>;
@@ -109,9 +173,25 @@ export function ServicesPanel({ filterType }: { filterType?: string }) {
                       : "Not running"
                   }
                 />
-                <span className="service-id" title={key}>
-                  {key}
-                </span>
+                {(() => {
+                  const action = describeActivate(s);
+                  if (!action) {
+                    return (
+                      <span className="service-id" title={key}>
+                        {key}
+                      </span>
+                    );
+                  }
+                  return (
+                    <button
+                      className="service-id service-id-active"
+                      title={action.title}
+                      onClick={action.onClick}
+                    >
+                      {key}
+                    </button>
+                  );
+                })()}
                 <button
                   className="service-action"
                   onClick={() =>
