@@ -659,8 +659,10 @@ function JobCard({
     : null;
 
   // MkDocs serve runs a local HTTP dev server. host:port pair is folded
-  // into ``--dev-addr``; render the URL the same way TB does so the user
-  // can jump straight to the rendered docs.
+  // into ``--dev-addr``; render the URL via ``urlHost`` so a 0.0.0.0
+  // bind resolves to the scheduler-stamped ``routable_host`` (LAN-
+  // reachable IP) rather than ``localhost`` — same fallback as the
+  // inference / dataset jobs above.
   const mkPort =
     isMkDocs && typeof job.job_params?.port === "number"
       ? (job.job_params.port as number)
@@ -672,9 +674,7 @@ function JobCard({
   // MkDocs serve runs the dev server in plain HTTP regardless of
   // forgather's TLS state — the rendered docs are intended for the
   // local network. Keep http://.
-  const mkUrl = mkPort
-    ? `http://${browserSafeHost(mkHost)}:${mkPort}`
-    : null;
+  const mkUrl = mkPort ? `http://${urlHost(mkHost)}:${mkPort}` : null;
 
   const cardClass =
     "job-card " +
