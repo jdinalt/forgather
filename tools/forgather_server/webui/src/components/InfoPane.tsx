@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
@@ -100,22 +100,40 @@ export function InfoPane({ project_dir, enabled, onOpenDoc, onEditFile }: Props)
   const [toc, setToc] = useState<TocEntry[]>([]);
   const refreshToc = useCallback(() => {
     const body = bodyRef.current;
-    if (!body) {
-      setToc([]);
-      return;
-    }
-    const headings = body.querySelectorAll<HTMLElement>(
-      ".info-pane-content h1, .info-pane-content h2, .info-pane-content h3",
-    );
     const entries: TocEntry[] = [];
-    headings.forEach((h) => {
-      const id = h.id;
-      if (!id) return;
-      const text = (h.textContent || "").trim();
-      if (!text) return;
-      entries.push({ id, text, level: Number(h.tagName.slice(1)) });
+    if (body) {
+      const headings = body.querySelectorAll<HTMLElement>(
+        ".info-pane-content h1, .info-pane-content h2, .info-pane-content h3",
+      );
+      headings.forEach((h) => {
+        const id = h.id;
+        if (!id) return;
+        const text = (h.textContent || "").trim();
+        if (!text) return;
+        entries.push({ id, text, level: Number(h.tagName.slice(1)) });
+      });
+    }
+    // Bail out if the outline didn't actually change. Without this, a
+    // DOM mutation that produces the same headings (e.g., react re-
+    // reconciling identical markdown output) would still produce a
+    // fresh array reference on every observer fire and React would
+    // re-render unconditionally — combined with non-memoized
+    // ``components`` that meant a hot infinite loop locked the main
+    // thread.
+    setToc((prev) => {
+      if (
+        prev.length === entries.length &&
+        prev.every(
+          (p, i) =>
+            p.id === entries[i].id &&
+            p.text === entries[i].text &&
+            p.level === entries[i].level,
+        )
+      ) {
+        return prev;
+      }
+      return entries;
     });
-    setToc(entries);
   }, []);
   // Re-extract whenever the rendered project changes (project_dir
   // shift) or the README data refreshes. ``readmeQ.data`` is the
@@ -172,7 +190,12 @@ export function InfoPane({ project_dir, enabled, onOpenDoc, onEditFile }: Props)
   const is404 = errMsg.includes("404");
 
 
-  const components: Components = {
+  // ``components`` MUST be memoized. ReactMarkdown treats this prop
+  // by-reference; a fresh object on every render makes react-
+  // markdown regenerate its child tree, which is what the
+  // MutationObserver below watches — combined that produced an
+  // infinite render loop and a wedged main thread.
+  const components: Components = useMemo(() => ({
     img({ src, alt, ...rest }) {
       if (!src) return null;
       const isAbsolute =
@@ -273,7 +296,7 @@ export function InfoPane({ project_dir, enabled, onOpenDoc, onEditFile }: Props)
       }
       return <a {...rest}>{children}</a>;
     },
-  };
+  }), [project_dir, onOpenDoc, onEditFile]);
 
   // The TOC rides on the same flex shell pattern as DocsPanel's
   // ``.docs-pane-split`` — outline column on the left, scrollable
