@@ -352,6 +352,15 @@ def active_signatures() -> Dict[str, Tuple[str, Optional[str]]]:
 
 
 def status_for_each(services: Iterable[Service]) -> List[ServiceStatus]:
+    """Status snapshot, polled by the webui for the red/green dot.
+
+    ``running`` is true only when an actual JobRecord with status
+    ``"running"`` matches the service signature. "queued" and
+    "starting" both stay red — the dot is meant to reflect the
+    spawned process being live, not "the operator intended to start
+    this", so it doesn't flip until the process is really up and
+    doesn't flip back until the process has finished exiting.
+    """
     sigs = active_signatures()
     out: List[ServiceStatus] = []
     for svc in services:
@@ -359,7 +368,7 @@ def status_for_each(services: Iterable[Service]) -> List[ServiceStatus]:
         active = sigs.get(sig)
         if active:
             qid, st = active
-            running = st in RUNNING_STATUSES or st == "queued"
+            running = st == "running"
             out.append(
                 ServiceStatus(
                     service=svc, running=running, queue_id=qid, status=st
