@@ -54,6 +54,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import yaml
 
 from . import job_records, queue_store, server_config
+from ._atomic import atomic_write_text
 from .job_records import RUNNING_STATUSES, TERMINAL_STATUSES
 
 log = logging.getLogger("forgather_server.services")
@@ -279,6 +280,14 @@ def _write_back(path: Path, data: Dict[str, Any]) -> None:
     fixed preamble at the top of the file is preserved unconditionally
     so the file always opens with a brief description of what each
     section is for.
+
+    Atomic: writes to a sibling .tmp, fsyncs, then os.replaces into
+    place. A crash mid-write can't leave a truncated / empty
+    ``server_config.yaml`` — either the previous contents or the new
+    contents are visible, never something in between. ``mode=0o600``
+    sets the tmp file's mode at ``os.open`` time and re-asserts it
+    via fchmod, so the file is never readable at the umask default,
+    even momentarily.
     """
     # Normalize: empty top-level sections render as ``key: {}`` rather
     # than ``key: null`` — easier to read and to extend by hand later.
@@ -288,11 +297,7 @@ def _write_back(path: Path, data: Dict[str, Any]) -> None:
             normalized[k] = {}
     body = yaml.safe_dump(normalized, sort_keys=False, default_flow_style=False)
     text = _PROGRAMMATIC_HEADER + body
-    path.write_text(text)
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
+    atomic_write_text(path, text, mode=0o600)
 
 
 _PROGRAMMATIC_HEADER = """\
