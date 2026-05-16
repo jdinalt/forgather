@@ -952,6 +952,17 @@ function ConfigContextMenuItems({
     queryFn: () => api.listProjectModels(project.project_dir),
     staleTime: 5 * 60 * 1000,
   });
+  // Resolves the config's *actual* output_dir from its rendered meta
+  // and stats the path. ``output_dir`` may live anywhere on disk —
+  // ``output_models/`` is just a default — so we can't infer
+  // existence from the project tree alone. Used to gate the
+  // "Clean Output" entry on a real existence check.
+  const outputDirQ = useQuery({
+    queryKey: ["config-output-dir", project.project_dir, config.name],
+    queryFn: () => api.configOutputDir(project.project_dir, config.name),
+    staleTime: 60 * 1000,
+  });
+  const outputDirExists = !!outputDirQ.data?.output_dir_exists;
 
   const cls = metaQ.data?.config_class ?? null;
   const isTraining = cls?.startsWith("type.training_script") ?? false;
@@ -975,12 +986,10 @@ function ConfigContextMenuItems({
       )}
       <button onClick={() => onChoose("construct")}>🔨 Construct…</button>
       <button onClick={() => onChoose("overrides")}>🔧 Overrides…</button>
-      {/* Only useful when there's actually something to clean. ``modelEntry``
-          is populated by ``listProjectModels`` for any config whose
-          output_models/<name>/ exists on disk; absence means a fresh
-          config that's never been run, in which case "Clean Output"
-          would be a no-op. */}
-      {showRunCleanup && modelEntry && (
+      {/* Only useful when the config's actual output_dir exists. The
+          path is resolved from the config's meta — it may live
+          anywhere on disk, not necessarily under output_models/. */}
+      {showRunCleanup && outputDirExists && (
         <button onClick={() => onChoose("clean")}>🗑 Clean Output…</button>
       )}
       {showRunCleanup && (
