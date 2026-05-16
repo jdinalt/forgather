@@ -77,6 +77,19 @@ theme:
         icon: material/brightness-7
         name: Switch to dark mode
 
+hooks:
+  # Many pages under docs/ are symlinks to canonical files elsewhere
+  # in the repo (e.g. docs/forgather-server.md ->
+  # ../tools/forgather_server/README.md). MkDocs's relative-link
+  # resolver computes paths from the docs_dir location of the page,
+  # not from the realpath of the source file — so relative links the
+  # author wrote for source-tree context (``../../docs/...`` etc.)
+  # come out broken in the rendered site. This hook walks each
+  # symlinked page's markdown and rewrites relative links to be
+  # equivalent paths interpreted from the docs_dir location, so
+  # MkDocs's own resolver then handles them correctly.
+  - docs_hooks.py
+
 plugins:
   - search
   - mkdocs-jupyter:

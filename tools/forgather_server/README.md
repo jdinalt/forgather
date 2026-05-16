@@ -414,8 +414,8 @@ leave auth on and forward ports over SSH for remote access.
 The `forgather` CLI can talk to a running server directly — no browser needed. All commands accept `--server URL` or the `FORGATHER_SERVER_URL` environment variable; both default to `http://127.0.0.1:8765`.
 
 For a workflow-oriented walkthrough with recipes, see
-[guides/server-cli.md](guides/server-cli.md). The reference below is a
-quick cheat-sheet.
+[guides/server-cli.md](../../docs/guides/server-cli.md). The reference
+below is a quick cheat-sheet.
 
 **Submit jobs from the terminal:**
 
@@ -583,7 +583,7 @@ boot).
 ### Auto-start services
 
 For the YAML schema, supported types, and operator-meta keys, see the
-[`services:` block](#services-block--auto-start-services) section
+[`services:` block](#services-block-auto-start-services) section
 near the top of this document.
 
 **Boot semantics.** The lifespan handler runs an autostart pass

@@ -72,7 +72,7 @@ forgather tb --enqueue [--port 6006] [--priority N] [--server URL]
 This enqueues a TensorBoard job through the same scheduler as the webui
 modal -- the resulting job shows up in the Jobs view and is controlled
 the same way. The full server CLI surface is documented in
-[`tools/forgather_server/README.md`](../../tools/forgather_server/README.md)
+[`tools/forgather_server/README.md`](../forgather-server.md)
 and [`guides/server-cli.md`](server-cli.md).
 
 The `forgather tb` wrapper picks sensible defaults; for arbitrary TB
