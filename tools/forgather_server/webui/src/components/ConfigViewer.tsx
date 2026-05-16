@@ -129,7 +129,11 @@ export function ConfigViewer({
         >
           🔧 Overrides…
         </button>
-        {showRunCleanup && (
+        {/* Hidden when there's no output directory on disk yet —
+            ``modelEntry`` is populated only when the config has a
+            registered ``output_models/<name>/``. A fresh config has
+            nothing to clean. */}
+        {showRunCleanup && modelEntry && (
           <button
             className="clean-btn"
             onClick={() => setCleaning(true)}

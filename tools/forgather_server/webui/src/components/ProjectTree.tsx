@@ -975,7 +975,12 @@ function ConfigContextMenuItems({
       )}
       <button onClick={() => onChoose("construct")}>🔨 Construct…</button>
       <button onClick={() => onChoose("overrides")}>🔧 Overrides…</button>
-      {showRunCleanup && (
+      {/* Only useful when there's actually something to clean. ``modelEntry``
+          is populated by ``listProjectModels`` for any config whose
+          output_models/<name>/ exists on disk; absence means a fresh
+          config that's never been run, in which case "Clean Output"
+          would be a no-op. */}
+      {showRunCleanup && modelEntry && (
         <button onClick={() => onChoose("clean")}>🗑 Clean Output…</button>
       )}
       {showRunCleanup && (
