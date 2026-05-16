@@ -93,6 +93,10 @@ export function InfoPane({ project_dir, enabled, onOpenDoc, onEditFile }: Props)
   // the rendered DOM after the markdown commits, since rehype-slug
   // has already stamped ids on every h1–h6 we'd want to link to.
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  // Last observed scrollTop. Preserved across tab switches so the
+  // Info pane re-opens where the user last was rather than at the
+  // top. Updated by the scroll handler on the .info-pane container.
+  const lastScrollTop = useRef(0);
   const [toc, setToc] = useState<TocEntry[]>([]);
   const refreshToc = useCallback(() => {
     const body = bodyRef.current;
@@ -141,25 +145,32 @@ export function InfoPane({ project_dir, enabled, onOpenDoc, onEditFile }: Props)
     }
   }, []);
 
-  if (!enabled) return null;
+  // Restore the saved scrollTop after re-enabling. Wait one frame so
+  // the previously display:none-d container has its scroll viewport
+  // back; ``display:none`` resets scrollTop in some browsers, so we
+  // can't rely on the browser to remember.
+  useEffect(() => {
+    if (!enabled) return;
+    const raf = requestAnimationFrame(() => {
+      if (bodyRef.current) {
+        bodyRef.current.scrollTop = lastScrollTop.current;
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [enabled]);
 
-  if (readmeQ.isLoading) {
-    return <div className="pane-state">Loading...</div>;
-  }
+  const onScroll = useCallback(() => {
+    if (bodyRef.current) lastScrollTop.current = bodyRef.current.scrollTop;
+  }, []);
 
-  if (readmeQ.isError) {
-    const msg = String(readmeQ.error);
-    if (msg.includes("404")) {
-      return (
-        <div className="pane-state muted">This project has no README.md.</div>
-      );
-    }
-    return (
-      <div className="pane-state err">
-        <pre>{msg}</pre>
-      </div>
-    );
-  }
+  // Loading / error / 404 states render inside the same shell so the
+  // outer ``.info-pane-split`` and ``bodyRef`` survive across them —
+  // otherwise an early ``return`` would unmount the scroll container
+  // on every tab switch and the saved scrollTop would have nothing
+  // to restore against.
+  const errMsg = readmeQ.isError ? String(readmeQ.error) : "";
+  const is404 = errMsg.includes("404");
+
 
   const components: Components = {
     img({ src, alt, ...rest }) {
@@ -276,8 +287,44 @@ export function InfoPane({ project_dir, enabled, onOpenDoc, onEditFile }: Props)
   // tables all share the same left/right edges (instead of each
   // centering itself independently with its own max-width, which
   // produced the inconsistent-spacing rendering).
+  //
+  // Disabled (tab switched away) renders the same shell with
+  // ``display:none`` rather than returning null. Keeping the
+  // .info-pane node mounted means ``bodyRef`` stays valid across
+  // tab switches and the scrollTop-restore effect can put the
+  // user back where they were.
+  let body: React.ReactNode;
+  if (readmeQ.isLoading) {
+    body = <div className="pane-state">Loading...</div>;
+  } else if (is404) {
+    body = (
+      <div className="pane-state muted">This project has no README.md.</div>
+    );
+  } else if (readmeQ.isError) {
+    body = (
+      <div className="pane-state err">
+        <pre>{errMsg}</pre>
+      </div>
+    );
+  } else {
+    body = (
+      <div className="info-pane-content">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[rehypeSlug]}
+          components={components}
+        >
+          {readmeQ.data ?? ""}
+        </ReactMarkdown>
+      </div>
+    );
+  }
+
   return (
-    <div className="info-pane-split">
+    <div
+      className="info-pane-split"
+      style={!enabled ? { display: "none" } : undefined}
+    >
       {toc.length > 1 && (
         <nav className="docs-pane-toc" aria-label="README outline">
           <div className="docs-pane-toc-title">On this page</div>
@@ -299,16 +346,8 @@ export function InfoPane({ project_dir, enabled, onOpenDoc, onEditFile }: Props)
           </ul>
         </nav>
       )}
-      <div className="info-pane" ref={bodyRef}>
-        <div className="info-pane-content">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeSlug]}
-            components={components}
-          >
-            {readmeQ.data ?? ""}
-          </ReactMarkdown>
-        </div>
+      <div className="info-pane" ref={bodyRef} onScroll={onScroll}>
+        {body}
       </div>
     </div>
   );
