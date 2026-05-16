@@ -1559,6 +1559,13 @@ export const api = {
     }
     return r.json();
   },
+  restartServer: async () => {
+    const r = await fetch("/api/server/restart", { method: "POST" });
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<{ restart: string }>;
+  },
   setServiceEnabled: async (type: string, name: string, enabled: boolean) => {
     const r = await fetch(
       `/api/services/${encodeURIComponent(type)}/${encodeURIComponent(name)}/enabled`,

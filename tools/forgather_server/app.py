@@ -27,6 +27,7 @@ from .routes import models as models_routes
 from .routes import projects as projects_routes
 from .routes import queue as queue_routes
 from .routes import search_roots as search_roots_routes
+from .routes import server_admin as server_admin_routes
 from .routes import services as services_routes
 from .routes import tb_proxy as tb_proxy_routes
 
@@ -231,6 +232,7 @@ def create_app() -> FastAPI:
     app.include_router(models_routes.router, prefix="/api")
     app.include_router(queue_routes.router, prefix="/api")
     app.include_router(services_routes.router, prefix="/api")
+    app.include_router(server_admin_routes.router, prefix="/api")
     # Auth-gated reverse proxy to spawned TensorBoard instances. Defaults
     # in tensorboard_ops bind TB to loopback so other local users can't
     # reach it directly; this proxy mounts it under /api/tb/{job_id}/...

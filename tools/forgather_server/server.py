@@ -232,6 +232,24 @@ def main():
         **extra,
     )
 
+    # If the running server asked for an in-place restart, fall through
+    # to here once uvicorn finishes shutting down, then re-exec the
+    # python interpreter with the same argv so the new process picks up
+    # any config-file changes. PID is preserved; spawned jobs keep
+    # running and are re-attached by ``_reattach_or_cleanup_on_startup``
+    # in the fresh server's startup path.
+    from .routes import server_admin as _server_admin
+
+    if _server_admin.is_restart_requested():
+        logging.info("restart requested via API — execv'ing back into argv")
+        # Flush stdio so any buffered banner / log lines hit the TTY
+        # before the new process takes over.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        import os
+
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
 
 def _configure_auth(args, *, tls_on: bool = False) -> None:
     """Print the jupyter-style banner and set up auth state.

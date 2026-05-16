@@ -83,6 +83,29 @@ function SidebarIcon() {
   );
 }
 
+// Circular-arrow glyph matching the top-bar Refresh button (which uses
+// the "⟳" character). Inline SVG so disabled / hover styling matches
+// the gear button beside it without depending on the system font's
+// rendering of the unicode glyph.
+function ReloadIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="23 4 23 10 17 10" />
+      <path d="M20.49 15A9 9 0 1 1 18.36 6.36L23 10" />
+    </svg>
+  );
+}
+
 // Simple gear glyph for the sidebar settings bar. Stroked rather than
 // filled so it sits comfortably next to the other monochrome controls.
 function GearIcon() {
@@ -516,6 +539,59 @@ export default function App() {
     const p = serverConfigQ.data?.path;
     if (p) openFileForEdit(p);
   }, [serverConfigQ.data?.path]);
+
+  // Restart the running server as a fresh process. The backend
+  // returns 202-ish ({"restart": "scheduled"}) before unwinding
+  // uvicorn, so we wait until the next /api/health success after a
+  // failure and then reload the page so the rebooted server's state
+  // is reflected fresh. Spawned subprocesses (training, inference,
+  // dataset_server, …) survive the restart and are reattached on the
+  // new server's startup path.
+  const [restarting, setRestarting] = useState(false);
+  const restartServer = useCallback(async () => {
+    if (
+      !window.confirm(
+        "Restart the forgather server process? Running training / inference / dataset jobs keep running, but the webui will briefly disconnect.",
+      )
+    ) {
+      return;
+    }
+    setRestarting(true);
+    try {
+      await api.restartServer();
+    } catch (e) {
+      window.alert(
+        `Restart request failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      setRestarting(false);
+      return;
+    }
+    // Wait for the server to drop, then poll /api/health until it
+    // answers again. Hard-reload so every cached query refetches
+    // against the rebooted server.
+    let sawDown = false;
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      try {
+        const r = await fetch("/api/health", { cache: "no-store" });
+        if (r.ok) {
+          if (sawDown) {
+            window.location.reload();
+            return;
+          }
+        } else {
+          sawDown = true;
+        }
+      } catch {
+        sawDown = true;
+      }
+      await new Promise((r) => setTimeout(r, 750));
+    }
+    setRestarting(false);
+    window.alert(
+      "Server did not come back within 60 seconds. Check the terminal where it was launched.",
+    );
+  }, []);
 
   const openHelp = useCallback(
     async (menu: ToolHelpMenu) => {
@@ -1005,6 +1081,19 @@ export default function App() {
               the YAML config the server loaded at startup in the editor
               so the operator can tweak persistent server defaults. */}
           <div className="sidebar-footer">
+            <button
+              className="sidebar-footer-gear"
+              onClick={restartServer}
+              disabled={restarting}
+              title={
+                restarting
+                  ? "Waiting for the server to come back up…"
+                  : "Restart the forgather server (running jobs survive)"
+              }
+              aria-label="Restart server"
+            >
+              <ReloadIcon />
+            </button>
             <button
               className="sidebar-footer-gear"
               onClick={openServerConfig}
