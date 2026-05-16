@@ -14,8 +14,13 @@ function serviceId(s: ServiceStatus): string {
  *  expandable to reveal its args; the row carries a red/green dot
  *  (running vs. not), a play/stop toggle wired to the enabled flag,
  *  and an X delete button. Polls every few seconds so the dot flips
- *  shortly after the service is actually up. */
-export function ServicesPanel() {
+ *  shortly after the service is actually up.
+ *
+ *  When ``filterType`` is provided only entries of that service type
+ *  are rendered — used to fan out the list under each category's
+ *  launcher button (Inference, Dataset, …). Empty omitted filter
+ *  shows every configured service. */
+export function ServicesPanel({ filterType }: { filterType?: string }) {
   const qc = useQueryClient();
   const q = useQuery({
     queryKey: ["services"],
@@ -57,12 +62,16 @@ export function ServicesPanel() {
       </div>
     );
   }
-  const items = q.data ?? [];
+  const all = q.data ?? [];
+  const items = filterType
+    ? all.filter((s) => s.service.type === filterType)
+    : all;
   if (items.length === 0) {
     return (
       <div className="services-panel muted">
-        No services configured. Open Inference / Dataset / TensorBoard /
-        MkDocs from above and use “Create service…” to add one.
+        {filterType
+          ? `No ${filterType} services configured. Use “Create service…” to add one.`
+          : "No services configured. Open Inference / Dataset / TensorBoard / MkDocs from above and use “Create service…” to add one."}
       </div>
     );
   }
@@ -120,7 +129,7 @@ export function ServicesPanel() {
                   }
                   aria-label={s.service.enabled ? "Stop" : "Start"}
                 >
-                  {s.service.enabled ? "⏸" : "▶"}
+                  {s.service.enabled ? "⏹" : "▶"}
                 </button>
                 <button
                   className="service-action service-delete"

@@ -201,6 +201,51 @@ input {
   margin-bottom: 8px;
 }
 
+/* Each Services category (Inference, Dataset, …) is a launcher button
+   prefixed with a disclosure chevron that expands the configured-
+   service list scoped to that type. Body indents under the row so
+   instances nest visually under their launcher. */
+.services-category {
+  display: flex;
+  flex-direction: column;
+}
+.services-category-row {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+}
+.services-category-chevron {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  width: 16px;
+  padding: 0;
+  font-size: 11px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.services-category-chevron:hover:not(:disabled) {
+  color: var(--fg);
+}
+.services-category-chevron:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.services-category-row > .sidebar-tool-btn {
+  flex: 1;
+}
+.services-category-body {
+  padding-left: 16px;
+  /* Pull the nested list slightly tighter so it doesn't dominate the
+     launcher row visually. */
+  margin-top: 2px;
+}
+.services-category-body .services-panel {
+  margin-top: 0;
+  border-top: none;
+  padding-top: 0;
+}
+
 /* Configured-services list inside the Services sidebar section. Each
    row carries a red/green dot, a play/pause toggle, and a delete X;
    the disclosure chevron expands the row to show the entry's args. */

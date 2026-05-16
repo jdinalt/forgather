@@ -162,6 +162,12 @@ export default function App() {
   }, []);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [servicesOpen, setServicesOpen] = useState(false);
+  // Each Services launcher row carries its own disclosure for the
+  // configured-instance list. Keyed by service type. Collapsed by
+  // default so the Services pane stays tidy on first paint.
+  const [servicesCategoryOpen, setServicesCategoryOpen] = useState<
+    Record<string, boolean>
+  >({});
   const [searchRootsOpen, setSearchRootsOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
@@ -533,6 +539,10 @@ export default function App() {
     docRelpath: string;
     mkdocsSlug: string;
     extraItems?: ToolExtraMenuItem[];
+    // Filled in for entries under "Services" — the backend service
+    // type each launcher creates instances of. Used to fan out the
+    // configured-service list under the matching launcher row.
+    serviceType?: "inference" | "dataset" | "tensorboard" | "mkdocs";
   }
 
   // Build "Edit Configuration…" for the dataset server. Creates the
@@ -569,6 +579,7 @@ export default function App() {
       onOpen: () => setStartServerOpen(true),
       docRelpath: "tools/inference_server/README.md",
       mkdocsSlug: "tools/inference_server/",
+      serviceType: "inference",
     },
     {
       icon: "🗂",
@@ -584,6 +595,7 @@ export default function App() {
           onChoose: onEditDatasetServerConfig,
         },
       ],
+      serviceType: "dataset",
     },
     {
       icon: "📊",
@@ -592,6 +604,7 @@ export default function App() {
       onOpen: () => setTensorboardOpen(true),
       docRelpath: "docs/guides/tensorboard.md",
       mkdocsSlug: "guides/tensorboard/",
+      serviceType: "tensorboard",
     },
     {
       icon: "📖",
@@ -601,6 +614,7 @@ export default function App() {
       onOpen: () => setMkdocsOpen(true),
       docRelpath: "docs/guides/mkdocs.md",
       mkdocsSlug: "guides/mkdocs/",
+      serviceType: "mkdocs",
     },
   ];
 
@@ -821,31 +835,60 @@ export default function App() {
           >
             <summary>Services</summary>
             <div className="sidebar-tools-body">
-              {SERVICES.map((tool) => (
-                <button
-                  key={tool.label}
-                  className="sidebar-tool-btn"
-                  onClick={tool.onOpen}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    setToolHelpMenu({
-                      x: e.clientX,
-                      y: e.clientY,
-                      docRelpath: tool.docRelpath,
-                      mkdocsSlug: tool.mkdocsSlug,
-                      label: tool.label,
-                      extraItems: tool.extraItems,
-                    });
-                  }}
-                  title={tool.title}
-                >
-                  {tool.icon} {tool.label}
-                </button>
-              ))}
+              {SERVICES.map((tool) => {
+                const t = tool.serviceType;
+                const open = t ? !!servicesCategoryOpen[t] : false;
+                return (
+                  <div
+                    key={tool.label}
+                    className="services-category"
+                  >
+                    <div className="services-category-row">
+                      <button
+                        className="services-category-chevron"
+                        onClick={() => {
+                          if (!t) return;
+                          setServicesCategoryOpen((s) => ({
+                            ...s,
+                            [t]: !s[t],
+                          }));
+                        }}
+                        disabled={!t}
+                        title={open ? "Collapse" : "Expand"}
+                        aria-label={open ? "Collapse" : "Expand"}
+                      >
+                        {open ? "▾" : "▸"}
+                      </button>
+                      <button
+                        className="sidebar-tool-btn"
+                        onClick={tool.onOpen}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setToolHelpMenu({
+                            x: e.clientX,
+                            y: e.clientY,
+                            docRelpath: tool.docRelpath,
+                            mkdocsSlug: tool.mkdocsSlug,
+                            label: tool.label,
+                            extraItems: tool.extraItems,
+                          });
+                        }}
+                        title={tool.title}
+                      >
+                        {tool.icon} {tool.label}
+                      </button>
+                    </div>
+                    {open && t && (
+                      <div className="services-category-body">
+                        <ServicesPanel filterType={t} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
               <div className="sidebar-tools-hint muted">
                 Right-click any service for help.
               </div>
-              <ServicesPanel />
             </div>
           </details>
 
