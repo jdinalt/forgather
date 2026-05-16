@@ -1216,7 +1216,22 @@ BANDWIDTH_TARGET_SECONDS = 2.0
 # 2 s sample, and a malformed manual ``?bytes=`` query is still
 # bounded.
 MAX_BANDWIDTH_BYTES = 4 * 1024 * 1024 * 1024  # 4 GiB
-_BANDWIDTH_CHUNK = b"X" * 65536  # 64 KiB chunks
+# Larger application-layer chunks reduce per-chunk Python overhead
+# in the streaming pipeline (asgi → uvicorn → httpx → ``aiter_bytes``).
+# 1 MiB is the sweet spot empirically — bigger doesn't measurably
+# help, smaller has a noticeable wakeup-rate penalty.
+_BANDWIDTH_CHUNK = b"X" * (1024 * 1024)
+
+# Number of parallel streams used for the real bandwidth measurement.
+# Single-stream throughput on a 10 Gbps link is bottlenecked by the
+# Python ``ssl`` module's per-thread crypto throughput (~2 Gbps with
+# AES-NI), so a single-stream probe under-reports wire speed by 4–5×.
+# Python's ssl releases the GIL during cryptographic operations, so
+# concurrent streams actually parallelize across CPU cores — the
+# same trick ``iperf3 -P 4`` uses. 4 is a conservative default that
+# saturates a 10 Gbps link on modern hardware without exhausting the
+# httpx connection pool (defaults to ~20 keepalive).
+BANDWIDTH_PARALLEL_STREAMS = 4
 
 # Cache TTL: bandwidth / latency don't change minute-to-minute, but a
 # node coming back online or a network reroute should refresh on the
@@ -1375,17 +1390,25 @@ async def _measure_one_peer(
     client: httpx.AsyncClient,
     member: cluster.MemberInfo,
 ) -> BandwidthEntry:
-    """Adaptive bandwidth probe.
+    """Adaptive parallel-stream bandwidth probe.
 
-    A small probe pass (``PROBE_BANDWIDTH_BYTES``) is used to estimate
-    the peer's throughput; the real sample is then sized to take
-    roughly ``BANDWIDTH_TARGET_SECONDS`` of steady-state transfer.
-    Returning only the second-pass measurement means slow links get a
-    small sample (fast wall-clock) and fast links get a big sample
-    (accurate above the noise floor of HTTP framing / TCP slow-start /
-    scheduler jitter) — both finish in roughly the same wall time and
-    both produce a result that matches what ``netperf -t TCP_STREAM``
-    would report on the same wire.
+    Two passes:
+
+    1. A single-stream probe (``PROBE_BANDWIDTH_BYTES``) estimates
+       the peer's per-stream rate and warms the connection pool /
+       TCP cwnd. Result discarded; this is just sizing for the real
+       sample.
+    2. ``BANDWIDTH_PARALLEL_STREAMS`` concurrent streams, each sized
+       to take roughly ``BANDWIDTH_TARGET_SECONDS`` of steady-state
+       transfer at the probed rate. Reported throughput is the
+       aggregate bytes received divided by the wall-clock of the
+       gather — what ``iperf3 -P N`` would call link throughput.
+
+    Single-stream under-reports a 10 Gbps link by 4–5× because
+    Python's ``ssl`` module bottlenecks at ~2 Gbps single-thread;
+    parallel streams give the GIL a chance to interleave between
+    crypto-bound C calls and produce a result that matches
+    ``netperf -t TCP_STREAM`` on the wire.
     """
     self_id = cluster.self_identity()
     if self_id is not None and member.node_id == self_id.node_id:
@@ -1403,15 +1426,37 @@ async def _measure_one_peer(
     if probe.error is not None or probe.bytes_transferred == 0:
         return probe
 
-    # Size the real sample from the probe's measured rate. Bytes-per-
-    # second × target_seconds, capped, floored to "at least the probe
-    # size" so a noisy probe doesn't shrink the real sample below the
-    # noise floor.
+    # Size each parallel stream from the single-stream probe rate.
+    # With N streams in flight the aggregate wall-clock for
+    # ``per_stream_bytes`` bytes on each is ≈ ``BANDWIDTH_TARGET_SECONDS``,
+    # since the streams interleave on the same CPU.
     rate_bps = probe.bytes_transferred / probe.elapsed_seconds
-    target_bytes = int(rate_bps * BANDWIDTH_TARGET_SECONDS)
-    target_bytes = max(target_bytes, PROBE_BANDWIDTH_BYTES * 2)
-    target_bytes = min(target_bytes, MAX_BANDWIDTH_BYTES)
-    return await _stream_and_time(client, member, target_bytes)
+    per_stream_bytes = int(rate_bps * BANDWIDTH_TARGET_SECONDS)
+    per_stream_bytes = max(per_stream_bytes, PROBE_BANDWIDTH_BYTES)
+    per_stream_bytes = min(
+        per_stream_bytes, MAX_BANDWIDTH_BYTES // BANDWIDTH_PARALLEL_STREAMS
+    )
+
+    start = time.monotonic()
+    tasks = [
+        _stream_and_time(client, member, per_stream_bytes)
+        for _ in range(BANDWIDTH_PARALLEL_STREAMS)
+    ]
+    results = await asyncio.gather(*tasks)
+    elapsed = max(time.monotonic() - start, 1e-6)
+    total_bytes = sum(r.bytes_transferred for r in results)
+    first_error = next((r.error for r in results if r.error), None)
+    if first_error is not None and total_bytes == 0:
+        # Every stream failed; surface the first error rather than
+        # a misleading 0 Mbps reading.
+        return _bw_entry(member, error=first_error)
+    mbps = (total_bytes * 8) / elapsed / 1_000_000
+    return _bw_entry(
+        member,
+        bytes_transferred=total_bytes,
+        elapsed_seconds=elapsed,
+        mbps=mbps,
+    )
 
 
 @router.get("/bandwidth", response_model=BandwidthResponse)
