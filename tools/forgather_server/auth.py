@@ -151,6 +151,14 @@ _PEER_ALLOWED_MUTATIONS = frozenset(
         # within ~1 s instead of one collect tick. Read-only-ish:
         # the handler just sets an asyncio.Event.
         "/api/cluster/dataset_servers/refresh",
+        # Bandwidth-test control plane. Opens a one-shot ephemeral
+        # TCP listener and returns its (port, token) so the caller
+        # can transfer over plain TCP instead of through the
+        # Python ssl bottleneck. No state, no side effects beyond
+        # the ephemeral socket — handshake-gated by a fresh 32-byte
+        # token so port scans during a measurement can't poison
+        # the result.
+        "/api/cluster/bandwidth_prep",
     }
 )
 

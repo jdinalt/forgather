@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1222,16 +1223,27 @@ MAX_BANDWIDTH_BYTES = 4 * 1024 * 1024 * 1024  # 4 GiB
 # help, smaller has a noticeable wakeup-rate penalty.
 _BANDWIDTH_CHUNK = b"X" * (1024 * 1024)
 
-# Number of parallel streams used for the real bandwidth measurement.
-# Single-stream throughput on a 10 Gbps link is bottlenecked by the
-# Python ``ssl`` module's per-thread crypto throughput (~2 Gbps with
-# AES-NI), so a single-stream probe under-reports wire speed by 4–5×.
-# Python's ssl releases the GIL during cryptographic operations, so
-# concurrent streams actually parallelize across CPU cores — the
-# same trick ``iperf3 -P 4`` uses. 4 is a conservative default that
-# saturates a 10 Gbps link on modern hardware without exhausting the
-# httpx connection pool (defaults to ~20 keepalive).
+# Number of parallel raw-TCP streams used for the real bandwidth
+# measurement. Even without TLS in the data path, a single Python
+# ``asyncio`` receive loop bottlenecks on per-chunk overhead at
+# ~10 Gbps; parallel streams interleave across cores the way
+# ``iperf3 -P N`` does. 4 is conservative.
 BANDWIDTH_PARALLEL_STREAMS = 4
+
+# Raw-TCP data path. The HTTPS endpoint ``/api/cluster/bandwidth_prep``
+# is the *control* channel — peer-authenticated via mTLS, returns an
+# ephemeral port + per-test handshake token. The actual byte transfer
+# then happens over a plain TCP connection straight to that port,
+# bypassing Python's ``ssl`` module which otherwise caps single-stream
+# throughput at ~2 Gbps even on a 10 Gbps wire. The cluster trust
+# model already grants the LAN every other authenticated read, so an
+# unauthenticated data channel that only serves deterministic zero
+# bytes adds no useful capability to an attacker. The 32-byte
+# handshake token prevents a coincidental port scan during a
+# measurement from poisoning the result.
+BANDWIDTH_RAW_LISTEN_TIMEOUT_SECONDS = 30.0
+BANDWIDTH_RAW_CONNECT_TIMEOUT_SECONDS = 10.0
+BANDWIDTH_RAW_TOKEN_BYTES = 32
 
 # Cache TTL: bandwidth / latency don't change minute-to-minute, but a
 # node coming back online or a network reroute should refresh on the
@@ -1339,6 +1351,195 @@ def _bw_entry(
     )
 
 
+async def _bw_raw_handler(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    expected_token: bytes,
+    total_bytes: int,
+    served: asyncio.Event,
+) -> None:
+    """Serve one raw-TCP bandwidth-test connection.
+
+    Read and verify the 32-byte handshake token first (rejects port
+    scans / accidental traffic), then stream ``total_bytes`` of the
+    deterministic chunk back as fast as the kernel will accept it.
+    """
+    try:
+        actual = await asyncio.wait_for(
+            reader.readexactly(len(expected_token)),
+            timeout=BANDWIDTH_RAW_CONNECT_TIMEOUT_SECONDS,
+        )
+        if actual != expected_token:
+            return
+        sent = 0
+        chunk = _BANDWIDTH_CHUNK
+        while sent < total_bytes:
+            size = min(len(chunk), total_bytes - sent)
+            if size == len(chunk):
+                writer.write(chunk)
+            else:
+                writer.write(chunk[:size])
+            await writer.drain()
+            sent += size
+    except (
+        asyncio.IncompleteReadError,
+        asyncio.TimeoutError,
+        ConnectionError,
+        OSError,
+    ):
+        pass
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            pass
+        served.set()
+
+
+async def _start_bw_listener(total_bytes: int) -> Tuple[int, bytes]:
+    """Open a one-shot ephemeral TCP listener for raw bandwidth tests.
+
+    Returns ``(port, token)``. The first client whose first 32 bytes
+    match ``token`` gets ``total_bytes`` zero bytes streamed back;
+    everyone else is closed without serving. After the served event
+    fires (or ``BANDWIDTH_RAW_LISTEN_TIMEOUT_SECONDS`` passes), the
+    listener stops accepting and unbinds the port.
+    """
+    token = secrets.token_bytes(BANDWIDTH_RAW_TOKEN_BYTES)
+    served = asyncio.Event()
+    server = await asyncio.start_server(
+        lambda r, w: _bw_raw_handler(r, w, token, total_bytes, served),
+        host="0.0.0.0",
+        port=0,
+    )
+    port = server.sockets[0].getsockname()[1]
+
+    async def reaper() -> None:
+        try:
+            await asyncio.wait_for(
+                served.wait(), timeout=BANDWIDTH_RAW_LISTEN_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            pass
+        server.close()
+        try:
+            await server.wait_closed()
+        except Exception:
+            pass
+
+    asyncio.create_task(reaper())
+    return port, token
+
+
+class BandwidthPrepRequest(BaseModel):
+    bytes: int = PROBE_BANDWIDTH_BYTES
+
+
+class BandwidthPrepResponse(BaseModel):
+    port: int
+    bytes: int
+    token: str  # hex-encoded
+
+
+@router.post("/bandwidth_prep", response_model=BandwidthPrepResponse)
+async def bandwidth_prep(req: BandwidthPrepRequest):
+    """Open a one-shot raw-TCP listener and return its coordinates.
+
+    The control plane for the parallel-stream bandwidth test. Peer-
+    authenticated (mTLS via the existing ``_PEER_ALLOWED_PATHS``
+    list); the listener it spawns is unauthenticated for the
+    duration of one transfer, gated by a fresh 32-byte handshake
+    token returned here. See ``_start_bw_listener`` for the
+    operational details.
+    """
+    bytes_to = max(4096, min(int(req.bytes), MAX_BANDWIDTH_BYTES))
+    port, token = await _start_bw_listener(bytes_to)
+    return BandwidthPrepResponse(port=port, bytes=bytes_to, token=token.hex())
+
+
+async def _stream_and_time_raw(
+    client: httpx.AsyncClient,
+    member: cluster.MemberInfo,
+    bytes_to_pull: int,
+) -> BandwidthEntry:
+    """Coordinate a raw-TCP transfer with ``member`` and time the receive.
+
+    Bypasses the HTTPS/TLS data path so Python's ``ssl`` module
+    isn't the bottleneck on fast links. Coordination still flows over
+    the authenticated HTTPS channel: we POST ``/bandwidth_prep`` to
+    have the peer open a one-shot listener and hand back
+    ``(port, token)``, then connect a plain TCP socket to it.
+    """
+    prep_url = _peer_url(member, "/api/cluster/bandwidth_prep")
+    try:
+        r = await client.post(
+            prep_url,
+            json={"bytes": bytes_to_pull},
+            timeout=PEER_BANDWIDTH_TIMEOUT_SECONDS,
+        )
+    except (httpx.HTTPError, OSError) as e:
+        return _bw_entry(member, error=f"prep failed: {e.__class__.__name__}")
+    if r.status_code != 200:
+        return _bw_entry(member, error=f"prep http {r.status_code}")
+    served_by = r.headers.get("x-forgather-node-id") or r.headers.get(
+        "X-Forgather-Node-Id"
+    )
+    if served_by and served_by != member.node_id:
+        return _bw_entry(
+            member,
+            error=(
+                f"address {member.address}:{member.port} "
+                f"served by node {served_by[:8]}"
+            ),
+        )
+    try:
+        data = r.json()
+        port = int(data["port"])
+        token = bytes.fromhex(data["token"])
+    except (ValueError, KeyError, TypeError) as e:
+        return _bw_entry(member, error=f"prep decode failed: {e}")
+
+    received = 0
+    start = time.monotonic()
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(member.address, port),
+            timeout=BANDWIDTH_RAW_CONNECT_TIMEOUT_SECONDS,
+        )
+        try:
+            writer.write(token)
+            await writer.drain()
+            # Big read buffer so a fast link doesn't pay per-chunk
+            # Python overhead. The kernel decides actual sizes.
+            while True:
+                chunk = await reader.read(1024 * 1024)
+                if not chunk:
+                    break
+                received += len(chunk)
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+    except (asyncio.TimeoutError, ConnectionError, OSError) as e:
+        return _bw_entry(
+            member,
+            bytes_transferred=received,
+            elapsed_seconds=time.monotonic() - start,
+            error=f"raw transfer failed: {e.__class__.__name__}",
+        )
+    elapsed = max(time.monotonic() - start, 1e-6)
+    mbps = (received * 8) / elapsed / 1_000_000
+    return _bw_entry(
+        member,
+        bytes_transferred=received,
+        elapsed_seconds=elapsed,
+        mbps=mbps,
+    )
+
+
 async def _stream_and_time(
     client: httpx.AsyncClient,
     member: cluster.MemberInfo,
@@ -1390,25 +1591,29 @@ async def _measure_one_peer(
     client: httpx.AsyncClient,
     member: cluster.MemberInfo,
 ) -> BandwidthEntry:
-    """Adaptive parallel-stream bandwidth probe.
+    """Adaptive parallel-stream raw-TCP bandwidth probe.
 
-    Two passes:
+    Two passes, both using the raw-TCP data path (control plane over
+    the authenticated HTTPS channel; bulk bytes over a one-shot
+    plain TCP listener — see ``_stream_and_time_raw``):
 
-    1. A single-stream probe (``PROBE_BANDWIDTH_BYTES``) estimates
-       the peer's per-stream rate and warms the connection pool /
-       TCP cwnd. Result discarded; this is just sizing for the real
-       sample.
+    1. Single-stream probe (``PROBE_BANDWIDTH_BYTES``) estimates the
+       peer's per-stream rate. Result discarded; this is just sizing.
     2. ``BANDWIDTH_PARALLEL_STREAMS`` concurrent streams, each sized
        to take roughly ``BANDWIDTH_TARGET_SECONDS`` of steady-state
        transfer at the probed rate. Reported throughput is the
        aggregate bytes received divided by the wall-clock of the
        gather — what ``iperf3 -P N`` would call link throughput.
 
-    Single-stream under-reports a 10 Gbps link by 4–5× because
-    Python's ``ssl`` module bottlenecks at ~2 Gbps single-thread;
-    parallel streams give the GIL a chance to interleave between
-    crypto-bound C calls and produce a result that matches
-    ``netperf -t TCP_STREAM`` on the wire.
+    The earlier HTTPS data path under-reported a 10 Gbps link by
+    ~4× because Python's ``ssl`` module bottlenecks at ~2 Gbps
+    per thread; even with parallel HTTPS streams the uvicorn
+    server-side dispatch and httpx client-side pool serialized
+    enough work that we only crept to ~2.8 Gbps. Raw TCP removes
+    every layer above ``asyncio.open_connection`` so the only
+    Python work in the receive loop is `reader.read(1 MiB)` and a
+    `received += len(chunk)` counter, leaving the kernel to do the
+    bulk of the work.
     """
     self_id = cluster.self_identity()
     if self_id is not None and member.node_id == self_id.node_id:
@@ -1420,9 +1625,9 @@ async def _measure_one_peer(
     if not member.reachable:
         return _bw_entry(member, error="member unreachable")
 
-    # Probe pass — also serves as a connection-warm-up, so the final
-    # sample doesn't pay TCP slow-start.
-    probe = await _stream_and_time(client, member, PROBE_BANDWIDTH_BYTES)
+    # Probe pass over raw TCP. Also warms TCP cwnd between this node
+    # and the peer for the parallel run.
+    probe = await _stream_and_time_raw(client, member, PROBE_BANDWIDTH_BYTES)
     if probe.error is not None or probe.bytes_transferred == 0:
         return probe
 
@@ -1439,7 +1644,7 @@ async def _measure_one_peer(
 
     start = time.monotonic()
     tasks = [
-        _stream_and_time(client, member, per_stream_bytes)
+        _stream_and_time_raw(client, member, per_stream_bytes)
         for _ in range(BANDWIDTH_PARALLEL_STREAMS)
     ]
     results = await asyncio.gather(*tasks)
