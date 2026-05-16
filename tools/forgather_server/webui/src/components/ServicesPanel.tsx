@@ -88,7 +88,14 @@ export function ServicesPanel({
       : rawHost;
 
     if (t === "tensorboard" && port != null) {
-      const url = `http://${host}:${port}/`;
+      // TensorBoard is launched with --path_prefix /api/tb/<queue_id>
+      // by the scheduler so the forgather server's reverse proxy can
+      // mount it at /api/tb/{queue_id}/. TB only answers under that
+      // prefix — hitting :port/ returns 404. We don't have direct
+      // access to ``job.path_prefix`` from the ServiceStatus, but the
+      // prefix is deterministic from queue_id, so synthesize it.
+      const prefix = s.queue_id ? `/api/tb/${s.queue_id}/` : "/";
+      const url = `http://${host}:${port}${prefix}`;
       return {
         title: `Open TensorBoard at ${url} in a new tab`,
         onClick: () => window.open(url, "_blank", "noopener,noreferrer"),

@@ -654,8 +654,17 @@ function JobCard({
   // own port. The forgather-server's tb_proxy fronts it (auth-gated) but
   // the direct URL we render here is the bypass for SSH-tunnel users, so
   // it stays http://.
+  //
+  // When TB is bind_all, prefer the host the browser is already
+  // reaching the webui on (window.location.hostname) over a literal
+  // "localhost". The old "localhost" was right for SSH-tunnel users
+  // and wrong for LAN users — substituting window.location.hostname
+  // covers both: SSH-tunnel sessions hit the webui at localhost too,
+  // and LAN sessions hit it at the routable hostname, both yielding
+  // a URL that works.
+  const tbHostBindAll = window.location.hostname || "localhost";
   const tbUrl = tbPort
-    ? `http://${tbBindAll ? "localhost" : browserSafeHost(tbHost)}:${tbPort}${tbPathSuffix}`
+    ? `http://${tbBindAll ? tbHostBindAll : browserSafeHost(tbHost)}:${tbPort}${tbPathSuffix}`
     : null;
 
   // MkDocs serve runs a local HTTP dev server. host:port pair is folded
