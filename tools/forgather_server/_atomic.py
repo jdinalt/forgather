@@ -6,9 +6,14 @@ helpers to guarantee:
 1. **Tmp + os.replace** — the target file is never in a partially-written
    state visible to readers.  A bare ``open(path, "w")`` truncates first,
    leaving a zero-byte window; tmp+rename closes that window.
-2. **fsync before rename** — ``os.replace`` can return before the kernel
-   flushes dirty pages.  Without fsync a crash can leave the *renamed* file
-   intact but with stale (or zero) content.
+2. **fsync before rename, fsync the directory after** — ``os.replace`` can
+   return before the kernel flushes dirty pages. Without the pre-rename
+   ``fsync(fd)`` a crash can leave the *renamed* file intact but with
+   stale (or zero) content; without the post-rename ``fsync(dir_fd)`` the
+   data is durable on its inode but the new dirent pointing at it can be
+   lost across a crash, leaving the previous file visible (or, on a fresh
+   create, no entry at all). Pre + post fsync is the textbook POSIX
+   safe-replace recipe.
 3. **Tmp in the same directory** — so the rename stays on one filesystem and
    is truly atomic (POSIX).  Cross-device renames fall back to copy+unlink.
 4. **Mode applied before any data is written** — when ``mode`` is given the
@@ -35,6 +40,29 @@ from pathlib import Path
 from typing import Optional
 
 
+def _fsync_dir(path: Path) -> None:
+    """Best-effort fsync of a directory so a freshly-renamed entry is durable.
+
+    POSIX requires this for the rename itself to survive a crash —
+    ``fsync(file_fd)`` persists the inode's data blocks, but the
+    directory entry pointing at that inode is a separate write that
+    needs its own flush. On Linux with ext4 / xfs / btrfs the dir-fsync
+    persists the dirent. Silent no-op on platforms that don't expose
+    directory fds (Windows): the rename is durable per the platform's
+    own semantics or not at all, and we don't make it any worse.
+    """
+    try:
+        fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def _open_tmp_with_mode(tmp: Path, mode: Optional[int]) -> int:
     """Return a freshly-created tmp fd. Applies ``mode`` atomically at
     creation (subject to umask, then re-asserted via fchmod) when given.
@@ -58,11 +86,19 @@ def _open_tmp_with_mode(tmp: Path, mode: Optional[int]) -> int:
 def atomic_write_text(path: Path, content: str, *, mode: Optional[int] = None) -> None:
     """Write *content* to *path* atomically.
 
-    Creates the parent directory if it does not exist, writes to a sibling
-    ``.tmp`` file, fsyncs the fd, then renames into place. When ``mode`` is
-    provided the tmp file is created with that mode AND has it re-asserted
-    via fchmod — sensitive content is never readable at the umask-default
-    mode, even momentarily.
+    Sequence (POSIX safe-replace):
+
+      1. ``mkdir -p`` the parent.
+      2. Open a sibling ``.tmp`` and write the new content.
+      3. ``fsync`` the tmp fd so the data is durable on its inode
+         before any new dirent points at it.
+      4. ``os.replace`` the tmp into place — atomic rename.
+      5. ``fsync`` the parent directory so the new dirent itself is
+         durable across a crash.
+
+    When ``mode`` is provided the tmp file is created with that mode
+    AND has it re-asserted via fchmod — sensitive content is never
+    readable at the umask-default mode, even momentarily.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -72,6 +108,7 @@ def atomic_write_text(path: Path, content: str, *, mode: Optional[int] = None) -
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+    _fsync_dir(path.parent)
 
 
 def atomic_write_bytes(
@@ -86,3 +123,4 @@ def atomic_write_bytes(
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+    _fsync_dir(path.parent)
