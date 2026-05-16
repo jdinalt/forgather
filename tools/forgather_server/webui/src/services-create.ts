@@ -5,6 +5,18 @@ import { api } from "./api";
 /** Service type names accepted by the backend ``services:`` config. */
 export type ServiceTypeName = "dataset" | "inference" | "tensorboard" | "mkdocs";
 
+/** Coerce an arbitrary string into something the backend's name
+ *  validator (``[A-Za-z0-9_-]+``) accepts. Anything that isn't a
+ *  letter, digit, dash, or underscore becomes a dash; runs of dashes
+ *  are collapsed; leading / trailing dashes are trimmed. Empty result
+ *  → empty string (the prompt falls back to a blank default). */
+export function sanitizeServiceName(raw: string): string {
+  return raw
+    .replace(/[^A-Za-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 /** Shared flow behind every modal's "Create service…" button.
  *
  *  Prompts the operator for a service name, validates it locally to

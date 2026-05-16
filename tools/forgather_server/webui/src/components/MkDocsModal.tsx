@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
-import { promptAndCreateService } from "../services-create";
+import { promptAndCreateService, sanitizeServiceName } from "../services-create";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
 import { ModalBackdrop } from "./ModalBackdrop";
@@ -304,10 +304,17 @@ export function MkDocsModal({
               onClick={async () => {
                 const finalConfig = configFile.trim();
                 if (!finalConfig) return;
+                // Default name: basename of the dir containing the
+                // mkdocs.yml — the project / repo name, which is
+                // more informative than the literal "mkdocs.yml".
+                const parts = finalConfig.split("/").filter(Boolean);
+                const parentDir = parts.length >= 2 ? parts[parts.length - 2] : "";
+                const suggested = sanitizeServiceName(parentDir || "docs");
                 const ok = await promptAndCreateService(
                   qc,
                   "mkdocs",
                   buildArgs(finalConfig),
+                  suggested,
                 );
                 if (ok) {
                   onServiceCreated?.("mkdocs");

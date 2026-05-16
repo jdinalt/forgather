@@ -3,7 +3,7 @@ import { useState } from "react";
 
 import { api, ConfigInfo, ProjectInfo } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
-import { promptAndCreateService } from "../services-create";
+import { promptAndCreateService, sanitizeServiceName } from "../services-create";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { ModalBackdrop } from "./ModalBackdrop";
 import { PathField } from "./PathField";
@@ -341,10 +341,17 @@ export function TensorBoardModal({
               className="secondary"
               onClick={async () => {
                 if (!logdir.trim()) return;
+                // Default name: basename of the logdir — usually the
+                // run / experiment directory, which is the natural
+                // human label for "this TB instance".
+                const suggested = sanitizeServiceName(
+                  logdir.trim().split("/").filter(Boolean).pop() ?? "",
+                );
                 const ok = await promptAndCreateService(
                   qc,
                   "tensorboard",
                   buildArgs(),
+                  suggested,
                 );
                 if (ok) {
                   onServiceCreated?.("tensorboard");

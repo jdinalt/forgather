@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 
 import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
-import { promptAndCreateService } from "../services-create";
+import { promptAndCreateService, sanitizeServiceName } from "../services-create";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { ModalBackdrop } from "./ModalBackdrop";
 import { PathField } from "./PathField";
@@ -419,10 +419,16 @@ export function DatasetServerModal({
             <button
               className="secondary"
               onClick={async () => {
+                // Default name: ``dataset-<port>`` — the port is what
+                // makes multiple instances on the same host distinct
+                // and is always present (defaulted to 8766 in the
+                // form).
+                const suggested = sanitizeServiceName(`dataset-${port}`);
                 const ok = await promptAndCreateService(
                   qc,
                   "dataset",
                   buildArgs(),
+                  suggested,
                 );
                 if (ok) {
                   onServiceCreated?.("dataset");

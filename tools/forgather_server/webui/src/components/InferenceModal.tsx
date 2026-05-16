@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 
 import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
-import { promptAndCreateService } from "../services-create";
+import { promptAndCreateService, sanitizeServiceName } from "../services-create";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
 import { ModalBackdrop } from "./ModalBackdrop";
@@ -522,7 +522,18 @@ export function InferenceModal({
                   // the operator's choice so autostart respects it.
                   requested_gpus: requestedGpus,
                 };
-                const ok = await promptAndCreateService(qc, "inference", args);
+                // Default name: basename of the model path. Falls
+                // back to the empty string if sanitization eats the
+                // whole thing (the prompt then opens blank).
+                const suggested = sanitizeServiceName(
+                  finalPath.split("/").filter(Boolean).pop() ?? "",
+                );
+                const ok = await promptAndCreateService(
+                  qc,
+                  "inference",
+                  args,
+                  suggested,
+                );
                 if (ok) {
                   onServiceCreated?.("inference");
                   onClose();
