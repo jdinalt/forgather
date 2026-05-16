@@ -215,18 +215,36 @@ export function DocsPanel({
   //
   // The scroll has to be applied *after* the new content has
   // rendered — otherwise the scrollable area may be shorter than
-  // the saved offset and the browser clamps to 0. We watch the
-  // ``doc`` value (populated by react-query once the fetch resolves)
-  // so the effect fires on both path change and content arrival.
-  // The TOC rebuild rides the same effect.
+  // the saved offset and the browser clamps to 0. Watch the ``doc``
+  // value (populated by react-query once the fetch resolves) so the
+  // effect fires on both path change and content arrival.
+  //
+  // We must NOT re-apply when the effect re-fires for unrelated
+  // reasons — react-query refetches the doc query on window focus,
+  // and any parent re-render that changes ``onScrollRestored``'s
+  // identity also re-triggers this effect. Without a guard, those
+  // spurious runs would slam the user's scroll position back to the
+  // top of the page (writing ``scrollTop = restoreScrollTop ?? 0``
+  // for a stale ``restoreScrollTop`` of ``null``). Dedupe by
+  // tracking the path we last applied scroll to in a ref.
+  const appliedPathRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
+    if (appliedPathRef.current === effectivePath) {
+      // Same page; don't touch the user's scroll position.
+      return;
+    }
+    if (!doc) {
+      // Content not loaded yet; let the next render (when ``doc``
+      // populates) actually apply the scroll.
+      return;
+    }
+    appliedPathRef.current = effectivePath;
     const el = bodyRef.current;
     if (!el) return;
     const target = restoreScrollTop ?? 0;
     // Apply once immediately so any tall placeholder collapses
     // promptly, then again on the next frame after layout has had a
-    // chance to settle with the freshly-rendered content. Both
-    // applies are cheap; the second one is the load-bearing one.
+    // chance to settle with the freshly-rendered content.
     el.scrollTop = target;
     const raf = requestAnimationFrame(() => {
       if (bodyRef.current) bodyRef.current.scrollTop = target;
