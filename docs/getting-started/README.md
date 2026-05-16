@@ -238,26 +238,6 @@ rename). Power-loss-mid-write never leaves a half-written canonical
 file, and every reader tolerates a corrupt or truncated file by
 falling back to empty state.
 
-### Dev mode (hot reload)
-
-If you're modifying `webui/src/`, run the Vite dev server alongside
-the Python backend:
-
-```bash
-# Terminal 1 — API backend
-forgather server -p 8765
-
-# Terminal 2 — Vite dev server (hot reload, proxies /api → :8765)
-cd tools/forgather_server/webui
-npm run dev          # opens http://localhost:5173
-```
-
-For an end-to-end tour of the UI — install through training a small
-model and chatting with it — see the
-[Forgather server walkthrough](../guides/forgather-server-walkthrough.md).
-For the full feature reference and API documentation, see the
-[Forgather server README](../forgather-server.md).
-
 ## Next steps
 
 With your first model trained, here are recommended paths for learning more:

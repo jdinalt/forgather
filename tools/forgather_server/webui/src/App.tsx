@@ -149,7 +149,7 @@ function GearIcon() {
 }
 
 type DocsBackEntry =
-  | { kind: "doc"; path: string | null }
+  | { kind: "doc"; path: string | null; scrollTop: number }
   | {
       kind: "external";
       view: View;
@@ -309,12 +309,27 @@ export default function App() {
     setView("edit");
   };
 
+  // Captured scroll position to restore after the next back-navigation
+  // applies. Set when Back is clicked, consumed by DocsPanel once the
+  // popped page's content has rendered. ``null`` outside of Back, so
+  // forward navigations always start at the top.
+  const [pendingDocsScroll, setPendingDocsScroll] = useState<number | null>(null);
+
+  // Helper: read the current docs scrollTop from the DOM. The body is
+  // a single fixed selector (the only ``.docs-pane-body`` in the
+  // tree), so document.querySelector is fine.
+  const readDocsScrollTop = (): number => {
+    const el = document.querySelector(".docs-pane-body");
+    return el ? el.scrollTop : 0;
+  };
+
   // Open a document in the Docs view. If we're entering Docs from another
   // view (e.g. clicking a markdown link in a project README), snapshot the
   // current view + selection so Back returns there. If we're already in
   // Docs and navigating to a different doc, snapshot the previous doc
-  // path. Either way, leave docsBackStack untouched if the path is the
-  // same as the current one (idempotent re-entry).
+  // path plus its scroll position so Back restores it. Either way, leave
+  // docsBackStack untouched if the path is the same as the current one
+  // (idempotent re-entry).
   const openDocs = useCallback(
     (path: string | null) => {
       if (view !== "docs") {
@@ -323,18 +338,26 @@ export default function App() {
           { kind: "external", view, selection: selected, tab },
         ]);
         setDocsPath(path);
+        setPendingDocsScroll(null);
         setView("docs");
         return;
       }
       if (docsPath !== path) {
-        setDocsBackStack((s) => [...s, { kind: "doc", path: docsPath }]);
+        const scrollTop = readDocsScrollTop();
+        setDocsBackStack((s) => [
+          ...s,
+          { kind: "doc", path: docsPath, scrollTop },
+        ]);
         setDocsPath(path);
+        setPendingDocsScroll(null);
       }
     },
     [view, selected, tab, docsPath],
   );
   // Pop the back-stack and apply the restored state. For a "doc" entry
-  // we just swap the doc path; for an "external" entry we restore the
+  // we swap the doc path and stash the saved scrollTop in
+  // pendingDocsScroll so DocsPanel restores it once the prev page's
+  // content has rendered. For an "external" entry we restore the
   // pre-Docs view + selection (matching browser-back semantics across
   // the view boundary).
   const docsBack = useCallback(() => {
@@ -346,16 +369,23 @@ export default function App() {
       setSelected(top.selection);
       setTab(top.tab);
     } else {
+      setPendingDocsScroll(top.scrollTop);
       setDocsPath(top.path);
     }
   }, [docsBackStack]);
   // Within-docs link click: the user clicked a markdown / ipynb link in
-  // the rendered doc. Push the previous path so Back unwinds.
+  // the rendered doc. Push the previous path + scroll so Back unwinds
+  // to exactly where the user was.
   const docsNavigate = useCallback(
     (path: string) => {
       if (docsPath === path) return;
-      setDocsBackStack((s) => [...s, { kind: "doc", path: docsPath }]);
+      const scrollTop = readDocsScrollTop();
+      setDocsBackStack((s) => [
+        ...s,
+        { kind: "doc", path: docsPath, scrollTop },
+      ]);
       setDocsPath(path);
+      setPendingDocsScroll(null);
     },
     [docsPath],
   );
@@ -1227,6 +1257,8 @@ export default function App() {
             onEdit={openFileForEdit}
             canGoBack={docsBackStack.length > 0}
             onBack={docsBack}
+            restoreScrollTop={pendingDocsScroll}
+            onScrollRestored={() => setPendingDocsScroll(null)}
           />
         </div>
         <div

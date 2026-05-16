@@ -23,6 +23,14 @@ interface Props {
   canGoBack: boolean;
   /** Pop the parent's docs-history stack. */
   onBack: () => void;
+  /** When the parent pops a Back-stack entry it captures the saved
+   *  scrollTop here. ``DocsPanel`` applies it once the popped page's
+   *  content has finished rendering (so the scrollable area is tall
+   *  enough), then calls ``onScrollRestored``. ``null`` means
+   *  "start at the top" — the default behaviour for forward
+   *  navigation. */
+  restoreScrollTop?: number | null;
+  onScrollRestored?: () => void;
 }
 
 /** A single entry in the docs outline / TOC. ``level`` is the
@@ -132,7 +140,15 @@ function resolveAbsolute(currentDocPath: string, href: string): string | null {
   return joinAndNormalize(dirname(currentDocPath), clean);
 }
 
-export function DocsPanel({ path, onNavigate, onEdit, canGoBack, onBack }: Props) {
+export function DocsPanel({
+  path,
+  onNavigate,
+  onEdit,
+  canGoBack,
+  onBack,
+  restoreScrollTop,
+  onScrollRestored,
+}: Props) {
   // Resolve the default landing page when the panel is opened without a
   // specific path. Once resolved, ``path`` should be set by the parent so
   // future navigations stick.
@@ -153,6 +169,13 @@ export function DocsPanel({ path, onNavigate, onEdit, canGoBack, onBack }: Props
   });
 
   const [menu, setMenu] = useState<MenuState | null>(null);
+
+  // Derived doc value — pulled up here so the scroll-restore effect
+  // below can include it in its dependency array. Stable identity
+  // across re-renders that don't refetch (react-query guarantees
+  // ``fileQ.data`` is the same object until the next successful
+  // fetch).
+  const doc = fileQ.data ?? null;
 
   // Outline / TOC. Extracted from the rendered DOM after each doc loads
   // — rehype-slug stamps id="..." on every h1-h6 so we can read both
@@ -183,16 +206,37 @@ export function DocsPanel({ path, onNavigate, onEdit, canGoBack, onBack }: Props
     setToc(entries);
   }, []);
 
-  // Reset scroll to top when switching documents so a fresh doc doesn't
-  // inherit the previous one's scroll offset, and rebuild the TOC.
+  // Switch-document scroll handling. Two cases:
+  //
+  //  1. Forward navigation (``restoreScrollTop`` is null): jump to
+  //     the top of the new page, matching browser-new-tab behaviour.
+  //  2. Back navigation (``restoreScrollTop`` is a number): jump to
+  //     the saved offset so the user lands where they left off.
+  //
+  // The scroll has to be applied *after* the new content has
+  // rendered — otherwise the scrollable area may be shorter than
+  // the saved offset and the browser clamps to 0. We watch the
+  // ``doc`` value (populated by react-query once the fetch resolves)
+  // so the effect fires on both path change and content arrival.
+  // The TOC rebuild rides the same effect.
   useEffect(() => {
-    const el = document.querySelector(".docs-pane-body");
-    if (el) el.scrollTop = 0;
-    // Defer to the next frame so react-markdown has actually committed
-    // the new headings before we query for them.
-    const id = requestAnimationFrame(refreshToc);
-    return () => cancelAnimationFrame(id);
-  }, [effectivePath, refreshToc]);
+    const el = bodyRef.current;
+    if (!el) return;
+    const target = restoreScrollTop ?? 0;
+    // Apply once immediately so any tall placeholder collapses
+    // promptly, then again on the next frame after layout has had a
+    // chance to settle with the freshly-rendered content. Both
+    // applies are cheap; the second one is the load-bearing one.
+    el.scrollTop = target;
+    const raf = requestAnimationFrame(() => {
+      if (bodyRef.current) bodyRef.current.scrollTop = target;
+      refreshToc();
+      if (restoreScrollTop != null && onScrollRestored) {
+        onScrollRestored();
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [effectivePath, doc, restoreScrollTop, refreshToc, onScrollRestored]);
 
   // Rebuild when the rendered doc content itself changes (re-fetch,
   // ipynb cells loaded async, etc.). Lightweight observer over the
@@ -220,7 +264,6 @@ export function DocsPanel({ path, onNavigate, onEdit, canGoBack, onBack }: Props
   // error states render INSIDE the body so the user can always recover
   // by going back — without that, a 404 left the panel stuck with no
   // way out short of a page reload.
-  const doc = fileQ.data ?? null;
   const headerPath = doc?.path ?? effectivePath ?? "";
   const docDir = doc ? dirname(doc.path) : "";
 
