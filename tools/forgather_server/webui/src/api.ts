@@ -280,6 +280,23 @@ export interface ClusterBandwidthResponse {
   server_time: number;
 }
 
+export interface ClusterLatencyEntry {
+  peer_node_id: string;
+  peer_hostname: string;
+  peer_address: string;
+  samples: number;
+  min_ms: number;
+  median_ms: number;
+  max_ms: number;
+  timestamp: number;
+  error: string | null;
+}
+
+export interface ClusterLatencyResponse {
+  measurements: ClusterLatencyEntry[];
+  server_time: number;
+}
+
 export interface ClusterJobMember {
   node_id: string;
   hostname: string;
@@ -1348,6 +1365,34 @@ export const api = {
       throw new Error(`${r.status}: ${detail}`);
     }
     return r.json() as Promise<ClusterBandwidthResponse>;
+  },
+  refreshClusterBandwidthOne: async (
+    nodeId: string,
+  ): Promise<ClusterBandwidthEntry> => {
+    const r = await fetch(
+      `/api/cluster/bandwidth/refresh_one/${encodeURIComponent(nodeId)}`,
+      { method: "POST" },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<ClusterBandwidthEntry>;
+  },
+  getClusterLatency: () =>
+    fetchJson<ClusterLatencyResponse>("/api/cluster/latency"),
+  refreshClusterLatencyOne: async (
+    nodeId: string,
+  ): Promise<ClusterLatencyEntry> => {
+    const r = await fetch(
+      `/api/cluster/latency/refresh_one/${encodeURIComponent(nodeId)}`,
+      { method: "POST" },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<ClusterLatencyEntry>;
   },
   /** Master-proxied GPU policy mutation. Routes to the named node's
    *  /api/cluster/gpu_policy_local; short-circuits when the target is
