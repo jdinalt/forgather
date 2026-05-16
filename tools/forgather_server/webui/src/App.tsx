@@ -83,25 +83,23 @@ function SidebarIcon() {
   );
 }
 
-// Classic power-cycle glyph: vertical line through a three-quarter
-// arc. Visually distinct from the circular-arrow ReloadIcon next to
-// it so operators don't confuse "re-read disk" with "re-exec the
-// server process".
-function PowerIcon() {
+// "Restart-alt" glyph: a clockwise circular arrow with the arrow
+// pointing *back* into a small notch — the classic "reboot in place"
+// icon (Material Design's ``restart_alt``). Visually distinct from a
+// plain power button (which means shutdown) and from the C-shaped
+// ReloadIcon (which means refresh / reload data). Filled rather than
+// stroked because the path data is borrowed from Material's icon
+// font, which is shipped as a filled outline.
+function RestartIcon() {
   return (
     <svg
       viewBox="0 0 24 24"
       width="16"
       height="16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
+      fill="currentColor"
       aria-hidden="true"
     >
-      <path d="M12 3 v9" />
-      <path d="M6.3 7.7 A8 8 0 1 0 17.7 7.7" />
+      <path d="M12 5 V1 L 7 6 l 5 5 V 7 c 3.31 0 6 2.69 6 6 s -2.69 6 -6 6 s -6 -2.69 -6 -6 H 4 c 0 4.42 3.58 8 8 8 s 8 -3.58 8 -8 S 16.42 5 12 5 z" />
     </svg>
   );
 }
@@ -1137,7 +1135,7 @@ export default function App() {
               }
               aria-label="Restart server"
             >
-              <PowerIcon />
+              <RestartIcon />
             </button>
             <button
               className="sidebar-footer-gear"
