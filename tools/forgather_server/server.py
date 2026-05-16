@@ -104,6 +104,18 @@ def main():
         help="Generate a fresh auth token at startup (invalidates existing CLIs)",
     )
     parser.add_argument(
+        "--persist-sessions",
+        action="store_true",
+        help=(
+            "Persist browser sessions to disk so the webui doesn't "
+            "force a re-login on every server restart. Sessions still "
+            "obey the 30-day TTL and can be revoked via /api/auth/logout. "
+            "Convenience for rapid dev / restart cycles; remove the "
+            "file at <config>/server/sessions.json to drop all "
+            "persisted sessions."
+        ),
+    )
+    parser.add_argument(
         "--cluster",
         default=None,
         metavar="NAME",
@@ -244,6 +256,9 @@ def _configure_auth(args, *, tls_on: bool = False) -> None:
         token = auth.regenerate_token()
     else:
         token = auth.load_token()
+
+    if args.persist_sessions:
+        auth.enable_session_persistence()
 
     on_loopback = args.host in ("127.0.0.1", "::1", "localhost")
     scheme = "https" if tls_on else "http"

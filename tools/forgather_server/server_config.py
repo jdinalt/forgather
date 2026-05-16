@@ -45,6 +45,7 @@ args:
   # reload: false
   # no_auth: false
   # regen_token: false
+  # persist_sessions: false   # keep browser sessions across restarts (dev)
   # cluster: null
   # cluster_address: []
   # lock_inference_proxy: false

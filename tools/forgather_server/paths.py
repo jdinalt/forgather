@@ -156,6 +156,7 @@ _SENSITIVE_TOPLEVEL_FILES = (
     "job_records.json",
     "gpu_policy.json",
     "search_roots.json",
+    "sessions.json",
 )
 
 
