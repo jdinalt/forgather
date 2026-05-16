@@ -45,9 +45,14 @@ function savePersisted(s: PersistedDatasetServer) {
 interface Props {
   onClose: () => void;
   onSubmitted?: (queueId: string) => void;
+  onServiceCreated?: (type: "dataset") => void;
 }
 
-export function DatasetServerModal({ onClose, onSubmitted }: Props) {
+export function DatasetServerModal({
+  onClose,
+  onSubmitted,
+  onServiceCreated,
+}: Props) {
   const qc = useQueryClient();
   const schedQ = useQuery({
     queryKey: ["scheduler-status"],
@@ -419,7 +424,10 @@ export function DatasetServerModal({ onClose, onSubmitted }: Props) {
                   "dataset",
                   buildArgs(),
                 );
-                if (ok) onClose();
+                if (ok) {
+                  onServiceCreated?.("dataset");
+                  onClose();
+                }
               }}
               disabled={partialLocals}
               title="Persist these settings to the server config as an auto-start service"

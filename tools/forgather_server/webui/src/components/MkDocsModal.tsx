@@ -41,13 +41,18 @@ function savePersisted(s: PersistedMkDocs) {
 interface Props {
   onClose: () => void;
   onSubmitted?: (queueId: string) => void;
+  onServiceCreated?: (type: "mkdocs") => void;
 }
 
 /** Global "MkDocs…" tool — queues an ``mkdocs serve`` job. The user
  *  picks an ``mkdocs.yml`` and a host:port; the running job appears in
  *  the Jobs view with a clickable URL like the TensorBoard / Inference
  *  cards. */
-export function MkDocsModal({ onClose, onSubmitted }: Props) {
+export function MkDocsModal({
+  onClose,
+  onSubmitted,
+  onServiceCreated,
+}: Props) {
   const qc = useQueryClient();
   const schedQ = useQuery({
     queryKey: ["scheduler-status"],
@@ -304,7 +309,10 @@ export function MkDocsModal({ onClose, onSubmitted }: Props) {
                   "mkdocs",
                   buildArgs(finalConfig),
                 );
-                if (ok) onClose();
+                if (ok) {
+                  onServiceCreated?.("mkdocs");
+                  onClose();
+                }
               }}
               disabled={!configFile.trim()}
               title="Persist these settings to the server config as an auto-start service"

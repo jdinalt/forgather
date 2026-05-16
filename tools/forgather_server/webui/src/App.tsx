@@ -168,6 +168,29 @@ export default function App() {
   const [servicesCategoryOpen, setServicesCategoryOpen] = useState<
     Record<string, boolean>
   >({});
+  // Configured-services list, kept here so the per-category launcher
+  // rows can hide their disclosure chevron when there are no instances.
+  // Shares the ["services"] query key with ServicesPanel — react-query
+  // dedupes the fetch, so this is "free".
+  const servicesQ = useQuery({
+    queryKey: ["services"],
+    queryFn: api.listServices,
+    refetchInterval: 4000,
+  });
+  const servicesByType = (servicesQ.data ?? []).reduce<Record<string, number>>(
+    (acc, s) => {
+      acc[s.service.type] = (acc[s.service.type] ?? 0) + 1;
+      return acc;
+    },
+    {},
+  );
+  const expandServicesCategory = useCallback((t: string) => {
+    setServicesCategoryOpen((s) => ({ ...s, [t]: true }));
+    // Also unfold the Services group itself if the user created the
+    // entry from a modal triggered elsewhere — without this, the new
+    // entry would land inside a collapsed parent.
+    setServicesOpen(true);
+  }, []);
   const [searchRootsOpen, setSearchRootsOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
@@ -837,28 +860,38 @@ export default function App() {
             <div className="sidebar-tools-body">
               {SERVICES.map((tool) => {
                 const t = tool.serviceType;
+                const count = t ? servicesByType[t] ?? 0 : 0;
                 const open = t ? !!servicesCategoryOpen[t] : false;
+                const showChevron = !!t && count > 0;
                 return (
                   <div
                     key={tool.label}
                     className="services-category"
                   >
                     <div className="services-category-row">
-                      <button
-                        className="services-category-chevron"
-                        onClick={() => {
-                          if (!t) return;
-                          setServicesCategoryOpen((s) => ({
-                            ...s,
-                            [t]: !s[t],
-                          }));
-                        }}
-                        disabled={!t}
-                        title={open ? "Collapse" : "Expand"}
-                        aria-label={open ? "Collapse" : "Expand"}
-                      >
-                        {open ? "▾" : "▸"}
-                      </button>
+                      {showChevron ? (
+                        <button
+                          className="services-category-chevron"
+                          onClick={() =>
+                            setServicesCategoryOpen((s) => ({
+                              ...s,
+                              [t!]: !s[t!],
+                            }))
+                          }
+                          title={open ? "Collapse" : "Expand"}
+                          aria-label={open ? "Collapse" : "Expand"}
+                        >
+                          {open ? "▾" : "▸"}
+                        </button>
+                      ) : (
+                        // Placeholder so launcher labels stay aligned
+                        // whether or not their type currently has any
+                        // configured instances.
+                        <span
+                          className="services-category-chevron services-category-chevron-spacer"
+                          aria-hidden="true"
+                        />
+                      )}
                       <button
                         className="sidebar-tool-btn"
                         onClick={tool.onOpen}
@@ -878,9 +911,9 @@ export default function App() {
                         {tool.icon} {tool.label}
                       </button>
                     </div>
-                    {open && t && (
+                    {showChevron && open && (
                       <div className="services-category-body">
-                        <ServicesPanel filterType={t} />
+                        <ServicesPanel filterType={t!} />
                       </div>
                     )}
                   </div>
@@ -1098,12 +1131,14 @@ export default function App() {
           checkpointPath={null}
           onClose={() => setStartServerOpen(false)}
           onSubmitted={onJobSubmitted}
+          onServiceCreated={expandServicesCategory}
         />
       )}
       {datasetServerOpen && (
         <DatasetServerModal
           onClose={() => setDatasetServerOpen(false)}
           onSubmitted={onJobSubmitted}
+          onServiceCreated={expandServicesCategory}
         />
       )}
       {tensorboardOpen && (
@@ -1113,12 +1148,14 @@ export default function App() {
           initialWindowTitle=""
           onClose={() => setTensorboardOpen(false)}
           onSubmitted={onJobSubmitted}
+          onServiceCreated={expandServicesCategory}
         />
       )}
       {mkdocsOpen && (
         <MkDocsModal
           onClose={() => setMkdocsOpen(false)}
           onSubmitted={onJobSubmitted}
+          onServiceCreated={expandServicesCategory}
         />
       )}
       {convertOpen && (

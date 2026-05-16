@@ -72,9 +72,19 @@ SERVICE_TYPES: Dict[str, str] = {
 _JOB_TYPE_TO_SERVICE: Dict[str, str] = {v: k for k, v in SERVICE_TYPES.items()}
 
 # Keys that are operator-level metadata, not part of the spawned
-# process's args. Stripped before signature computation and before
-# building the QueueItem's job_params.
+# process's args. Stripped before building the QueueItem's job_params.
 _META_KEYS = ("enabled", "priority", "requested_gpus")
+
+# Keys the scheduler injects into ``job_params`` when it dispatches a
+# QueueItem into a JobRecord — derived from the runtime environment,
+# not the operator's intent. Stripped before signature computation so
+# pre- and post-dispatch signatures for the same logical service
+# match. Without this the configured-service status flips from green
+# back to red the moment the queue item becomes a JobRecord.
+_DISPATCH_INJECTED_KEYS = ("scheme", "routable_host")
+
+# Everything excluded from the signature hash.
+_SIG_EXCLUDED_KEYS = _META_KEYS + _DISPATCH_INJECTED_KEYS
 
 
 _write_lock = threading.Lock()
@@ -98,14 +108,14 @@ class Service:
 def compute_signature(svc_type: str, args: Dict[str, Any]) -> str:
     """Stable signature for dedupe.
 
-    Strips meta keys (``enabled`` / ``priority`` / ``requested_gpus``)
-    so the signature reflects only what actually configures the spawned
-    process. Same args under the same service type produce the same
-    signature regardless of service name.
+    Strips operator-meta keys and dispatch-injected keys so the same
+    logical service produces the same signature whether we're looking
+    at the YAML entry, the QueueItem before dispatch, or the JobRecord
+    after.
     """
-    job_params = _job_params_from_args(args)
+    params = _signature_params(args)
     canonical = json.dumps(
-        {"type": svc_type, "params": job_params},
+        {"type": svc_type, "params": params},
         sort_keys=True,
         separators=(",", ":"),
         default=str,
@@ -116,6 +126,11 @@ def compute_signature(svc_type: str, args: Dict[str, Any]) -> str:
 def _job_params_from_args(args: Dict[str, Any]) -> Dict[str, Any]:
     """Drop meta fields; everything else is the spawned process's args."""
     return {k: v for k, v in args.items() if k not in _META_KEYS}
+
+
+def _signature_params(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop both meta and dispatch-injected keys for signature use."""
+    return {k: v for k, v in args.items() if k not in _SIG_EXCLUDED_KEYS}
 
 
 def list_services() -> List[Service]:

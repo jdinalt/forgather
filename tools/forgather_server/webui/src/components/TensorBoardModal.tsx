@@ -54,6 +54,7 @@ interface Props {
   global?: boolean;
   onClose: () => void;
   onSubmitted?: (queueId: string) => void;
+  onServiceCreated?: (type: "tensorboard") => void;
 }
 
 export function TensorBoardModal({
@@ -63,6 +64,7 @@ export function TensorBoardModal({
   global,
   onClose,
   onSubmitted,
+  onServiceCreated,
 }: Props) {
   const qc = useQueryClient();
   const schedQ = useQuery({
@@ -344,7 +346,10 @@ export function TensorBoardModal({
                   "tensorboard",
                   buildArgs(),
                 );
-                if (ok) onClose();
+                if (ok) {
+                  onServiceCreated?.("tensorboard");
+                  onClose();
+                }
               }}
               disabled={!logdir.trim()}
               title="Persist these settings to the server config as an auto-start service"

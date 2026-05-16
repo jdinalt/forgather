@@ -231,6 +231,12 @@ input {
   opacity: 0.3;
   cursor: default;
 }
+/* When a category has no instances we hide the chevron entirely but
+   keep a same-width placeholder so launcher labels stay aligned. */
+.services-category-chevron-spacer {
+  display: inline-block;
+  visibility: hidden;
+}
 .services-category-row > .sidebar-tool-btn {
   flex: 1;
 }

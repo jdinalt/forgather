@@ -65,6 +65,11 @@ interface Props {
   projectDir?: string;
   onClose: () => void;
   onSubmitted?: (queueId: string) => void;
+  /** Fired after the "Create service…" button successfully persists a
+   *  new service entry. The caller uses this to auto-expand the
+   *  matching launcher row in the sidebar so the new instance is
+   *  immediately visible. */
+  onServiceCreated?: (type: "inference") => void;
 }
 
 export function InferenceModal({
@@ -74,6 +79,7 @@ export function InferenceModal({
   projectDir,
   onClose,
   onSubmitted,
+  onServiceCreated,
 }: Props) {
   const qc = useQueryClient();
   const gpusQ = useQuery({ queryKey: ["gpus-once"], queryFn: api.listGpus });
@@ -517,7 +523,10 @@ export function InferenceModal({
                   requested_gpus: requestedGpus,
                 };
                 const ok = await promptAndCreateService(qc, "inference", args);
-                if (ok) onClose();
+                if (ok) {
+                  onServiceCreated?.("inference");
+                  onClose();
+                }
               }}
               disabled={!modelPath.trim()}
               title="Persist these settings to the server config as an auto-start service"
