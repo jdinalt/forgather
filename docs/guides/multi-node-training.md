@@ -136,7 +136,7 @@ Otherwise, when torchrun gets killed, its worker subprocesses
 re-parent to PID 1, never get reaped, and pile up as zombies inside
 the container.
 
-The bundled `docker/run.sh` passes `--init` for exactly this
+The bundled `docker/run` passes `--init` for exactly this
 reason — Docker's `tini` becomes PID 1 and reaps orphans regardless
 of parentage. If you bring your own container, make sure either you
 add `--init` to the `docker run` invocation, or run a tini/dumb-init
@@ -146,8 +146,8 @@ To pick up the `--init` change on an existing forgather-dev
 container:
 
 ```bash
-docker/run.sh --rm
-docker/run.sh
+docker/run --rm
+docker/run
 ```
 
 That recreates the container; existing zombies vanish with the old
@@ -181,7 +181,7 @@ Three reasonable ways to get the server running on every node:
 run `forgather server` from each. Right when you're iterating on
 Forgather itself or already have host venvs everywhere.
 
-**2. Dev image (`docker/run.sh`)** — long-lived dev container with
+**2. Dev image (`docker/run`)** — long-lived dev container with
 the host source bind-mounted. Fine for testing on your own
 machine; awkward to deploy to N nodes because each needs a host
 clone.
@@ -250,7 +250,7 @@ forgather server -H 0.0.0.0 --cluster lab \
 addresses you want advertised.
 
 You can also use `--network host` on the docker run command (the
-default in `docker/run.sh`) so the container shares the host's
+default in `docker/run`) so the container shares the host's
 network stack and address advertisement Just Works.
 
 ### Optional: network probe

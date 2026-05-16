@@ -150,7 +150,7 @@ in before each build; see `tools/forgather_server/README.md` for
 the mechanics.
 
 The Docker image runs `./build-webui.sh` automatically as a
-post-step in `docker/build.sh`, so the dist bundle is already in
+post-step in `docker/build`, so the dist bundle is already in
 place when you enter the container — no manual build needed under
 that workflow.
 

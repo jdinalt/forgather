@@ -14,8 +14,8 @@ ssh -L 8765:localhost:8765 \
 # Install with Docker
 git clone https://github.com/jdinalt/forgather.git
 cd forgather
-docker/build.sh                  # per-user dev image, bakes your host UID/GID in
-docker/run.sh                    # interactive shell, --gpus all, ports forwarded
+docker/build                  # per-user dev image, bakes your host UID/GID in
+docker/run                    # interactive shell, --gpus all, ports forwarded
 
 # Inside the container:
 
@@ -222,10 +222,10 @@ host-clone dependency, builds the SPA inside the image. The
 ```bash
 git clone https://github.com/jdinalt/forgather.git
 cd forgather
-docker/build.sh
+docker/build
 ```
 
-`docker/build.sh` builds a **per-user** dev image: it reads your
+`docker/build` builds a **per-user** dev image: it reads your
 `id -u` / `id -g` / `id -un` and passes them as build args, baking
 your host identity into the in-container user. Files created inside
 the container on bind-mounted host paths land with correct ownership
@@ -240,14 +240,14 @@ The first build pulls ~3 GB of dependencies and takes a few minutes;
 rebuilds reuse the layer cache. After the docker build, `build.sh`
 runs `./build-webui.sh` in a transient container against the host
 clone so the Forgather server's SPA dist/ is ready before
-`docker/run.sh` is invoked. Skip the post-step with
-`SKIP_WEBUI_BUILD=1 docker/build.sh` (e.g. you'll iterate on the
+`docker/run` is invoked. Skip the post-step with
+`SKIP_WEBUI_BUILD=1 docker/build` (e.g. you'll iterate on the
 SPA via `npm run dev`).
 
 ### Run it
 
 ```bash
-docker/run.sh
+docker/run
 ```
 
 This drops you into an interactive bash shell with:
@@ -275,7 +275,7 @@ forgather -t v2.yaml train
 
 ### Container lifecycle
 
-The container is long-lived: the first `docker/run.sh` invocation
+The container is long-lived: the first `docker/run` invocation
 creates a detached container named `forgather-dev-${USER}` with
 `sleep infinity` as PID 1; subsequent invocations re-attach via
 `docker exec`. Logging out of an interactive shell does **not**
@@ -284,17 +284,17 @@ you started in one session keeps running, and you can re-attach
 from a new terminal to inspect or control it.
 
 ```bash
-docker/run.sh                   # attach (creating the container if needed)
-docker/run.sh forgather ls -r   # one-shot command in the same container
-docker/run.sh --status          # is the container running, stopped, or absent?
-docker/run.sh --stop            # stop (but keep) — preserves filesystem state
-docker/run.sh --rm              # stop and remove (next run.sh recreates fresh)
-docker/run.sh --recreate        # rebuild from scratch (e.g. after image rebuild)
+docker/run                   # attach (creating the container if needed)
+docker/run forgather ls -r   # one-shot command in the same container
+docker/run --status          # is the container running, stopped, or absent?
+docker/run --stop            # stop (but keep) — preserves filesystem state
+docker/run --rm              # stop and remove (next run.sh recreates fresh)
+docker/run --recreate        # rebuild from scratch (e.g. after image rebuild)
 ```
 
 `IMAGE`, `GPUS`, `NETWORK`, port and mount overrides only apply
-when the container is **created**. After `docker/build.sh`
-rebuilds the image, run `docker/run.sh --recreate` to roll the
+when the container is **created**. After `docker/build`
+rebuilds the image, run `docker/run --recreate` to roll the
 running container forward to the new image.
 
 If you'd rather drive `docker` directly:
@@ -323,8 +323,8 @@ Force-rebuilding the image is only needed when the `Dockerfile`
 itself changed (new system packages, Python minor-version bump):
 
 ```bash
-docker/build.sh -- --no-cache
-docker/run.sh --recreate
+docker/build -- --no-cache
+docker/run --recreate
 ```
 
 See [docker.md → Upgrading Forgather inside the container](docker.md#upgrading-forgather-inside-the-container)
@@ -332,7 +332,7 @@ for the full reference.
 
 ### Networking
 
-`docker/run.sh` defaults to `--network host`, so the container
+`docker/run` defaults to `--network host`, so the container
 shares the host's network stack. Every service inside the
 container is reachable on its bound port without `-p` mappings,
 and tools that default to `127.0.0.1` (Forgather server, MkDocs,
@@ -346,7 +346,7 @@ If you'd rather use bridge networking with explicit port-forwards
 forward), set `NETWORK=bridge`:
 
 ```bash
-NETWORK=bridge docker/run.sh
+NETWORK=bridge docker/run
 # Inside the container:
 forgather server -H 0.0.0.0
 mkdocs serve --host 0.0.0.0
@@ -369,20 +369,20 @@ access from another machine, set `HOST_BIND=0.0.0.0` alongside
 
 ```bash
 # CPU-only:
-GPUS=none docker/run.sh
+GPUS=none docker/run
 
 # Specific GPUs:
-GPUS='"device=0,1"' docker/run.sh
+GPUS='"device=0,1"' docker/run
 
 # Mount additional host paths (e.g. scratch / dataset volumes):
-EXTRA_MOUNTS="-v /scratch:/scratch" docker/run.sh
+EXTRA_MOUNTS="-v /scratch:/scratch" docker/run
 
 # Forward extra ports (Vite dev server, etc.):
-EXTRA_PORTS="-p 5173:5173" docker/run.sh
+EXTRA_PORTS="-p 5173:5173" docker/run
 
 # Build / run a tagged variant:
-docker/build.sh forgather-dev:experiment
-IMAGE=forgather-dev:experiment docker/run.sh
+docker/build forgather-dev:experiment
+IMAGE=forgather-dev:experiment docker/run
 ```
 
 For more detail — full CLI / env-var reference, the runtime

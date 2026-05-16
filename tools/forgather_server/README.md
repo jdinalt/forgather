@@ -1079,11 +1079,11 @@ creation calls so the world-collective stays balanced.
   torchrun (those are torchrun's children, not ours), so when
   torchrun gets killed the workers re-parent to PID 1 of the
   container's pid namespace. If PID 1 is ``sleep infinity`` (the
-  pre-init default of ``docker/run.sh``) it doesn't call ``wait()``
-  and the workers pile up as zombies. ``docker/run.sh`` now passes
+  pre-init default of ``docker/run``) it doesn't call ``wait()``
+  and the workers pile up as zombies. ``docker/run`` now passes
   ``--init`` so Docker's bundled ``tini`` becomes PID 1 and reaps
   orphans regardless of parentage. Existing containers need
-  recreation to pick this up: ``docker/run.sh --rm && docker/run.sh``.
+  recreation to pick this up: ``docker/run --rm && docker/run``.
 
 - **Diagnosing hangs with faulthandler.** ``train_script.py``
   enables Python's ``faulthandler`` at startup and registers

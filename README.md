@@ -93,8 +93,8 @@ ssh -L 8765:localhost:8765 \
 # Install with Docker
 git clone https://github.com/jdinalt/forgather.git
 cd forgather
-docker/build.sh                  # generic image; works for any host user
-docker/run.sh                    # interactive shell, --gpus all, ports forwarded
+docker/build                  # generic image; works for any host user
+docker/run                    # interactive shell, --gpus all, ports forwarded
 
 # Inside the container:
 
