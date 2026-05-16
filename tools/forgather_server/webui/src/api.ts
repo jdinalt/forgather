@@ -1264,11 +1264,17 @@ export const api = {
   fsCopy: async (
     src: string,
     dest_dir: string,
+    opts: { autoRename?: boolean; targetName?: string } = {},
   ): Promise<{ path: string }> => {
     const r = await fetch("/api/fs/copy", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ src, dest_dir }),
+      body: JSON.stringify({
+        src,
+        dest_dir,
+        auto_rename: !!opts.autoRename,
+        target_name: opts.targetName ?? null,
+      }),
     });
     if (!r.ok) {
       let detail = await r.text();
