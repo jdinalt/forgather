@@ -184,6 +184,18 @@ export default function App() {
     },
     {},
   );
+  // Running count per type — same UI pattern as the Views → Jobs pill.
+  // Only "actually running" entries count (ServiceStatus.running maps
+  // strictly to JobRecord status == "running"; queued/starting/aborted
+  // don't), so the pill matches the green dots on the rows below.
+  const runningServicesByType = (servicesQ.data ?? []).reduce<
+    Record<string, number>
+  >((acc, s) => {
+    if (s.running) {
+      acc[s.service.type] = (acc[s.service.type] ?? 0) + 1;
+    }
+    return acc;
+  }, {});
   const expandServicesCategory = useCallback((t: string) => {
     setServicesCategoryOpen((s) => ({ ...s, [t]: true }));
     // Also unfold the Services group itself if the user created the
@@ -861,6 +873,7 @@ export default function App() {
               {SERVICES.map((tool) => {
                 const t = tool.serviceType;
                 const count = t ? servicesByType[t] ?? 0 : 0;
+                const runningCount = t ? runningServicesByType[t] ?? 0 : 0;
                 const open = t ? !!servicesCategoryOpen[t] : false;
                 const showChevron = !!t && count > 0;
                 return (
@@ -908,7 +921,12 @@ export default function App() {
                         }}
                         title={tool.title}
                       >
-                        {tool.icon} {tool.label}
+                        <span className="sidebar-tool-btn-label">
+                          {tool.icon} {tool.label}
+                        </span>
+                        {runningCount > 0 && (
+                          <span className="badge">{runningCount}</span>
+                        )}
                       </button>
                     </div>
                     {showChevron && open && (
