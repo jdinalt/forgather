@@ -800,9 +800,26 @@ export default function App() {
           </nav>
         </div>
         <div className="sidebar-expanded-content">
-          <header className="sidebar-header">
+          <header
+            className="sidebar-header"
+            // Right-click anywhere on the header surfaces a small menu
+            // whose only entry today is a Help… link to the server
+            // reference doc — same plumbing the per-tool right-click
+            // menus use (ToolHelpMenu + openHelp). Add per-app actions
+            // here as the need shows up.
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setToolHelpMenu({
+                x: e.clientX,
+                y: e.clientY,
+                docRelpath: "tools/forgather_server/README.md",
+                mkdocsSlug: "forgather-server/",
+                label: "Forgather Server",
+              });
+            }}
+            title="Right-click for help"
+          >
             <h1>Forgather Server</h1>
-            <span className="muted">preview</span>
             <div className="sidebar-header-actions">
               <button
                 className="refresh-btn"

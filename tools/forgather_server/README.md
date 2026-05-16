@@ -1,4 +1,4 @@
-# Forgather Server (prototype)
+# Forgather Server
 
 A web frontend over the existing Forgather CLI. Single pane of glass for
 discovering projects, inspecting configurations, queuing training / eval
@@ -11,6 +11,208 @@ the browser — wraps `MetaConfig`, `ConfigEnvironment`,
 service binds to `127.0.0.1` by default and `/api/` is gated by a bearer
 token (see [Threat model](#threat-model)). No rate limiting, no native
 TLS — run behind an SSH tunnel or reverse proxy if you need LAN access.
+
+> **New here?** For a guided tour of the web UI — fresh install through
+> training a Tiny Llama and chatting with it — read the
+> [Forgather Server Walkthrough](guides/forgather-server-walkthrough.md)
+> first; come back here for the reference material.
+
+## Quick reference
+
+Skip to the two reference tables most operators want first:
+
+- [CLI arguments](#cli-arguments) — every flag accepted by
+  `forgather server`.
+- [Config file (`server_config.yaml`)](#config-file-server_configyaml) —
+  full YAML schema for persistent CLI defaults and auto-start services.
+
+The rest of this document covers the threat model, authentication
+details, persistent on-disk state, UI panels, and the HTTP API.
+
+---
+
+## CLI arguments
+
+`forgather server` accepts the following arguments. Anything passed on
+the command line overrides the matching key in `server_config.yaml`;
+anything absent from both falls back to the defaults shown.
+
+| Flag                                 | Default                                  | Effect                                                                                                                |
+| ------------------------------------ | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `--config PATH`                      | `<config>/server/server_config.yaml`     | Path to the YAML config file. Default location is created (with a commented template) if missing.                     |
+| `-H` / `--host HOST`                 | `127.0.0.1`                              | Bind address. `0.0.0.0` / `::` accepted; the bearer token then traverses the network in cleartext unless TLS is on.   |
+| `-p` / `--port PORT`                 | `8765`                                   | TCP port.                                                                                                             |
+| `-l` / `--log-level LEVEL`           | `INFO`                                   | `DEBUG`, `INFO`, `WARNING`, `ERROR`.                                                                                  |
+| `--reload`                           | off                                      | Uvicorn auto-reload — development convenience only; spawned jobs do not survive a hot-reload.                         |
+| `--no-auth`                          | off                                      | Disable the bearer-token / password gate. Single-trusted-user host only. See [Threat model](#threat-model).            |
+| `--regen-token`                      | off                                      | Rotate the persisted bearer token at startup. Invalidates every CLI client using the old token.                       |
+| `--persist-sessions`                 | off                                      | Persist browser session cookies to `<config>/server/sessions.json` (0600) so the webui survives restarts. See [Persisted sessions](#persisted-sessions). |
+| `--cluster NAME`                     | unset                                    | Join the named cluster (mDNS-scoped). Standalone otherwise. See [Cluster mode](#cluster-mode-multi-node-prototype).   |
+| `--cluster-address IP`               | unset (repeatable)                       | Override the address advertised to cluster peers. Repeatable — useful when running inside a container whose network namespace hides the host NICs from psutil. The first entry also seeds the startup banner's clickable URL when bound to `0.0.0.0`. |
+| `--tls` / `--no-tls`                 | shared config                            | Force-enable / force-disable TLS, overriding `<config>/tls/`'s shared setting. See [docs/operations/tls.md](../../docs/operations/tls.md). |
+| `--tls-cert PATH` / `--tls-key PATH` | resolved from shared config              | Override the certificate / private-key paths for this run.                                                            |
+| `--insecure`                         | off                                      | Allow binding a non-loopback host without TLS. Suppresses the "token in cleartext" abort.                             |
+| `--lock-inference-proxy`             | off                                      | Restrict the inference reverse proxy to localhost upstreams. The unconditional `http`/`https`-only scheme guard still applies. See [Network exposure](#network-exposure). |
+
+The `args:` mapping in `server_config.yaml` accepts the same names with
+dashes turned to underscores (`log_level`, `regen_token`,
+`persist_sessions`, `cluster_address`, …). See the next section.
+
+## Config file (`server_config.yaml`)
+
+Top-level keys:
+
+```yaml
+args:        # persistent CLI defaults; CLI flags still win
+  ...
+services:    # auto-start declarations for long-running spawned processes
+  ...
+```
+
+The server resolves the file in this order:
+
+1. `--config PATH` on the command line (explicit override).
+2. `<forgather_config_dir>/server/server_config.yaml` (default). On
+   first boot a commented template is written here so the defaults are
+   visible / uncomment-to-change.
+
+Programmatic writes (the webui's **Create service…** button and the
+`/api/services` endpoints) regenerate the file body and lose any
+inline user comments — a fixed documentation preamble at the top
+survives. Operator-edited fields like `args:` keep working but won't
+preserve hand-written comments after the first programmatic write.
+
+The sidebar footer's **⚙ Open config** button opens this file in the
+embedded editor; **⟳ Restart server** next to it re-execs the running
+process so edits take effect without disrupting active jobs (spawned
+subprocesses survive across `os.execv`; the rebooted server re-attaches
+to them via the standard PID-reattach path).
+
+### `args:` block — CLI default overrides
+
+Every entry under `args:` corresponds to a CLI argument. Use
+snake_case (dashes are accepted and normalized for convenience):
+
+```yaml
+args:
+  # Network
+  host: 0.0.0.0
+  port: 8765
+  log_level: INFO
+
+  # Auth
+  no_auth: false
+  regen_token: false
+  persist_sessions: true        # webui survives restarts (dev convenience)
+
+  # Cluster
+  cluster: my-cluster
+  cluster_address:
+    - 192.168.1.27              # operator-supplied advertise address
+
+  # TLS — see docs/operations/tls.md
+  insecure: false
+  tls: null                     # path to an alternate TLS config
+
+  # Inference reverse-proxy hardening
+  lock_inference_proxy: false
+```
+
+Unknown keys log a warning at startup and are ignored.
+
+### `services:` block — auto-start services
+
+Long-running spawned processes the server brings up automatically on
+boot. Each entry under `<type>.<name>` is `enabled: true|false` plus
+the same args the corresponding modal would have submitted as
+`job_params`. Supported types and the queue `job_type` each maps to:
+
+| `type`        | Maps to       | Args shape match                |
+| ------------- | ------------- | ------------------------------- |
+| `dataset`     | `dataset_server` | The **Dataset…** modal       |
+| `inference`   | `inference`      | The **Inference…** modal     |
+| `tensorboard` | `tensorboard`    | The **TensorBoard…** modal   |
+| `mkdocs`      | `mkdocs`         | The **MkDocs…** modal        |
+
+```yaml
+services:
+  dataset:
+    primary:
+      enabled: true
+      host: 0.0.0.0
+      port: 8766
+      no_auth: false
+      no_hf: false
+      allow_paths: false
+      allow_downloads: false
+      config_file: /etc/forgather/dataset_server.yaml   # optional
+      locals:                                           # optional
+        - [shakespeare, /datasets/shakespeare]
+
+  inference:
+    llama-8b:
+      enabled: true
+      model_path: /models/llama-3-8b
+      port: 8137
+      host: 0.0.0.0
+      dtype: bfloat16
+      from_checkpoint: false
+      compile: false
+      disable_kv_cache: false
+      requested_gpus: 1         # operator-meta — defaults to 1 for inference
+    llama-70b:
+      enabled: false            # stays available but not auto-started
+      model_path: /models/llama-3-70b
+      port: 8138
+      requested_gpus: 4
+
+  tensorboard:
+    runs:
+      enabled: true
+      logdir: /mnt/runs
+      port: 6006
+      bind_all: true
+
+  mkdocs:
+    docs:
+      enabled: true
+      config_file: /repo/mkdocs.yml
+      host: localhost
+      port: 9999
+      strict: false
+      livereload: true
+      dirty: false
+      watch:                    # optional
+        - /repo/docs
+```
+
+**Operator-meta keys** — recognized at the entry top level alongside
+`enabled`, stripped before the args are forwarded to the spawned
+process:
+
+| Key              | Default                                | Effect                                  |
+| ---------------- | -------------------------------------- | --------------------------------------- |
+| `enabled`        | `false`                                | Auto-start the service on boot.         |
+| `priority`       | `0`                                    | Queue priority (higher dispatches first). |
+| `requested_gpus` | `1` for `inference`, `0` for the rest  | GPU reservation count.                  |
+
+Everything else is forwarded verbatim to the job's `job_params`. The
+**dispatch-injected** fields (`scheme`, `routable_host` — added by the
+scheduler post-submit for inference / dataset_server jobs) are
+excluded from the service signature so a service's pre- and
+post-dispatch signatures match, which is what makes restart-without-
+double-spawn and ▶/⏹ correctness work.
+
+The names are operator-chosen, must match `[A-Za-z0-9_-]+`, and are
+purely human labels — dedupe between configured services and live
+queue items is by **signature**, an sha256 over
+`(type, normalized args)`. Multiple instances of the same type with
+different args are fine (common case: several inference servers on
+different ports / models).
+
+For the boot-time / status / sidebar-UI semantics and the matching API
+endpoints, see [Auto-start services](#auto-start-services) and
+[API quick reference → Services](#services-auto-start).
 
 ---
 
@@ -366,105 +568,47 @@ sidebar's **Browse…** button.
 
 ### Server config file (`server_config.yaml`)
 
-CLI defaults can live in a YAML file so persistent preferences (host,
-port, log level, cluster name, auto-start services) don't have to be
-re-typed on every launch. The server resolves the path in this order:
-
-1. `--config PATH` on the command line (explicit override).
-2. `<config>/server/server_config.yaml` (default; created with a
-   commented template if absent).
-
-```yaml
-# Top-level args: keys override the CLI argument defaults. Values
-# passed on the command line still win.
-args:
-  # host: 127.0.0.1
-  # port: 8765
-  # cluster: my-cluster
-  # persist_sessions: true      # see "Persisted sessions" below
-
-# Long-running spawned processes to auto-start on boot. Each entry
-# under <type>.<name> is enabled=true|false plus the same args its
-# modal would have submitted as job_params. See "Auto-start services"
-# below for the full schema.
-services:
-  inference:
-    llama:
-      enabled: true
-      model_path: /models/llama
-      port: 8137
-  tensorboard:
-    runs:
-      enabled: false
-      logdir: /mnt/runs
-      port: 6006
-```
+CLI defaults and auto-start services live in a YAML file so
+persistent preferences (host, port, log level, cluster name,
+services) don't have to be re-typed on every launch. The full schema
+is up front in [Config file (`server_config.yaml`)](#config-file-server_configyaml).
 
 The webui sidebar's bottom bar has a **gear** button (⚙) that opens
 this file in the embedded editor, and a **reload** button (⟳) that
 restarts the server in place via `os.execv` so config changes take
 effect without disrupting running jobs (spawned subprocesses survive
 the exec via the existing PID-reattach path on the new server's
-boot). See [Restart endpoint](#restart-endpoint) below for the
-mechanics.
+boot).
 
 ### Auto-start services
 
-The `services:` block declares long-running spawned processes the
-server brings up automatically on boot:
+For the YAML schema, supported types, and operator-meta keys, see the
+[`services:` block](#services-block--auto-start-services) section
+near the top of this document.
 
-| Type          | Maps to queue `job_type` | Args shape                                 |
-| ------------- | ------------------------ | ------------------------------------------ |
-| `dataset`     | `dataset_server`         | Same as the **Dataset…** modal             |
-| `inference`   | `inference`              | Same as the **Inference…** modal           |
-| `tensorboard` | `tensorboard`            | Same as the **TensorBoard…** modal         |
-| `mkdocs`      | `mkdocs`                 | Same as the **MkDocs…** modal              |
-
-Each instance is keyed `<type>.<name>` (e.g. `inference.llama`); the
-name is operator-chosen, must match `[A-Za-z0-9_-]+`, and is purely a
-human label — dedupe between configured services and live queue items
-is by **signature**, an sha256 over `(type, normalized args)`.
-Multiple instances of the same type with different args are fine
-(common case: several inference servers on different ports / models).
-
-**Operator-meta keys** (recognized at the entry top level alongside
-`enabled`, stripped before forwarding to the spawned process):
-
-| Key              | Default                              | Effect                                                 |
-| ---------------- | ------------------------------------ | ------------------------------------------------------ |
-| `enabled`        | `false`                              | Whether to auto-start the service on boot.             |
-| `priority`       | `0`                                  | Queue priority.                                        |
-| `requested_gpus` | `1` for inference, `0` for the rest  | GPU reservation count.                                 |
-
-Everything else is forwarded verbatim to the job's `job_params`. The
-**dispatch-injected** fields (`scheme`, `routable_host` — added by
-the scheduler post-submit for inference / dataset_server jobs) are
-excluded from the signature so a service's pre- and post-dispatch
-signatures match.
-
-**Boot semantics.** The lifespan handler runs an autostart pass before
-the dispatcher's first tick: for every `enabled: true` service whose
-signature isn't already in the queue or in a non-terminal JobRecord,
-it enqueues a fresh QueueItem. Already-running services (matched by
-signature — including matches against manually-submitted jobs with
-the same args) are skipped, so a restart never double-spawns and an
-operator who manually started an equivalent job has it counted as the
-service's running instance.
+**Boot semantics.** The lifespan handler runs an autostart pass
+before the dispatcher's first tick: for every `enabled: true`
+service whose signature isn't already in the queue or in a
+non-terminal JobRecord, it enqueues a fresh QueueItem. Already-
+running services (matched by signature — including matches against
+manually-submitted jobs with the same args) are skipped, so a
+restart never double-spawns and an operator who manually started an
+equivalent job has it counted as the service's running instance.
 
 **Sidebar UI.** The Services sidebar group renders one row per
-launcher (Inference / Dataset / TensorBoard / MkDocs). A right-aligned
-count pill shows how many instances are *actually running* (JobRecord
-status `running`, not just queued/starting). A disclosure chevron to
-the left of the launcher row expands the per-type list when there are
-configured instances; each row carries a red/green dot, ▶/⏹ to toggle
-the `enabled` flag (start / stop), and × to delete (the running
-instance, if any, is aborted first). The four service modals each
-have a **Create service…** button beside Start that prompts for a
-name and persists the entry to the config file.
+launcher (Inference / Dataset / TensorBoard / MkDocs). A right-
+aligned count pill shows how many instances are *actually running*
+(JobRecord status `running`, not just queued/starting). A disclosure
+chevron to the left of the launcher row expands the per-type list
+when there are configured instances; each row carries a red/green
+dot, ▶/⏹ to toggle the `enabled` flag (start / stop), and × to
+delete (the running instance, if any, is aborted first). The four
+service modals each have a **Create service…** button beside Start
+that prompts for a name and persists the entry to the config file.
 
 **API.** Full CRUD plus enable-toggle, with the enable path running
 the autostart pass (or aborting the matching running job) so changes
-land immediately. See [API quick reference → Services](#services).
+land immediately. See [API quick reference → Services (auto-start)](#services-auto-start).
 
 ### Persisted sessions
 

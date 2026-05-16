@@ -14,6 +14,7 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 - **[Docker images](getting-started/docker.md)** - Full reference for the dev and runtime (distributable) images: CLI flags, env vars, multi-node operation, troubleshooting. Docker is the recommended install path on Linux
 - **[Getting Started](getting-started/README.md)** - First training run, key CLI commands, and the web UI tour
 - **[Forgather Server Walkthrough](guides/forgather-server-walkthrough.md)** - End-to-end tour of the web UI from a fresh install to chatting with a freshly-trained model
+- **[Forgather Server Reference](forgather-server.md)** - CLI flags, config-file syntax, persistent state, full API and panel reference
 - **[Core Concepts](core-concepts/README.md)** - Configuration pipeline, projects, templates, trainers
 
 **Configuration:**
