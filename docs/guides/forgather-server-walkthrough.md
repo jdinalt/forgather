@@ -138,12 +138,17 @@ TensorBoard, MkDocs); each can also be saved as an auto-start
 service entry — see *[Saving a service for next time](#saving-a-service-for-next-time)*
 below.
 
-At the bottom of the sidebar a footer bar carries two icons:
+At the bottom of the sidebar a footer bar carries four icon
+buttons:
 
-- **⟳ Restart server** — re-execs the server process in place.
+- **⟳ Refresh data** — re-reads projects, configs, and templates
+  from disk. Use this after editing files outside the webui.
+- **▶ / ⏸ Scheduler toggle** — flips the dispatcher loop on/off
+  (green when running, muted when paused).
+- **↺ Restart server** — re-execs the server process in place.
   PID, TTY, and running subprocesses (training, inference,
-  dataset, …) all survive. Useful for picking up changes after you
-  edit the config file.
+  dataset, …) all survive. Useful for picking up changes after
+  you edit the config file.
 - **⚙ Open server config** — opens `server_config.yaml` in the
   embedded editor. See [Persistent CLI defaults](#persistent-cli-defaults)
   further down.
@@ -216,8 +221,9 @@ much the templates expand into.
 
 Before staring training, we can start TensorBoard to monitor the training job.
 
-Click the "TensorBoard..." button in the header (or right click on the configuration and
-select "Tensorboard..."). This will take you to the "Jobs" panel. You should see a "TB"
+Expand the **Services** group in the sidebar and click **📊 TensorBoard…**
+(or right click on the configuration and select "TensorBoard…"). This
+will take you to the "Jobs" panel. You should see a "TB"
 card, where you can click on the URL to open TensorBoard. Once your training jobs starts,
 you can monitor progress from here.
 
@@ -234,14 +240,14 @@ policies.
 
 You can pause dispatch independently of enqueueing — useful when you
 want to inspect what's about to run before it actually starts. Click
-the **▶/⏸** button in the sidebar header (next to ⟳ Refresh) to
+the **▶/⏸** button in the sidebar footer (next to ⟳ Refresh) to
 toggle. **⏸** means dispatch is paused; new submissions sit in the
 queue waiting.
 
 For this walkthrough, pause the dispatcher first so you can see the
 job in the queue panel before it kicks off:
 
-![Sidebar header showing the scheduler paused (⏸ button)](screenshots/07-scheduler-paused.png)
+![Sidebar footer showing the scheduler paused (⏸ button)](screenshots/07-scheduler-paused.png)
 
 If you have already run the Tiny Llama tutorial, clean the output artifacts by
 clicking on **Clean Output** first.
@@ -266,7 +272,7 @@ for the dispatcher.
 
 ![Queue panel showing the queued tiny_llama job](screenshots/10-queue-pending.png)
 
-Now click the **⏸/▶** button in the sidebar header to resume
+Now click the **⏸/▶** button in the sidebar footer to resume
 dispatch. Within a tick or two the scheduler picks GPUs, marks the
 job `starting`, and then `running`. The job moves out of the queue
 and into the **Jobs** panel.

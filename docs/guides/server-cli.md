@@ -48,7 +48,8 @@ services:
 
 The webui has a **Create service…** button on each of the four
 service modals that builds an entry for you. Restart with the
-sidebar's ⟳ button (which calls `POST /api/server/restart` — the
+sidebar footer's ↺ **Restart server** button (which calls
+`POST /api/server/restart` — the
 process `os.execv`s in place; running training / inference /
 dataset jobs survive across the restart) or just `kill -TERM` and
 relaunch.

@@ -66,7 +66,7 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 - **[Evaluating Models](guides/evaluating-models.md)** - Loss/perplexity evaluation via `forgather eval`
 - **[Log Analysis](guides/logs-analysis.md)** - Training log summaries, plots, and heatmaps
 - **[TensorBoard](guides/tensorboard.md)** - Launch TensorBoard against a model's `runs/` directory from the webui or `forgather tb`
-- **[MkDocs](guides/mkdocs.md)** - Serve the bundled Forgather docs locally with live-reload via the Tools menu or `forgather mkdocs`
+- **[MkDocs](guides/mkdocs.md)** - Serve the bundled Forgather docs locally with live-reload via the Services menu or `forgather mkdocs`
 
 **Operations:**
 

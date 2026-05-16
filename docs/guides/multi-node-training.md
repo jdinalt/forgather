@@ -253,17 +253,30 @@ You can also use `--network host` on the docker run command (the
 default in `docker/run.sh`) so the container shares the host's
 network stack and address advertisement Just Works.
 
-### Optional: bandwidth probe
+### Optional: network probe
 
 The Cluster view's **network** tab has a **Refresh** button that
-runs a single-stream HTTP throughput measurement from the local
-node to every reachable peer, sequentially. Results are cached for
-1 hour.
+runs two probes against each reachable peer in turn:
 
-This is a sanity check — if the measured bandwidth between two
-hosts is much lower than your link's nominal speed, you have a
-network problem to fix (wrong interface routing, broken cable,
-duplex mismatch) before submitting any training jobs.
+- **Latency** — 30 keepalived round-trips over HTTPS, warmup-
+  trimmed, reported as min / median / max ms.
+- **Bandwidth** — adaptive parallel-stream **raw TCP** throughput
+  test (4 streams in flight, sized for ~2 s of steady-state
+  transfer per stream). Coordination flows over the authenticated
+  HTTPS channel; the actual bytes go over a one-shot ephemeral
+  plain-TCP listener so Python's `ssl` module isn't the bottleneck
+  on fast links. Numbers should match what `netperf -t TCP_STREAM`
+  reports on the same wire.
+
+Sequential across peers because two simultaneous bulk transfers
+would saturate the local NIC and under-report each link. The
+row being measured shows "Measuring…" so the operator sees
+per-peer progress. Results are cached for 1 hour.
+
+This is a sanity check — if the measured bandwidth or latency
+between two hosts is much worse than your link's nominal numbers,
+you have a network problem to fix (wrong interface routing, broken
+cable, duplex mismatch) before submitting any training jobs.
 
 ---
 

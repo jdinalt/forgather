@@ -26,10 +26,10 @@ Point TensorBoard's `--logdir` at:
 
 ## Launching from the webui
 
-### Sidebar Tools menu
+### Sidebar Services menu
 
-The sidebar **Tools** menu has a **TensorBoard...** entry. It opens a
-modal that takes an arbitrary logdir.
+The sidebar **Services** group has a **📊 TensorBoard…** entry.
+It opens a modal that takes an arbitrary logdir.
 
 | Field | Default | Notes |
 |-------|---------|-------|
@@ -148,4 +148,4 @@ If both `--bind_all` and a host override are passed, `--bind_all` wins
 - [Server CLI](server-cli.md) -- workflow walkthrough for `forgather
   tb --enqueue`, `forgather job`, `forgather sched`, and friends.
 - [MkDocs](mkdocs.md) -- the other long-lived viewer spawned from
-  the Tools menu; same lifecycle and auth-gating model.
+  the Services menu; same lifecycle and auth-gating model.
