@@ -5,6 +5,8 @@ import {
   ClusterBandwidthEntry,
   ClusterBandwidthResponse,
   ClusterJob,
+  ClusterLatencyEntry,
+  ClusterLatencyResponse,
   ClusterMember,
   ClusterMembersResponse,
   ClusterGpusResponse,
@@ -237,43 +239,95 @@ function NetworkTab({
   members: ClusterMember[];
   selfNodeId: string | null;
 }) {
+  const qc = useQueryClient();
   const bwQ = useQuery<ClusterBandwidthResponse>({
     queryKey: ["cluster", "bandwidth"],
     queryFn: api.getClusterBandwidth,
     refetchInterval: false,
   });
-  const refresh = useMutation({
-    mutationFn: api.refreshClusterBandwidth,
-    onSuccess: () => {
-      // The mutation response holds the freshly-measured payload but
-      // the GET endpoint also serves the same cache, so a single
-      // refetch keeps the list state consistent with what other
-      // tabs would see.
-      bwQ.refetch();
-    },
-    onError: (e) => alert(`Bandwidth refresh failed: ${String(e)}`),
+  const latQ = useQuery<ClusterLatencyResponse>({
+    queryKey: ["cluster", "latency"],
+    queryFn: api.getClusterLatency,
+    refetchInterval: false,
   });
-  const byPeer = new Map<string, ClusterBandwidthEntry>();
-  for (const m of bwQ.data?.measurements ?? []) {
-    byPeer.set(m.peer_node_id, m);
-  }
-  // Show one row per non-self peer, regardless of whether we have a
+  // Tracks which peer is currently being probed. Set as the
+  // per-peer requests run sequentially; ``null`` when the
+  // orchestrator is idle. The row for the matching node_id renders
+  // "Measuring…" in place of its result columns.
+  const [activeProbe, setActiveProbe] = useState<string | null>(null);
+  const [probeError, setProbeError] = useState<string | null>(null);
+
+  const byBw = new Map<string, ClusterBandwidthEntry>();
+  for (const m of bwQ.data?.measurements ?? []) byBw.set(m.peer_node_id, m);
+  const byLat = new Map<string, ClusterLatencyEntry>();
+  for (const m of latQ.data?.measurements ?? []) byLat.set(m.peer_node_id, m);
+
+  // Show one row per non-self peer regardless of whether we have a
   // measurement yet — empty rows make it obvious which peers haven't
   // been probed.
   const peers = members.filter((m) => m.node_id !== selfNodeId);
+
+  // Click handler: walks the peer list sequentially. For each peer
+  // we set ``activeProbe`` to the peer's node_id, kick off the
+  // latency probe (fast, ~50 ms steady-state on a LAN) followed by
+  // the adaptive bandwidth probe (~3 s of steady-state), then move
+  // to the next peer. Bandwidth probes are sequential because two
+  // simultaneous bulk transfers would saturate the local NIC and
+  // under-report each link's actual throughput; latency could go in
+  // parallel, but keeping the ordering simple makes the per-row
+  // progress feedback unambiguous.
+  const probing = activeProbe !== null;
+  const runAll = async () => {
+    if (probing) return;
+    setProbeError(null);
+    try {
+      for (const m of peers) {
+        setActiveProbe(m.node_id);
+        // Latency first (cheap; warms the connection pool for the
+        // bandwidth pass), then bandwidth.
+        try {
+          await api.refreshClusterLatencyOne(m.node_id);
+          // Push the latest result into the cached list query so the
+          // row re-renders without waiting for the next refetch.
+          qc.invalidateQueries({ queryKey: ["cluster", "latency"] });
+        } catch (e) {
+          // Don't abort the whole loop if one peer fails — show the
+          // error in the row and keep going.
+          console.warn(`latency probe for ${m.hostname} failed:`, e);
+        }
+        try {
+          await api.refreshClusterBandwidthOne(m.node_id);
+          qc.invalidateQueries({ queryKey: ["cluster", "bandwidth"] });
+        } catch (e) {
+          console.warn(`bandwidth probe for ${m.hostname} failed:`, e);
+        }
+      }
+    } catch (e) {
+      setProbeError(String(e));
+    } finally {
+      setActiveProbe(null);
+    }
+  };
+
   return (
     <div className="bw-panel cluster-tab-body">
       <div className="cluster-tab-heading">
-        <span>Bandwidth (this node → peers)</span>
+        <span>Network (this node → peers)</span>
         <button
           className="bw-refresh"
-          disabled={refresh.isPending}
-          onClick={() => refresh.mutate()}
-          title="Run a fresh single-stream throughput measurement to each peer. Sequential — takes ~few seconds per peer."
+          disabled={probing || peers.length === 0}
+          onClick={runAll}
+          title={
+            "Measure latency (30 round-trips) and bandwidth " +
+            "(adaptive ~2 s sample) against each peer in turn. " +
+            "Sequential — two simultaneous bulk transfers would " +
+            "saturate the local NIC."
+          }
         >
-          {refresh.isPending ? "Measuring…" : "Refresh"}
+          {probing ? "Measuring…" : "Refresh"}
         </button>
       </div>
+      {probeError && <div className="err">{probeError}</div>}
       {peers.length === 0 ? (
         <div className="muted bw-empty">Only this node is in the cluster.</div>
       ) : (
@@ -282,6 +336,7 @@ function NetworkTab({
             <tr>
               <th>Peer</th>
               <th>Address</th>
+              <th>Latency (min / med / max)</th>
               <th>Throughput</th>
               <th>Sample</th>
               <th>Measured</th>
@@ -289,12 +344,19 @@ function NetworkTab({
           </thead>
           <tbody>
             {peers.map((m) => {
-              const entry = byPeer.get(m.node_id);
+              const bw = byBw.get(m.node_id);
+              const lat = byLat.get(m.node_id);
+              const isActive = activeProbe === m.node_id;
+              const rowErr =
+                !isActive &&
+                ((bw?.error && bw.error !== "self") ||
+                  (lat?.error && lat.error !== "self"));
+              const latestTs = Math.max(
+                bw?.timestamp ?? 0,
+                lat?.timestamp ?? 0,
+              );
               return (
-                <tr
-                  key={m.node_id}
-                  className={entry?.error && entry.error !== "self" ? "err" : ""}
-                >
+                <tr key={m.node_id} className={rowErr ? "err" : ""}>
                   <td>{m.hostname}</td>
                   <td>
                     <code>
@@ -302,20 +364,39 @@ function NetworkTab({
                     </code>
                   </td>
                   <td>
-                    {entry && !entry.error
-                      ? `${entry.mbps.toFixed(1)} Mbps`
-                      : entry?.error
-                        ? entry.error
-                        : "—"}
+                    {isActive ? (
+                      <span className="muted">Measuring…</span>
+                    ) : lat && !lat.error ? (
+                      `${lat.min_ms.toFixed(2)} / ${lat.median_ms.toFixed(2)} / ${lat.max_ms.toFixed(2)} ms`
+                    ) : lat?.error ? (
+                      lat.error
+                    ) : (
+                      "—"
+                    )}
                   </td>
                   <td>
-                    {entry && entry.bytes_transferred > 0
-                      ? `${(entry.bytes_transferred / 1024 / 1024).toFixed(0)} MiB / ${entry.elapsed_seconds.toFixed(2)} s`
-                      : "—"}
+                    {isActive ? (
+                      <span className="muted">Measuring…</span>
+                    ) : bw && !bw.error ? (
+                      `${bw.mbps.toFixed(1)} Mbps`
+                    ) : bw?.error ? (
+                      bw.error
+                    ) : (
+                      "—"
+                    )}
                   </td>
                   <td>
-                    {entry?.timestamp
-                      ? new Date(entry.timestamp * 1000).toLocaleTimeString()
+                    {isActive ? (
+                      <span className="muted">…</span>
+                    ) : bw && bw.bytes_transferred > 0 ? (
+                      `${(bw.bytes_transferred / 1024 / 1024).toFixed(0)} MiB / ${bw.elapsed_seconds.toFixed(2)} s`
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td>
+                    {latestTs
+                      ? new Date(latestTs * 1000).toLocaleTimeString()
                       : "—"}
                   </td>
                 </tr>

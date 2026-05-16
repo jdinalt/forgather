@@ -15,6 +15,7 @@ import { InferencePanel } from "./components/InferencePanel";
 import { DatasetsPanel } from "./components/DatasetsPanel";
 import type { SelectedLeaf } from "./components/DatasetsExploreTab";
 import { JobsPanel } from "./components/JobsPanel";
+import { ServicesPanel } from "./components/ServicesPanel";
 import { QueuePanel } from "./components/QueuePanel";
 import { LogDetailPanel } from "./components/LogDetailPanel";
 import { CheckpointDetailPanel } from "./components/CheckpointDetailPanel";
@@ -82,8 +83,73 @@ function SidebarIcon() {
   );
 }
 
+// "Restart-alt" glyph: a clockwise circular arrow with the arrow
+// pointing *back* into a small notch — the classic "reboot in place"
+// icon (Material Design's ``restart_alt``). Visually distinct from a
+// plain power button (which means shutdown) and from the C-shaped
+// ReloadIcon (which means refresh / reload data). Filled rather than
+// stroked because the path data is borrowed from Material's icon
+// font, which is shipped as a filled outline.
+function RestartIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M12 5 V1 L 7 6 l 5 5 V 7 c 3.31 0 6 2.69 6 6 s -2.69 6 -6 6 s -6 -2.69 -6 -6 H 4 c 0 4.42 3.58 8 8 8 s 8 -3.58 8 -8 S 16.42 5 12 5 z" />
+    </svg>
+  );
+}
+
+// Circular-arrow glyph matching the old top-bar Refresh button (which
+// used the "⟳" character). Inline SVG so disabled / hover styling
+// matches the other icon buttons in the footer without depending on
+// the system font's rendering of the unicode glyph.
+function ReloadIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="23 4 23 10 17 10" />
+      <path d="M20.49 15A9 9 0 1 1 18.36 6.36L23 10" />
+    </svg>
+  );
+}
+
+// Simple gear glyph for the sidebar settings bar. Stroked rather than
+// filled so it sits comfortably next to the other monochrome controls.
+function GearIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+    </svg>
+  );
+}
+
 type DocsBackEntry =
-  | { kind: "doc"; path: string | null }
+  | { kind: "doc"; path: string | null; scrollTop: number }
   | {
       kind: "external";
       view: View;
@@ -139,6 +205,48 @@ export default function App() {
       window.removeEventListener("keydown", onKey, { capture: true } as any);
   }, []);
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [servicesOpen, setServicesOpen] = useState(false);
+  // Each Services launcher row carries its own disclosure for the
+  // configured-instance list. Keyed by service type. Collapsed by
+  // default so the Services pane stays tidy on first paint.
+  const [servicesCategoryOpen, setServicesCategoryOpen] = useState<
+    Record<string, boolean>
+  >({});
+  // Configured-services list, kept here so the per-category launcher
+  // rows can hide their disclosure chevron when there are no instances.
+  // Shares the ["services"] query key with ServicesPanel — react-query
+  // dedupes the fetch, so this is "free".
+  const servicesQ = useQuery({
+    queryKey: ["services"],
+    queryFn: api.listServices,
+    refetchInterval: 4000,
+  });
+  const servicesByType = (servicesQ.data ?? []).reduce<Record<string, number>>(
+    (acc, s) => {
+      acc[s.service.type] = (acc[s.service.type] ?? 0) + 1;
+      return acc;
+    },
+    {},
+  );
+  // Running count per type — same UI pattern as the Views → Jobs pill.
+  // Only "actually running" entries count (ServiceStatus.running maps
+  // strictly to JobRecord status == "running"; queued/starting/aborted
+  // don't), so the pill matches the green dots on the rows below.
+  const runningServicesByType = (servicesQ.data ?? []).reduce<
+    Record<string, number>
+  >((acc, s) => {
+    if (s.running) {
+      acc[s.service.type] = (acc[s.service.type] ?? 0) + 1;
+    }
+    return acc;
+  }, {});
+  const expandServicesCategory = useCallback((t: string) => {
+    setServicesCategoryOpen((s) => ({ ...s, [t]: true }));
+    // Also unfold the Services group itself if the user created the
+    // entry from a modal triggered elsewhere — without this, the new
+    // entry would land inside a collapsed parent.
+    setServicesOpen(true);
+  }, []);
   const [searchRootsOpen, setSearchRootsOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
@@ -201,12 +309,27 @@ export default function App() {
     setView("edit");
   };
 
+  // Captured scroll position to restore after the next back-navigation
+  // applies. Set when Back is clicked, consumed by DocsPanel once the
+  // popped page's content has rendered. ``null`` outside of Back, so
+  // forward navigations always start at the top.
+  const [pendingDocsScroll, setPendingDocsScroll] = useState<number | null>(null);
+
+  // Helper: read the current docs scrollTop from the DOM. The body is
+  // a single fixed selector (the only ``.docs-pane-body`` in the
+  // tree), so document.querySelector is fine.
+  const readDocsScrollTop = (): number => {
+    const el = document.querySelector(".docs-pane-body");
+    return el ? el.scrollTop : 0;
+  };
+
   // Open a document in the Docs view. If we're entering Docs from another
   // view (e.g. clicking a markdown link in a project README), snapshot the
   // current view + selection so Back returns there. If we're already in
   // Docs and navigating to a different doc, snapshot the previous doc
-  // path. Either way, leave docsBackStack untouched if the path is the
-  // same as the current one (idempotent re-entry).
+  // path plus its scroll position so Back restores it. Either way, leave
+  // docsBackStack untouched if the path is the same as the current one
+  // (idempotent re-entry).
   const openDocs = useCallback(
     (path: string | null) => {
       if (view !== "docs") {
@@ -215,18 +338,26 @@ export default function App() {
           { kind: "external", view, selection: selected, tab },
         ]);
         setDocsPath(path);
+        setPendingDocsScroll(null);
         setView("docs");
         return;
       }
       if (docsPath !== path) {
-        setDocsBackStack((s) => [...s, { kind: "doc", path: docsPath }]);
+        const scrollTop = readDocsScrollTop();
+        setDocsBackStack((s) => [
+          ...s,
+          { kind: "doc", path: docsPath, scrollTop },
+        ]);
         setDocsPath(path);
+        setPendingDocsScroll(null);
       }
     },
     [view, selected, tab, docsPath],
   );
   // Pop the back-stack and apply the restored state. For a "doc" entry
-  // we just swap the doc path; for an "external" entry we restore the
+  // we swap the doc path and stash the saved scrollTop in
+  // pendingDocsScroll so DocsPanel restores it once the prev page's
+  // content has rendered. For an "external" entry we restore the
   // pre-Docs view + selection (matching browser-back semantics across
   // the view boundary).
   const docsBack = useCallback(() => {
@@ -238,16 +369,23 @@ export default function App() {
       setSelected(top.selection);
       setTab(top.tab);
     } else {
+      setPendingDocsScroll(top.scrollTop);
       setDocsPath(top.path);
     }
   }, [docsBackStack]);
   // Within-docs link click: the user clicked a markdown / ipynb link in
-  // the rendered doc. Push the previous path so Back unwinds.
+  // the rendered doc. Push the previous path + scroll so Back unwinds
+  // to exactly where the user was.
   const docsNavigate = useCallback(
     (path: string) => {
       if (docsPath === path) return;
-      setDocsBackStack((s) => [...s, { kind: "doc", path: docsPath }]);
+      const scrollTop = readDocsScrollTop();
+      setDocsBackStack((s) => [
+        ...s,
+        { kind: "doc", path: docsPath, scrollTop },
+      ]);
       setDocsPath(path);
+      setPendingDocsScroll(null);
     },
     [docsPath],
   );
@@ -441,6 +579,71 @@ export default function App() {
     staleTime: Infinity,
   });
 
+  // Path to the YAML config the server loaded at startup. Used by the
+  // settings gear in the sidebar footer to open the file in the editor.
+  const serverConfigQ = useQuery({
+    queryKey: ["server-config-path"],
+    queryFn: api.serverConfigPath,
+    staleTime: Infinity,
+  });
+  const openServerConfig = useCallback(() => {
+    const p = serverConfigQ.data?.path;
+    if (p) openFileForEdit(p);
+  }, [serverConfigQ.data?.path]);
+
+  // Restart the running server as a fresh process. The backend
+  // returns 202-ish ({"restart": "scheduled"}) before unwinding
+  // uvicorn, so we wait until the next /api/health success after a
+  // failure and then reload the page so the rebooted server's state
+  // is reflected fresh. Spawned subprocesses (training, inference,
+  // dataset_server, …) survive the restart and are reattached on the
+  // new server's startup path.
+  const [restarting, setRestarting] = useState(false);
+  const restartServer = useCallback(async () => {
+    if (
+      !window.confirm(
+        "Restart the forgather server process? Running training / inference / dataset jobs keep running, but the webui will briefly disconnect.",
+      )
+    ) {
+      return;
+    }
+    setRestarting(true);
+    try {
+      await api.restartServer();
+    } catch (e) {
+      window.alert(
+        `Restart request failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      setRestarting(false);
+      return;
+    }
+    // Wait for the server to drop, then poll /api/health until it
+    // answers again. Hard-reload so every cached query refetches
+    // against the rebooted server.
+    let sawDown = false;
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      try {
+        const r = await fetch("/api/health", { cache: "no-store" });
+        if (r.ok) {
+          if (sawDown) {
+            window.location.reload();
+            return;
+          }
+        } else {
+          sawDown = true;
+        }
+      } catch {
+        sawDown = true;
+      }
+      await new Promise((r) => setTimeout(r, 750));
+    }
+    setRestarting(false);
+    window.alert(
+      "Server did not come back within 60 seconds. Check the terminal where it was launched.",
+    );
+  }, []);
+
   const openHelp = useCallback(
     async (menu: ToolHelpMenu) => {
       // 1. Build the absolute path the Docs API expects.
@@ -498,6 +701,10 @@ export default function App() {
     docRelpath: string;
     mkdocsSlug: string;
     extraItems?: ToolExtraMenuItem[];
+    // Filled in for entries under "Services" — the backend service
+    // type each launcher creates instances of. Used to fan out the
+    // configured-service list under the matching launcher row.
+    serviceType?: "inference" | "dataset" | "tensorboard" | "mkdocs";
   }
 
   // Build "Edit Configuration…" for the dataset server. Creates the
@@ -521,19 +728,24 @@ export default function App() {
     // implementation via filesApi/setView regardless.
   }, []);
 
-  const TOOLS: ToolEntry[] = [
+  // Long-running spawned processes the operator wants to launch and
+  // then forget about (inference, datasets, dashboards). Split out from
+  // TOOLS so the one-shot model-manipulation utilities aren't visually
+  // mixed with persistent services in the sidebar.
+  const SERVICES: ToolEntry[] = [
     {
       icon: "🔮",
-      label: "Serve Inference…",
+      label: "Inference…",
       title:
         "Serve an arbitrary model directory — project affiliation optional",
       onOpen: () => setStartServerOpen(true),
       docRelpath: "tools/inference_server/README.md",
       mkdocsSlug: "tools/inference_server/",
+      serviceType: "inference",
     },
     {
       icon: "🗂",
-      label: "Start Dataset Server…",
+      label: "Dataset…",
       title:
         "Run the Forgather dataset server — clients route fast_load_iterable_dataset over HTTP via FORGATHER_DATASET_SERVER",
       onOpen: () => setDatasetServerOpen(true),
@@ -545,14 +757,7 @@ export default function App() {
           onChoose: onEditDatasetServerConfig,
         },
       ],
-    },
-    {
-      icon: "📐",
-      label: "Evaluate…",
-      title: "Run loss/perplexity evaluation against any model directory",
-      onOpen: () => setEvaluateOpen(true),
-      docRelpath: "docs/guides/evaluating-models.md",
-      mkdocsSlug: "guides/evaluating-models/",
+      serviceType: "dataset",
     },
     {
       icon: "📊",
@@ -561,6 +766,7 @@ export default function App() {
       onOpen: () => setTensorboardOpen(true),
       docRelpath: "docs/guides/tensorboard.md",
       mkdocsSlug: "guides/tensorboard/",
+      serviceType: "tensorboard",
     },
     {
       icon: "📖",
@@ -570,6 +776,21 @@ export default function App() {
       onOpen: () => setMkdocsOpen(true),
       docRelpath: "docs/guides/mkdocs.md",
       mkdocsSlug: "guides/mkdocs/",
+      serviceType: "mkdocs",
+    },
+  ];
+
+  // One-shot model-manipulation utilities (evaluate / convert /
+  // finalize / update). Distinct from SERVICES which spawn long-running
+  // processes.
+  const TOOLS: ToolEntry[] = [
+    {
+      icon: "📐",
+      label: "Evaluate…",
+      title: "Run loss/perplexity evaluation against any model directory",
+      onOpen: () => setEvaluateOpen(true),
+      docRelpath: "docs/guides/evaluating-models.md",
+      mkdocsSlug: "guides/evaluating-models/",
     },
     {
       icon: "🔁",
@@ -630,32 +851,27 @@ export default function App() {
           </nav>
         </div>
         <div className="sidebar-expanded-content">
-          <header className="sidebar-header">
+          <header
+            className="sidebar-header"
+            // Right-click anywhere on the header surfaces a small menu
+            // whose only entry today is a Help… link to the server
+            // reference doc — same plumbing the per-tool right-click
+            // menus use (ToolHelpMenu + openHelp). Add per-app actions
+            // here as the need shows up.
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setToolHelpMenu({
+                x: e.clientX,
+                y: e.clientY,
+                docRelpath: "tools/forgather_server/README.md",
+                mkdocsSlug: "forgather-server/",
+                label: "Forgather Server",
+              });
+            }}
+            title="Right-click for help"
+          >
             <h1>Forgather Server</h1>
-            <span className="muted">preview</span>
             <div className="sidebar-header-actions">
-              <button
-                className="refresh-btn"
-                onClick={refresh}
-                title="Re-read projects, configs, and templates from disk"
-              >
-                ⟳ Refresh
-              </button>
-              <button
-                className={
-                  "sched-btn " + (schedEnabled ? "running" : "paused")
-                }
-                onClick={() => toggleSched.mutate(!schedEnabled)}
-                disabled={toggleSched.isPending || schedQ.isLoading}
-                title={
-                  schedEnabled
-                    ? "Scheduler running — click to pause"
-                    : "Scheduler paused — click to run"
-                }
-                aria-label={schedEnabled ? "Pause scheduler" : "Run scheduler"}
-              >
-                {schedEnabled ? "⏸" : "▶"}
-              </button>
               <button
                 className="sidebar-toggle"
                 onClick={() => setSidebarCollapsed(true)}
@@ -768,6 +984,91 @@ export default function App() {
           </details>
 
           <details
+            className="sidebar-tools"
+            open={servicesOpen}
+            onToggle={(e) =>
+              setServicesOpen((e.target as HTMLDetailsElement).open)
+            }
+          >
+            <summary>Services</summary>
+            <div className="sidebar-tools-body">
+              {SERVICES.map((tool) => {
+                const t = tool.serviceType;
+                const count = t ? servicesByType[t] ?? 0 : 0;
+                const runningCount = t ? runningServicesByType[t] ?? 0 : 0;
+                const open = t ? !!servicesCategoryOpen[t] : false;
+                const showChevron = !!t && count > 0;
+                return (
+                  <div
+                    key={tool.label}
+                    className="services-category"
+                  >
+                    <div className="services-category-row">
+                      {showChevron ? (
+                        <button
+                          className="services-category-chevron"
+                          onClick={() =>
+                            setServicesCategoryOpen((s) => ({
+                              ...s,
+                              [t!]: !s[t!],
+                            }))
+                          }
+                          title={open ? "Collapse" : "Expand"}
+                          aria-label={open ? "Collapse" : "Expand"}
+                        >
+                          {open ? "▾" : "▸"}
+                        </button>
+                      ) : (
+                        // Placeholder so launcher labels stay aligned
+                        // whether or not their type currently has any
+                        // configured instances.
+                        <span
+                          className="services-category-chevron services-category-chevron-spacer"
+                          aria-hidden="true"
+                        />
+                      )}
+                      <button
+                        className="sidebar-tool-btn"
+                        onClick={tool.onOpen}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setToolHelpMenu({
+                            x: e.clientX,
+                            y: e.clientY,
+                            docRelpath: tool.docRelpath,
+                            mkdocsSlug: tool.mkdocsSlug,
+                            label: tool.label,
+                            extraItems: tool.extraItems,
+                          });
+                        }}
+                        title={tool.title}
+                      >
+                        <span className="sidebar-tool-btn-label">
+                          {tool.icon} {tool.label}
+                        </span>
+                        {runningCount > 0 && (
+                          <span className="badge">{runningCount}</span>
+                        )}
+                      </button>
+                    </div>
+                    {showChevron && open && (
+                      <div className="services-category-body">
+                        <ServicesPanel
+                          filterType={t!}
+                          onSwitchView={(v) => setView(v)}
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              <div className="sidebar-tools-hint muted">
+                Right-click any service for help.
+              </div>
+            </div>
+          </details>
+
+          <details
             className="sidebar-search-roots-details"
             open={searchRootsOpen}
             onToggle={(e) => {
@@ -824,6 +1125,62 @@ export default function App() {
               />
             </div>
           </details>
+
+          {/* Footer bar pinned to the bottom of the sidebar. Gear opens
+              the YAML config the server loaded at startup in the editor
+              so the operator can tweak persistent server defaults. */}
+          <div className="sidebar-footer">
+            <button
+              className="sidebar-footer-gear"
+              onClick={refresh}
+              title="Re-read projects, configs, and templates from disk"
+              aria-label="Refresh data"
+            >
+              <ReloadIcon />
+            </button>
+            <button
+              className={
+                "sidebar-footer-gear sched-footer-btn " +
+                (schedEnabled ? "running" : "paused")
+              }
+              onClick={() => toggleSched.mutate(!schedEnabled)}
+              disabled={toggleSched.isPending || schedQ.isLoading}
+              title={
+                schedEnabled
+                  ? "Scheduler running — click to pause"
+                  : "Scheduler paused — click to run"
+              }
+              aria-label={schedEnabled ? "Pause scheduler" : "Run scheduler"}
+            >
+              {schedEnabled ? "⏸" : "▶"}
+            </button>
+            <button
+              className="sidebar-footer-gear"
+              onClick={restartServer}
+              disabled={restarting}
+              title={
+                restarting
+                  ? "Waiting for the server to come back up…"
+                  : "Restart the forgather server (running jobs survive)"
+              }
+              aria-label="Restart server"
+            >
+              <RestartIcon />
+            </button>
+            <button
+              className="sidebar-footer-gear"
+              onClick={openServerConfig}
+              disabled={!serverConfigQ.data?.path}
+              title={
+                serverConfigQ.data?.path
+                  ? `Open server config: ${serverConfigQ.data.path}`
+                  : "Server config path unavailable"
+              }
+              aria-label="Open server config"
+            >
+              <GearIcon />
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -900,6 +1257,8 @@ export default function App() {
             onEdit={openFileForEdit}
             canGoBack={docsBackStack.length > 0}
             onBack={docsBack}
+            restoreScrollTop={pendingDocsScroll}
+            onScrollRestored={() => setPendingDocsScroll(null)}
           />
         </div>
         <div
@@ -954,12 +1313,14 @@ export default function App() {
           checkpointPath={null}
           onClose={() => setStartServerOpen(false)}
           onSubmitted={onJobSubmitted}
+          onServiceCreated={expandServicesCategory}
         />
       )}
       {datasetServerOpen && (
         <DatasetServerModal
           onClose={() => setDatasetServerOpen(false)}
           onSubmitted={onJobSubmitted}
+          onServiceCreated={expandServicesCategory}
         />
       )}
       {tensorboardOpen && (
@@ -969,12 +1330,14 @@ export default function App() {
           initialWindowTitle=""
           onClose={() => setTensorboardOpen(false)}
           onSubmitted={onJobSubmitted}
+          onServiceCreated={expandServicesCategory}
         />
       )}
       {mkdocsOpen && (
         <MkDocsModal
           onClose={() => setMkdocsOpen(false)}
           onSubmitted={onJobSubmitted}
+          onServiceCreated={expandServicesCategory}
         />
       )}
       {convertOpen && (

@@ -850,14 +850,19 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
             )
         except Exception:
             finalized_params.setdefault("scheme", "http")
-        # Stamp a routable host for cross-machine URL display. When
-        # the server binds 0.0.0.0, "localhost" in the URL is correct
-        # for browser+proxy on the same host but useless for any
-        # other machine the operator is browsing from. Pick the
-        # cluster-routable address when available (same one peers
-        # use), or fall back to the first non-loopback psutil-detected
-        # IP. Leave unset for explicit bind hosts (operator knows
-        # what they typed).
+
+    # Stamp a routable host for cross-machine URL display. When the
+    # spawned service binds 0.0.0.0, "localhost" in the rendered URL
+    # is correct for a browser on the same host but useless for any
+    # other machine the operator is browsing from. Pick the
+    # cluster-routable address when available (same one peers use),
+    # or fall back to the first non-loopback psutil-detected IP.
+    # Leave unset for explicit bind hosts (operator knows what they
+    # typed). Applies to every job type that exposes a clickable URL
+    # on its Job card — currently inference, dataset_server, and
+    # mkdocs. TensorBoard renders its own URL with its bind_all
+    # toggle in mind and is left alone.
+    if item.job_type in ("inference", "dataset_server", "mkdocs"):
         if finalized_params.get("host") in ("0.0.0.0", "::", ""):
             routable = detect_routable_host()
             if routable:

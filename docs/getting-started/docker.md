@@ -10,7 +10,7 @@ Two images, distinct roles:
 | **Mutability** | Mutable (host-clone bind-mount, edits go live) | **Immutable by design** (build once, distribute identical) |
 | **Networking default** | `--network host` (Linux only) | Bridge with `-p 8765:8765` (portable) |
 | **Multi-node** | `--network host` works out of the box | `NETWORK=host` opt-in required |
-| **User identity** | Host operator's UID/GID/name baked in at build time via `docker/build.sh` build args | Fixed in-container user (`forgather`, UID 1000), remapped to host's PUID/PGID at container start via `gosu` |
+| **User identity** | Host operator's UID/GID/name baked in at build time via `docker/build` build args | Fixed in-container user (`forgather`, UID 1000), remapped to host's PUID/PGID at container start via `gosu` |
 | **Distributable** | **No** — scoped to the user who built it (single-host, single-user) | Yes — build once, deploy anywhere |
 
 The two images share the entrypoint script (`docker/entrypoint.sh`)
@@ -37,8 +37,8 @@ remap at container start.
 
 ```bash
 # Dev image (tag defaults to forgather-dev:<your-host-username>):
-docker/build.sh                   # build forgather-dev:dinalt (or similar)
-docker/run.sh                     # interactive shell, repo bind-mounted
+docker/build                   # build forgather-dev:dinalt (or similar)
+docker/run                     # interactive shell, repo bind-mounted
 
 # Runtime image:
 docker/runtime/build.sh           # build forgather:latest
@@ -72,15 +72,15 @@ Every script accepts `-h` / `--help` and prints its own usage from
 the script's docstring header. Help is read-only — it never builds,
 creates, or modifies anything.
 
-### `docker/build.sh` — build the dev image
+### `docker/build` — build the dev image
 
 ```text
-docker/build.sh [TAG] [--claude] [-- DOCKER_BUILD_ARGS...]
-docker/build.sh -h | --help
+docker/build [TAG] [--claude] [-- DOCKER_BUILD_ARGS...]
+docker/build -h | --help
 ```
 
 Build the dev image (`Dockerfile`). The image is **single-user and
-host-scoped**: `docker/build.sh` reads `id -u` / `id -g` / `id -un`
+host-scoped**: `docker/build` reads `id -u` / `id -g` / `id -un`
 from the calling shell and passes them as `USER_UID` / `USER_GID` /
 `USER_NAME` build args, baking the host operator's identity directly
 into the image. There's no runtime usermod / gosu drop — the in-
@@ -90,7 +90,7 @@ build-once-deploy-everywhere, user-agnostic story, use
 
 After the docker build succeeds, `build.sh` runs `./build-webui.sh`
 in a transient container against your host clone so the SPA `dist/`
-is ready before `docker/run.sh` is invoked. Skip with
+is ready before `docker/run` is invoked. Skip with
 `SKIP_WEBUI_BUILD=1` (e.g. when iterating on the SPA via
 `npm run dev`).
 
@@ -109,7 +109,7 @@ The default tag is `forgather-dev:<host-username>` so multiple
 operators on a shared host don't collide on a single
 `forgather-dev:latest` tag.
 
-`docker/build.sh` refuses to run as `uid 0` — baking root into the
+`docker/build` refuses to run as `uid 0` — baking root into the
 image would collide with the existing in-image root account. Re-run
 as a regular user, or use the runtime image which is user-agnostic.
 
@@ -117,7 +117,7 @@ as a regular user, or use the runtime image which is user-agnostic.
 
 | Arg | Default | Notes |
 | - | - | - |
-| `TAG` | `forgather-dev:<host-username>` | Image tag. Combine with `IMAGE=` on `docker/run.sh` to use a non-default build. |
+| `TAG` | `forgather-dev:<host-username>` | Image tag. Combine with `IMAGE=` on `docker/run` to use a non-default build. |
 
 **Flags**
 
@@ -136,21 +136,21 @@ as a regular user, or use the runtime image which is user-agnostic.
 **Examples**
 
 ```bash
-docker/build.sh                                   # default tag
-docker/build.sh forgather-dev:experiment          # custom tag
-docker/build.sh --claude                          # bake in Claude Code
-docker/build.sh -- --no-cache                     # force a clean rebuild
-docker/build.sh forgather-dev:claude --claude -- --no-cache
-SKIP_WEBUI_BUILD=1 docker/build.sh                # no SPA post-step
+docker/build                                   # default tag
+docker/build forgather-dev:experiment          # custom tag
+docker/build --claude                          # bake in Claude Code
+docker/build -- --no-cache                     # force a clean rebuild
+docker/build forgather-dev:claude --claude -- --no-cache
+SKIP_WEBUI_BUILD=1 docker/build                # no SPA post-step
 ```
 
-### `docker/run.sh` — launch / attach the dev container
+### `docker/run` — launch / attach the dev container
 
 ```text
-docker/run.sh                       # interactive bash, create-or-attach
-docker/run.sh COMMAND [ARG...]      # one-shot command in the same container
-docker/run.sh --status | --stop | --rm | --recreate
-docker/run.sh -h | --help
+docker/run                       # interactive bash, create-or-attach
+docker/run COMMAND [ARG...]      # one-shot command in the same container
+docker/run --status | --stop | --rm | --recreate
+docker/run -h | --help
 ```
 
 Long-lived container: first invocation creates it detached
@@ -167,7 +167,7 @@ can be inspected from another terminal.
 | `COMMAND ARGS` | One-shot command in the same container. The container is created or started first if needed. |
 | `--status` | Print container state, image tag, network mode, started-at timestamp. |
 | `--stop` | Stop the container; keep the filesystem (re-attach later picks up where you left off). |
-| `--rm` | Stop and remove. Next `docker/run.sh` recreates from scratch. |
+| `--rm` | Stop and remove. Next `docker/run` recreates from scratch. |
 | `--recreate` | Stop + remove + create fresh. Required when env-var overrides change after first create (e.g. you added an `EXTRA_MOUNTS` and want it to take effect). |
 | `-h` / `--help` | Print usage and exit. |
 
@@ -175,7 +175,7 @@ can be inspected from another terminal.
 
 | Var | Default | Effect |
 | - | - | - |
-| `IMAGE` | `forgather-dev:<host-username>` | Image to run. Combine with `docker/build.sh TAG` to test a different build. |
+| `IMAGE` | `forgather-dev:<host-username>` | Image to run. Combine with `docker/build TAG` to test a different build. |
 | `NAME` | `forgather-dev-${USER}` | Container name. Useful when running multiple variants side-by-side. |
 | `GPUS` | `all` | Passed to `--gpus`. `none` disables GPU access; `'"device=0,1"'` exposes a subset (note the inner quotes — required for the docker CLI to parse the device list). |
 | `NETWORK` | `host` | `host` or `bridge`. Host networking is Linux-only and the most ergonomic; bridge wraps with explicit `-p` forwards. |
@@ -187,16 +187,16 @@ can be inspected from another terminal.
 **Examples**
 
 ```bash
-docker/run.sh                                     # interactive shell
-docker/run.sh forgather ls -r                     # one-shot command
-docker/run.sh --status                            # state probe
-docker/run.sh --recreate                          # roll forward to a new image
+docker/run                                     # interactive shell
+docker/run forgather ls -r                     # one-shot command
+docker/run --status                            # state probe
+docker/run --recreate                          # roll forward to a new image
 
-GPUS=none docker/run.sh                           # CPU only
-GPUS='"device=0,1"' docker/run.sh                 # subset of GPUs
-EXTRA_MOUNTS='-v /mnt/rust:/mnt/rust' docker/run.sh --recreate
-NETWORK=bridge HOST_BIND=0.0.0.0 docker/run.sh --recreate
-IMAGE=forgather-dev:experiment docker/run.sh --recreate
+GPUS=none docker/run                           # CPU only
+GPUS='"device=0,1"' docker/run                 # subset of GPUs
+EXTRA_MOUNTS='-v /mnt/rust:/mnt/rust' docker/run --recreate
+NETWORK=bridge HOST_BIND=0.0.0.0 docker/run --recreate
+IMAGE=forgather-dev:experiment docker/run --recreate
 ```
 
 ### `docker/runtime/build.sh` — build the runtime (distributable) image
@@ -333,12 +333,12 @@ IMAGE=ghcr.io/jdinalt/forgather:1.1.0 docker/runtime/run.sh
 
 ### Persistent overrides
 
-Both `docker/run.sh` and `docker/runtime/run.sh` source
+Both `docker/run` and `docker/runtime/run.sh` source
 `$FORGATHER_DOCKER_CONFIG` (default
 `$XDG_CONFIG_HOME/forgather/docker.env`, falling back to
 `~/.config/forgather/docker.env`) before applying defaults. The
 file is shell-sourced — use the `: "${VAR:=default}"` pattern so a
-command-line `VAR=... docker/run.sh` still wins:
+command-line `VAR=... docker/run` still wins:
 
 ```bash
 # ~/.config/forgather/docker.env
@@ -395,7 +395,7 @@ Topics that apply to both images.
 The two images take opposite approaches here. Pick whichever fits
 your deployment story.
 
-**Dev image — host operator baked in at build time.** `docker/build.sh`
+**Dev image — host operator baked in at build time.** `docker/build`
 reads `id -u` / `id -g` / `id -un` from the calling shell and passes
 them to `docker build` as the `USER_UID` / `USER_GID` / `USER_NAME`
 build args. The Dockerfile uses those to create the in-container user
@@ -505,7 +505,7 @@ to inspect or control it.
 When the container already exists, env-var overrides for
 `IMAGE` / `GPUS` / `NETWORK` / port / mount are **ignored on
 re-attach** — those bake at create time. Use `--recreate` to pick up
-changes after `docker/build.sh` rebuilt the image (or the runtime's
+changes after `docker/build` rebuilt the image (or the runtime's
 `docker/runtime/run.sh --recreate`).
 
 ### Container init (zombie reaping)
@@ -531,8 +531,8 @@ for the full story.
 | ---- | ------- |
 | `Dockerfile` | Image definition |
 | `.dockerignore` | Build-context filter |
-| `docker/build.sh` | Builds the image; passes host `id -u`/`id -g`/`id -un` as build args |
-| `docker/run.sh` | Launches a long-lived container with `$HOME` bind-mounted |
+| `docker/build` | Builds the image; passes host `id -u`/`id -g`/`id -un` as build args |
+| `docker/run` | Launches a long-lived container with `$HOME` bind-mounted |
 | `docker/entrypoint.sh` | **Shared with runtime image** — `nvidia-smi` probe, editable-install when `FORGATHER_REPO` is set. The phase-1 PUID/PGID remap block is skipped on the dev image because the container starts as the host operator already. |
 | `docker/_lib.sh` | **Shared with runtime image** — common run-script scaffold |
 
@@ -583,9 +583,9 @@ enough cruft that a clean slate is faster than untangling it. In
 those cases:
 
 ```bash
-docker/build.sh                  # incremental rebuild
-docker/build.sh -- --no-cache    # full rebuild from scratch
-docker/run.sh --recreate         # discard the old container, attach to the new image
+docker/build                  # incremental rebuild
+docker/build -- --no-cache    # full rebuild from scratch
+docker/run --recreate         # discard the old container, attach to the new image
 ```
 
 ### Web UI bundle (build on the host)
@@ -601,7 +601,7 @@ the Forgather server:
 cd "$FORGATHER_REPO" && ./build-webui.sh
 ```
 
-`docker/build.sh` runs `./build-webui.sh` automatically as a post-
+`docker/build` runs `./build-webui.sh` automatically as a post-
 step against your host clone (`SKIP_WEBUI_BUILD=1` to skip when you
 plan to use Vite hot-reload via `npm run dev` instead).
 
@@ -619,7 +619,7 @@ sudo, ...), the dev image bakes in:
 Optional, opt-in at build time:
 
 - **Claude Code** (`@anthropic-ai/claude-code`) — pass `--claude`
-  to `docker/build.sh` to install it globally via npm. Lands at
+  to `docker/build` to install it globally via npm. Lands at
   `/usr/bin/claude`, world-executable so the in-container user can
   invoke it. Off by default; the average operator doesn't need it
   baked in.
@@ -632,14 +632,14 @@ Optional, opt-in at build time:
 
 ```bash
 # Build without Claude Code (default):
-docker/build.sh
+docker/build
 
 # Build with Claude Code baked in:
-docker/build.sh --claude
+docker/build --claude
 
 # Combine with a custom tag and docker passthrough:
-docker/build.sh forgather-dev:claude --claude
-docker/build.sh --claude -- --no-cache
+docker/build forgather-dev:claude --claude
+docker/build --claude -- --no-cache
 ```
 
 ### Cross-device symlinks
@@ -660,7 +660,7 @@ Bind-mount the underlying mountpoint at the same path so symlinks
 resolve identically:
 
 ```bash
-EXTRA_MOUNTS="-v /mnt/rust:/mnt/rust" docker/run.sh --recreate
+EXTRA_MOUNTS="-v /mnt/rust:/mnt/rust" docker/run --recreate
 ```
 
 Use `--recreate` — mount config is fixed at container creation, not
@@ -682,12 +682,12 @@ Use the dev image as a clean sandbox by building with `--no-cache`
 and bind-mounting a freshly cloned tree:
 
 ```bash
-docker/build.sh forgather-dev:release-test -- --no-cache
+docker/build forgather-dev:release-test -- --no-cache
 
 # In a clean directory:
 git clone https://github.com/jdinalt/forgather.git fresh-forgather
 cd fresh-forgather
-IMAGE=forgather-dev:release-test docker/run.sh -- bash -lc \
+IMAGE=forgather-dev:release-test docker/run -- bash -lc \
     "forgather ls -r && \
      cd examples/tutorials/tiny_llama && \
      forgather -t v2.yaml train"
@@ -917,7 +917,7 @@ Only the **runtime image** supports this without a rebuild —
 automatically, and the in-image user is remapped at container start
 via `gosu`. The **dev image** bakes a single host operator's
 identity in at build time; a second user needs to run
-`docker/build.sh` from their own account to produce their own image
+`docker/build` from their own account to produce their own image
 (the default tag includes their username, so the two coexist).
 
 **Multi-node hang or "no peer discovery."**
@@ -972,4 +972,4 @@ What stays per-image:
   `--logs` / `--shell` / `--token` / `--dev` / `--recreate` on the
   runtime image).
 - The runtime image's `HEALTHCHECK` and `--init` are on by default;
-  the dev image inherits `--init` from `docker/run.sh`.
+  the dev image inherits `--init` from `docker/run`.

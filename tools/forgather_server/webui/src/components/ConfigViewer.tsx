@@ -84,6 +84,18 @@ export function ConfigViewer({
   );
   const hasCheckpoints = (modelEntry?.checkpoint_count ?? 0) > 0;
   const outputDir = modelEntry?.output_dir ?? "";
+  // Resolves the config's *actual* output_dir from its rendered
+  // meta and stats it. ``output_dir`` is configurable per config
+  // (can live anywhere on disk), so existence has to be checked
+  // against the resolved path, not inferred from output_models/.
+  // Used to gate the Clean Output button so it only shows when
+  // there's something to clean.
+  const outputDirQ = useQuery({
+    queryKey: ["config-output-dir", project.project_dir, config.name],
+    queryFn: () => api.configOutputDir(project.project_dir, config.name),
+    staleTime: 60 * 1000,
+  });
+  const outputDirExists = !!outputDirQ.data?.output_dir_exists;
   const modelName = outputDir
     ? outputDir.split("/").filter(Boolean).pop() ?? outputDir
     : config.name;
@@ -129,7 +141,9 @@ export function ConfigViewer({
         >
           🔧 Overrides…
         </button>
-        {showRunCleanup && (
+        {/* Hidden when the config's resolved output_dir doesn't
+            exist on disk — there's nothing to clean. */}
+        {showRunCleanup && outputDirExists && (
           <button
             className="clean-btn"
             onClick={() => setCleaning(true)}

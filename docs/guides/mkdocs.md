@@ -3,7 +3,7 @@
 The Forgather repository ships an `mkdocs.yml` at the repo root that renders the
 contents of `docs/` as a static site with the Material theme, search, and a
 nav tree. This guide covers how to serve those docs locally with live-reload,
-either from the webui's "Tools -> MkDocs..." entry or from the CLI.
+either from the webui's "Services -> MkDocs…" entry or from the CLI.
 
 The bundled config (`mkdocs.yml`) sets `docs_dir: docs` and pins the Material
 theme, the `search` / `mkdocs-jupyter` / `mkdocstrings` plugins, and a nav
@@ -25,7 +25,7 @@ authoring documentation; the built-in view is fine the rest of the time.
 
 ## Launch from the webui
 
-Sidebar menu: **Tools -> MkDocs...** opens a modal that enqueues an
+Sidebar menu: **Services -> MkDocs…** opens a modal that enqueues an
 `mkdocs serve` job through the scheduler. The defaults are picked from the
 modal's persisted state, with the following first-run values
 (see `tools/forgather_server/webui/src/components/MkDocsModal.tsx`):
@@ -108,6 +108,7 @@ the modal toggles.
   server / scheduler / Jobs view architecture that hosts the MkDocs
   job.
 - [TensorBoard](tensorboard.md) -- the other long-lived viewer
-  spawned from the Tools menu; same lifecycle and auth-gating model.
+  spawned from the Services menu; same lifecycle and auth-gating
+  model.
 - [`docs/README.md`](../README.md) -- table of contents for the doc
   tree this site renders.

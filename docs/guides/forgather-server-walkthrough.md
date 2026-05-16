@@ -129,9 +129,29 @@ forwarding permanent.
 > inference servers): if a job card's clickable link doesn't
 > resolve, swap any `127.0.0.1` for `localhost` and try again.
 
-The sidebar's five collapsible groups (Views, Tools, Search Roots,
-Projects, Files) are all closed on first boot — expand the ones you
-want.
+The sidebar's collapsible groups (Views, Tools, Services, Search
+Roots, Projects, Files) are all closed on first boot — expand the
+ones you want. **Tools** holds one-shot model-manipulation actions
+(Evaluate, Convert, Finalize, Update). **Services** holds the
+launchers for long-running spawned processes (Inference, Dataset,
+TensorBoard, MkDocs); each can also be saved as an auto-start
+service entry — see *[Saving a service for next time](#saving-a-service-for-next-time)*
+below.
+
+At the bottom of the sidebar a footer bar carries four icon
+buttons:
+
+- **⟳ Refresh data** — re-reads projects, configs, and templates
+  from disk. Use this after editing files outside the webui.
+- **▶ / ⏸ Scheduler toggle** — flips the dispatcher loop on/off
+  (green when running, muted when paused).
+- **↺ Restart server** — re-execs the server process in place.
+  PID, TTY, and running subprocesses (training, inference,
+  dataset, …) all survive. Useful for picking up changes after
+  you edit the config file.
+- **⚙ Open server config** — opens `server_config.yaml` in the
+  embedded editor. See [Persistent CLI defaults](#persistent-cli-defaults)
+  further down.
 
 ![Forgather server first-load view, sidebar with all sections collapsed](screenshots/01-first-load.png)
 
@@ -141,7 +161,7 @@ This step is optional but useful: the same docs you're reading now
 can be served locally from the running server, which is handy for
 flipping between the walkthrough and the live UI.
 
-Open the **Tools** group in the sidebar and click **📖 MkDocs…**.
+Open the **Services** group in the sidebar and click **📖 MkDocs…**.
 The modal pre-fills the right `mkdocs.yml` (the bundled one at the
 repo root); leave the rest at defaults and submit.
 
@@ -201,8 +221,9 @@ much the templates expand into.
 
 Before staring training, we can start TensorBoard to monitor the training job.
 
-Click the "TensorBoard..." button in the header (or right click on the configuration and
-select "Tensorboard..."). This will take you to the "Jobs" panel. You should see a "TB"
+Expand the **Services** group in the sidebar and click **📊 TensorBoard…**
+(or right click on the configuration and select "TensorBoard…"). This
+will take you to the "Jobs" panel. You should see a "TB"
 card, where you can click on the URL to open TensorBoard. Once your training jobs starts,
 you can monitor progress from here.
 
@@ -219,14 +240,14 @@ policies.
 
 You can pause dispatch independently of enqueueing — useful when you
 want to inspect what's about to run before it actually starts. Click
-the **▶/⏸** button in the sidebar header (next to ⟳ Refresh) to
+the **▶/⏸** button in the sidebar footer (next to ⟳ Refresh) to
 toggle. **⏸** means dispatch is paused; new submissions sit in the
 queue waiting.
 
 For this walkthrough, pause the dispatcher first so you can see the
 job in the queue panel before it kicks off:
 
-![Sidebar header showing the scheduler paused (⏸ button)](screenshots/07-scheduler-paused.png)
+![Sidebar footer showing the scheduler paused (⏸ button)](screenshots/07-scheduler-paused.png)
 
 If you have already run the Tiny Llama tutorial, clean the output artifacts by
 clicking on **Clean Output** first.
@@ -251,7 +272,7 @@ for the dispatcher.
 
 ![Queue panel showing the queued tiny_llama job](screenshots/10-queue-pending.png)
 
-Now click the **⏸/▶** button in the sidebar header to resume
+Now click the **⏸/▶** button in the sidebar footer to resume
 dispatch. Within a tick or two the scheduler picks GPUs, marks the
 job `starting`, and then `running`. The job moves out of the queue
 and into the **Jobs** panel.
@@ -468,6 +489,67 @@ coherent answers. For something with a fighting chance of holding a
 conversation, see the
 [Small LLM Pretraining](../examples/pretrain/small-llm/README.md)
 example.
+
+## Saving a service for next time
+
+The four service modals (Inference, Dataset, TensorBoard, MkDocs)
+each have a **Create service…** button beside their **Start** button.
+Click it, give the entry a name, and the modal's current settings are
+persisted to `server_config.yaml` as an auto-start service. On every
+subsequent server boot the entry is brought up automatically —
+without re-opening the modal.
+
+Saved entries appear in the **Services** sidebar group nested under
+their type's launcher row, with:
+
+- A right-aligned **pill** on the launcher row showing how many
+  instances of that type are running.
+- A **chevron** to the left of the launcher row that expands the
+  per-type list (hidden when the type has no saved entries).
+- A **red/green dot** per entry — green only when the spawned
+  process is actually serving (`JobRecord status == "running"`),
+  not just queued.
+- A **▶ / ⏹** toggle that flips the entry's `enabled` flag and
+  starts / stops the running instance accordingly.
+- An **×** that deletes the entry (and aborts the running
+  instance, if any).
+
+To stop using a service temporarily without losing its config: ⏹.
+To remove it entirely: ×. The signature of a saved entry is matched
+against running queue items and JobRecords, so a manually-launched
+job with the same args counts as "the running instance" — restarting
+the server won't double-spawn.
+
+## Persistent CLI defaults
+
+`forgather server` reads `<config>/server/server_config.yaml` on
+boot. Anything under `args:` overrides the corresponding CLI default;
+values passed on the command line still win. Useful for persistent
+preferences like `cluster:`, custom `host:` / `port:`, or
+`persist_sessions: true` (the next bullet).
+
+The footer's ⚙ button opens this file in the embedded editor; the
+⟳ button next to it re-execs the server so edits take effect without
+killing the terminal session (running jobs survive — the new server
+re-attaches to them via the standard PID-reattach path).
+
+```yaml
+args:
+  cluster: my-cluster
+  persist_sessions: true       # browser stays logged in across restarts
+services:
+  inference:
+    llama:
+      enabled: true
+      model_path: /models/llama
+      port: 8137
+```
+
+`persist_sessions: true` (or `--persist-sessions` on the command
+line) keeps the browser session cookie valid across restarts so
+hitting ⟳ during development doesn't force a re-login every time.
+The 30-day session TTL still applies, and `/api/auth/logout` (or
+deleting `<config>/server/sessions.json`) still revokes.
 
 ## What's next
 

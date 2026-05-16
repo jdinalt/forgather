@@ -1,4 +1,4 @@
-# Forgather Server (prototype)
+# Forgather Server
 
 A web frontend over the existing Forgather CLI. Single pane of glass for
 discovering projects, inspecting configurations, queuing training / eval
@@ -11,6 +11,208 @@ the browser — wraps `MetaConfig`, `ConfigEnvironment`,
 service binds to `127.0.0.1` by default and `/api/` is gated by a bearer
 token (see [Threat model](#threat-model)). No rate limiting, no native
 TLS — run behind an SSH tunnel or reverse proxy if you need LAN access.
+
+> **New here?** For a guided tour of the web UI — fresh install through
+> training a Tiny Llama and chatting with it — read the
+> [Forgather Server Walkthrough](../../docs/guides/forgather-server-walkthrough.md)
+> first; come back here for the reference material.
+
+## Quick reference
+
+Skip to the two reference tables most operators want first:
+
+- [CLI arguments](#cli-arguments) — every flag accepted by
+  `forgather server`.
+- [Config file (`server_config.yaml`)](#config-file-server_configyaml) —
+  full YAML schema for persistent CLI defaults and auto-start services.
+
+The rest of this document covers the threat model, authentication
+details, persistent on-disk state, UI panels, and the HTTP API.
+
+---
+
+## CLI arguments
+
+`forgather server` accepts the following arguments. Anything passed on
+the command line overrides the matching key in `server_config.yaml`;
+anything absent from both falls back to the defaults shown.
+
+| Flag                                 | Default                                  | Effect                                                                                                                |
+| ------------------------------------ | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `--config PATH`                      | `<config>/server/server_config.yaml`     | Path to the YAML config file. Default location is created (with a commented template) if missing.                     |
+| `-H` / `--host HOST`                 | `127.0.0.1`                              | Bind address. `0.0.0.0` / `::` accepted; the bearer token then traverses the network in cleartext unless TLS is on.   |
+| `-p` / `--port PORT`                 | `8765`                                   | TCP port.                                                                                                             |
+| `-l` / `--log-level LEVEL`           | `INFO`                                   | `DEBUG`, `INFO`, `WARNING`, `ERROR`.                                                                                  |
+| `--reload`                           | off                                      | Uvicorn auto-reload — development convenience only; spawned jobs do not survive a hot-reload.                         |
+| `--no-auth`                          | off                                      | Disable the bearer-token / password gate. Single-trusted-user host only. See [Threat model](#threat-model).            |
+| `--regen-token`                      | off                                      | Rotate the persisted bearer token at startup. Invalidates every CLI client using the old token.                       |
+| `--persist-sessions`                 | off                                      | Persist browser session cookies to `<config>/server/sessions.json` (0600) so the webui survives restarts. See [Persisted sessions](#persisted-sessions). |
+| `--cluster NAME`                     | unset                                    | Join the named cluster (mDNS-scoped). Standalone otherwise. See [Cluster mode](#cluster-mode-multi-node-prototype).   |
+| `--cluster-address IP`               | unset (repeatable)                       | Override the address advertised to cluster peers. Repeatable — useful when running inside a container whose network namespace hides the host NICs from psutil. The first entry also seeds the startup banner's clickable URL when bound to `0.0.0.0`. |
+| `--tls` / `--no-tls`                 | shared config                            | Force-enable / force-disable TLS, overriding `<config>/tls/`'s shared setting. See [docs/operations/tls.md](../../docs/operations/tls.md). |
+| `--tls-cert PATH` / `--tls-key PATH` | resolved from shared config              | Override the certificate / private-key paths for this run.                                                            |
+| `--insecure`                         | off                                      | Allow binding a non-loopback host without TLS. Suppresses the "token in cleartext" abort.                             |
+| `--lock-inference-proxy`             | off                                      | Restrict the inference reverse proxy to localhost upstreams. The unconditional `http`/`https`-only scheme guard still applies. See [Network exposure](#network-exposure). |
+
+The `args:` mapping in `server_config.yaml` accepts the same names with
+dashes turned to underscores (`log_level`, `regen_token`,
+`persist_sessions`, `cluster_address`, …). See the next section.
+
+## Config file (`server_config.yaml`)
+
+Top-level keys:
+
+```yaml
+args:        # persistent CLI defaults; CLI flags still win
+  ...
+services:    # auto-start declarations for long-running spawned processes
+  ...
+```
+
+The server resolves the file in this order:
+
+1. `--config PATH` on the command line (explicit override).
+2. `<forgather_config_dir>/server/server_config.yaml` (default). On
+   first boot a commented template is written here so the defaults are
+   visible / uncomment-to-change.
+
+Programmatic writes (the webui's **Create service…** button and the
+`/api/services` endpoints) regenerate the file body and lose any
+inline user comments — a fixed documentation preamble at the top
+survives. Operator-edited fields like `args:` keep working but won't
+preserve hand-written comments after the first programmatic write.
+
+The sidebar footer's **⚙ Open config** button opens this file in the
+embedded editor; **⟳ Restart server** next to it re-execs the running
+process so edits take effect without disrupting active jobs (spawned
+subprocesses survive across `os.execv`; the rebooted server re-attaches
+to them via the standard PID-reattach path).
+
+### `args:` block — CLI default overrides
+
+Every entry under `args:` corresponds to a CLI argument. Use
+snake_case (dashes are accepted and normalized for convenience):
+
+```yaml
+args:
+  # Network
+  host: 0.0.0.0
+  port: 8765
+  log_level: INFO
+
+  # Auth
+  no_auth: false
+  regen_token: false
+  persist_sessions: true        # webui survives restarts (dev convenience)
+
+  # Cluster
+  cluster: my-cluster
+  cluster_address:
+    - 192.168.1.27              # operator-supplied advertise address
+
+  # TLS — see docs/operations/tls.md
+  insecure: false
+  tls: null                     # path to an alternate TLS config
+
+  # Inference reverse-proxy hardening
+  lock_inference_proxy: false
+```
+
+Unknown keys log a warning at startup and are ignored.
+
+### `services:` block — auto-start services
+
+Long-running spawned processes the server brings up automatically on
+boot. Each entry under `<type>.<name>` is `enabled: true|false` plus
+the same args the corresponding modal would have submitted as
+`job_params`. Supported types and the queue `job_type` each maps to:
+
+| `type`        | Maps to       | Args shape match                |
+| ------------- | ------------- | ------------------------------- |
+| `dataset`     | `dataset_server` | The **Dataset…** modal       |
+| `inference`   | `inference`      | The **Inference…** modal     |
+| `tensorboard` | `tensorboard`    | The **TensorBoard…** modal   |
+| `mkdocs`      | `mkdocs`         | The **MkDocs…** modal        |
+
+```yaml
+services:
+  dataset:
+    primary:
+      enabled: true
+      host: 0.0.0.0
+      port: 8766
+      no_auth: false
+      no_hf: false
+      allow_paths: false
+      allow_downloads: false
+      config_file: /etc/forgather/dataset_server.yaml   # optional
+      locals:                                           # optional
+        - [shakespeare, /datasets/shakespeare]
+
+  inference:
+    llama-8b:
+      enabled: true
+      model_path: /models/llama-3-8b
+      port: 8137
+      host: 0.0.0.0
+      dtype: bfloat16
+      from_checkpoint: false
+      compile: false
+      disable_kv_cache: false
+      requested_gpus: 1         # operator-meta — defaults to 1 for inference
+    llama-70b:
+      enabled: false            # stays available but not auto-started
+      model_path: /models/llama-3-70b
+      port: 8138
+      requested_gpus: 4
+
+  tensorboard:
+    runs:
+      enabled: true
+      logdir: /mnt/runs
+      port: 6006
+      bind_all: true
+
+  mkdocs:
+    docs:
+      enabled: true
+      config_file: /repo/mkdocs.yml
+      host: localhost
+      port: 9999
+      strict: false
+      livereload: true
+      dirty: false
+      watch:                    # optional
+        - /repo/docs
+```
+
+**Operator-meta keys** — recognized at the entry top level alongside
+`enabled`, stripped before the args are forwarded to the spawned
+process:
+
+| Key              | Default                                | Effect                                  |
+| ---------------- | -------------------------------------- | --------------------------------------- |
+| `enabled`        | `false`                                | Auto-start the service on boot.         |
+| `priority`       | `0`                                    | Queue priority (higher dispatches first). |
+| `requested_gpus` | `1` for `inference`, `0` for the rest  | GPU reservation count.                  |
+
+Everything else is forwarded verbatim to the job's `job_params`. The
+**dispatch-injected** fields (`scheme`, `routable_host` — added by the
+scheduler post-submit for inference / dataset_server jobs) are
+excluded from the service signature so a service's pre- and
+post-dispatch signatures match, which is what makes restart-without-
+double-spawn and ▶/⏹ correctness work.
+
+The names are operator-chosen, must match `[A-Za-z0-9_-]+`, and are
+purely human labels — dedupe between configured services and live
+queue items is by **signature**, an sha256 over
+`(type, normalized args)`. Multiple instances of the same type with
+different args are fine (common case: several inference servers on
+different ports / models).
+
+For the boot-time / status / sidebar-UI semantics and the matching API
+endpoints, see [Auto-start services](#auto-start-services) and
+[API quick reference → Services](#services-auto-start).
 
 ---
 
@@ -212,8 +414,8 @@ leave auth on and forward ports over SSH for remote access.
 The `forgather` CLI can talk to a running server directly — no browser needed. All commands accept `--server URL` or the `FORGATHER_SERVER_URL` environment variable; both default to `http://127.0.0.1:8765`.
 
 For a workflow-oriented walkthrough with recipes, see
-[guides/server-cli.md](guides/server-cli.md). The reference below is a
-quick cheat-sheet.
+[guides/server-cli.md](../../docs/guides/server-cli.md). The reference
+below is a quick cheat-sheet.
 
 **Submit jobs from the terminal:**
 
@@ -364,6 +566,62 @@ Open <http://127.0.0.1:8765/>. On first boot the server seeds its
 search-roots list with `<repo>/examples`; add or remove roots via the
 sidebar's **Browse…** button.
 
+### Server config file (`server_config.yaml`)
+
+CLI defaults and auto-start services live in a YAML file so
+persistent preferences (host, port, log level, cluster name,
+services) don't have to be re-typed on every launch. The full schema
+is up front in [Config file (`server_config.yaml`)](#config-file-server_configyaml).
+
+The webui sidebar's bottom bar has a **gear** button (⚙) that opens
+this file in the embedded editor, and a **reload** button (⟳) that
+restarts the server in place via `os.execv` so config changes take
+effect without disrupting running jobs (spawned subprocesses survive
+the exec via the existing PID-reattach path on the new server's
+boot).
+
+### Auto-start services
+
+For the YAML schema, supported types, and operator-meta keys, see the
+[`services:` block](#services-block-auto-start-services) section
+near the top of this document.
+
+**Boot semantics.** The lifespan handler runs an autostart pass
+before the dispatcher's first tick: for every `enabled: true`
+service whose signature isn't already in the queue or in a
+non-terminal JobRecord, it enqueues a fresh QueueItem. Already-
+running services (matched by signature — including matches against
+manually-submitted jobs with the same args) are skipped, so a
+restart never double-spawns and an operator who manually started an
+equivalent job has it counted as the service's running instance.
+
+**Sidebar UI.** The Services sidebar group renders one row per
+launcher (Inference / Dataset / TensorBoard / MkDocs). A right-
+aligned count pill shows how many instances are *actually running*
+(JobRecord status `running`, not just queued/starting). A disclosure
+chevron to the left of the launcher row expands the per-type list
+when there are configured instances; each row carries a red/green
+dot, ▶/⏹ to toggle the `enabled` flag (start / stop), and × to
+delete (the running instance, if any, is aborted first). The four
+service modals each have a **Create service…** button beside Start
+that prompts for a name and persists the entry to the config file.
+
+**API.** Full CRUD plus enable-toggle, with the enable path running
+the autostart pass (or aborting the matching running job) so changes
+land immediately. See [API quick reference → Services (auto-start)](#services-auto-start).
+
+### Persisted sessions
+
+In-memory browser sessions are wiped on every restart by default —
+"restart" is the implicit revoke. For rapid dev cycles where the
+operator is hitting the ⟳ button often, this is tedious. Opt into
+persistence with `--persist-sessions` (or `args: persist_sessions:
+true` in the config file) and the session dict is written to
+`<config>/server/sessions.json` (mode 0600) on every create / revoke
+and reloaded on boot. The existing 30-day TTL still applies; the
+`/api/auth/logout` endpoint still revokes; `rm sessions.json` drops
+everything.
+
 ### Authentication (operational)
 
 For the threat model and the full service-by-service layout, see
@@ -381,6 +639,14 @@ On startup the server prints a Jupyter-style URL with the token baked in:
     CLI auth: token in /home/<user>/.config/forgather/server/auth_token (mode 0600)
     First successful token login will prompt to set a password for future browser logins.
 ```
+
+When the server binds to a wildcard host (`-H 0.0.0.0` / `::`) the
+banner substitutes a connectable address rather than printing the
+literal wildcard — Ctrl-clicking `http://0.0.0.0:8765/` doesn't
+resolve in any terminal. Priority: the first `--cluster-address`
+override → an auto-detected non-loopback IPv4 from `psutil` →
+`localhost` as a final fallback. Explicit bind hosts (`-H 127.0.0.1`,
+`-H 192.168.1.27`) pass through unchanged.
 
 | Channel                    | Used by                       | Notes                                                     |
 | -------------------------- | ----------------------------- | --------------------------------------------------------- |
@@ -532,9 +798,18 @@ survive switching:
 
 - **jobs** — the Cluster Jobs card (multi-node training bundles);
   see *Cluster Jobs panel* below.
-- **network** — the pairwise bandwidth probe. Reserved for future
-  network diagnostics — `Refresh` runs a fresh single-stream
-  measurement to every reachable peer.
+- **network** — pairwise latency + bandwidth probe. `Refresh`
+  walks the peer list sequentially (so two simultaneous bulk
+  transfers don't saturate the local NIC), per peer doing first a
+  30-sample HTTP latency probe — min / median / max ms,
+  warmup-trimmed — and then an adaptive parallel-stream **raw-TCP**
+  bandwidth probe (4 streams in flight, sized for ~2 s of
+  steady-state transfer per stream). The data channel is plain TCP
+  via a one-shot ephemeral listener so Python's `ssl` module isn't
+  the bottleneck on fast links; the control channel still flows
+  over the authenticated mTLS HTTPS path. Each row in the table
+  swaps its Latency / Throughput cells to "Measuring…" while that
+  peer is in flight so the operator sees per-peer progress.
 - **nodes** — per-peer rollup: hostname, master/peer/this-server
   tags, version chips (yellow on divergence), a collapsible
   **Interfaces** list, and a collapsible **GPUs (N · M idle)** list
@@ -601,19 +876,44 @@ peer-pull:
 - **CPU / RAM summary**: logical + physical core count and total
   RAM in GiB, shown in the node header next to the address.
 
-**Bandwidth probe (Phase 2).** Lives on the **Cluster view →
-network** tab. Runs a single-stream HTTP throughput measurement
-from the local node to each reachable peer on demand, triggered by
-the **Refresh** button so the network stays idle the rest of the
-time; sequential rather than parallel so co-tenant flows don't
-masquerade as bottlenecks. Results are cached for 1 hour.
+**Network probe (Phase 2).** Lives on the **Cluster view → network**
+tab. On-demand only, triggered by **Refresh** so the network stays
+idle the rest of the time; sequential across peers because two
+simultaneous bulk transfers would saturate the local NIC and
+under-report each link.
 
-The endpoint at ``/api/cluster/bandwidth_local`` streams a
-deterministic byte blob (default 32 MiB, max 256 MiB) and is in the
-peer-allowed list — peers measure their own receive time and never
-hold the bytes in memory all at once. ``/api/cluster/bandwidth``
-returns the cached results; ``/api/cluster/bandwidth/refresh``
-runs a fresh measurement and updates the cache.
+For each peer the orchestrator runs two passes in order:
+
+1. **Latency** — 30 keepalived round-trips to
+   ``/api/cluster/latency_local`` (empty 200 over the mTLS HTTPS
+   channel). First 3 samples discarded to skip TCP-connect /
+   TLS-handshake / DNS spikes; report min / median / max ms.
+2. **Bandwidth** — adaptive parallel-stream **raw TCP** transfer.
+   Coordination over HTTPS: ``POST /api/cluster/bandwidth_prep``
+   asks the peer to open a one-shot ``asyncio.start_server``
+   listener on ``0.0.0.0:0`` and returns ``(port, 32-byte token)``.
+   The local node then opens 4 concurrent plain TCP connections to
+   that port, sends the token, and times the receive. The peer
+   verifies the token before serving bytes; the listener self-closes
+   after the first served connection (or 30 s timeout). Adaptive
+   sizing: a single-stream probe estimates the rate, then each of
+   the 4 streams pulls enough bytes to take ~2 s of steady-state
+   transfer.
+
+The raw-TCP data path bypasses Python's ``ssl`` module, which
+otherwise capped single-stream throughput at ~2 Gbps even on a
+10 Gbps wire. The bytes themselves are deterministic zero data with
+no useful information content, so removing TLS from the data channel
+adds no useful capability to an attacker who'd already need to be
+inside the cluster LAN's trust boundary (and the 32-byte handshake
+token prevents a coincidental port scan during a measurement from
+poisoning the result).
+
+Results cached for 1 hour. ``GET /api/cluster/bandwidth`` /
+``/api/cluster/latency`` return cached entries;
+``POST .../refresh`` re-runs across all peers;
+``POST .../refresh_one/{node_id}`` re-runs against one peer (used
+by the per-peer "Measuring…" progress feedback in the table).
 
 **Multi-node training submit.** Multi-node submits are folded into
 the regular Run dialog — the same dialog that opens from a config's
@@ -779,11 +1079,11 @@ creation calls so the world-collective stays balanced.
   torchrun (those are torchrun's children, not ours), so when
   torchrun gets killed the workers re-parent to PID 1 of the
   container's pid namespace. If PID 1 is ``sleep infinity`` (the
-  pre-init default of ``docker/run.sh``) it doesn't call ``wait()``
-  and the workers pile up as zombies. ``docker/run.sh`` now passes
+  pre-init default of ``docker/run``) it doesn't call ``wait()``
+  and the workers pile up as zombies. ``docker/run`` now passes
   ``--init`` so Docker's bundled ``tini`` becomes PID 1 and reaps
   orphans regardless of parentage. Existing containers need
-  recreation to pick this up: ``docker/run.sh --rm && docker/run.sh``.
+  recreation to pick this up: ``docker/run --rm && docker/run``.
 
 - **Diagnosing hangs with faulthandler.** ``train_script.py``
   enables Python's ``faulthandler`` at startup and registers
@@ -961,6 +1261,8 @@ Everything under `~/.config/forgather/server/` survives restarts:
 | `gpu_policy.json`           | Per-GPU runtime policy: disabled + min_priority.       |
 | `auth_token`                | Bearer token shared with CLI clients (mode 0600).      |
 | `password_hash`             | Optional pbkdf2_sha256 hash for browser logins (0600). |
+| `sessions.json`             | Persisted browser sessions (0600). Present only when started with `--persist-sessions`. |
+| `server_config.yaml`        | Operator-editable CLI defaults + auto-start services (0600). See [Server config file](#server-config-file-server_configyaml). |
 
 All state files are written crash-atomically via `_atomic.py`: tmp file
 written in the target directory, `fsync` on the fd, then `os.replace`.
@@ -1070,10 +1372,13 @@ The left side of the window is a collapsible sidebar (`<aside
 class="app-sidebar">`) that owns navigation and global actions. Top to
 bottom:
 
-- **Header** — "Forgather Server" · preview, then a `⟳ Refresh` button,
-  a scheduler `▶`/`⏸` play/pause button (toggles the dispatcher; green
-  when running, muted when paused), and a window/sidebar SVG toggle
-  that collapses the sidebar.
+- **Header** — "Forgather Server" title and a window/sidebar SVG
+  toggle that collapses the sidebar. Right-click anywhere on the
+  header opens a small context menu whose only entry today is
+  **Help…**, routing to this reference document (rendered through
+  MkDocs if a serve is alive, the built-in Docs viewer otherwise).
+  (The Refresh and scheduler ▶/⏸ controls that used to live up here
+  moved to the new footer — see below.)
 - **Nodes** (cluster-only, sits above Views) — collapsible
   `<details>` listing every cluster peer by hostname with a tri-state
   health dot (green = reachable, yellow = reachable but a headline
@@ -1094,32 +1399,24 @@ bottom:
   menu), independent of cluster mode. **Cluster** is the
   cluster-wide surface — see
   [Cluster mode (multi-node, prototype)](#cluster-mode-multi-node-prototype).
-- **Tools** (collapsible `<details>`) — global actions that don't
-  belong to a specific config. Each tool persists its last-submitted
-  settings to localStorage so the next open defaults to those values
-  (`priority` resets each time since the right value depends on
-  current queue state). Current tools:
-    - **🔮 Serve Inference…** — opens `InferenceModal` in ad-hoc mode
-      so you can serve any on-disk directory without a Forgather
-      project. Persisted under `forgather-adhoc-inference-v1`.
-    - **📊 TensorBoard…** — `TensorBoardModal` in `global` mode against
-      any logdir on disk. Persisted under `forgather-global-tensorboard-v1`.
-    - **📖 MkDocs…** — queues `mkdocs serve` against an `mkdocs.yml`
-      on disk. The picker defaults to `<Forgather repo>/mkdocs.yml`
-      when no value has been persisted yet (resolved from
-      `/api/fs/quick-paths`'s "Forgather repo" entry). Persisted under
-      `forgather-global-mkdocs-v1`.
+- **Tools** (collapsible `<details>`) — one-shot model-manipulation
+  utilities. Persisted to localStorage so the next open of each
+  modal defaults to the last-committed values; `priority` resets
+  each time since the right value depends on current queue state.
+    - **📐 Evaluate…** — queues `forgather eval` against an arbitrary
+      model directory.
     - **🔁 Convert Model…** — queues `forgather convert` against a
-      pair of source/destination model paths. Direction (HF↔Forgather)
-      is auto-detected by the script unless `--reverse` is forced.
-      Persisted under `forgather-global-convert-v1`. The footer carries
-      a **Reset to defaults** button that clears the persisted blob.
+      pair of source/destination model paths. Direction
+      (HF ↔ Forgather) is auto-detected unless `--reverse` is forced.
+      Persisted under `forgather-global-convert-v1`. The footer
+      carries a **Reset to defaults** button that clears the
+      persisted blob.
     - **📦 Finalize Model…** — queues `forgather finalize` to package
-      a trained Forgather output tree into a clean directory: tokenizer
-      additions, chat template, generation config, root-copy /
-      keep-optimizer toggles. Persisted under
+      a trained Forgather output tree into a clean directory:
+      tokenizer additions, chat template, generation config,
+      root-copy / keep-optimizer toggles. Persisted under
       `forgather-global-finalize-v1`. Same **Reset to defaults**
-      affordance as Convert.
+      affordance.
     - **⬆️ Update Model…** — queues `forgather update` to migrate a
       saved Forgather model to the current source schema. Reads
       `forgather_arch` / `forgather_arch_version` from the source
@@ -1128,9 +1425,51 @@ bottom:
       `--checkpoint` overrides plus dtype, device, strict / no-strict,
       safetensors, and dry-run toggles. Persisted under
       `forgather-global-update-v1`. Same **Reset to defaults**
-      affordance as Convert / Finalize.
+      affordance.
+- **Services** (collapsible `<details>`) — launchers for the four
+  long-running spawned-process services: 🔮 Inference, 🗂 Dataset,
+  📊 TensorBoard, 📖 MkDocs. Same persistence model as Tools. Each
+  launcher carries a right-aligned running-count pill (same UI as
+  Views → Jobs) and, when there are configured instances of that
+  type, a chevron that expands a per-type list of saved services.
+  Each saved-service row has a red/green dot reflecting actual
+  running state (JobRecord `status == "running"`), a ▶/⏹ toggle
+  that flips the `enabled` flag, an `×` delete (aborts the running
+  instance first), and a clickable label that does the obvious
+  thing for each type:
+
+  - **Inference / Dataset** → switch to the matching view (chat
+    or browse the running server).
+  - **TensorBoard** → open `http://<host>:<port>/api/tb/<queue_id>/`
+    in a new tab. The path prefix is the one the scheduler stamps
+    onto the spawned TB via `--path_prefix`; TB only serves under
+    that prefix.
+  - **MkDocs** → open `http://<host>:<port>/` in a new tab.
+
+  For wildcard binds (`0.0.0.0` / `::`), the URL substitutes
+  `window.location.hostname` — the host the browser is already
+  reaching the webui on, guaranteed to be reachable from there.
+
+  Each service modal also has a **Create service…** button that
+  prompts for a name (with a sensible default per type — model
+  basename for inference, logdir basename for tensorboard, etc.)
+  and persists the modal's current args into `server_config.yaml`
+  via [`POST /api/services`](#services-auto-start). See
+  [Auto-start services](#auto-start-services) for the boot
+  semantics.
 - **Project tree** — Search Roots + workspace-clustered projects
   (see below).
+
+Below the scrolling section stack is a **sidebar footer** pinned
+via `position: sticky; bottom: 0`. Four icon-only buttons (tooltips
+explain each):
+
+| Glyph | Action |
+| --- | --- |
+| ⟳ | **Refresh data** — invalidates the entire client query cache so disk edits to workspace metadata, templates, configs are picked up immediately. |
+| ▶ / ⏸ | **Scheduler toggle** — flips the dispatcher loop on/off (green when running, muted when paused). Same mutation that backed the old header button. |
+| ↺ | **Restart server** — confirms, then hits `POST /api/server/restart`. The process re-execs in place; running training / inference / dataset_server / mkdocs / tensorboard subprocesses survive across the exec via the standard PID-reattach path. Useful for picking up `server_config.yaml` changes without killing the terminal. |
+| ⚙ | **Open server config** — opens the resolved `server_config.yaml` in the embedded editor. |
 
 When collapsed, the sidebar shrinks to a 44-px strip showing only the
 expand toggle and the icon-only view switcher. Both the collapsed
@@ -1171,9 +1510,9 @@ persists for next time.
   (user-confirmed, guarded by `/api/fs/delete-dir`). Populated lazily
   via `/api/project/models` — two configs that materialize to the same
   `output_dir` show the same sub-nodes.
-- **Refresh button** invalidates the entire client query cache so disk
-  edits to workspace metadata, templates, configs are picked up
-  immediately.
+- **Refresh button** (⟳ in the sidebar footer) invalidates the
+  entire client query cache so disk edits to workspace metadata,
+  templates, configs are picked up immediately.
 
 ### Config inspection
 
@@ -1366,9 +1705,9 @@ choices:
 `conflict: {currentMtime}` flag; the modal watches every open
 buffer and pops for the first conflicting one.
 
-### Sidebar layout: six top-level collapsible sections
+### Sidebar layout: top-level collapsible sections + footer bar
 
-The sidebar's body below the header is a stack of six independent
+The sidebar's body below the header is a stack of independent
 `<details>`-backed groups, all sharing the same chrome (uppercase
 muted summary, custom `▸`/`▾` glyph via `::before`,
 `::-webkit-details-marker { display: none }`) and all defaulting to
@@ -1381,16 +1720,37 @@ state.
 | Section | Component | Purpose |
 | --- | --- | --- |
 | **Views** | `<nav class="sidebar-views">` | The view switcher (📁 Projects, ✎ Edit, 🖥 GPUs, 📋 Queue, ⚙ Jobs, 🔮 Inference). |
-| **Tools** | inline buttons | Global actions: 🔮 Serve Inference, 📊 TensorBoard, 📖 MkDocs, 🔁 Convert Model, 📦 Finalize Model. |
+| **Tools** | inline buttons | One-shot model-manipulation utilities: 📐 Evaluate, 🔁 Convert Model, 📦 Finalize Model, ⬆️ Update Model. |
+| **Services** | inline buttons + `ServicesPanel` | Long-running spawned processes: 🔮 Inference, 🗂 Dataset, 📊 TensorBoard, 📖 MkDocs. Each launcher row carries a right-aligned running-count pill (same UI pattern as Views → Jobs) and, when there are configured instances of that type, a chevron that expands a per-type list of saved services with red/green dots and ▶/⏹/× controls. See [Auto-start services](#auto-start-services). |
 | **Search Roots** | `SearchRootsPanel` | Root-list management: Browse… to add, × to remove, **📁 New Workspace…** for the dropdown-driven flow. Lifted out of `ProjectTree` so each group is its own top-level entry. |
 | **Projects** | `ProjectTree` | The familiar workspace-clustered project forest. |
 | **Files** | `FilesTree` | Hierarchical filesystem view of every search root. |
 
+Below the scrolling section stack a **sidebar footer** is pinned via
+`position: sticky; bottom: 0`. Four icon-only buttons:
+
+- **⟳ Refresh data.** Invalidates the entire client query cache so
+  disk edits to workspace metadata, templates, configs are picked
+  up immediately. Moved here from the old sidebar header.
+- **▶ / ⏸ Scheduler toggle.** Flips the dispatcher loop on/off
+  (green when running, muted when paused). Same mutation that
+  backed the old header button.
+- **↺ Restart server.** Confirms, hits `POST /api/server/restart`,
+  then polls `/api/health` and reloads the page once the rebooted
+  server is responsive. Useful for picking up `server_config.yaml`
+  changes without killing the terminal. Spawned jobs survive.
+- **⚙ Open config.** Opens the loaded server config file
+  (`server_config.yaml`) in the embedded editor. The path is
+  surfaced by `GET /api/server-config-path`.
+
 Earlier iterations had Tools and the view switcher visually
 distinct from the rest (a horizontal rule above and below Tools, a
-Tools-specific summary block). Those were dropped so the six
-groups read as a single uniform stack — easier to scan, no
-implicit grouping where there isn't one.
+Tools-specific summary block). Those were dropped so the groups
+read as a single uniform stack — easier to scan, no implicit
+grouping where there isn't one. The Tools / Services split came
+later to separate one-shot utilities (Evaluate / Convert / Finalize
+/ Update) from persistent services (which gained the
+configured-instance management above).
 
 ### Files tree (sidebar)
 
@@ -1443,7 +1803,8 @@ target type):
 | **✎ Rename…** | non-root | prompt for new bare basename → `POST /api/fs/rename` |
 | **✂ Cut** | non-root | set in-memory clipboard `{path, mode: "cut"}` |
 | **❏ Copy** | any | set clipboard `{path, mode: "copy"}` |
-| **⎘ Paste** | dir, when clipboard set | `POST /api/fs/move` (cut, consumes clipboard) or `POST /api/fs/copy` (copy) |
+| **⎘ Paste** | dir, when clipboard set | `POST /api/fs/move` (cut, consumes clipboard) or `POST /api/fs/copy` with `auto_rename: true` (copy — collisions become `<stem> (copy)<ext>` siblings rather than 409 errors) |
+| **⎘ Duplicate** | non-root | `POST /api/fs/copy` into the clicked node's parent with `auto_rename: true`; same "(copy)" suffix flow paste uses, no clipboard needed |
 | **🗑 Delete Permanently…** | non-root | confirm + `POST /api/fs/delete-file` (file) or `POST /api/fs/delete-dir` (dir) |
 
 The clipboard is in-memory (`useState` in `FilesTree`); no OS
@@ -1490,15 +1851,64 @@ recoverable by reverse operation:
 
 - `POST /api/fs/rename` `{path, new_name}` — `os.rename` to a
   bare basename; refuses overwrite (409).
-- `POST /api/fs/copy` `{src, dest_dir}` — `shutil.copy2` for
-  files, `shutil.copytree` for directories; refuses overwrite at
-  destination.
+- `POST /api/fs/copy` `{src, dest_dir, auto_rename?: bool, target_name?: string}`
+  — `shutil.copy2` for files, `shutil.copytree` for directories.
+  Without `auto_rename` a destination collision returns 409. With
+  `auto_rename: true` the server picks a non-colliding sibling by
+  appending ` (copy)` / ` (copy 2)` / … to the stem (used by paste
+  and right-click Duplicate). `target_name` overrides the
+  destination basename — single filename only, no path separators —
+  used by the "Duplicate Config…" prompt to land the new file at
+  the operator-chosen name.
 - `POST /api/fs/move` `{src, dest_dir}` — `shutil.move` (so
   cross-device moves degrade to copy + unlink); refuses overwrite.
 - `POST /api/fs/new-file` `{parent, name}` — `Path.touch()` an
   empty file; refuses overwrite.
 - `POST /api/fs/mkdir` `{parent, name}` — single new directory
   (already existed; reused for + New Folder…).
+
+### Markdown surfaces: Docs view + Project Info
+
+Both the **Docs** view (`DocsPanel`) and the project tree's
+**Info** tab (`InfoPane`) render markdown with `react-markdown +
+remark-gfm + rehype-slug`. They share three behaviours worth
+calling out:
+
+- **Outline column.** A 220-px-wide nav rail to the left of the
+  content lists every h1 / h2 / h3 by clicking the rendered DOM
+  for `id`-stamped headings (rehype-slug stamps them) and
+  rendering one entry per heading. Clicking smooth-scrolls the
+  body to the matching anchor. Hidden entirely when the page has
+  fewer than two headings.
+- **Scroll restore.** The Docs view's Back button restores the
+  scroll position of the page being returned to (the back-stack
+  entry records `scrollTop` when pushed; the body re-applies it
+  in a `requestAnimationFrame` after the content has rendered, so
+  a saved offset doesn't get clamped to 0 by an empty body during
+  a refetch). The Info tab applies the same trick across
+  config-tab switches — it stays mounted with `display:none` so
+  the scroll container survives, and its scrollTop is saved /
+  restored from a ref.
+- **Default landing page.** The Docs view lands on `docs/README.md`
+  rather than the repo-root README — the docs index is the curated
+  entry point with links to installation / tutorials / config / API,
+  whereas the root README is closer to a project elevator pitch.
+  Falls back to the root README if the docs index is missing.
+
+`docs_hooks.py` is a MkDocs `on_page_markdown` hook (wired via
+`mkdocs.yml: hooks:`) that rewrites relative markdown links on
+pages whose source is a symlink. Many pages under `docs/` are
+symlinks to canonical files elsewhere in the repo — e.g.
+`docs/forgather-server.md → ../tools/forgather_server/README.md`.
+MkDocs computes link paths from the docs_dir page location rather
+than the source file's realpath, so relative links written from
+the source author's perspective (`../../docs/foo.md`) come out
+broken in the rendered site. The hook resolves each relative href
+against the symlink target's realpath, then rewrites it as a path
+relative to the docs_dir page; it also maintains a
+`realpath → docs_dir alias` map so a link that lands on the
+realpath of another docs symlink gets pointed at the in-tree alias
+rather than ascending out of `docs_dir`.
 
 ### Persistent dynamic-args overrides
 
@@ -1567,10 +1977,10 @@ Convert / finalize / update will happily take a GPU if the user sets
 | ---------------- | -------------------------------------------------------------------------------------- | -------------------------------------- |
 | `training`       | ▶ Run (Submit modal)                                                                   | Terminal when trainer exits.           |
 | `eval`           | ⚖ Evaluate… (EvalModal, from config or checkpoint)                                     | Terminal when `forgather eval` exits.  |
-| `inference`      | 🔮 Serve Inference… (InferenceModal, project-backed or ad-hoc)                         | Long-lived; kill/force-kill to stop.   |
-| `dataset_server` | 🗂 Start Dataset Server… (DatasetServerModal, sidebar Tools)                           | Long-lived; kill to stop.              |
-| `tensorboard`    | 📊 TensorBoard… (TensorBoardModal, per-config or per-model)                            | Long-lived; kill to stop.              |
-| `mkdocs`         | 📖 MkDocs… (MkDocsModal, sidebar Tools — picks an `mkdocs.yml` + host:port)            | Long-lived; kill to stop.              |
+| `inference`      | 🔮 Inference… (InferenceModal, project-backed or ad-hoc; sidebar Services)             | Long-lived; kill/force-kill to stop.   |
+| `dataset_server` | 🗂 Dataset… (DatasetServerModal, sidebar Services)                                     | Long-lived; kill to stop.              |
+| `tensorboard`    | 📊 TensorBoard… (TensorBoardModal, sidebar Services or per-config/per-model)           | Long-lived; kill to stop.              |
+| `mkdocs`         | 📖 MkDocs… (MkDocsModal, sidebar Services — picks an `mkdocs.yml` + host:port)         | Long-lived; kill to stop.              |
 | `convert`        | 🔁 Convert Model… (ConvertModal, sidebar Tools)                                        | Terminal when `convert` exits.         |
 | `finalize`       | 📦 Finalize Model… (FinalizeModal, sidebar Tools)                                      | Terminal when `finalize` exits.        |
 | `update`         | ⬆️ Update Model… (UpdateModal, sidebar Tools or config / checkpoint right-click)        | Terminal when `update` exits.          |
@@ -1758,7 +2168,7 @@ generation params — persisted to `localStorage`):
   per-message edit (truncate + re-run), per-message delete. History
   + system text persist under `forgather-inference-chat-v1`.
 
-**Serve Inference… (sidebar Tools section)** — opens `InferenceModal`
+**Inference… (sidebar Services section)** — opens `InferenceModal`
 in ad-hoc mode: the model path becomes a `PathField` instead of a
 read-only summary, so the user can serve any on-disk directory without
 a Forgather project. Ad-hoc settings (path, port, dtype, attention
@@ -1843,7 +2253,7 @@ per-node only:
   the right pane shows a yellow `couldn't resolve` hint instead of
   silently appearing empty.
 
-**Start Dataset Server… (sidebar Tools section)** — opens the
+**Dataset… (sidebar Services section)** — opens the
 DatasetServerModal: host, port, no-auth toggle, loading-policy
 flags (`--no-hf`, `--allow-paths`, `--allow-downloads`), a
 repeatable Local-mapping form (`name=path`), and an optional
@@ -1855,7 +2265,7 @@ server reboot; pass `--regen-token` to the underlying script (or
 re-spawn from this modal after deleting the per-port `.token` file)
 to rotate.
 
-**Edit Configuration… (right-click on Start Dataset Server…)** —
+**Edit Configuration… (right-click on Dataset…)** —
 creates `<forgather_config_dir>/dataset_server/config.yaml` as a
 commented YAML stub if it doesn't exist (0600 in a 0700 dir), then
 opens it in the editor view. The standalone dataset_server loads
@@ -2015,22 +2425,32 @@ The project tree exposes a different menu per node type:
   `["project-templates", dir]`, and `["project-models", dir]` are
   invalidated, and the active selection is dropped if it was
   pointing into the deleted project.
-- **Config row** — Run / TensorBoard / Overrides / Clean Output, plus
-  Serve Inference / Evaluate / Convert Model / Finalize Model when
-  the config has checkpoints on disk. Convert and Finalize pre-fill
-  the source path with the config's resolved `output_dir` while
-  inheriting every other field from the global tool's persisted
-  defaults; submit then writes everything (including the new source
-  path) back, so the next opening — global tool or context-menu —
-  reflects the last run. Items are filtered by `config_class` so
-  non-training configs only show **Overrides**. A trailing **🗑 Delete
-  Config…** entry unlinks just the config template file (via
+- **Config row** — Run / TensorBoard / Overrides plus, when the
+  config has actually been run, Clean Output (gated on
+  `configOutputDir`'s `output_dir_exists` — `output_dir` is
+  per-config and can live anywhere on disk, so the menu polls the
+  resolved path rather than guessing from `output_models/`).
+  Serve Inference / Evaluate / Convert Model / Finalize Model
+  surface when the config has checkpoints on disk. Convert and
+  Finalize pre-fill the source path with the config's resolved
+  `output_dir` while inheriting every other field from the global
+  tool's persisted defaults; submit then writes everything
+  (including the new source path) back, so the next opening —
+  global tool or context-menu — reflects the last run. Items are
+  filtered by `config_class` so non-training configs only show
+  **Overrides**. **⎘ Duplicate Config…** prompts for the new
+  filename (defaulting to `<stem> (copy)<ext>`) and copies the
+  config file alongside the original via `POST /api/fs/copy` with
+  `target_name`; the new entry appears in the tree immediately on
+  `["projects"]` invalidation. A trailing **🗑 Delete Config…**
+  entry unlinks just the config template file (via
   `POST /api/fs/delete-file`); it explicitly does *not* touch the
-  config's `output_dir` / runs / checkpoints — those have their own
-  Clean Output / Delete Permanently flows. After delete the
+  config's `output_dir` / runs / checkpoints — those have their
+  own Clean Output / Delete Permanently flows. After delete the
   `["projects"]` and `["project-templates", …]` queries are
   invalidated so the tree and the `tlist` view both refresh, and
-  the active selection is cleared if it pointed at the deleted file.
+  the active selection is cleared if it pointed at the deleted
+  file.
 - **Checkpoint leaf** — Serve Inference / Evaluate (both pre-fill the
   modal with this checkpoint's path), plus Delete Permanently.
 - **Log leaf** / **Evaluation leaf** — Delete Permanently.
@@ -2143,10 +2563,12 @@ tools/forgather_server/
     ├── vite.config.ts         # dev-mode /api → :8765 proxy (REST + WS)
     └── src/
         ├── main.tsx           # React + QueryClientProvider bootstrap
-        ├── App.tsx            # Collapsible sidebar (header, view
-        │                      #   switcher, Tools, ProjectTree) + main
-        │                      #   pane; owns view / selection / tab
-        │                      #   state and the scheduler play/pause
+        ├── App.tsx            # Collapsible sidebar (header, Views,
+        │                      #   Tools, Services, Search Roots,
+        │                      #   ProjectTree, FilesTree, sticky
+        │                      #   footer) + main pane; owns view /
+        │                      #   selection / tab state and the
+        │                      #   scheduler play/pause
         ├── api.ts             # Typed fetch wrappers for every endpoint
         ├── inference-client.ts# Browser client for /v1/* (via the proxy);
         │                      #   streamCompletion / streamChatCompletion /
@@ -2202,9 +2624,9 @@ tools/forgather_server/
             │                        #   (project-backed or ad-hoc)
             ├── TensorBoardModal.tsx # Enqueue tensorboard job
             │                        #   (config-backed; or `global`
-            │                        #   from sidebar Tools)
+            │                        #   from sidebar Services)
             ├── MkDocsModal.tsx      # Enqueue `mkdocs serve` job
-            │                        #   (sidebar Tools — global only)
+            │                        #   (sidebar Services — global only)
             ├── ConvertModal.tsx     # Enqueue `forgather convert` job
             │                        #   (sidebar Tools or config / checkpoint
             │                        #   right-click)
@@ -2215,14 +2637,18 @@ tools/forgather_server/
             │                        #   (sidebar Tools or config / checkpoint
             │                        #   right-click; pre-fills source path
             │                        #   and optional checkpoint)
+            ├── ServicesPanel.tsx    # Configured-service rows in the
+            │                        #   sidebar Services group (red/green
+            │                        #   dots, ▶/⏹/× row controls,
+            │                        #   click-through per type)
             ├── LogDetailPanel.tsx   # Selection target for a run/log leaf
             ├── CheckpointDetailPanel.tsx # Selection target for a checkpoint
             ├── EvalDetailPanel.tsx  # Selection target for an evaluation
             ├── RunSummaryView.tsx   # Extracted from legacy models panel
             ├── EvalResultTable.tsx  # Extracted from legacy models panel
             ├── InferencePanel.tsx   # Inference view: model/completion/chat
-            │                        #   sub-tabs (Serve Inference lives
-            │                        #   in the sidebar Tools section)
+            │                        #   sub-tabs (Inference launcher lives
+            │                        #   in the sidebar Services section)
             ├── InferenceModelPanel.tsx     # Base URL, params, presets
             ├── InferenceCompletionPanel.tsx# Textarea completion + Stream
             ├── InferenceChatPanel.tsx      # Multi-turn chat + markdown
@@ -2275,6 +2701,8 @@ are WebSockets.
 | Endpoint                                       | Purpose                                             |
 | ---------------------------------------------- | --------------------------------------------------- |
 | `GET /api/health`                              | Liveness                                            |
+| `GET /api/server-config-path`                  | Resolved path to the loaded `server_config.yaml` (`{path}` — used by the sidebar gear button) |
+| `POST /api/server/restart`                     | Schedule an in-place `os.execv` restart; running subprocesses survive. Returns `{restart: "scheduled"}` immediately, then the process re-execs after a short delay so the response body can flush. |
 | `GET /api/search-roots`                        | List search roots                                   |
 | `POST /api/search-roots` `{path, create?: bool}`| Add a search root; with `create: true` the server `mkdir`s the path before registering (used by the New Workspace modal's inline create-root flow) |
 | `DELETE /api/search-roots?path=`               | Remove a search root                                |
@@ -2359,9 +2787,15 @@ them is safe to mount unconditionally.
 | `GET /api/cluster/gpus`                                            | bearer                     | Aggregated `{nodes: [{node_id, hostname, address, reachable, gpus, error}]}` across the cluster (master fetches each peer's `gpus_local` in parallel) |
 | `POST /api/cluster/gpu_policy_local` `{gpu_index, disabled?, min_priority?}` | bearer / peer (only mutation path carved out for peers) | Apply a GPU policy update on this node |
 | `POST /api/cluster/nodes/{node_id}/gpus/{idx}/policy` `{disabled?, min_priority?}` | bearer | Master-side proxy: forward a GPU policy update to the named node (short-circuits self) |
-| `GET /api/cluster/bandwidth_local?bytes=N`                         | bearer / peer              | Stream `N` bytes back so the caller can time the receive (4 KiB ≤ N ≤ 256 MiB; default 32 MiB) |
+| `GET /api/cluster/bandwidth_local?bytes=N`                         | bearer / peer              | Legacy HTTPS data path. Streams `N` bytes back so the caller can time the receive (default = probe size; capped at 4 GiB). Superseded by the raw-TCP path below for the live tab — left in place for ad-hoc / CLI use. |
+| `POST /api/cluster/bandwidth_prep` `{bytes}`                       | bearer / peer              | Open a one-shot ephemeral raw-TCP listener for a single bandwidth-test transfer. Returns `{port, bytes, token}` where `token` is a fresh 32-byte hex handshake the caller sends first; mismatched tokens are dropped without serving. Listener self-closes after one served connection (or 30 s timeout). |
 | `GET /api/cluster/bandwidth`                                       | bearer                     | Cached pairwise bandwidth measurements (1 h TTL)                          |
-| `POST /api/cluster/bandwidth/refresh?bytes=N`                      | bearer                     | Run a fresh bandwidth measurement against every reachable peer (sequential) and update the cache |
+| `POST /api/cluster/bandwidth/refresh`                              | bearer                     | Run a fresh adaptive parallel-stream bandwidth measurement against every reachable peer (sequential across peers, parallel streams per peer) and update the cache |
+| `POST /api/cluster/bandwidth/refresh_one/{node_id}`                | bearer                     | Re-run the bandwidth probe against one peer. Used by the per-peer "Measuring…" progress feedback in the webui. |
+| `GET /api/cluster/latency_local`                                   | bearer / peer              | Empty 200 with a node-id header — peer endpoint for RTT round-trip timing |
+| `GET /api/cluster/latency`                                         | bearer                     | Cached pairwise latency measurements (1 h TTL). Each entry carries min / median / max ms across `samples` post-warmup probes. |
+| `POST /api/cluster/latency/refresh`                                | bearer                     | Run a fresh latency probe against every reachable peer and update the cache |
+| `POST /api/cluster/latency/refresh_one/{node_id}`                  | bearer                     | Re-run the latency probe against one peer.                               |
 | `POST /api/cluster/jobs/submit` `{project_dir, config, dynamic_args?, priority?, members:[{node_id,nproc_per_node,nccl_socket_ifname?}], rdzv_node_id?, rdzv_port?, allow_version_mismatch?}` | bearer | Submit a multi-node training bundle; master fans out per-rank queue items to each participant. Auto-derives the iface from each member's advertised IP when `nccl_socket_ifname` is omitted. Returns the bundle and any version-mismatch warnings. HTTP 422 if no iface can be matched, 409 on unacknowledged version mismatch. |
 | `GET /api/cluster/jobs`                                            | bearer / peer              | List multi-node bundles with rolled-up status. Non-master nodes proxy to master so every webui sees the same list. Peer-allowed because the response is read-only and cluster-wide by definition. |
 | `GET /api/cluster/jobs/{id}`                                       | bearer                     | Get one bundle (with rolled-up status, fanned out from master)            |
@@ -2446,6 +2880,26 @@ allowlist is the registry itself (see `routes/dataset_server.py`).
 Token resolution order for every proxy call: explicit
 `X-Dataset-Auth-Token` header → JobRecord auto-lookup (for local
 servers) → registry lookup (for user-added entries) → none.
+
+### Services (auto-start)
+
+CRUD over the `services:` block in `server_config.yaml`. Entries
+declare long-running spawned processes (dataset / inference /
+tensorboard / mkdocs) that the server brings up on boot. See
+[Auto-start services](#auto-start-services) for the full schema.
+
+| Endpoint                                                  | Purpose                                                        |
+| --------------------------------------------------------- | -------------------------------------------------------------- |
+| `GET /api/services`                                       | List every configured service with its current running status (`ServiceStatus[]`: service + `running` (true iff a JobRecord with `status=="running"` matches the signature) + `queue_id` + raw `status`). |
+| `POST /api/services` `{type, name, enabled, args}`        | Upsert by `<type, name>`. If `enabled=true` the autostart pass runs immediately so the entry comes up without waiting for the next server boot. |
+| `DELETE /api/services/{type}/{name}`                      | Remove the entry. Any matching running instance is aborted first via `scheduler.abort_or_cancel` so the queue / Jobs rows don't linger. |
+| `POST /api/services/{type}/{name}/enabled` `{enabled}`    | Toggle the auto-start flag. `enabled=true` triggers the autostart pass (start if not already running); `enabled=false` aborts the matching running instance. |
+
+Service signature = `sha256((type, normalized_args))[:16]`. The
+"normalized args" exclude operator-meta keys (`enabled` /
+`priority` / `requested_gpus`) and scheduler-injected fields
+(`scheme` / `routable_host`) so pre- and post-dispatch signatures
+for the same logical service match.
 
 ### Generation-parameter presets
 

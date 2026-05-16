@@ -26,10 +26,10 @@ Point TensorBoard's `--logdir` at:
 
 ## Launching from the webui
 
-### Sidebar Tools menu
+### Sidebar Services menu
 
-The sidebar **Tools** menu has a **TensorBoard...** entry. It opens a
-modal that takes an arbitrary logdir.
+The sidebar **Services** group has a **📊 TensorBoard…** entry.
+It opens a modal that takes an arbitrary logdir.
 
 | Field | Default | Notes |
 |-------|---------|-------|
@@ -72,7 +72,7 @@ forgather tb --enqueue [--port 6006] [--priority N] [--server URL]
 This enqueues a TensorBoard job through the same scheduler as the webui
 modal -- the resulting job shows up in the Jobs view and is controlled
 the same way. The full server CLI surface is documented in
-[`tools/forgather_server/README.md`](../../tools/forgather_server/README.md)
+[`tools/forgather_server/README.md`](../forgather-server.md)
 and [`guides/server-cli.md`](server-cli.md).
 
 The `forgather tb` wrapper picks sensible defaults; for arbitrary TB
@@ -148,4 +148,4 @@ If both `--bind_all` and a host override are passed, `--bind_all` wins
 - [Server CLI](server-cli.md) -- workflow walkthrough for `forgather
   tb --enqueue`, `forgather job`, `forgather sched`, and friends.
 - [MkDocs](mkdocs.md) -- the other long-lived viewer spawned from
-  the Tools menu; same lifecycle and auth-gating model.
+  the Services menu; same lifecycle and auth-gating model.

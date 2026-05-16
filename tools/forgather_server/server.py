@@ -28,10 +28,10 @@ if __name__ == "__main__" and __package__ is None:
     parent_dir = script_dir.parent
     if str(parent_dir) not in sys.path:
         sys.path.insert(0, str(parent_dir))
-    from forgather_server import auth, cluster, paths
+    from forgather_server import auth, cluster, paths, server_config
     from forgather_server.app import create_app
 else:
-    from . import auth, cluster, paths
+    from . import auth, cluster, paths, server_config
     from .app import create_app
 
 import uvicorn
@@ -50,9 +50,35 @@ from forgather.tls.runtime import (
 
 
 def main():
+    # First pass: pull out --config so we can read defaults from disk
+    # before adding the rest of the arguments. ``parse_known_args`` so
+    # the rest of the command line is left for the real parser.
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", default=None)
+    pre_args, _ = pre.parse_known_args()
+
+    try:
+        cfg_path, cfg_data = server_config.load(pre_args.config)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(2)
+    cfg_arg_defaults = server_config.args_defaults(cfg_data)
+
     parser = argparse.ArgumentParser(
         formatter_class=RawTextHelpFormatter,
         description="Forgather web server (prototype)",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to a YAML config file. Defaults to "
+            f"{server_config.default_config_path()} (created with a "
+            "commented template if absent). Keys under 'args:' override "
+            "the CLI argument defaults; values passed on the command line "
+            "still win."
+        ),
     )
     parser.add_argument("-H", "--host", default="127.0.0.1", help="Host to bind to")
     parser.add_argument("-p", "--port", type=int, default=8765, help="Port to bind to")
@@ -76,6 +102,18 @@ def main():
         "--regen-token",
         action="store_true",
         help="Generate a fresh auth token at startup (invalidates existing CLIs)",
+    )
+    parser.add_argument(
+        "--persist-sessions",
+        action="store_true",
+        help=(
+            "Persist browser sessions to disk so the webui doesn't "
+            "force a re-login on every server restart. Sessions still "
+            "obey the 30-day TTL and can be revoked via /api/auth/logout. "
+            "Convenience for rapid dev / restart cycles; remove the "
+            "file at <config>/server/sessions.json to drop all "
+            "persisted sessions."
+        ),
     )
     parser.add_argument(
         "--cluster",
@@ -117,6 +155,19 @@ def main():
             "Example: --cluster-address 192.168.1.27"
         ),
     )
+    if cfg_arg_defaults:
+        # ``set_defaults`` only overrides destinations parser actually
+        # knows about; quietly ignore unknown keys (with a warning) so a
+        # forward-compat config that names a future arg doesn't crash.
+        known = {a.dest for a in parser._actions}
+        applied = {k: v for k, v in cfg_arg_defaults.items() if k in known}
+        unknown = set(cfg_arg_defaults) - known
+        if unknown:
+            logging.getLogger("forgather_server").warning(
+                "ignoring unknown server-config args: %s", sorted(unknown)
+            )
+        parser.set_defaults(**applied)
+
     args = parser.parse_args()
 
     log_level = getattr(logging, args.log_level.upper(), logging.INFO)
@@ -169,6 +220,7 @@ def main():
 
     scheme = "https" if tls_on else "http"
     logging.info(f"Starting Forgather server on {scheme}://{args.host}:{args.port}")
+    logging.info(f"Server config: {cfg_path}")
     # Pin the HTTP protocol to our subclass so peer client certs are
     # surfaced on the ASGI scope for mTLS-aware auth (issue #31).
     # Falls back to the default protocol when TLS is off — no point
@@ -193,6 +245,41 @@ def main():
     )
 
 
+def _pick_display_host(args) -> str:
+    """Return a host string safe to embed in the startup-banner URL.
+
+    ``0.0.0.0`` / ``::`` are valid bind addresses but never valid
+    *connect* addresses, so a Ctrl-click on the printed URL produces
+    a dead link. Substitute something the operator can actually
+    reach. Priority:
+
+      1. First ``--cluster-address`` override the operator gave —
+         that's explicitly "the address peers should use," and it's
+         the most authoritative signal we have at startup.
+      2. ``detect_routable_host()`` — a psutil scan for the first
+         non-loopback, non-link-local IPv4. The cluster-self branch
+         doesn't fire here because cluster mode hasn't been
+         activated yet at banner time.
+      3. ``localhost`` — better than printing a literal wildcard
+         even when the operator is browsing from elsewhere; at
+         worst it nudges them to find their own IP.
+
+    Non-wildcard binds (``-H 127.0.0.1`` / a specific NIC) pass
+    through unchanged so we don't second-guess the operator.
+    """
+    if args.host not in ("0.0.0.0", "::", "*", ""):
+        return args.host
+    if args.cluster_address:
+        return args.cluster_address[0]
+    if __package__ is None:
+        from forgather_server.scheduler import detect_routable_host
+    else:
+        from .scheduler import detect_routable_host
+
+    addr = detect_routable_host()
+    return addr or "localhost"
+
+
 def _configure_auth(args, *, tls_on: bool = False) -> None:
     """Print the jupyter-style banner and set up auth state.
 
@@ -205,20 +292,24 @@ def _configure_auth(args, *, tls_on: bool = False) -> None:
     else:
         token = auth.load_token()
 
+    if args.persist_sessions:
+        auth.enable_session_persistence()
+
     on_loopback = args.host in ("127.0.0.1", "::1", "localhost")
     scheme = "https" if tls_on else "http"
+    display_host = _pick_display_host(args)
 
     print()
     if args.no_auth:
         auth.disable_auth()
         print("    !! Forgather server is running with --no-auth !!")
         print(f"    !! Any other local user on this host can read/control jobs.")
-        print(f"        {scheme}://{args.host}:{args.port}/")
+        print(f"        {scheme}://{display_host}:{args.port}/")
         print()
         return
 
     print("    Forgather server is running at:")
-    print(f"        {scheme}://{args.host}:{args.port}/?token={token}")
+    print(f"        {scheme}://{display_host}:{args.port}/?token={token}")
     if on_loopback and args.host != "localhost":
         print(f"        {scheme}://localhost:{args.port}/?token={token}")
     print()

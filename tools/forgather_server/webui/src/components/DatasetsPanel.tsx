@@ -475,7 +475,6 @@ export function DatasetsClusterTab({
                     toggle={toggleDs}
                     defaultDir="desc"
                   />
-                  <th>load args / name</th>
                 </tr>
               </thead>
               <tbody>
@@ -614,9 +613,6 @@ function ClusterDatasetRow({
             ({hostBaseUrls.join(", ")})
           </span>
         )}
-      </td>
-      <td style={{ fontFamily: "monospace", fontSize: "0.85em" }}>
-        {entry.load_args ? JSON.stringify(entry.load_args) : "-"}
       </td>
     </tr>
   );

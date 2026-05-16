@@ -150,7 +150,7 @@ in before each build; see `tools/forgather_server/README.md` for
 the mechanics.
 
 The Docker image runs `./build-webui.sh` automatically as a
-post-step in `docker/build.sh`, so the dist bundle is already in
+post-step in `docker/build`, so the dist bundle is already in
 place when you enter the container — no manual build needed under
 that workflow.
 
@@ -237,26 +237,6 @@ GPU policy. All files are written crash-atomically (tmp + fsync +
 rename). Power-loss-mid-write never leaves a half-written canonical
 file, and every reader tolerates a corrupt or truncated file by
 falling back to empty state.
-
-### Dev mode (hot reload)
-
-If you're modifying `webui/src/`, run the Vite dev server alongside
-the Python backend:
-
-```bash
-# Terminal 1 — API backend
-forgather server -p 8765
-
-# Terminal 2 — Vite dev server (hot reload, proxies /api → :8765)
-cd tools/forgather_server/webui
-npm run dev          # opens http://localhost:5173
-```
-
-For an end-to-end tour of the UI — install through training a small
-model and chatting with it — see the
-[Forgather server walkthrough](../guides/forgather-server-walkthrough.md).
-For the full feature reference and API documentation, see the
-[Forgather server README](../forgather-server.md).
 
 ## Next steps
 

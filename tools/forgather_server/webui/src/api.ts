@@ -280,6 +280,23 @@ export interface ClusterBandwidthResponse {
   server_time: number;
 }
 
+export interface ClusterLatencyEntry {
+  peer_node_id: string;
+  peer_hostname: string;
+  peer_address: string;
+  samples: number;
+  min_ms: number;
+  median_ms: number;
+  max_ms: number;
+  timestamp: number;
+  error: string | null;
+}
+
+export interface ClusterLatencyResponse {
+  measurements: ClusterLatencyEntry[];
+  server_time: number;
+}
+
 export interface ClusterJobMember {
   node_id: string;
   hostname: string;
@@ -365,6 +382,22 @@ export interface ClusterGpusEntry {
 export interface ClusterGpusResponse {
   nodes: ClusterGpusEntry[];
   server_time: number;
+}
+
+/** Configured auto-start service entry (from `services:` in the
+ *  server config) plus its current running status. */
+export interface ConfiguredService {
+  type: string;
+  name: string;
+  enabled: boolean;
+  args: Record<string, unknown>;
+  signature: string;
+}
+export interface ServiceStatus {
+  service: ConfiguredService;
+  running: boolean;
+  queue_id: string | null;
+  status: string | null; // "queued" | "starting" | "running" | null
 }
 
 /** Unified job model returned by /api/jobs.
@@ -1231,11 +1264,17 @@ export const api = {
   fsCopy: async (
     src: string,
     dest_dir: string,
+    opts: { autoRename?: boolean; targetName?: string } = {},
   ): Promise<{ path: string }> => {
     const r = await fetch("/api/fs/copy", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ src, dest_dir }),
+      body: JSON.stringify({
+        src,
+        dest_dir,
+        auto_rename: !!opts.autoRename,
+        target_name: opts.targetName ?? null,
+      }),
     });
     if (!r.ok) {
       let detail = await r.text();
@@ -1332,6 +1371,34 @@ export const api = {
       throw new Error(`${r.status}: ${detail}`);
     }
     return r.json() as Promise<ClusterBandwidthResponse>;
+  },
+  refreshClusterBandwidthOne: async (
+    nodeId: string,
+  ): Promise<ClusterBandwidthEntry> => {
+    const r = await fetch(
+      `/api/cluster/bandwidth/refresh_one/${encodeURIComponent(nodeId)}`,
+      { method: "POST" },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<ClusterBandwidthEntry>;
+  },
+  getClusterLatency: () =>
+    fetchJson<ClusterLatencyResponse>("/api/cluster/latency"),
+  refreshClusterLatencyOne: async (
+    nodeId: string,
+  ): Promise<ClusterLatencyEntry> => {
+    const r = await fetch(
+      `/api/cluster/latency/refresh_one/${encodeURIComponent(nodeId)}`,
+      { method: "POST" },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<ClusterLatencyEntry>;
   },
   /** Master-proxied GPU policy mutation. Routes to the named node's
    *  /api/cluster/gpu_policy_local; short-circuits when the target is
@@ -1514,6 +1581,56 @@ export const api = {
     ),
   docsRoot: () => fetchJson<{ path: string | null }>("/api/docs/root"),
   docsRepoRoot: () => fetchJson<{ repo_root: string }>("/api/docs/repo-root"),
+  serverConfigPath: () =>
+    fetchJson<{ path: string | null }>("/api/server-config-path"),
+  listServices: () => fetchJson<ServiceStatus[]>("/api/services"),
+  upsertService: async (
+    type: string,
+    name: string,
+    enabled: boolean,
+    args: Record<string, unknown>,
+  ) => {
+    const r = await fetch("/api/services", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type, name, enabled, args }),
+    });
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<ServiceStatus>;
+  },
+  deleteService: async (type: string, name: string) => {
+    const r = await fetch(
+      `/api/services/${encodeURIComponent(type)}/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    );
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json();
+  },
+  restartServer: async () => {
+    const r = await fetch("/api/server/restart", { method: "POST" });
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<{ restart: string }>;
+  },
+  setServiceEnabled: async (type: string, name: string, enabled: boolean) => {
+    const r = await fetch(
+      `/api/services/${encodeURIComponent(type)}/${encodeURIComponent(name)}/enabled`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      },
+    );
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<ServiceStatus>;
+  },
   ensureDatasetServerConfigStub: async (): Promise<{
     path: string;
     created: boolean;

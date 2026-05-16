@@ -25,6 +25,7 @@ type ConfigAction =
   | "clean"
   | "tensorboard"
   | "edit"
+  | "duplicate"
   | "delete";
 
 interface ContextTarget {
@@ -298,11 +299,59 @@ export function ProjectTree({
       onEditTemplate(target.config.path);
       return;
     }
+    if (action === "duplicate") {
+      void duplicateConfig(target.project, target.config);
+      return;
+    }
     setActiveModal({
       action,
       project: target.project,
       config: target.config,
     });
+  };
+
+  /** Right-click "Duplicate Config…" — prompts for a new filename
+   *  and copies the config file alongside the original. The default
+   *  suggestion appends " (copy)" before the extension; the operator
+   *  can edit freely. After the copy lands we invalidate the
+   *  projects query so the new config appears in the tree without
+   *  a manual refresh. */
+  const duplicateConfig = async (
+    project: ProjectInfo,
+    config: ConfigInfo,
+  ) => {
+    const srcPath = config.path;
+    const parent = srcPath.split("/").slice(0, -1).join("/") || "/";
+    const srcBase = config.name; // e.g. "train.yaml"
+    const dot = srcBase.lastIndexOf(".");
+    const stem = dot > 0 ? srcBase.slice(0, dot) : srcBase;
+    const ext = dot > 0 ? srcBase.slice(dot) : "";
+    const suggested = `${stem} (copy)${ext}`;
+    const raw = window.prompt(
+      `Duplicate configuration:\n${srcBase}\n\nNew filename:`,
+      suggested,
+    );
+    if (raw == null) return;
+    const newName = raw.trim();
+    if (!newName) return;
+    if (newName.includes("/") || newName.includes("\\")) {
+      alert(
+        "Configuration names cannot contain path separators. " +
+          "Use the Files view to copy across directories.",
+      );
+      return;
+    }
+    try {
+      await api.fsCopy(srcPath, parent, { targetName: newName });
+      // Refresh the project tree + the per-config caches so the new
+      // entry shows up under the project immediately.
+      invalidateConfigCaches(project, config);
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    } catch (e) {
+      alert(
+        `Duplicate failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   };
 
   const deleteWorkspace = async (ws: WorkspaceCluster) => {
@@ -903,6 +952,17 @@ function ConfigContextMenuItems({
     queryFn: () => api.listProjectModels(project.project_dir),
     staleTime: 5 * 60 * 1000,
   });
+  // Resolves the config's *actual* output_dir from its rendered meta
+  // and stats the path. ``output_dir`` may live anywhere on disk —
+  // ``output_models/`` is just a default — so we can't infer
+  // existence from the project tree alone. Used to gate the
+  // "Clean Output" entry on a real existence check.
+  const outputDirQ = useQuery({
+    queryKey: ["config-output-dir", project.project_dir, config.name],
+    queryFn: () => api.configOutputDir(project.project_dir, config.name),
+    staleTime: 60 * 1000,
+  });
+  const outputDirExists = !!outputDirQ.data?.output_dir_exists;
 
   const cls = metaQ.data?.config_class ?? null;
   const isTraining = cls?.startsWith("type.training_script") ?? false;
@@ -926,7 +986,10 @@ function ConfigContextMenuItems({
       )}
       <button onClick={() => onChoose("construct")}>🔨 Construct…</button>
       <button onClick={() => onChoose("overrides")}>🔧 Overrides…</button>
-      {showRunCleanup && (
+      {/* Only useful when the config's actual output_dir exists. The
+          path is resolved from the config's meta — it may live
+          anywhere on disk, not necessarily under output_models/. */}
+      {showRunCleanup && outputDirExists && (
         <button onClick={() => onChoose("clean")}>🗑 Clean Output…</button>
       )}
       {showRunCleanup && (
@@ -961,6 +1024,12 @@ function ConfigContextMenuItems({
       )}
       <button onClick={() => onChoose("edit")} title={config.path}>
         ✎ Edit Config
+      </button>
+      <button
+        onClick={() => onChoose("duplicate")}
+        title={`Copy ${config.name} alongside itself under a new name`}
+      >
+        ⎘ Duplicate Config…
       </button>
       <button
         className="context-menu-destructive"

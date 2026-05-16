@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import os
 import secrets
@@ -83,6 +84,9 @@ _PEER_ALLOWED_PATHS = frozenset(
         # transfer. Returns a deterministic in-memory blob; never
         # touches state.
         "/api/cluster/bandwidth_local",
+        # Latency self-test target — peer GETs this for RTT timing.
+        # Empty 200 body; same trust profile as bandwidth_local.
+        "/api/cluster/latency_local",
         # Per-rank job-status lookup. The master rolls up cluster-job
         # status by GETting this on each peer with the queue_id of
         # the assignment. Read-only — exposes a small status snapshot
@@ -147,6 +151,14 @@ _PEER_ALLOWED_MUTATIONS = frozenset(
         # within ~1 s instead of one collect tick. Read-only-ish:
         # the handler just sets an asyncio.Event.
         "/api/cluster/dataset_servers/refresh",
+        # Bandwidth-test control plane. Opens a one-shot ephemeral
+        # TCP listener and returns its (port, token) so the caller
+        # can transfer over plain TCP instead of through the
+        # Python ssl bottleneck. No state, no side effects beyond
+        # the ephemeral socket — handshake-gated by a fresh 32-byte
+        # token so port scans during a measurement can't poison
+        # the result.
+        "/api/cluster/bandwidth_prep",
     }
 )
 
@@ -176,10 +188,17 @@ _PEER_ALLOWED_MUTATION_PREFIXES = frozenset(
     }
 )
 
-# Module-level state. Sessions intentionally do not survive process
+# Module-level state. By default sessions do not survive process
 # restart — both the bearer token and the password still work, so a
-# restart only forces a re-login for already-open browser tabs.
+# restart only forces a re-login for already-open browser tabs. The
+# ``--persist-sessions`` toggle (set via ``enable_session_persistence``)
+# trades that implicit "restart == revoke" for the dev-time
+# convenience of keeping the browser logged in across rapid
+# server restarts; the explicit ``SESSION_TTL_SECONDS`` cap still
+# applies, as does the ``/api/auth/logout`` revoke endpoint.
 _sessions: dict[str, float] = {}
+_session_persistence: bool = False
+_sessions_loaded: bool = False
 # Short-lived, single-use URL tokens used by the peer-SSO flow
 # (``/api/cluster/peer_session`` → ``?token=<one-shot>``). Distinct
 # from the persistent bearer at ``_token_path``: a URL that leaks
@@ -316,15 +335,81 @@ def clear_password() -> None:
 # ---------------------------------------------------------------------------
 
 
+def enable_session_persistence() -> None:
+    """Persist browser sessions to disk so they survive server restart.
+
+    Opt-in via ``--persist-sessions``. Reads any existing sessions
+    file on the first call so a restart picks up the prior dict
+    transparently. Stale (past-TTL) entries are dropped at load time.
+    """
+    global _session_persistence
+    _session_persistence = True
+    _load_sessions_from_disk()
+
+
+def _sessions_file():
+    # Local import to avoid a circular module dependency at import time:
+    # paths -> server_state_dir is fine, but importing at module top
+    # would couple auth.py's load order to the rest of the package.
+    from .paths import server_state_dir
+
+    return server_state_dir() / "sessions.json"
+
+
+def _load_sessions_from_disk() -> None:
+    global _sessions_loaded
+    if _sessions_loaded:
+        return
+    _sessions_loaded = True
+    p = _sessions_file()
+    if not p.exists():
+        return
+    try:
+        raw = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        log.warning("could not read persisted sessions from %s: %s", p, e)
+        return
+    if not isinstance(raw, dict):
+        return
+    now = time.time()
+    loaded = 0
+    for sid, created in raw.items():
+        try:
+            ts = float(created)
+        except (TypeError, ValueError):
+            continue
+        if now - ts > SESSION_TTL_SECONDS:
+            continue
+        _sessions[str(sid)] = ts
+        loaded += 1
+    if loaded:
+        log.info("loaded %d persisted session(s) from %s", loaded, p)
+
+
+def _save_sessions_to_disk() -> None:
+    if not _session_persistence:
+        return
+    try:
+        atomic_write_text(
+            _sessions_file(),
+            json.dumps(_sessions),
+            mode=0o600,
+        )
+    except OSError as e:
+        log.warning("could not persist sessions: %s", e)
+
+
 def create_session() -> str:
     sid = secrets.token_urlsafe(SESSION_LENGTH_BYTES)
     _sessions[sid] = time.time()
+    _save_sessions_to_disk()
     return sid
 
 
 def revoke_session(sid: Optional[str]) -> None:
     if sid:
         _sessions.pop(sid, None)
+        _save_sessions_to_disk()
 
 
 def session_valid(sid: Optional[str]) -> bool:
@@ -335,6 +420,7 @@ def session_valid(sid: Optional[str]) -> bool:
         return False
     if time.time() - created > SESSION_TTL_SECONDS:
         _sessions.pop(sid, None)
+        _save_sessions_to_disk()
         return False
     return True
 

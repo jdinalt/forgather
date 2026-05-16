@@ -141,7 +141,7 @@ file layout, same auto-discovery semantics, same `--no-auth` knob.
 For the broader threat-model picture (how this token interacts with
 forgather-server's bearer token and the per-job trainer-control
 token), see the
-[forgather server threat model](../../forgather-server.md#threat-model).
+[forgather server threat model](../forgather_server/README.md#threat-model).
 
 **Default behaviour** — on first start, the server generates a random
 64-hex-char token and writes it to a per-port file under
@@ -709,5 +709,5 @@ discussed:
   state_dict / load_state_dict semantics, which the
   RemoteBackend-based wrapper inherits unchanged.
 - **Other forgather servers**:
-  [forgather_server](../../forgather-server.md),
+  [forgather_server](../forgather_server/README.md),
   [inference_server](../inference_server/README.md).

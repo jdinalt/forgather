@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 
 import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
+import { promptAndCreateService, sanitizeServiceName } from "../services-create";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { ModalBackdrop } from "./ModalBackdrop";
 import { PathField } from "./PathField";
@@ -44,9 +45,14 @@ function savePersisted(s: PersistedDatasetServer) {
 interface Props {
   onClose: () => void;
   onSubmitted?: (queueId: string) => void;
+  onServiceCreated?: (type: "dataset") => void;
 }
 
-export function DatasetServerModal({ onClose, onSubmitted }: Props) {
+export function DatasetServerModal({
+  onClose,
+  onSubmitted,
+  onServiceCreated,
+}: Props) {
   const qc = useQueryClient();
   const schedQ = useQuery({
     queryKey: ["scheduler-status"],
@@ -139,19 +145,12 @@ export function DatasetServerModal({ onClose, onSubmitted }: Props) {
       (name.trim() && !path.trim()) || (!name.trim() && path.trim()),
   );
 
-  const submit = () => {
-    savePersisted({
-      host: host.trim() || "127.0.0.1",
-      port,
-      logLevel,
-      noAuth,
-      noHf,
-      allowPaths,
-      allowDownloads,
-      configFile: configFile.trim(),
-      locals: cleanLocals,
-    });
-    const job_params: Record<string, unknown> = {
+  // Single source of truth for the job_params shape — used by both
+  // ``Start server`` (one-shot enqueue) and ``Create service…``
+  // (persist into the services config and let the autostart pass kick
+  // it off).
+  const buildArgs = (): Record<string, unknown> => {
+    const args: Record<string, unknown> = {
       host: host.trim() || "127.0.0.1",
       port,
       log_level: logLevel,
@@ -164,11 +163,27 @@ export function DatasetServerModal({ onClose, onSubmitted }: Props) {
       allow_downloads: allowDownloads,
     };
     const cf = configFile.trim();
-    if (cf) job_params.config_file = cf;
+    if (cf) args.config_file = cf;
     if (cleanLocals.length > 0) {
       // Wire format: list of [name, path] pairs (JSON has no tuples).
-      job_params.locals = cleanLocals.map(({ name, path }) => [name, path]);
+      args.locals = cleanLocals.map(({ name, path }) => [name, path]);
     }
+    return args;
+  };
+
+  const submit = () => {
+    savePersisted({
+      host: host.trim() || "127.0.0.1",
+      port,
+      logLevel,
+      noAuth,
+      noHf,
+      allowPaths,
+      allowDownloads,
+      configFile: configFile.trim(),
+      locals: cleanLocals,
+    });
+    const job_params = buildArgs();
     enqueue.mutate({
       // No project context for this tool; use the working host so the
       // QueueItem still has *some* project_dir field. The launcher
@@ -400,6 +415,30 @@ export function DatasetServerModal({ onClose, onSubmitted }: Props) {
             </button>
             <button className="secondary" onClick={onClose}>
               Cancel
+            </button>
+            <button
+              className="secondary"
+              onClick={async () => {
+                // Default name: ``dataset-<port>`` — the port is what
+                // makes multiple instances on the same host distinct
+                // and is always present (defaulted to 8766 in the
+                // form).
+                const suggested = sanitizeServiceName(`dataset-${port}`);
+                const ok = await promptAndCreateService(
+                  qc,
+                  "dataset",
+                  buildArgs(),
+                  suggested,
+                );
+                if (ok) {
+                  onServiceCreated?.("dataset");
+                  onClose();
+                }
+              }}
+              disabled={partialLocals}
+              title="Persist these settings to the server config as an auto-start service"
+            >
+              Create service…
             </button>
             <button
               onClick={submit}

@@ -605,7 +605,13 @@ function FilesContextMenu({
           "/";
         invalidateAfter(srcParent, target.path);
       } else {
-        await api.fsCopy(clipboard.path, target.path);
+        // Copy-paste: silently auto-rename on collision rather than
+        // erroring out. Matches the operator's "I want a duplicate"
+        // intent when pasting back into the same dir, and avoids
+        // having to manually clear a name conflict when pasting
+        // somewhere that happens to already contain a file with the
+        // same name.
+        await api.fsCopy(clipboard.path, target.path, { autoRename: true });
         invalidateAfter(target.path);
       }
     } catch (e) {
@@ -635,6 +641,25 @@ function FilesContextMenu({
   };
 
   const canPaste = target.isDir && clipboard != null;
+
+  /** Right-click "Duplicate" — copies the clicked file or directory
+   *  into its own parent with an auto-generated " (copy)" suffix.
+   *  Skipped for roots (no sensible parent to copy into). */
+  const doDuplicate = async () => {
+    onClose();
+    const parent =
+      target.path.replace(/\/+$/, "").split("/").slice(0, -1).join("/") || "/";
+    try {
+      const r = await api.fsCopy(target.path, parent, { autoRename: true });
+      invalidateAfter(parent);
+      // Refresh selection cues / breadcrumbs if applicable. Nothing
+      // to do here — the tree picks up the new entry from
+      // invalidateAfter's query refresh.
+      void r;
+    } catch (e) {
+      alert(`Duplicate failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
 
   return (
     <ContextMenu x={target.x} y={target.y} onClose={onClose}>
@@ -702,6 +727,15 @@ function FilesContextMenu({
       <button className="context-menu-item" onClick={doCopy}>
         ❏ Copy
       </button>
+      {!target.isRoot && (
+        <button
+          className="context-menu-item"
+          onClick={doDuplicate}
+          title={`Copy ${basename(target.path)} alongside itself with a "(copy)" suffix`}
+        >
+          ⎘ Duplicate
+        </button>
+      )}
       {canPaste && (
         <button
           className="context-menu-item"
