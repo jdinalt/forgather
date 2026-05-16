@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
@@ -5,6 +6,13 @@ import remarkGfm from "remark-gfm";
 import rehypeSlug from "rehype-slug";
 
 import { api } from "../api";
+
+/** Entry in the outline. Same shape as DocsPanel's. */
+interface TocEntry {
+  id: string;
+  text: string;
+  level: number;
+}
 
 interface Props {
   project_dir: string;
@@ -80,6 +88,58 @@ export function InfoPane({ project_dir, enabled, onOpenDoc, onEditFile }: Props)
     enabled,
     retry: false,
   });
+
+  // Outline / TOC. Same extraction pattern DocsPanel uses: query
+  // the rendered DOM after the markdown commits, since rehype-slug
+  // has already stamped ids on every h1–h6 we'd want to link to.
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const [toc, setToc] = useState<TocEntry[]>([]);
+  const refreshToc = useCallback(() => {
+    const body = bodyRef.current;
+    if (!body) {
+      setToc([]);
+      return;
+    }
+    const headings = body.querySelectorAll<HTMLElement>(
+      ".info-pane-content h1, .info-pane-content h2, .info-pane-content h3",
+    );
+    const entries: TocEntry[] = [];
+    headings.forEach((h) => {
+      const id = h.id;
+      if (!id) return;
+      const text = (h.textContent || "").trim();
+      if (!text) return;
+      entries.push({ id, text, level: Number(h.tagName.slice(1)) });
+    });
+    setToc(entries);
+  }, []);
+  // Re-extract whenever the rendered project changes (project_dir
+  // shift) or the README data refreshes. ``readmeQ.data`` is the
+  // markdown source string — when it flips identity react-markdown
+  // re-renders and we re-query.
+  useEffect(() => {
+    const id = requestAnimationFrame(refreshToc);
+    return () => cancelAnimationFrame(id);
+  }, [project_dir, readmeQ.data, refreshToc]);
+  // Also catch DOM mutations inside the body — covers the case
+  // where rehype plugins commit asynchronously after the first
+  // render (rare here, but defensive and matches DocsPanel).
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const obs = new MutationObserver(() => refreshToc());
+    obs.observe(el, { childList: true, subtree: true });
+    return () => obs.disconnect();
+  }, [refreshToc]);
+
+  const scrollToHeading = useCallback((id: string) => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const target = body.querySelector<HTMLElement>(`#${CSS.escape(id)}`);
+    if (target) {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, []);
 
   if (!enabled) return null;
 
@@ -204,21 +264,51 @@ export function InfoPane({ project_dir, enabled, onOpenDoc, onEditFile }: Props)
     },
   };
 
-  // Single inner content wrapper: that's where max-width + centering
-  // live. Everything inside flows at the wrapper's full width so headers,
-  // paragraphs, hr, lists, tables all share the same left/right edges
-  // (instead of each centering itself independently with its own
-  // max-width, which produced the inconsistent-spacing rendering).
+  // The TOC rides on the same flex shell pattern as DocsPanel's
+  // ``.docs-pane-split`` — outline column on the left, scrollable
+  // content on the right. Reusing the same ``.docs-pane-toc*``
+  // class names keeps the styling consistent across the two
+  // surfaces (one set of CSS for both outlines).
+  //
+  // Single inner content wrapper inside ``.info-pane``: that's
+  // where max-width + centering live. Everything inside flows at
+  // the wrapper's full width so headers, paragraphs, hr, lists,
+  // tables all share the same left/right edges (instead of each
+  // centering itself independently with its own max-width, which
+  // produced the inconsistent-spacing rendering).
   return (
-    <div className="info-pane">
-      <div className="info-pane-content">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={[rehypeSlug]}
-          components={components}
-        >
-          {readmeQ.data ?? ""}
-        </ReactMarkdown>
+    <div className="info-pane-split">
+      {toc.length > 1 && (
+        <nav className="docs-pane-toc" aria-label="README outline">
+          <div className="docs-pane-toc-title">On this page</div>
+          <ul>
+            {toc.map((e, i) => (
+              <li
+                key={`${e.id}-${i}`}
+                className={`docs-toc-l${Math.min(e.level, 3)}`}
+              >
+                <button
+                  type="button"
+                  onClick={() => scrollToHeading(e.id)}
+                  title={e.text}
+                >
+                  {e.text}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      )}
+      <div className="info-pane" ref={bodyRef}>
+        <div className="info-pane-content">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeSlug]}
+            components={components}
+          >
+            {readmeQ.data ?? ""}
+          </ReactMarkdown>
+        </div>
       </div>
     </div>
   );

@@ -2817,11 +2817,22 @@ li.config.selected button.link:hover {
 /* ---------- Info pane (README viewer) ---------- */
 /* The pane itself is the scroll container. Padding stays here so the
    scrollbar doesn't sit flush against the markdown content. */
+/* Flex shell that hosts the README outline alongside the scrolling
+   ``.info-pane`` content. Mirrors the docs-pane-split layout so the
+   same TOC chrome (``.docs-pane-toc``…) renders correctly here. */
+.info-pane-split {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+}
+
 .info-pane {
   flex: 1;
   overflow-y: auto;
   background: var(--bg-pane);
   padding: 24px 16px;
+  min-height: 0;
 }
 
 /* Single inner wrapper that owns the column width. Everything inside
