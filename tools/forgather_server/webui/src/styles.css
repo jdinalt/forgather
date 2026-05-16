@@ -2985,13 +2985,77 @@ li.config.selected button.link:hover {
   text-overflow: ellipsis;
 }
 
+/* Body + outline live in a flex row so the outline column scrolls
+   independently of the doc content. The split sits between the
+   fixed-height header above and fills the remaining vertical space. */
+.docs-pane-split {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+}
+
 .docs-pane-body {
   /* All scrolling + padding + background come from the .info-pane
      class applied alongside this one. min-height: 0 lets the flex
      child actually shrink to its parent's height instead of growing
-     to its content. */
+     to its content. flex: 1 so the body takes the remaining width
+     after the outline column claims its share. */
+  flex: 1;
   min-height: 0;
 }
+
+/* ----- Outline / TOC ----- */
+.docs-pane-toc {
+  flex: 0 0 220px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-alt);
+  overflow-y: auto;
+  padding: 8px 4px 12px 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  min-height: 0;
+}
+.docs-pane-toc-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  margin: 2px 0 6px 4px;
+}
+.docs-pane-toc ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.docs-pane-toc li {
+  margin: 0;
+}
+.docs-pane-toc button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: var(--fg-muted);
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 3px;
+}
+.docs-pane-toc button:hover {
+  background: var(--bg);
+  color: var(--fg);
+}
+/* Indent by heading depth — small steps so the outline reads as a
+   single column rather than a deep tree. */
+.docs-toc-l1 > button { padding-left: 6px; color: var(--fg); font-weight: 500; }
+.docs-toc-l2 > button { padding-left: 18px; }
+.docs-toc-l3 > button { padding-left: 30px; font-size: 11px; }
 
 .docs-pane-content {
   /* Right-click target — see the onContextMenu handler in DocsPanel

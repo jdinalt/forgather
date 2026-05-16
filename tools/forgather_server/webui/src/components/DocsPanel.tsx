@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
@@ -23,6 +23,15 @@ interface Props {
   canGoBack: boolean;
   /** Pop the parent's docs-history stack. */
   onBack: () => void;
+}
+
+/** A single entry in the docs outline / TOC. ``level`` is the
+ *  heading depth (h1=1, h2=2, h3=3) and is used purely for indent
+ *  styling. */
+interface TocEntry {
+  id: string;
+  text: string;
+  level: number;
 }
 
 interface MenuState {
@@ -145,12 +154,67 @@ export function DocsPanel({ path, onNavigate, onEdit, canGoBack, onBack }: Props
 
   const [menu, setMenu] = useState<MenuState | null>(null);
 
+  // Outline / TOC. Extracted from the rendered DOM after each doc loads
+  // — rehype-slug stamps id="..." on every h1-h6 so we can read both
+  // the text and the anchor straight off the markup. Doing it from the
+  // DOM rather than parsing the markdown source means we never go out
+  // of sync with whatever the markdown engine actually produced (slug
+  // normalisation, character escaping, ipynb-cell-by-cell rendering).
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const [toc, setToc] = useState<TocEntry[]>([]);
+  const refreshToc = useCallback(() => {
+    const body = bodyRef.current;
+    if (!body) {
+      setToc([]);
+      return;
+    }
+    const headings = body.querySelectorAll<HTMLElement>(
+      ".docs-pane-content h1, .docs-pane-content h2, .docs-pane-content h3",
+    );
+    const entries: TocEntry[] = [];
+    headings.forEach((h) => {
+      const id = h.id;
+      if (!id) return;
+      const text = (h.textContent || "").trim();
+      if (!text) return;
+      const level = Number(h.tagName.slice(1)); // h2 -> 2
+      entries.push({ id, text, level });
+    });
+    setToc(entries);
+  }, []);
+
   // Reset scroll to top when switching documents so a fresh doc doesn't
-  // inherit the previous one's scroll offset.
+  // inherit the previous one's scroll offset, and rebuild the TOC.
   useEffect(() => {
     const el = document.querySelector(".docs-pane-body");
     if (el) el.scrollTop = 0;
-  }, [effectivePath]);
+    // Defer to the next frame so react-markdown has actually committed
+    // the new headings before we query for them.
+    const id = requestAnimationFrame(refreshToc);
+    return () => cancelAnimationFrame(id);
+  }, [effectivePath, refreshToc]);
+
+  // Rebuild when the rendered doc content itself changes (re-fetch,
+  // ipynb cells loaded async, etc.). Lightweight observer over the
+  // body subtree.
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const obs = new MutationObserver(() => {
+      refreshToc();
+    });
+    obs.observe(el, { childList: true, subtree: true });
+    return () => obs.disconnect();
+  }, [refreshToc]);
+
+  const scrollToHeading = useCallback((id: string) => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const target = body.querySelector<HTMLElement>(`#${CSS.escape(id)}`);
+    if (target) {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, []);
 
   // Render the header (with Back button) unconditionally. Loading and
   // error states render INSIDE the body so the user can always recover
@@ -232,7 +296,32 @@ export function DocsPanel({ path, onNavigate, onEdit, canGoBack, onBack }: Props
           {headerPath}
         </span>
       </div>
-      <div className="docs-pane-body info-pane">{body}</div>
+      <div className="docs-pane-split">
+        {toc.length > 1 && (
+          <nav className="docs-pane-toc" aria-label="Document outline">
+            <div className="docs-pane-toc-title">On this page</div>
+            <ul>
+              {toc.map((e, i) => (
+                <li
+                  key={`${e.id}-${i}`}
+                  className={`docs-toc-l${Math.min(e.level, 3)}`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => scrollToHeading(e.id)}
+                    title={e.text}
+                  >
+                    {e.text}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        )}
+        <div className="docs-pane-body info-pane" ref={bodyRef}>
+          {body}
+        </div>
+      </div>
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
           <button
