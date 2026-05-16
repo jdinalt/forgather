@@ -14,7 +14,7 @@ TLS — run behind an SSH tunnel or reverse proxy if you need LAN access.
 
 > **New here?** For a guided tour of the web UI — fresh install through
 > training a Tiny Llama and chatting with it — read the
-> [Forgather Server Walkthrough](guides/forgather-server-walkthrough.md)
+> [Forgather Server Walkthrough](../../docs/guides/forgather-server-walkthrough.md)
 > first; come back here for the reference material.
 
 ## Quick reference
