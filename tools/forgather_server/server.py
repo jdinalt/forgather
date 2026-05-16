@@ -245,6 +245,41 @@ def main():
     )
 
 
+def _pick_display_host(args) -> str:
+    """Return a host string safe to embed in the startup-banner URL.
+
+    ``0.0.0.0`` / ``::`` are valid bind addresses but never valid
+    *connect* addresses, so a Ctrl-click on the printed URL produces
+    a dead link. Substitute something the operator can actually
+    reach. Priority:
+
+      1. First ``--cluster-address`` override the operator gave —
+         that's explicitly "the address peers should use," and it's
+         the most authoritative signal we have at startup.
+      2. ``detect_routable_host()`` — a psutil scan for the first
+         non-loopback, non-link-local IPv4. The cluster-self branch
+         doesn't fire here because cluster mode hasn't been
+         activated yet at banner time.
+      3. ``localhost`` — better than printing a literal wildcard
+         even when the operator is browsing from elsewhere; at
+         worst it nudges them to find their own IP.
+
+    Non-wildcard binds (``-H 127.0.0.1`` / a specific NIC) pass
+    through unchanged so we don't second-guess the operator.
+    """
+    if args.host not in ("0.0.0.0", "::", "*", ""):
+        return args.host
+    if args.cluster_address:
+        return args.cluster_address[0]
+    if __package__ is None:
+        from forgather_server.scheduler import detect_routable_host
+    else:
+        from .scheduler import detect_routable_host
+
+    addr = detect_routable_host()
+    return addr or "localhost"
+
+
 def _configure_auth(args, *, tls_on: bool = False) -> None:
     """Print the jupyter-style banner and set up auth state.
 
@@ -262,18 +297,19 @@ def _configure_auth(args, *, tls_on: bool = False) -> None:
 
     on_loopback = args.host in ("127.0.0.1", "::1", "localhost")
     scheme = "https" if tls_on else "http"
+    display_host = _pick_display_host(args)
 
     print()
     if args.no_auth:
         auth.disable_auth()
         print("    !! Forgather server is running with --no-auth !!")
         print(f"    !! Any other local user on this host can read/control jobs.")
-        print(f"        {scheme}://{args.host}:{args.port}/")
+        print(f"        {scheme}://{display_host}:{args.port}/")
         print()
         return
 
     print("    Forgather server is running at:")
-    print(f"        {scheme}://{args.host}:{args.port}/?token={token}")
+    print(f"        {scheme}://{display_host}:{args.port}/?token={token}")
     if on_loopback and args.host != "localhost":
         print(f"        {scheme}://localhost:{args.port}/?token={token}")
     print()
