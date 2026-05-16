@@ -16,7 +16,42 @@ A running server on the same host (or reachable over the network):
 
 ```bash
 forgather server                       # default: 127.0.0.1:8765
+
+# Common dev-time flags:
+forgather server --persist-sessions    # browser stays logged in across restarts
+forgather server --config path/to/server_config.yaml
+                                       # override default <config>/server/server_config.yaml
 ```
+
+`server_config.yaml` (auto-created at `<config>/server/` on first
+boot with a commented template) holds two top-level sections:
+
+- `args:` — persistent CLI defaults (any value passed on the command
+  line still wins). Useful for sticky `host` / `port` / `cluster` /
+  `persist_sessions`.
+- `services:` — auto-start declarations for long-running spawned
+  processes (dataset / inference / tensorboard / mkdocs). Each entry
+  under `<type>.<name>` is `enabled: true|false` plus the same args
+  the corresponding modal would have submitted. The server runs an
+  autostart pass before the dispatcher's first tick — already-running
+  services (matched by an args signature) are skipped, so a restart
+  never double-spawns.
+
+```yaml
+services:
+  inference:
+    llama:
+      enabled: true
+      model_path: /models/llama
+      port: 8137
+```
+
+The webui has a **Create service…** button on each of the four
+service modals that builds an entry for you. Restart with the
+sidebar's ⟳ button (which calls `POST /api/server/restart` — the
+process `os.execv`s in place; running training / inference /
+dataset jobs survive across the restart) or just `kill -TERM` and
+relaunch.
 
 Every CLI command below that talks to the server accepts:
 

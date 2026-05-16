@@ -364,6 +364,120 @@ Open <http://127.0.0.1:8765/>. On first boot the server seeds its
 search-roots list with `<repo>/examples`; add or remove roots via the
 sidebar's **Browse…** button.
 
+### Server config file (`server_config.yaml`)
+
+CLI defaults can live in a YAML file so persistent preferences (host,
+port, log level, cluster name, auto-start services) don't have to be
+re-typed on every launch. The server resolves the path in this order:
+
+1. `--config PATH` on the command line (explicit override).
+2. `<config>/server/server_config.yaml` (default; created with a
+   commented template if absent).
+
+```yaml
+# Top-level args: keys override the CLI argument defaults. Values
+# passed on the command line still win.
+args:
+  # host: 127.0.0.1
+  # port: 8765
+  # cluster: my-cluster
+  # persist_sessions: true      # see "Persisted sessions" below
+
+# Long-running spawned processes to auto-start on boot. Each entry
+# under <type>.<name> is enabled=true|false plus the same args its
+# modal would have submitted as job_params. See "Auto-start services"
+# below for the full schema.
+services:
+  inference:
+    llama:
+      enabled: true
+      model_path: /models/llama
+      port: 8137
+  tensorboard:
+    runs:
+      enabled: false
+      logdir: /mnt/runs
+      port: 6006
+```
+
+The webui sidebar's bottom bar has a **gear** button (⚙) that opens
+this file in the embedded editor, and a **reload** button (⟳) that
+restarts the server in place via `os.execv` so config changes take
+effect without disrupting running jobs (spawned subprocesses survive
+the exec via the existing PID-reattach path on the new server's
+boot). See [Restart endpoint](#restart-endpoint) below for the
+mechanics.
+
+### Auto-start services
+
+The `services:` block declares long-running spawned processes the
+server brings up automatically on boot:
+
+| Type          | Maps to queue `job_type` | Args shape                                 |
+| ------------- | ------------------------ | ------------------------------------------ |
+| `dataset`     | `dataset_server`         | Same as the **Dataset…** modal             |
+| `inference`   | `inference`              | Same as the **Inference…** modal           |
+| `tensorboard` | `tensorboard`            | Same as the **TensorBoard…** modal         |
+| `mkdocs`      | `mkdocs`                 | Same as the **MkDocs…** modal              |
+
+Each instance is keyed `<type>.<name>` (e.g. `inference.llama`); the
+name is operator-chosen, must match `[A-Za-z0-9_-]+`, and is purely a
+human label — dedupe between configured services and live queue items
+is by **signature**, an sha256 over `(type, normalized args)`.
+Multiple instances of the same type with different args are fine
+(common case: several inference servers on different ports / models).
+
+**Operator-meta keys** (recognized at the entry top level alongside
+`enabled`, stripped before forwarding to the spawned process):
+
+| Key              | Default                              | Effect                                                 |
+| ---------------- | ------------------------------------ | ------------------------------------------------------ |
+| `enabled`        | `false`                              | Whether to auto-start the service on boot.             |
+| `priority`       | `0`                                  | Queue priority.                                        |
+| `requested_gpus` | `1` for inference, `0` for the rest  | GPU reservation count.                                 |
+
+Everything else is forwarded verbatim to the job's `job_params`. The
+**dispatch-injected** fields (`scheme`, `routable_host` — added by
+the scheduler post-submit for inference / dataset_server jobs) are
+excluded from the signature so a service's pre- and post-dispatch
+signatures match.
+
+**Boot semantics.** The lifespan handler runs an autostart pass before
+the dispatcher's first tick: for every `enabled: true` service whose
+signature isn't already in the queue or in a non-terminal JobRecord,
+it enqueues a fresh QueueItem. Already-running services (matched by
+signature — including matches against manually-submitted jobs with
+the same args) are skipped, so a restart never double-spawns and an
+operator who manually started an equivalent job has it counted as the
+service's running instance.
+
+**Sidebar UI.** The Services sidebar group renders one row per
+launcher (Inference / Dataset / TensorBoard / MkDocs). A right-aligned
+count pill shows how many instances are *actually running* (JobRecord
+status `running`, not just queued/starting). A disclosure chevron to
+the left of the launcher row expands the per-type list when there are
+configured instances; each row carries a red/green dot, ▶/⏹ to toggle
+the `enabled` flag (start / stop), and × to delete (the running
+instance, if any, is aborted first). The four service modals each
+have a **Create service…** button beside Start that prompts for a
+name and persists the entry to the config file.
+
+**API.** Full CRUD plus enable-toggle, with the enable path running
+the autostart pass (or aborting the matching running job) so changes
+land immediately. See [API quick reference → Services](#services).
+
+### Persisted sessions
+
+In-memory browser sessions are wiped on every restart by default —
+"restart" is the implicit revoke. For rapid dev cycles where the
+operator is hitting the ⟳ button often, this is tedious. Opt into
+persistence with `--persist-sessions` (or `args: persist_sessions:
+true` in the config file) and the session dict is written to
+`<config>/server/sessions.json` (mode 0600) on every create / revoke
+and reloaded on boot. The existing 30-day TTL still applies; the
+`/api/auth/logout` endpoint still revokes; `rm sessions.json` drops
+everything.
+
 ### Authentication (operational)
 
 For the threat model and the full service-by-service layout, see
@@ -961,6 +1075,8 @@ Everything under `~/.config/forgather/server/` survives restarts:
 | `gpu_policy.json`           | Per-GPU runtime policy: disabled + min_priority.       |
 | `auth_token`                | Bearer token shared with CLI clients (mode 0600).      |
 | `password_hash`             | Optional pbkdf2_sha256 hash for browser logins (0600). |
+| `sessions.json`             | Persisted browser sessions (0600). Present only when started with `--persist-sessions`. |
+| `server_config.yaml`        | Operator-editable CLI defaults + auto-start services (0600). See [Server config file](#server-config-file-server_configyaml). |
 
 All state files are written crash-atomically via `_atomic.py`: tmp file
 written in the target directory, `fsync` on the fd, then `os.replace`.
@@ -1366,9 +1482,9 @@ choices:
 `conflict: {currentMtime}` flag; the modal watches every open
 buffer and pops for the first conflicting one.
 
-### Sidebar layout: six top-level collapsible sections
+### Sidebar layout: top-level collapsible sections + footer bar
 
-The sidebar's body below the header is a stack of six independent
+The sidebar's body below the header is a stack of independent
 `<details>`-backed groups, all sharing the same chrome (uppercase
 muted summary, custom `▸`/`▾` glyph via `::before`,
 `::-webkit-details-marker { display: none }`) and all defaulting to
@@ -1381,16 +1497,31 @@ state.
 | Section | Component | Purpose |
 | --- | --- | --- |
 | **Views** | `<nav class="sidebar-views">` | The view switcher (📁 Projects, ✎ Edit, 🖥 GPUs, 📋 Queue, ⚙ Jobs, 🔮 Inference). |
-| **Tools** | inline buttons | Global actions: 🔮 Serve Inference, 📊 TensorBoard, 📖 MkDocs, 🔁 Convert Model, 📦 Finalize Model. |
+| **Tools** | inline buttons | One-shot model-manipulation utilities: 📐 Evaluate, 🔁 Convert Model, 📦 Finalize Model, ⬆️ Update Model. |
+| **Services** | inline buttons + `ServicesPanel` | Long-running spawned processes: 🔮 Inference, 🗂 Dataset, 📊 TensorBoard, 📖 MkDocs. Each launcher row carries a right-aligned running-count pill (same UI pattern as Views → Jobs) and, when there are configured instances of that type, a chevron that expands a per-type list of saved services with red/green dots and ▶/⏹/× controls. See [Auto-start services](#auto-start-services). |
 | **Search Roots** | `SearchRootsPanel` | Root-list management: Browse… to add, × to remove, **📁 New Workspace…** for the dropdown-driven flow. Lifted out of `ProjectTree` so each group is its own top-level entry. |
 | **Projects** | `ProjectTree` | The familiar workspace-clustered project forest. |
 | **Files** | `FilesTree` | Hierarchical filesystem view of every search root. |
 
+Below the scrolling section stack a **sidebar footer** is pinned via
+`position: sticky; bottom: 0`. Two icon buttons:
+
+- **⟳ Restart server.** Confirms, hits `POST /api/server/restart`,
+  then polls `/api/health` and reloads the page once the rebooted
+  server is responsive. Useful for picking up `server_config.yaml`
+  changes without killing the terminal. Spawned jobs survive.
+- **⚙ Open config.** Opens the loaded server config file
+  (`server_config.yaml`) in the embedded editor. The path is
+  surfaced by `GET /api/server-config-path`.
+
 Earlier iterations had Tools and the view switcher visually
 distinct from the rest (a horizontal rule above and below Tools, a
-Tools-specific summary block). Those were dropped so the six
-groups read as a single uniform stack — easier to scan, no
-implicit grouping where there isn't one.
+Tools-specific summary block). Those were dropped so the groups
+read as a single uniform stack — easier to scan, no implicit
+grouping where there isn't one. The Tools / Services split came
+later to separate one-shot utilities (Evaluate / Convert / Finalize
+/ Update) from persistent services (which gained the
+configured-instance management above).
 
 ### Files tree (sidebar)
 
@@ -2275,6 +2406,8 @@ are WebSockets.
 | Endpoint                                       | Purpose                                             |
 | ---------------------------------------------- | --------------------------------------------------- |
 | `GET /api/health`                              | Liveness                                            |
+| `GET /api/server-config-path`                  | Resolved path to the loaded `server_config.yaml` (`{path}` — used by the sidebar gear button) |
+| `POST /api/server/restart`                     | Schedule an in-place `os.execv` restart; running subprocesses survive. Returns `{restart: "scheduled"}` immediately, then the process re-execs after a short delay so the response body can flush. |
 | `GET /api/search-roots`                        | List search roots                                   |
 | `POST /api/search-roots` `{path, create?: bool}`| Add a search root; with `create: true` the server `mkdir`s the path before registering (used by the New Workspace modal's inline create-root flow) |
 | `DELETE /api/search-roots?path=`               | Remove a search root                                |
@@ -2446,6 +2579,26 @@ allowlist is the registry itself (see `routes/dataset_server.py`).
 Token resolution order for every proxy call: explicit
 `X-Dataset-Auth-Token` header → JobRecord auto-lookup (for local
 servers) → registry lookup (for user-added entries) → none.
+
+### Services (auto-start)
+
+CRUD over the `services:` block in `server_config.yaml`. Entries
+declare long-running spawned processes (dataset / inference /
+tensorboard / mkdocs) that the server brings up on boot. See
+[Auto-start services](#auto-start-services) for the full schema.
+
+| Endpoint                                                  | Purpose                                                        |
+| --------------------------------------------------------- | -------------------------------------------------------------- |
+| `GET /api/services`                                       | List every configured service with its current running status (`ServiceStatus[]`: service + `running` (true iff a JobRecord with `status=="running"` matches the signature) + `queue_id` + raw `status`). |
+| `POST /api/services` `{type, name, enabled, args}`        | Upsert by `<type, name>`. If `enabled=true` the autostart pass runs immediately so the entry comes up without waiting for the next server boot. |
+| `DELETE /api/services/{type}/{name}`                      | Remove the entry. Any matching running instance is aborted first via `scheduler.abort_or_cancel` so the queue / Jobs rows don't linger. |
+| `POST /api/services/{type}/{name}/enabled` `{enabled}`    | Toggle the auto-start flag. `enabled=true` triggers the autostart pass (start if not already running); `enabled=false` aborts the matching running instance. |
+
+Service signature = `sha256((type, normalized_args))[:16]`. The
+"normalized args" exclude operator-meta keys (`enabled` /
+`priority` / `requested_gpus`) and scheduler-injected fields
+(`scheme` / `routable_host`) so pre- and post-dispatch signatures
+for the same logical service match.
 
 ### Generation-parameter presets
 
