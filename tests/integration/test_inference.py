@@ -132,6 +132,11 @@ def test_inference_with_perplexity(spec, output_dir):
             "WARNING",
             "--auth-token",
             auth_token,
+            # Force plain HTTP regardless of whether the developer has run
+            # 'forgather tls init' on this host. The test client below speaks
+            # http://, and TLS would otherwise be auto-enabled when the shared
+            # cert bundle is provisioned, causing the health poll to time out.
+            "--no-tls",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
