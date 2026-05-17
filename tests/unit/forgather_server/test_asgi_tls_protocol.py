@@ -17,7 +17,26 @@ does at request time.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _event_loop():
+    """uvicorn's HTTP protocol bases call asyncio.get_event_loop() in __init__.
+
+    On Python 3.12 that raises when no loop is running (the implicit-loop
+    creation behaviour was removed). Provide a fresh loop for each test.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        yield loop
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
 
 
 class _FakeSSL:
@@ -61,10 +80,9 @@ class _FakeTransport:
 
 def _make_protocol():
     """Build a ForgatherProtocol with a no-op uvicorn config."""
+    from forgather_server.asgi_tls_protocol import ForgatherProtocol
     from uvicorn.config import Config
     from uvicorn.server import ServerState
-
-    from forgather_server.asgi_tls_protocol import ForgatherProtocol
 
     async def _stub_app(scope, receive, send):
         return
@@ -125,8 +143,12 @@ class TestScopeInjection:
         # Emulate what the parser does — assign a fresh scope dict.
         proto.scope = {"type": "http", "method": "GET", "path": "/x"}
 
-        assert proto.scope["extensions"]["forgather.tls"]["client_cert_verified"] is True
-        assert proto.scope["extensions"]["forgather.tls"]["client_cert_chain_der"] == [der]
+        assert (
+            proto.scope["extensions"]["forgather.tls"]["client_cert_verified"] is True
+        )
+        assert proto.scope["extensions"]["forgather.tls"]["client_cert_chain_der"] == [
+            der
+        ]
 
     def test_scope_setter_skips_injection_when_no_cert(self):
         proto = _make_protocol()
@@ -154,7 +176,9 @@ class TestScopeInjection:
         }
 
         assert proto.scope["extensions"]["some.other"] == {"foo": "bar"}
-        assert proto.scope["extensions"]["forgather.tls"]["client_cert_verified"] is True
+        assert (
+            proto.scope["extensions"]["forgather.tls"]["client_cert_verified"] is True
+        )
 
     def test_scope_none_assignment_is_passthrough(self):
         """Parsers reset scope to None between requests; setter must allow that."""
