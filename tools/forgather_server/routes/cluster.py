@@ -2577,6 +2577,15 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
                     # ever recognise itself as the rdzv host and the c10d
                     # store would never bind). Set explicitly per-peer.
                     "is_host": member.node_id == rdzv_node_id,
+                    # Each peer's own routable IP. Rank 0's elastic
+                    # agent writes this into the c10d store as
+                    # MASTER_ADDR (RendezvousStoreInfo.build falls back
+                    # to socket.getfqdn() otherwise, which yields a
+                    # bare hostname like "hal9000" that peers without
+                    # DNS can't resolve). Setting --local-addr on
+                    # every peer is harmless and keeps the master /
+                    # non-master code paths uniform.
+                    "local_addr": member.address,
                 },
                 "extra_env": extra_env,
                 "cluster_job_id": cluster_job_id,

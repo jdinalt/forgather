@@ -86,6 +86,16 @@ def build_command(
     optional ``is_host`` boolean in ``rdzv_args``: when set, we emit
     ``--rdzv-conf is_host=true|false`` so torch skips the broken
     autodetection entirely.
+
+    Similarly, rank 0's elastic agent publishes ``MASTER_ADDR`` to
+    every peer via the c10d store; without ``--local-addr`` it falls
+    back to ``socket.getfqdn()`` (torch elastic
+    ``RendezvousStoreInfo.build``). On LANs without DNS that yields a
+    bare hostname like ``hal9000`` which other ranks then fail to
+    resolve (``gai error: -3``). ``rdzv_args["local_addr"]`` lets the
+    cluster master ship each peer's own routable address; we emit it
+    as ``--local-addr <addr>`` so MASTER_ADDR is an IP every peer can
+    dial.
     """
     meta = MetaConfig(project_dir)
     env = get_env(meta, project_dir)
@@ -128,6 +138,9 @@ def build_command(
                     f"is_host={'true' if is_host else 'false'}",
                 ]
             )
+        local_addr = rdzv_args.get("local_addr")
+        if local_addr:
+            cmd.extend(["--local-addr", str(local_addr)])
     else:
         cmd.extend(
             [
