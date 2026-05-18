@@ -24,6 +24,7 @@ const JOB_TYPE_CHIPS: Record<Job["job_type"], { label: string; className: string
   training: { label: "train", className: "type-train" },
   eval: { label: "eval", className: "type-eval" },
   inference: { label: "serve", className: "type-inference" },
+  dataset_server: { label: "dataset-srv", className: "type-inference" },
   tensorboard: { label: "tb", className: "type-tensorboard" },
   mkdocs: { label: "docs", className: "type-mkdocs" },
   convert: { label: "convert", className: "type-convert" },
@@ -31,6 +32,7 @@ const JOB_TYPE_CHIPS: Record<Job["job_type"], { label: string; className: string
   update: { label: "update", className: "type-update" },
   model: { label: "model", className: "type-model" },
   dataset: { label: "dataset", className: "type-dataset" },
+  construct: { label: "construct", className: "type-construct" },
 };
 
 // Loopback hosts that some browsers (notably ChromeOS over SSH
@@ -428,6 +430,10 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
               control.mutate({ id: menuTarget.job.id, action });
               setMenuTarget(null);
             }}
+            onRemoveStaleEndpoint={() => {
+              removeJob.mutate(menuTarget.job.id);
+              setMenuTarget(null);
+            }}
           />
         </ContextMenu>
       )}
@@ -442,12 +448,20 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
 function JobContextMenuItems({
   job,
   onChoose,
+  onRemoveStaleEndpoint,
 }: {
   job: Job;
   onChoose: (action: ControlAction) => void;
+  onRemoveStaleEndpoint: () => void;
 }) {
   const isOurs = job.source !== "endpoint";
   const isActive = job.alive;
+  // Stale-endpoint case: a TrainerControlClient endpoint file is on
+  // disk but the PID is dead/zombie/reused. Without an action here
+  // the entry sticks in the Jobs list forever (the Forgather control
+  // CLI on each peer was the only escape hatch). Backend's
+  // DELETE /api/jobs/{id} now rmtrees the endpoint dir for these.
+  const isStaleEndpoint = !isOurs && !isActive;
   return (
     <>
       <div className="context-menu-header muted">
@@ -473,7 +487,26 @@ function JobContextMenuItems({
           ☠ Force kill (SIGKILL)
         </button>
       )}
-      {(!isOurs || !isActive) && (
+      {isStaleEndpoint && (
+        <button
+          className="context-menu-destructive"
+          onClick={() => {
+            if (
+              confirm(
+                `Remove stale endpoint ${job.id}?\n\nThis endpoint's ` +
+                  `process is gone (PID dead or zombie). The directory ` +
+                  `under ~/.config/forgather/jobs/ will be deleted so the entry ` +
+                  `stops appearing in the Jobs list. No process is killed.`,
+              )
+            ) {
+              onRemoveStaleEndpoint();
+            }
+          }}
+        >
+          ✕ Remove stale endpoint
+        </button>
+      )}
+      {!isOurs && isActive && (
         <div className="context-menu-empty muted">
           No actions for this job.
         </div>
@@ -515,6 +548,7 @@ function JobCard({
   const isOurs = job.source !== "endpoint";
   const isEval = job.job_type === "eval";
   const isInference = job.job_type === "inference";
+  const isDatasetServer = job.job_type === "dataset_server";
   const isTensorBoard = job.job_type === "tensorboard";
   const isMkDocs = job.job_type === "mkdocs";
   const isConvert = job.job_type === "convert";
@@ -534,7 +568,34 @@ function JobCard({
   const dyn =
     isTraining && job.dynamic_args ? Object.entries(job.dynamic_args) : [];
 
-  // Inference jobs run a local HTTP server on a user-chosen port.
+  // ``scheme`` is stamped server-side by the scheduler for every job
+  // type that exposes a URL — it reflects whether the spawned child
+  // is actually serving TLS. Fallback to ``http`` for old records that
+  // pre-date the stamp.
+  const jobScheme =
+    typeof job.job_params?.scheme === "string"
+      ? (job.job_params.scheme as string)
+      : "http";
+
+  // `routable_host` is stamped server-side by the scheduler for
+  // inference/dataset_server jobs bound to 0.0.0.0 — it's a LAN-
+  // reachable address (cluster-self address or psutil's first
+  // non-loopback IP). When present, prefer it over browserSafeHost's
+  // 0.0.0.0→localhost fallback: that fallback is only useful for
+  // same-host access, and the cross-host case is the whole point
+  // of binding 0.0.0.0.
+  const jobRoutable =
+    typeof job.job_params?.routable_host === "string"
+      ? (job.job_params.routable_host as string)
+      : null;
+  function urlHost(rawHost: string | null): string {
+    if (jobRoutable && (rawHost === "0.0.0.0" || rawHost === "::" || !rawHost)) {
+      return jobRoutable;
+    }
+    return browserSafeHost(rawHost);
+  }
+
+  // Inference jobs run a local HTTP(S) server on a user-chosen port.
   // Synthesize the URL for a clickable link so the user can jump straight
   // to the OpenAPI root rather than copy-pasting host:port.
   const inferenceHost =
@@ -546,7 +607,22 @@ function JobCard({
       ? (job.job_params.port as number)
       : null;
   const inferenceUrl = inferencePort
-    ? `http://${browserSafeHost(inferenceHost)}:${inferencePort}`
+    ? `${jobScheme}://${urlHost(inferenceHost)}:${inferencePort}`
+    : null;
+
+  // Dataset server: same shape as inference — local HTTP(S) service whose
+  // host/port the user picked. Render the URL so the operator can copy it
+  // into FORGATHER_DATASET_SERVER on the client side.
+  const dsHost =
+    isDatasetServer && typeof job.job_params?.host === "string"
+      ? (job.job_params.host as string)
+      : null;
+  const dsPort =
+    isDatasetServer && typeof job.job_params?.port === "number"
+      ? (job.job_params.port as number)
+      : null;
+  const dsUrl = dsPort
+    ? `${jobScheme}://${urlHost(dsHost)}:${dsPort}`
     : null;
 
   // TensorBoard is the same idea: a local web server. ``bind_all`` →
@@ -574,13 +650,28 @@ function JobCard({
         ? job.path_prefix
         : job.path_prefix + "/"
       : "";
+  // TensorBoard itself doesn't speak TLS — it always serves HTTP on its
+  // own port. The forgather-server's tb_proxy fronts it (auth-gated) but
+  // the direct URL we render here is the bypass for SSH-tunnel users, so
+  // it stays http://.
+  //
+  // When TB is bind_all, prefer the host the browser is already
+  // reaching the webui on (window.location.hostname) over a literal
+  // "localhost". The old "localhost" was right for SSH-tunnel users
+  // and wrong for LAN users — substituting window.location.hostname
+  // covers both: SSH-tunnel sessions hit the webui at localhost too,
+  // and LAN sessions hit it at the routable hostname, both yielding
+  // a URL that works.
+  const tbHostBindAll = window.location.hostname || "localhost";
   const tbUrl = tbPort
-    ? `http://${tbBindAll ? "localhost" : browserSafeHost(tbHost)}:${tbPort}${tbPathSuffix}`
+    ? `http://${tbBindAll ? tbHostBindAll : browserSafeHost(tbHost)}:${tbPort}${tbPathSuffix}`
     : null;
 
   // MkDocs serve runs a local HTTP dev server. host:port pair is folded
-  // into ``--dev-addr``; render the URL the same way TB does so the user
-  // can jump straight to the rendered docs.
+  // into ``--dev-addr``; render the URL via ``urlHost`` so a 0.0.0.0
+  // bind resolves to the scheduler-stamped ``routable_host`` (LAN-
+  // reachable IP) rather than ``localhost`` — same fallback as the
+  // inference / dataset jobs above.
   const mkPort =
     isMkDocs && typeof job.job_params?.port === "number"
       ? (job.job_params.port as number)
@@ -589,9 +680,10 @@ function JobCard({
     isMkDocs && typeof job.job_params?.host === "string"
       ? (job.job_params.host as string)
       : null;
-  const mkUrl = mkPort
-    ? `http://${browserSafeHost(mkHost)}:${mkPort}`
-    : null;
+  // MkDocs serve runs the dev server in plain HTTP regardless of
+  // forgather's TLS state — the rendered docs are intended for the
+  // local network. Keep http://.
+  const mkUrl = mkPort ? `http://${urlHost(mkHost)}:${mkPort}` : null;
 
   const cardClass =
     "job-card " +
@@ -691,6 +783,35 @@ function JobCard({
               <span>ckpt:</span> <em>from_pretrained</em>
             </div>
           )}
+        </div>
+      )}
+      {isDatasetServer && job.job_params && (
+        <div className="queue-dirs muted">
+          <div>
+            <span>url:</span>{" "}
+            <code>{dsUrl ?? "—"}</code>
+          </div>
+          {job.auth_token ? (
+            <div>
+              <span>token:</span>{" "}
+              <code>{job.auth_token}</code>
+            </div>
+          ) : (
+            <div>
+              <span>auth:</span> <em>--no-auth</em>
+            </div>
+          )}
+          {Array.isArray(job.job_params.locals) &&
+            (job.job_params.locals as unknown[]).length > 0 && (
+              <div>
+                <span>locals:</span>{" "}
+                <code>
+                  {(job.job_params.locals as Array<[string, string]>)
+                    .map(([n]) => n)
+                    .join(", ")}
+                </code>
+              </div>
+            )}
         </div>
       )}
       {isTensorBoard && job.job_params && (
@@ -821,7 +942,9 @@ function JobCard({
                 ? `Kill ${job.id}? Ends the evaluation subprocess.`
                 : isInference
                   ? `Stop inference server ${job.id}? The HTTP endpoint will drop.`
-                  : isTensorBoard
+                  : isDatasetServer
+                    ? `Stop dataset server ${job.id}? Active client streams will be cut.`
+                    : isTensorBoard
                     ? `Stop TensorBoard ${job.id}? The viewer at :${tbPort} will drop.`
                     : isMkDocs
                       ? `Stop MkDocs ${job.id}? The docs server at :${mkPort} will drop.`

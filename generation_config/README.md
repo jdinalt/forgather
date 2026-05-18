@@ -2,10 +2,10 @@
 
 Reference presets shipped with Forgather. The forgather-server webui's
 Inference panel exposes these alongside user-saved presets from
-`~/.forgather/generation_config/`.
+`~/.config/forgather/generation_config/`.
 
 Files here are read-only from the UI: they cannot be deleted or overwritten.
-To customize one, copy it to `~/.forgather/generation_config/` under a new
+To customize one, copy it to `~/.config/forgather/generation_config/` under a new
 name (or edit it in place with a text editor).
 
 Each file is a JSON object whose keys are forwarded verbatim to the

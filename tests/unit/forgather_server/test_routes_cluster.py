@@ -1,0 +1,1403 @@
+"""Tests for routes/cluster.py and the peer-call auth carve-out.
+
+Uses FastAPI's TestClient so the full middleware stack runs — that's
+the only way to verify the carve-out is wired correctly.
+"""
+
+import time
+import uuid
+
+import forgather_server.auth as auth
+import forgather_server.cluster as cluster
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from forgather_server import paths
+from forgather_server.auth import AuthMiddleware
+from forgather_server.routes import cluster as cluster_routes
+
+
+@pytest.fixture(autouse=True)
+def isolated_state(tmp_path, monkeypatch):
+    cluster_dir = tmp_path / "cluster"
+    cluster_dir.mkdir()
+    journal_dir = cluster_dir / "journal"
+    journal_dir.mkdir()
+    server_dir = tmp_path / "server"
+    server_dir.mkdir()
+    monkeypatch.setattr(paths, "cluster_state_dir", lambda: cluster_dir)
+    monkeypatch.setattr(
+        paths, "cluster_node_id_file", lambda: cluster_dir / "node_id"
+    )
+    monkeypatch.setattr(paths, "cluster_journal_dir", lambda: journal_dir)
+    monkeypatch.setattr(paths, "server_state_dir", lambda: server_dir)
+    monkeypatch.setattr(
+        paths, "auth_token_file", lambda: server_dir / "auth_token"
+    )
+    monkeypatch.setattr(
+        paths, "password_hash_file", lambda: server_dir / "password_hash"
+    )
+    from forgather_server import (
+        cluster_dataset_inventory,
+        cluster_jobs,
+        cluster_journal,
+        cluster_membership,
+    )
+
+    cluster._reset_for_tests()
+    cluster_jobs._reset_for_tests()
+    cluster_journal._reset_for_tests()
+    cluster_dataset_inventory._reset_master_state_for_tests()
+    cluster_membership._reset_role_listeners_for_tests()
+    auth._reset_sessions_for_tests()
+    yield
+
+
+def _make_app() -> FastAPI:
+    app = FastAPI()
+    app.add_middleware(AuthMiddleware)
+    app.include_router(cluster_routes.router, prefix="/api")
+    return app
+
+
+class TestEndpointShapes:
+    def test_members_when_active(self):
+        cluster.activate("c", port=8765)
+        peer_id = str(uuid.uuid4())
+        cluster.update_member(
+            peer_id,
+            hostname="peer1",
+            address="10.0.0.7",
+            port=8765,
+            cluster_name="c",
+            source="peer_pull",
+        )
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/members",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["cluster_name"] == "c"
+        assert data["self_node_id"] == cluster.self_identity().node_id
+        assert data["master_node_id"] is not None
+        ids = {m["node_id"] for m in data["members"]}
+        assert peer_id in ids
+
+    def test_self_returns_null_when_inactive(self):
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/self",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        assert r.json() is None
+
+    def test_self_when_active(self):
+        ident = cluster.activate("c", port=1234)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/self",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["node_id"] == ident.node_id
+        assert data["cluster_name"] == "c"
+        assert data["port"] == 1234
+        assert data["is_master"] is True  # only self in cluster
+
+    def test_master_when_inactive(self):
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/master",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["cluster_active"] is False
+        assert data["master_node_id"] is None
+        assert data["is_self_master"] is False
+
+
+class TestPeerCarveOut:
+    """Inter-node endpoints require a bearer token over TestClient.
+
+    The HTTP-over-TestClient path can't synthesize a TLS scope
+    extension, so these endpoints (which exist for mTLS-authenticated
+    peers) are reached here via the bearer-token path. Coverage of
+    the mTLS gate itself lives in
+    ``test_auth.py::TestPeerMutualTLS`` where the middleware is
+    driven with crafted ASGI scopes.
+    """
+
+    def test_no_token_rejected(self):
+        cluster.activate("c", port=8765)
+        client = TestClient(_make_app())
+        r = client.get("/api/cluster/members")
+        assert r.status_code == 401
+
+    def test_bearer_token_passes(self):
+        cluster.activate("c", port=8765)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/members",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+
+
+class TestPeerSSO:
+    """The peer-SSO endpoints used to open a peer's webui in a new
+    tab without re-typing the bearer token."""
+
+    def test_issue_url_token_requires_auth(self):
+        cluster.activate("c", port=8765)
+        client = TestClient(_make_app())
+        r = client.get("/api/cluster/issue_url_token")
+        assert r.status_code == 401
+
+    def test_issue_url_token_mints_short_lived(self):
+        cluster.activate("c", port=8765)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/issue_url_token",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # Token must NOT be the persistent bearer — that's the whole
+        # point of the one-shot. Bearer leakage from an address-bar
+        # paste would otherwise expose ``~/.config/.../auth_token``.
+        assert body["token"] != token
+        assert auth.verify_url_token(body["token"]) is True
+        # Single-use: replayed verify rejects.
+        assert auth.verify_url_token(body["token"]) is False
+
+    def test_issue_url_token_503_when_no_cluster(self):
+        # Cluster not activated → the endpoint refuses rather than
+        # issuing a token that no peer can map back to this node.
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/issue_url_token",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 503
+
+    def test_peer_session_self_refused(self):
+        ident = cluster.activate("c", port=8765)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        # Asking for an SSO URL to ourselves is meaningless — the
+        # caller is already authenticated on this origin.
+        r = client.post(
+            "/api/cluster/peer_session",
+            json={"node_id": ident.node_id},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 400
+
+    def test_peer_session_unknown_node(self):
+        cluster.activate("c", port=8765)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.post(
+            "/api/cluster/peer_session",
+            json={"node_id": "00000000-0000-0000-0000-000000000099"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 404
+
+
+class TestClusterGpus:
+    def test_inactive_returns_empty(self):
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/gpus",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["nodes"] == []
+
+    def test_self_short_circuits_no_network(self, monkeypatch):
+        # Arrange a single-member (self) cluster and stub
+        # ``gpu_monitor.snapshot`` so the aggregator can't accidentally
+        # block on real NVML or hit the network for self.
+        cluster.activate("c", port=8765)
+
+        from forgather_server import gpu_monitor
+
+        fake_gpu = gpu_monitor.GpuInfo(
+            index=0,
+            name="FakeGPU",
+            total_mem_bytes=10_000_000_000,
+            used_mem_bytes=1_000_000_000,
+            util_pct=10,
+            mem_util_pct=5,
+            power_w=42.0,
+            temp_c=50,
+            fan_pct=20,
+            processes=[],
+            source="test",
+            node="self",
+            excluded=False,
+            disabled=False,
+            min_priority=0,
+        )
+        monkeypatch.setattr(gpu_monitor, "snapshot", lambda: [fake_gpu])
+
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        # Mount the gpus router so cluster_gpus's local fallback can
+        # find _to_model — the import is already done at module load
+        # but the test app does not need the gpus router mounted.
+        r = client.get(
+            "/api/cluster/gpus",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["nodes"]) == 1
+        node = body["nodes"][0]
+        assert node["reachable"] is True
+        assert len(node["gpus"]) == 1
+        assert node["gpus"][0]["name"] == "FakeGPU"
+
+    def test_unreachable_peer_is_reported(self, monkeypatch):
+        cluster.activate("c", port=8765)
+        peer_id = str(uuid.uuid4())
+        cluster.update_member(
+            peer_id,
+            hostname="peer",
+            address="10.255.255.1",  # unroutable: forces a quick fail
+            port=8765,
+            cluster_name="c",
+        )
+        cluster.mark_unreachable(peer_id)
+
+        # Stub local snapshot too so the test does not require NVML.
+        from forgather_server import gpu_monitor
+
+        monkeypatch.setattr(gpu_monitor, "snapshot", lambda: [])
+
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/gpus",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        peers = [n for n in body["nodes"] if n["node_id"] == peer_id]
+        assert len(peers) == 1
+        assert peers[0]["reachable"] is False
+        assert peers[0]["gpus"] == []
+        assert peers[0]["error"]
+
+
+class TestBandwidth:
+    def test_bandwidth_local_streams_requested_size(self):
+        # We don't actually need a cluster activated for the streaming
+        # endpoint's correctness test — but the X-Forgather-Node-Id
+        # header is only set when active.
+        cluster.activate("c", port=8765)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        size = 65536  # one chunk
+        r = client.get(
+            f"/api/cluster/bandwidth_local?bytes={size}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        assert len(r.content) == size
+        # All bytes are the deterministic filler — checking one is
+        # enough to catch a wiring mistake without hashing the body.
+        assert set(r.content) == {ord("X")}
+        assert r.headers.get("x-forgather-node-id")
+
+    def test_bandwidth_local_clamps_huge_request(self):
+        cluster.activate("c", port=8765)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        # FastAPI's Query validation rejects out-of-range values with
+        # 422; we don't want a malformed request to make the server
+        # allocate gigabytes.
+        r = client.get(
+            "/api/cluster/bandwidth_local?bytes=99999999999",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 422
+
+
+class TestDatasetServersLocal:
+    """Verifies `GET /api/cluster/dataset_servers_local` returns the
+    inventory module's view of this peer's dataset_servers and is
+    reachable via the peer carve-out."""
+
+    def _patch_inventory(self, monkeypatch, servers):
+        from forgather_server import cluster_dataset_inventory
+
+        monkeypatch.setattr(
+            cluster_dataset_inventory, "local_servers", lambda: list(servers)
+        )
+
+    def test_returns_servers_with_tokens(self, monkeypatch):
+        from forgather_server.cluster_dataset_inventory import LocalServer
+
+        cluster.activate("c", port=8765)
+        self._patch_inventory(
+            monkeypatch,
+            [
+                LocalServer(
+                    server_id="abc123",
+                    base_url="http://node-a:8766",
+                    auth_token="tok",
+                    label="config.yaml:8766",
+                    source="local",
+                    peer_node_id=cluster.self_identity().node_id,
+                )
+            ],
+        )
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_servers_local",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["self_node_id"] == cluster.self_identity().node_id
+        assert len(body["servers"]) == 1
+        s = body["servers"][0]
+        assert s["base_url"] == "http://node-a:8766"
+        assert s["auth_token"] == "tok"  # bearer included over carve-out
+        assert s["source"] == "local"
+        # Node-id header for the master's sanity check.
+        assert r.headers.get("x-forgather-node-id") == cluster.self_identity().node_id
+
+    def test_rejected_without_credentials(self, monkeypatch):
+        # Without bearer token (and over plain HTTP, so no mTLS cert
+        # path) the inter-node endpoint must 401.
+        cluster.activate("c", port=8765)
+        self._patch_inventory(monkeypatch, [])
+        client = TestClient(_make_app())
+        r = client.get("/api/cluster/dataset_servers_local")
+        assert r.status_code == 401
+
+
+class TestDatasetInventoryRoutes:
+    """End-to-end shape of /dataset_inventory, /dataset_servers, and
+    /dataset_router/resolve when this node is master."""
+
+    def _seed_master_inventory(self):
+        from forgather_server import cluster_dataset_inventory as cdi
+
+        cdi.master_inventory.set_master_state(True)
+        cdi.master_inventory.merge_servers(
+            {
+                "srv-a": cdi.MasterServerEntry(
+                    server_id="srv-a",
+                    base_url="http://node-a:8766",
+                    auth_token="tok-a",
+                    label="cfg:8766",
+                    source="local",
+                    peer_node_id="peer-a",
+                    healthy=True,
+                ),
+                "srv-b": cdi.MasterServerEntry(
+                    server_id="srv-b",
+                    base_url="http://node-b:8766",
+                    auth_token="tok-b",
+                    label="user-entry",
+                    source="user",
+                    peer_node_id="peer-b",
+                    healthy=False,
+                    last_health_error="conn refused",
+                ),
+            }
+        )
+        cdi.master_inventory.update_datasets(
+            "srv-a",
+            handles=[
+                {
+                    "handle": "h-hf-1",
+                    "source": "hf",
+                    "load_args": {"path": "allenai/c4", "name": "en"},
+                    "length": 1000,
+                }
+            ],
+            locals_info=[{"name": "stories", "length": 20}],
+            # HF cache snapshot: ``allenai/c4`` is available on this
+            # server. The cluster inventory keys HF entries on repo
+            # path, not on the canonical load_args hash — so a
+            # cached-but-never-loaded repo still surfaces in the
+            # unified Datasets view.
+            hf_cache=[
+                {
+                    "repo": "allenai/c4",
+                    "size_bytes": 100,
+                    "configs": [
+                        {
+                            "config": "en",
+                            "splits": [
+                                {"name": "train", "num_examples": 1000}
+                            ],
+                        }
+                    ],
+                }
+            ],
+        )
+        # srv-b is unhealthy; refresh_tick won't touch it, but we
+        # can simulate stale data being present.
+        cdi.master_inventory.update_datasets(
+            "srv-b",
+            handles=[],
+            locals_info=[{"name": "stories", "length": 20}],
+            hf_cache=[],
+        )
+        # ≥1 healthy server in the seeded set, so flip the
+        # observed-healthy latch so ``is_warmed_up()`` reflects a
+        # fully-warmed master. Without this, /resolve would now
+        # correctly return 503 instead of 200, which is right for
+        # cold-start but wrong for these tests' setup intent.
+        cdi.master_inventory.mark_observed_healthy()
+        cdi.master_inventory.mark_dataset_pass_complete()
+
+    def test_dataset_inventory_returns_deduped_listing(self):
+        cluster.activate("c", port=8765)
+        self._seed_master_inventory()
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_inventory",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["is_master"] is True
+        assert len(body["servers"]) == 2
+        # Tokens MUST be absent from this webui-facing surface.
+        assert all("auth_token" not in s for s in body["servers"])
+        # local/stories is on both servers — dedup keeps one entry.
+        local_entries = [d for d in body["datasets"] if d["source"] == "local"]
+        assert len(local_entries) == 1
+        assert local_entries[0]["dataset_id"] == "local/stories"
+        assert set(local_entries[0]["server_ids"]) == {"srv-a", "srv-b"}
+        # HF entries are now keyed on repo path (sourced from
+        # /v1/cache/hf), so the unified Datasets view lists
+        # ``allenai/c4`` once whether or not any client has loaded it.
+        hf_entries = [d for d in body["datasets"] if d["source"] == "hf"]
+        assert len(hf_entries) == 1
+        assert hf_entries[0]["dataset_id"] == "allenai/c4"
+        assert hf_entries[0]["name"] == "allenai/c4"
+        assert hf_entries[0]["length"] == 1000  # sum across splits
+
+    def test_dataset_servers_token_stripped(self):
+        cluster.activate("c", port=8765)
+        self._seed_master_inventory()
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_servers",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert {s["server_id"] for s in body} == {"srv-a", "srv-b"}
+        for s in body:
+            assert "auth_token" not in s
+
+    def test_router_resolve_returns_token_to_training_client(self):
+        cluster.activate("c", port=8765)
+        self._seed_master_inventory()
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_router/resolve",
+            params={"dataset_id": "local/stories"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # Only srv-a is healthy + has stories, so the pick is
+        # deterministic here.
+        assert body["base_url"] == "http://node-a:8766"
+        assert body["auth_token"] == "tok-a"
+        assert body["server_id"] == "srv-a"
+
+    def test_router_resolve_503_until_warmed_up(self):
+        from forgather_server import cluster_dataset_inventory as cdi
+
+        cluster.activate("c", port=8765)
+        cdi.master_inventory.set_master_state(True)
+        # Do NOT mark_dataset_pass_complete — simulate cold start.
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_router/resolve",
+            params={"dataset_id": "local/stories"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 503
+        assert r.headers.get("retry-after") == "5"
+
+    def test_router_resolve_410_when_no_candidate(self):
+        from forgather_server import cluster_dataset_inventory as cdi
+
+        cluster.activate("c", port=8765)
+        cdi.master_inventory.set_master_state(True)
+        # Mark fully warmed (observed a healthy server at some point)
+        # so /resolve goes past the 503 cold-start gate. The actual
+        # path requested doesn't match any server, so the response
+        # should be 410 "no candidate" — operator config error.
+        cdi.master_inventory.mark_observed_healthy()
+        cdi.master_inventory.mark_dataset_pass_complete()
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_router/resolve",
+            params={"dataset_id": "local/missing"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 410
+
+
+class TestDatasetServerProxy:
+    """Master-side cluster proxy: /api/cluster/dataset_server_proxy/{server_id}/{op}
+    looks up the server in the master inventory, applies the bearer
+    token, and forwards to the upstream dataset_server.
+
+    Upstream calls are intercepted with `monkeypatch` so we exercise
+    the routing/auth/SSRF-allowlist logic without booting a real
+    dataset_server.
+    """
+
+    def _seed(self, *, server_id="srv-1", base_url="http://upstream:8766",
+              token="tok-1"):
+        from forgather_server import cluster_dataset_inventory as cdi
+
+        cdi.master_inventory.set_master_state(True)
+        cdi.master_inventory.merge_servers(
+            {
+                server_id: cdi.MasterServerEntry(
+                    server_id=server_id,
+                    base_url=base_url,
+                    auth_token=token,
+                    label="x",
+                    source="local",
+                    peer_node_id="self",
+                    healthy=True,
+                )
+            }
+        )
+
+    def _intercept_httpx(self, monkeypatch, fake):
+        """Patch httpx.AsyncClient so every call goes to `fake(method,
+        target, headers, body)` and returns httpx.Response."""
+        import httpx as _httpx
+        from forgather_server.routes import cluster as cluster_routes
+
+        class _FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, target, headers=None):
+                return fake("GET", target, headers, None)
+
+            async def post(self, target, content=None, headers=None):
+                return fake("POST", target, headers, content)
+
+            def stream(self, method, target, headers=None):
+                fake_resp = fake(method, target, headers, None)
+                return _FakeStreamCtx(fake_resp)
+
+        class _FakeStreamCtx:
+            def __init__(self, resp):
+                self._resp = resp
+
+            async def __aenter__(self):
+                return self._resp
+
+            async def __aexit__(self, *a):
+                return False
+
+        monkeypatch.setattr(_httpx, "AsyncClient", _FakeAsyncClient)
+
+    def test_health_forwards_with_token(self, monkeypatch):
+        import httpx as _httpx
+
+        cluster.activate("c", port=8765)
+        self._seed()
+        calls = []
+
+        def fake(method, target, headers, body):
+            calls.append((method, target, headers, body))
+            return _httpx.Response(200, json={"status": "ok"})
+
+        self._intercept_httpx(monkeypatch, fake)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_server_proxy/srv-1/health",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        assert r.json() == {"status": "ok"}
+        # One upstream call, /v1/health on the inventory's base_url,
+        # with the inventory's token in the Authorization header.
+        assert calls[0][0] == "GET"
+        assert calls[0][1] == "http://upstream:8766/v1/health"
+        assert calls[0][2] == {"Authorization": "Bearer tok-1"}
+
+    def test_unknown_server_id_returns_404(self):
+        cluster.activate("c", port=8765)
+        # Inventory empty → server_id doesn't exist.
+        from forgather_server import cluster_dataset_inventory as cdi
+
+        cdi.master_inventory.set_master_state(True)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_server_proxy/nonexistent/health",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 404
+
+    def test_unknown_op_returns_404(self):
+        cluster.activate("c", port=8765)
+        self._seed()
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_server_proxy/srv-1/evil",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 404
+
+    def test_load_post_passes_body(self, monkeypatch):
+        import httpx as _httpx
+
+        cluster.activate("c", port=8765)
+        self._seed()
+        calls = []
+
+        def fake(method, target, headers, body):
+            calls.append((method, target, headers, body))
+            return _httpx.Response(200, json={"handle": "h", "length": 3})
+
+        self._intercept_httpx(monkeypatch, fake)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.post(
+            "/api/cluster/dataset_server_proxy/srv-1/load",
+            content='{"path":"local/stories"}',
+            headers={
+                "Authorization": f"Bearer {token}",
+                "content-type": "application/json",
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["handle"] == "h"
+        assert calls[0][0] == "POST"
+        assert calls[0][1] == "http://upstream:8766/v1/load"
+        assert calls[0][3] == b'{"path":"local/stories"}'
+
+    def test_length_requires_handle_param(self):
+        cluster.activate("c", port=8765)
+        self._seed()
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_server_proxy/srv-1/length",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 400
+
+    def test_upstream_401_forwarded_with_marker(self, monkeypatch):
+        import httpx as _httpx
+
+        cluster.activate("c", port=8765)
+        self._seed()
+
+        def fake(method, target, headers, body):
+            return _httpx.Response(401, json={"detail": "bad token"})
+
+        self._intercept_httpx(monkeypatch, fake)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        r = client.get(
+            "/api/cluster/dataset_server_proxy/srv-1/health",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        # Upstream's 401 surfaces verbatim plus the marker header so
+        # the webui can show "your saved token is wrong" instead of
+        # the generic "forgather-server auth failed."
+        assert r.status_code == 401
+        assert r.headers.get("x-upstream-auth-failed") == "1"
+
+
+class TestClusterJobSubmit:
+    """Cluster-coordinator submit path. The fanout step is monkey-
+    patched away — we don't want to actually enqueue anything during
+    unit tests — but the validation, rdzv-args computation, and
+    bundle-record code paths run for real.
+    """
+
+    def _activate_with_two_members(
+        self,
+        version_a="1.1.0",
+        version_b="1.1.0",
+        *,
+        with_interfaces: bool = True,
+    ):
+        ident = cluster.activate("c", port=8765)
+        # Self gets a non-loopback address so the membership table is
+        # realistic; updating self via update_member is normally done
+        # by cluster_discovery.start, which the unit test bypasses.
+        cluster.update_self_address("192.168.1.27")
+        peer_id = str(uuid.uuid4())
+        # Interface table mirrors the one a real probe would publish:
+        # one entry per IPv4 interface, with the cluster's chosen
+        # advertised address present so _derive_iface_from_member can
+        # match it back to a name. Without that, auto-derive falls
+        # through to the 422 branch.
+        peer_ifaces = (
+            [{"name": "enp4s0", "address": "192.168.1.162", "is_up": True}]
+            if with_interfaces
+            else []
+        )
+        self_ifaces = (
+            [{"name": "enp212s0", "address": "192.168.1.27", "is_up": True}]
+            if with_interfaces
+            else []
+        )
+        cluster.update_member(
+            peer_id,
+            hostname="muthur",
+            address="192.168.1.162",
+            port=8765,
+            cluster_name="c",
+            forgather_version=version_b,
+            probe={
+                "versions": {
+                    "forgather": version_b,
+                    "torch": "2.10.0",
+                    "nccl": "2.27.5",
+                    "transformers": "5.7.0",
+                },
+                "interfaces": peer_ifaces,
+            },
+            source="peer_pull",
+        )
+        # Self's probe was set by activate() but with whatever was
+        # importable at test time. Stamp a deterministic version dict
+        # so the divergence check is honest about what's diverging.
+        from forgather_server import cluster as _c
+
+        _c._state._members[ident.node_id].probe = {
+            "versions": {
+                "forgather": version_a,
+                "torch": "2.10.0",
+                "nccl": "2.27.5",
+                "transformers": "5.7.0",
+            },
+            "interfaces": self_ifaces,
+        }
+        return ident, peer_id
+
+    def test_happy_path_submits_to_both_members(self, monkeypatch):
+        ident, peer_id = self._activate_with_two_members()
+
+        # Stub the fanout: capture payloads, return a synthetic queue id.
+        import forgather_server.routes.cluster as routes
+
+        captured: list = []
+
+        async def fake_fanout(client, target, payload):
+            captured.append((target.node_id, payload))
+            return {
+                "queue_id": f"q_{target.node_id[:8]}",
+                "node_id": target.node_id,
+            }
+
+        monkeypatch.setattr(routes, "_fanout_training", fake_fanout)
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.post(
+            "/api/cluster/jobs/submit",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "project_dir": "/proj",
+                "config": "train.yaml",
+                "members": [
+                    {
+                        "node_id": ident.node_id,
+                        "nproc_per_node": 2,
+                        "nccl_socket_ifname": "enp212s0",
+                    },
+                    {
+                        "node_id": peer_id,
+                        "nproc_per_node": 1,
+                        "nccl_socket_ifname": "eth0",
+                    },
+                ],
+            },
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        cj = body["cluster_job"]
+        assert len(cj["members"]) == 2
+        # node_rank assignment follows the request order.
+        ranks = {m["node_id"]: m["node_rank"] for m in cj["members"]}
+        assert ranks[ident.node_id] == 0
+        assert ranks[peer_id] == 1
+        # rdzv host defaults to master (lowest UUID — could be either,
+        # so just check it is one of them and the endpoint is well-
+        # formed).
+        assert cj["rdzv_endpoint"].endswith(":29400")
+        # Both peers received a fanout call with the same rdzv_id and
+        # endpoint, but different node_ranks.
+        assert len(captured) == 2
+        rdzv_ids = {c[1]["rdzv_args"]["rdzv_id"] for c in captured}
+        assert len(rdzv_ids) == 1
+        node_ranks = {
+            c[0]: c[1]["rdzv_args"]["node_rank"] for c in captured
+        }
+        assert node_ranks == ranks
+        # The operator-chosen interface name lands in extra_env for
+        # all three socket-binding env vars: NCCL (CUDA collectives),
+        # GLOO (CPU collectives), and TP (tensorpipe RPC). Pinning
+        # only NCCL leaves Gloo's connectFullMesh resolving each
+        # rank's address via socket.gethostname() — which on
+        # Debian/Ubuntu returns 127.0.1.1 — and the trainer dies
+        # before the first step.
+        env_by_id = {c[0]: c[1]["extra_env"] for c in captured}
+        for nid, expected_iface in (
+            (ident.node_id, "enp212s0"),
+            (peer_id, "eth0"),
+        ):
+            assert env_by_id[nid]["NCCL_SOCKET_IFNAME"] == expected_iface
+            assert env_by_id[nid]["GLOO_SOCKET_IFNAME"] == expected_iface
+            assert env_by_id[nid]["TP_SOCKET_IFNAME"] == expected_iface
+        # Exactly one peer must be flagged is_host=True (the rdzv host),
+        # all others is_host=False. Without this, c10d's broken
+        # gethostname-based autodetection drops every node into client
+        # mode and the rendezvous never binds.
+        is_host_by_id = {c[0]: c[1]["rdzv_args"]["is_host"] for c in captured}
+        rdzv_node_id = cj["rdzv_node_id"]
+        assert is_host_by_id[rdzv_node_id] is True
+        for nid, v in is_host_by_id.items():
+            if nid != rdzv_node_id:
+                assert v is False
+        # Every peer must receive its own routable address as
+        # local_addr so torchrun emits --local-addr <ip>. Without this,
+        # rank 0's elastic agent stores socket.getfqdn() in the c10d
+        # store as MASTER_ADDR — a bare hostname like "hal9000" that
+        # peers without DNS can't resolve.
+        local_addr_by_id = {
+            c[0]: c[1]["rdzv_args"]["local_addr"] for c in captured
+        }
+        assert local_addr_by_id[ident.node_id] == "192.168.1.27"
+        assert local_addr_by_id[peer_id] == "192.168.1.162"
+
+    def test_version_mismatch_blocks_without_override(self, monkeypatch):
+        ident, peer_id = self._activate_with_two_members(
+            version_a="1.0.0", version_b="1.1.0"
+        )
+        import forgather_server.routes.cluster as routes
+
+        async def fake_fanout(client, target, payload):
+            raise AssertionError("should not fan out when blocked")
+
+        monkeypatch.setattr(routes, "_fanout_training", fake_fanout)
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.post(
+            "/api/cluster/jobs/submit",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "project_dir": "/proj",
+                "config": "train.yaml",
+                "members": [
+                    {"node_id": ident.node_id, "nproc_per_node": 2},
+                    {"node_id": peer_id, "nproc_per_node": 1},
+                ],
+            },
+        )
+        assert r.status_code == 409
+        assert "version mismatch" in r.text.lower()
+
+    def test_version_mismatch_allowed_with_override(self, monkeypatch):
+        ident, peer_id = self._activate_with_two_members(
+            version_a="1.0.0", version_b="1.1.0"
+        )
+        import forgather_server.routes.cluster as routes
+
+        async def fake_fanout(client, target, payload):
+            return {
+                "queue_id": f"q_{target.node_id[:8]}",
+                "node_id": target.node_id,
+            }
+
+        monkeypatch.setattr(routes, "_fanout_training", fake_fanout)
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.post(
+            "/api/cluster/jobs/submit",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "project_dir": "/proj",
+                "config": "train.yaml",
+                "allow_version_mismatch": True,
+                "members": [
+                    {"node_id": ident.node_id, "nproc_per_node": 2},
+                    {"node_id": peer_id, "nproc_per_node": 1},
+                ],
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert any("forgather" in w for w in r.json()["warnings"])
+
+    def test_auto_derives_iface_when_operator_omits_it(self, monkeypatch):
+        # When the modal's iface picker is left on "(auto)" — i.e.
+        # nccl_socket_ifname is null — the server must match the
+        # member's advertised address against its probe's interface
+        # table and pin NCCL/Gloo/TP to that interface name. Without
+        # this, Gloo's connectFullMesh publishes loopback addresses
+        # because socket.gethostname() resolves to 127.0.1.1 on
+        # Debian/Ubuntu, and the trainer dies before the first step.
+        ident, peer_id = self._activate_with_two_members()
+        import forgather_server.routes.cluster as routes
+
+        captured: list = []
+
+        async def fake_fanout(client, target, payload):
+            captured.append((target.node_id, payload))
+            return {"queue_id": f"q_{target.node_id[:8]}", "node_id": target.node_id}
+
+        monkeypatch.setattr(routes, "_fanout_training", fake_fanout)
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.post(
+            "/api/cluster/jobs/submit",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "project_dir": "/proj",
+                "config": "train.yaml",
+                "members": [
+                    # No nccl_socket_ifname — auto-derive must fill in.
+                    {"node_id": ident.node_id, "nproc_per_node": 1},
+                    {"node_id": peer_id, "nproc_per_node": 1},
+                ],
+            },
+        )
+        assert r.status_code == 200, r.text
+        env_by_id = {c[0]: c[1]["extra_env"] for c in captured}
+        # Self's advertised address is 192.168.1.27 → enp212s0; peer's
+        # is 192.168.1.162 → enp4s0. Auto-derive must pick those names.
+        assert env_by_id[ident.node_id]["NCCL_SOCKET_IFNAME"] == "enp212s0"
+        assert env_by_id[ident.node_id]["GLOO_SOCKET_IFNAME"] == "enp212s0"
+        assert env_by_id[ident.node_id]["TP_SOCKET_IFNAME"] == "enp212s0"
+        assert env_by_id[peer_id]["NCCL_SOCKET_IFNAME"] == "enp4s0"
+        assert env_by_id[peer_id]["GLOO_SOCKET_IFNAME"] == "enp4s0"
+        assert env_by_id[peer_id]["TP_SOCKET_IFNAME"] == "enp4s0"
+
+    def test_rejects_when_iface_cannot_be_derived(self, monkeypatch):
+        # Probe with no interfaces (e.g. a host that hasn't published
+        # one yet, or a malformed payload) leaves auto-derive with
+        # nothing to match. Must surface a 422 rather than silently
+        # spawn a job that will deadlock in connectFullMesh.
+        ident, peer_id = self._activate_with_two_members(
+            with_interfaces=False
+        )
+        import forgather_server.routes.cluster as routes
+
+        async def fake_fanout(client, target, payload):
+            raise AssertionError("must not fan out when iface is unknown")
+
+        monkeypatch.setattr(routes, "_fanout_training", fake_fanout)
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.post(
+            "/api/cluster/jobs/submit",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "project_dir": "/proj",
+                "config": "train.yaml",
+                "members": [
+                    {"node_id": ident.node_id, "nproc_per_node": 1},
+                    {"node_id": peer_id, "nproc_per_node": 1},
+                ],
+            },
+        )
+        assert r.status_code == 422
+        assert "interface" in r.text.lower()
+
+    def test_unreachable_peer_rejected(self, monkeypatch):
+        ident, peer_id = self._activate_with_two_members()
+        cluster.mark_unreachable(peer_id)
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.post(
+            "/api/cluster/jobs/submit",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "project_dir": "/proj",
+                "config": "train.yaml",
+                "members": [
+                    {"node_id": ident.node_id, "nproc_per_node": 2},
+                    {"node_id": peer_id, "nproc_per_node": 1},
+                ],
+            },
+        )
+        assert r.status_code == 400
+        assert "unreachable" in r.text.lower()
+
+
+class TestClusterJobStatusRollup:
+    """Per-rank status fanout + bundle roll-up. The bug we're closing
+    here: before this, ``cluster_jobs.status`` only ever flipped to
+    "cancelled", so a finished training run stayed listed as
+    "submitted" forever. The roll-up is computed at read time from
+    each peer's local job_record state."""
+
+    def _activate_with_self_only(self):
+        ident = cluster.activate("c", port=8765)
+        cluster.update_self_address("192.168.1.27")
+        from forgather_server import cluster as _c
+
+        _c._state._members[ident.node_id].probe = {
+            "versions": {"forgather": "1.1.0"},
+            "interfaces": [
+                {"name": "enp212s0", "address": "192.168.1.27", "is_up": True}
+            ],
+        }
+        return ident
+
+    def test_training_status_local_returns_record(self, monkeypatch):
+        # Peer-side endpoint: returns job_records snapshot keyed by
+        # queue_id. Master uses this during fanout-driven rollup.
+        self._activate_with_self_only()
+        from forgather_server import job_records
+
+        rec = job_records.JobRecord(
+            queue_id="q_done",
+            project_dir="/proj",
+            config="train.yaml",
+            dynamic_args={},
+            requested_gpus=1,
+            priority=0,
+            submitted_at=time.time(),
+            node="self",
+            gpu_indices=(),
+            job_type="training",
+            job_params={},
+            status="done",
+            exit_code=0,
+        )
+        monkeypatch.setattr(
+            job_records, "get_record", lambda qid: rec if qid == "q_done" else None
+        )
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.get(
+            "/api/cluster/training_status_local?queue_id=q_done",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "done"
+        assert body["exit_code"] == 0
+        # Unknown queue ids return status=unknown rather than 404 so
+        # the master can keep going when a peer's record was GC'd.
+        r2 = client.get(
+            "/api/cluster/training_status_local?queue_id=q_missing",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r2.status_code == 200
+        assert r2.json()["status"] == "unknown"
+
+    def test_get_cluster_job_rolls_up_to_done(self, monkeypatch):
+        # Synthesise a bundle with one local member, monkey-patch the
+        # local record to "done", and verify the read path promotes
+        # the bundle to a sticky "done" terminal status.
+        ident = self._activate_with_self_only()
+        from forgather_server import cluster_jobs as cj
+        from forgather_server import job_records
+
+        job = cj.ClusterJob(
+            cluster_job_id="cj_test",
+            project_dir="/proj",
+            config="train.yaml",
+            submitted_at=time.time(),
+            rdzv_endpoint="192.168.1.27:29400",
+            rdzv_id="r1",
+            rdzv_node_id=ident.node_id,
+            members=[
+                cj.MemberAssignment(
+                    node_id=ident.node_id,
+                    hostname="wopr",
+                    address="192.168.1.27",
+                    port=8765,
+                    queue_id="q_self",
+                    nproc_per_node=1,
+                    node_rank=0,
+                )
+            ],
+        )
+        cj.add_job(job)
+        rec = job_records.JobRecord(
+            queue_id="q_self",
+            project_dir="/proj",
+            config="train.yaml",
+            dynamic_args={},
+            requested_gpus=1,
+            priority=0,
+            submitted_at=time.time(),
+            node="self",
+            gpu_indices=(),
+            job_type="training",
+            job_params={},
+            status="done",
+            exit_code=0,
+        )
+        monkeypatch.setattr(
+            job_records, "get_record", lambda qid: rec if qid == "q_self" else None
+        )
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.get(
+            "/api/cluster/jobs/cj_test",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["rolled_up_status"] == "done"
+        assert body["members"][0]["current_status"] == "done"
+        # The bundle's own status is now sticky-terminal so future
+        # reads short-circuit without fanning out.
+        assert cj.get_job("cj_test").status == "done"
+
+    def test_non_master_proxies_jobs_list_to_master(self, monkeypatch):
+        # When this node isn't the master, GET /jobs must fetch the
+        # bundle list from master (which holds the only copy) instead
+        # of returning the local empty list. Without this the user
+        # sees 0 cluster jobs on muthur while wopr (master) shows the
+        # running one — exactly the symptom they hit.
+        ident = self._activate_with_self_only()
+        # Add a peer with a smaller UUID so it becomes master.
+        master_id = "00000000-0000-0000-0000-000000000001"
+        cluster.update_member(
+            master_id,
+            hostname="master-host",
+            address="192.168.1.10",
+            port=8765,
+            cluster_name="c",
+            source="peer_pull",
+        )
+        assert cluster.master_node_id() == master_id
+        assert ident.node_id != master_id
+
+        proxied_payload = [
+            {
+                "cluster_job_id": "cj_remote",
+                "project_dir": "/p",
+                "config": "t.yaml",
+                "submitted_at": time.time(),
+                "rdzv_endpoint": "192.168.1.10:29400",
+                "rdzv_id": "rrr",
+                "rdzv_node_id": master_id,
+                "members": [],
+                "status": "submitted",
+                "rolled_up_status": "running",
+            }
+        ]
+
+        # Stub the proxy HTTP call so we don't actually hit a network.
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return proxied_payload
+
+        class _AsyncClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def get(self, url, **kw):
+                assert url == "http://192.168.1.10:8765/api/cluster/jobs"
+                return _Resp()
+
+        import forgather_server.routes.cluster as routes
+        monkeypatch.setattr(routes.httpx, "AsyncClient", _AsyncClient)
+
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.get(
+            "/api/cluster/jobs",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert len(body) == 1
+        assert body[0]["cluster_job_id"] == "cj_remote"
+        assert body[0]["rolled_up_status"] == "running"
+
+    def test_master_does_not_proxy_to_itself(self, monkeypatch):
+        # On the master we hit the local computation path; no proxy.
+        # Asserting we don't double-fetch matters because the master
+        # is the only owner of the bundle records — proxying to self
+        # would either deadlock or trip auth depending on the order.
+        ident = self._activate_with_self_only()
+        # Self is the only member, so it's master by definition.
+        assert cluster.master_node_id() == ident.node_id
+
+        async def fail(*a, **kw):
+            raise AssertionError("master must not proxy /jobs")
+
+        # Spy on AsyncClient construction to make the assertion sharp.
+        class _Spy:
+            def __init__(self, *a, **kw):
+                raise AssertionError("AsyncClient must not be used on master")
+
+        import forgather_server.routes.cluster as routes
+        monkeypatch.setattr(routes.httpx, "AsyncClient", _Spy)
+
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.get(
+            "/api/cluster/jobs",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json() == []
+
+    def test_rollup_failed_beats_running(self, monkeypatch):
+        # Two local members: one running, one failed. Roll-up must
+        # surface "failed" — partial failure is more important than
+        # ongoing work, so the operator notices something's wrong.
+        ident = self._activate_with_self_only()
+        from forgather_server import cluster_jobs as cj
+        from forgather_server import job_records
+
+        job = cj.ClusterJob(
+            cluster_job_id="cj_mixed",
+            project_dir="/proj",
+            config="train.yaml",
+            submitted_at=time.time(),
+            rdzv_endpoint="192.168.1.27:29400",
+            rdzv_id="r2",
+            rdzv_node_id=ident.node_id,
+            members=[
+                cj.MemberAssignment(
+                    node_id=ident.node_id,
+                    hostname="wopr",
+                    address="192.168.1.27",
+                    port=8765,
+                    queue_id="q_a",
+                    nproc_per_node=1,
+                    node_rank=0,
+                ),
+                cj.MemberAssignment(
+                    node_id=ident.node_id,
+                    hostname="wopr",
+                    address="192.168.1.27",
+                    port=8765,
+                    queue_id="q_b",
+                    nproc_per_node=1,
+                    node_rank=1,
+                ),
+            ],
+        )
+        cj.add_job(job)
+
+        def fake_get(queue_id):
+            base = dict(
+                project_dir="/proj",
+                config="train.yaml",
+                dynamic_args={},
+                requested_gpus=1,
+                priority=0,
+                submitted_at=time.time(),
+                node="self",
+                gpu_indices=(),
+                job_type="training",
+                job_params={},
+            )
+            if queue_id == "q_a":
+                return job_records.JobRecord(
+                    queue_id="q_a", status="running", **base
+                )
+            if queue_id == "q_b":
+                return job_records.JobRecord(
+                    queue_id="q_b", status="failed", exit_code=1, **base
+                )
+            return None
+
+        monkeypatch.setattr(job_records, "get_record", fake_get)
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.get(
+            "/api/cluster/jobs/cj_mixed",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["rolled_up_status"] == "failed"
+
+
+def _make_app_with_full_router():
+    """Like _make_app() but mounts the cluster router with prefix="/api"
+    so /api/cluster/jobs/submit resolves correctly."""
+    app = FastAPI()
+    app.add_middleware(AuthMiddleware)
+    app.include_router(cluster_routes.router, prefix="/api")
+    return app
+
+
+class TestPathAllowsPeer:
+    def test_known_peer_paths(self):
+        assert auth.path_allows_peer("/api/cluster/members") is True
+        assert auth.path_allows_peer("/api/cluster/self") is True
+        assert auth.path_allows_peer("/api/cluster/master") is True
+
+    def test_other_paths_not_carved_out(self):
+        assert auth.path_allows_peer("/api/queue") is False
+        assert auth.path_allows_peer("/api/gpus") is False
+        assert auth.path_allows_peer("/api/cluster/anything-else") is False
+
+    def test_gpus_local_carved_out(self):
+        assert auth.path_allows_peer("/api/cluster/gpus_local") is True
+
+    def test_bandwidth_local_carved_out(self):
+        assert auth.path_allows_peer("/api/cluster/bandwidth_local") is True
+
+    def test_mutation_carve_out_disjoint_from_read_set(self):
+        # The two carve-outs are different intentionally — guard
+        # against accidentally widening the GET set to include the
+        # mutation path or vice versa.
+        assert auth.path_allows_peer_mutation("/api/cluster/gpu_policy_local")
+        assert not auth.path_allows_peer_mutation("/api/cluster/members")
+        assert not auth.path_allows_peer("/api/cluster/gpu_policy_local")

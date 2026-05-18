@@ -75,7 +75,7 @@ def create_control_parser(global_args):
     cleanup_parser = subparsers.add_parser(
         "cleanup",
         help=(
-            "Remove dead-job directories under ~/.forgather/jobs/ "
+            "Remove dead-job directories under ~/.config/forgather/jobs/ "
             "(both jobs whose endpoint.json points at a dead PID and "
             "orphan directories left behind by crashed runs)"
         ),

@@ -67,7 +67,7 @@ def create_sched_parser(global_args):
     subparsers.add_parser(
         "gc",
         help=(
-            "Sweep orphan TTY logs from ~/.forgather/server/jobs/ "
+            "Sweep orphan TTY logs from ~/.config/forgather/server/jobs/ "
             "(files not referenced by any record, older than the TTL)"
         ),
         formatter_class=RawTextHelpFormatter,

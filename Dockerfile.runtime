@@ -1,0 +1,382 @@
+# syntax=docker/dockerfile:1.6
+#
+# Forgather runtime image (user-agnostic, distributable).
+#
+# In contrast to the dev image (`Dockerfile`), this image:
+#   - has a fixed in-container user `forgather` (UID/GID 1000) that is
+#     remapped at container start via PUID/PGID env vars, so a single
+#     prebuilt image works for any host user
+#   - clones the source tree from git at build time into
+#     /opt/forgather/repo and installs editable from there (editable
+#     is required because `forgather server` resolves
+#     `tools/forgather_server/server.py` relative to the package's
+#     own __file__, and the FastAPI app likewise resolves the SPA's
+#     `webui/dist/` relative to its own __file__)
+#   - prebuilds the webui SPA bundle at build time, so the server
+#     can serve it on first start without any post-install steps
+#   - defaults to running `forgather server -H 0.0.0.0 -p 8765` and
+#     uses bridge networking + port forward for portability
+#   - drops privileges via gosu in the entrypoint after remap
+#
+# See `docker/runtime/README.md` for the user-facing docs.
+
+FROM ubuntu:24.04
+
+ARG VENV_DIR=/opt/forgather/venv
+ARG REPO_DIR=/opt/forgather/repo
+ARG USER_NAME=forgather
+ARG USER_UID=1000
+ARG USER_GID=1000
+# torch variant for the build (mirrors Dockerfile, the dev image):
+#   cuda  (default) -- CUDA-enabled torch (PyPI x86_64 ships it; aarch64 wheels live on
+#                      download.pytorch.org/whl/cu128 so we pre-install from there)
+#   cpu             -- CPU-only torch from download.pytorch.org/whl/cpu on both arches.
+#                      Yields a much smaller image (no nvidia-* libs) -- appropriate for
+#                      CI / docs / hosts that won't run GPU workloads.
+ARG TORCH_VARIANT=cuda
+# Source tree is fetched fresh from git at build time — no host
+# checkout is baked in, so the image is fully reproducible. Override
+# FORGATHER_GIT_REF to pin a release tag or commit sha.
+ARG FORGATHER_GIT_URL=https://github.com/jdinalt/forgather.git
+ARG FORGATHER_GIT_REF=dev
+# Air-gap escape hatch: when FORGATHER_SOURCE_DIR is set to a path
+# *inside the build context*, the source tree is copied from there
+# instead of being cloned from git. Useful for offline / CI builds
+# or to bake a working-tree-with-uncommitted-changes for testing.
+# Default empty = git-clone path (the recommended reproducible flow).
+ARG FORGATHER_SOURCE_DIR=
+# TLS-seed bake: when FORGATHER_TLS_SEED_DIR is set to a path *inside
+# the build context*, the directory is copied to /etc/forgather/tls-seed/
+# in the image. On first start, the entrypoint copies the seed into
+# the container's state volume if no TLS state is present yet — so
+# every container launched from this image trusts the same CA and
+# (by default) shares the same server identity. Use case:
+# build-once-distribute-everywhere clusters where each of N runtime
+# containers should talk to its peers (and to the developer's
+# workstation) without per-node `forgather tls install` ceremony.
+#
+# SECURITY: a baked-in cert + key means anyone who can pull this image
+# can impersonate any peer in the cluster. Treat the resulting image
+# as a high-trust secret — equivalent in sensitivity to the CA private
+# key it contains. Never publish a TLS-baked image to a public registry.
+# The dev image's `forgather tls init` workflow + `STATE_VOLUME=$HOME/.config/forgather`
+# bind-mount is the right path for single-machine development.
+#
+# Default empty = no bake (operator must `forgather tls init` per container).
+ARG FORGATHER_TLS_SEED_DIR=
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    UV_LINK_MODE=copy \
+    VIRTUAL_ENV=${VENV_DIR} \
+    USER_NAME=${USER_NAME} \
+    VENV_DIR=${VENV_DIR} \
+    PATH=${VENV_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# UV_CACHE_DIR is intentionally NOT in ENV: the build-time cache target
+# /root/.cache/uv is unwritable to the unprivileged in-image user, so
+# baking it into ENV poisons every `docker exec`-spawned shell (which
+# inherits image ENV but bypasses the entrypoint's scrub). Instead we
+# set it inline on each uv-using RUN below, so it's scoped to the
+# build only. At runtime uv falls back to $HOME/.cache/uv, which lands
+# in the in-image user's home (a named volume by default).
+
+# ---------------------------------------------------------------------------
+# System packages. Same baseline as the dev image, plus `gosu` for the
+# privilege-drop entrypoint. The "developer convenience" tools (vim,
+# tmux, htop, ...) are still useful for the diagnostic shell flow
+# (`docker exec -u forgather -ti <name> bash`), so we keep them.
+#
+# BuildKit cache mounts on /var/cache/apt and /var/lib/apt make
+# rebuilds instant on the apt step (no re-download of ~150 MB of
+# Ubuntu packages). The default `docker-clean` apt config wipes the
+# cache after each install, so we delete it first. The cache mounts
+# are external to the image layer, so the final image is the same
+# size as without them.
+# ---------------------------------------------------------------------------
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 \
+        python3.12-venv \
+        python3.12-dev \
+        python3-pip \
+        build-essential \
+        ca-certificates \
+        git \
+        git-lfs \
+        graphviz \
+        nodejs \
+        npm \
+        gosu \
+        bash-completion \
+        curl \
+        wget \
+        less \
+        vim \
+        tmux \
+        htop \
+        tree \
+        jq \
+        ripgrep \
+        unzip \
+        zip \
+        rsync \
+        openssh-client \
+        gnupg \
+        locales \
+        tzdata \
+    && locale-gen en_US.UTF-8 \
+    && gosu nobody true
+
+# ---------------------------------------------------------------------------
+# Install uv (fast Python package manager).
+# ---------------------------------------------------------------------------
+ADD --chmod=755 https://astral.sh/uv/install.sh /tmp/uv-install.sh
+RUN UV_INSTALL_DIR=/usr/local/bin /tmp/uv-install.sh \
+    && rm -f /tmp/uv-install.sh \
+    && uv --version
+
+# ---------------------------------------------------------------------------
+# Create the in-container user (fixed UID 1000 — the entrypoint remaps
+# at container start). If the stock Ubuntu 24.04 `ubuntu` user already
+# holds UID 1000, delete it first so our build arg always wins.
+# ---------------------------------------------------------------------------
+RUN set -eux; \
+    if id -u ubuntu >/dev/null 2>&1 && [ "$(id -u ubuntu)" = "${USER_UID}" ]; then \
+        userdel -r ubuntu 2>/dev/null || userdel ubuntu; \
+    fi; \
+    if ! getent group "${USER_GID}" >/dev/null; then \
+        groupadd --gid "${USER_GID}" "${USER_NAME}"; \
+    fi; \
+    if ! id -u "${USER_NAME}" >/dev/null 2>&1; then \
+        useradd --uid "${USER_UID}" --gid "${USER_GID}" \
+            --shell /bin/bash --create-home "${USER_NAME}"; \
+    fi; \
+    install -d -o "${USER_UID}" -g "${USER_GID}" -m 0775 /opt/forgather; \
+    chmod 0755 /root
+# /root is 0700 in the Ubuntu base image, which blocks the unprivileged
+# build user from traversing into the uv cache mount at /root/.cache/uv
+# even when the leaf is world-writable (mode=0777 on the mount). The
+# chmod above opens up just the parent dir; containers don't have a
+# real root login flow, so this is cosmetic-only.
+
+# ---------------------------------------------------------------------------
+# Build the venv and install dependencies as the unprivileged user, so
+# every venv file is correctly owned from the start (no slow recursive
+# chown later).
+#
+# Each venv-touching RUN sets ``umask 0002`` so newly created
+# directories land at mode 0775 (group writable) rather than the
+# default 0755. The runtime entrypoint remaps only the UID via
+# ``usermod`` and keeps GID at 1000, so the dropped-privilege user
+# inherits group access to every venv directory baked at gid 1000.
+# Files inside the venv keep their wheel-recorded modes (typically
+# 644, group-readable), which is sufficient because runtime only
+# reads them. This replaces a previous
+# ``chmod -R go+rwX /opt/forgather`` step that walked every
+# installed file (PyTorch alone is several thousand) and re-ran
+# whenever earlier layers' caches got invalidated.
+# ---------------------------------------------------------------------------
+USER ${USER_NAME}
+
+RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
+    export UV_CACHE_DIR=/root/.cache/uv \
+    && umask 0002 \
+    && uv venv --python python3.12 --seed ${VENV_DIR}
+
+# Fetch a fresh copy of the source tree from git rather than COPYing
+# the publisher's local checkout. Three reasons:
+#   1. Reproducible — the image only depends on the git URL+ref, not
+#      whatever stray state happens to live in the publisher's tree.
+#   2. Distribution-friendly — anyone (CI, a release builder, an
+#      end user) can build the same image from any working dir.
+#   3. Avoids dragging the local working tree (output_models, etc.)
+#      through Docker's build context.
+#
+# `forgather server` walks up from src/forgather/cli/server.py to find
+# tools/forgather_server/server.py, and the FastAPI app resolves
+# webui/dist/ relative to its own __file__ — both work because we
+# install editable from this baked-in tree.
+# Two source acquisition modes, selected by FORGATHER_SOURCE_DIR:
+#
+#   - empty (default): git-clone from FORGATHER_GIT_URL @ FORGATHER_GIT_REF.
+#     `git clone --depth 1 --branch <ref>` only works when <ref> is a
+#     branch or tag name; fall back to a full clone + checkout so the
+#     ref can also be a commit SHA.
+#
+#   - non-empty: cp -a from that path inside the build context (mounted
+#     read-only at /build-context) into ${REPO_DIR}. Lets operators
+#     build offline / from a vendored snapshot without internet access
+#     to a git remote. The build-context bind mount is used the same
+#     way the dev image's pyproject install does, so behavior is
+#     consistent.
+RUN --mount=type=bind,target=/build-context \
+    set -eux; \
+    umask 0002; \
+    if [ -n "${FORGATHER_SOURCE_DIR}" ]; then \
+        src="/build-context/${FORGATHER_SOURCE_DIR}"; \
+        if [ ! -d "${src}" ]; then \
+            echo "FORGATHER_SOURCE_DIR=${FORGATHER_SOURCE_DIR} not found in build context" >&2; \
+            exit 1; \
+        fi; \
+        echo "[Dockerfile.runtime] copying source from build context: ${FORGATHER_SOURCE_DIR}"; \
+        mkdir -p "${REPO_DIR}"; \
+        # `cp -r` (not `cp -a`) so the destination files are owned by
+        # the current build user (forgather) rather than whatever
+        # uid the build context happens to expose. Mode/timestamps
+        # are not load-bearing for installed source.
+        cp -r "${src}/." "${REPO_DIR}/"; \
+    else \
+        echo "[Dockerfile.runtime] cloning ${FORGATHER_GIT_URL} @ ${FORGATHER_GIT_REF}"; \
+        git clone --depth 1 --branch "${FORGATHER_GIT_REF}" \
+                "${FORGATHER_GIT_URL}" "${REPO_DIR}" 2>/dev/null \
+            || ( rm -rf "${REPO_DIR}" \
+                && git clone "${FORGATHER_GIT_URL}" "${REPO_DIR}" \
+                && cd "${REPO_DIR}" && git checkout "${FORGATHER_GIT_REF}" ); \
+    fi
+
+# Pre-install torch + torchvision from the right PyTorch index so the
+# subsequent editable install sees the constraint already satisfied
+# and doesn't overwrite them with whatever PyPI ships. Same logic as
+# Dockerfile (the dev image):
+#
+#   * TORCH_VARIANT=cuda + aarch64 -> cu128 (PyPI's aarch64 torch is CPU-only;
+#                                            CUDA wheels live on the PyTorch index)
+#   * TORCH_VARIANT=cuda + x86_64  -> no-op (PyPI's x86_64 torch IS CUDA-enabled)
+#   * TORCH_VARIANT=cpu  + *       -> cpu index (forces CPU build on every arch)
+#
+# ``torchao`` is not pre-installed here: it ships as a pure-Python
+# (``py3-none-any``) wheel and delegates its float8/quant ops to
+# torch's built-in kernels (e.g. ``torch._scaled_mm``), so the editable
+# install below resolves it from PyPI on every arch.
+ARG TORCH_VARIANT
+RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
+    export UV_CACHE_DIR=/root/.cache/uv \
+    && umask 0002 \
+    && case "${TORCH_VARIANT}:$(uname -m)" in \
+        cuda:aarch64) \
+            uv pip install --python ${VENV_DIR}/bin/python \
+                --index-url https://download.pytorch.org/whl/cu128 \
+                "torch==2.10.0+cu128" torchvision ;; \
+        cuda:x86_64) ;; \
+        cpu:*) \
+            uv pip install --python ${VENV_DIR}/bin/python \
+                --index-url https://download.pytorch.org/whl/cpu \
+                "torch==2.10.0+cpu" torchvision ;; \
+        *) \
+            echo "[Dockerfile.runtime] unknown TORCH_VARIANT='${TORCH_VARIANT}'" >&2; exit 2 ;; \
+    esac
+
+# Install Forgather (editable) from the cloned tree. Editable mode
+# is required so that the file-walk in `forgather server` resolves
+# correctly; the tree is frozen anyway because nothing bind-mounts
+# over it at runtime.
+RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
+    export UV_CACHE_DIR=/root/.cache/uv \
+    && umask 0002 \
+    && uv pip install --python ${VENV_DIR}/bin/python -e ${REPO_DIR}
+
+# cut-cross-entropy from source for bf16/fp16 numerical stability
+# (the pip release lacks the accum_e_fp32 / accum_c_fp32 features).
+RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
+    export UV_CACHE_DIR=/root/.cache/uv \
+    && umask 0002 \
+    && uv pip install --python ${VENV_DIR}/bin/python \
+        "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
+
+# TensorBoard <= 2.20.0 imports `pkg_resources` at module load, but
+# setuptools 82 (Feb 2026) removed it. Backport the fix.
+RUN umask 0002 \
+    && ${VENV_DIR}/bin/python ${REPO_DIR}/docker/patches/fix_tensorboard_pkg_resources.py
+
+# Build the SPA bundle in-image. Output lands at
+# ${REPO_DIR}/tools/forgather_server/webui/dist/ — exactly where
+# tools/forgather_server/app.py looks for it at runtime.
+RUN umask 0002 \
+    && cd ${REPO_DIR} && ./build-webui.sh \
+    && rm -rf ${REPO_DIR}/tools/forgather_server/webui/node_modules \
+              ${REPO_DIR}/tools/forgather_server/webui/.node_modules-*
+
+# ---------------------------------------------------------------------------
+# Back to root for the entrypoint setup. The entrypoint runs as root
+# so it can usermod for UID remap then drops to the forgather user
+# via gosu before exec'ing the real command. Build-time umask above
+# means venv directories are already group-writable, so no recursive
+# chmod / chown is needed at container start.
+# ---------------------------------------------------------------------------
+USER root
+
+# Activate the venv in every interactive shell (used by
+# `docker exec -u forgather -ti <name> bash` for diagnostics).
+RUN printf '%s\n' \
+        '# Forgather venv (baked in at image build)' \
+        'export VIRTUAL_ENV=/opt/forgather/venv' \
+        'export PATH="$VIRTUAL_ENV/bin:$PATH"' \
+        > /etc/profile.d/10-forgather-venv.sh \
+    && chmod 0644 /etc/profile.d/10-forgather-venv.sh \
+    && printf '\n# Forgather venv\n. /etc/profile.d/10-forgather-venv.sh\n' \
+        >> /etc/bash.bashrc
+
+# Install the entrypoint from the cloned tree so the image build is
+# fully decoupled from the host build context. The dev and runtime
+# images share a single entrypoint script (docker/entrypoint.sh) — it
+# branches internally on FORGATHER_REPO to decide whether to do the
+# editable-install dance. To iterate on the entrypoint locally, push
+# to a branch and rebuild with FORGATHER_GIT_REF=<branch>.
+RUN install -m 0755 -o root -g root \
+        ${REPO_DIR}/docker/entrypoint.sh \
+        /usr/local/bin/forgather-runtime-entrypoint
+
+# Optional TLS-seed bake. The seed dir is COPY'd in via a bind-mount
+# of the build context (same pattern as FORGATHER_SOURCE_DIR above).
+# At container first-start, the entrypoint copies the seed into the
+# state volume if no TLS state exists there yet. Keys are written
+# 0600, owned by the in-image forgather user via the entrypoint
+# (the layer here is owned by root, mode 0600 on key files).
+#
+# Skipped at build time when FORGATHER_TLS_SEED_DIR is empty (default).
+RUN --mount=type=bind,target=/build-context \
+    set -eux; \
+    if [ -n "${FORGATHER_TLS_SEED_DIR}" ]; then \
+        src="/build-context/${FORGATHER_TLS_SEED_DIR}"; \
+        if [ ! -d "${src}" ]; then \
+            echo "FORGATHER_TLS_SEED_DIR=${FORGATHER_TLS_SEED_DIR} not found in build context" >&2; \
+            exit 1; \
+        fi; \
+        if [ ! -f "${src}/server.crt" ] || [ ! -f "${src}/server.key" ]; then \
+            echo "TLS seed missing server.crt or server.key" >&2; \
+            exit 1; \
+        fi; \
+        echo "[Dockerfile.runtime] baking TLS seed from build context: ${FORGATHER_TLS_SEED_DIR}"; \
+        install -d -m 0700 -o root -g root /etc/forgather/tls-seed; \
+        cp -r "${src}/." /etc/forgather/tls-seed/; \
+        chown -R root:root /etc/forgather/tls-seed; \
+        find /etc/forgather/tls-seed -type f -name "*.key" -exec chmod 0600 {} +; \
+        find /etc/forgather/tls-seed -type f \! -name "*.key" -exec chmod 0644 {} +; \
+        find /etc/forgather/tls-seed -type d -exec chmod 0700 {} +; \
+        echo "[Dockerfile.runtime] seed contents:"; \
+        find /etc/forgather/tls-seed -maxdepth 3 -printf "  %p (%m)\\n"; \
+    fi
+
+# Volumes (advisory — the run wrapper sets the actual mounts).
+VOLUME ["/home/forgather/.forgather", "/home/forgather/.cache/huggingface"]
+
+EXPOSE 8765
+
+# Healthcheck: probe the cluster-self endpoint, which returns 200 even
+# in standalone (non-cluster) mode and is cheap to serve. start-period
+# gives the server a beat to come up before failures count against the
+# retry budget. Orchestrators (compose, swarm, k8s readiness checks
+# via docker inspect) can use this to gate traffic / restarts.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8765/api/cluster/self > /dev/null || exit 1
+
+WORKDIR /home/forgather
+
+ENTRYPOINT ["/usr/local/bin/forgather-runtime-entrypoint"]
+CMD ["forgather", "server", "-H", "0.0.0.0", "-p", "8765"]

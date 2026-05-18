@@ -50,7 +50,32 @@ def _find_model_dir(output_dir: Path) -> Path:
     raise FileNotFoundError(f"No directory with config.json found in {output_dir}")
 
 
-def _wait_for_health(port: int, timeout: int, proc: subprocess.Popen) -> None:
+def _tls_state() -> tuple[str, object]:
+    """Return ``(scheme, verify)`` matching the server's runtime TLS state.
+
+    The inference server auto-enables TLS when ``forgather tls init`` has
+    been run on this host. Mirror that so the test exercises the real
+    code path (including the CLI client's CA-bundle verification) when
+    TLS is provisioned, and gracefully falls back to plain HTTP when
+    it isn't. ``verify`` is the value to hand to ``requests``: a CA
+    bundle path when one exists, ``True`` (system trust) otherwise.
+    """
+    try:
+        from forgather.tls import is_enabled, load_config
+    except ImportError:
+        return "http", True
+
+    cfg = load_config()
+    if not is_enabled(cfg):
+        return "http", True
+
+    bundle = cfg.effective_bundle()
+    return "https", str(bundle) if bundle is not None else True
+
+
+def _wait_for_health(
+    base_url: str, verify: object, timeout: int, proc: subprocess.Popen
+) -> None:
     """Poll the server health endpoint until it responds or timeout."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -63,7 +88,7 @@ def _wait_for_health(port: int, timeout: int, proc: subprocess.Popen) -> None:
                 f"stderr: {stderr[-2000:] if stderr else ''}"
             )
         try:
-            r = requests.get(f"http://127.0.0.1:{port}/health", timeout=2)
+            r = requests.get(f"{base_url}/health", timeout=2, verify=verify)
             if r.status_code == 200 and r.json().get("model_loaded"):
                 return
         except (requests.ConnectionError, requests.Timeout):
@@ -85,14 +110,45 @@ def test_inference_with_perplexity(spec, output_dir):
     # 2. Find model directory
     model_dir = _find_model_dir(output_dir)
 
+    # 2b. Optional finalize step (e.g. --quantize for torchao quantized
+    # artifacts). Produces a sibling directory under output_dir; the
+    # server then loads from there instead of the raw training output.
+    if spec.finalize and spec.finalize.quantize:
+        finalize_dest = output_dir / "finalized"
+        finalize_proc = subprocess.run(
+            [
+                "forgather",
+                "finalize",
+                "--quantize",
+                spec.finalize.quantize,
+                str(model_dir),
+                str(finalize_dest),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert finalize_proc.returncode == 0, (
+            f"finalize --quantize failed: rc={finalize_proc.returncode}\n"
+            f"stdout: {finalize_proc.stdout[-2000:]}\n"
+            f"stderr: {finalize_proc.stderr[-2000:]}"
+        )
+        model_dir = finalize_dest
+
     # 3. Start inference server (load from checkpoint since training
     #    saves checkpoints, not standalone model weights)
     port = _find_free_port()
     # Use an explicit known token so the test exercises the real auth path
     # (default-on bearer auth) without relying on the on-disk shared-token
     # cache, which would race with concurrent test runs sharing the same
-    # FORGATHER_HOME.
+    # per-user config dir.
     auth_token = "test-" + secrets.token_hex(16)
+    # Let the server pick its scheme via shared TLS config and mirror that
+    # in the client. When the dev host has 'forgather tls init' run, this
+    # exercises the real https:// + CA-bundle verify path that production
+    # clients (e.g. tools/inference_server/client.py) take; otherwise it
+    # falls back cleanly to http.
+    scheme, verify = _tls_state()
+    base_url = f"{scheme}://127.0.0.1:{port}"
     server_proc = subprocess.Popen(
         [
             sys.executable,
@@ -115,11 +171,11 @@ def test_inference_with_perplexity(spec, output_dir):
     )
 
     try:
-        _wait_for_health(port, spec.inference.server_timeout, server_proc)
+        _wait_for_health(base_url, verify, spec.inference.server_timeout, server_proc)
 
         # 4. Send completion request
         response = requests.post(
-            f"http://127.0.0.1:{port}/v1/completions",
+            f"{base_url}/v1/completions",
             headers={"Authorization": f"Bearer {auth_token}"},
             json={
                 "model": "test",
@@ -128,6 +184,7 @@ def test_inference_with_perplexity(spec, output_dir):
                 "temperature": spec.inference.temperature,
             },
             timeout=30,
+            verify=verify,
         )
         assert (
             response.status_code == 200

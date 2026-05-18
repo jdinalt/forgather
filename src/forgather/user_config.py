@@ -1,4 +1,4 @@
-"""User-level configuration loaded from ~/.forgather/config.yaml.
+"""User-level configuration loaded from ``<forgather_config_dir>/config.yaml``.
 
 Lazy, best-effort reader. Missing file or parse errors return an empty dict so
 callers can always treat the result as a dict.
@@ -10,14 +10,16 @@ from typing import Any, Dict
 
 import yaml
 
+from forgather.preprocess import forgather_config_dir
+
 
 def user_config_path() -> Path:
     """Path to the user's forgather config file (may or may not exist)."""
-    return Path.home() / ".forgather" / "config.yaml"
+    return Path(forgather_config_dir()) / "config.yaml"
 
 
 def load_user_config() -> Dict[str, Any]:
-    """Load ~/.forgather/config.yaml, returning {} if absent or unreadable."""
+    """Load the user's ``config.yaml``, returning {} if absent or unreadable."""
     path = user_config_path()
     if not path.is_file():
         return {}
@@ -34,7 +36,7 @@ def eval_search_paths(forgather_dir: str) -> list[str]:
 
     Default: ``{forgather_dir}/examples/evaluation``. Users can extend or
     replace the default via ``eval.search_paths`` and
-    ``eval.replace_default`` in ``~/.forgather/config.yaml``.
+    ``eval.replace_default`` in ``<forgather_config_dir>/config.yaml``.
     """
     cfg = load_user_config().get("eval", {}) or {}
     extra = cfg.get("search_paths") or []

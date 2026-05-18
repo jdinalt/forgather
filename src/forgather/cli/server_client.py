@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from urllib.parse import quote
 
+from forgather.preprocess import forgather_config_dir
+
 
 class ServerUnreachable(Exception):
     pass
@@ -26,20 +28,58 @@ def _load_auth_token():
     """Find the bearer token shared with the server.
 
     Order: ``$FORGATHER_SERVER_TOKEN`` overrides everything (handy for
-    multi-server setups), otherwise ``~/.forgather/server/auth_token``.
-    Returns ``None`` if neither is available — the client still issues
-    requests, and the server's 401 response surfaces a clear error.
+    multi-server setups), otherwise
+    ``<forgather_config_dir>/server/auth_token``. Returns ``None`` if
+    neither is available — the client still issues requests, and the
+    server's 401 response surfaces a clear error.
     """
     env = os.environ.get("FORGATHER_SERVER_TOKEN")
     if env:
         return env.strip()
-    home = os.environ.get("FORGATHER_HOME") or str(Path.home() / ".forgather")
-    token_path = Path(home) / "server" / "auth_token"
+    token_path = Path(forgather_config_dir()) / "server" / "auth_token"
     try:
         text = token_path.read_text().strip()
     except (FileNotFoundError, PermissionError):
         return None
     return text or None
+
+
+def _default_base_url():
+    """Same default as before, but pick ``https://`` when local TLS is on.
+
+    This mirrors how the server itself emits its banner URL. A user who
+    ran ``forgather tls init`` doesn't have to set $FORGATHER_SERVER_URL
+    to talk to their own server — the client picks the scheme up from
+    the shared config.
+    """
+    try:
+        from forgather.tls import client_scheme
+
+        scheme = client_scheme()
+    except Exception:
+        scheme = "http"
+    return f"{scheme}://127.0.0.1:8765"
+
+
+class _NoHostnameHTTPSAdapter:
+    """Lazy import wrapper — only build the requests/urllib3 plumbing
+    when we actually need it. Avoids importing requests at module load."""
+
+    @staticmethod
+    def build():
+        from requests.adapters import HTTPAdapter
+
+        class _Adapter(HTTPAdapter):
+            def init_poolmanager(self, *args, **kwargs):
+                # ``assert_hostname=False`` tells urllib3 to skip the
+                # cert-SAN-vs-URL-hostname check while still requiring
+                # chain validation against the configured CA bundle.
+                # Matches what we do for httpx/urllib elsewhere — see
+                # forgather.tls.runtime.httpx_verify for the rationale.
+                kwargs["assert_hostname"] = False
+                return super().init_poolmanager(*args, **kwargs)
+
+        return _Adapter()
 
 
 class ServerClient:
@@ -49,12 +89,35 @@ class ServerClient:
         base = (
             base_url
             or os.environ.get("FORGATHER_SERVER_URL")
-            or "http://127.0.0.1:8765"
+            or _default_base_url()
         )
         self.base = base.rstrip("/")
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers["User-Agent"] = "forgather-cli"
+        # HTTPS configuration:
+        #   1. Point `requests` at the shared CA bundle so our self-
+        #      signed certs validate. Without it, requests falls back
+        #      to the system trust store and rejects the cert.
+        #   2. If the shared config has verify_hostname=False (the
+        #      LAN default), install an HTTPAdapter that disables
+        #      urllib3's hostname-SAN check. The chain check is the
+        #      actual security boundary on a private CA — see
+        #      docs/operations/tls.md.
+        if self.base.lower().startswith("https://"):
+            try:
+                from forgather.tls import load_config
+
+                cfg = load_config()
+                bundle = cfg.effective_bundle()
+                if bundle is not None:
+                    self.session.verify = str(bundle)
+                if not cfg.verify_hostname:
+                    self.session.mount(
+                        "https://", _NoHostnameHTTPSAdapter.build()
+                    )
+            except Exception:
+                pass
         self._token = _load_auth_token()
         if self._token:
             self.session.headers["Authorization"] = f"Bearer {self._token}"
@@ -88,13 +151,13 @@ class ServerClient:
             return (
                 f"forgather-server at {self.base} rejected the auth token. "
                 "If the server was restarted with --regen-token, re-read "
-                "~/.forgather/server/auth_token; otherwise check "
+                "~/.config/forgather/server/auth_token; otherwise check "
                 "$FORGATHER_SERVER_TOKEN."
             )
         return (
             f"forgather-server at {self.base} requires authentication. "
             "Start the server (it persists a token at "
-            "~/.forgather/server/auth_token) or set "
+            "~/.config/forgather/server/auth_token) or set "
             "$FORGATHER_SERVER_TOKEN."
         )
 
@@ -283,3 +346,104 @@ class ServerClient:
 
     def kill_gpu_processes(self, idx):
         return self._post(f"/gpus/{idx}/kill", {"confirmed": True}).json()
+
+    # Cluster (multi-node, opt-in via the server's --cluster flag)
+
+    def cluster_self(self):
+        """This node's identity in the cluster, or null if standalone."""
+        return self._get("/cluster/self").json()
+
+    def cluster_members(self):
+        """Cluster name, master node_id, and the full member table."""
+        return self._get("/cluster/members").json()
+
+    def cluster_master(self):
+        """Master node_id and is_self_master."""
+        return self._get("/cluster/master").json()
+
+    def cluster_jobs_list(self):
+        """List multi-node bundles (newest first), with rolled-up status."""
+        return self._get("/cluster/jobs").json()
+
+    def cluster_job_get(self, cluster_job_id):
+        """Get one bundle (rolled-up status fanned out from master)."""
+        return self._get(f"/cluster/jobs/{cluster_job_id}").json()
+
+    def cluster_jobs_submit(
+        self,
+        *,
+        project_dir,
+        config,
+        members,
+        dynamic_args=None,
+        priority=0,
+        rdzv_node_id=None,
+        rdzv_port=None,
+        allow_version_mismatch=False,
+        dataset_source=None,
+    ):
+        """Fan out a multi-node training submit.
+
+        ``members`` is a list of dicts with keys ``node_id``,
+        ``nproc_per_node``, and optional ``nccl_socket_ifname``. The
+        server matches each member to a known cluster peer, derives
+        the iface from the member's advertised IP when omitted, and
+        spawns torchrun with the right rdzv args on every peer.
+
+        ``dataset_source`` mirrors the webui submit modal's
+        dataset-source choice — e.g. ``{"kind": "auto"}`` for cluster
+        auto-routing or ``{"kind": "server", "server_id": "..."}`` to
+        pin to a specific known server.
+        """
+        body = {
+            "project_dir": project_dir,
+            "config": config,
+            "members": members,
+            "dynamic_args": dynamic_args or {},
+            "priority": priority,
+            "allow_version_mismatch": allow_version_mismatch,
+        }
+        if rdzv_node_id is not None:
+            body["rdzv_node_id"] = rdzv_node_id
+        if rdzv_port is not None:
+            body["rdzv_port"] = rdzv_port
+        if dataset_source is not None:
+            body["dataset_source"] = dataset_source
+        return self._post("/cluster/jobs/submit", body).json()
+
+    def cluster_job_cancel(self, cluster_job_id):
+        """Fan out cancel to every participant of the bundle."""
+        return self._post(f"/cluster/jobs/{cluster_job_id}/cancel").json()
+
+    def cluster_dataset_inventory(self):
+        """Master-aggregated dataset-server inventory + dataset listing.
+
+        Returns the same payload the webui Cluster + Servers tabs
+        consume — useful for verifying routing readiness from the CLI
+        before kicking off cluster-mode training.
+        """
+        return self._get("/cluster/dataset_inventory").json()
+
+    def cluster_dataset_resolve(self, dataset_id):
+        """Ask the master's router which server it would pick for ``path``.
+
+        Returns the response body (which contains
+        ``{base_url, auth_token, server_id}`` on success). Raises
+        ``RuntimeError`` on 503 (cold-start) / 410 (no candidate) /
+        other 4xx with the upstream detail message — same exception
+        shape as the rest of ServerClient, so the CLI handler just
+        prints the message.
+        """
+        return self._get(
+            f"/cluster/dataset_router/resolve?dataset_id={quote(dataset_id, safe='')}"
+        ).json()
+
+    def cluster_server_proxy_get(self, server_id, op):
+        """Cluster-proxied GET against a single dataset_server.
+
+        ``op`` is one of ``health``, ``auth-status``, ``datasets``,
+        ``cache``, ``local``. The master injects the bearer from its
+        inventory; the caller only needs the cluster bearer.
+        """
+        path = f"/cluster/dataset_server_proxy/{server_id}/{op}"
+        return self._get(path).json()

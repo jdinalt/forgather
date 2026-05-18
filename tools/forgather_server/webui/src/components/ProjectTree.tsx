@@ -2,6 +2,7 @@ import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api, CheckpointEntry, ConfigInfo, EvalEntry, ModelEntry, ProjectInfo, RunEntry, WorkspaceCluster } from "../api";
 import { CleanOutputModal } from "./CleanOutputModal";
+import { ConstructModal } from "./ConstructModal";
 import { ContextMenu } from "./ContextMenu";
 import { ConvertModal } from "./ConvertModal";
 import { EvalModal } from "./EvalModal";
@@ -19,10 +20,12 @@ import { Selection } from "../App";
 
 type ConfigAction =
   | "submit"
+  | "construct"
   | "overrides"
   | "clean"
   | "tensorboard"
   | "edit"
+  | "duplicate"
   | "delete";
 
 interface ContextTarget {
@@ -296,11 +299,59 @@ export function ProjectTree({
       onEditTemplate(target.config.path);
       return;
     }
+    if (action === "duplicate") {
+      void duplicateConfig(target.project, target.config);
+      return;
+    }
     setActiveModal({
       action,
       project: target.project,
       config: target.config,
     });
+  };
+
+  /** Right-click "Duplicate Config…" — prompts for a new filename
+   *  and copies the config file alongside the original. The default
+   *  suggestion appends " (copy)" before the extension; the operator
+   *  can edit freely. After the copy lands we invalidate the
+   *  projects query so the new config appears in the tree without
+   *  a manual refresh. */
+  const duplicateConfig = async (
+    project: ProjectInfo,
+    config: ConfigInfo,
+  ) => {
+    const srcPath = config.path;
+    const parent = srcPath.split("/").slice(0, -1).join("/") || "/";
+    const srcBase = config.name; // e.g. "train.yaml"
+    const dot = srcBase.lastIndexOf(".");
+    const stem = dot > 0 ? srcBase.slice(0, dot) : srcBase;
+    const ext = dot > 0 ? srcBase.slice(dot) : "";
+    const suggested = `${stem} (copy)${ext}`;
+    const raw = window.prompt(
+      `Duplicate configuration:\n${srcBase}\n\nNew filename:`,
+      suggested,
+    );
+    if (raw == null) return;
+    const newName = raw.trim();
+    if (!newName) return;
+    if (newName.includes("/") || newName.includes("\\")) {
+      alert(
+        "Configuration names cannot contain path separators. " +
+          "Use the Files view to copy across directories.",
+      );
+      return;
+    }
+    try {
+      await api.fsCopy(srcPath, parent, { targetName: newName });
+      // Refresh the project tree + the per-config caches so the new
+      // entry shows up under the project immediately.
+      invalidateConfigCaches(project, config);
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    } catch (e) {
+      alert(
+        `Duplicate failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   };
 
   const deleteWorkspace = async (ws: WorkspaceCluster) => {
@@ -597,8 +648,23 @@ export function ProjectTree({
           >
             📁 Create Project…
           </button>
-          <ReadmeMenuItem
-            dir={workspaceMenuTarget.workspace.workspace_root}
+          <EditFileMenuItem
+            path={
+              workspaceMenuTarget.workspace.workspace_root.replace(/\/+$/, "") +
+              "/forgather_workspace/README.md"
+            }
+            label="✎ Edit README.md"
+            onEdit={(path) => {
+              setWorkspaceMenuTarget(null);
+              onEditTemplate(path);
+            }}
+          />
+          <EditFileMenuItem
+            path={
+              workspaceMenuTarget.workspace.workspace_root.replace(/\/+$/, "") +
+              "/forgather_workspace/meta_defaults.yaml"
+            }
+            label="✎ Edit Meta Defaults…"
             onEdit={(path) => {
               setWorkspaceMenuTarget(null);
               onEditTemplate(path);
@@ -642,8 +708,23 @@ export function ProjectTree({
           >
             📄 New Template…
           </button>
-          <ReadmeMenuItem
-            dir={projectMenuTarget.project.project_dir}
+          <EditFileMenuItem
+            path={
+              projectMenuTarget.project.project_dir.replace(/\/+$/, "") +
+              "/README.md"
+            }
+            label="✎ Edit README.md"
+            onEdit={(path) => {
+              setProjectMenuTarget(null);
+              onEditTemplate(path);
+            }}
+          />
+          <EditFileMenuItem
+            path={
+              projectMenuTarget.project.project_dir.replace(/\/+$/, "") +
+              "/meta.yaml"
+            }
+            label="✎ Edit Meta…"
             onEdit={(path) => {
               setProjectMenuTarget(null);
               onEditTemplate(path);
@@ -708,6 +789,14 @@ export function ProjectTree({
 
       {activeModal?.action === "submit" && (
         <SubmitModalRouter
+          project={activeModal.project}
+          config={activeModal.config}
+          onClose={() => setActiveModal(null)}
+          onSubmitted={onJobSubmitted}
+        />
+      )}
+      {activeModal?.action === "construct" && (
+        <ConstructModal
           project={activeModal.project}
           config={activeModal.config}
           onClose={() => setActiveModal(null)}
@@ -863,6 +952,17 @@ function ConfigContextMenuItems({
     queryFn: () => api.listProjectModels(project.project_dir),
     staleTime: 5 * 60 * 1000,
   });
+  // Resolves the config's *actual* output_dir from its rendered meta
+  // and stats the path. ``output_dir`` may live anywhere on disk —
+  // ``output_models/`` is just a default — so we can't infer
+  // existence from the project tree alone. Used to gate the
+  // "Clean Output" entry on a real existence check.
+  const outputDirQ = useQuery({
+    queryKey: ["config-output-dir", project.project_dir, config.name],
+    queryFn: () => api.configOutputDir(project.project_dir, config.name),
+    staleTime: 60 * 1000,
+  });
+  const outputDirExists = !!outputDirQ.data?.output_dir_exists;
 
   const cls = metaQ.data?.config_class ?? null;
   const isTraining = cls?.startsWith("type.training_script") ?? false;
@@ -884,8 +984,12 @@ function ConfigContextMenuItems({
       {showRun && (
         <button onClick={() => onChoose("submit")}>▶ Run…</button>
       )}
+      <button onClick={() => onChoose("construct")}>🔨 Construct…</button>
       <button onClick={() => onChoose("overrides")}>🔧 Overrides…</button>
-      {showRunCleanup && (
+      {/* Only useful when the config's actual output_dir exists. The
+          path is resolved from the config's meta — it may live
+          anywhere on disk, not necessarily under output_models/. */}
+      {showRunCleanup && outputDirExists && (
         <button onClick={() => onChoose("clean")}>🗑 Clean Output…</button>
       )}
       {showRunCleanup && (
@@ -922,6 +1026,12 @@ function ConfigContextMenuItems({
         ✎ Edit Config
       </button>
       <button
+        onClick={() => onChoose("duplicate")}
+        title={`Copy ${config.name} alongside itself under a new name`}
+      >
+        ⎘ Duplicate Config…
+      </button>
+      <button
         className="context-menu-destructive"
         onClick={() => onChoose("delete")}
         title={config.path}
@@ -932,18 +1042,19 @@ function ConfigContextMenuItems({
   );
 }
 
-/** Renders an "Edit README.md" menu item if a README.md exists in
- *  the given directory; renders nothing otherwise. The probe uses
- *  ``fsPathExists`` so a missing file silently hides the entry
- *  instead of offering an action that would open an empty editor. */
-function ReadmeMenuItem({
-  dir,
+/** Renders an "Edit ..." menu item if the given file exists; renders
+ *  nothing otherwise. The probe uses ``fsPathExists`` so a missing file
+ *  silently hides the entry instead of offering an action that would
+ *  open an empty editor. */
+function EditFileMenuItem({
+  path,
+  label,
   onEdit,
 }: {
-  dir: string;
+  path: string;
+  label: string;
   onEdit: (path: string) => void;
 }) {
-  const path = dir.replace(/\/+$/, "") + "/README.md";
   const existsQ = useQuery({
     queryKey: ["fs-path-exists", path],
     queryFn: () => api.fsPathExists(path),
@@ -952,7 +1063,7 @@ function ReadmeMenuItem({
   if (!existsQ.data?.exists || !existsQ.data?.is_file) return null;
   return (
     <button onClick={() => onEdit(path)} title={path}>
-      ✎ Edit README.md
+      {label}
     </button>
   );
 }

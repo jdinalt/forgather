@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
+import { promptAndCreateService, sanitizeServiceName } from "../services-create";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
 import { ModalBackdrop } from "./ModalBackdrop";
@@ -40,13 +41,18 @@ function savePersisted(s: PersistedMkDocs) {
 interface Props {
   onClose: () => void;
   onSubmitted?: (queueId: string) => void;
+  onServiceCreated?: (type: "mkdocs") => void;
 }
 
 /** Global "MkDocs…" tool — queues an ``mkdocs serve`` job. The user
  *  picks an ``mkdocs.yml`` and a host:port; the running job appears in
  *  the Jobs view with a clickable URL like the TensorBoard / Inference
  *  cards. */
-export function MkDocsModal({ onClose, onSubmitted }: Props) {
+export function MkDocsModal({
+  onClose,
+  onSubmitted,
+  onServiceCreated,
+}: Props) {
   const qc = useQueryClient();
   const schedQ = useQuery({
     queryKey: ["scheduler-status"],
@@ -121,6 +127,23 @@ export function MkDocsModal({ onClose, onSubmitted }: Props) {
     },
   });
 
+  const buildArgs = (finalConfig: string): Record<string, unknown> => {
+    const watch = watchDirs
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const args: Record<string, unknown> = {
+      config_file: finalConfig,
+      host: host.trim() || "localhost",
+      port,
+      strict,
+      livereload,
+      dirty,
+    };
+    if (watch.length > 0) args.watch = watch;
+    return args;
+  };
+
   const submit = () => {
     const finalConfig = configFile.trim();
     if (!finalConfig) return;
@@ -133,19 +156,7 @@ export function MkDocsModal({ onClose, onSubmitted }: Props) {
       dirty,
       watchDirs: watchDirs.trim(),
     });
-    const watch = watchDirs
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const job_params: Record<string, unknown> = {
-      config_file: finalConfig,
-      host: host.trim() || "localhost",
-      port,
-      strict,
-      livereload,
-      dirty,
-    };
-    if (watch.length > 0) job_params.watch = watch;
+    const job_params = buildArgs(finalConfig);
 
     enqueue.mutate({
       project_dir: finalConfig,
@@ -287,6 +298,33 @@ export function MkDocsModal({ onClose, onSubmitted }: Props) {
             </button>
             <button className="secondary" onClick={onClose}>
               Cancel
+            </button>
+            <button
+              className="secondary"
+              onClick={async () => {
+                const finalConfig = configFile.trim();
+                if (!finalConfig) return;
+                // Default name: basename of the dir containing the
+                // mkdocs.yml — the project / repo name, which is
+                // more informative than the literal "mkdocs.yml".
+                const parts = finalConfig.split("/").filter(Boolean);
+                const parentDir = parts.length >= 2 ? parts[parts.length - 2] : "";
+                const suggested = sanitizeServiceName(parentDir || "docs");
+                const ok = await promptAndCreateService(
+                  qc,
+                  "mkdocs",
+                  buildArgs(finalConfig),
+                  suggested,
+                );
+                if (ok) {
+                  onServiceCreated?.("mkdocs");
+                  onClose();
+                }
+              }}
+              disabled={!configFile.trim()}
+              title="Persist these settings to the server config as an auto-start service"
+            >
+              Create service…
             </button>
             <button
               onClick={submit}

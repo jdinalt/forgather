@@ -77,7 +77,7 @@ modified -- only the generation config gets the merged list.
 | `--generation-config carry` | (Default) Copy source `generation_config.json` if present, else synthesize a minimal `{bos,pad,eos}` config. |
 | `--generation-config none` | Skip writing `generation_config.json` entirely. |
 | `--generation-config PATH` | Load directly from a JSON file in the Forgather inference-preset format (keys: `max_tokens`, `temperature`, `top_p`, `top_k`, `repetition_penalty`, `num_beams`, ...). |
-| `--generation-config NAME` | Bare name resolved against `~/.forgather/generation_config/NAME.json`. No presets ship with this branch -- populate that directory yourself, or pass an explicit `PATH`. |
+| `--generation-config NAME` | Bare name resolved against `~/.config/forgather/generation_config/NAME.json`. No presets ship with this branch -- populate that directory yourself, or pass an explicit `PATH`. |
 
 Forgather presets use `max_tokens` (matching chat-completion APIs); finalize
 translates this to HuggingFace's `max_new_tokens` and infers `do_sample`
@@ -98,6 +98,39 @@ the (possibly-updated) tokenizer last.
 | `--safetensors` | Save as safetensors. Default is PyTorch (`.bin`). PyTorch handles tied embeddings natively; safetensors raises on save when weights are tied. |
 | `--dtype {bfloat16,float16,float32}` | Cast weights to this dtype before saving. Default: keep the dtype the source checkpoint was saved in. |
 | `--device STR` | Device for loading the model during finalize (default `cpu`). |
+
+### Quantization
+
+| Option | Description |
+|--------|-------------|
+| `--quantize RECIPE` | Quantize the model before saving using the named torchao recipe. Works on any source. If the source was trained with `--qat-recipe`, this completes the QAT round-trip and keeps the QAT training-time accuracy benefit. If the source is plain bf16, this is standard post-training quantization (PTQ). See [QAT Training](../trainers/qat-training.md) for the recipe list and the QAT-vs-PTQ tradeoff. |
+
+Examples:
+
+```bash
+# QAT round-trip: source was trained with --qat-recipe
+forgather finalize output_models/qat_run out/qat_int8_int4 \
+    --quantize int8-dynamic-act-int4-weight
+
+# PTQ: plain bf16 source, same flag
+forgather finalize output_models/bf16_run out/bf16_int8_int4_ptq \
+    --quantize int8-dynamic-act-int4-weight
+```
+
+When `--quantize` is set, finalize always writes `.bin`: torchao's
+quantized tensor subclasses don't expose a single `.storage().data_ptr()`,
+which the safetensors writer requires. If `--safetensors` is passed
+alongside `--quantize`, it is silently disabled with a warning.
+
+Finalize also writes a `quantization_config` block into `config.json`
+with the recipe. Forgather's native checkpoint loader consumes this
+hint (with a state_dict scan as fallback) and installs the matching
+quantized linear modules before weights load — so `forgather eval`,
+the inference server, and any other tool using the native loader
+handle the artifact transparently with no caller-side flag. The same
+block also enables HF `AutoModelForCausalLM.from_pretrained()`
+auto-detection for non-Forgather consumers. See [Evaluating Quantized
+Models](../trainers/qat-training.md#evaluating-quantized-models).
 
 ### Misc
 
@@ -166,3 +199,6 @@ pad_token:
 - **[EOS Tokens and `generate()` Stopping Criteria](eos-and-generate-stopping.md)** --
   theory of operation: how HF's `generate()` resolves stopping across the
   multiple files that carry EOS information.
+- **[QAT Training](../trainers/qat-training.md)** -- pair `--quantize` here
+  with `--qat-recipe` at training time for the full QAT round-trip, or use
+  `--quantize` alone on a plain bf16 source for post-training quantization.

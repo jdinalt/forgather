@@ -77,6 +77,19 @@ theme:
         icon: material/brightness-7
         name: Switch to dark mode
 
+hooks:
+  # Many pages under docs/ are symlinks to canonical files elsewhere
+  # in the repo (e.g. docs/forgather-server.md ->
+  # ../tools/forgather_server/README.md). MkDocs's relative-link
+  # resolver computes paths from the docs_dir location of the page,
+  # not from the realpath of the source file — so relative links the
+  # author wrote for source-tree context (``../../docs/...`` etc.)
+  # come out broken in the rendered site. This hook walks each
+  # symlinked page's markdown and rewrites relative links to be
+  # equivalent paths interpreted from the docs_dir location, so
+  # MkDocs's own resolver then handles them correctly.
+  - docs_hooks.py
+
 plugins:
   - search
   - mkdocs-jupyter:
@@ -86,7 +99,13 @@ plugins:
       handlers:
         python:
           paths: [src]
+          # Force griffe to use pure static AST analysis. The docs build
+          # does not install forgather, so any fallback to runtime
+          # inspection would fail to import the package. Keeping this
+          # explicit also stops the build from silently picking up
+          # whichever forgather happens to be on sys.path.
           options:
+            allow_inspection: false
             docstring_style: numpy
             show_source: true
             show_root_heading: true
@@ -108,6 +127,7 @@ nav:
   - Getting Started:
     - Overview: getting-started/README.md
     - Installation: getting-started/installation.md
+    - Docker images: getting-started/docker.md
   - Core Concepts: core-concepts/README.md
   - Configuration:
     - Overview: configuration/README.md
@@ -145,6 +165,7 @@ nav:
     - Document Boundaries: datasets/document-boundaries.md
     - Fast HF Loader: datasets/fast-hf-loader.md
     - Fast HF Loader Checkpoints: datasets/fast-hf-loader-checkpoints.md
+    - Dataset Server: tools/dataset_server/README.md
     - Dataset Projects: datasets/dataset-projects.md
     - Dataset CLI: datasets/dataset-cli.md
   - Fused Loss:
@@ -161,6 +182,8 @@ nav:
     - Interactive CLI: guides/interactive-cli.md
     - Evaluating Models: guides/evaluating-models.md
     - Log Analysis: guides/logs-analysis.md
+    - TensorBoard: guides/tensorboard.md
+    - MkDocs: guides/mkdocs.md
   - API Reference:
     - Overview: api/index.md
     - Project System: api/project.md
@@ -181,5 +204,4 @@ nav:
     - Testing: development/testing.md
     - Integration Testing: development/integration-testing.md
     - Git Hooks: development/git-hooks.md
-    - Docker Development Image: development/docker.md
     - Known Bugs: development/bugs.md

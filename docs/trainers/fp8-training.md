@@ -14,6 +14,11 @@ bf16/fp16.
   divisible by 16 for FP8. Layers that don't meet this are automatically skipped and remain
   as standard Linear layers.
 
+torchao ships as a pure-Python (`py3-none-any`) wheel and resolves cleanly on `aarch64`
+(DGX Spark / GB10), so the Forgather Docker images install it from PyPI on every arch.
+The float8 ops delegate to `torch._scaled_mm` and friends, which are built into the
+PyTorch wheel.
+
 ## Quick Start
 
 Add `fp8_recipe` to your trainer arguments:
@@ -44,7 +49,7 @@ are quantized across the three matmuls in each Linear layer (forward, grad_input
 |--------|---------|-------|----------|-------|
 | `tensorwise` | Per-tensor | Fastest | Good | Default. Uses cuBLAS kernel. |
 | `rowwise` | Per-row/column | Medium | Better | Uses CUTLASS kernel. Scales rounded to power-of-2. |
-| `rowwise_with_gw_hp` | Per-row (fwd/bwd), high-precision (grad_weight) | Slower | Best | Keeps grad_weight computation in original precision. |
+| `rowwise_with_gw_hp` | Per-row (fwd/bwd), high-precision (grad_weight) | Slower | Best | Keeps grad_weight computation in original precision. **Broken in torchao 0.16.0 for ND inputs** -- see Limitations. |
 
 Start with `tensorwise` for maximum throughput. Switch to `rowwise` or `rowwise_with_gw_hp`
 if you observe training instability or degraded convergence compared to bf16.
@@ -128,6 +133,22 @@ This is planned for a future release.
   exposed through this interface.
 - FP8 training benefits vary by model size and architecture. For very small models, the
   overhead of scale computation may negate the compute savings.
+- **`rowwise_with_gw_hp` recipe is broken in torchao 0.16.0 for ND inputs.** Transformer
+  hidden states have shape `(batch, seq, hidden)`, and torchao's
+  `matmul_with_hp_or_float8_args.forward` reshapes the input to 2D before the matmul.
+  Reshape on an axiswise-scaled `Float8Tensor` is unimplemented and trips
+  `AssertionError: aten.reshape.default with axiswise scaling is not supported yet` in
+  `torchao/float8/float8_ops.py`. Plain `rowwise` uses a different autograd path and is
+  unaffected. Use `tensorwise` or `rowwise` until this is fixed upstream.
+
+- **`rowwise` recipe fails on Blackwell SM 12.1 (DGX Spark / GB10) with torch 2.10 / cu128.**
+  The recipe's dynamic scale rounding (`torch.exp2(torch.floor(torch.log2(scale)))`) gets
+  JIT-compiled by inductor, and the NVRTC bundled with torch 2.10 cu128 wheels rejects the
+  arch flag for SM 12.1 with `nvrtc: error: invalid value for --gpu-architecture (-arch)`.
+  PyTorch's own warning surfaces the underlying issue: "Maximum cuda capability supported
+  by this version of PyTorch is (8.0) - (12.0)". `tensorwise` works on GB10 because its
+  cuBLAS path (`torch._scaled_mm`) doesn't go through NVRTC. Fix is in upstream
+  PyTorch/cu128 nightlies; until then, prefer `tensorwise` on Blackwell.
 
 ## Programmatic Usage
 
@@ -165,3 +186,11 @@ performance. Update torchao to match your PyTorch version.
 **No speedup observed**: Ensure `torch_compile=True` is set. Without compilation, the
 overhead of FP8 scale computation and casting can offset the matmul speedup, especially
 for small models.
+
+## See Also
+
+- **[QAT Training](qat-training.md)** -- the other torchao Linear-swap recipe. Mutually
+  exclusive with FP8: QAT inserts `FakeQuantizedLinear` for low-bit deployment, while
+  FP8 swaps to `Float8Linear` for faster training compute.
+- **[Finalizing a Trained Model](../guides/finalize-model.md)** -- post-training packaging.
+  No FP8-specific options today; the deployable artifact retains the original FP precision.

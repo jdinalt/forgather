@@ -34,14 +34,21 @@ dependencies = [
     "aiohttp ~= 3.9",
     "torchao ~= 0.16.0",
     "torchdata ~= 0.11",
-    "uvicorn",
+    # Pinned because tools/forgather_server/asgi_tls_protocol.py subclasses
+    # uvicorn.protocols.http.{h11,httptools}_impl (private paths) to surface
+    # the peer's TLS client cert on the ASGI scope. A uvicorn bump that
+    # changes those protocol classes can break inter-node mTLS auth at
+    # runtime — pinning lets `pip install` fail loudly instead.
+    "uvicorn >= 0.46, < 0.47",
     "websockets",
     "fastapi",
     "httpx",
+    "zeroconf",
     "psutil",
     "nvidia-ml-py",
     "openai",
     "huggingface_hub",
+    "cryptography",
     "pytest >= 7.0.0",
     "pytest-cov >= 4.0.0",
     "pytest-mock >= 3.10.0",
@@ -61,7 +68,7 @@ dependencies = [
     "mkdocstrings[python] >= 0.25",
     "mkdocs-jupyter >= 0.24",
 ]
-version = "1.1.0"
+version = "1.2.0"
 authors = [
     {name = "Jason dinAlt", email = "joedkloss@gmail.com"},
 ]

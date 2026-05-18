@@ -17,7 +17,14 @@ from safetensors.torch import save_file as safetensors_save
 from torch import Tensor, nn
 from torch.nn import Module
 
+from forgather.ml.distributed import prefix_logger_rank
+
 logger = logging.getLogger(__name__)
+# Show messages from every rank — this module's logs are the diagnostic
+# story for "who actually wrote which file" during multi-rank /
+# multi-node checkpointing, so the default rank-0-only filter would hide
+# exactly the rows that matter when something goes wrong.
+prefix_logger_rank(logger, show_all_ranks=True)
 
 """
 This implements loading and saving sharded checkpoints
@@ -597,6 +604,17 @@ def load_checkpoint(
     See `torch.nn.Module.load_state_dict
     <https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html#torch.nn.Module.load_state_dict>`_
     for the semantics of the ``strict`` and ``assign`` flags.
+
+    When the checkpoint is torchao-quantized, this function installs the
+    matching quantized linear modules on ``module`` before
+    ``load_state_dict`` runs and forces ``assign=True`` (``Tensor.copy_``
+    does not handle quantized-to-quantized copies). In that branch the
+    ``device`` argument is silently overridden to the module's existing
+    device, so the ``assign``-rebound tensors don't migrate the model
+    off the caller's compute device. Tied weights are restored
+    post-load by the trainer's ``retie_parameters()`` step; eval /
+    inference paths that don't re-tie still produce correct outputs
+    because quantized inference doesn't grad-update tied tensors.
     """
     checkpoint_meta = get_checkpoint_metadata(model_dir)
 
@@ -605,6 +623,20 @@ def load_checkpoint(
 
     if checkpoint_meta.is_index:
         shard_index = load_shard_index(model_dir, checkpoint_meta.file_name)
+        if module is not None and _maybe_install_torchao_quantization(
+            model_dir, module, shard_index=shard_index,
+            safetensors=checkpoint_meta.safetensors, device=device,
+        ):
+            # Quantized weights are tensor subclasses; ``Tensor.copy_``
+            # between two quantized subclasses fails with a metadata
+            # mismatch. ``assign=True`` rebinds the Parameter directly,
+            # bypassing copy_. The flip-side: assigned tensors keep
+            # their map_location device, so we must load to wherever
+            # the (already-constructed) module lives — not to the
+            # caller-passed ``device`` (which may be a staging area
+            # like CPU).
+            assign = True
+            device = _module_device(module, fallback=device)
         return load_sharded_checkpoint(
             model_dir,
             shard_index,
@@ -631,10 +663,117 @@ def load_checkpoint(
             return {k: v for k, v in state_dict.items() if k in keys}
         return state_dict
 
+    if _maybe_install_torchao_quantization(model_dir, module, state_dict=state_dict):
+        assign = True
+        # Move the loaded tensors onto the module's existing device before
+        # assigning them in (see the sharded branch above for the reason).
+        target = _module_device(module, fallback=device)
+        if str(target) != str(device):
+            state_dict = {k: v.to(target) for k, v in state_dict.items()}
+
     # TODO: Properly handle strict, in this case?
     # We wish to ensure that all model weights were loaded, but ignore any other weights, like we do in load_sharded_checkpoint()
     module.load_state_dict(state_dict, strict=strict, assign=assign)
     return None
+
+
+def _module_device(module: Module, *, fallback) -> "torch.device | str":
+    """Return the device of the module's first parameter, or ``fallback``.
+
+    Skips ``meta`` devices: a module constructed under ``torch.device("meta")``
+    has no storage, and inheriting that device would silently produce a
+    fully-meta model after ``load_state_dict(assign=True)``. In that
+    case, defer to the caller-passed ``fallback`` instead.
+    """
+    for p in module.parameters():
+        if p.device.type != "meta":
+            return p.device
+    for b in module.buffers():
+        if b.device.type != "meta":
+            return b.device
+    return fallback
+
+
+def _maybe_install_torchao_quantization(
+    model_dir: str,
+    module: Module,
+    *,
+    shard_index: "ShardIndex | None" = None,
+    state_dict: "Dict[str, Tensor] | None" = None,
+    safetensors: bool = False,
+    device: str = "cpu",
+) -> bool:
+    """Detect torchao quantization on a checkpoint and install matching linear modules.
+
+    Detection prefers ``<model_dir>/config.json``'s ``quantization_config``
+    block (cheap, no shard load). Falls back to scanning the first shard
+    (or the supplied single-file state_dict) for torchao tensor subclasses.
+    Without this step, ``load_state_dict`` would try to copy quantized
+    tensor subclasses into plain ``nn.Linear.weight`` slots and fail with
+    ``'Parameter' object has no attribute 'tensor_data_names'``.
+
+    Returns True if quantization was detected and installed; the caller
+    should force ``assign=True`` on the subsequent ``load_state_dict``
+    call to bypass ``Tensor.copy_`` (which doesn't handle
+    quantized-to-quantized copies cleanly).
+    """
+    from forgather.ml.quantization_detect import (
+        detect_torchao_quantization,
+        install_torchao_quantization,
+    )
+
+    base_config = detect_torchao_quantization(model_dir=model_dir)
+    if base_config is None:
+        if state_dict is None and shard_index is not None:
+            state_dict = _peek_first_shard(
+                model_dir, shard_index, safetensors=safetensors, device=device,
+            )
+        if state_dict is not None:
+            base_config = detect_torchao_quantization(state_dict=state_dict)
+    if base_config is None:
+        return False
+
+    logger.info(
+        "load_checkpoint: detected torchao quantization (%s); "
+        "installing quantized linear modules before load_state_dict",
+        type(base_config).__name__,
+    )
+    install_torchao_quantization(module, base_config)
+    return True
+
+
+def _peek_first_shard(
+    model_dir: str,
+    shard_index: "ShardIndex",
+    *,
+    safetensors: bool = False,
+    device: str = "cpu",
+) -> "Dict[str, Tensor]":
+    """Load just one shard's state_dict for quantization detection.
+
+    Eagerly register torchao tensor subclasses with PyTorch's
+    ``add_safe_globals`` before loading, so ``weights_only=True`` accepts
+    quantized shards. Registration is idempotent and cheap (a single
+    import + dedup against PyTorch's allowlist), and importantly keeps
+    the loader's safe-default posture: we never fall back to
+    ``weights_only=False`` on a `.bin` shard, which would permit
+    arbitrary pickled code execution.
+    """
+    from forgather.ml.quantization_detect import _register_torchao_safe_globals
+
+    weight_map = shard_index["weight_map"]
+    # Unique shard files; pick the first deterministically (sorted) so
+    # tests are reproducible.
+    shard_files = sorted(set(weight_map.values()))
+    if not shard_files:
+        return {}
+    shard_file_path = os.path.join(model_dir, shard_files[0])
+    if safetensors:
+        return safetensors_load(shard_file_path, device=device)
+    _register_torchao_safe_globals()
+    return torch.load(
+        shard_file_path, map_location=device, weights_only=True, mmap=True
+    )
 
 
 @overload

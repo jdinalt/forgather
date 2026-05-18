@@ -9,7 +9,9 @@ network.
 
 import logging
 import os
+import re
 import shutil
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -383,12 +385,61 @@ class CopyOrMoveRequest(BaseModel):
 
     ``src`` is an absolute existing file or directory; ``dest_dir`` is
     the destination *parent* (must exist). The new entry lands at
-    ``dest_dir / basename(src)``. Refuses overwrite — collisions need a
-    rename first.
+    ``dest_dir / basename(src)``.
+
+    ``auto_rename`` only affects ``/fs/copy``: when set and the
+    destination already exists, the server picks a non-colliding name
+    by appending ``" (copy)"`` (then ``" (copy 2)"``, etc.) to the
+    stem. This is how the webui implements paste-into-same-dir
+    duplication and the right-click "Duplicate" actions. Move ignores
+    the flag — moving a file is by definition a rename, and silently
+    auto-renaming the destination would surprise the operator.
     """
 
     src: str
     dest_dir: str
+    auto_rename: bool = False
+    # Override the destination basename. Defaults to ``basename(src)``.
+    # Used by the "Duplicate Config…" flow in the webui, where the
+    # operator types the new config's name in a prompt before the
+    # copy goes out. Must be a single filename component — no path
+    # separators.
+    target_name: Optional[str] = None
+
+
+# Match a trailing " (copy)" or " (copy N)" on a path stem so we can
+# strip it before computing the next candidate — keeps repeated
+# duplicates as "foo (copy 2)" instead of accumulating
+# "foo (copy) (copy)".
+_COPY_SUFFIX_RE = re.compile(r" \(copy(?: \d+)?\)$")
+
+
+def _next_available_copy_name(target: Path) -> Path:
+    """Return ``target`` if free, else a sibling whose basename has a
+    ``" (copy)"`` / ``" (copy N)"`` suffix appended to the stem until
+    a free name is found.
+
+    Preserves the original extension (``foo.yaml`` →
+    ``foo (copy).yaml``). On a clean stem the first candidate is
+    ``" (copy)"``; on a stem that already carries the suffix the
+    increment continues from there (``foo (copy)`` → ``foo (copy 2)``).
+    """
+    parent = target.parent
+    stem = target.stem
+    suffix = target.suffix
+    base = _COPY_SUFFIX_RE.sub("", stem)
+    # Cap at a sane upper bound to prevent a degenerate loop if the
+    # filesystem layer were lying about existence; in practice the
+    # first one or two iterations always win.
+    for n in range(1, 1000):
+        marker = " (copy)" if n == 1 else f" (copy {n})"
+        candidate = parent / f"{base}{marker}{suffix}"
+        if not candidate.exists():
+            return candidate
+    raise HTTPException(
+        status_code=500,
+        detail=f"could not find a free copy name under {parent}",
+    )
 
 
 def _resolve_copy_target(
@@ -397,19 +448,38 @@ def _resolve_copy_target(
     *,
     src_raw: Optional[str] = None,
     dest_raw: Optional[str] = None,
+    auto_rename: bool = False,
+    target_name: Optional[str] = None,
 ) -> Path:
-    """Compute the resolved destination ``dest_dir / basename(src)`` and
-    enforce safety: parent must be a real directory, both ends pass
-    ``_check_path_safe``, and the target itself must not yet exist."""
+    """Compute the resolved destination ``dest_dir / target_name`` (or
+    ``basename(src)`` when ``target_name`` is None) and enforce safety:
+    parent must be a real directory, both ends pass
+    ``_check_path_safe``, and the target itself must not yet exist
+    (unless ``auto_rename`` is set, in which case a non-colliding
+    sibling name is generated)."""
     _check_path_safe(src_path, raw=src_raw)
     _check_path_safe(dest_dir_path, raw=dest_raw)
     if not dest_dir_path.is_dir():
         raise HTTPException(
             status_code=400, detail=f"dest_dir is not a directory: {dest_dir_path}"
         )
-    target = dest_dir_path / src_path.name
+    if target_name is not None:
+        # Reject anything that looks like a path — basename only.
+        cleaned = target_name.strip()
+        if not cleaned or "/" in cleaned or "\\" in cleaned or cleaned in (".", ".."):
+            raise HTTPException(
+                status_code=400,
+                detail=f"target_name must be a single filename: {target_name!r}",
+            )
+        target = dest_dir_path / cleaned
+    else:
+        target = dest_dir_path / src_path.name
     if target.exists():
-        raise HTTPException(status_code=409, detail=f"already exists: {target}")
+        if not auto_rename:
+            raise HTTPException(
+                status_code=409, detail=f"already exists: {target}"
+            )
+        target = _next_available_copy_name(target)
     # Ensure the resulting path also clears the depth floor (it should
     # always — dest_dir already passed — but defense in depth).
     _check_path_safe(target, must_exist=False)
@@ -421,12 +491,21 @@ def copy_path(req: CopyOrMoveRequest):
     """Copy a file or directory under ``dest_dir``.
 
     Files: ``shutil.copy2`` (preserves metadata). Directories:
-    ``shutil.copytree``. The resulting path is ``dest_dir / basename(src)``.
-    Refuses overwrite (409).
+    ``shutil.copytree``. The resulting path is normally
+    ``dest_dir / basename(src)``; when ``auto_rename`` is set and that
+    would collide, the server appends ``" (copy)"`` / ``" (copy N)"``
+    to the stem until it finds a free name.
     """
     src = Path(os.path.expanduser(req.src)).resolve()
     dest_dir = Path(os.path.expanduser(req.dest_dir)).resolve()
-    target = _resolve_copy_target(src, dest_dir, src_raw=req.src, dest_raw=req.dest_dir)
+    target = _resolve_copy_target(
+        src,
+        dest_dir,
+        src_raw=req.src,
+        dest_raw=req.dest_dir,
+        auto_rename=req.auto_rename,
+        target_name=req.target_name,
+    )
     try:
         if src.is_dir():
             shutil.copytree(src, target, symlinks=False)
@@ -543,5 +622,37 @@ def delete_dir(req: DeleteDirRequest):
         shutil.rmtree(target)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"rmtree failed: {e}")
+
+    # On NFS-shared trees the operator typically follows Clean Output with a
+    # restart of training on another node. That node's NFS client caches the
+    # parent directory's attributes / negative lookups for up to ``acdirmax``
+    # seconds (Linux default ~60s), so the just-deleted contents can briefly
+    # appear to "still be there" — or, after a re-create, the re-created
+    # contents can briefly look "missing". There is no NFS-level way for the
+    # server to push cache invalidations to clients; the best we can do is:
+    #
+    #   1. ``os.sync()`` — flushes writeback so a server crash mid-cleanup
+    #      doesn't leave half-deleted state on disk. Doesn't touch client
+    #      caches but it's cheap insurance on the storage side.
+    #   2. ``os.utime`` on the parent dir — bumps mtime so the next client
+    #      lookup that *does* go over the wire (e.g. after acdirmin expires)
+    #      sees a fresher value and is more likely to invalidate its cached
+    #      child list. Already implicit in the rmtree of a leaf; re-issuing
+    #      it explicitly is belt-and-suspenders.
+    #
+    # The real fix for cross-node "I just deleted that, why is it back?"
+    # remains an NFS mount-side knob (``actimeo=1`` / ``noac`` / equivalent)
+    # — see docs/operations/nfs-caching.md if/when that page exists.
+    try:
+        os.sync()
+    except Exception as e:
+        log.debug("post-rmtree os.sync() failed (non-fatal): %s", e)
+    try:
+        parent = target.parent
+        if parent.is_dir():
+            now = time.time()
+            os.utime(parent, (now, now))
+    except Exception as e:
+        log.debug("post-rmtree parent utime failed (non-fatal): %s", e)
 
     return DeleteDirResponse(deleted=str(target), removed_bytes=removed_bytes)

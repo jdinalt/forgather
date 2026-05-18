@@ -6,9 +6,9 @@ uid). This module raises the bar for cross-user access by gating every
 ``/api/`` request on a bearer token, an authenticated session cookie, or
 a query-string token (used for browser bootstrap and WebSocket auth).
 
-The token persists across server restarts in ``~/.forgather/server/auth_token``
+The token persists across server restarts in ``~/.config/forgather/server/auth_token``
 (mode 0600) so CLI clients can read it without user interaction. The
-optional password lives in ``~/.forgather/server/password_hash`` (also
+optional password lives in ``~/.config/forgather/server/password_hash`` (also
 mode 0600) and is used only for browser logins after the initial
 token-bootstrap.
 
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import os
 import secrets
@@ -59,10 +60,165 @@ _OPEN_PATHS = frozenset(
     }
 )
 
-# Module-level state. Sessions intentionally do not survive process
+# Cluster API endpoints that another forgather node may call without
+# a bearer token. The caller authenticates by presenting a CA-signed
+# TLS client cert (mTLS — see ``_request_has_client_cert`` below); the
+# auth gate then checks the path against this allow-list. These paths
+# are the inter-node surface, intentionally narrow and explicit.
+#
+# Limited to read-only GETs; mutations have their own (smaller) list
+# in ``_PEER_ALLOWED_MUTATIONS`` because granting writes to peers is
+# a deliberate decision per endpoint.
+_PEER_ALLOWED_PATHS = frozenset(
+    {
+        "/api/cluster/members",
+        "/api/cluster/self",
+        "/api/cluster/master",
+        # Read-only local GPU snapshot used by the master's
+        # cluster-wide aggregator. Going through a cluster-scoped
+        # alias (rather than carving out the existing /api/gpus
+        # path) keeps the trusted-peer surface explicitly inside
+        # the cluster namespace.
+        "/api/cluster/gpus_local",
+        # Bandwidth self-test target — peer GETs this to time the
+        # transfer. Returns a deterministic in-memory blob; never
+        # touches state.
+        "/api/cluster/bandwidth_local",
+        # Latency self-test target — peer GETs this for RTT timing.
+        # Empty 200 body; same trust profile as bandwidth_local.
+        "/api/cluster/latency_local",
+        # Per-rank job-status lookup. The master rolls up cluster-job
+        # status by GETting this on each peer with the queue_id of
+        # the assignment. Read-only — exposes a small status snapshot
+        # of one local queue item, nothing else.
+        "/api/cluster/training_status_local",
+        # Cluster jobs list — read-only view of the bundle records.
+        # Non-master nodes proxy to master via this path so every
+        # cluster-mode webui shows the same job list. Returning the
+        # bundle catalogue across the LAN is consistent with the
+        # trusted-peer security contract.
+        "/api/cluster/jobs",
+        # Dataset-server inventory: each peer's local list of
+        # dataset_servers (JobRecord-spawned + user-registered),
+        # including the bearer token. The master aggregator polls
+        # this every ~10s to build the cluster-wide routing index.
+        # Tokens leaving this surface stay within the cluster bearer
+        # trust boundary — see cluster_dataset_inventory.py.
+        "/api/cluster/dataset_servers_local",
+        # Master-aggregated dataset inventory + router. Non-master
+        # nodes proxy these GETs to master so every webui and every
+        # training client sees the same cluster-wide view.
+        "/api/cluster/dataset_inventory",
+        "/api/cluster/dataset_servers",
+        "/api/cluster/dataset_router/resolve",
+        # Cross-node webui SSO. The local node calls this on the target
+        # peer over mTLS to obtain the peer's bearer token, which is
+        # then folded into a ``?token=...`` URL the browser opens in a
+        # new tab. The peer-trust boundary already concedes arbitrary
+        # code execution (see ``peer_session`` in routes/cluster.py),
+        # so handing out the bearer to a cluster peer is not a new
+        # escalation — it just removes the "re-enter your token in
+        # every tab" speed bump.
+        "/api/cluster/issue_url_token",
+    }
+)
+
+# Peer-allowed mutating endpoints. POST is permitted from an mTLS-
+# authenticated peer on these paths only — narrower than the GET
+# allow-list above. Each entry here represents a deliberate decision
+# that "another node may change my state with only cluster-CA-cert
+# proof of identity"; the list should stay small.
+_PEER_ALLOWED_MUTATIONS = frozenset(
+    {
+        # GPU enable/disable + priority gate. Lets the cluster Nodes
+        # view route the click-to-toggle action to the owning node.
+        "/api/cluster/gpu_policy_local",
+        # Cluster-coordinator submit (Phase 3). The master generates
+        # rdzv args and POSTs one of these to each participating
+        # peer to enqueue the per-rank training job. Narrower than
+        # carving out the entire /api/queue surface — the handler
+        # only constructs training items with caller-supplied rdzv
+        # args, never the other job_types.
+        "/api/cluster/training_local",
+        # Cluster-coordinator cancel: master DELETEs through this
+        # path on each peer to abort the local queue item. Modeled
+        # as POST so the carve-out (which only allows GET / POST)
+        # applies cleanly without widening it to DELETE.
+        "/api/cluster/training_cancel_local",
+        # On-demand wake for the master's dataset-server collect
+        # loop. Non-master nodes proxy here so an add/delete on a
+        # peer's user-registry surfaces in the cluster inventory
+        # within ~1 s instead of one collect tick. Read-only-ish:
+        # the handler just sets an asyncio.Event.
+        "/api/cluster/dataset_servers/refresh",
+        # Bandwidth-test control plane. Opens a one-shot ephemeral
+        # TCP listener and returns its (port, token) so the caller
+        # can transfer over plain TCP instead of through the
+        # Python ssl bottleneck. No state, no side effects beyond
+        # the ephemeral socket — handshake-gated by a fresh 32-byte
+        # token so port scans during a measurement can't poison
+        # the result.
+        "/api/cluster/bandwidth_prep",
+        # Per-node maintenance: master forwards a restart / shutdown
+        # request to the named peer via these cluster-scoped wrappers
+        # (rather than carving out /api/server/{restart,shutdown}
+        # directly). The mTLS peer trust already concedes arbitrary
+        # code execution on the peer (see ``peer_session``), so adding
+        # process-lifecycle control to that surface is not a new
+        # escalation — but each entry here is still a deliberate
+        # decision, kept narrow and explicit.
+        "/api/cluster/server_restart_local",
+        "/api/cluster/server_shutdown_local",
+    }
+)
+
+# Peer-allowed path *prefixes* for endpoints whose final segments are
+# templated by server_id, queue_id, etc. Exact-match doesn't fit
+# templated routes; matching by prefix keeps the gate narrow as long
+# as the prefix itself is unambiguous (every entry here must be a
+# string no other API endpoint can start with).
+_PEER_ALLOWED_PATH_PREFIXES = frozenset(
+    {
+        # Master-side cluster dataset_server proxy. Non-master nodes
+        # forward webui ``/api/cluster/dataset_server_proxy/{id}/...``
+        # GETs (status / datasets / cache / local / length / iter) to
+        # the master over mTLS. The op set is validated against
+        # ``_ALLOWED_PROXY_OPS`` in routes/cluster.py before any
+        # forwarding happens.
+        "/api/cluster/dataset_server_proxy/",
+    }
+)
+
+_PEER_ALLOWED_MUTATION_PREFIXES = frozenset(
+    {
+        # Same family as above; the ``load`` op is POST. Anything
+        # else under this prefix is rejected by _ALLOWED_PROXY_OPS in
+        # routes/cluster.py.
+        "/api/cluster/dataset_server_proxy/",
+    }
+)
+
+# Module-level state. By default sessions do not survive process
 # restart — both the bearer token and the password still work, so a
-# restart only forces a re-login for already-open browser tabs.
+# restart only forces a re-login for already-open browser tabs. The
+# ``--persist-sessions`` toggle (set via ``enable_session_persistence``)
+# trades that implicit "restart == revoke" for the dev-time
+# convenience of keeping the browser logged in across rapid
+# server restarts; the explicit ``SESSION_TTL_SECONDS`` cap still
+# applies, as does the ``/api/auth/logout`` revoke endpoint.
 _sessions: dict[str, float] = {}
+_session_persistence: bool = False
+_sessions_loaded: bool = False
+# Short-lived, single-use URL tokens used by the peer-SSO flow
+# (``/api/cluster/peer_session`` → ``?token=<one-shot>``). Distinct
+# from the persistent bearer at ``_token_path``: a URL that leaks
+# from the address bar / referer / clipboard exposes only this short
+# window, not the long-lived ``~/.config/forgather/server/auth_token``.
+# Tokens stored as ``token -> created_at``; consumed (deleted) on
+# verify so a captured URL can't be replayed.
+_url_tokens: dict[str, float] = {}
+URL_TOKEN_TTL_SECONDS = 60.0
+URL_TOKEN_LENGTH_BYTES = 32
 _auth_disabled: bool = False
 
 
@@ -189,15 +345,81 @@ def clear_password() -> None:
 # ---------------------------------------------------------------------------
 
 
+def enable_session_persistence() -> None:
+    """Persist browser sessions to disk so they survive server restart.
+
+    Opt-in via ``--persist-sessions``. Reads any existing sessions
+    file on the first call so a restart picks up the prior dict
+    transparently. Stale (past-TTL) entries are dropped at load time.
+    """
+    global _session_persistence
+    _session_persistence = True
+    _load_sessions_from_disk()
+
+
+def _sessions_file():
+    # Local import to avoid a circular module dependency at import time:
+    # paths -> server_state_dir is fine, but importing at module top
+    # would couple auth.py's load order to the rest of the package.
+    from .paths import server_state_dir
+
+    return server_state_dir() / "sessions.json"
+
+
+def _load_sessions_from_disk() -> None:
+    global _sessions_loaded
+    if _sessions_loaded:
+        return
+    _sessions_loaded = True
+    p = _sessions_file()
+    if not p.exists():
+        return
+    try:
+        raw = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        log.warning("could not read persisted sessions from %s: %s", p, e)
+        return
+    if not isinstance(raw, dict):
+        return
+    now = time.time()
+    loaded = 0
+    for sid, created in raw.items():
+        try:
+            ts = float(created)
+        except (TypeError, ValueError):
+            continue
+        if now - ts > SESSION_TTL_SECONDS:
+            continue
+        _sessions[str(sid)] = ts
+        loaded += 1
+    if loaded:
+        log.info("loaded %d persisted session(s) from %s", loaded, p)
+
+
+def _save_sessions_to_disk() -> None:
+    if not _session_persistence:
+        return
+    try:
+        atomic_write_text(
+            _sessions_file(),
+            json.dumps(_sessions),
+            mode=0o600,
+        )
+    except OSError as e:
+        log.warning("could not persist sessions: %s", e)
+
+
 def create_session() -> str:
     sid = secrets.token_urlsafe(SESSION_LENGTH_BYTES)
     _sessions[sid] = time.time()
+    _save_sessions_to_disk()
     return sid
 
 
 def revoke_session(sid: Optional[str]) -> None:
     if sid:
         _sessions.pop(sid, None)
+        _save_sessions_to_disk()
 
 
 def session_valid(sid: Optional[str]) -> bool:
@@ -208,6 +430,7 @@ def session_valid(sid: Optional[str]) -> bool:
         return False
     if time.time() - created > SESSION_TTL_SECONDS:
         _sessions.pop(sid, None)
+        _save_sessions_to_disk()
         return False
     return True
 
@@ -215,6 +438,55 @@ def session_valid(sid: Optional[str]) -> bool:
 def _reset_sessions_for_tests() -> None:
     """Test helper: drop all in-memory sessions."""
     _sessions.clear()
+    _url_tokens.clear()
+
+
+# ---------------------------------------------------------------------------
+# Short-lived single-use URL tokens (peer-SSO)
+# ---------------------------------------------------------------------------
+
+
+def mint_url_token() -> str:
+    """Issue a one-shot URL-bound token for the peer-SSO flow.
+
+    Returned via ``/api/cluster/issue_url_token`` (gated to mTLS
+    peers in ``_PEER_ALLOWED_PATHS``) so the caller can fold it into
+    ``https://peer:port/?token=<one-shot>``. The peer's webui
+    consumes it on first paint via the existing ``/api/auth/login``
+    flow; ``verify_url_token`` deletes it on verify so a captured URL
+    can't be replayed past the first use.
+
+    Why one-shot rather than handing out the persistent bearer: an
+    address-bar / referer / clipboard leak would otherwise expose
+    the long-lived ``~/.config/forgather/server/auth_token``, which
+    survives process restarts and grants full API access. A 60 s
+    single-use credential is the smallest blast radius that still
+    lets the browser convert the URL into a session cookie before
+    the next render.
+    """
+    token = secrets.token_urlsafe(URL_TOKEN_LENGTH_BYTES)
+    _url_tokens[token] = time.time()
+    return token
+
+
+def verify_url_token(presented: Optional[str]) -> bool:
+    """Validate and *consume* a URL-bound token. Returns True on first
+    successful use; subsequent calls with the same value return False.
+    """
+    if not presented:
+        return False
+    created = _url_tokens.pop(presented, None)
+    if created is None:
+        return False
+    if time.time() - created > URL_TOKEN_TTL_SECONDS:
+        # Expired: deletion above already consumed it; nothing to do.
+        return False
+    return True
+
+
+def _url_tokens_count_for_tests() -> int:
+    """Test helper: number of outstanding URL tokens."""
+    return len(_url_tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +544,43 @@ def path_requires_auth(path: str) -> bool:
     return True
 
 
+def path_allows_peer(path: str) -> bool:
+    """True if a known cluster peer may GET ``path`` without auth.
+
+    See ``_PEER_ALLOWED_PATHS`` for the rationale.
+    """
+    if path in _PEER_ALLOWED_PATHS:
+        return True
+    return any(path.startswith(p) for p in _PEER_ALLOWED_PATH_PREFIXES)
+
+
+def path_allows_peer_mutation(path: str) -> bool:
+    """True if a known cluster peer may POST ``path`` without auth."""
+    if path in _PEER_ALLOWED_MUTATIONS:
+        return True
+    return any(path.startswith(p) for p in _PEER_ALLOWED_MUTATION_PREFIXES)
+
+
+def _request_has_client_cert(scope) -> bool:
+    """True if the TLS handshake presented a CA-validated client cert.
+
+    The custom uvicorn protocol (``ForgatherProtocol``) sets
+    ``scope["extensions"]["forgather.tls"]["client_cert_verified"]``
+    whenever the peer presents a cert that passed validation against
+    the cluster CA (``ssl_cert_reqs=CERT_OPTIONAL`` +
+    ``ssl_ca_certs=<bundle>`` on the listener). Presence is therefore
+    proof of cluster membership — a cert signed by our CA is by
+    definition a legitimate peer.
+
+    Returns False for plain-HTTP listeners, for TLS listeners without
+    the custom protocol, and for connections where the peer did not
+    present a cert.
+    """
+    extensions = scope.get("extensions") or {}
+    tls_ext = extensions.get("forgather.tls") or {}
+    return bool(tls_ext.get("client_cert_verified"))
+
+
 # ---------------------------------------------------------------------------
 # ASGI middleware
 # ---------------------------------------------------------------------------
@@ -316,6 +625,20 @@ class AuthMiddleware:
         if authenticate(headers, query_flat, cookies):
             await self.app(scope, receive, send)
             return
+
+        # Cluster inter-node call: an mTLS-authenticated peer (proven
+        # by presenting a CA-signed client cert in the TLS handshake)
+        # may GET a peer-allowed path or POST one of the explicitly
+        # mutation-allowed cluster endpoints without a bearer token.
+        # The path allow-lists encode what an inter-node call is
+        # allowed to do; cert presence proves who is making it.
+        if scope_type == "http" and _request_has_client_cert(scope):
+            method = scope.get("method", "").upper()
+            if (method == "GET" and path_allows_peer(path)) or (
+                method == "POST" and path_allows_peer_mutation(path)
+            ):
+                await self.app(scope, receive, send)
+                return
 
         if scope_type == "websocket":
             # Accept then close with a policy-violation code so the

@@ -201,11 +201,208 @@ export interface GpuInfo {
   /** Minimum queue priority required to schedule on this GPU (inclusive).
    *  0 means no restriction. */
   min_priority: number;
+  /** True when a running JobRecord on the owning peer has reserved this
+   *  GPU. Stamped server-side so peers are authoritative for their own
+   *  reservations — used by the cluster Nodes panel to mark a peer GPU
+   *  BUSY without needing cross-node job visibility. */
+  reserved: boolean;
+  /** True when total_mem_bytes reports host system RAM rather than a
+   *  discrete VRAM pool — set for GPUs like GB10 / Jetson where NVML
+   *  returns "Not Supported" for memory info and the device shares
+   *  system memory. */
+  unified_memory?: boolean;
 }
 
 export interface GpuPolicy {
   disabled: boolean;
   min_priority: number;
+}
+
+/** This server's identity within an active cluster. ``null`` from the
+ *  /api/cluster/self endpoint means the server is in standalone mode
+ *  and the rest of the cluster API will return empty payloads. */
+export interface ClusterSelf {
+  node_id: string;
+  hostname: string;
+  cluster_name: string;
+  port: number;
+  forgather_version: string;
+  started_at: number;
+  is_master: boolean;
+}
+
+export interface ClusterProbeInterface {
+  name: string;
+  address: string;
+  netmask: string;
+  cidr: string;
+  is_up: boolean;
+  speed_mbps: number;
+}
+
+export interface ClusterProbe {
+  versions: Record<string, string>;
+  interfaces: ClusterProbeInterface[];
+  cpu: {
+    logical: number;
+    physical: number;
+    ram_gib: number;
+  };
+}
+
+export interface ClusterMember {
+  node_id: string;
+  hostname: string;
+  address: string;
+  port: number;
+  cluster_name: string;
+  forgather_version: string;
+  first_seen: number;
+  last_seen: number;
+  reachable: boolean;
+  /** "discovery" | "peer_pull" | "self" — debug aid for figuring out
+   *  which mechanism is keeping a stale entry alive. */
+  last_source: string;
+  /** Pre-flight probe payload — package versions, interfaces, CPU
+   *  summary. Null until the peer answers at least one peer-pull
+   *  with the new shape. */
+  probe: ClusterProbe | null;
+}
+
+export interface ClusterBandwidthEntry {
+  peer_node_id: string;
+  peer_hostname: string;
+  peer_address: string;
+  bytes_transferred: number;
+  elapsed_seconds: number;
+  mbps: number;
+  timestamp: number;
+  error: string | null;
+}
+
+export interface ClusterBandwidthResponse {
+  measurements: ClusterBandwidthEntry[];
+  server_time: number;
+}
+
+export interface ClusterLatencyEntry {
+  peer_node_id: string;
+  peer_hostname: string;
+  peer_address: string;
+  samples: number;
+  min_ms: number;
+  median_ms: number;
+  max_ms: number;
+  timestamp: number;
+  error: string | null;
+}
+
+export interface ClusterLatencyResponse {
+  measurements: ClusterLatencyEntry[];
+  server_time: number;
+}
+
+export interface ClusterJobMember {
+  node_id: string;
+  hostname: string;
+  address: string;
+  port: number;
+  queue_id: string;
+  nproc_per_node: number;
+  node_rank: number;
+  nccl_socket_ifname: string | null;
+  /** Live status of this rank's queue item, fetched at read time
+   *  via the master's per-peer status fanout. null when the master
+   *  could not reach the peer. */
+  current_status?: string | null;
+  exit_code?: number | null;
+  error?: string | null;
+}
+
+export interface ClusterJob {
+  cluster_job_id: string;
+  project_dir: string;
+  config: string;
+  submitted_at: number;
+  rdzv_endpoint: string;
+  rdzv_id: string;
+  rdzv_node_id: string;
+  members: ClusterJobMember[];
+  status: string;
+  cancelled_at: number | null;
+  /** Aggregated status across all members. The bundle's own
+   *  ``status`` only flips on cancel/done/failed promotions; this
+   *  field is always recomputed at read time. */
+  rolled_up_status?: string;
+}
+
+export interface ClusterJobMemberSpec {
+  node_id: string;
+  nproc_per_node: number;
+  nccl_socket_ifname?: string | null;
+}
+
+export interface ClusterJobSubmitRequest {
+  project_dir: string;
+  config: string;
+  dynamic_args?: Record<string, unknown>;
+  priority?: number;
+  members: ClusterJobMemberSpec[];
+  rdzv_node_id?: string;
+  rdzv_port?: number;
+  allow_version_mismatch?: boolean;
+  /** Same shape as ``EnqueueRequest.dataset_source``; resolved once on
+   *  the master and merged into every peer's extra_env. */
+  dataset_source?: DatasetSource | null;
+}
+
+export interface ClusterJobSubmitResponse {
+  cluster_job: ClusterJob;
+  warnings: string[];
+}
+
+export interface ClusterJobCancelResponse {
+  cluster_job_id: string;
+  cancelled: boolean;
+  per_member: { node_id: string; queue_id: string; result: unknown }[];
+}
+
+export interface ClusterMembersResponse {
+  cluster_name: string | null;
+  self_node_id: string | null;
+  master_node_id: string | null;
+  members: ClusterMember[];
+  server_time: number;
+}
+
+export interface ClusterGpusEntry {
+  node_id: string;
+  hostname: string;
+  address: string;
+  reachable: boolean;
+  gpus: GpuInfo[];
+  error: string | null;
+}
+
+export interface ClusterGpusResponse {
+  nodes: ClusterGpusEntry[];
+  server_time: number;
+}
+
+/** Configured auto-start service entry (from `services:` in the
+ *  server config) plus its current running status. */
+export interface ConfiguredService {
+  type: string;
+  name: string;
+  enabled: boolean;
+  args: Record<string, unknown>;
+  signature: string;
+}
+export interface ServiceStatus {
+  service: ConfiguredService;
+  running: boolean;
+  queue_id: string | null;
+  status: string | null; // "queued" | "starting" | "running" | null
 }
 
 /** Unified job model returned by /api/jobs.
@@ -229,13 +426,15 @@ export interface Job {
   job_type: "training"
     | "eval"
     | "inference"
+    | "dataset_server"
     | "tensorboard"
     | "mkdocs"
     | "convert"
     | "finalize"
     | "update"
     | "model"
-    | "dataset";
+    | "dataset"
+    | "construct";
   job_params: Record<string, unknown> | null;
   status: string;
   started_at: number | null;
@@ -259,6 +458,16 @@ export interface Job {
   auth_token: string | null;
   source: "record" | "endpoint" | "merged";
 }
+
+/** Job statuses for which the scheduler considers the job to be holding its
+ *  reserved GPUs. Mirrors ``job_records.RUNNING_STATUSES`` on the backend;
+ *  keep in sync when adding a new status. The UI consults this set to
+ *  decide whether a GPU card should render as "busy" (a Forgather job has
+ *  the device) vs "idle" (available for dispatch). */
+export const RUNNING_JOB_STATUSES: ReadonlySet<string> = new Set([
+  "starting",
+  "running",
+]);
 
 export interface ControlResponse {
   success: boolean;
@@ -299,9 +508,45 @@ export interface DynamicArg {
   max: number | null;
 }
 
+/** Last-used multi-node submit settings. The webui owns this shape;
+ *  the server stores it as an opaque blob alongside the dynamic-args
+ *  overrides so a config "opens where you left off" for cluster
+ *  submits the same way it does for single-node ones. */
+export interface MultinodeOverrides {
+  rdzv_port: number;
+  /** Ordered list of node ids the operator opted in. Empty implies
+   *  "single-node submit" — no cluster fanout, even when the cluster
+   *  is active. */
+  selected_node_ids: string[];
+  /** node_id → desired nproc per peer. */
+  per_node_nproc: Record<string, number>;
+  /** node_id → NCCL/Gloo/TP iface name; empty string means "auto"
+   *  and the server derives it from the member's advertised IP. */
+  per_node_iface: Record<string, string>;
+  /** Which member hosts the rendezvous TCPStore. Defaults to master
+   *  when null. */
+  rdzv_node_id: string | null;
+  /** Whether the user has acknowledged any version mismatch warnings
+   *  the server returned on the previous submit attempt. */
+  allow_version_mismatch: boolean;
+}
+
+/** Submit-modal dataset-source choice. ``server_id`` is one of:
+ *  ``local:<queue_id>`` (a forgather_server-spawned dataset_server) or
+ *  ``user:<entry_id>`` (a URL registered via Datasets → Servers → + Add).
+ *  The token is never embedded here — the backend resolves it from the
+ *  JobRecord / registry at submit time, so deleting an entry or stopping
+ *  a local server invalidates the choice and surfaces as a 400. */
+export type DatasetSource =
+  | { kind: "local" }
+  | { kind: "server"; server_id: string }
+  | { kind: "auto" };
+
 export interface OverridesData {
   values: Record<string, unknown>;
   requested_gpus: number | null;
+  multinode: MultinodeOverrides | null;
+  dataset_source: DatasetSource | null;
   updated_at: number | null;
 }
 
@@ -334,15 +579,20 @@ export interface EnqueueRequest {
   job_type?: "training"
     | "eval"
     | "inference"
+    | "dataset_server"
     | "tensorboard"
     | "mkdocs"
     | "convert"
     | "finalize"
     | "update"
     | "model"
-    | "dataset";
+    | "dataset"
+    | "construct";
   /** Type-specific payload; empty for training. */
   job_params?: Record<string, unknown>;
+  /** Submit-modal dataset-source choice. Resolved server-side and
+   *  merged into ``job_params.extra_env`` for training jobs. */
+  dataset_source?: DatasetSource | null;
 }
 
 /** One row for the "pick an eval config" picker in EvalModal. */
@@ -490,6 +740,231 @@ async function fetchText(url: string): Promise<string> {
     throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
   }
   return r.text();
+}
+
+/** Helper for dataset_server proxy GETs. Forwards the optional bearer
+ *  token via the side-channel header so the user's forgather-server
+ *  bearer (in Authorization) doesn't leak to the upstream. The proxy
+ *  itself falls back to JobRecord / registry auto-lookup when token is
+ *  blank — see ``routes/dataset_server.py::_auth_headers_for``. */
+async function datasetServerProxyGet<T>(
+  url: string,
+  base: string,
+  token: string,
+): Promise<T> {
+  const sep = url.includes("?") ? "&" : "?";
+  const u = `${url}${sep}base=${encodeURIComponent(base)}`;
+  const headers: Record<string, string> = {};
+  if (token) headers["x-dataset-auth-token"] = token;
+  const r = await fetch(u, { headers });
+  if (!r.ok) {
+    throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+  }
+  return r.json() as Promise<T>;
+}
+
+/** Cluster-aggregated dataset_server entry. Tokens are stripped by
+ *  the master before responding; this shape is safe for the browser. */
+export interface ClusterDatasetServer {
+  server_id: string;
+  base_url: string;
+  label: string;
+  source: string; // "local" | "user"
+  peer_node_id: string | null;
+  healthy: boolean;
+  last_health_check: number;
+  last_health_error: string;
+  last_dataset_refresh: number;
+  last_dataset_error: string;
+  // Polling counters from the master's loops.
+  total_health_polls?: number;
+  health_failures?: number;
+  consecutive_health_failures?: number;
+  total_dataset_polls?: number;
+  dataset_failures?: number;
+  consecutive_dataset_failures?: number;
+  /** Per-entry TLS verification policy. False = chain validation off
+   *  for outbound calls. Used for SSH-tunneled / out-of-band-secured
+   *  upstreams; surfaced so the webui can show an "insecure TLS"
+   *  badge. */
+  verify_tls?: boolean;
+  /** Source-side identifier on the owning peer — JobRecord
+   *  ``queue_id`` for ``source === "local"``, registry entry id for
+   *  ``source === "user"``. Used by the webui to target a DELETE
+   *  for user-added entries owned by the local node. */
+  source_id?: string | null;
+  /** True when the URL's host is loopback. Cluster auto-routing
+   *  skips these; the webui shows them with a "node-local" badge. */
+  loopback?: boolean;
+}
+
+/** Aggregate counters across the inventory. */
+export interface ClusterDatasetInventoryMetrics {
+  healthy_servers: number;
+  unhealthy_servers: number;
+  total_servers: number;
+  total_datasets: number;
+  total_health_polls: number;
+  total_health_failures: number;
+  total_dataset_polls: number;
+  total_dataset_failures: number;
+  master_age_seconds: number | null;
+}
+
+/** One unique dataset in the cluster (deduped across servers). */
+export interface ClusterDatasetEntry {
+  dataset_id: string;
+  source: string; // "local" | "hf" | "path"
+  name: string | null;
+  load_args: Record<string, unknown> | null;
+  length: number | null;
+  column_names: string[] | null;
+  server_ids: string[];
+  /** Total on-disk size in bytes across the dataset (sum of splits
+   *  for HF / cluster-aggregated local entries). Null when unknown. */
+  size_bytes?: number | null;
+  /** Distinct ``meta_hash`` values observed across servers
+   *  advertising this name. Multiple values = collision. */
+  meta_hashes?: string[];
+}
+
+export interface ClusterDatasetInventoryResponse {
+  is_master: boolean;
+  master_become_ts: number | null;
+  last_servers_collect_ts: number | null;
+  last_health_pass_ts: number | null;
+  last_dataset_pass_ts: number | null;
+  servers: ClusterDatasetServer[];
+  datasets: ClusterDatasetEntry[];
+  metrics?: ClusterDatasetInventoryMetrics;
+}
+
+/** Dataset server registered as a user-added entry. */
+export interface DatasetServerUser {
+  id: string;
+  label: string;
+  base_url: string;
+  has_auth_token: boolean;
+  /** False = TLS chain + hostname validation off for outbound calls
+   *  to this URL. Operator-asserted for SSH-tunneled / out-of-band-
+   *  secured upstreams. Default true (secure-by-default). */
+  verify_tls?: boolean;
+}
+
+/** Dataset server spawned by the forgather_server itself. */
+export interface DatasetServerLocal {
+  queue_id: string;
+  label: string;
+  base_url: string;
+  host: string;
+  port: number;
+  alive: boolean;
+  has_auth_token: boolean;
+}
+
+export interface AddDatasetServerRequest {
+  label?: string;
+  base_url: string;
+  auth_token?: string;
+  /** False = TLS chain + hostname validation off for outbound calls
+   *  to this URL. Operator-asserted for SSH-tunneled / out-of-band-
+   *  secured upstreams. Defaults to true on the server side when
+   *  omitted. */
+  verify_tls?: boolean;
+}
+
+/** One row from ``GET /v1/datasets``. Field set tracks what the
+ *  dataset_server's wire model exposes; we mirror only what we render. */
+export interface DatasetHandleEntry {
+  handle: string;
+  length?: number | null;
+  source?: string | null;
+  load_args?: Record<string, unknown> | null;
+}
+
+/** ``GET /v1/cache/hf`` per-split entry. */
+export interface HFCacheSplit {
+  name: string;
+  num_examples?: number | null;
+  num_bytes?: number | null;
+}
+export interface HFCacheConfig {
+  config: string;
+  version?: string | null;
+  size_bytes?: number | null;
+  splits: HFCacheSplit[];
+}
+export interface HFCacheRepo {
+  repo: string;
+  size_bytes?: number | null;
+  configs: HFCacheConfig[];
+}
+export interface HFCacheResponse {
+  cache_root: string;
+  datasets: HFCacheRepo[];
+}
+
+/** One entry from the (enriched) ``GET /v1/local`` response. */
+export interface LocalDatasetEntry {
+  name: string;
+  path: string;
+  layout?: "dataset_dict" | "dataset" | "unknown" | "missing";
+  size_bytes?: number | null;
+  config_name?: string | null;
+  dataset_name?: string | null;
+  features?: string[];
+  splits?: HFCacheSplit[];
+}
+export interface LocalListResponse {
+  local: LocalDatasetEntry[];
+}
+
+/** ``GET /v1/health`` response. */
+export interface DatasetServerHealth {
+  status: string;          // "ok"
+  service: string;         // "forgather-dataset-server"
+  version: string;         // "1.0.0"
+  policy: {
+    auth_required: boolean;
+    hf_cache_enabled: boolean;
+    allow_paths: boolean;
+    allow_downloads: boolean;
+    local_count: number;
+  };
+}
+
+/** ``GET /v1/datasets`` response — currently-loaded handles. */
+export interface DatasetHandleRow {
+  handle: string;
+  length: number;
+  source: string | null;
+  load_args: Record<string, unknown>;
+}
+export interface DatasetHandlesResponse {
+  handles: DatasetHandleRow[];
+}
+
+/** ``POST /v1/load`` response. */
+export interface LoadResponse {
+  handle: string;
+  length: number;
+  load_args: Record<string, unknown>;
+  source: string | null;
+  column_names: string[] | null;
+}
+
+/** Body of ``POST /v1/load``. */
+export interface LoadRequest {
+  path: string;
+  name?: string;
+  split?: string;
+  data_files?: unknown;
+  revision?: string;
+}
+
+/** ``GET /v1/datasets/{handle}/iter`` (wrapped by our proxy as JSON). */
+export interface IterResponse {
+  rows: Array<Record<string, unknown>>;
 }
 
 export const api = {
@@ -794,11 +1269,17 @@ export const api = {
   fsCopy: async (
     src: string,
     dest_dir: string,
+    opts: { autoRename?: boolean; targetName?: string } = {},
   ): Promise<{ path: string }> => {
     const r = await fetch("/api/fs/copy", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ src, dest_dir }),
+      body: JSON.stringify({
+        src,
+        dest_dir,
+        auto_rename: !!opts.autoRename,
+        target_name: opts.targetName ?? null,
+      }),
     });
     if (!r.ok) {
       let detail = await r.text();
@@ -832,6 +1313,120 @@ export const api = {
     return r.json();
   },
   listGpus: () => fetchJson<GpuInfo[]>("/api/gpus"),
+  /** Returns null when the server is in standalone mode. */
+  getClusterSelf: () => fetchJson<ClusterSelf | null>("/api/cluster/self"),
+  getClusterMembers: () =>
+    fetchJson<ClusterMembersResponse>("/api/cluster/members"),
+  getClusterGpus: () =>
+    fetchJson<ClusterGpusResponse>("/api/cluster/gpus"),
+  getClusterBandwidth: () =>
+    fetchJson<ClusterBandwidthResponse>("/api/cluster/bandwidth"),
+  listClusterJobs: () => fetchJson<ClusterJob[]>("/api/cluster/jobs"),
+  submitClusterJob: async (
+    req: ClusterJobSubmitRequest,
+  ): Promise<ClusterJobSubmitResponse> => {
+    const r = await fetch("/api/cluster/jobs/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<ClusterJobSubmitResponse>;
+  },
+  cancelClusterJob: async (
+    cluster_job_id: string,
+  ): Promise<ClusterJobCancelResponse> => {
+    const r = await fetch(
+      `/api/cluster/jobs/${encodeURIComponent(cluster_job_id)}/cancel`,
+      { method: "POST" },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<ClusterJobCancelResponse>;
+  },
+  /** Mint a one-click URL the browser can open to log into a peer node
+   *  via the cluster bearer carve-out. The peer's webui consumes the
+   *  ``?token=`` query and strips it from the address bar on first
+   *  paint, leaving a normal session cookie. */
+  peerSessionUrl: async (
+    node_id: string,
+  ): Promise<{ url: string; hostname: string }> => {
+    const r = await fetch("/api/cluster/peer_session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ node_id }),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json();
+  },
+  refreshClusterBandwidth: async (): Promise<ClusterBandwidthResponse> => {
+    const r = await fetch("/api/cluster/bandwidth/refresh", {
+      method: "POST",
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<ClusterBandwidthResponse>;
+  },
+  refreshClusterBandwidthOne: async (
+    nodeId: string,
+  ): Promise<ClusterBandwidthEntry> => {
+    const r = await fetch(
+      `/api/cluster/bandwidth/refresh_one/${encodeURIComponent(nodeId)}`,
+      { method: "POST" },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<ClusterBandwidthEntry>;
+  },
+  getClusterLatency: () =>
+    fetchJson<ClusterLatencyResponse>("/api/cluster/latency"),
+  refreshClusterLatencyOne: async (
+    nodeId: string,
+  ): Promise<ClusterLatencyEntry> => {
+    const r = await fetch(
+      `/api/cluster/latency/refresh_one/${encodeURIComponent(nodeId)}`,
+      { method: "POST" },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<ClusterLatencyEntry>;
+  },
+  /** Master-proxied GPU policy mutation. Routes to the named node's
+   *  /api/cluster/gpu_policy_local; short-circuits when the target is
+   *  the local node. Returns the updated policy from the owning node. */
+  setNodeGpuPolicy: async (
+    node_id: string,
+    gpu_index: number,
+    policy: { disabled?: boolean; min_priority?: number },
+  ): Promise<GpuPolicy> => {
+    const r = await fetch(
+      `/api/cluster/nodes/${encodeURIComponent(node_id)}/gpus/${gpu_index}/policy`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(policy),
+      },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<GpuPolicy>;
+  },
   gpuStreamUrl: (): string => {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     return `${proto}//${window.location.host}/api/gpus/stream`;
@@ -950,6 +1545,8 @@ export const api = {
     config: string,
     values: Record<string, unknown>,
     requested_gpus?: number | null,
+    multinode?: MultinodeOverrides | null,
+    dataset_source?: DatasetSource | null,
   ): Promise<OverridesData> => {
     const r = await fetch("/api/config/overrides", {
       method: "POST",
@@ -959,6 +1556,8 @@ export const api = {
         config,
         values,
         requested_gpus: requested_gpus ?? null,
+        multinode: multinode ?? null,
+        dataset_source: dataset_source ?? null,
       }),
     });
     if (!r.ok) {
@@ -986,6 +1585,308 @@ export const api = {
       `/api/project/readme?project_dir=${encodeURIComponent(project_dir)}`,
     ),
   docsRoot: () => fetchJson<{ path: string | null }>("/api/docs/root"),
+  docsRepoRoot: () => fetchJson<{ repo_root: string }>("/api/docs/repo-root"),
+  serverConfigPath: () =>
+    fetchJson<{ path: string | null }>("/api/server-config-path"),
+  listServices: () => fetchJson<ServiceStatus[]>("/api/services"),
+  upsertService: async (
+    type: string,
+    name: string,
+    enabled: boolean,
+    args: Record<string, unknown>,
+  ) => {
+    const r = await fetch("/api/services", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type, name, enabled, args }),
+    });
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<ServiceStatus>;
+  },
+  deleteService: async (type: string, name: string) => {
+    const r = await fetch(
+      `/api/services/${encodeURIComponent(type)}/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    );
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json();
+  },
+  restartServer: async () => {
+    const r = await fetch("/api/server/restart", { method: "POST" });
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<{ restart: string }>;
+  },
+  shutdownServer: async (opts: { stopJobs?: boolean } = {}) => {
+    const r = await fetch("/api/server/shutdown", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stop_jobs: !!opts.stopJobs }),
+    });
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<{
+      shutdown: string;
+      stopped_jobs: string[];
+    }>;
+  },
+  // Cluster maintenance: master forwards to the named node via mTLS.
+  // For the local node, the master short-circuits to the local helper.
+  restartNode: async (nodeId: string) => {
+    const r = await fetch(
+      `/api/cluster/nodes/${encodeURIComponent(nodeId)}/restart`,
+      { method: "POST" },
+    );
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<{ restart: string }>;
+  },
+  shutdownNode: async (
+    nodeId: string,
+    opts: { stopJobs?: boolean } = {},
+  ) => {
+    const r = await fetch(
+      `/api/cluster/nodes/${encodeURIComponent(nodeId)}/shutdown`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stop_jobs: !!opts.stopJobs }),
+      },
+    );
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<{
+      shutdown: string;
+      stopped_jobs: string[];
+    }>;
+  },
+  setServiceEnabled: async (type: string, name: string, enabled: boolean) => {
+    const r = await fetch(
+      `/api/services/${encodeURIComponent(type)}/${encodeURIComponent(name)}/enabled`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      },
+    );
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<ServiceStatus>;
+  },
+  ensureDatasetServerConfigStub: async (): Promise<{
+    path: string;
+    created: boolean;
+  }> => {
+    const r = await fetch("/api/dataset-server/config/ensure-stub", {
+      method: "POST",
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+    return r.json();
+  },
+
+  listLocalDatasetServers: () =>
+    fetchJson<DatasetServerLocal[]>("/api/dataset-servers/local"),
+  localDatasetServerBundle: (queue_id: string) =>
+    fetchJson<{ bundle: string }>(
+      `/api/dataset-servers/local/${encodeURIComponent(queue_id)}/bundle`,
+    ),
+  listUserDatasetServers: () =>
+    fetchJson<DatasetServerUser[]>("/api/dataset-servers/user"),
+  addUserDatasetServer: async (
+    req: AddDatasetServerRequest,
+  ): Promise<DatasetServerUser> => {
+    const r = await fetch("/api/dataset-servers/user", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+    return r.json();
+  },
+  deleteUserDatasetServer: async (id: string): Promise<void> => {
+    const r = await fetch(
+      `/api/dataset-servers/user/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+  },
+
+  // Proxy GETs. ``token`` is the upstream bearer that's forwarded via
+  // the X-Dataset-Auth-Token side-channel; empty string means no
+  // explicit token (the proxy then falls back to JobRecord auto-lookup
+  // for local servers, or registry lookup for saved user entries).
+  datasetServerHealth: (base: string, token: string) =>
+    datasetServerProxyGet<DatasetServerHealth>(
+      "/api/dataset-server/proxy/health",
+      base,
+      token,
+    ),
+  datasetServerAuthStatus: (base: string, token: string) =>
+    datasetServerProxyGet<{ auth_required: boolean }>(
+      "/api/dataset-server/proxy/auth-status",
+      base,
+      token,
+    ),
+  datasetServerDatasets: (base: string, token: string) =>
+    datasetServerProxyGet<DatasetHandlesResponse>(
+      "/api/dataset-server/proxy/datasets",
+      base,
+      token,
+    ),
+  datasetServerCache: (base: string, token: string) =>
+    datasetServerProxyGet<HFCacheResponse>(
+      "/api/dataset-server/proxy/cache",
+      base,
+      token,
+    ),
+  datasetServerLocal: (base: string, token: string) =>
+    datasetServerProxyGet<LocalListResponse>(
+      "/api/dataset-server/proxy/local",
+      base,
+      token,
+    ),
+  /** POST a ``LoadRequest`` to the proxy; returns the handle + length +
+   *  ``column_names`` the dataset_server reports. ``token`` is the
+   *  optional explicit bearer; empty string defers to proxy auto-lookup. */
+  datasetServerLoad: async (
+    base: string,
+    body: LoadRequest,
+    token: string,
+  ): Promise<LoadResponse> => {
+    const u = `/api/dataset-server/proxy/load?base=${encodeURIComponent(base)}`;
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+    };
+    if (token) headers["x-dataset-auth-token"] = token;
+    const r = await fetch(u, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<LoadResponse>;
+  },
+  datasetServerLength: (base: string, handle: string, token: string) =>
+    datasetServerProxyGet<{ length: number }>(
+      `/api/dataset-server/proxy/length?handle=${encodeURIComponent(handle)}`,
+      base,
+      token,
+    ),
+  datasetServerIter: (
+    base: string,
+    handle: string,
+    position: number,
+    limit: number,
+    token: string,
+  ) =>
+    datasetServerProxyGet<IterResponse>(
+      `/api/dataset-server/proxy/iter?handle=${encodeURIComponent(handle)}` +
+        `&position=${position}&limit=${limit}`,
+      base,
+      token,
+    ),
+
+  // ---- Cluster-aggregated dataset inventory + master proxy ----
+
+  /** Master-aggregated dataset-server inventory + dataset listing.
+   *  Same shape the ``forgather cluster datasets`` CLI consumes. */
+  getClusterDatasetInventory: () =>
+    fetchJson<ClusterDatasetInventoryResponse>(
+      "/api/cluster/dataset_inventory",
+    ),
+  /** Token-stripped server list — same as ``inventory.servers`` but
+   *  a smaller payload for the Explore + Servers tabs. */
+  getClusterDatasetServers: () =>
+    fetchJson<ClusterDatasetServer[]>("/api/cluster/dataset_servers"),
+  /** Wake the master's collect/health/refresh loops on demand.
+   *  Best-effort — fire-and-forget. Used right after a registry
+   *  add/delete so the cluster inventory reflects the change within
+   *  ~1s rather than waiting up to one collect tick. */
+  refreshClusterDatasetServers: async (): Promise<void> => {
+    try {
+      await fetch("/api/cluster/dataset_servers/refresh", {
+        method: "POST",
+      });
+    } catch {
+      // Latency hint only — silently ignore failures.
+    }
+  },
+
+  /** Cluster-proxied probes against a single dataset_server. The master
+   *  injects the bearer from its inventory, so the browser only needs
+   *  the cluster bearer. ``server_id`` comes from the cluster inventory. */
+  clusterDatasetServerHealth: (server_id: string) =>
+    fetchJson<DatasetServerHealth>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/health`,
+    ),
+  clusterDatasetServerAuthStatus: (server_id: string) =>
+    fetchJson<{ auth_required: boolean }>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/auth-status`,
+    ),
+  clusterDatasetServerDatasets: (server_id: string) =>
+    fetchJson<DatasetHandlesResponse>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/datasets`,
+    ),
+  clusterDatasetServerCache: (server_id: string) =>
+    fetchJson<HFCacheResponse>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/cache`,
+    ),
+  clusterDatasetServerLocal: (server_id: string) =>
+    fetchJson<LocalListResponse>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/local`,
+    ),
+  clusterDatasetServerLoad: async (
+    server_id: string,
+    body: LoadRequest,
+  ): Promise<LoadResponse> => {
+    const u = `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/load`;
+    const r = await fetch(u, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<LoadResponse>;
+  },
+  clusterDatasetServerLength: (server_id: string, handle: string) =>
+    fetchJson<{ length: number }>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/length` +
+        `?handle=${encodeURIComponent(handle)}`,
+    ),
+  clusterDatasetServerIter: (
+    server_id: string,
+    handle: string,
+    position: number,
+    limit: number,
+  ) =>
+    fetchJson<IterResponse>(
+      `/api/cluster/dataset_server_proxy/${encodeURIComponent(server_id)}/iter` +
+        `?handle=${encodeURIComponent(handle)}` +
+        `&position=${position}&limit=${limit}`,
+    ),
+
   docsFile: (path: string) =>
     fetchJson<DocsFile>(`/api/docs/file?path=${encodeURIComponent(path)}`),
   docsAssetUrl: (path: string): string =>

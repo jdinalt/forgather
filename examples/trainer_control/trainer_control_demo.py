@@ -173,7 +173,7 @@ def main():
     print("🎛️  Control Interface Information:")
     print(f"   Job ID: {job_id}")
     print(f"   Host: {platform.node()}")
-    print(f"   Discovery: ~/.forgather/jobs/{job_id}/endpoint.json")
+    print(f"   Discovery: ~/.config/forgather/jobs/{job_id}/endpoint.json")
     print()
     print("📱 Control Commands (run in another terminal):")
     print(f"   forgather control list                    # List all jobs")

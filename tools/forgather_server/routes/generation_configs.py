@@ -4,10 +4,11 @@ Presets come from two layers:
 
 1. Bundled examples under ``<forgather_repo>/generation_config/`` —
    read-only; the UI may load them but not overwrite or delete them.
-2. User-saved presets under ``~/.forgather/generation_config/`` —
-   read-write. Take precedence over bundled names of the same stem, so
-   a user can effectively override an example by creating a file with
-   the same name.
+2. User-saved presets under
+   ``<forgather_config_dir>/generation_config/`` — read-write. Take
+   precedence over bundled names of the same stem, so a user can
+   effectively override an example by creating a file with the same
+   name.
 
 Each preset is a single ``<name>.json`` whose body is passed through
 verbatim — the server doesn't interpret the fields, the inference
@@ -26,6 +27,8 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel
 
+from forgather.preprocess import forgather_config_dir
+
 from .._atomic import atomic_write_text
 from ..search_roots import forgather_repo_root
 
@@ -38,7 +41,7 @@ router = APIRouter(tags=["generation-configs"])
 
 
 def _user_dir() -> Path:
-    p = Path(os.path.expanduser("~/.forgather/generation_config"))
+    p = Path(forgather_config_dir()) / "generation_config"
     p.mkdir(parents=True, exist_ok=True)
     return p
 

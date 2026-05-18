@@ -31,7 +31,16 @@ interface PersistedFinalize {
   dryRun: boolean;
   logLevel: string;
   requestedGpus: number;
+  /** Torchao quantize recipe. Empty string means "skip quantize". */
+  quantize: string;
 }
+
+// Keep in sync with QAT_RECIPES in src/forgather/ml/qat_recipes.py.
+const QUANTIZE_RECIPES = [
+  "int8-dynamic-act-int4-weight",
+  "int4-weight-only",
+  "float8-dynamic-act-float8-weight",
+] as const;
 
 const STORAGE_KEY = "forgather-global-finalize-v1";
 
@@ -56,6 +65,7 @@ const DEFAULTS: PersistedFinalize = {
   dryRun: false,
   logLevel: "INFO",
   requestedGpus: 0,
+  quantize: "",
 };
 
 function loadPersisted(): Partial<PersistedFinalize> {
@@ -167,7 +177,7 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
   // Pull the merged bundled + user preset list. The finalize resolver
   // (forgather/ml/model_conversion/finalize.py:_resolve_preset_path)
   // checks both ``<repo>/generation_config/`` and
-  // ``~/.forgather/generation_config/``, so any name in this list is
+  // ``~/.config/forgather/generation_config/``, so any name in this list is
   // valid for finalize even though the CLI's --help text only mentions
   // the user directory.
   const presetsQ = useQuery({
@@ -200,6 +210,7 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
   const [requestedGpus, setRequestedGpus] = useState<number>(
     initial.requestedGpus ?? 0,
   );
+  const [quantize, setQuantize] = useState(initial.quantize ?? "");
   const [priority, setPriority] = useState<number>(0);
 
   // Backfill tokenizer defaults once quick-paths resolves, but only
@@ -248,6 +259,7 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
     setDryRun(DEFAULTS.dryRun);
     setLogLevel(DEFAULTS.logLevel);
     setRequestedGpus(DEFAULTS.requestedGpus);
+    setQuantize(DEFAULTS.quantize);
   };
 
   const enqueue = useMutation({
@@ -289,6 +301,7 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
       dryRun,
       logLevel,
       requestedGpus,
+      quantize,
     });
 
     const job_params: Record<string, unknown> = {
@@ -317,6 +330,7 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
     if (dtype && dtype !== "keep") job_params.dtype = dtype;
     const dev = device.trim();
     if (dev) job_params.device = dev;
+    if (quantize) job_params.quantize = quantize;
 
     enqueue.mutate({
       // project_dir isn't meaningful for finalize; use the dest path so
@@ -570,6 +584,27 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
               />
               <code>--dry-run</code>
               <span className="muted">resolve only; don't write</span>
+            </label>
+          </div>
+          <div className="submit-row">
+            <label className="wide">
+              <code>--quantize</code>
+              <select
+                value={quantize}
+                onChange={(e) => setQuantize(e.target.value)}
+                title="Quantize the model via torchao. QAT-trained sources keep the QAT accuracy benefit; plain bf16 sources get standard PTQ."
+              >
+                <option value="">(none — no quantization)</option>
+                {QUANTIZE_RECIPES.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+              <span className="muted">
+                QAT round-trip if source was trained with{" "}
+                <code>--qat-recipe</code>; otherwise post-training quantization
+              </span>
             </label>
           </div>
 

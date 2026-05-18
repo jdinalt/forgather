@@ -16,25 +16,28 @@ Events framing the client expects flows through unchanged.
 
 SSRF policy
 -----------
-Even though every route is auth-gated, the auth token is still a
-confused-deputy risk: a stolen / phished token, or an XSS payload running
-in an authenticated tab, could otherwise direct this proxy at internal
-hosts (cloud metadata services like 169.254.169.254, other LAN boxes,
-etc.). To make that exploit useless on a default install, ``_validate_base``
-rejects any host that is not literal localhost (``127.0.0.1`` /
-``localhost`` / ``::1``). Single-user secure-LAN deployments that
-legitimately need a remote vLLM box can opt back in with the
-``FORGATHER_INFERENCE_PROXY_ALLOW_REMOTE`` env var (truthy values
-``1``/``true``/``yes``); a WARNING is logged for each non-localhost
-target so the choice is visible. The check is purely string-based — we
-do not resolve DNS — so a hostname that resolves to loopback still
-fails. Use the literal addresses if you mean loopback.
+Default: any URL the operator types into the panel is allowed.
+forgather is a single-user research tool; the same auth token that
+gates this endpoint also gates training-job submission, which is
+already arbitrary code execution on the host. An "SSRF guard"
+layered on top of that adds friction without adding security — an
+authenticated attacker who could exploit this proxy could just as
+easily exfiltrate cloud-metadata creds (or anything else) by
+submitting a training job that shells out.
+
+Operators who genuinely want stricter posture (e.g. running
+forgather in an environment with non-operator-controlled clients)
+pass ``--lock-inference-proxy`` to ``forgather server``;
+``_validate_base`` then rejects any non-localhost upstream.
+
+The scheme allow-list stays unconditionally: only ``http`` / ``https``
+through this proxy, so ``file://`` and similar exfiltration vectors
+are off the table regardless of the lock setting.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import time
 from threading import Lock
 from typing import Any, Dict, Optional
@@ -55,32 +58,53 @@ router = APIRouter(tags=["inference-proxy"])
 # stream — httpx holds the connection open for the duration automatically.
 _TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
 
+
+def _verify_for(target: str) -> object:
+    """Pick ``verify=`` for an upstream URL.
+
+    When the inference server runs with TLS (auto-on from the shared
+    config), the upstream URL is ``https://`` and httpx must validate
+    against the shared CA bundle — otherwise it falls back to the
+    system trust store and rejects our self-signed certs with
+    ``CERTIFICATE_VERIFY_FAILED``. For plain ``http://`` upstreams we
+    short-circuit to ``True`` (no-op).
+    """
+    try:
+        from forgather.tls import httpx_verify_for_url
+
+        return httpx_verify_for_url(target)
+    except ImportError:
+        return True
+
 # Completion responses can be large. Use a small chunk size so tokens
 # reach the browser promptly rather than sitting in an HTTP buffer.
 _STREAM_CHUNK = 1024
 
-# SSRF guard: localhost-only by default, opt-in for remote bases. See
-# the module docstring for the policy.
-_REMOTE_ALLOW_ENV = "FORGATHER_INFERENCE_PROXY_ALLOW_REMOTE"
 _LOCALHOST_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 
-
-def _remote_allowed() -> bool:
-    """Return True iff the operator opted into non-localhost upstreams."""
-    return os.environ.get(_REMOTE_ALLOW_ENV, "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+# Set to True by `forgather server --lock-inference-proxy` to restrict
+# the proxy to localhost upstreams. Default off: forgather is a
+# single-user research tool and the operator already has full RCE via
+# training-job submission, so SSRF adds no real capability. The flag
+# exists for the (rare) case of running forgather in an environment
+# with non-operator-controlled clients.
+LOCK_TO_LOCALHOST = False
 
 
 def _validate_base(base: str) -> str:
     """Reject obviously-unsafe values before connecting upstream.
 
-    Two layers: scheme allow-list (http/https only — no ``file://`` /
-    ``gopher://`` exfiltration tricks) plus an SSRF host allow-list
-    pinned to literal localhost. Hostname comparison is string-based;
-    DNS is not resolved (see module docstring).
+    Scheme allow-list (http/https only — no ``file://`` / ``gopher://``
+    exfiltration tricks). Host allow-list is empty by default: the
+    operator types the URL into the panel, the operator is the one
+    using forgather, the operator already has full RCE on the host
+    via training-job submission — an "SSRF guard" on top of that adds
+    friction without security. Pass ``--lock-inference-proxy`` to the
+    server to switch to strict-localhost-only mode.
+
+    Rejections are 403s tagged with ``X-Forgather-Proxy-Refused: 1``
+    so the webui renders them inline instead of treating them as
+    session-expired.
     """
     try:
         parsed = urlparse(base)
@@ -90,29 +114,31 @@ def _validate_base(base: str) -> str:
         raise HTTPException(
             status_code=400,
             detail=f"unsupported scheme: {parsed.scheme!r}",
+            headers={"X-Forgather-Proxy-Refused": "1"},
         )
     if not parsed.netloc:
-        raise HTTPException(status_code=400, detail="missing host")
-    # parsed.hostname returns the bare host with brackets stripped from
-    # IPv6 literals ("::1", not "[::1]"). Lowercased for case-insensitive
-    # match against the localhost set.
-    host = (parsed.hostname or "").lower()
-    if host not in _LOCALHOST_HOSTS:
-        if _remote_allowed():
-            log.warning(
-                "inference proxy forwarding to non-localhost host %r "
-                "(opt-in via %s)",
-                host,
-                _REMOTE_ALLOW_ENV,
-            )
-        else:
+        raise HTTPException(
+            status_code=400,
+            detail="missing host",
+            headers={"X-Forgather-Proxy-Refused": "1"},
+        )
+
+    if LOCK_TO_LOCALHOST:
+        # Lowercased for case-insensitive match. parsed.hostname strips
+        # brackets from IPv6 literals, so "[::1]" arrives here as "::1".
+        host = (parsed.hostname or "").lower()
+        if host not in _LOCALHOST_HOSTS:
             raise HTTPException(
                 status_code=403,
                 detail=(
-                    f"refusing to proxy to non-localhost host: {host!r} "
-                    f"(set {_REMOTE_ALLOW_ENV}=1 to allow)"
+                    f"inference proxy is locked to localhost; "
+                    f"refusing to proxy to {host!r}. Restart the server "
+                    "without --lock-inference-proxy to allow remote "
+                    "upstreams."
                 ),
+                headers={"X-Forgather-Proxy-Refused": "1"},
             )
+
     return base.rstrip("/")
 
 
@@ -250,7 +276,7 @@ async def proxy_health(base: str, request: Request) -> JSONResponse:
     """
     target = _root_of(_validate_base(base)) + "/health"
     headers = _auth_headers_for(base, request)
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target)) as client:
         try:
             r = await client.get(target, headers=headers or None)
         except httpx.RequestError as e:
@@ -267,7 +293,7 @@ async def proxy_models(base: str, request: Request) -> JSONResponse:
     """Forward GET ``<base>/models``."""
     target = _validate_base(base) + "/models"
     headers = _auth_headers_for(base, request)
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target)) as client:
         try:
             r = await client.get(target, headers=headers or None)
         except httpx.RequestError as e:
@@ -296,7 +322,7 @@ async def _proxy_streaming_post(
     target = _validate_base(base) + upstream_path
     body = await request.body()
 
-    client = httpx.AsyncClient(timeout=_TIMEOUT)
+    client = httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target))
     # Send our own Content-Type; drop hop-by-hop and origin headers that
     # would confuse the upstream or reflect browser trust scope. We also
     # drop the user's Authorization (if any) and re-add a per-job token
@@ -377,7 +403,7 @@ async def proxy_tokenize(base: str, request: Request) -> JSONResponse:
     body = await request.body()
     upstream_headers = {"content-type": "application/json"}
     upstream_headers.update(_auth_headers_for(base, request))
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target)) as client:
         try:
             r = await client.post(target, content=body, headers=upstream_headers)
         except httpx.RequestError as e:

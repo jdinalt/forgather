@@ -25,9 +25,29 @@ except ImportError:
 class InferenceClient:
     def __init__(self, base_url: str, api_key: str = "dummy"):
         """Initialize the OpenAI client for our inference server."""
+        # Build an httpx client carrying the shared CA bundle so the
+        # OpenAI SDK validates our self-signed certs. Passing
+        # ``http_client`` to ``OpenAI`` is the supported escape hatch
+        # (``verify=`` is not exposed on the SDK constructor directly).
+        #
+        # Narrow the catch to ImportError: we'd rather surface a real
+        # configuration failure (bad cert path, broken bundle) than
+        # silently degrade to the SDK's default httpx client (system
+        # trust only — would reject our self-signed certs and produce
+        # a confusing TLS verification error several stack frames
+        # away).
+        import httpx as _httpx
+
+        try:
+            from forgather.tls import httpx_verify_for_url
+
+            verify = httpx_verify_for_url(base_url)
+        except ImportError:
+            verify = True  # forgather.tls missing entirely — system trust.
+
+        http_client = _httpx.Client(verify=verify)
         self.client = OpenAI(
-            base_url=base_url,
-            api_key=api_key,  # Not used by our server but required by client
+            base_url=base_url, api_key=api_key, http_client=http_client
         )
         self.conversation_history: List[Dict[str, str]] = []
 

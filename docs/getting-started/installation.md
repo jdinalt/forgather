@@ -14,8 +14,8 @@ ssh -L 8765:localhost:8765 \
 # Install with Docker
 git clone https://github.com/jdinalt/forgather.git
 cd forgather
-docker/build.sh                  # auto-fills USER_NAME/UID/GID from host
-docker/run.sh                    # interactive shell, --gpus all, ports forwarded
+docker/build                  # per-user dev image, bakes your host UID/GID in
+docker/run                    # interactive shell, --gpus all, ports forwarded
 
 # Inside the container:
 
@@ -86,14 +86,19 @@ server tour.
 - **Node.js + npm** (optional, only for the Forgather server's web
   UI). The `forgather server` command serves a Vite/React SPA built
   from `tools/forgather_server/webui/`. The build artifact isn't
-  checked in, so you build it once after install — see
+  checked in, so you build it once after install via
+  `./build-webui.sh` at the repo root — see
   [Running the Forgather server](README.md#running-the-forgather-server).
   Any current LTS Node release works (tested on Node 20).
   ```bash
   sudo apt-get install nodejs npm
   ```
   None of this is needed if you only use the CLI; the running server
-  itself has no Node dependency once the dist bundle exists.
+  itself has no Node dependency once the dist bundle exists. On a
+  checkout shared between hosts of different platform (e.g. an NFS
+  share spanning x86_64 and aarch64), always invoke `./build-webui.sh`
+  — `node_modules/` is platform-specific and the script keeps each
+  platform's install in its own sibling directory.
 
 ## Host installation (pip / uv)
 
@@ -175,6 +180,14 @@ current directory. You should see output listing the bundled example projects.
 
 ## Installing with Docker
 
+> **Looking for the full reference?** See [**Docker images**](docker.md)
+> for the comprehensive guide — every CLI flag and env var on the
+> `build.sh` / `run.sh` helpers, the runtime (distributable) image
+> for clusters, multi-node setup, persistent overrides, and
+> troubleshooting. The section below is the install quick-start; the
+> reference page is where to go to customize things or understand
+> how it works.
+
 The repo ships a `Dockerfile` (and matching helpers in `docker/`)
 that builds an Ubuntu 24.04 image with the full Forgather environment
 pre-provisioned: Python 3.12, PyTorch (CUDA wheels), all
@@ -187,6 +200,11 @@ useful in two ways:
 - **As a clean sandbox for release testing** — build the image with
   `--no-cache` and you get a reproducible from-scratch verification
   that the source tree builds and runs end-to-end.
+
+There's also a separate **runtime image** (`Dockerfile.runtime`)
+intended for distribution to a multi-node cluster — generic, no
+host-clone dependency, builds the SPA inside the image. The
+[Docker images](docker.md) reference covers both.
 
 ### Prerequisites
 
@@ -204,27 +222,32 @@ useful in two ways:
 ```bash
 git clone https://github.com/jdinalt/forgather.git
 cd forgather
-docker/build.sh
+docker/build
 ```
 
-`docker/build.sh` reads your host UID, GID, and username (`id -u`,
-`id -g`, `id -un`) and passes them as build args, so the image
-carries an account that matches your host user. Files created
-inside the container on a bind-mounted home land with correct
-ownership on the host.
+`docker/build` builds a **per-user** dev image: it reads your
+`id -u` / `id -g` / `id -un` and passes them as build args, baking
+your host identity into the in-container user. Files created inside
+the container on bind-mounted host paths land with correct ownership
+without any runtime remap — the in-container user simply IS you.
+
+The default image tag is `forgather-dev:<your-host-username>` so
+multiple operators on a shared host get separate images. (For the
+build-once-deploy-everywhere, user-agnostic story, see the
+[runtime image](docker.md#runtime-image-specifics).)
 
 The first build pulls ~3 GB of dependencies and takes a few minutes;
 rebuilds reuse the layer cache. After the docker build, `build.sh`
 runs `./build-webui.sh` in a transient container against the host
 clone so the Forgather server's SPA dist/ is ready before
-`docker/run.sh` is invoked. Skip the post-step with
-`SKIP_WEBUI_BUILD=1 docker/build.sh` (e.g. you'll iterate on the
+`docker/run` is invoked. Skip the post-step with
+`SKIP_WEBUI_BUILD=1 docker/build` (e.g. you'll iterate on the
 SPA via `npm run dev`).
 
 ### Run it
 
 ```bash
-docker/run.sh
+docker/run
 ```
 
 This drops you into an interactive bash shell with:
@@ -252,7 +275,7 @@ forgather -t v2.yaml train
 
 ### Container lifecycle
 
-The container is long-lived: the first `docker/run.sh` invocation
+The container is long-lived: the first `docker/run` invocation
 creates a detached container named `forgather-dev-${USER}` with
 `sleep infinity` as PID 1; subsequent invocations re-attach via
 `docker exec`. Logging out of an interactive shell does **not**
@@ -261,17 +284,17 @@ you started in one session keeps running, and you can re-attach
 from a new terminal to inspect or control it.
 
 ```bash
-docker/run.sh                   # attach (creating the container if needed)
-docker/run.sh forgather ls -r   # one-shot command in the same container
-docker/run.sh --status          # is the container running, stopped, or absent?
-docker/run.sh --stop            # stop (but keep) — preserves filesystem state
-docker/run.sh --rm              # stop and remove (next run.sh recreates fresh)
-docker/run.sh --recreate        # rebuild from scratch (e.g. after image rebuild)
+docker/run                   # attach (creating the container if needed)
+docker/run forgather ls -r   # one-shot command in the same container
+docker/run --status          # is the container running, stopped, or absent?
+docker/run --stop            # stop (but keep) — preserves filesystem state
+docker/run --rm              # stop and remove (next run.sh recreates fresh)
+docker/run --recreate        # rebuild from scratch (e.g. after image rebuild)
 ```
 
 `IMAGE`, `GPUS`, `NETWORK`, port and mount overrides only apply
-when the container is **created**. After `docker/build.sh`
-rebuilds the image, run `docker/run.sh --recreate` to roll the
+when the container is **created**. After `docker/build`
+rebuilds the image, run `docker/run --recreate` to roll the
 running container forward to the new image.
 
 If you'd rather drive `docker` directly:
@@ -285,16 +308,31 @@ docker start ${NAME}                      # start an existing stopped container
 docker rm -f ${NAME}                      # stop and remove
 ```
 
-For force-rebuilding after pulling repo changes:
+After pulling repo changes, most updates are picked up live —
+the source tree is bind-mounted from your host clone. If
+`pyproject.toml` changed (new deps, version bumps), refresh the
+venv from inside the running container — no rebuild needed:
 
 ```bash
-docker/build.sh -- --no-cache
-docker/run.sh --recreate
+# Inside the container:
+uv pip install -e "$FORGATHER_REPO"
+cd "$FORGATHER_REPO" && ./build-webui.sh    # only if the SPA changed
 ```
+
+Force-rebuilding the image is only needed when the `Dockerfile`
+itself changed (new system packages, Python minor-version bump):
+
+```bash
+docker/build -- --no-cache
+docker/run --recreate
+```
+
+See [docker.md → Upgrading Forgather inside the container](docker.md#upgrading-forgather-inside-the-container)
+for the full reference.
 
 ### Networking
 
-`docker/run.sh` defaults to `--network host`, so the container
+`docker/run` defaults to `--network host`, so the container
 shares the host's network stack. Every service inside the
 container is reachable on its bound port without `-p` mappings,
 and tools that default to `127.0.0.1` (Forgather server, MkDocs,
@@ -308,7 +346,7 @@ If you'd rather use bridge networking with explicit port-forwards
 forward), set `NETWORK=bridge`:
 
 ```bash
-NETWORK=bridge docker/run.sh
+NETWORK=bridge docker/run
 # Inside the container:
 forgather server -H 0.0.0.0
 mkdocs serve --host 0.0.0.0
@@ -320,29 +358,37 @@ default (same exposure as the host-networking case). For LAN
 access from another machine, set `HOST_BIND=0.0.0.0` alongside
 `NETWORK=bridge`.
 
+> **Binding outside loopback?** The server refuses to bind a
+> non-loopback host (`0.0.0.0`, LAN IP, public IP) without TLS
+> unless you pass `--insecure`. Provision HTTPS with
+> `forgather tls init` first — see
+> [TLS](../operations/tls.md) for the single-host setup and the
+> Docker runtime image's `TLS_INIT=1` convenience flag.
+
 ### Common overrides
 
 ```bash
 # CPU-only:
-GPUS=none docker/run.sh
+GPUS=none docker/run
 
 # Specific GPUs:
-GPUS='"device=0,1"' docker/run.sh
+GPUS='"device=0,1"' docker/run
 
 # Mount additional host paths (e.g. scratch / dataset volumes):
-EXTRA_MOUNTS="-v /scratch:/scratch" docker/run.sh
+EXTRA_MOUNTS="-v /scratch:/scratch" docker/run
 
 # Forward extra ports (Vite dev server, etc.):
-EXTRA_PORTS="-p 5173:5173" docker/run.sh
+EXTRA_PORTS="-p 5173:5173" docker/run
 
 # Build / run a tagged variant:
-docker/build.sh forgather-dev:experiment
-IMAGE=forgather-dev:experiment docker/run.sh
+docker/build forgather-dev:experiment
+IMAGE=forgather-dev:experiment docker/run
 ```
 
-For more detail — including the release-testing workflow against a
-freshly cloned tree — see the
-[Docker Development Image](../development/docker.md) page.
+For more detail — full CLI / env-var reference, the runtime
+(distributable) image, multi-node setup, and the release-testing
+workflow against a freshly cloned tree — see the [Docker images](docker.md)
+reference.
 
 ## Next: your first training run
 

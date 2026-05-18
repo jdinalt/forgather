@@ -10,8 +10,10 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
-    """Point ``forgather_home_dir`` at a fresh tmp path for the test."""
-    monkeypatch.setenv("FORGATHER_HOME", str(tmp_path))
+    """Redirect ``forgather_config_dir`` to a fresh tmp path for the test."""
+    monkeypatch.setattr(
+        "forgather_server.paths.forgather_config_dir", lambda: str(tmp_path)
+    )
     # Reset module-level state so prior tests don't leak in.
     from forgather_server import auth
 
@@ -136,6 +138,101 @@ class TestSessions:
         assert not auth.session_valid("not-a-real-sid")
         assert not auth.session_valid(None)
         assert not auth.session_valid("")
+
+
+class TestUrlTokens:
+    """Short-lived single-use URL tokens used by peer-SSO.
+
+    These are minted by ``/api/cluster/issue_url_token`` (gated to
+    mTLS-peers + already-authed sessions) and exchanged for a session
+    cookie via ``/api/auth/login``. The invariants below are what
+    keep the cluster bearer concession from leaking a *persistent*
+    token through a one-click URL.
+    """
+
+    def test_mint_returns_unique_token(self, isolated_home):
+        from forgather_server import auth
+
+        a = auth.mint_url_token()
+        b = auth.mint_url_token()
+        assert a != b
+        assert len(a) >= 32
+
+    def test_verify_single_use(self, isolated_home):
+        from forgather_server import auth
+
+        token = auth.mint_url_token()
+        assert auth.verify_url_token(token) is True
+        # A replayed URL must NOT re-authenticate — the first verify
+        # consumed the token.
+        assert auth.verify_url_token(token) is False
+
+    def test_verify_rejects_unknown(self, isolated_home):
+        from forgather_server import auth
+
+        assert auth.verify_url_token("not-a-real-token") is False
+        assert auth.verify_url_token(None) is False
+        assert auth.verify_url_token("") is False
+
+    def test_verify_rejects_expired(self, isolated_home, monkeypatch):
+        from forgather_server import auth
+
+        # Mint at t=1000, advance the clock past the TTL.
+        monkeypatch.setattr(auth, "time", _ClockMock(1000.0))
+        token = auth.mint_url_token()
+        monkeypatch.setattr(
+            auth, "time", _ClockMock(1000.0 + auth.URL_TOKEN_TTL_SECONDS + 1.0)
+        )
+        assert auth.verify_url_token(token) is False
+        # Expired token is also consumed (so a clock-skew replay can't
+        # land it just inside the window on a retry).
+        assert auth._url_tokens_count_for_tests() == 0
+
+    def test_url_token_does_not_authenticate_directly(self, isolated_home):
+        """URL tokens must not satisfy the bearer/?token path — they
+        only flow through /api/auth/login. Otherwise a leaked URL
+        could call API endpoints directly for the full 60 s window
+        instead of just creating one session."""
+        from forgather_server import auth
+
+        url_tok = auth.mint_url_token()
+        # Direct credential paths only honor the persistent bearer.
+        assert not auth.authenticate({}, {"token": url_tok}, {})
+        assert not auth.authenticate(
+            {"authorization": f"Bearer {url_tok}"}, {}, {}
+        )
+        # The token survives — only ``verify_url_token`` consumes.
+        assert auth._url_tokens_count_for_tests() == 1
+
+    def test_login_route_accepts_url_token(self, client):
+        """End-to-end: mint a URL token, POST it to /api/auth/login,
+        receive a session cookie."""
+        from forgather_server import auth
+
+        url_tok = auth.mint_url_token()
+        r = client.post("/api/auth/login", json={"token": url_tok})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is True
+        # Cookie was set — subsequent requests succeed.
+        r = client.get("/api/auth/status")
+        assert r.status_code == 200
+        assert r.json()["authenticated"] is True
+        # And the URL token was consumed — a replay attempt fails.
+        r2 = client.post("/api/auth/login", json={"token": url_tok})
+        assert r2.status_code == 401
+
+
+class _ClockMock:
+    """Stub for monkeypatching ``auth.time`` so verify-TTL tests can
+    advance the clock without sleeping. Only exposes ``time()`` since
+    that's all auth.py uses."""
+
+    def __init__(self, now: float):
+        self._now = now
+
+    def time(self) -> float:
+        return self._now
 
 
 class TestAuthenticateDispatch:
@@ -377,6 +474,281 @@ class TestRoutes:
             auth._auth_disabled = False
 
 
+class TestPeerMutualTLS:
+    """Exercise the AuthMiddleware peer carve-out gate (issue #31).
+
+    Drives the middleware directly with crafted ASGI scopes so the
+    decision matrix (bearer / client-cert / peer-IP / nothing) can be
+    tested without standing up a real TLS listener.
+    """
+
+    @pytest.fixture
+    def driven_middleware(self, isolated_home, monkeypatch):
+        """Return (call, captured) where call(scope) invokes the gate
+        and captured["app_ran"] tells you whether the downstream app
+        was reached."""
+        from forgather_server import auth
+
+        captured = {"app_ran": False, "send": []}
+
+        async def inner_app(scope, receive, send):
+            captured["app_ran"] = True
+
+        async def fake_receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def fake_send(message):
+            captured["send"].append(message)
+
+        mw = auth.AuthMiddleware(inner_app)
+
+        def call(scope):
+            import asyncio
+
+            captured["app_ran"] = False
+            captured["send"] = []
+            asyncio.run(mw(scope, fake_receive, fake_send))
+            return captured
+
+        return call, captured
+
+    @staticmethod
+    def _http_scope(
+        path: str,
+        *,
+        method: str = "GET",
+        client: tuple = ("10.0.0.5", 54321),
+        headers=None,
+        tls_ext: dict | None = None,
+    ) -> dict:
+        scope: dict = {
+            "type": "http",
+            "method": method,
+            "path": path,
+            "client": client,
+            "headers": headers or [],
+            "query_string": b"",
+        }
+        if tls_ext is not None:
+            scope["extensions"] = {"forgather.tls": tls_ext}
+        return scope
+
+    def test_client_cert_allows_peer_path(self, driven_middleware):
+        """A verified client cert authenticates an inter-node GET."""
+        call, captured = driven_middleware
+        scope = self._http_scope(
+            "/api/cluster/members",
+            tls_ext={"client_cert_verified": True},
+        )
+        call(scope)
+        assert captured["app_ran"] is True
+
+    def test_client_cert_allows_peer_mutation(self, driven_middleware):
+        call, captured = driven_middleware
+        scope = self._http_scope(
+            "/api/cluster/training_local",
+            method="POST",
+            tls_ext={"client_cert_verified": True},
+        )
+        call(scope)
+        assert captured["app_ran"] is True
+
+    def test_client_cert_does_not_open_user_paths(self, driven_middleware):
+        """A client cert is *not* a substitute for a user bearer.
+
+        The cert proves "I am a cluster member"; it does NOT grant
+        access to user-facing endpoints (those still need a bearer).
+        """
+        call, captured = driven_middleware
+        scope = self._http_scope(
+            "/api/queue",
+            tls_ext={"client_cert_verified": True},
+        )
+        call(scope)
+        assert captured["app_ran"] is False
+        assert any(
+            m["type"] == "http.response.start" and m["status"] == 401
+            for m in captured["send"]
+        )
+
+    def test_no_credentials_rejected_on_peer_path(self, driven_middleware):
+        """No bearer, no cert → 401 even on a peer-allowed path."""
+        call, captured = driven_middleware
+        scope = self._http_scope("/api/cluster/members")
+        call(scope)
+        assert captured["app_ran"] is False
+
+    def test_peer_ip_alone_does_not_authenticate(self, driven_middleware):
+        """Source IP is not authentication.
+
+        Even a request from a putative peer address must present a
+        verified client cert to reach an inter-node endpoint.
+        """
+        call, captured = driven_middleware
+        scope = self._http_scope(
+            "/api/cluster/members",
+            client=("10.0.0.5", 12345),
+        )
+        call(scope)
+        assert captured["app_ran"] is False
+
+    def test_unverified_cert_does_not_authenticate(self, driven_middleware):
+        """A presented-but-not-verified cert must not pass the gate.
+
+        With ``ssl_cert_reqs=CERT_OPTIONAL`` + ``ssl_ca_certs`` we
+        only ever get ``client_cert_verified=True`` on the scope, but
+        a buggy protocol could in theory set it falsy. Make sure the
+        check is on the truthy verified flag, not on cert presence
+        alone.
+        """
+        call, captured = driven_middleware
+        scope = self._http_scope(
+            "/api/cluster/members",
+            tls_ext={
+                "client_cert_chain_der": [b"fake-der"],
+                "client_cert_verified": False,
+            },
+        )
+        call(scope)
+        assert captured["app_ran"] is False
+
+    def test_bearer_still_works_alongside_cert_path(self, driven_middleware):
+        """A valid bearer still authenticates regardless of cert state."""
+        from forgather_server import auth
+
+        token = auth.load_token()
+        call, captured = driven_middleware
+        scope = self._http_scope(
+            "/api/queue",
+            headers=[(b"authorization", f"Bearer {token}".encode())],
+        )
+        call(scope)
+        assert captured["app_ran"] is True
+
+
+class TestTLSHelpers:
+    def test_httpx_client_cert_returns_none_when_unprovisioned(self, tmp_path, monkeypatch):
+        """When the local node has no cert+key on disk, return None."""
+        from forgather.tls import httpx_client_cert
+        from forgather.tls.config import TLSConfig
+
+        cfg = TLSConfig(root=tmp_path)  # no files
+        # Sanity: explicit cfg path. Also test the implicit-load branch
+        # by pointing the env override at an empty dir.
+        monkeypatch.setenv("FORGATHER_TLS_DIR", str(tmp_path))
+        assert httpx_client_cert() is None
+
+    def test_httpx_client_cert_returns_pair_when_provisioned(
+        self, tmp_path, monkeypatch
+    ):
+        """When cert+key exist, return their paths as a tuple."""
+        from forgather.tls import httpx_client_cert
+
+        (tmp_path / "server.crt").write_text("-----BEGIN CERTIFICATE-----\n")
+        (tmp_path / "server.key").write_text("-----BEGIN PRIVATE KEY-----\n")
+        monkeypatch.setenv("FORGATHER_TLS_DIR", str(tmp_path))
+        result = httpx_client_cert()
+        assert result is not None
+        cert_path, key_path = result
+        assert cert_path.endswith("server.crt")
+        assert key_path.endswith("server.key")
+
+    def test_uvicorn_ssl_kwargs_requests_client_cert(self, tmp_path, monkeypatch):
+        """When TLS is on + a CA bundle exists, listener requests client certs."""
+        import ssl
+
+        from forgather.tls import uvicorn_ssl_kwargs
+        from forgather.tls.config import load_config, save_config
+
+        (tmp_path / "server.crt").write_text("dummy cert\n")
+        (tmp_path / "server.key").write_text("dummy key\n")
+        (tmp_path / "ca-bundle.crt").write_text("dummy bundle\n")
+        monkeypatch.setenv("FORGATHER_TLS_DIR", str(tmp_path))
+        cfg = load_config()
+        cfg.enabled = True
+        save_config(cfg)
+
+        kwargs = uvicorn_ssl_kwargs()
+        assert kwargs["ssl_cert_reqs"] == ssl.CERT_OPTIONAL
+        assert kwargs["ssl_ca_certs"].endswith("ca-bundle.crt")
+        assert kwargs["ssl_certfile"].endswith("server.crt")
+        assert kwargs["ssl_keyfile"].endswith("server.key")
+
+    def test_uvicorn_ssl_kwargs_off_returns_empty(self, tmp_path, monkeypatch):
+        from forgather.tls import uvicorn_ssl_kwargs
+
+        monkeypatch.setenv("FORGATHER_TLS_DIR", str(tmp_path))
+        assert uvicorn_ssl_kwargs() == {}
+
+    def test_httpx_peer_kwargs_loads_client_cert_into_context(
+        self, tmp_path, monkeypatch
+    ):
+        """Inter-node httpx clients carry their identity in the SSLContext.
+
+        Uses the real ``ca`` module to provision a CA + leaf so the
+        cert is well-formed (EKU + chain) and ``load_cert_chain``
+        accepts it.
+        """
+        import ssl
+
+        from forgather.tls import httpx_peer_kwargs, load_config
+        from forgather.tls.ca import (
+            create_ca,
+            install_server_cert,
+            mint_server_cert,
+            rebuild_bundle,
+        )
+        from forgather.tls.config import save_config
+
+        monkeypatch.setenv("FORGATHER_TLS_DIR", str(tmp_path))
+        cfg = load_config()
+        cfg.enabled = True
+        cfg.san_hostnames = ["localhost"]
+        cfg.san_ips = ["127.0.0.1"]
+        create_ca(cfg, common_name="Test CA")
+        install_server_cert(
+            cfg,
+            mint_server_cert(
+                cfg, hostnames=["localhost"], ips=["127.0.0.1"]
+            ),
+        )
+        rebuild_bundle(cfg)
+        save_config(cfg)
+
+        # Spy on load_cert_chain so we can prove the helper called it.
+        calls: list[tuple[str, str]] = []
+        orig_load = ssl.SSLContext.load_cert_chain
+
+        def spy(self, certfile, keyfile=None, password=None):
+            calls.append((str(certfile), str(keyfile) if keyfile else ""))
+            return orig_load(self, certfile, keyfile, password)
+
+        monkeypatch.setattr(ssl.SSLContext, "load_cert_chain", spy)
+
+        kwargs = httpx_peer_kwargs()
+        ctx = kwargs["verify"]
+        assert isinstance(ctx, ssl.SSLContext)
+        # CA bundle loaded for verifying the peer's cert.
+        assert ctx.get_ca_certs()
+        # forgather posture: chain-only, no hostname matching.
+        assert ctx.check_hostname is False
+        # Client cert chain loaded for presenting our identity.
+        assert len(calls) == 1
+        assert calls[0][0].endswith("server.crt")
+        assert calls[0][1].endswith("server.key")
+
+    def test_httpx_peer_kwargs_no_cert_falls_back(self, tmp_path, monkeypatch):
+        """Without a provisioned cert, return verify-only kwargs."""
+        from forgather.tls import httpx_peer_kwargs
+
+        monkeypatch.setenv("FORGATHER_TLS_DIR", str(tmp_path))
+        kwargs = httpx_peer_kwargs()
+        # No cert+key on disk and no CA bundle -> verify=True (system
+        # trust). The forgather peer will fail-closed against the
+        # system trust store, which is the correct failure mode.
+        assert kwargs == {"verify": True}
+
+
 class TestCliClientToken:
     def test_loads_from_env(self, monkeypatch):
         from forgather.cli.server_client import _load_auth_token
@@ -388,7 +760,10 @@ class TestCliClientToken:
         from forgather.cli.server_client import _load_auth_token
 
         monkeypatch.delenv("FORGATHER_SERVER_TOKEN", raising=False)
-        monkeypatch.setenv("FORGATHER_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "forgather.cli.server_client.forgather_config_dir",
+            lambda: str(tmp_path),
+        )
         (tmp_path / "server").mkdir()
         (tmp_path / "server" / "auth_token").write_text("from-file\n")
         assert _load_auth_token() == "from-file"
@@ -397,14 +772,20 @@ class TestCliClientToken:
         from forgather.cli.server_client import _load_auth_token
 
         monkeypatch.delenv("FORGATHER_SERVER_TOKEN", raising=False)
-        monkeypatch.setenv("FORGATHER_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "forgather.cli.server_client.forgather_config_dir",
+            lambda: str(tmp_path),
+        )
         assert _load_auth_token() is None
 
     def test_env_overrides_file(self, tmp_path, monkeypatch):
         from forgather.cli.server_client import _load_auth_token
 
         monkeypatch.setenv("FORGATHER_SERVER_TOKEN", "winner")
-        monkeypatch.setenv("FORGATHER_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "forgather.cli.server_client.forgather_config_dir",
+            lambda: str(tmp_path),
+        )
         (tmp_path / "server").mkdir()
         (tmp_path / "server" / "auth_token").write_text("loser\n")
         assert _load_auth_token() == "winner"

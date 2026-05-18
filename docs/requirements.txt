@@ -1,0 +1,15 @@
+# Docs-only dependency set used by Read the Docs and the docs CI job.
+#
+# Forgather itself is *not* installed for the docs build: mkdocstrings
+# reads ``src/forgather`` via griffe's static AST analysis (configured
+# in mkdocs.yml as ``paths: [src]`` and ``allow_inspection: false``),
+# so the heavy runtime stack (torch, CUDA wheels, transformers, ...)
+# is not needed just to render docstrings. Skipping that install drops
+# the build's footprint from ~3 GB to ~250 MB.
+#
+# Keep the version constraints below in sync with the corresponding
+# entries in ``pyproject.toml``'s ``[project] dependencies`` block.
+mkdocs >= 1.6
+mkdocs-material >= 9.5
+mkdocstrings[python] >= 0.25
+mkdocs-jupyter >= 0.24

@@ -2,8 +2,8 @@
 
 [config_metadata]
     == super()
-    -- set ns.tokenizer_name = "wikitext_64k"
+    -- set ns.tokenizer_name = tokenizer_name | default("wikitext_64k")
     -- set ns.config_name = "Wikitext 64K"
     -- set ns.config_description = "64K BPE tokenizer, trained on Wikitext"
-    -- set ns.vocab_size = 64000
-    -- set ns.model_max_length = 32768
+    -- set ns.vocab_size = vocab_size | default(64000)
+    -- set ns.model_max_length = model_max_length | default(32768)

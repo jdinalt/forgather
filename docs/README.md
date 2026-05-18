@@ -10,10 +10,13 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 
 **Start here:**
 
-- **[Installation](getting-started/installation.md)** - Host venv (pip / uv) or the Docker development image
+- **[Installation](getting-started/installation.md)** - Host venv (pip / uv) or the Docker images
+- **[Docker images](getting-started/docker.md)** - Full reference for the dev and runtime (distributable) images: CLI flags, env vars, multi-node operation, troubleshooting. Docker is the recommended install path on Linux
 - **[Getting Started](getting-started/README.md)** - First training run, key CLI commands, and the web UI tour
 - **[Forgather Server Walkthrough](guides/forgather-server-walkthrough.md)** - End-to-end tour of the web UI from a fresh install to chatting with a freshly-trained model
+- **[Forgather Server Reference](forgather-server.md)** - CLI flags, config-file syntax, persistent state, full API and panel reference
 - **[Core Concepts](core-concepts/README.md)** - Configuration pipeline, projects, templates, trainers
+- **[Release Notes](release-notes/README.md)** - Per-release change summaries; current release is [1.2.0](release-notes/v1.2.0.md)
 
 **Configuration:**
 
@@ -28,10 +31,12 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 
 - **[Trainer Options Reference](trainers/trainer_options.md)** - Every training-argument field and constructor parameter across all built-in trainers
 - **[Pipeline Parallel](trainers/pipeline-parallel.md)** - Pipeline parallelism for consumer GPUs and limited interconnects
+- **[Multi-node Training](guides/multi-node-training.md)** - Practical setup, submit flow, and hang diagnosis for training across multiple machines on a LAN
 - **[Trainer Control](trainers/trainer-control.md)** - External control of running training jobs (save, stop, abort)
 - **[Training Performance Metrics](trainers/training-performance-metrics.md)** - Token throughput, FLOP tracking, and MFU
 - **[DiLoCo](trainers/diloco.md)** - Distributed Local-SGD training across heterogeneous machines on LAN
 - **[FP8 Training](trainers/fp8-training.md)** - FP8 training via torchao
+- **[QAT Training](trainers/qat-training.md)** - Quantization-aware training via torchao; pair with `forgather finalize --quantize` (also works alone as post-training quantization)
 - **[Checkpointing](checkpointing/README.md)** - Distributed checkpoint system for multi-GPU and multi-node training
 - **[Torch Titan Integration](trainers/torchtitan.md)** - Forgather integration with PyTorch's Torch Titan training framework
 - **[Adafactor Triton Performance](trainers/adafactor-triton-performance.md)** - Performance analysis for the Triton-optimized Adafactor kernel
@@ -55,11 +60,18 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 - **[Model CLI Reference](guides/model-cli.md)** - `forgather model` command: construct, test, checkpoint, and use models
 - **[Creating a Dataset Project](guides/creating-a-dataset-project.md)** - Load, pack, and interleave HuggingFace datasets
 - **[Dataset CLI Reference](datasets/dataset-cli.md)** - `forgather dataset` command: inspect, sample, and histogram datasets
+- **[Dataset Server](tools/dataset_server/README.md)** - Multi-node training: serve HF cache + named local datasets via `FORGATHER_DATASET_SERVER`
 - **[Working with Tokenizer Projects](guides/working-with-tokenizer-projects.md)** - CLI commands for tokenizer projects
 - **[Debugging Configuration Errors](guides/debugging.md)** - Systematic troubleshooting and common error patterns
 - **[Interactive CLI](guides/interactive-cli.md)** - Interactive shell with tab completion and editor integration
 - **[Evaluating Models](guides/evaluating-models.md)** - Loss/perplexity evaluation via `forgather eval`
 - **[Log Analysis](guides/logs-analysis.md)** - Training log summaries, plots, and heatmaps
+- **[TensorBoard](guides/tensorboard.md)** - Launch TensorBoard against a model's `runs/` directory from the webui or `forgather tb`
+- **[MkDocs](guides/mkdocs.md)** - Serve the bundled Forgather docs locally with live-reload via the Services menu or `forgather mkdocs`
+
+**Operations:**
+
+- **[TLS](operations/tls.md)** - Enable HTTPS for `forgather server`, `dataset_server`, and `inference_server` off a single per-host CA + cert. Single-host bring-up, cluster cert distribution, renewal, Docker runtime integration, command reference, threat model.
 
 ## Tutorials
 - **[Tiny Llama](tutorials/tiny_llama/README.md)** - Demonstration of basic usage
@@ -109,7 +121,6 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 
 - **[API Reference](api/index.md)** - Auto-generated Python API documentation
 - **[Debugging Guide](configuration/debugging.md)** - Tools and techniques for debugging configurations
-- **[Docker Development Image](development/docker.md)** - Reproducible Ubuntu 24.04 dev / release-test container with the full Forgather environment pre-provisioned
 - **[Known Bugs](development/bugs.md)** - Known bugs in top-level modules, with corresponding xfail tests
 - **[Testing Guide](development/testing.md)** How to create and run unit tests
 - **[Integration Testing](development/integration-testing.md)** How to create and run integration tests

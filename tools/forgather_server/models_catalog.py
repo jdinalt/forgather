@@ -278,7 +278,7 @@ def get_model_runs(output_dir: str) -> List[RunEntry]:
                 pass
         logs_path = os.path.join(e.path, "trainer_logs.json")
         tty_path = os.path.join(e.path, "tty.log")
-        # ``tty.log`` is typically a symlink into ~/.forgather/server/jobs/;
+        # ``tty.log`` is typically a symlink into ~/.config/forgather/server/jobs/;
         # accept either a regular file or a symlink that resolves to one.
         has_tty = os.path.isfile(tty_path) or (
             os.path.islink(tty_path) and os.path.isfile(os.path.realpath(tty_path))

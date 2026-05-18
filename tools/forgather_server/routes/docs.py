@@ -30,6 +30,10 @@ class DocsRootResponse(BaseModel):
     path: Optional[str] = None
 
 
+class DocsRepoRootResponse(BaseModel):
+    repo_root: str
+
+
 class IpynbCell(BaseModel):
     cell_type: str  # "markdown" | "code" | "raw"
     source: str
@@ -69,16 +73,33 @@ def _abs_resolve(path: str) -> Path:
 
 @router.get("/docs/root", response_model=DocsRootResponse)
 def docs_root():
-    """Default Docs landing page: the Forgather repo's top-level README.
+    """Default Docs landing page.
 
-    Returns ``{path: null}`` if the repo has no README — the frontend
-    surfaces a friendly empty state in that case.
+    Prefers the documentation index at ``docs/README.md`` over the
+    repo-root README — the docs index is the curated entry point with
+    links to installation / tutorials / configuration / API, whereas
+    the root README is closer to a project elevator pitch. Falls back
+    to the root README if the docs index is missing, and finally to
+    ``null`` so the frontend can surface an empty state.
     """
     repo = Path(sr.forgather_repo_root())
-    candidate = repo / "README.md"
-    if candidate.is_file():
-        return DocsRootResponse(path=str(candidate))
+    for candidate in (repo / "docs" / "README.md", repo / "README.md"):
+        if candidate.is_file():
+            return DocsRootResponse(path=str(candidate))
     return DocsRootResponse(path=None)
+
+
+@router.get("/docs/repo-root", response_model=DocsRepoRootResponse)
+def docs_repo_root():
+    """Absolute filesystem path of the Forgather repo root.
+
+    Lets the frontend build absolute paths for known-relative doc links
+    (Tools-menu Help entries, etc.) without round-tripping each one
+    through a custom resolve endpoint. The Docs API requires absolute
+    paths, so the frontend joins this with a relative-to-repo path
+    before calling ``/api/docs/file``.
+    """
+    return DocsRepoRootResponse(repo_root=str(Path(sr.forgather_repo_root())))
 
 
 @router.get("/docs/file", response_model=DocsFileResponse)

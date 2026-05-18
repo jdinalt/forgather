@@ -1,20 +1,31 @@
-"""Tests for forgather_server.routes.inference_proxy SSRF guard.
+"""Tests for forgather_server.routes.inference_proxy SSRF policy.
 
-Covers ``_validate_base`` directly: scheme allow-list, default localhost-
-only host policy, and the ``FORGATHER_INFERENCE_PROXY_ALLOW_REMOTE`` opt-
-in escape hatch.
+Covers ``_validate_base`` directly: scheme allow-list (always
+enforced) and the optional ``--lock-inference-proxy`` localhost-only
+mode.
 """
 
 from __future__ import annotations
-
-import logging
 
 import pytest
 from fastapi import HTTPException
 from forgather_server.routes import inference_proxy
 
 
-# Localhost variants we accept by default.
+@pytest.fixture(autouse=True)
+def _reset_lock():
+    """Every test starts with the default (unlocked) posture."""
+    saved = inference_proxy.LOCK_TO_LOCALHOST
+    inference_proxy.LOCK_TO_LOCALHOST = False
+    try:
+        yield
+    finally:
+        inference_proxy.LOCK_TO_LOCALHOST = saved
+
+
+# Default: any URL the operator types is allowed. The operator-typed-URL
+# threat model already covers SSRF (the operator can already submit
+# training jobs and exfiltrate anything; the proxy adds no capability).
 @pytest.mark.parametrize(
     "url",
     [
@@ -22,80 +33,72 @@ from forgather_server.routes import inference_proxy
         "http://localhost:8137",
         "https://localhost",
         "http://[::1]:8137",
-        "http://LOCALHOST:8137",  # case-insensitive
+        "http://LOCALHOST:8137",
+        "http://192.168.1.5:8137",
+        "http://169.254.169.254",  # cloud metadata — operator-typed, fine
+        "http://10.0.0.1",
+        "http://example.com",
+        "https://vllm.lan:8000",
     ],
 )
-def test_validate_base_accepts_localhost(url, monkeypatch):
-    monkeypatch.delenv(inference_proxy._REMOTE_ALLOW_ENV, raising=False)
+def test_validate_base_accepts_any_http_host_by_default(url):
     assert inference_proxy._validate_base(url) == url.rstrip("/")
 
 
-# Non-localhost hosts must be refused with 403 by default.
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1:8137",
+        "http://localhost:8137",
+        "https://localhost",
+        "http://[::1]:8137",
+        "http://LOCALHOST:8137",
+    ],
+)
+def test_validate_base_locked_accepts_localhost(url):
+    inference_proxy.LOCK_TO_LOCALHOST = True
+    assert inference_proxy._validate_base(url) == url.rstrip("/")
+
+
 @pytest.mark.parametrize(
     "url",
     [
         "http://192.168.1.5:8137",
-        "http://169.254.169.254",  # cloud metadata service
+        "http://169.254.169.254",
         "http://10.0.0.1",
         "http://example.com",
     ],
 )
-def test_validate_base_rejects_remote_by_default(url, monkeypatch):
-    monkeypatch.delenv(inference_proxy._REMOTE_ALLOW_ENV, raising=False)
+def test_validate_base_locked_rejects_remote(url):
+    inference_proxy.LOCK_TO_LOCALHOST = True
     with pytest.raises(HTTPException) as ei:
         inference_proxy._validate_base(url)
     assert ei.value.status_code == 403
-    assert "non-localhost" in ei.value.detail
-    assert inference_proxy._REMOTE_ALLOW_ENV in ei.value.detail
+    assert ei.value.headers.get("X-Forgather-Proxy-Refused") == "1"
+    assert "locked" in ei.value.detail.lower()
 
 
-def test_validate_base_allows_remote_when_opted_in(monkeypatch, caplog):
-    monkeypatch.setenv(inference_proxy._REMOTE_ALLOW_ENV, "1")
-    url = "http://192.168.1.5:8137"
-    with caplog.at_level(logging.WARNING, logger="forgather_server.inference_proxy"):
-        out = inference_proxy._validate_base(url)
-    assert out == url
-    # The host (without scheme/port) should appear in the warning so an
-    # operator scanning logs sees what was let through.
-    assert any(
-        "192.168.1.5" in rec.getMessage() and rec.levelno == logging.WARNING
-        for rec in caplog.records
-    )
-
-
-@pytest.mark.parametrize("truthy", ["1", "true", "yes", "TRUE", "Yes"])
-def test_remote_allowed_truthy_values(monkeypatch, truthy):
-    monkeypatch.setenv(inference_proxy._REMOTE_ALLOW_ENV, truthy)
-    assert inference_proxy._remote_allowed() is True
-
-
-@pytest.mark.parametrize("falsy", ["", "0", "false", "no", "off", "maybe"])
-def test_remote_allowed_falsy_values(monkeypatch, falsy):
-    monkeypatch.setenv(inference_proxy._REMOTE_ALLOW_ENV, falsy)
-    assert inference_proxy._remote_allowed() is False
-
-
-def test_validate_base_rejects_non_http_scheme(monkeypatch):
-    monkeypatch.delenv(inference_proxy._REMOTE_ALLOW_ENV, raising=False)
+def test_validate_base_rejects_non_http_scheme():
     with pytest.raises(HTTPException) as ei:
         inference_proxy._validate_base("file:///etc/passwd")
     assert ei.value.status_code == 400
     assert "scheme" in ei.value.detail
+    assert ei.value.headers.get("X-Forgather-Proxy-Refused") == "1"
 
 
-def test_validate_base_rejects_non_http_scheme_even_when_remote_allowed(monkeypatch):
-    # Opt-in must not weaken the scheme guard.
-    monkeypatch.setenv(inference_proxy._REMOTE_ALLOW_ENV, "1")
+def test_validate_base_rejects_non_http_scheme_even_when_locked():
+    """Scheme guard is unconditional — locked mode doesn't strengthen
+    it, unlocked mode doesn't weaken it."""
+    inference_proxy.LOCK_TO_LOCALHOST = True
     with pytest.raises(HTTPException) as ei:
         inference_proxy._validate_base("gopher://127.0.0.1/")
     assert ei.value.status_code == 400
 
 
-def test_validate_base_strips_trailing_slash(monkeypatch):
-    monkeypatch.delenv(inference_proxy._REMOTE_ALLOW_ENV, raising=False)
+def test_validate_base_strips_trailing_slash():
     assert (
-        inference_proxy._validate_base("http://127.0.0.1:8137/")
-        == "http://127.0.0.1:8137"
+        inference_proxy._validate_base("http://192.168.1.5:8137/")
+        == "http://192.168.1.5:8137"
     )
 
 

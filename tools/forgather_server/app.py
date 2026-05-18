@@ -11,10 +11,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.types import Scope
 
-from . import scheduler, search_roots
+from . import cluster, cluster_journal, scheduler, search_roots, server_config, services
 from .auth import AuthMiddleware
 from .routes import auth as auth_routes
+from .routes import cluster as cluster_routes
 from .routes import configs as configs_routes
+from .routes import dataset_server as dataset_server_routes
 from .routes import docs as docs_routes
 from .routes import fs as fs_routes
 from .routes import generation_configs as generation_configs_routes
@@ -25,6 +27,8 @@ from .routes import models as models_routes
 from .routes import projects as projects_routes
 from .routes import queue as queue_routes
 from .routes import search_roots as search_roots_routes
+from .routes import server_admin as server_admin_routes
+from .routes import services as services_routes
 from .routes import tb_proxy as tb_proxy_routes
 
 log = logging.getLogger("forgather_server")
@@ -39,16 +43,97 @@ async def lifespan(app: FastAPI):
     to flip the switch after a restart and finding their queues
     silently stalled. Pause anytime via the ⏸ button in the sidebar
     header (``POST /api/queue/scheduler {enabled: false}``).
+
+    When cluster mode is active, also start mDNS discovery and the
+    peer-pull membership task. Discovery runs synchronously on its own
+    threads inside ``python-zeroconf``; membership is an asyncio task.
     """
-    task = asyncio.create_task(scheduler.dispatcher_loop())
+    tasks: list[asyncio.Task] = []
+    discovery_handle = None
+    if cluster.is_active():
+        # Lazy import: zeroconf and the membership module pull in net
+        # subsystems we don't want loading on standalone servers.
+        from . import cluster_dataset_inventory, cluster_discovery, cluster_membership
+
+        cluster_journal.init()
+        discovery_handle = cluster_discovery.ClusterDiscovery()
+        try:
+            # ``Zeroconf.register_service`` is synchronous but waits on
+            # its own internal asyncio loop via ``run_coroutine_threadsafe``.
+            # Calling it directly from FastAPI's lifespan blocks our
+            # event loop, which keeps the inner zeroconf scheduling
+            # call from completing within its timeout (EventLoopBlocked).
+            # Hop to a worker thread so zeroconf's internals can drive
+            # themselves while we keep our loop responsive.
+            await asyncio.to_thread(discovery_handle.start)
+        except Exception:
+            logging.getLogger("forgather_server").exception(
+                "mDNS discovery failed to start; continuing without it"
+            )
+            discovery_handle = None
+        # Wake the master dataset-inventory loops on a master-role
+        # transition so a newly-elected master populates the routing
+        # index within ~5s rather than waiting on the steady-state
+        # cadence.
+        cluster_membership.register_role_change_listener(
+            lambda _prev, _new: cluster_dataset_inventory.wake_loops()
+        )
+        tasks.append(asyncio.create_task(cluster_membership.membership_loop()))
+        # Dataset-server cluster-routing inventory. All three loops
+        # run on every node but self-gate on master status — failover
+        # to a new master is automatic.
+        tasks.append(
+            asyncio.create_task(
+                cluster_dataset_inventory.master_collect_servers_loop()
+            )
+        )
+        tasks.append(
+            asyncio.create_task(cluster_dataset_inventory.master_health_loop())
+        )
+        tasks.append(
+            asyncio.create_task(
+                cluster_dataset_inventory.master_dataset_refresh_loop()
+            )
+        )
+
+    # Enqueue auto-start services declared in the server config before
+    # the dispatcher first ticks so they're picked up on the first pass
+    # rather than after a poll interval.
+    try:
+        started = services.autostart()
+        if started:
+            log.info(
+                "auto-started %d service(s): %s",
+                len(started),
+                ", ".join(s.id for s in started),
+            )
+    except Exception:
+        log.exception("services.autostart failed at lifespan startup")
+
+    tasks.append(asyncio.create_task(scheduler.dispatcher_loop()))
     try:
         yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        for t in tasks:
+            t.cancel()
+        for t in tasks:
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logging.getLogger("forgather_server").exception(
+                    "lifespan task raised on shutdown"
+                )
+        if discovery_handle is not None:
+            # Same thread-hop reasoning as start() — close() also drives
+            # the internal zeroconf loop synchronously.
+            try:
+                await asyncio.to_thread(discovery_handle.stop)
+            except Exception:
+                logging.getLogger("forgather_server").exception(
+                    "mDNS discovery stop failed"
+                )
 
 
 def create_app() -> FastAPI:
@@ -95,6 +180,17 @@ def create_app() -> FastAPI:
     async def health():
         return {"status": "ok"}
 
+    @app.get("/api/server-config-path")
+    async def server_config_path():
+        """Path to the YAML config file loaded at server startup.
+
+        Returned as a string so the webui can open it in the embedded
+        editor. ``path`` is ``null`` only if startup never reached
+        ``server_config.load`` (shouldn't happen in normal operation).
+        """
+        p = server_config.loaded_path()
+        return {"path": str(p) if p is not None else None}
+
     @app.get("/api/server-identity")
     async def server_identity():
         """Stable per-server identity for namespacing client-side
@@ -122,9 +218,11 @@ def create_app() -> FastAPI:
         }
 
     app.include_router(auth_routes.router, prefix="/api")
+    app.include_router(cluster_routes.router, prefix="/api")
     app.include_router(search_roots_routes.router, prefix="/api")
     app.include_router(projects_routes.router, prefix="/api")
     app.include_router(configs_routes.router, prefix="/api")
+    app.include_router(dataset_server_routes.router, prefix="/api")
     app.include_router(docs_routes.router, prefix="/api")
     app.include_router(fs_routes.router, prefix="/api")
     app.include_router(generation_configs_routes.router, prefix="/api")
@@ -133,6 +231,8 @@ def create_app() -> FastAPI:
     app.include_router(jobs_routes.router, prefix="/api")
     app.include_router(models_routes.router, prefix="/api")
     app.include_router(queue_routes.router, prefix="/api")
+    app.include_router(services_routes.router, prefix="/api")
+    app.include_router(server_admin_routes.router, prefix="/api")
     # Auth-gated reverse proxy to spawned TensorBoard instances. Defaults
     # in tensorboard_ops bind TB to loopback so other local users can't
     # reach it directly; this proxy mounts it under /api/tb/{job_id}/...

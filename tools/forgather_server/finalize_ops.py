@@ -35,6 +35,7 @@ def build_finalize_command(
     device: Optional[str] = None,
     dry_run: bool = False,
     log_level: str = "INFO",
+    quantize: Optional[str] = None,
 ) -> List[str]:
     """Build the argv for ``tools/finalize_model/finalize_model.py``.
 
@@ -70,6 +71,8 @@ def build_finalize_command(
         cmd.extend(["--dtype", dtype])
     if device:
         cmd.extend(["--device", device])
+    if quantize:
+        cmd.extend(["--quantize", quantize])
     if dry_run:
         cmd.append("--dry-run")
     cmd.extend(["--log-level", log_level])

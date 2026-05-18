@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { api, GpuInfo, GpuPolicy, Job } from "../api";
+import { api, GpuInfo, GpuPolicy, Job, RUNNING_JOB_STATUSES } from "../api";
 import { ContextMenu } from "./ContextMenu";
 
 interface GpuMenuTarget {
@@ -93,8 +93,15 @@ export function GpuPanel() {
     refetchInterval: 5000,
   });
   const jobByPid = new Map<number, Job>();
+  const reservedGpus = new Set<number>();
   for (const j of jobsQ.data ?? []) {
     if (j.pid != null) jobByPid.set(j.pid, j);
+    // Mirror scheduler._reserved_gpu_set: a GPU is reserved by Forgather
+    // whenever a JobRecord with status in RUNNING_JOB_STATUSES lists it
+    // under gpu_indices. Single source of truth in api.ts.
+    if (RUNNING_JOB_STATUSES.has(j.status) && j.gpu_indices) {
+      for (const idx of j.gpu_indices) reservedGpus.add(idx);
+    }
   }
 
   const killGpu = useMutation({
@@ -156,6 +163,7 @@ export function GpuPanel() {
             key={g.index}
             g={g}
             jobByPid={jobByPid}
+            reserved={reservedGpus.has(g.index)}
             onContextRequest={(e) => {
               e.preventDefault();
               setMenuTarget({ gpu: g, x: e.clientX, y: e.clientY });
@@ -282,28 +290,39 @@ function GpuContextMenuItems({
   );
 }
 
-function GpuCard({
+/** Single GPU card. Exported so the cluster Nodes view can reuse the
+ *  exact card layout per peer node (read-only — peer mutations are
+ *  not routed in Phase 1). When ``onContextRequest`` and
+ *  ``onToggleDisabled`` are omitted the card renders without click
+ *  affordances, which matches the read-only peer use case. */
+export function GpuCard({
   g,
   jobByPid,
+  reserved = false,
   onContextRequest,
   onToggleDisabled,
 }: {
   g: GpuInfo;
   jobByPid: Map<number, Job>;
-  onContextRequest: (e: React.MouseEvent) => void;
-  onToggleDisabled: () => void;
+  /** True when a Forgather-dispatched job currently lists this GPU under
+   *  its ``gpu_indices`` (status in RUNNING_STATUSES). Mirrors
+   *  scheduler._reserved_gpu_set on the backend. */
+  reserved?: boolean;
+  onContextRequest?: (e: React.MouseEvent) => void;
+  onToggleDisabled?: () => void;
 }) {
+  const interactive = !!onToggleDisabled;
   const memPct = g.total_mem_bytes
     ? (g.used_mem_bytes / g.total_mem_bytes) * 100
     : 0;
   // The card color mirrors the scheduler's dispatch rule
-  // (scheduler._idle_gpu_indices): a GPU is "available" iff it isn't
-  // excluded via CUDA_VISIBLE_DEVICES and isn't user-disabled.
-  // External processes — desktop compositors, unrelated CUDA work —
-  // don't gate dispatch and don't change the card color. Whatever is
-  // actually running on the card shows up in the process list and the
-  // util/memory bars.
-  const idle = !g.excluded && !g.disabled;
+  // (scheduler._idle_gpu_indices minus _reserved_gpu_set): a GPU shows
+  // "idle" iff it isn't excluded via CUDA_VISIBLE_DEVICES, isn't user-
+  // disabled, AND isn't currently reserved by a running Forgather job.
+  // External processes — desktop compositors, unrelated CUDA work — do
+  // *not* gate dispatch and do *not* mark the card busy on their own;
+  // they show up in the process list and the util/memory bars.
+  const idle = !g.excluded && !g.disabled && !reserved;
   // excluded trumps disabled visually
   const cardClass =
     "gpu-card" +
@@ -315,15 +334,22 @@ function GpuCard({
 
   return (
     <div
-      className={cardClass}
+      className={cardClass + (interactive ? "" : " readonly")}
       onContextMenu={onContextRequest}
-      onClick={(e) => {
-        // Don't fire on right-click or on child action elements.
-        if (e.button !== 0) return;
-        onToggleDisabled();
-      }}
-      title={!g.excluded ? disabledTitle : undefined}
-      style={{ cursor: g.excluded ? undefined : "pointer" }}
+      onClick={
+        interactive
+          ? (e) => {
+              if (e.button !== 0) return;
+              onToggleDisabled!();
+            }
+          : undefined
+      }
+      title={interactive && !g.excluded ? disabledTitle : undefined}
+      style={
+        interactive
+          ? { cursor: g.excluded ? undefined : "pointer" }
+          : undefined
+      }
     >
       <div className="gpu-header">
         <span className="gpu-idx">GPU{g.index}</span>
@@ -360,7 +386,7 @@ function GpuCard({
       </div>
 
       <Bar
-        label="memory"
+        label={g.unified_memory ? "memory (shared)" : "memory"}
         pct={memPct}
         right={`${fmtMiB(g.used_mem_bytes)} / ${fmtMiB(g.total_mem_bytes)}`}
       />

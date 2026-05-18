@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api, ConfigInfo, ProjectInfo } from "../api";
+import { useDatasetSource } from "../dataset-source";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import {
   coerceArgs,
@@ -98,6 +99,19 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
 
   const [values, setValues] = useState<Record<string, string>>({});
   const [overrideSeeded, setOverrideSeeded] = useState<boolean>(false);
+
+  // Dataset-source selector — shared hook handles state + offline-
+  // fallback seeding. ``forgather model construct/test`` calls
+  // ``fast_load_iterable_dataset`` when --dataset-project is set, so
+  // the choice plumbs through the same FORGATHER_DATASET_SERVER env
+  // route training uses.
+  const {
+    source: datasetSource,
+    selector: datasetSourceSelector,
+  } = useDatasetSource({
+    ready: !!overridesQ.data,
+    initial: overridesQ.data?.dataset_source ?? null,
+  });
 
   const [subcommand, setSubcommand] = useState<Subcommand>("construct");
   const [device, setDevice] = useState<string>("meta");
@@ -238,9 +252,17 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
       priority,
       job_type: "model",
       job_params: params,
+      dataset_source: datasetSource,
     });
     api
-      .setOverrides(project.project_dir, config.name, dyn)
+      .setOverrides(
+        project.project_dir,
+        config.name,
+        dyn,
+        null,
+        null,
+        datasetSource,
+      )
       .then(() => {
         qc.invalidateQueries({
           queryKey: ["overrides", project.project_dir, config.name],
@@ -275,6 +297,8 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
               <code>{project.project_dir}</code>
             </div>
           </div>
+
+          {datasetSourceSelector}
 
           <div className="submit-row">
             <label title="construct: build the model and print its parameter / architecture summary. test: run a few train steps against random or a real dataset to verify forward + backward.">

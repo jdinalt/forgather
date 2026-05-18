@@ -1,6 +1,6 @@
 # Tokenizer Examples
 
-This directory contains examples of different tokenizer configurations and usage patterns in Forgather.
+Examples of different tokenizer configurations and usage patterns in Forgather.
 
 ## Projects
 

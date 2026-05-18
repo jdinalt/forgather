@@ -438,6 +438,19 @@ def put_template_source(req: PutTemplateSourceRequest):
 class OverridesResponse(BaseModel):
     values: Dict[str, Any]
     requested_gpus: Optional[int] = None
+    # Last-used cluster submit settings, persisted alongside the
+    # config's dynamic-args overrides so a config "opens where you left
+    # off" for both single-node and multi-node submits. Webui owns the
+    # shape; backend treats it as opaque passthrough.
+    multinode: Optional[Dict[str, Any]] = None
+    # Last-used dataset-source choice from the submit modal. Either
+    # ``{"kind": "local"}`` (in-process loader) or
+    # ``{"kind": "server", "server_id": "..."}`` where ``server_id`` is
+    # ``local:<queue_id>`` for a forgather_server-spawned dataset_server
+    # or ``user:<entry_id>`` for a registered URL. The token itself is
+    # never persisted here — it lives in the registry / JobRecord and is
+    # resolved at submit time.
+    dataset_source: Optional[Dict[str, Any]] = None
     updated_at: Optional[float] = None
 
 
@@ -446,19 +459,23 @@ class SetOverridesRequest(BaseModel):
     config: str
     values: Dict[str, Any]
     requested_gpus: Optional[int] = None
+    multinode: Optional[Dict[str, Any]] = None
+    dataset_source: Optional[Dict[str, Any]] = None
 
 
 @router.get("/config/overrides", response_model=OverridesResponse)
 def get_overrides(project_dir: str, config: str):
     """Return the cached override values for a config.
 
-    Returns ``{values: {}, requested_gpus: null, updated_at: null}`` when no
+    Returns a stub with empty ``values`` and ``None`` siblings when no
     cache file exists.
     """
     payload = overrides_store.get_overrides_payload(project_dir, config)
     return OverridesResponse(
         values=payload["values"],
         requested_gpus=payload["requested_gpus"],
+        multinode=payload.get("multinode"),
+        dataset_source=payload.get("dataset_source"),
         updated_at=payload["updated_at"],
     )
 
@@ -467,11 +484,18 @@ def get_overrides(project_dir: str, config: str):
 def set_overrides(req: SetOverridesRequest):
     """Persist override values for a config (upsert). Returns the new state."""
     payload = overrides_store.set_overrides(
-        req.project_dir, req.config, req.values, req.requested_gpus
+        req.project_dir,
+        req.config,
+        req.values,
+        req.requested_gpus,
+        req.multinode,
+        req.dataset_source,
     )
     return OverridesResponse(
         values=payload["values"],
         requested_gpus=payload["requested_gpus"],
+        multinode=payload.get("multinode"),
+        dataset_source=payload.get("dataset_source"),
         updated_at=payload["updated_at"],
     )
 

@@ -859,8 +859,16 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             case _:
                 raise ValueError("Requires one of: default|meta|device")
         assert self.model is not None
+        # Linear-swap recipes (fp8 / qat) are mutually exclusive — see the
+        # _LINEAR_SWAP_RECIPES check in BaseTrainingArguments.__post_init__.
+        # The if-chain is sequential rather than elif so a future relaxed
+        # mutex still surfaces a clear error (the second swap would find
+        # no nn.Linear left and report 0/N converted) instead of silently
+        # producing a single-recipe model.
         if self.args.fp8_recipe:
             self.model = self._apply_fp8_training(self.model)
+        if self.args.qat_recipe:
+            self.model = self._apply_qat_training(self.model)
         if self.args.gradient_checkpointing:
             if self.enable_activation_checkpoint_fn is None:
                 if self.dist.rank == 0:
@@ -905,6 +913,17 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         from torchao.float8.float8_linear import Float8Linear
 
         assert self.args.fp8_recipe is not None
+        if self.args.fp8_recipe == "rowwise_with_gw_hp":
+            # torchao 0.16.0: matmul_with_hp_or_float8_args reshapes axiswise-scaled
+            # inputs in forward(), which trips an assertion in float8_ops. ND inputs
+            # (e.g. transformer hidden states of shape (B, S, H)) cannot be used with
+            # this recipe. Plain "rowwise" and "tensorwise" are unaffected.
+            logger.warning(
+                "fp8_recipe='rowwise_with_gw_hp' is currently broken in torchao for "
+                "ND inputs (transformer hidden states): reshape on axiswise-scaled "
+                "Float8Tensor raises 'aten.reshape.default with axiswise scaling is "
+                "not supported yet'. Use 'rowwise' or 'tensorwise' instead."
+            )
         config = Float8LinearConfig.from_recipe_name(self.args.fp8_recipe)
 
         module_filter_fn = None
@@ -935,6 +954,41 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         logger.info(
             f"FP8 training ({self.args.fp8_recipe}): "
             f"converted {converted}/{total_linear} Linear layers"
+        )
+
+        return model
+
+    def _apply_qat_training(self, model: torch.nn.Module) -> torch.nn.Module:
+        """Install torchao FakeQuantizedLinear modules for quantization-aware training.
+
+        The forward pass simulates the target low-bit precision via fake
+        quantizers while the backward pass stays in full precision, letting
+        the model learn to be robust to quantization noise. The convert phase
+        (real low-bit ops) is run post-training by ``forgather finalize
+        --quantize <recipe>``.
+        """
+        from torchao.quantization import quantize_
+        from torchao.quantization.qat import FakeQuantizedLinear, QATConfig
+
+        from forgather.ml.qat_recipes import recipe_to_base_config
+
+        assert self.args.qat_recipe is not None
+        base_config = recipe_to_base_config(self.args.qat_recipe)
+        quantize_(model, QATConfig(base_config, step="prepare"))
+
+        converted = sum(
+            1 for m in model.modules() if isinstance(m, FakeQuantizedLinear)
+        )
+        total_linear = sum(
+            1
+            for m in model.modules()
+            if isinstance(m, (torch.nn.Linear, FakeQuantizedLinear))
+        )
+        logger.info(
+            f"QAT training ({self.args.qat_recipe}): "
+            f"converted {converted}/{total_linear} Linear layers to FakeQuantizedLinear. "
+            f"Run `forgather finalize --quantize {self.args.qat_recipe}` "
+            f"after training to produce a deployable quantized artifact."
         )
 
         return model

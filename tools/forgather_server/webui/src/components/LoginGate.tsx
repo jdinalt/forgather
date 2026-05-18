@@ -107,8 +107,8 @@ export function LoginGate({ status, onAuthenticated }: Props) {
         {error && <div className="login-error">{error}</div>}
 
         <p className="login-hint">
-          The token lives at <code>~/.forgather/server/auth_token</code>.
-          Run <code>cat ~/.forgather/server/auth_token</code> to print it.
+          The token lives at <code>~/.config/forgather/server/auth_token</code>.
+          Run <code>cat ~/.config/forgather/server/auth_token</code> to print it.
         </p>
       </div>
     </div>

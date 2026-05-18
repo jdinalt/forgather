@@ -136,12 +136,29 @@ def resolve_checkpoint(args):
     - True: auto-find latest
     - str path: explicit
     - False: do not resume
+
+    Cache the result on ``args`` so repeated calls don't re-log.
+
+    Quantization is handled transparently downstream: when the native
+    loader at ``forgather.ml.sharded_checkpoint.load_checkpoint`` detects
+    torchao quantization (via ``config.json`` or a state_dict scan), it
+    installs the matching quantized linear modules before
+    ``load_state_dict``. Eval doesn't need to special-case quantized
+    models here.
     """
+    cached = getattr(args, "_resolved_checkpoint", None)
+    if cached is not None:
+        return cached
+
     if args.no_checkpoint:
-        return False, False
-    if args.checkpoint:
-        return args.checkpoint, True
-    return True, True
+        result = (False, False)
+    elif args.checkpoint:
+        result = (args.checkpoint, True)
+    else:
+        result = (True, True)
+
+    args._resolved_checkpoint = result
+    return result
 
 
 def build_trainer(args, model_init, eval_dataset, data_collator, tokenizer, device):

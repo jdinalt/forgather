@@ -1,0 +1,35 @@
+test_id: tiny_llama_inference_quantized
+project_dir: examples/tutorials/tiny_llama
+config: train_tiny_llama.yaml
+dynamic_args:
+  max_steps: 500
+  save_strategy: "steps"
+loss:
+  final_max: 5.0
+  no_nan: true
+stderr:
+  forbidden_patterns:
+    - "RuntimeError"
+    - "CUDA error"
+    - "Traceback"
+    - "tensor_data_names"
+  warn_patterns: []
+expected_files:
+  - trainer_logs.json
+min_steps_logged: 5
+finalize:
+  quantize: int8-dynamic-act-int4-weight
+inference:
+  prompt: "Once upon a time"
+  max_tokens: 50
+  temperature: 0.7
+  # int4-weight quantized output is noisier than bf16 baseline;
+  # relax the perplexity ceiling slightly while still gating against
+  # gibberish (the bf16 sibling test uses 500.0).
+  perplexity_max: 750.0
+  server_timeout: 90
+timeout: 1200
+gpu_requirement: 1
+markers:
+  - integration
+  - slow

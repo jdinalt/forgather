@@ -42,6 +42,7 @@ from forgather.ml.trainer.checkpoint_types import (
     ComponentManifest,
     SharingPattern,
 )
+from forgather.preprocess import forgather_config_dir
 
 logger = logging.getLogger(__name__)
 
@@ -314,7 +315,7 @@ def _resolve_preset_path(preset_arg: str) -> str:
 
     A path that exists is used directly. A bare name is searched first
     in ``$FORGATHER_ROOT/generation_config/`` (when discoverable), then
-    in ``~/.forgather/generation_config/``.
+    in ``<forgather_config_dir>/generation_config/``.
     """
     if os.path.exists(preset_arg) and os.path.isfile(preset_arg):
         return preset_arg
@@ -332,8 +333,7 @@ def _resolve_preset_path(preset_arg: str) -> str:
     except Exception:
         pass
 
-    home = os.path.expanduser("~")
-    candidates.append(os.path.join(home, ".forgather", "generation_config", name))
+    candidates.append(os.path.join(forgather_config_dir(), "generation_config", name))
 
     for cand in candidates:
         if os.path.isfile(cand):

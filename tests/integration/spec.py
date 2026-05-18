@@ -38,6 +38,17 @@ class InferenceSpec:
 
 
 @dataclass
+class FinalizeSpec:
+    """Run ``forgather finalize`` between train and inference.
+
+    Lets a test exercise the inference / eval load paths against finalized
+    artifacts (e.g. ``--quantize`` for torchao quantized models).
+    """
+
+    quantize: str | None = None
+
+
+@dataclass
 class IntegrationSpec:
     """Complete specification for an integration test."""
 
@@ -50,6 +61,7 @@ class IntegrationSpec:
     expected_files: list[str] = field(default_factory=lambda: ["trainer_logs.json"])
     min_steps_logged: int = 1
     inference: InferenceSpec | None = None
+    finalize: FinalizeSpec | None = None
     gpu_requirement: int = 1
     timeout: int = 300
     markers: list[str] = field(default_factory=lambda: ["integration"])
@@ -69,7 +81,12 @@ def _load_spec(path: Path) -> IntegrationSpec:
     inference_raw = raw.pop("inference", None)
     inference = InferenceSpec(**inference_raw) if inference_raw else None
 
-    return IntegrationSpec(loss=loss, stderr=stderr, inference=inference, **raw)
+    finalize_raw = raw.pop("finalize", None)
+    finalize = FinalizeSpec(**finalize_raw) if finalize_raw else None
+
+    return IntegrationSpec(
+        loss=loss, stderr=stderr, inference=inference, finalize=finalize, **raw
+    )
 
 
 def load_all_specs(specs_dir: Path) -> list[IntegrationSpec]:

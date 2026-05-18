@@ -6,17 +6,33 @@ helpers to guarantee:
 1. **Tmp + os.replace** — the target file is never in a partially-written
    state visible to readers.  A bare ``open(path, "w")`` truncates first,
    leaving a zero-byte window; tmp+rename closes that window.
-2. **fsync before rename** — ``os.replace`` can return before the kernel
-   flushes dirty pages.  Without fsync a crash can leave the *renamed* file
-   intact but with stale (or zero) content.
+2. **fsync before rename, fsync the directory after** — ``os.replace`` can
+   return before the kernel flushes dirty pages. Without the pre-rename
+   ``fsync(fd)`` a crash can leave the *renamed* file intact but with
+   stale (or zero) content; without the post-rename ``fsync(dir_fd)`` the
+   data is durable on its inode but the new dirent pointing at it can be
+   lost across a crash, leaving the previous file visible (or, on a fresh
+   create, no entry at all). Pre + post fsync is the textbook POSIX
+   safe-replace recipe.
 3. **Tmp in the same directory** — so the rename stays on one filesystem and
    is truly atomic (POSIX).  Cross-device renames fall back to copy+unlink.
+4. **Mode applied before any data is written** — when ``mode`` is given the
+   tmp fd is opened with that mode directly via ``os.open`` and the mode is
+   re-asserted via ``os.fchmod`` (defeats the process umask, which would
+   otherwise mask bits off the mode passed to ``os.open``). The previous
+   implementation called ``open(tmp, "w")`` then ``os.chmod`` after-the-
+   fact, leaving a brief window where another local user could open the
+   newly-created file at the umask-default mode (typically 0o644) and
+   read sensitive content as it was being written.
 
-The optional ``mode`` parameter chmods the tmp file *before* writing, so
-sensitive content (auth tokens, password hashes, anything in
-``~/.forgather/server/``) is never readable on disk during the write
-window. Without a mode argument the file inherits the process umask, which
-is what user-content writes (template editor saves) want.
+Without a ``mode`` argument the file is created at ``0o666 & ~umask`` —
+the same default Python's built-in ``open(path, "w")`` uses. This is
+what user-content writes (template editor saves) want: a typical 0o022
+umask yields 0o644, matching the rest of the filesystem. The naked
+``os.open(path, flags)`` call (no mode arg) defaults to ``0o777``,
+which after a 0o022 umask becomes 0o755 — silently flipping the +x bit
+on every saved file. Always pass an explicit mode (even ``0o666``) to
+``os.open``.
 """
 
 import os
@@ -24,27 +40,75 @@ from pathlib import Path
 from typing import Optional
 
 
+def _fsync_dir(path: Path) -> None:
+    """Best-effort fsync of a directory so a freshly-renamed entry is durable.
+
+    POSIX requires this for the rename itself to survive a crash —
+    ``fsync(file_fd)`` persists the inode's data blocks, but the
+    directory entry pointing at that inode is a separate write that
+    needs its own flush. On Linux with ext4 / xfs / btrfs the dir-fsync
+    persists the dirent. Silent no-op on platforms that don't expose
+    directory fds (Windows): the rename is durable per the platform's
+    own semantics or not at all, and we don't make it any worse.
+    """
+    try:
+        fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _open_tmp_with_mode(tmp: Path, mode: Optional[int]) -> int:
+    """Return a freshly-created tmp fd. Applies ``mode`` atomically at
+    creation (subject to umask, then re-asserted via fchmod) when given.
+    ``O_EXCL`` is intentionally NOT used — same-port restarts and other
+    retries depend on overwriting a stale tmp from a previous run.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if mode is None:
+        # Match open(path, "w"): create at 0o666 so umask trims to 0o644.
+        # Naked os.open(path, flags) defaults to 0o777 -> 0o755 with umask
+        # 022, which silently flipped +x on every editor save.
+        return os.open(str(tmp), flags, 0o666)
+    fd = os.open(str(tmp), flags, mode)
+    try:
+        os.fchmod(fd, mode)
+    except OSError:
+        pass
+    return fd
+
+
 def atomic_write_text(path: Path, content: str, *, mode: Optional[int] = None) -> None:
     """Write *content* to *path* atomically.
 
-    Creates the parent directory if it does not exist, writes to a sibling
-    ``.tmp`` file, fsyncs the fd, then renames into place. When ``mode`` is
-    provided the tmp file is chmod'd to it after creation but before the
-    write, closing the window where a sensitive file is briefly readable
-    by other users.
+    Sequence (POSIX safe-replace):
+
+      1. ``mkdir -p`` the parent.
+      2. Open a sibling ``.tmp`` and write the new content.
+      3. ``fsync`` the tmp fd so the data is durable on its inode
+         before any new dirent points at it.
+      4. ``os.replace`` the tmp into place — atomic rename.
+      5. ``fsync`` the parent directory so the new dirent itself is
+         durable across a crash.
+
+    When ``mode`` is provided the tmp file is created with that mode
+    AND has it re-asserted via fchmod — sensitive content is never
+    readable at the umask-default mode, even momentarily.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w") as f:
-        if mode is not None:
-            try:
-                os.chmod(tmp, mode)
-            except OSError:
-                pass
+    fd = _open_tmp_with_mode(tmp, mode)
+    with os.fdopen(fd, "w") as f:
         f.write(content)
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+    _fsync_dir(path.parent)
 
 
 def atomic_write_bytes(
@@ -53,13 +117,10 @@ def atomic_write_bytes(
     """Binary equivalent of :func:`atomic_write_text`."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "wb") as f:
-        if mode is not None:
-            try:
-                os.chmod(tmp, mode)
-            except OSError:
-                pass
+    fd = _open_tmp_with_mode(tmp, mode)
+    with os.fdopen(fd, "wb") as f:
         f.write(content)
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+    _fsync_dir(path.parent)

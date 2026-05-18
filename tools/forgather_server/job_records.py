@@ -6,7 +6,7 @@ as a :class:`JobRecord` and the queue entry is removed.
 
 Also distinct from :class:`forgather.trainer_control.JobInfo`, which
 represents the trainer's own ``endpoint.json`` file under
-``~/.forgather/jobs/``. The unified ``/api/jobs`` view merges JobRecords
+``~/.config/forgather/jobs/``. The unified ``/api/jobs`` view merges JobRecords
 with TrainerControlClient discoveries by PID lineage.
 """
 

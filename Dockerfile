@@ -1,31 +1,46 @@
 # syntax=docker/dockerfile:1.6
 #
-# Forgather development image.
+# Forgather development image — single-user, host-baked.
 #
 # Base: Ubuntu 24.04 (Python 3.12 ships in-distro). PyTorch wheels
 # bundle their own CUDA runtime, so we don't pull in an nvidia/cuda
 # base image — GPU access at runtime comes from the host driver via
 # nvidia-container-toolkit (`docker run --gpus all ...`).
 #
-# Build args USER_NAME / USER_UID / USER_GID let the image carry an
-# account that matches the host user, so a bind-mounted home keeps
-# correct ownership. Defaults match Ubuntu's first interactive user
-# (1000:1000); override at build time when your host user differs:
-#
-#   docker build \
-#     --build-arg USER_NAME=$(id -un) \
-#     --build-arg USER_UID=$(id -u) \
-#     --build-arg USER_GID=$(id -g) \
-#     -t forgather-dev .
+# This image is intentionally NOT user-agnostic — it's a dev container
+# scoped to the operator who built it. ``docker/build.sh`` bakes the
+# host user's name/UID/GID directly into the image via build args, so
+# files created inside the container land owned by the same identity
+# on the host clone, with no runtime usermod / gosu / privilege-drop
+# dance. (For the user-agnostic, build-once-deploy-everywhere story,
+# see ``Dockerfile.runtime``.) Bind-mount your host clone at
+# $FORGATHER_REPO and the container will install it editable on first
+# start.
 #
 # See `docker/build.sh` and `docker/run.sh` for convenience wrappers.
 
 FROM ubuntu:24.04
 
+# Host user identity, baked in at build time. ``docker/build.sh``
+# overrides these with the host operator's actual values
+# (``id -u`` / ``id -g`` / ``id -un``); the defaults below are
+# placeholders that let ``docker build`` work without the wrapper.
 ARG USER_NAME=dev
 ARG USER_UID=1000
 ARG USER_GID=1000
 ARG VENV_DIR=/opt/forgather/venv
+# Set to 1 to install Claude Code (the CLI agent from Anthropic) into
+# the image at /usr/bin/claude. Off by default — opt in via
+# ``docker/build.sh --claude``. Tooling-only convenience for
+# developers who use Claude Code; production builds shouldn't need
+# it. Installed globally so the in-container user can invoke ``claude``.
+ARG INSTALL_CLAUDE=0
+# torch variant for the build:
+#   cuda  (default) -- CUDA-enabled torch (PyPI x86_64; download.pytorch.org cu128 aarch64)
+#   cpu             -- CPU-only torch from download.pytorch.org/whl/cpu on both arches.
+#                      Yields a much smaller image (no nvidia-* libs) -- appropriate for
+#                      CI / docs / arbitrary host installs that won't run GPU workloads.
+ARG TORCH_VARIANT=cuda
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -34,14 +49,31 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     UV_LINK_MODE=copy \
     VIRTUAL_ENV=${VENV_DIR} \
+    USER_NAME=${USER_NAME} \
+    VENV_DIR=${VENV_DIR} \
     PATH=${VENV_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# UV_CACHE_DIR is intentionally NOT in ENV: the build-time cache target
+# /root/.cache/uv is unwritable to the unprivileged in-image user, so
+# baking it into ENV poisons every `docker exec`-spawned shell (which
+# inherits image ENV but bypasses the entrypoint's scrub). Instead we
+# set it inline on each uv-using RUN below, so it's scoped to the
+# build only. At runtime uv falls back to $HOME/.cache/uv, which lives
+# under the bind-mounted host home and is owned by the host operator.
 
 # ---------------------------------------------------------------------------
 # System packages
 # ---------------------------------------------------------------------------
 # Split into "Forgather runtime requirements" and "developer convenience".
-# Cleanup of apt lists at the end keeps the image small.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# BuildKit cache mounts on /var/cache/apt and /var/lib/apt make rebuilds
+# instant on this step. The default `docker-clean` apt config wipes the
+# cache after each install, so we delete it first. Cache mounts are
+# external to the image layer, so the final image is the same size
+# either way.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+    && apt-get update && apt-get install -y --no-install-recommends \
         # Forgather runtime / build deps
         python3.12 \
         python3.12-venv \
@@ -76,8 +108,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gnupg \
         locales \
         tzdata \
-    && locale-gen en_US.UTF-8 \
-    && rm -rf /var/lib/apt/lists/*
+        gh \
+    && locale-gen en_US.UTF-8
 
 # ---------------------------------------------------------------------------
 # Install uv (fast Python package manager) into /usr/local/bin so it's
@@ -90,12 +122,27 @@ RUN UV_INSTALL_DIR=/usr/local/bin /tmp/uv-install.sh \
     && uv --version
 
 # ---------------------------------------------------------------------------
-# Create the in-container user matching the host UID/GID *before* we
-# build the venv, so all venv files (~thousands, dominated by PyTorch)
-# are owned by the user from the start — no slow recursive chown after
-# the install. Ubuntu 24.04 already ships with a uid=1000 'ubuntu'
-# user; if the requested UID collides with it we delete the stock
-# account first so the build arg always wins.
+# Optionally install Claude Code (Anthropic's CLI agent) so developers
+# who use it don't have to re-install on every image rebuild. Off by
+# default; enable via ``docker/build.sh --claude`` (sets
+# ``--build-arg INSTALL_CLAUDE=1``). Lands at /usr/bin/claude (npm
+# global), world-executable so the in-container user can invoke it.
+# ---------------------------------------------------------------------------
+RUN if [ "${INSTALL_CLAUDE}" = "1" ]; then \
+        echo "[Dockerfile] installing Claude Code (npm global)" && \
+        npm install -g @anthropic-ai/claude-code && \
+        chmod -R go+rX /usr/lib/node_modules/@anthropic-ai 2>/dev/null || true; \
+    fi
+
+# ---------------------------------------------------------------------------
+# Create the in-container user with the host operator's UID/GID/name
+# (passed in via build args from ``docker/build.sh``) *before* we
+# build the venv, so all venv files (~thousands, dominated by
+# PyTorch) are owned by the same identity as the host user from the
+# start — no runtime usermod, no recursive chown, no gosu drop, no
+# permission gymnastics. Ubuntu 24.04 ships with a uid=1000 'ubuntu'
+# user; if our UID collides with it we delete the stock account
+# first.
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     if id -u ubuntu >/dev/null 2>&1 && [ "$(id -u ubuntu)" = "${USER_UID}" ]; then \
@@ -110,12 +157,17 @@ RUN set -eux; \
     fi; \
     echo "${USER_NAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-${USER_NAME}; \
     chmod 0440 /etc/sudoers.d/90-${USER_NAME}; \
-    install -d -o "${USER_UID}" -g "${USER_GID}" /opt/forgather
+    install -d -o "${USER_UID}" -g "${USER_GID}" /opt/forgather; \
+    chmod 0755 /root
+# /root is 0700 in the Ubuntu base image, which blocks the unprivileged
+# build user from traversing into the uv cache mount at /root/.cache/uv.
+# The chmod above opens up just the parent dir; harmless in a container.
 
 # ---------------------------------------------------------------------------
 # Everything below this line that touches the venv runs as the
-# unprivileged user, so files land with the right ownership and the
-# slow `chown -R /opt/forgather` is gone. We switch back to root
+# unprivileged user — that's the same UID/GID/name as the host
+# operator, so created files are owned correctly from the start
+# and bind-mounted host paths Just Work. We switch back to root
 # below for the system-wide /etc/profile.d and entrypoint setup.
 # ---------------------------------------------------------------------------
 USER ${USER_NAME}
@@ -124,7 +176,44 @@ USER ${USER_NAME}
 # /home, so the bind-mounted host home doesn't shadow it).
 # /opt/forgather/ is just the venv's parent — there is no in-image
 # copy of the repo.
-RUN uv venv --python python3.12 --seed ${VENV_DIR}
+RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
+    export UV_CACHE_DIR=/root/.cache/uv \
+    && uv venv --python python3.12 --seed ${VENV_DIR}
+
+# Pre-install torch + torchvision from the right PyTorch index so the
+# subsequent ``/tmp/src`` install sees the constraint already
+# satisfied and doesn't overwrite them with whatever PyPI ships:
+#
+#   * TORCH_VARIANT=cuda + aarch64 -> cu128 (PyPI's aarch64 torch is CPU-only;
+#                                            CUDA wheels live on the PyTorch index)
+#   * TORCH_VARIANT=cuda + x86_64  -> no-op (PyPI's x86_64 torch IS CUDA-enabled)
+#   * TORCH_VARIANT=cpu  + *       -> cpu index (forces CPU build on every arch)
+#
+# ``torchao`` is *not* pre-installed here: it ships as a pure-Python
+# (``py3-none-any``) wheel that delegates its float8/quant ops to
+# torch's built-in kernels (e.g. ``torch._scaled_mm``), so the main
+# /tmp/src install resolves it from PyPI on every arch. (The PyTorch
+# index has no aarch64 torchao wheel, and we don't need one.) FP8
+# ``tensorwise`` exercises this path end-to-end on GB10/aarch64 with
+# no extra build steps; see docs/trainers/fp8-training.md for the
+# known ``rowwise`` limitation on SM 12.1 (NVRTC in torch 2.10/cu128
+# can't compile for SM > 12.0 yet).
+ARG TORCH_VARIANT
+RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
+    export UV_CACHE_DIR=/root/.cache/uv \
+    && case "${TORCH_VARIANT}:$(uname -m)" in \
+        cuda:aarch64) \
+            uv pip install --python ${VENV_DIR}/bin/python \
+                --index-url https://download.pytorch.org/whl/cu128 \
+                "torch==2.10.0+cu128" torchvision ;; \
+        cuda:x86_64) ;; \
+        cpu:*) \
+            uv pip install --python ${VENV_DIR}/bin/python \
+                --index-url https://download.pytorch.org/whl/cpu \
+                "torch==2.10.0+cpu" torchvision ;; \
+        *) \
+            echo "[Dockerfile] unknown TORCH_VARIANT='${TORCH_VARIANT}'" >&2; exit 2 ;; \
+    esac
 
 # Install Forgather + every dependency from pyproject.toml. We bind-
 # mount the build context read-only and then copy it into a user-
@@ -150,9 +239,10 @@ RUN uv venv --python python3.12 --seed ${VENV_DIR}
 # Cache mount lives at the user's ~/.cache/uv (uv's documented cache
 # path); BuildKit needs explicit uid/gid on the cache volume so the
 # unprivileged user can write to it.
-RUN --mount=type=cache,target=/home/${USER_NAME}/.cache/uv,uid=${USER_UID},gid=${USER_GID} \
+RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
     --mount=type=bind,target=/build-context \
-    sudo cp -a /build-context /tmp/src \
+    export UV_CACHE_DIR=/root/.cache/uv \
+    && sudo cp -a /build-context /tmp/src \
     && sudo chown -R ${USER_UID}:${USER_GID} /tmp/src \
     && uv pip install --python ${VENV_DIR}/bin/python /tmp/src \
     && rm -rf /tmp/src
@@ -162,8 +252,9 @@ RUN --mount=type=cache,target=/home/${USER_NAME}/.cache/uv,uid=${USER_UID},gid=$
 # accum_e_fp32 / accum_c_fp32 features Forgather relies on. Replaces
 # the cut-cross-entropy 25.1.1 wheel installed via pyproject.toml
 # above.
-RUN --mount=type=cache,target=/home/${USER_NAME}/.cache/uv,uid=${USER_UID},gid=${USER_GID} \
-    uv pip install --python ${VENV_DIR}/bin/python \
+RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
+    export UV_CACHE_DIR=/root/.cache/uv \
+    && uv pip install --python ${VENV_DIR}/bin/python \
         "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
 
 # TensorBoard <= 2.20.0 imports `pkg_resources` at module load,
@@ -231,6 +322,16 @@ RUN printf '%s\n' \
 # Entrypoint: if FORGATHER_REPO points at a bind-mounted checkout,
 # re-install the package in editable mode against that path so the
 # user's host-side edits are picked up live.
+#
+# The entrypoint script is shared with ``Dockerfile.runtime``. There
+# the entrypoint runs as root to usermod/gosu-drop into a runtime
+# UID; here the image's user IS already the host operator, so the
+# entrypoint's phase-1 (root) block is skipped automatically (it
+# guards on ``$(id -u) == 0``) and we go straight to the editable-
+# install + exec path. That's why we install the entrypoint as root
+# (file ownership) but leave the final USER set to the operator,
+# unlike the runtime image which ends on USER root.
+USER root
 COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/forgather-entrypoint
 ENTRYPOINT ["/usr/local/bin/forgather-entrypoint"]
 

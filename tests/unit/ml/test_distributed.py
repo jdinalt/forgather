@@ -211,23 +211,6 @@ class TestPrefixLoggerRank(unittest.TestCase):
             record = logging.LogRecord("test", logging.INFO, "", 0, "msg", (), None)
             self.assertFalse(handler.filter(record))
 
-    def test_custom_filter(self):
-        """Custom filter function is applied correctly."""
-        logger = self._make_logger("test.prefix.custom_filter")
-        # Accept only rank 2
-        custom_filter = lambda rank: rank == 2
-
-        with patch("forgather.ml.distributed.get_rank", return_value=2):
-            prefix_logger_rank(logger, filter=custom_filter)
-            handler = logger.handlers[-1]
-            record = logging.LogRecord("test", logging.INFO, "", 0, "msg", (), None)
-            self.assertTrue(handler.filter(record))
-
-        with patch("forgather.ml.distributed.get_rank", return_value=0):
-            # Re-create since the filter references get_rank at call time
-            record2 = logging.LogRecord("test", logging.INFO, "", 0, "msg", (), None)
-            self.assertFalse(handler.filter(record2))
-
     def test_custom_format(self):
         """Custom format string is applied to the handler."""
         logger = self._make_logger("test.prefix.custom_format")
@@ -246,7 +229,7 @@ class TestPrefixLoggerRank(unittest.TestCase):
     def test_default_format_with_filter(self):
         """When custom filter is given, default format includes rank prefix."""
         logger = self._make_logger("test.prefix.default_fmt_with_filter")
-        prefix_logger_rank(logger, filter=lambda rank: True)
+        prefix_logger_rank(logger, show_all_ranks=True)
         handler = logger.handlers[-1]
         self.assertIn("%(rank)s", handler.formatter._fmt)
 
@@ -254,7 +237,7 @@ class TestPrefixLoggerRank(unittest.TestCase):
         """The rank_filter sets a 'rank' attribute on the log record."""
         logger = self._make_logger("test.prefix.rank_attr")
         with patch("forgather.ml.distributed.get_rank", return_value=5):
-            prefix_logger_rank(logger, filter=lambda rank: True)
+            prefix_logger_rank(logger, show_all_ranks=True)
             handler = logger.handlers[-1]
             record = logging.LogRecord("test", logging.INFO, "", 0, "msg", (), None)
             handler.filter(record)

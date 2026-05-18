@@ -201,6 +201,242 @@ input {
   margin-bottom: 8px;
 }
 
+/* Each Services category (Inference, Dataset, …) is a launcher button
+   prefixed with a disclosure chevron that expands the configured-
+   service list scoped to that type. Body indents under the row so
+   instances nest visually under their launcher. */
+.services-category {
+  display: flex;
+  flex-direction: column;
+}
+.services-category-row {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+}
+.services-category-chevron {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  width: 16px;
+  padding: 0;
+  font-size: 11px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.services-category-chevron:hover:not(:disabled) {
+  color: var(--fg);
+}
+.services-category-chevron:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+/* When a category has no instances we hide the chevron entirely but
+   keep a same-width placeholder so launcher labels stay aligned. */
+.services-category-chevron-spacer {
+  display: inline-block;
+  visibility: hidden;
+}
+.services-category-row > .sidebar-tool-btn {
+  flex: 1;
+}
+.services-category-body {
+  padding-left: 16px;
+  /* Pull the nested list slightly tighter so it doesn't dominate the
+     launcher row visually. */
+  margin-top: 2px;
+}
+.services-category-body .services-panel {
+  margin-top: 0;
+  border-top: none;
+  padding-top: 0;
+}
+
+/* Configured-services list inside the Services sidebar section. Each
+   row carries a red/green dot, a play/pause toggle, and a delete X;
+   the disclosure chevron expands the row to show the entry's args. */
+.services-panel {
+  margin-top: 6px;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+.services-panel.muted {
+  color: var(--fg-muted);
+  font-size: 12px;
+  padding: 6px 4px;
+}
+.services-panel.err {
+  color: #f87171;
+  font-size: 12px;
+  padding: 6px 4px;
+}
+.services-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.service-row {
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  margin-bottom: 4px;
+  background: var(--bg);
+}
+.service-row.disabled .service-id {
+  color: var(--fg-muted);
+}
+.service-row-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+}
+.service-disclosure {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  width: 14px;
+  padding: 0;
+  font-size: 11px;
+  cursor: pointer;
+}
+.service-disclosure:hover {
+  color: var(--fg);
+}
+.service-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1px solid rgba(0, 0, 0, 0.4);
+}
+.service-dot.running {
+  background: #3fb950;
+  box-shadow: 0 0 4px rgba(63, 185, 80, 0.6);
+}
+.service-dot.stopped {
+  background: #f87171;
+}
+.service-id {
+  flex: 1;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* When the label is a clickable button (running services where we
+   have a useful default action — open URL or switch view) make it
+   look like a link without going full underline-on-hover noise. */
+button.service-id-active {
+  display: block;
+  flex: 1;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  font: inherit;
+  color: var(--accent, #58a6ff);
+  cursor: pointer;
+}
+button.service-id-active:hover {
+  text-decoration: underline;
+}
+.service-action {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 1;
+}
+.service-action:hover:not(:disabled) {
+  background: var(--bg-alt);
+  border-color: var(--fg-muted);
+}
+.service-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.service-delete {
+  color: #f87171;
+}
+.service-row-body {
+  padding: 4px 8px 6px 22px;
+  border-top: 1px dashed var(--border);
+  font-size: 11px;
+}
+.service-args {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.service-arg {
+  display: flex;
+  gap: 6px;
+  padding: 1px 0;
+}
+.service-arg-key {
+  color: var(--fg-muted);
+  min-width: 90px;
+}
+.service-arg-value {
+  font-family: var(--font-mono, monospace);
+  word-break: break-all;
+}
+.service-sig {
+  margin-top: 3px;
+  font-size: 10px;
+}
+
+/* Bottom-of-sidebar bar. Sticks to the bottom of the scrolling
+   .sidebar-expanded-content container — auto top-margin pushes it past
+   any earlier sections that don't fill the height, and position:sticky
+   keeps it on screen while the user scrolls the project / files tree.
+   Gear glyph is right-aligned so it doesn't compete with the section
+   chevrons on the left edge. */
+.sidebar-footer {
+  margin-top: auto;
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-alt);
+  z-index: 1;
+}
+.sidebar-footer-gear {
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  padding: 3px 6px;
+  line-height: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.sidebar-footer-gear:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+  background: var(--bg);
+}
+.sidebar-footer-gear:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* Scheduler-toggle row in the footer: green when running, muted when
+   paused. Mirrors the original .sched-btn tinting but layered onto
+   the icon-button frame the footer uses. */
+.sched-footer-btn.running {
+  color: #3fb950;
+  border-color: #3fb95066;
+}
+.sched-footer-btn.paused {
+  color: var(--fg-muted);
+}
+
 .sched-btn {
   background: transparent;
   color: var(--fg);
@@ -286,10 +522,26 @@ input {
   font-size: 12px;
   text-align: left;
   border-radius: 2px;
+  /* Flex so the running-count pill on Services entries floats to the
+     right edge — same pattern Views → Jobs uses. */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sidebar-tool-btn-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .sidebar-tool-btn:hover {
   background: var(--bg);
   border-color: var(--fg-muted);
+}
+.sidebar-tools-hint {
+  font-size: 11px;
+  padding: 4px 2px 0 2px;
+  font-style: italic;
 }
 
 .sidebar-projects {
@@ -1034,8 +1286,14 @@ button.jobs-tty-toggle.active {
   margin-top: 8px;
 }
 
-.submit-modal {
-  width: 640px;
+/* Two class selectors so this rule beats .modal's later
+   ``width: 560px`` declaration (tied specificity → source order →
+   .modal won). The Submit dialog is wider than other modals on
+   purpose: the multi-node participants table needs five columns
+   plus a checkbox and radio without wrapping. The 92vw cap pins
+   small viewports to the screen edges. */
+.modal.submit-modal {
+  width: 960px;
   max-width: 92vw;
 }
 
@@ -1679,6 +1937,13 @@ li.config.selected button.link:hover {
   padding: 24px;
   color: var(--fg-muted);
 }
+.pane-state.warn {
+  /* Used when a cross-view preselect couldn't resolve (e.g. the
+   * chosen server doesn't have the dataset cached). Slightly warmer
+   * than the muted default so the user notices it's a hint, not the
+   * usual "nothing here" placeholder. */
+  color: #dcb450;
+}
 
 .templates-view {
   flex: 1;
@@ -2226,7 +2491,8 @@ li.config.selected button.link:hover {
 .sidebar-tools > summary,
 .sidebar-search-roots-details > summary,
 .sidebar-projects-details > summary,
-.sidebar-files-details > summary {
+.sidebar-files-details > summary,
+.sidebar-cluster-details > summary {
   cursor: pointer;
   padding: 4px 8px;
   font-size: 11px;
@@ -2241,14 +2507,16 @@ li.config.selected button.link:hover {
 .sidebar-tools > summary::-webkit-details-marker,
 .sidebar-search-roots-details > summary::-webkit-details-marker,
 .sidebar-projects-details > summary::-webkit-details-marker,
-.sidebar-files-details > summary::-webkit-details-marker {
+.sidebar-files-details > summary::-webkit-details-marker,
+.sidebar-cluster-details > summary::-webkit-details-marker {
   display: none;
 }
 .sidebar-views-details > summary::before,
 .sidebar-tools > summary::before,
 .sidebar-search-roots-details > summary::before,
 .sidebar-projects-details > summary::before,
-.sidebar-files-details > summary::before {
+.sidebar-files-details > summary::before,
+.sidebar-cluster-details > summary::before {
   content: "▸ ";
   font-size: 10px;
 }
@@ -2256,15 +2524,98 @@ li.config.selected button.link:hover {
 .sidebar-tools[open] > summary::before,
 .sidebar-search-roots-details[open] > summary::before,
 .sidebar-projects-details[open] > summary::before,
-.sidebar-files-details[open] > summary::before {
+.sidebar-files-details[open] > summary::before,
+.sidebar-cluster-details[open] > summary::before {
   content: "▾ ";
 }
 .sidebar-views-details > summary:hover,
 .sidebar-tools > summary:hover,
 .sidebar-search-roots-details > summary:hover,
 .sidebar-projects-details > summary:hover,
-.sidebar-files-details > summary:hover {
+.sidebar-files-details > summary:hover,
+.sidebar-cluster-details > summary:hover {
   color: var(--fg);
+}
+
+/* ---------- Sidebar Cluster group ---------- */
+.sidebar-cluster-details {
+  flex: none;
+}
+.cluster-sidebar {
+  padding: 2px 6px 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.cluster-sidebar-empty {
+  padding: 4px 12px 8px 12px;
+  font-size: 12px;
+}
+.cluster-sidebar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--fg);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.cluster-sidebar-row:hover:not(:disabled) {
+  background: var(--bg-alt);
+}
+.cluster-sidebar-row:disabled {
+  cursor: default;
+  color: var(--fg-muted);
+}
+.cluster-sidebar-row.self {
+  font-style: italic;
+}
+.cluster-sidebar-row.unreachable .cluster-sidebar-host {
+  text-decoration: line-through;
+  color: var(--fg-muted);
+}
+.cluster-sidebar-row.errored {
+  border-color: var(--err, #c33);
+}
+.cluster-sidebar-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.cluster-sidebar-dot.ok {
+  background: var(--ok, #2c8a2c);
+}
+.cluster-sidebar-dot.warn {
+  /* Same warm yellow the Cluster view's version-mismatch chip uses,
+   * so the two surfaces share a vocabulary. Distinct enough from
+   * green/red to be picked out at a glance. */
+  background: #dcb450;
+}
+.cluster-sidebar-dot.down {
+  background: var(--err, #c33);
+}
+.cluster-sidebar-host {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cluster-sidebar-tag {
+  font-size: 10px;
+  color: var(--fg-muted);
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+.cluster-sidebar-pending {
+  font-size: 11px;
 }
 .sidebar-files {
   /* See .sidebar-projects: the parent scrolls, so let this grow. */
@@ -2466,11 +2817,22 @@ li.config.selected button.link:hover {
 /* ---------- Info pane (README viewer) ---------- */
 /* The pane itself is the scroll container. Padding stays here so the
    scrollbar doesn't sit flush against the markdown content. */
+/* Flex shell that hosts the README outline alongside the scrolling
+   ``.info-pane`` content. Mirrors the docs-pane-split layout so the
+   same TOC chrome (``.docs-pane-toc``…) renders correctly here. */
+.info-pane-split {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+}
+
 .info-pane {
   flex: 1;
   overflow-y: auto;
   background: var(--bg-pane);
   padding: 24px 16px;
+  min-height: 0;
 }
 
 /* Single inner wrapper that owns the column width. Everything inside
@@ -2652,13 +3014,77 @@ li.config.selected button.link:hover {
   text-overflow: ellipsis;
 }
 
+/* Body + outline live in a flex row so the outline column scrolls
+   independently of the doc content. The split sits between the
+   fixed-height header above and fills the remaining vertical space. */
+.docs-pane-split {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+}
+
 .docs-pane-body {
   /* All scrolling + padding + background come from the .info-pane
      class applied alongside this one. min-height: 0 lets the flex
      child actually shrink to its parent's height instead of growing
-     to its content. */
+     to its content. flex: 1 so the body takes the remaining width
+     after the outline column claims its share. */
+  flex: 1;
   min-height: 0;
 }
+
+/* ----- Outline / TOC ----- */
+.docs-pane-toc {
+  flex: 0 0 220px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-alt);
+  overflow-y: auto;
+  padding: 8px 4px 12px 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  min-height: 0;
+}
+.docs-pane-toc-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  margin: 2px 0 6px 4px;
+}
+.docs-pane-toc ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.docs-pane-toc li {
+  margin: 0;
+}
+.docs-pane-toc button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: var(--fg-muted);
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 3px;
+}
+.docs-pane-toc button:hover {
+  background: var(--bg);
+  color: var(--fg);
+}
+/* Indent by heading depth — small steps so the outline reads as a
+   single column rather than a deep tree. */
+.docs-toc-l1 > button { padding-left: 6px; color: var(--fg); font-weight: 500; }
+.docs-toc-l2 > button { padding-left: 18px; }
+.docs-toc-l3 > button { padding-left: 30px; font-size: 11px; }
 
 .docs-pane-content {
   /* Right-click target — see the onContextMenu handler in DocsPanel
@@ -2969,6 +3395,10 @@ li.config.selected button.link:hover {
   background: #3a4a2e;
   color: #c4d89c;
 }
+.job-type-chip.type-construct {
+  background: #4a4a2e;
+  color: #d8d49c;
+}
 
 /* ----- Inference panel ----- */
 
@@ -2993,7 +3423,12 @@ li.config.selected button.link:hover {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  max-width: 920px;
+  /* Was 920px — too narrow for the Cluster + Servers tabs whose
+   * tables carry several columns (dataset id, source, rows, size,
+   * hosts, load args). 1400px fits comfortably on a 1080-wide
+   * display with sidebar; falls back to 92vw on narrower screens
+   * so it doesn't push the page horizontally. */
+  max-width: min(1400px, 92vw);
 }
 .inference-model-panel h4 {
   margin: 0 0 6px 0;
@@ -3519,4 +3954,1144 @@ li.config.selected button.link:hover {
   background: var(--bg);
   padding: 1px 4px;
   border-radius: 2px;
+}
+
+/* ============================================================
+ * Cluster Nodes view (renders inside the "gpus" view-panel slot
+ * when the server is in cluster mode). Visual language follows
+ * the existing GpuPanel — cards with a header strip and a
+ * compact metric table — so the user does not need to learn a
+ * new layout when the standalone install joins a cluster.
+ * ============================================================ */
+
+.cluster-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.cluster-panel .viewer-header {
+  border-bottom: 1px solid var(--border);
+  padding: 6px 12px;
+}
+.cluster-panel-header-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* Shared layout for ClusterJobsTab / NetworkTab — the heading line
+ * (which used to be the <details> summary) sits flush at the top of
+ * the tab body with the same indent as everything else. */
+.cluster-tab-body {
+  padding: 8px 12px;
+}
+.cluster-tab-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.nodes-panel-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 12px;
+}
+
+.node-row {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+  padding: 8px 10px;
+  background: var(--panel-bg, transparent);
+}
+
+.node-row.unreachable {
+  opacity: 0.65;
+  border-color: rgba(244, 135, 113, 0.4);
+}
+
+.node-row-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.node-hostname {
+  font-size: 14px;
+}
+
+.node-address,
+.node-version {
+  font-size: 11px;
+  color: var(--muted, #888);
+  font-family: monospace;
+}
+
+.node-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.node-tag-ok {
+  background: rgba(110, 200, 130, 0.15);
+  color: #6ec882;
+}
+
+.node-tag-warn {
+  background: rgba(220, 180, 80, 0.15);
+  color: #dcb450;
+}
+
+.node-tag-err {
+  background: rgba(244, 135, 113, 0.15);
+  color: #f48771;
+}
+
+.node-tag-muted {
+  background: rgba(140, 140, 140, 0.15);
+  color: var(--muted, #888);
+}
+
+.node-row-body {
+  font-size: 12px;
+}
+
+.node-gpu-empty,
+.node-gpu-loading,
+.node-gpu-error {
+  font-style: italic;
+  color: var(--muted, #888);
+  padding: 4px 0;
+}
+
+.node-gpu-error {
+  color: #f48771;
+  font-style: normal;
+}
+
+.node-gpu-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.node-gpu-table th,
+.node-gpu-table td {
+  text-align: left;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+}
+
+.node-gpu-table th {
+  color: var(--muted, #888);
+  font-weight: 500;
+}
+
+.node-gpu-table tr.disabled {
+  opacity: 0.5;
+}
+
+/* Cluster Nodes view: per-node bounded box wrapping the GpuPanel
+ * layout. Each box has its own header strip identifying the node;
+ * the GPU cards inside are the same component used in standalone
+ * mode so the visual language is consistent. */
+.node-group {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 6px;
+  margin: 0;
+  background: var(--panel-bg, transparent);
+}
+
+.node-group.unreachable {
+  opacity: 0.7;
+  border-color: rgba(244, 135, 113, 0.4);
+}
+
+.node-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 6px 6px 0 0;
+}
+
+.node-group-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.node-group-meta {
+  margin-left: auto;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.node-group-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.node-group-action {
+  /* Inherits sizing from .sidebar-footer-gear — the only override is
+   * a tiny side-padding bump so the buttons read as a paired control
+   * group sitting next to the node's tags. */
+  padding: 4px 8px;
+}
+
+.node-group-body {
+  padding: 8px;
+}
+
+.node-group-body .gpu-panel {
+  /* Embedded GpuPanel: the wrapping node box already provides the
+   * frame, so trim its own padding to keep the nested layout tight. */
+  padding: 0;
+}
+
+.node-group-body .gpu-panel-header {
+  /* The cluster header already names the node; the inner "N GPUs ·
+   * live" tag would be redundant. Hide it but keep it for the
+   * standalone case via the un-wrapped GpuPanel. */
+  display: none;
+}
+
+.node-group-error {
+  color: #f48771;
+  font-size: 12px;
+  padding: 8px 4px;
+}
+
+.gpu-card.readonly {
+  /* Slightly muted to signal that click-toggle is the only action;
+   * peer cards still respond to click but don't expose the right-
+   * click context menu. */
+  cursor: default;
+}
+
+/* Phase 2 — version row, interface list, bandwidth panel.
+ * The version chips share the visual idiom of the existing GPU
+ * badges so the Nodes view doesn't introduce yet another color
+ * vocabulary. */
+
+.node-group-versions {
+  padding: 4px 10px 0 10px;
+}
+
+.version-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.version-row-pending {
+  font-style: italic;
+  color: var(--muted, #888);
+  font-size: 11px;
+}
+
+.version-chip {
+  display: inline-flex;
+  gap: 4px;
+  align-items: baseline;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-family: monospace;
+  background: rgba(140, 140, 140, 0.1);
+}
+
+.version-chip-label {
+  color: var(--muted, #888);
+}
+
+.version-chip-value {
+  color: inherit;
+}
+
+.version-chip-muted .version-chip-value {
+  color: var(--muted, #888);
+}
+
+.version-chip-warn {
+  background: rgba(220, 180, 80, 0.18);
+  color: #dcb450;
+}
+
+.version-chip-warn .version-chip-label {
+  color: #dcb450;
+  opacity: 0.8;
+}
+
+.node-group-interfaces {
+  padding: 4px 10px;
+  border-top: 1px solid var(--border, #2a2a2a);
+}
+
+.node-group-interfaces summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted, #888);
+  padding: 2px 0;
+}
+
+.node-group-interfaces summary:hover {
+  color: inherit;
+}
+
+.iface-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.iface-table th,
+.iface-table td {
+  text-align: left;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+}
+
+.iface-table th {
+  color: var(--muted, #888);
+  font-weight: 500;
+}
+
+.iface-table tr.down {
+  opacity: 0.55;
+}
+
+.iface-empty {
+  font-size: 11px;
+  padding: 4px 0;
+}
+
+/* Per-node collapsible GPU list (Nodes panel). Visually matches
+ * .node-group-interfaces / .iface-table but stays open by default. */
+.node-group-gpus {
+  padding: 4px 10px;
+  border-top: 1px solid var(--border, #2a2a2a);
+}
+.node-group-gpus summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted, #888);
+  padding: 2px 0;
+}
+.node-group-gpus summary:hover {
+  color: inherit;
+}
+.gpu-row-empty {
+  font-size: 11px;
+  padding: 4px 0;
+}
+.gpu-row-table {
+  /* width: auto so the table hugs its content from the left edge
+   * instead of stretching to fill the panel — at 100% the auto
+   * layout algorithm scatters the columns across the panel width,
+   * leaving big gaps between short headers like "Util" and "Temp". */
+  width: auto;
+  border-collapse: collapse;
+  font-size: 11px;
+  margin-top: 4px;
+}
+.gpu-row-table th,
+.gpu-row-table td {
+  text-align: left;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+}
+.gpu-row-table th {
+  color: var(--muted, #888);
+  font-weight: 500;
+}
+.gpu-row-table tr.gpu-list-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.gpu-row-idx {
+  font-family: monospace;
+  width: 3em;
+}
+.gpu-row-name {
+  max-width: 18em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gpu-row-mem,
+.gpu-row-util,
+.gpu-row-temp {
+  font-family: monospace;
+  white-space: nowrap;
+}
+.gpu-row-status-tag {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  background: rgba(140, 140, 140, 0.15);
+}
+.gpu-row-status-tag.tag-idle {
+  background: rgba(80, 180, 100, 0.18);
+  color: #6dc97f;
+}
+.gpu-row-status-tag.tag-busy,
+.gpu-row-status-tag.tag-active {
+  background: rgba(220, 180, 80, 0.18);
+  color: #dcb450;
+}
+.gpu-row-status-tag.tag-disabled {
+  background: rgba(180, 90, 90, 0.18);
+  color: #d07a7a;
+}
+.gpu-row-status-tag.tag-excluded {
+  background: rgba(140, 140, 140, 0.25);
+  color: var(--muted, #888);
+}
+.gpu-list-row.gpu-list-row-disabled .gpu-row-name,
+.gpu-list-row.gpu-list-row-excluded .gpu-row-name {
+  opacity: 0.6;
+}
+
+.bw-panel {
+  margin: 0 0 8px 0;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.bw-panel summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.bw-panel summary::-webkit-details-marker {
+  margin-right: 4px;
+}
+
+.bw-refresh {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.bw-refresh:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.bw-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  border-top: 1px solid var(--border, #2a2a2a);
+}
+
+.bw-table th,
+.bw-table td {
+  text-align: left;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+}
+
+.bw-table th {
+  color: var(--muted, #888);
+  font-weight: 500;
+}
+
+.bw-table tr.err td {
+  color: #f48771;
+}
+
+.bw-empty {
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+/* Phase 3: cluster jobs panel + multi-node submit modal. */
+
+.cluster-jobs-panel {
+  margin: 0 0 8px 0;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.cluster-jobs-panel summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.cj-hint {
+  margin-left: auto;
+  font-size: 11px;
+  font-style: italic;
+}
+
+.multinode-panel {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+  padding: 8px 10px 4px;
+  margin-bottom: 12px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.multinode-panel .multinode-members {
+  margin-top: 6px;
+}
+
+.multinode-panel .modal-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.multinode-panel .submit-help {
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+/* Internal scroll so the participants table caps at ~9 rows (~240
+   px) and any extras scroll within the panel rather than pushing
+   the rdzv port / warnings / help line off-screen. The submit-modal
+   already caps each <details> section at 50% of the modal body, so
+   together these bounds mean: panel never larger than half the
+   modal, and the table inside it scrolls when the cluster has many
+   members. */
+.multinode-members-scroll {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 3px;
+}
+
+/* Collapsible section inside the Submit dialog. The Multi-node
+   panel and the Dynamic arguments form are each wrapped in one of
+   these; opening both gives a 50/50 split, collapsing one lets the
+   other expand naturally. */
+.submit-section {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+  margin-bottom: 10px;
+}
+.submit-section[open] {
+  display: flex;
+  flex-direction: column;
+  max-height: 50%;
+  min-height: 0;
+}
+.submit-section > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 4px 8px;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 3px 3px 0 0;
+}
+.submit-section > summary::-webkit-details-marker {
+  display: none;
+}
+.submit-section > summary::before {
+  content: "▶";
+  display: inline-block;
+  width: 12px;
+  font-size: 9px;
+  color: var(--muted, #888);
+  margin-right: 4px;
+  transition: transform 0.15s;
+}
+.submit-section[open] > summary::before {
+  transform: rotate(90deg);
+}
+.submit-section > summary .dyn-heading {
+  display: inline;
+  margin: 0;
+}
+/* Open-section content area scrolls. Both the Multi-node panel
+   (single ``.multinode-panel`` root) and DynamicArgsForm render as
+   one wrapping element, so this selector grabs that single child. */
+.submit-section[open] > :not(summary) {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 6px 8px 8px;
+}
+
+.cj-empty {
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+.cj-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  border-top: 1px solid var(--border, #2a2a2a);
+}
+
+.cj-table th,
+.cj-table td {
+  text-align: left;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+  vertical-align: top;
+}
+
+.cj-table th {
+  color: var(--muted, #888);
+  font-weight: 500;
+}
+
+.cj-table tr.cancelled {
+  opacity: 0.6;
+}
+
+.cj-member {
+  font-family: monospace;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.cj-cancel-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+  background: rgba(244, 135, 113, 0.15);
+  color: #f48771;
+  border: 1px solid rgba(244, 135, 113, 0.3);
+  border-radius: 3px;
+}
+
+.cj-cancel-btn:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+.multinode-modal {
+  width: min(900px, 95vw);
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.multinode-members {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin: 6px 0;
+}
+
+.multinode-members th,
+.multinode-members td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+  vertical-align: middle;
+}
+
+.multinode-members th {
+  color: var(--muted, #888);
+  font-weight: 500;
+  text-align: left;
+}
+
+.multinode-members tr.unreachable {
+  opacity: 0.5;
+}
+
+.multinode-members input[type="text"],
+.multinode-members select {
+  width: 100%;
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.modal-section {
+  margin: 12px 0;
+}
+
+.modal-section h3 {
+  font-size: 13px;
+  margin: 0 0 6px 0;
+  color: var(--muted, #888);
+}
+
+.modal-warning {
+  margin: 12px 0;
+  padding: 8px 10px;
+  background: rgba(220, 180, 80, 0.10);
+  border-left: 3px solid #dcb450;
+  font-size: 12px;
+}
+
+.modal-warning ul {
+  margin: 4px 0 8px 16px;
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.modal-error pre {
+  background: rgba(244, 135, 113, 0.08);
+  border-left: 3px solid #f48771;
+  padding: 6px 8px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Datasets → Explore tab ----------------------------------------------- */
+.datasets-explore {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+.datasets-explore-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.datasets-explore-header .spacer {
+  flex: 1;
+}
+.datasets-explore-header-title {
+  min-width: 0;
+}
+.datasets-explore-tree-toggle {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 3px 7px;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.datasets-explore-tree-toggle:hover {
+  background: var(--bg-alt);
+}
+.datasets-explore-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.datasets-explore-tree {
+  /* Default flex-basis kept as a fallback; the component overrides
+   * width inline once the user drags the divider (or initialises
+   * from localStorage). */
+  flex: 0 0 442px;
+  min-width: 240px;
+  max-width: 60%;
+  overflow: auto;
+  border-right: 1px solid var(--border);
+  padding: 8px;
+  background: var(--bg);
+}
+.datasets-explore-tree.collapsed {
+  display: none;
+}
+/* Drag handle between the tree and the preview pane. Mirrors the
+ * .trefs-split-handle styling so the two resizers feel the same. */
+.datasets-explore-resizer {
+  flex: 0 0 6px;
+  background: var(--border);
+  cursor: col-resize;
+  position: relative;
+  touch-action: none;
+  align-self: stretch;
+}
+.datasets-explore-resizer::before {
+  /* Widen the hit area without expanding the visual stripe — easier
+   * to grab without making the divider visually heavy. */
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+}
+.datasets-explore-resizer:hover,
+.datasets-explore-resizer:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+.preview-page-size {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.preview-page-size button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  font-size: 11px;
+  min-width: 36px;
+}
+.preview-page-size button:hover {
+  background: var(--bg-alt);
+}
+.preview-page-size button.active {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+.preview-header-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.preview-header-row .spacer {
+  flex: 1;
+}
+.datasets-explore-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 12px;
+}
+.explore-tree-root,
+.explore-tree-children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.explore-tree-children {
+  padding-left: 14px;
+  border-left: 1px dashed var(--border);
+  margin-left: 6px;
+}
+.explore-tree-node {
+  margin: 1px 0;
+}
+.explore-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 4px;
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+  font-size: 12px;
+  border-radius: 2px;
+  border-left: 2px solid transparent;
+}
+.explore-tree-row:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.explore-tree-row.split-row {
+  padding-left: 10px;
+  cursor: pointer;
+}
+.explore-tree-row.split-row.selected {
+  background: var(--selected);
+  border-left-color: var(--accent);
+}
+.explore-tree-row .tri {
+  display: inline-block;
+  width: 12px;
+  color: var(--fg-muted);
+}
+.explore-server-label {
+  font-weight: 500;
+}
+.explore-server-url {
+  font-size: 11px;
+}
+
+.preview-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.preview-header {
+  flex: 0 0 auto;
+  margin-bottom: 8px;
+}
+.preview-title {
+  font-size: 14px;
+}
+.preview-meta {
+  font-size: 11px;
+  margin-top: 2px;
+}
+.preview-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+.preview-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+  background: var(--bg-alt);
+}
+.preview-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  padding: 5px 8px;
+  z-index: 1;
+}
+.preview-table tbody td {
+  border-bottom: 1px solid var(--border);
+  padding: 4px 8px;
+  vertical-align: top;
+  max-width: 480px;
+}
+.preview-table tbody tr {
+  cursor: pointer;
+}
+.preview-table tbody tr:hover {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.preview-table tbody tr.expanded {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.preview-table tbody tr.expanded td {
+  max-width: none;
+}
+.preview-table .row-index {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.preview-cell {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.preview-cell.expanded {
+  font-family: var(--mono, monospace);
+}
+
+.preview-pager {
+  flex: 0 0 auto;
+  margin-top: 8px;
+}
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  justify-content: center;
+}
+.pager-page {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  min-width: 28px;
+  font-size: 12px;
+}
+.pager-page:hover {
+  background: var(--bg-alt);
+}
+.pager-page.active {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.pager-ellipsis {
+  padding: 0 4px;
+  font-size: 12px;
+}
+.pager-goto {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 12px;
+  font-size: 12px;
+}
+.pager-goto label {
+  font-size: 11px;
+}
+.pager-goto input {
+  width: 5em;
+  padding: 3px 6px;
+  font-size: 12px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+/* Hide the native number-input spinners — they squeeze the visible
+ * digit area and add no value over typing or the Prev/Next chevrons. */
+.pager-goto input::-webkit-inner-spin-button,
+.pager-goto input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.pager-goto input[type="number"] {
+  -moz-appearance: textfield;
+}
+.pager-goto-total {
+  font-size: 11px;
+}
+
+/* Datasets → Servers — typed result renderers ----------------------- */
+.ds-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ds-section-summary {
+  font-size: 11px;
+}
+.ds-status-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-alt);
+}
+.ds-status-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font-size: 13px;
+}
+.ds-status-policy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ds-feature-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.chip.chip-ok {
+  background: color-mix(in srgb, #2ea043 28%, var(--bg-alt));
+  border-color: color-mix(in srgb, #2ea043 60%, var(--border));
+  color: var(--fg);
+}
+.chip.chip-warn {
+  background: color-mix(in srgb, #d29922 28%, var(--bg-alt));
+  border-color: color-mix(in srgb, #d29922 60%, var(--border));
+  color: var(--fg);
+}
+.chip.chip-danger {
+  background: color-mix(in srgb, #cf222e 28%, var(--bg-alt));
+  border-color: color-mix(in srgb, #cf222e 60%, var(--border));
+  color: var(--fg);
+}
+.chip.chip-muted {
+  background: var(--bg);
+  border-color: var(--border);
+  color: var(--fg-muted);
+}
+.ds-hf-table td,
+.ds-local-table td,
+.ds-handles-table td {
+  max-width: 360px;
+}
+
+/* Datasets → Servers — sortable headers + split links + bar chart ---- */
+.preview-table th.sortable:hover {
+  background: var(--bg-alt);
+}
+.preview-table th.sortable.active {
+  color: var(--accent);
+}
+.ds-split-link {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: none;
+}
+.ds-split-link:hover {
+  text-decoration: underline;
+}
+.ds-features-cell {
+  font-size: 11px;
+  max-width: 260px;
+}
+.ds-bar-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-alt);
+}
+.ds-bar-row {
+  display: flex;
+  width: 100%;
+  height: 14px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.ds-bar-seg {
+  display: inline-block;
+  height: 100%;
+  min-width: 2px;
+}
+.ds-bar-seg.ds-bar-tail {
+  background: var(--fg-muted);
+}
+.ds-bar-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  font-size: 11px;
+}
+.ds-bar-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.ds-bar-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.ds-bar-swatch.ds-bar-tail {
+  background: var(--fg-muted);
 }

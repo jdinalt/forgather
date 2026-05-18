@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
@@ -5,6 +6,13 @@ import remarkGfm from "remark-gfm";
 import rehypeSlug from "rehype-slug";
 
 import { api } from "../api";
+
+/** Entry in the outline. Same shape as DocsPanel's. */
+interface TocEntry {
+  id: string;
+  text: string;
+  level: number;
+}
 
 interface Props {
   project_dir: string;
@@ -81,27 +89,113 @@ export function InfoPane({ project_dir, enabled, onOpenDoc, onEditFile }: Props)
     retry: false,
   });
 
-  if (!enabled) return null;
-
-  if (readmeQ.isLoading) {
-    return <div className="pane-state">Loading...</div>;
-  }
-
-  if (readmeQ.isError) {
-    const msg = String(readmeQ.error);
-    if (msg.includes("404")) {
-      return (
-        <div className="pane-state muted">This project has no README.md.</div>
+  // Outline / TOC. Same extraction pattern DocsPanel uses: query
+  // the rendered DOM after the markdown commits, since rehype-slug
+  // has already stamped ids on every h1–h6 we'd want to link to.
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  // Last observed scrollTop. Preserved across tab switches so the
+  // Info pane re-opens where the user last was rather than at the
+  // top. Updated by the scroll handler on the .info-pane container.
+  const lastScrollTop = useRef(0);
+  const [toc, setToc] = useState<TocEntry[]>([]);
+  const refreshToc = useCallback(() => {
+    const body = bodyRef.current;
+    const entries: TocEntry[] = [];
+    if (body) {
+      const headings = body.querySelectorAll<HTMLElement>(
+        ".info-pane-content h1, .info-pane-content h2, .info-pane-content h3",
       );
+      headings.forEach((h) => {
+        const id = h.id;
+        if (!id) return;
+        const text = (h.textContent || "").trim();
+        if (!text) return;
+        entries.push({ id, text, level: Number(h.tagName.slice(1)) });
+      });
     }
-    return (
-      <div className="pane-state err">
-        <pre>{msg}</pre>
-      </div>
-    );
-  }
+    // Bail out if the outline didn't actually change. Without this, a
+    // DOM mutation that produces the same headings (e.g., react re-
+    // reconciling identical markdown output) would still produce a
+    // fresh array reference on every observer fire and React would
+    // re-render unconditionally — combined with non-memoized
+    // ``components`` that meant a hot infinite loop locked the main
+    // thread.
+    setToc((prev) => {
+      if (
+        prev.length === entries.length &&
+        prev.every(
+          (p, i) =>
+            p.id === entries[i].id &&
+            p.text === entries[i].text &&
+            p.level === entries[i].level,
+        )
+      ) {
+        return prev;
+      }
+      return entries;
+    });
+  }, []);
+  // Re-extract whenever the rendered project changes (project_dir
+  // shift) or the README data refreshes. ``readmeQ.data`` is the
+  // markdown source string — when it flips identity react-markdown
+  // re-renders and we re-query.
+  useEffect(() => {
+    const id = requestAnimationFrame(refreshToc);
+    return () => cancelAnimationFrame(id);
+  }, [project_dir, readmeQ.data, refreshToc]);
+  // Also catch DOM mutations inside the body — covers the case
+  // where rehype plugins commit asynchronously after the first
+  // render (rare here, but defensive and matches DocsPanel).
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const obs = new MutationObserver(() => refreshToc());
+    obs.observe(el, { childList: true, subtree: true });
+    return () => obs.disconnect();
+  }, [refreshToc]);
 
-  const components: Components = {
+  const scrollToHeading = useCallback((id: string) => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const target = body.querySelector<HTMLElement>(`#${CSS.escape(id)}`);
+    if (target) {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, []);
+
+  // Restore the saved scrollTop after re-enabling. Wait one frame so
+  // the previously display:none-d container has its scroll viewport
+  // back; ``display:none`` resets scrollTop in some browsers, so we
+  // can't rely on the browser to remember.
+  useEffect(() => {
+    if (!enabled) return;
+    const raf = requestAnimationFrame(() => {
+      if (bodyRef.current) {
+        bodyRef.current.scrollTop = lastScrollTop.current;
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [enabled]);
+
+  const onScroll = useCallback(() => {
+    if (bodyRef.current) lastScrollTop.current = bodyRef.current.scrollTop;
+  }, []);
+
+  // Loading / error / 404 states render inside the same shell so the
+  // outer ``.info-pane-split`` and ``bodyRef`` survive across them —
+  // otherwise an early ``return`` would unmount the scroll container
+  // on every tab switch and the saved scrollTop would have nothing
+  // to restore against.
+  const errMsg = readmeQ.isError ? String(readmeQ.error) : "";
+  const is404 = errMsg.includes("404");
+
+
+  // ``components`` MUST be memoized. ReactMarkdown treats this prop
+  // by-reference; a fresh object on every render makes react-
+  // markdown regenerate its child tree, which is what the
+  // MutationObserver below watches — combined that produced an
+  // infinite render loop and a wedged main thread.
+  const components: Components = useMemo(() => ({
     img({ src, alt, ...rest }) {
       if (!src) return null;
       const isAbsolute =
@@ -202,15 +296,41 @@ export function InfoPane({ project_dir, enabled, onOpenDoc, onEditFile }: Props)
       }
       return <a {...rest}>{children}</a>;
     },
-  };
+  }), [project_dir, onOpenDoc, onEditFile]);
 
-  // Single inner content wrapper: that's where max-width + centering
-  // live. Everything inside flows at the wrapper's full width so headers,
-  // paragraphs, hr, lists, tables all share the same left/right edges
-  // (instead of each centering itself independently with its own
-  // max-width, which produced the inconsistent-spacing rendering).
-  return (
-    <div className="info-pane">
+  // The TOC rides on the same flex shell pattern as DocsPanel's
+  // ``.docs-pane-split`` — outline column on the left, scrollable
+  // content on the right. Reusing the same ``.docs-pane-toc*``
+  // class names keeps the styling consistent across the two
+  // surfaces (one set of CSS for both outlines).
+  //
+  // Single inner content wrapper inside ``.info-pane``: that's
+  // where max-width + centering live. Everything inside flows at
+  // the wrapper's full width so headers, paragraphs, hr, lists,
+  // tables all share the same left/right edges (instead of each
+  // centering itself independently with its own max-width, which
+  // produced the inconsistent-spacing rendering).
+  //
+  // Disabled (tab switched away) renders the same shell with
+  // ``display:none`` rather than returning null. Keeping the
+  // .info-pane node mounted means ``bodyRef`` stays valid across
+  // tab switches and the scrollTop-restore effect can put the
+  // user back where they were.
+  let body: React.ReactNode;
+  if (readmeQ.isLoading) {
+    body = <div className="pane-state">Loading...</div>;
+  } else if (is404) {
+    body = (
+      <div className="pane-state muted">This project has no README.md.</div>
+    );
+  } else if (readmeQ.isError) {
+    body = (
+      <div className="pane-state err">
+        <pre>{errMsg}</pre>
+      </div>
+    );
+  } else {
+    body = (
       <div className="info-pane-content">
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
@@ -219,6 +339,38 @@ export function InfoPane({ project_dir, enabled, onOpenDoc, onEditFile }: Props)
         >
           {readmeQ.data ?? ""}
         </ReactMarkdown>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="info-pane-split"
+      style={!enabled ? { display: "none" } : undefined}
+    >
+      {toc.length > 1 && (
+        <nav className="docs-pane-toc" aria-label="README outline">
+          <div className="docs-pane-toc-title">On this page</div>
+          <ul>
+            {toc.map((e, i) => (
+              <li
+                key={`${e.id}-${i}`}
+                className={`docs-toc-l${Math.min(e.level, 3)}`}
+              >
+                <button
+                  type="button"
+                  onClick={() => scrollToHeading(e.id)}
+                  title={e.text}
+                >
+                  {e.text}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      )}
+      <div className="info-pane" ref={bodyRef} onScroll={onScroll}>
+        {body}
       </div>
     </div>
   );

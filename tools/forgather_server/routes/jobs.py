@@ -5,7 +5,7 @@ A "job" here is a training run we know about, from one of two sources:
     1. ``JobRecord`` — a run *we* dispatched via the queue. Carries config,
        dynamic_args, GPU assignment, captured TTY path, exit code, etc.
     2. ``TrainerControlClient.JobInfo`` — discovery from a
-       ``~/.forgather/jobs/{job_id}/endpoint.json`` file. Carries the
+       ``~/.config/forgather/jobs/{job_id}/endpoint.json`` file. Carries the
        trainer's host:port for control commands and (for newer callbacks)
        its ``logging_dir`` / ``output_dir``.
 
@@ -107,24 +107,61 @@ class ControlResponseModel(BaseModel):
 
 
 def _pid_alive(pid: Optional[int]) -> bool:
+    """True iff ``pid`` refers to a running, *non-zombie* process.
+
+    Thin wrapper that handles ``None`` and delegates to the shared
+    helper used by the scheduler's reap path, so "is this PID alive"
+    has a single answer regardless of which subsystem is asking.
+    Pre-consolidation, this module had its own copy with a different
+    psutil-less fallback (returned True) than the scheduler's (used
+    ``os.kill(pid, 0)``); operators who hit the no-psutil path saw
+    inconsistent live-ness reporting between the Jobs view and the
+    scheduler's reap loop.
+    """
     if pid is None:
         return False
-    try:
-        import psutil
-    except ImportError:
-        return True
-    try:
-        if not psutil.pid_exists(pid):
-            return False
-        return psutil.Process(pid).is_running()
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        return False
+    return scheduler._pid_is_alive(pid)
 
 
 def _record_to_model(
     r: job_records.JobRecord,
     matched_endpoint: Optional[trainer_control.JobInfo] = None,
 ) -> JobModel:
+    # Backfill `scheme` for inference/dataset_server records that
+    # pre-date the scheduler-side stamp (or were created on a host
+    # whose TLS state has since flipped). The current TLS state is
+    # the right answer because the upstream child read the same
+    # shared config when it started; if the operator just enabled
+    # TLS, they also need to restart the spawned child, so the
+    # backfill matches what the server *currently* serves.
+    job_params_out = dict(r.job_params)
+    if r.job_type in ("inference", "dataset_server") and "scheme" not in job_params_out:
+        try:
+            from forgather.tls import client_scheme as _client_scheme
+
+            host_for_scheme = job_params_out.get("host", "127.0.0.1")
+            job_params_out["scheme"] = _client_scheme(host_for_scheme)
+        except Exception:
+            job_params_out["scheme"] = "http"
+    # Backfill routable_host the same way — pre-existing inference/
+    # dataset_server records bound to 0.0.0.0 want a LAN-routable URL
+    # displayed in the Job card. Computed at API-response time because
+    # the routable address depends on the *current* network state (mDNS
+    # discovery may have come up since the record was written).
+    if (
+        r.job_type in ("inference", "dataset_server")
+        and job_params_out.get("host") in ("0.0.0.0", "::", "")
+        and "routable_host" not in job_params_out
+    ):
+        try:
+            from .. import scheduler as _scheduler
+
+            routable = _scheduler.detect_routable_host()
+            if routable:
+                job_params_out["routable_host"] = routable
+        except Exception:
+            pass
+
     return JobModel(
         id=r.queue_id,
         queue_id=r.queue_id,
@@ -138,7 +175,7 @@ def _record_to_model(
         node=r.node,
         gpu_indices=list(r.gpu_indices),
         job_type=r.job_type,
-        job_params=dict(r.job_params),
+        job_params=job_params_out,
         status=r.status,
         started_at=r.started_at,
         finished_at=r.finished_at,
@@ -223,7 +260,7 @@ def list_jobs(include_dead_endpoints: bool = False):
     """List all known jobs.
 
     By default omits externally-discovered endpoint files whose process is
-    no longer alive (those accumulate as ``~/.forgather/jobs/`` cruft).
+    no longer alive (those accumulate as ``~/.config/forgather/jobs/`` cruft).
     JobRecords are always returned so users can see their own history.
     """
     return _build_unified_list(include_dead_endpoints=include_dead_endpoints)
@@ -381,7 +418,7 @@ async def tty_stream(ws: WebSocket, job_id: str, follow: bool = True):
 
     The TTY path is re-read from the JobRecord on every poll iteration so
     the stream survives a relocation (e.g. terminal-time relocation from
-    ``~/.forgather/server/jobs/q_*.tty`` into the run's ``logs/tty.log``).
+    ``~/.config/forgather/server/jobs/q_*.tty`` into the run's ``logs/tty.log``).
     The file content is preserved across the move, so the maintained byte
     ``offset`` remains valid against the new path.
     """
@@ -442,27 +479,96 @@ async def tty_stream(ws: WebSocket, job_id: str, follow: bool = True):
 
 @router.delete("/jobs/{job_id}")
 def remove_job(job_id: str):
-    """Remove a JobRecord (terminal only). Externally-discovered endpoints
-    aren't ours to delete — use the existing CLI ``forgather control
-    cleanup`` for those.
+    """Remove a job entry from the list.
 
-    If the record's TTY file is still under the central jobs_tty_dir
-    (i.e. it was never relocated into a run's logs/ — typically a
-    non-training job) we unlink it here too. TTYs that have already
-    been moved into a run dir are left alone; they're part of the run's
-    artifacts now.
+    Two paths depending on what backs the entry:
+
+    * **JobRecord** — must be in a terminal status. We unlink the
+      central TTY (if not already relocated into a run's logs/ dir)
+      and drop the JobRecord.
+    * **Endpoint-only** (``source="endpoint"`` in the merged list,
+      no JobRecord) — must be a *dead* endpoint (PID gone, zombie,
+      or recycled). We rmtree the trainer-control directory so the
+      stale ``endpoint.json`` and ``status.json`` files stop
+      surfacing in the Jobs list. Live endpoint-only entries are
+      refused: they belong to an actively-running trainer that
+      isn't ours to evict.
+
+    The endpoint-cleanup branch is what closes the "phantom running
+    job from a previous server instance" loop the operator hit on
+    muthur — without it, killing the zombie process did nothing
+    visible, and the Forgather control CLI on each peer was the
+    only escape.
     """
     rec = job_records.get_record(job_id)
-    if rec is None:
+    if rec is not None:
+        if rec.status not in job_records.TERMINAL_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"cannot remove an active record (status={rec.status})",
+            )
+        _gc.delete_central_tty_for(rec)
+        job_records.remove_record(job_id)
+        return {"removed": job_id, "source": "record"}
+
+    # Endpoint-only path. Look up the trainer-control entry, refuse
+    # to evict a live one, otherwise rmtree its directory.
+    ep = _find_endpoint_by_id(job_id)
+    if ep is None:
         raise HTTPException(status_code=404, detail=f"no record for {job_id}")
-    if rec.status not in job_records.TERMINAL_STATUSES:
+    if _pid_alive(ep.pid):
         raise HTTPException(
             status_code=409,
-            detail=f"cannot remove an active record (status={rec.status})",
+            detail=(
+                f"endpoint {job_id} (pid={ep.pid}) is still alive. "
+                "Refusing to remove a running trainer's endpoint dir."
+            ),
         )
-    _gc.delete_central_tty_for(rec)
-    job_records.remove_record(job_id)
-    return {"removed": job_id}
+    removed_dir = _remove_endpoint_dir(job_id)
+    if not removed_dir:
+        raise HTTPException(
+            status_code=500,
+            detail=f"could not remove endpoint directory for {job_id}",
+        )
+    return {"removed": job_id, "source": "endpoint"}
+
+
+def _find_endpoint_by_id(job_id: str) -> Optional[trainer_control.JobInfo]:
+    """Locate a TrainerControl endpoint entry by its job_id."""
+    try:
+        eps = trainer_control.list_jobs()
+    except Exception as e:
+        log.warning("endpoint enumeration failed during remove: %s", e)
+        return None
+    for ep in eps:
+        if ep.job_id == job_id:
+            return ep
+    return None
+
+
+def _remove_endpoint_dir(job_id: str) -> bool:
+    """Delete the trainer-control directory for ``job_id``.
+
+    Mirrors the directory layout the trainer's HTTP control endpoint
+    writes into (``<forgather_config_dir>/jobs/<job_id>/``). Returns
+    True on successful removal, False if the directory is missing or
+    rmtree raises. Errors are logged but swallowed so a partial
+    removal still produces a usable response.
+    """
+    import shutil
+    from pathlib import Path
+
+    from forgather.preprocess import forgather_config_dir
+
+    job_dir = Path(forgather_config_dir()) / "jobs" / job_id
+    if not job_dir.exists():
+        return False
+    try:
+        shutil.rmtree(job_dir)
+        return True
+    except OSError as e:
+        log.warning("failed to rmtree %s: %s", job_dir, e)
+        return False
 
 
 @router.post("/jobs/cleanup")

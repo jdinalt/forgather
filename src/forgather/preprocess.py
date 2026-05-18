@@ -24,24 +24,28 @@ logger = logging.getLogger(__name__)
 
 
 def forgather_config_dir():
-    return user_config_dir("forgather", getpass.getuser())
-
-
-def forgather_home_dir():
     """Root for all per-user Forgather state.
 
-    Honors ``$FORGATHER_HOME`` so tests (and unusual deployments) can
-    redirect every state file in one place; otherwise defaults to
-    ``~/.forgather``.
+    Resolved via ``platformdirs.user_config_dir`` -- on Linux this is
+    ``~/.config/forgather``; macOS/Windows pick the platform-appropriate
+    location. This is the single source of truth for the per-user
+    Forgather directory used by the CLI, the server, trainers, and tests.
     """
-    env = os.environ.get("FORGATHER_HOME")
-    if env:
-        return env
-    return str(Path.home() / ".forgather")
+    return user_config_dir("forgather", getpass.getuser())
 
 
 _HARDWARE_YAML = "hardware.yaml"
 _GPU_FLOPS_YAML = Path(__file__).with_name("gpu_flops.yaml")
+
+# Stand-in peak FLOPS used when no GPU is detected and no manual override
+# is present. Keeps preprocessing functional (MFU-style derived values stay
+# numeric) without pretending we know the real hardware. Deliberately set
+# to a *pessimistic* placeholder (~RTX 4060 / L4 BF16 dense): an operator
+# who silently lands here gets MFU > 100% on any real GPU, which is loud
+# enough to notice in dashboards. A 4090-class default would produce
+# plausible-looking numbers that hide the misconfiguration. Users on real
+# hardware get the auto-detected value cached in ``hardware.yaml`` instead.
+_FALLBACK_PEAK_HARDWARE_FLOPS: float = 30e12
 
 # Loaded lazily by _get_gpu_flops_table().
 _gpu_flops_table: list[tuple[list[str], float]] | None = None
@@ -80,25 +84,37 @@ def _detect_gpu_flops() -> tuple[str | None, float | None]:
         return None, None
 
 
-def get_peak_hardware_flops() -> float | None:
+def _qat_recipes_global() -> list[str]:
+    """Return the QAT recipe list for use as a Jinja global.
+
+    Renders to YAML via the ``toyaml`` filter so the template's
+    ``--qat-recipe`` ``choices:`` list stays in sync with the Python source
+    of truth (``forgather.ml.qat_recipes.QAT_RECIPES``).
+    """
+    from forgather.ml.qat_recipes import QAT_RECIPES
+
+    return list(QAT_RECIPES)
+
+
+def get_peak_hardware_flops() -> float:
     """
     Return the peak BF16 FLOP/s (FP32 accumulation) for a single GPU.
 
     Resolution order:
 
-    1. Read ``~/.forgather/hardware.yaml`` -- if it contains a
+    1. Read ``<forgather_config_dir>/hardware.yaml`` -- if it contains a
        ``peak_hardware_flops`` value, return it immediately.
     2. Detect the current GPU via ``torch.cuda.get_device_name(0)`` and
        look it up in the built-in reference table.
-    3. If found, write the result to ``~/.forgather/hardware.yaml`` so
-       subsequent calls (and other sessions) skip detection.
-
-    Returns ``None`` when no GPU is available or the GPU is not in the
-    reference table. In that case the user can create
-    ``~/.forgather/hardware.yaml`` manually -- see
-    ``docs/trainers/training-performance-metrics.md`` for values.
+    3. If found, write the result to ``<forgather_config_dir>/hardware.yaml``
+       so subsequent calls (and other sessions) skip detection.
+    4. Otherwise return a static stand-in (``_FALLBACK_PEAK_HARDWARE_FLOPS``)
+       so preprocessing stays functional on hosts without a recognized GPU.
+       MFU computed against the stand-in is meaningless -- override it by
+       creating ``<forgather_config_dir>/hardware.yaml`` with a real value
+       (see ``docs/trainers/training-performance-metrics.md``).
     """
-    home_dir = Path(forgather_home_dir())
+    home_dir = Path(forgather_config_dir())
     hardware_file = home_dir / _HARDWARE_YAML
 
     # 1. Check for a cached / manually specified value.
@@ -128,8 +144,19 @@ def get_peak_hardware_flops() -> float | None:
             )
         except OSError as exc:
             logger.debug("Could not write %s: %s", hardware_file, exc)
+        return flops
 
-    return flops
+    # 4. No GPU recognized -- keep preprocessing functional with a stand-in.
+    logger.warning(
+        "peak_hardware_flops not set and no recognized GPU detected"
+        " (device_name=%r); using deliberately pessimistic placeholder"
+        " %.1f TFLOPS. MFU > 100%% in your dashboards = this fallback"
+        " fired and you need to override it via %s.",
+        device_name,
+        _FALLBACK_PEAK_HARDWARE_FLOPS / 1e12,
+        hardware_file,
+    )
+    return _FALLBACK_PEAK_HARDWARE_FLOPS
 
 
 def split_templates(template, name=None):
@@ -561,8 +588,8 @@ class PPEnvironment(SandboxedEnvironment):
         "user_home_dir": lambda: os.path.expanduser("~"),
         "getcwd": os.getcwd,
         "forgather_config_dir": forgather_config_dir,
-        "forgather_home_dir": forgather_home_dir,
         "get_peak_hardware_flops": get_peak_hardware_flops,
+        "qat_recipes": _qat_recipes_global,
         # https://pypi.org/project/platformdirs/
         "user_data_dir": user_data_dir,
         "user_cache_dir": user_cache_dir,

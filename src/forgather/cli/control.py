@@ -117,6 +117,8 @@ def control_cmd(args):
 
             import psutil
 
+            from forgather.preprocess import forgather_config_dir
+
             # TTL for orphan directories (those without endpoint.json).
             # CLI flag wins; otherwise fall back to env var; otherwise 1h.
             ttl = getattr(args, "ttl", None)
@@ -124,7 +126,7 @@ def control_cmd(args):
                 ttl_env = os.environ.get("FORGATHER_ORPHAN_JOB_DIR_TTL_SECONDS")
                 ttl = int(ttl_env) if ttl_env else 3600
 
-            jobs_dir = Path.home() / ".forgather" / "jobs"
+            jobs_dir = Path(forgather_config_dir()) / "jobs"
             jobs = client.list_jobs()
 
             # --- Dead jobs: endpoint.json present, PID gone or recycled --------

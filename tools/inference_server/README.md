@@ -25,8 +25,8 @@ running inference port and use a private/finetuned model.
 For the full picture — how this token fits in alongside the forgather
 server's own bearer token, the per-job trainer-control token, and the
 TensorBoard / MkDocs spawn defaults — see the
-[forgather server threat model](../../forgather-server.md#threat-model)
-and [authentication overview](../../forgather-server.md#authentication-overview).
+[forgather server threat model](../forgather_server/README.md#threat-model)
+and [authentication overview](../forgather_server/README.md#authentication-overview).
 
 **Default behaviour** — if you don't pass any auth flag, the server
 generates a random 64-hex-char token at startup and prints it on **stderr**:
@@ -35,12 +35,11 @@ generates a random 64-hex-char token at startup and prints it on **stderr**:
 inference_server auth token: 8f5b...
 clients must send 'Authorization: Bearer <token>'
 curl -H "Authorization: Bearer 8f5b..." http://127.0.0.1:8137/v1/models
-shared token file: /home/<you>/.forgather/inference/8137.token
+shared token file: /home/<you>/.config/forgather/inference/8137.token
 ```
 
 The auto-generated token is also written to a per-port file under
-`$FORGATHER_HOME/inference/<port>.token` (default
-`~/.forgather/inference/<port>.token`, mode 0600 in a 0700 directory) and
+`~/.config/forgather/inference/<port>.token` (mode 0600 in a 0700 directory) and
 removed when the server exits. The bundled CLI client picks it up
 automatically when its `--url` resolves to a loopback host (127.0.0.1, ::1,
 or localhost), so `forgather inf server` paired with `forgather inf
@@ -73,7 +72,7 @@ forgather inf server -m /path/to/model      # in one terminal
 forgather inf client --message "hi"         # in another
 
 # Auto-generated token consumed by curl / a custom client:
-TOKEN=$(cat ~/.forgather/inference/8137.token)
+TOKEN=$(cat ~/.config/forgather/inference/8137.token)
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8137/v1/models
 
 # Known token from a file (orchestrators, multi-host, scripts):
@@ -93,7 +92,7 @@ require the bearer.
 
 When the server is spawned by the forgather-server scheduler it
 auto-generates a per-job token under
-`~/.forgather/server/inference/<queue_id>.token` (mode 0600) and the same-
+`~/.config/forgather/server/inference/<queue_id>.token` (mode 0600) and the same-
 origin proxy adds the bearer for browser-initiated requests
 transparently.
 
@@ -321,6 +320,48 @@ forgather inf server --model /path/to/model --dtype float32
 # With custom stop sequences
 forgather inf server --model /path/to/model --stop-sequences "<|im_end|>" "</s>"
 ```
+
+### Loading Quantized Models
+
+The server transparently loads torchao-quantized artifacts produced by
+`forgather finalize --quantize`. No extra flag — the native checkpoint
+loader detects quantization (from `config.json`'s `quantization_config`
+block, or by scanning the saved state_dict) and installs the matching
+quantized linear modules before weights load. See [QAT Training §
+Evaluating Quantized Models](../../docs/trainers/qat-training.md#evaluating-quantized-models)
+for the underlying mechanism.
+
+```bash
+# Quantize a finalized model (one-time, after training)
+forgather finalize --quantize int8-dynamic-act-int4-weight \
+    output_models/my_run /serve/my_run_int4
+
+# Serve it — same invocation shape as for bf16 models
+forgather inf server -m /serve/my_run_int4 --from-checkpoint
+```
+
+**Throughput.** Quantized serving is currently slower than bf16 on
+small/medium models at batch size 1. Measured on the 4.43M Tiny Llama,
+single RTX 3090, greedy 64-token completion:
+
+| Variant | tok/s |
+|---------|-------|
+| bf16 baseline | 379.9 |
+| `int8-dynamic-act-int4-weight` | 61.9 |
+
+The slowdown is the per-matmul dequant overhead being a large fraction
+of the work in a small model. Quantization wins (memory footprint,
+longer context, larger batch) appear at scale; benchmark your own
+setup before deploying.
+
+**Dtype interaction.** `--dtype` controls the unquantized layers (norms,
+embeddings, residuals) and the dequant target. The recipe controls
+activation/weight precision for the quantized linears. The default
+`bfloat16` is the right choice unless you have a specific reason to
+override.
+
+**Device placement.** Quantized linears are CUDA-bound for the v1
+recipes. CPU serving of quantized models is not currently supported.
 
 ### Stop Sequences
 

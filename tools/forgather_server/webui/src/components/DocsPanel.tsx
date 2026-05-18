@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
@@ -23,6 +23,23 @@ interface Props {
   canGoBack: boolean;
   /** Pop the parent's docs-history stack. */
   onBack: () => void;
+  /** When the parent pops a Back-stack entry it captures the saved
+   *  scrollTop here. ``DocsPanel`` applies it once the popped page's
+   *  content has finished rendering (so the scrollable area is tall
+   *  enough), then calls ``onScrollRestored``. ``null`` means
+   *  "start at the top" — the default behaviour for forward
+   *  navigation. */
+  restoreScrollTop?: number | null;
+  onScrollRestored?: () => void;
+}
+
+/** A single entry in the docs outline / TOC. ``level`` is the
+ *  heading depth (h1=1, h2=2, h3=3) and is used purely for indent
+ *  styling. */
+interface TocEntry {
+  id: string;
+  text: string;
+  level: number;
 }
 
 interface MenuState {
@@ -123,7 +140,15 @@ function resolveAbsolute(currentDocPath: string, href: string): string | null {
   return joinAndNormalize(dirname(currentDocPath), clean);
 }
 
-export function DocsPanel({ path, onNavigate, onEdit, canGoBack, onBack }: Props) {
+export function DocsPanel({
+  path,
+  onNavigate,
+  onEdit,
+  canGoBack,
+  onBack,
+  restoreScrollTop,
+  onScrollRestored,
+}: Props) {
   // Resolve the default landing page when the panel is opened without a
   // specific path. Once resolved, ``path`` should be set by the parent so
   // future navigations stick.
@@ -145,18 +170,118 @@ export function DocsPanel({ path, onNavigate, onEdit, canGoBack, onBack }: Props
 
   const [menu, setMenu] = useState<MenuState | null>(null);
 
-  // Reset scroll to top when switching documents so a fresh doc doesn't
-  // inherit the previous one's scroll offset.
+  // Derived doc value — pulled up here so the scroll-restore effect
+  // below can include it in its dependency array. Stable identity
+  // across re-renders that don't refetch (react-query guarantees
+  // ``fileQ.data`` is the same object until the next successful
+  // fetch).
+  const doc = fileQ.data ?? null;
+
+  // Outline / TOC. Extracted from the rendered DOM after each doc loads
+  // — rehype-slug stamps id="..." on every h1-h6 so we can read both
+  // the text and the anchor straight off the markup. Doing it from the
+  // DOM rather than parsing the markdown source means we never go out
+  // of sync with whatever the markdown engine actually produced (slug
+  // normalisation, character escaping, ipynb-cell-by-cell rendering).
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const [toc, setToc] = useState<TocEntry[]>([]);
+  const refreshToc = useCallback(() => {
+    const body = bodyRef.current;
+    if (!body) {
+      setToc([]);
+      return;
+    }
+    const headings = body.querySelectorAll<HTMLElement>(
+      ".docs-pane-content h1, .docs-pane-content h2, .docs-pane-content h3",
+    );
+    const entries: TocEntry[] = [];
+    headings.forEach((h) => {
+      const id = h.id;
+      if (!id) return;
+      const text = (h.textContent || "").trim();
+      if (!text) return;
+      const level = Number(h.tagName.slice(1)); // h2 -> 2
+      entries.push({ id, text, level });
+    });
+    setToc(entries);
+  }, []);
+
+  // Switch-document scroll handling. Two cases:
+  //
+  //  1. Forward navigation (``restoreScrollTop`` is null): jump to
+  //     the top of the new page, matching browser-new-tab behaviour.
+  //  2. Back navigation (``restoreScrollTop`` is a number): jump to
+  //     the saved offset so the user lands where they left off.
+  //
+  // The scroll has to be applied *after* the new content has
+  // rendered — otherwise the scrollable area may be shorter than
+  // the saved offset and the browser clamps to 0. Watch the ``doc``
+  // value (populated by react-query once the fetch resolves) so the
+  // effect fires on both path change and content arrival.
+  //
+  // We must NOT re-apply when the effect re-fires for unrelated
+  // reasons — react-query refetches the doc query on window focus,
+  // and any parent re-render that changes ``onScrollRestored``'s
+  // identity also re-triggers this effect. Without a guard, those
+  // spurious runs would slam the user's scroll position back to the
+  // top of the page (writing ``scrollTop = restoreScrollTop ?? 0``
+  // for a stale ``restoreScrollTop`` of ``null``). Dedupe by
+  // tracking the path we last applied scroll to in a ref.
+  const appliedPathRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
-    const el = document.querySelector(".docs-pane-body");
-    if (el) el.scrollTop = 0;
-  }, [effectivePath]);
+    if (appliedPathRef.current === effectivePath) {
+      // Same page; don't touch the user's scroll position.
+      return;
+    }
+    if (!doc) {
+      // Content not loaded yet; let the next render (when ``doc``
+      // populates) actually apply the scroll.
+      return;
+    }
+    appliedPathRef.current = effectivePath;
+    const el = bodyRef.current;
+    if (!el) return;
+    const target = restoreScrollTop ?? 0;
+    // Apply once immediately so any tall placeholder collapses
+    // promptly, then again on the next frame after layout has had a
+    // chance to settle with the freshly-rendered content.
+    el.scrollTop = target;
+    const raf = requestAnimationFrame(() => {
+      if (bodyRef.current) bodyRef.current.scrollTop = target;
+      refreshToc();
+      if (restoreScrollTop != null && onScrollRestored) {
+        onScrollRestored();
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [effectivePath, doc, restoreScrollTop, refreshToc, onScrollRestored]);
+
+  // Rebuild when the rendered doc content itself changes (re-fetch,
+  // ipynb cells loaded async, etc.). Lightweight observer over the
+  // body subtree.
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const obs = new MutationObserver(() => {
+      refreshToc();
+    });
+    obs.observe(el, { childList: true, subtree: true });
+    return () => obs.disconnect();
+  }, [refreshToc]);
+
+  const scrollToHeading = useCallback((id: string) => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const target = body.querySelector<HTMLElement>(`#${CSS.escape(id)}`);
+    if (target) {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, []);
 
   // Render the header (with Back button) unconditionally. Loading and
   // error states render INSIDE the body so the user can always recover
   // by going back — without that, a 404 left the panel stuck with no
   // way out short of a page reload.
-  const doc = fileQ.data ?? null;
   const headerPath = doc?.path ?? effectivePath ?? "";
   const docDir = doc ? dirname(doc.path) : "";
 
@@ -232,7 +357,32 @@ export function DocsPanel({ path, onNavigate, onEdit, canGoBack, onBack }: Props
           {headerPath}
         </span>
       </div>
-      <div className="docs-pane-body info-pane">{body}</div>
+      <div className="docs-pane-split">
+        {toc.length > 1 && (
+          <nav className="docs-pane-toc" aria-label="Document outline">
+            <div className="docs-pane-toc-title">On this page</div>
+            <ul>
+              {toc.map((e, i) => (
+                <li
+                  key={`${e.id}-${i}`}
+                  className={`docs-toc-l${Math.min(e.level, 3)}`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => scrollToHeading(e.id)}
+                    title={e.text}
+                  >
+                    {e.text}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        )}
+        <div className="docs-pane-body info-pane" ref={bodyRef}>
+          {body}
+        </div>
+      </div>
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
           <button

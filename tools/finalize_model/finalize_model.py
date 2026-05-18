@@ -136,7 +136,7 @@ def parse_args(argv=None):
             "  none   - skip generation_config.json entirely\n"
             "  PATH   - path to a JSON file (Forgather inference-preset format:\n"
             "           keys like max_tokens, temperature, top_p, repetition_penalty)\n"
-            "  NAME   - bare name resolved against ~/.forgather/generation_config/\n"
+            "  NAME   - bare name resolved against ~/.config/forgather/generation_config/\n"
             "           NAME.json. No presets ship with this branch; populate that\n"
             "           directory yourself or pass an explicit PATH."
         ),
@@ -175,6 +175,20 @@ def parse_args(argv=None):
         help="Device to load the model onto during finalize (default: cpu)",
     )
     parser.add_argument(
+        "--quantize",
+        dest="quantize_recipe",
+        type=str,
+        default=None,
+        help=(
+            "Quantize the model before saving using the named torchao "
+            "recipe (e.g. 'int8-dynamic-act-int4-weight'). Works on any "
+            "input: a QAT-trained model (trained with '--qat-recipe') "
+            "completes the round-trip and keeps the QAT accuracy benefit; "
+            "a plain bf16 model gets standard post-training quantization. "
+            "See docs/trainers/qat-training.md."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Resolve and report what would be done; do not write anything",
@@ -196,6 +210,50 @@ def _resolve_dtype(dtype_str: Optional[str]):
     from forgather.ml.construct import torch_dtype
 
     return torch_dtype(dtype_str)
+
+
+def _apply_quantize(model, recipe: str) -> None:
+    """Run torchao's prepare-then-convert pipeline in-place on a loaded model.
+
+    The loaded model's state_dict contains plain float weights (Forgather's
+    sharded saver doesn't persist FakeQuantizedLinear inner state, even for
+    QAT-trained models), so we run prepare to install fake quantizers on
+    top of the trained weights, then convert to swap them for real low-bit
+    quantized linear ops. Scales/zero-points come from the loaded weight
+    statistics.
+
+    Works on any input:
+
+    - QAT-trained model (trained with ``--qat-recipe``): the weights were
+      shaped under fake-quantization noise during training, so the result
+      keeps the QAT accuracy benefit (the full QAT round-trip).
+    - Plain bf16 model: standard post-training quantization (PTQ). Useful
+      for the AMP-baseline vs PTQ vs QAT comparison.
+    """
+    import torch
+
+    from forgather.ml.qat_recipes import QAT_RECIPES, recipe_to_base_config
+    from forgather.ml.quantization_detect import install_torchao_quantization
+
+    if recipe not in QAT_RECIPES:
+        raise ValueError(
+            f"--quantize must be one of {QAT_RECIPES}, got {recipe!r}"
+        )
+
+    linear_count = sum(1 for m in model.modules() if isinstance(m, torch.nn.Linear))
+    if linear_count == 0:
+        logger.warning(
+            "--quantize %r requested but model has no nn.Linear "
+            "modules to quantize; skipping quantize step.",
+            recipe,
+        )
+        return
+
+    logger.info(
+        f"Quantize ({recipe}): running torchao prepare→convert on "
+        f"{linear_count} nn.Linear modules"
+    )
+    install_torchao_quantization(model, recipe_to_base_config(recipe))
 
 
 def main(argv=None):
@@ -351,9 +409,43 @@ def main(argv=None):
             logger.info(
                 f"Would write generation_config.json (mode={args.generation_config})"
             )
+        if args.quantize_recipe:
+            logger.info(
+                f"Would run quantize step with recipe '{args.quantize_recipe}'"
+            )
+            logger.info(
+                "Would write 'quantization_config' block to config.json"
+            )
         return 0
 
-    # ---- 6. Materialize destination ------------------------------------
+    # ---- 6. Quantize (optional) ----------------------------------------
+    if args.quantize_recipe:
+        _apply_quantize(model, args.quantize_recipe)
+        # Record the recipe on the config so HF `from_pretrained()` runs
+        # the TorchAoHfQuantizer pre-process path on reload — it installs
+        # the right quantized linear modules before `load_state_dict`, so
+        # the quantized tensor subclasses land in slots that know how to
+        # hold them. Without this block, reload via `from_pretrained()`
+        # fails with `'Parameter' object has no attribute 'tensor_data_names'`.
+        from transformers import TorchAoConfig
+        from forgather.ml.qat_recipes import recipe_to_base_config
+
+        config.quantization_config = TorchAoConfig(
+            quant_type=recipe_to_base_config(args.quantize_recipe)
+        )
+        if args.safetensors:
+            # torchao's quantized tensor subclasses wrap multiple inner
+            # tensors and do not expose a single .storage().data_ptr(),
+            # so safetensors saves fail with "Attempted to access the
+            # data pointer on an invalid python storage". Force .bin.
+            logger.warning(
+                "--safetensors is incompatible with quantized models "
+                "(torchao subclass tensors lack a single storage pointer). "
+                "Saving as PyTorch (.bin) instead."
+            )
+            args.safetensors = False
+
+    # ---- 7. Materialize destination ------------------------------------
     os.makedirs(dest, exist_ok=False)
     copy_model_source(source, dest)
 

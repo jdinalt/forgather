@@ -75,6 +75,7 @@ def _enqueue_finalize(args):
     p.add_argument("--generation-config", default=None)
     p.add_argument("--dtype", default=None)
     p.add_argument("--device", default="cpu")
+    p.add_argument("--quantize", dest="quantize_recipe", default=None)
     p.add_argument("--priority", type=int, default=0)
     p.add_argument("--server", default=None)
     sub = p.parse_args(args.remainder)
@@ -104,6 +105,17 @@ def _enqueue_finalize(args):
         job_params["generation_config"] = sub.generation_config
     if sub.dtype:
         job_params["dtype"] = sub.dtype
+    if sub.quantize_recipe:
+        from forgather.ml.qat_recipes import QAT_RECIPES
+
+        if sub.quantize_recipe not in QAT_RECIPES:
+            print(
+                f"--quantize must be one of {QAT_RECIPES}, "
+                f"got '{sub.quantize_recipe}'",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        job_params["quantize"] = sub.quantize_recipe
 
     from .server_client import ServerClient, ServerUnreachable
 

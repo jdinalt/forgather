@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
-prefix_logger_rank(logger)
+prefix_logger_rank(logger, show_all_ranks=True)
 
 
 def default_checkpoint_id():
@@ -499,15 +499,38 @@ class CheckpointManager(CheckpointInterface):
         )
 
     def _should_save_common(self):
-        # Should save parameters and Stateful objects. If more than one rank is saving
-        # on the same node, each file will be named after the rank. Useful for things
-        # like Pipeline parallel.
-        if (
-            not self.config.save_on_all_ranks
-            and self.config.save_on_local_rank != self.dist.local_rank
-        ):
-            return False
-        return True
+        # Decides whether *this* rank participates in writing model
+        # shard files. Three regimes:
+        #
+        #   save_on_all_ranks=True
+        #     PP / FSDP — every rank holds a different subset of weights
+        #     so every rank writes its own non-overlapping shards.
+        #
+        #   save_on_each_node=True (default-False)
+        #     DDP across nodes that *don't* share a filesystem — every
+        #     node's chosen local rank writes a full copy locally.
+        #     ``save_on_local_rank`` selects which local rank does that
+        #     (defaults to 0 — a non-zero value lets the operator route
+        #     the write to a non-rank-0 GPU per node, e.g. one with
+        #     more disk I/O headroom).
+        #
+        #   save_on_each_node=False (the documented default for shared
+        #     storage) — only one global writer. Hardcoded to global
+        #     rank 0; ``save_on_local_rank`` is *not* consulted here
+        #     because that field describes a local-rank index and
+        #     comparing it to a global rank silently produces nonsense
+        #     for any non-zero value (e.g. setting save_on_local_rank=1
+        #     and running a 4-rank DDP would route writes to global
+        #     rank 1, which on a 2-node 2x2 layout is the second rank
+        #     of the first node, not "the first node's rank 1"). If a
+        #     future operator wants to pick a non-rank-0 global writer,
+        #     add a separate ``save_on_global_rank`` field rather than
+        #     overloading the local-rank knob.
+        if self.config.save_on_all_ranks:
+            return True
+        if self.config.save_on_each_node:
+            return self.dist.local_rank == self.config.save_on_local_rank
+        return self.dist.rank == 0
 
     def _validate_model_replication(self, model_component: StateComponent):
         """Validate that model weights are identical across all ranks.
@@ -570,13 +593,20 @@ class CheckpointManager(CheckpointInterface):
             # Save the shard index
             save_shard_index(shard_index, output_dir, index_file_name(save_safetensors))
 
-        for mod in self.model_parts:
-            save_sharded_checkpoint(
-                output_dir,
-                shard_index,
-                mod,
-                safetensors=save_safetensors,
-            )
+        # Shard *files* must be gated too — without this, plain DDP
+        # across multiple nodes with shared storage has multiple
+        # ranks writing the same file path at the same time, racing
+        # on the bytes. Pipeline-parallel sets save_on_all_ranks=True
+        # so every rank's call writes a non-overlapping subset; that
+        # case is preserved by _should_save_common.
+        if self._should_save_common():
+            for mod in self.model_parts:
+                save_sharded_checkpoint(
+                    output_dir,
+                    shard_index,
+                    mod,
+                    safetensors=save_safetensors,
+                )
 
     def _dict_name(self, key):
         if self.dist.world_size > 1 and self.config.save_on_all_ranks:

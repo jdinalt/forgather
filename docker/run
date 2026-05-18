@@ -10,9 +10,10 @@
 #
 # Bind-mounts the host home directory at the same path used inside
 # the container so absolute paths in shell history, configs, and
-# project files keep resolving correctly. The image carries an
-# account matching your host UID/GID (set at build time), so file
-# ownership is preserved across the boundary.
+# project files keep resolving correctly. The image is single-user
+# and host-scoped: ``docker/build`` bakes the host operator's
+# UID/GID/name into the image directly, so there's no runtime
+# remap — the in-container user IS the host user.
 #
 # Networking: defaults to host networking (--network host) so the
 # container shares the host's network stack — every service inside
@@ -23,16 +24,16 @@
 # networking with explicit port-forwards.
 #
 # Usage:
-#   docker/run.sh                      # interactive bash (creates container if needed)
-#   docker/run.sh forgather ls -r      # one-shot command in the same container
-#   docker/run.sh --status             # report container state
-#   docker/run.sh --stop               # stop (but keep) the container
-#   docker/run.sh --rm                 # stop and remove the container
-#   docker/run.sh --recreate           # remove and recreate from scratch
+#   docker/run                         # interactive bash (creates container if needed)
+#   docker/run forgather ls -r         # one-shot command in the same container
+#   docker/run --status                # report container state
+#   docker/run --stop                  # stop (but keep) the container
+#   docker/run --rm                    # stop and remove the container
+#   docker/run --recreate              # remove and recreate from scratch
 #
 # Environment overrides (only applied when the container is being
 # CREATED — ignored on re-attach):
-#   IMAGE=forgather-dev:my-tag         # default: forgather-dev:latest
+#   IMAGE=forgather-dev:my-tag         # default: forgather-dev:<host-user>
 #   NAME=my-forgather                  # default: forgather-dev-$USER
 #   GPUS=none                          # default: all
 #   GPUS='"device=0,1"'                # specific GPUs
@@ -41,9 +42,18 @@
 #   EXTRA_PORTS='-p 5173:5173'         # bridge mode only
 #   EXTRA_MOUNTS='-v /scratch:/scratch'
 #
+# Sharing ~/.config/forgather state with the runtime image:
+# The dev image bind-mounts $HOME wholesale, so ~/.config/forgather
+# inside the container is the same on-disk directory as
+# ~/.config/forgather on the host. To make the runtime image see that
+# same state directory, launch it with
+# `STATE_VOLUME=$HOME/.config/forgather docker/runtime/run.sh` — both
+# containers will then read/write the same auth token, queue index,
+# generation configs, and hardware FLOPS cache.
+#
 # Persistent overrides: if $XDG_CONFIG_HOME/forgather/docker.env (or
 # ~/.config/forgather/docker.env) exists it is sourced before defaults
-# are applied. Use `:= ` so a command-line `VAR=... docker/run.sh`
+# are applied. Use `:= ` so a command-line `VAR=... docker/run`
 # still wins:
 #
 #   # ~/.config/forgather/docker.env
@@ -56,29 +66,18 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-CONFIG_FILE="${FORGATHER_DOCKER_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/forgather/docker.env}"
-if [[ -f "${CONFIG_FILE}" ]]; then
-    # shellcheck disable=SC1090
-    source "${CONFIG_FILE}"
-fi
+# Shared scaffold (config-file load, container_state, ensure_running,
+# common subcommand dispatch). See docker/_lib.sh for the contract.
+# shellcheck source=_lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
+lib_load_config
 
-IMAGE="${IMAGE:-forgather-dev:latest}"
+IMAGE="${IMAGE:-forgather-dev:${USER:-$(id -un)}}"
 NAME="${NAME:-forgather-dev-${USER:-$(id -un)}}"
 GPUS="${GPUS:-all}"
 NETWORK="${NETWORK:-host}"
 EXTRA_PORTS="${EXTRA_PORTS:-}"
 EXTRA_MOUNTS="${EXTRA_MOUNTS:-}"
-
-container_state() {
-    # Prints "running", "stopped", or "absent".
-    local s
-    s="$(docker inspect -f '{{.State.Status}}' "${NAME}" 2>/dev/null || true)"
-    case "${s}" in
-        running) echo running ;;
-        "") echo absent ;;
-        *) echo stopped ;;
-    esac
-}
 
 check_uncovered_symlinks() {
     # Two checks:
@@ -122,12 +121,12 @@ check_uncovered_symlinks() {
         local repo_top
         repo_top="$(suggest_root "${repo_real}")"
         {
-            echo "[run.sh] error: forgather repo path resolves outside the bind-mount:"
-            echo "[run.sh]   ${REPO_ROOT}"
-            echo "[run.sh]   -> ${repo_real}"
-            echo "[run.sh] without a bind-mount covering the target, the container's"
-            echo "[run.sh] workdir will fail to resolve. add the target root to EXTRA_MOUNTS:"
-            echo "[run.sh]   EXTRA_MOUNTS=\"-v ${repo_top}:${repo_top}\" docker/run.sh --recreate"
+            echo "[run] error: forgather repo path resolves outside the bind-mount:"
+            echo "[run]   ${REPO_ROOT}"
+            echo "[run]   -> ${repo_real}"
+            echo "[run] without a bind-mount covering the target, the container's"
+            echo "[run] workdir will fail to resolve. add the target root to EXTRA_MOUNTS:"
+            echo "[run]   EXTRA_MOUNTS=\"-v ${repo_top}:${repo_top}\" docker/run --recreate"
         } >&2
         exit 2
     fi
@@ -164,16 +163,16 @@ check_uncovered_symlinks() {
         | sed 's/^ //')"
 
     {
-        echo "[run.sh] warning: \$HOME-rooted symlinks resolve outside the bind-mount:"
+        echo "[run] warning: \$HOME-rooted symlinks resolve outside the bind-mount:"
         printf '%s\n' "${entries}" \
-            | awk -F'\t' '!shown[$1]++ { printf "[run.sh]   %s   (e.g. %s)\n", $1, $2 }'
-        echo "[run.sh] those links will dangle inside the container."
-        echo "[run.sh] add the target roots to EXTRA_MOUNTS so paths keep resolving:"
-        echo "[run.sh]   EXTRA_MOUNTS=\"${mounts}\" docker/run.sh --recreate"
+            | awk -F'\t' '!shown[$1]++ { printf "[run]   %s   (e.g. %s)\n", $1, $2 }'
+        echo "[run] those links will dangle inside the container."
+        echo "[run] add the target roots to EXTRA_MOUNTS so paths keep resolving:"
+        echo "[run]   EXTRA_MOUNTS=\"${mounts}\" docker/run --recreate"
     } >&2
 }
 
-create_container() {
+do_create_container() {
     check_uncovered_symlinks
 
     GPU_ARGS=()
@@ -210,11 +209,23 @@ create_container() {
         HOSTNAME_ARGS=(--hostname "forgather-dev")
     fi
 
-    echo "[run.sh] creating container ${NAME} from ${IMAGE}" >&2
+    echo "[run] creating container ${NAME} from ${IMAGE}" >&2
 
     # Detached, no --rm. PID 1 is sleep infinity so the container
     # survives across `docker exec` sessions and shell logouts.
+    #
+    # ``--init`` puts Docker's bundled tini in front of the entrypoint
+    # so PID 1 properly reaps orphan grandchildren. Without it, when
+    # torchrun gets killed and its worker subprocesses get re-parented
+    # to PID 1 (= sleep), nobody calls wait() on them and they pile up
+    # as zombies. Operators ran into exactly this on the multi-node
+    # cluster after a hung save-stop. tini intercepts SIGCHLD and
+    # waitpid()s for any orphan, regardless of whether it's a child
+    # of a tracked process — solving the problem at the layer that
+    # can actually see those orphans (the Forgather server itself
+    # cannot, because the orphans are no longer its children).
     docker run -d \
+        --init \
         --name "${NAME}" \
         "${HOSTNAME_ARGS[@]}" \
         "${GPU_ARGS[@]}" \
@@ -232,25 +243,13 @@ create_container() {
         sleep infinity > /dev/null
 }
 
-ensure_running() {
-    local state
-    state="$(container_state)"
-    case "${state}" in
-        running)
-            ;;
-        stopped)
-            echo "[run.sh] starting existing container ${NAME}" >&2
-            docker start "${NAME}" > /dev/null
-            ;;
-        absent)
-            create_container
-            ;;
-    esac
-}
-
 attach_shell() {
     # Pass current TERM through; default to a sane value if absent
     # (e.g. invoked from a non-interactive parent).
+    #
+    # No ``-u`` flag: the Dockerfile's final USER directive sets the
+    # default exec identity to the baked-in host operator, so docker
+    # exec lands at the right user automatically.
     exec docker exec -it \
         -w "${REPO_ROOT}" \
         -e "TERM=${TERM:-xterm-256color}" \
@@ -259,58 +258,36 @@ attach_shell() {
 }
 
 # ---------- subcommand dispatch -----------------------------------
+# Common subcommands (--status, --stop, --rm) are handled by the
+# shared lib; image-specific ones live below.
+
+if lib_handle_common_subcommand "${1:-}"; then
+    exit 0
+fi
 
 case "${1:-}" in
-    --status)
-        echo "container: ${NAME}"
-        echo "state:     $(container_state)"
-        if [[ "$(container_state)" != "absent" ]]; then
-            docker inspect -f \
-                'image:     {{.Config.Image}}{{"\n"}}network:   {{.HostConfig.NetworkMode}}{{"\n"}}started:   {{.State.StartedAt}}' \
-                "${NAME}" 2>/dev/null || true
-        fi
-        exit 0
-        ;;
-    --stop)
-        if [[ "$(container_state)" == "running" ]]; then
-            echo "[run.sh] stopping ${NAME}" >&2
-            docker stop "${NAME}" > /dev/null
-        else
-            echo "[run.sh] container ${NAME} is not running" >&2
-        fi
-        exit 0
-        ;;
-    --rm)
-        if [[ "$(container_state)" != "absent" ]]; then
-            echo "[run.sh] removing ${NAME}" >&2
-            docker rm -f "${NAME}" > /dev/null
-        else
-            echo "[run.sh] container ${NAME} does not exist" >&2
-        fi
-        exit 0
-        ;;
     --recreate)
         # Validate before destructive removal so a bad config doesn't
         # leave the user with no container at all.
         check_uncovered_symlinks
-        if [[ "$(container_state)" != "absent" ]]; then
-            echo "[run.sh] removing existing ${NAME}" >&2
+        if [[ "$(lib_container_state)" != "absent" ]]; then
+            echo "[run] removing existing ${NAME}" >&2
             docker rm -f "${NAME}" > /dev/null
         fi
-        create_container
+        do_create_container
         shift
         attach_shell bash -l "$@"
         ;;
     -h|--help)
-        sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,52p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
     "")
-        ensure_running
+        lib_ensure_running
         attach_shell bash -l
         ;;
     *)
-        ensure_running
+        lib_ensure_running
         attach_shell "$@"
         ;;
 esac

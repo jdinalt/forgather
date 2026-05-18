@@ -2,8 +2,9 @@
 
 This guide walks you through training your first Forgather model
 from the CLI. It assumes Forgather is already installed — if not,
-start with **[Installation](installation.md)** (covers host venv via
-pip / uv and the Docker development image).
+start with **[Installation](installation.md)** (host venv via pip /
+uv, or the bundled Docker images — see [Docker images](docker.md)
+for the full reference).
 
 > **Prefer a web UI?** Forgather ships with a single-user web frontend
 > over the same APIs the CLI uses — project browsing, queued training,
@@ -122,24 +123,34 @@ default and ships with no auth.
 ### Build the web UI
 
 The web UI is a Vite/React SPA and isn't pre-built into the repo.
-Before starting the server, build the dist bundle:
+Before starting the server, run the helper from the repo root:
 
 ```bash
-cd tools/forgather_server/webui
-npm install          # one-time, fetches Vite + React + Monaco + viz-js
-npm run build        # produces webui/dist/
+./build-webui.sh                      # one-shot install + build, idempotent
 ```
 
 This needs Node.js + npm installed (see
 [Installation prerequisites](installation.md#prerequisites)).
-`npm install` takes a couple of minutes on first run; the build
-itself is fast. The output is a static `dist/` directory the
-running server serves directly — no Node process at runtime.
-Re-run `npm run build` after pulling changes that touch
-`webui/src/`.
+The first run takes a couple of minutes (it runs `npm install`
+under the hood, fetching Vite + React + Monaco + viz-js); the
+incremental build itself is fast, and the script skips
+`npm install` on subsequent runs unless `package-lock.json` has
+changed. The output is a static `dist/` directory the running
+server serves directly — no Node process at runtime. Re-run
+`./build-webui.sh` after pulling changes that touch `webui/src/`.
+
+You can also run the underlying commands directly
+(`cd tools/forgather_server/webui && npm install && npm run build`)
+if you're on a single host with a single arch — but on a checkout
+shared between hosts of different platform (NFS, bind mounts), use
+`./build-webui.sh` so per-platform installs don't trample each other.
+The script keeps each platform's `node_modules` in a sibling
+`.node_modules-<platform>/` directory and rotates the matching one
+in before each build; see `tools/forgather_server/README.md` for
+the mechanics.
 
 The Docker image runs `./build-webui.sh` automatically as a
-post-step in `docker/build.sh`, so the dist bundle is already in
+post-step in `docker/build`, so the dist bundle is already in
 place when you enter the container — no manual build needed under
 that workflow.
 
@@ -220,32 +231,12 @@ in place those links resolve transparently.
 
 ### Persistent state
 
-Per-user state lives under `~/.forgather/server/`: search roots,
+Per-user state lives under `~/.config/forgather/server/`: search roots,
 queue, job records, captured TTY logs, dynamic-args overrides,
 GPU policy. All files are written crash-atomically (tmp + fsync +
 rename). Power-loss-mid-write never leaves a half-written canonical
 file, and every reader tolerates a corrupt or truncated file by
 falling back to empty state.
-
-### Dev mode (hot reload)
-
-If you're modifying `webui/src/`, run the Vite dev server alongside
-the Python backend:
-
-```bash
-# Terminal 1 — API backend
-forgather server -p 8765
-
-# Terminal 2 — Vite dev server (hot reload, proxies /api → :8765)
-cd tools/forgather_server/webui
-npm run dev          # opens http://localhost:5173
-```
-
-For an end-to-end tour of the UI — install through training a small
-model and chatting with it — see the
-[Forgather server walkthrough](../guides/forgather-server-walkthrough.md).
-For the full feature reference and API documentation, see the
-[Forgather server README](../forgather-server.md).
 
 ## Next steps
 

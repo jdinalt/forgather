@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 
 import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
+import { promptAndCreateService, sanitizeServiceName } from "../services-create";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
 import { ModalBackdrop } from "./ModalBackdrop";
@@ -64,6 +65,11 @@ interface Props {
   projectDir?: string;
   onClose: () => void;
   onSubmitted?: (queueId: string) => void;
+  /** Fired after the "Create service…" button successfully persists a
+   *  new service entry. The caller uses this to auto-expand the
+   *  matching launcher row in the sidebar so the new instance is
+   *  immediately visible. */
+  onServiceCreated?: (type: "inference") => void;
 }
 
 export function InferenceModal({
@@ -73,6 +79,7 @@ export function InferenceModal({
   projectDir,
   onClose,
   onSubmitted,
+  onServiceCreated,
 }: Props) {
   const qc = useQueryClient();
   const gpusQ = useQuery({ queryKey: ["gpus-once"], queryFn: api.listGpus });
@@ -86,10 +93,16 @@ export function InferenceModal({
   // summary. Relevant defaults shift: from_checkpoint starts off (a bare
   // HuggingFace directory typically loads via ``from_pretrained``).
   const adHoc = !modelOutputDir;
-  // Ad-hoc settings are seeded from the previous invocation's persisted
-  // values. Project-backed flows ignore persistence entirely so their
-  // initial state always derives from props.
-  const persisted = adHoc ? loadAdHoc() : {};
+  // Persisted settings are loaded in BOTH modes. Project-backed flows
+  // (modelOutputDir set) take the model path from props but otherwise
+  // remember the operator's prior choices for host/port/dtype/etc — the
+  // "I always bind to 0.0.0.0 on this machine" knob shouldn't get reset
+  // every time the modal opens from a different model's context menu.
+  // Earlier the load was gated on ad-hoc; that conflated "which model"
+  // (correctly from props) with "which knobs" (which the operator
+  // expects to persist across opens). Saving stays unconditional on
+  // submit; resetDefaults clears for both modes.
+  const persisted = loadAdHoc();
   const [modelPath, setModelPath] = useState<string>(
     modelOutputDir ?? persisted.modelPath ?? "",
   );
@@ -104,21 +117,23 @@ export function InferenceModal({
   // SSH port-forwards) only follow clickable links to "localhost".
   const [host, setHost] = useState<string>(persisted.host ?? "localhost");
   // priority stays fresh each time — its "right" value depends on
-  // current queue state. requestedGpus is sticky.
+  // current queue state. requestedGpus is sticky in both modes.
   const [requestedGpus, setRequestedGpus] = useState<number>(
-    adHoc ? persisted.requestedGpus ?? 1 : 1,
+    persisted.requestedGpus ?? 1,
   );
   const [priority, setPriority] = useState<number>(0);
   const [ckptPath, setCkptPath] = useState<string>(
-    checkpointPath ?? (adHoc ? persisted.ckptPath ?? "" : ""),
+    checkpointPath ?? persisted.ckptPath ?? "",
   );
   // ``from_checkpoint`` on: use Forgather checkpoint loading (either the
   // path above, or the latest if empty). Off: use Transformers
   // ``from_pretrained`` against the model dir. Default on for project
   // models (user wants the -c flag path); default off for ad-hoc paths
-  // that usually point at a plain HF model directory.
+  // that usually point at a plain HF model directory. The persisted
+  // value wins over the mode-derived default — if the user explicitly
+  // set it last time, respect that choice on reopen.
   const [fromCheckpoint, setFromCheckpoint] = useState<boolean>(
-    adHoc ? persisted.fromCheckpoint ?? false : true,
+    persisted.fromCheckpoint ?? !adHoc,
   );
   const [dtype, setDtype] = useState<string>(persisted.dtype ?? "bfloat16");
   // "default" is a UI-only pseudo-value meaning "don't pass the flag,
@@ -128,13 +143,13 @@ export function InferenceModal({
     persisted.cacheImpl ?? "default",
   );
   const [compileFlag, setCompileFlag] = useState<boolean>(
-    adHoc ? persisted.compileFlag ?? false : false,
+    persisted.compileFlag ?? false,
   );
   const [compileArgs, setCompileArgs] = useState<string>(
     persisted.compileArgs ?? "",
   );
   const [disableKvCache, setDisableKvCache] = useState<boolean>(
-    adHoc ? persisted.disableKvCache ?? false : false,
+    persisted.disableKvCache ?? false,
   );
   const [chatTemplate, setChatTemplate] = useState<string>(
     persisted.chatTemplate ?? "",
@@ -176,33 +191,13 @@ export function InferenceModal({
     },
   });
 
-  const submit = () => {
-    const finalPath = modelPath.trim();
-    if (!finalPath) return;
-    // Persist the ad-hoc choices so the next "Start Server…" click
-    // defaults to whatever the user just committed to. Saving pre-
-    // enqueue (not in onSuccess) keeps this simple — if the request
-    // fails the persisted state still matches the last confirmed
-    // intent, which is what the user wants to see when they reopen
-    // the modal to retry.
-    if (adHoc) {
-      saveAdHoc({
-        modelPath: finalPath,
-        port,
-        host,
-        fromCheckpoint,
-        ckptPath: ckptPath.trim(),
-        dtype,
-        attn,
-        cacheImpl,
-        compileFlag,
-        compileArgs: compileArgs.trim(),
-        disableKvCache,
-        chatTemplate: chatTemplate.trim(),
-        requestedGpus,
-      });
-    }
-    const job_params: Record<string, unknown> = {
+  // Single source of truth for the job_params shape, factored out so
+  // ``Create service…`` can persist the exact same args the modal
+  // would have submitted.
+  const buildArgs = (
+    finalPath: string,
+  ): Record<string, unknown> => {
+    const args: Record<string, unknown> = {
       model_path: finalPath,
       port,
       host,
@@ -211,15 +206,49 @@ export function InferenceModal({
       compile: compileFlag,
       disable_kv_cache: disableKvCache,
     };
-    // "default" is UI-only — omit the key so the server picks its own.
-    if (attn !== "default") job_params.attn_implementation = attn;
-    if (cacheImpl !== "default") job_params.cache_implementation = cacheImpl;
+    if (attn !== "default") args.attn_implementation = attn;
+    if (cacheImpl !== "default") args.cache_implementation = cacheImpl;
     const ck = ckptPath.trim();
-    if (ck) job_params.checkpoint_path = ck;
+    if (ck) args.checkpoint_path = ck;
     const ct = chatTemplate.trim();
-    if (ct) job_params.chat_template = ct;
+    if (ct) args.chat_template = ct;
     const ca = compileArgs.trim();
-    if (ca) job_params.compile_args = ca;
+    if (ca) args.compile_args = ca;
+    return args;
+  };
+
+  const submit = () => {
+    const finalPath = modelPath.trim();
+    if (!finalPath) return;
+    // Persist the choices so the next "Start Server…" click defaults
+    // to whatever the user just committed to. Saving pre-enqueue (not
+    // in onSuccess) keeps this simple — if the request fails the
+    // persisted state still matches the last confirmed intent, which
+    // is what the user wants to see when they reopen the modal to
+    // retry. We don't persist modelPath in project-backed mode: the
+    // path comes from props (next open will be for a different model),
+    // and shoving the last-project-opened path into the ad-hoc default
+    // would silently override the ad-hoc user's prior choice on their
+    // next ad-hoc open. Everything else (host/port/dtype/…) is the
+    // operator's preference and persists in both modes.
+    saveAdHoc({
+      modelPath: adHoc ? finalPath : persisted.modelPath ?? "",
+      port,
+      host,
+      fromCheckpoint,
+      ckptPath: ckptPath.trim(),
+      dtype,
+      attn,
+      cacheImpl,
+      compileFlag,
+      compileArgs: compileArgs.trim(),
+      disableKvCache,
+      chatTemplate: chatTemplate.trim(),
+      requestedGpus,
+    });
+    // "default" attn / cache impl is UI-only — buildArgs omits the key
+    // so the server picks its own.
+    const job_params = buildArgs(finalPath);
 
     enqueue.mutate({
       project_dir: projectDir ?? finalPath,
@@ -470,17 +499,50 @@ export function InferenceModal({
           </div>
           <div className="btn-row">
             <AutoWatchTtyToggle />
-            {adHoc && (
-              <button
-                className="secondary"
-                onClick={resetDefaults}
-                title="Clear persisted settings and restore defaults"
-              >
-                Reset to defaults
-              </button>
-            )}
+            {/* Reset is meaningful in both modes now that settings
+                persist regardless of how the modal was opened. */}
+            <button
+              className="secondary"
+              onClick={resetDefaults}
+              title="Clear persisted settings and restore defaults"
+            >
+              Reset to defaults
+            </button>
             <button className="secondary" onClick={onClose}>
               Cancel
+            </button>
+            <button
+              className="secondary"
+              onClick={async () => {
+                const finalPath = modelPath.trim();
+                if (!finalPath) return;
+                const args = {
+                  ...buildArgs(finalPath),
+                  // Inference services need at least one GPU; persist
+                  // the operator's choice so autostart respects it.
+                  requested_gpus: requestedGpus,
+                };
+                // Default name: basename of the model path. Falls
+                // back to the empty string if sanitization eats the
+                // whole thing (the prompt then opens blank).
+                const suggested = sanitizeServiceName(
+                  finalPath.split("/").filter(Boolean).pop() ?? "",
+                );
+                const ok = await promptAndCreateService(
+                  qc,
+                  "inference",
+                  args,
+                  suggested,
+                );
+                if (ok) {
+                  onServiceCreated?.("inference");
+                  onClose();
+                }
+              }}
+              disabled={!modelPath.trim()}
+              title="Persist these settings to the server config as an auto-start service"
+            >
+              Create service…
             </button>
             <button
               onClick={submit}

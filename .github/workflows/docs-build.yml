@@ -1,0 +1,61 @@
+# Build the mkdocs site on every PR and push that could affect the
+# rendered docs. This is the same build sequence Read the Docs runs,
+# so a green check here means RTD will succeed too. The job catches
+# clean-clone failures (broken symlinks, missing markdown targets,
+# unparseable notebooks) that local ``mkdocs serve`` from a developer's
+# working tree won't surface.
+name: docs-build
+
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - "examples/**"
+      - "src/forgather/**"
+      - "mkdocs.yml"
+      - ".readthedocs.yaml"
+      - ".github/workflows/docs-build.yml"
+      - "pyproject.toml"
+      - ".gitignore"
+  push:
+    branches: [main, dev]
+    paths:
+      - "docs/**"
+      - "examples/**"
+      - "src/forgather/**"
+      - "mkdocs.yml"
+      - ".readthedocs.yaml"
+      - ".github/workflows/docs-build.yml"
+      - "pyproject.toml"
+      - ".gitignore"
+
+jobs:
+  mkdocs:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+
+      # Mirror the .readthedocs.yaml install: the docs toolchain only,
+      # forgather itself is not installed (mkdocstrings reads src/
+      # statically via griffe).
+      - name: Install docs toolchain
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r docs/requirements.txt
+
+      - name: Build mkdocs site
+        run: python -m mkdocs build --clean --site-dir _site --config-file mkdocs.yml
+
+      - name: Upload built site
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mkdocs-site
+          path: _site
+          retention-days: 7

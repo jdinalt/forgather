@@ -43,7 +43,7 @@ def list_eval_configs() -> List[EvalConfigEntry]:
 
     Search paths are resolved the same way the CLI resolves them — the
     repo's ``examples/evaluation`` directory by default, extensible via
-    ``~/.forgather/config.yaml`` ``eval.search_paths``.
+    ``~/.config/forgather/config.yaml`` ``eval.search_paths``.
     """
     paths = eval_search_paths(forgather_repo_root())
     out: List[EvalConfigEntry] = []
