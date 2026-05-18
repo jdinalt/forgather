@@ -4143,6 +4143,19 @@ li.config.selected button.link:hover {
   align-items: center;
 }
 
+.node-group-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.node-group-action {
+  /* Inherits sizing from .sidebar-footer-gear — the only override is
+   * a tiny side-padding bump so the buttons read as a paired control
+   * group sitting next to the node's tags. */
+  padding: 4px 8px;
+}
+
 .node-group-body {
   padding: 8px;
 }

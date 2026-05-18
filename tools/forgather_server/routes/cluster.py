@@ -25,7 +25,13 @@ from forgather.tls import httpx_peer_kwargs
 
 from .. import cluster, cluster_dataset_inventory, cluster_jobs, dataset_source
 from ..dataset_source import DatasetSourceError
-from .gpus import GpuInfoModel, GpuPolicyModel, SetGpuPolicyRequest, _to_model
+from .gpus import (
+    GpuInfoModel,
+    GpuPolicyModel,
+    SetGpuPolicyRequest,
+    _to_model,
+    local_reserved_gpu_indices,
+)
 
 log = logging.getLogger("forgather_server.routes.cluster")
 
@@ -350,7 +356,8 @@ def gpus_local(response: Response):
     ident = cluster.self_identity()
     if ident is not None:
         response.headers["X-Forgather-Node-Id"] = ident.node_id
-    return [_to_model(g) for g in gpu_monitor.snapshot()]
+    reserved = local_reserved_gpu_indices()
+    return [_to_model(g, reserved) for g in gpu_monitor.snapshot()]
 
 
 # ---------------------------------------------------------------------------
@@ -991,12 +998,13 @@ async def _fetch_peer_gpus(
         # entry happens to list its public address.
         from .. import gpu_monitor
 
+        reserved = local_reserved_gpu_indices()
         return ClusterGpusEntry(
             node_id=member.node_id,
             hostname=member.hostname,
             address=member.address,
             reachable=True,
-            gpus=[_to_model(g) for g in gpu_monitor.snapshot()],
+            gpus=[_to_model(g, reserved) for g in gpu_monitor.snapshot()],
         )
     if not member.reachable:
         return ClusterGpusEntry(
@@ -1171,6 +1179,162 @@ async def set_node_gpu_policy(node_id: str, gpu_index: int, req: SetGpuPolicyReq
         )
     body = r.json()
     return GpuPolicyModel(**body)
+
+
+# ---------------------------------------------------------------------------
+# Per-node maintenance: restart / shutdown via cluster carve-out.
+#
+# Mirrors the local /api/server/{restart,shutdown} but under the cluster
+# namespace so the peer-trust gate stays narrow and explicit. The
+# master-side proxy below short-circuits to the local helper when the
+# target is self.
+# ---------------------------------------------------------------------------
+
+
+class ServerShutdownLocalRequest(BaseModel):
+    stop_jobs: bool = False
+
+
+@router.post("/server_restart_local")
+async def server_restart_local(response: Response):
+    """Trigger an in-place restart on this node.
+
+    Auth bypassed by the peer-call carve-out — the mTLS client cert
+    proof that the caller is a cluster peer is the entire trust
+    envelope. See ``auth._PEER_ALLOWED_MUTATIONS``.
+    """
+    from . import server_admin
+
+    ident = cluster.self_identity()
+    if ident is not None:
+        response.headers["X-Forgather-Node-Id"] = ident.node_id
+    return server_admin.schedule_restart()
+
+
+@router.post("/server_shutdown_local")
+async def server_shutdown_local(
+    req: ServerShutdownLocalRequest, response: Response
+):
+    """Trigger a graceful shutdown on this node.
+
+    Carve-out twin of ``server_restart_local``. ``stop_jobs`` first
+    SIGTERMs every non-terminal JobRecord's process group on this peer
+    before the server exits.
+    """
+    from . import server_admin
+
+    ident = cluster.self_identity()
+    if ident is not None:
+        response.headers["X-Forgather-Node-Id"] = ident.node_id
+    return server_admin.schedule_shutdown(bool(req.stop_jobs))
+
+
+class NodeShutdownRequest(BaseModel):
+    stop_jobs: bool = False
+
+
+@router.post("/nodes/{node_id}/restart")
+async def restart_node(node_id: str):
+    """Master-side proxy: restart the named node.
+
+    Looks up ``node_id`` in the cluster member table and POSTs to that
+    node's ``/api/cluster/server_restart_local``. Short-circuits to
+    the local restart helper when the target is self so the same UI
+    works for both cases without the webui having to special-case
+    "is this me?".
+    """
+    target = next((m for m in cluster.members() if m.node_id == node_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"unknown node {node_id}")
+    self_id = cluster.self_identity()
+    if self_id is not None and node_id == self_id.node_id:
+        from . import server_admin
+
+        return server_admin.schedule_restart()
+    if not target.reachable:
+        raise HTTPException(
+            status_code=503,
+            detail=f"node {target.hostname} is currently unreachable",
+        )
+    url = _peer_url(target, "/api/cluster/server_restart_local")
+    async with _peer_client() as client:
+        try:
+            r = await client.post(url, timeout=PEER_GPU_TIMEOUT_SECONDS)
+        except (httpx.HTTPError, OSError) as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"forward to {target.hostname} failed: {e}",
+            )
+    if r.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"node {target.hostname} returned {r.status_code}: "
+                f"{r.text[:200]}"
+            ),
+        )
+    served_by = r.headers.get("x-forgather-node-id") or r.headers.get(
+        "X-Forgather-Node-Id"
+    )
+    if served_by and served_by != node_id:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"address {target.address}:{target.port} answered as node "
+                f"{served_by[:8]}; refusing to forward restart"
+            ),
+        )
+    return r.json()
+
+
+@router.post("/nodes/{node_id}/shutdown")
+async def shutdown_node(node_id: str, req: NodeShutdownRequest):
+    """Master-side proxy: shut down the named node."""
+    target = next((m for m in cluster.members() if m.node_id == node_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"unknown node {node_id}")
+    self_id = cluster.self_identity()
+    if self_id is not None and node_id == self_id.node_id:
+        from . import server_admin
+
+        return server_admin.schedule_shutdown(bool(req.stop_jobs))
+    if not target.reachable:
+        raise HTTPException(
+            status_code=503,
+            detail=f"node {target.hostname} is currently unreachable",
+        )
+    url = _peer_url(target, "/api/cluster/server_shutdown_local")
+    payload = {"stop_jobs": bool(req.stop_jobs)}
+    async with _peer_client() as client:
+        try:
+            r = await client.post(
+                url, json=payload, timeout=PEER_GPU_TIMEOUT_SECONDS
+            )
+        except (httpx.HTTPError, OSError) as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"forward to {target.hostname} failed: {e}",
+            )
+    if r.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"node {target.hostname} returned {r.status_code}: "
+                f"{r.text[:200]}"
+            ),
+        )
+    served_by = r.headers.get("x-forgather-node-id") or r.headers.get(
+        "X-Forgather-Node-Id"
+    )
+    if served_by and served_by != node_id:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"address {target.address}:{target.port} answered as node "
+                f"{served_by[:8]}; refusing to forward shutdown"
+            ),
+        )
+    return r.json()
 
 
 @router.get("/gpus", response_model=ClusterGpusResponse)
@@ -2577,6 +2741,15 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
                     # ever recognise itself as the rdzv host and the c10d
                     # store would never bind). Set explicitly per-peer.
                     "is_host": member.node_id == rdzv_node_id,
+                    # Each peer's own routable IP. Rank 0's elastic
+                    # agent writes this into the c10d store as
+                    # MASTER_ADDR (RendezvousStoreInfo.build falls back
+                    # to socket.getfqdn() otherwise, which yields a
+                    # bare hostname like "hal9000" that peers without
+                    # DNS can't resolve). Setting --local-addr on
+                    # every peer is harmless and keeps the master /
+                    # non-master code paths uniform.
+                    "local_addr": member.address,
                 },
                 "extra_env": extra_env,
                 "cluster_job_id": cluster_job_id,

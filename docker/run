@@ -11,7 +11,7 @@
 # Bind-mounts the host home directory at the same path used inside
 # the container so absolute paths in shell history, configs, and
 # project files keep resolving correctly. The image is single-user
-# and host-scoped: ``docker/build.sh`` bakes the host operator's
+# and host-scoped: ``docker/build`` bakes the host operator's
 # UID/GID/name into the image directly, so there's no runtime
 # remap — the in-container user IS the host user.
 #
@@ -24,12 +24,12 @@
 # networking with explicit port-forwards.
 #
 # Usage:
-#   docker/run.sh                      # interactive bash (creates container if needed)
-#   docker/run.sh forgather ls -r      # one-shot command in the same container
-#   docker/run.sh --status             # report container state
-#   docker/run.sh --stop               # stop (but keep) the container
-#   docker/run.sh --rm                 # stop and remove the container
-#   docker/run.sh --recreate           # remove and recreate from scratch
+#   docker/run                         # interactive bash (creates container if needed)
+#   docker/run forgather ls -r         # one-shot command in the same container
+#   docker/run --status                # report container state
+#   docker/run --stop                  # stop (but keep) the container
+#   docker/run --rm                    # stop and remove the container
+#   docker/run --recreate              # remove and recreate from scratch
 #
 # Environment overrides (only applied when the container is being
 # CREATED — ignored on re-attach):
@@ -53,7 +53,7 @@
 #
 # Persistent overrides: if $XDG_CONFIG_HOME/forgather/docker.env (or
 # ~/.config/forgather/docker.env) exists it is sourced before defaults
-# are applied. Use `:= ` so a command-line `VAR=... docker/run.sh`
+# are applied. Use `:= ` so a command-line `VAR=... docker/run`
 # still wins:
 #
 #   # ~/.config/forgather/docker.env
@@ -121,12 +121,12 @@ check_uncovered_symlinks() {
         local repo_top
         repo_top="$(suggest_root "${repo_real}")"
         {
-            echo "[run.sh] error: forgather repo path resolves outside the bind-mount:"
-            echo "[run.sh]   ${REPO_ROOT}"
-            echo "[run.sh]   -> ${repo_real}"
-            echo "[run.sh] without a bind-mount covering the target, the container's"
-            echo "[run.sh] workdir will fail to resolve. add the target root to EXTRA_MOUNTS:"
-            echo "[run.sh]   EXTRA_MOUNTS=\"-v ${repo_top}:${repo_top}\" docker/run.sh --recreate"
+            echo "[run] error: forgather repo path resolves outside the bind-mount:"
+            echo "[run]   ${REPO_ROOT}"
+            echo "[run]   -> ${repo_real}"
+            echo "[run] without a bind-mount covering the target, the container's"
+            echo "[run] workdir will fail to resolve. add the target root to EXTRA_MOUNTS:"
+            echo "[run]   EXTRA_MOUNTS=\"-v ${repo_top}:${repo_top}\" docker/run --recreate"
         } >&2
         exit 2
     fi
@@ -163,12 +163,12 @@ check_uncovered_symlinks() {
         | sed 's/^ //')"
 
     {
-        echo "[run.sh] warning: \$HOME-rooted symlinks resolve outside the bind-mount:"
+        echo "[run] warning: \$HOME-rooted symlinks resolve outside the bind-mount:"
         printf '%s\n' "${entries}" \
-            | awk -F'\t' '!shown[$1]++ { printf "[run.sh]   %s   (e.g. %s)\n", $1, $2 }'
-        echo "[run.sh] those links will dangle inside the container."
-        echo "[run.sh] add the target roots to EXTRA_MOUNTS so paths keep resolving:"
-        echo "[run.sh]   EXTRA_MOUNTS=\"${mounts}\" docker/run.sh --recreate"
+            | awk -F'\t' '!shown[$1]++ { printf "[run]   %s   (e.g. %s)\n", $1, $2 }'
+        echo "[run] those links will dangle inside the container."
+        echo "[run] add the target roots to EXTRA_MOUNTS so paths keep resolving:"
+        echo "[run]   EXTRA_MOUNTS=\"${mounts}\" docker/run --recreate"
     } >&2
 }
 
@@ -209,7 +209,7 @@ do_create_container() {
         HOSTNAME_ARGS=(--hostname "forgather-dev")
     fi
 
-    echo "[run.sh] creating container ${NAME} from ${IMAGE}" >&2
+    echo "[run] creating container ${NAME} from ${IMAGE}" >&2
 
     # Detached, no --rm. PID 1 is sleep infinity so the container
     # survives across `docker exec` sessions and shell logouts.
@@ -271,7 +271,7 @@ case "${1:-}" in
         # leave the user with no container at all.
         check_uncovered_symlinks
         if [[ "$(lib_container_state)" != "absent" ]]; then
-            echo "[run.sh] removing existing ${NAME}" >&2
+            echo "[run] removing existing ${NAME}" >&2
             docker rm -f "${NAME}" > /dev/null
         fi
         do_create_container

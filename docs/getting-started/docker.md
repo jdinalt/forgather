@@ -216,7 +216,7 @@ copies to N nodes.
 
 | Arg | Default | Notes |
 | - | - | - |
-| `TAG` | `forgather:latest` | Image tag. Use a versioned tag for distribution (e.g. `ghcr.io/jdinalt/forgather:1.1.0`). |
+| `TAG` | `forgather:latest` | Image tag. Use a versioned tag for distribution (e.g. `ghcr.io/jdinalt/forgather:1.2.0`). |
 
 **Env vars**
 
@@ -328,7 +328,7 @@ docker/runtime/run.sh --dev /home/me/forgather-fork --recreate
 PORT=8888 HOST_BIND=0.0.0.0 docker/runtime/run.sh
 
 # Versioned release image:
-IMAGE=ghcr.io/jdinalt/forgather:1.1.0 docker/runtime/run.sh
+IMAGE=ghcr.io/jdinalt/forgather:1.2.0 docker/runtime/run.sh
 ```
 
 ### Persistent overrides
@@ -877,8 +877,8 @@ clone.**
 Tag and push as usual:
 
 ```bash
-docker tag forgather:latest ghcr.io/jdinalt/forgather:1.1.0
-docker push ghcr.io/jdinalt/forgather:1.1.0
+docker tag forgather:latest ghcr.io/jdinalt/forgather:1.2.0
+docker push ghcr.io/jdinalt/forgather:1.2.0
 ```
 
 Multi-arch builds (`linux/arm64`) are out of scope for this

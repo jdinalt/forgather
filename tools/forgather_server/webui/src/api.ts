@@ -201,6 +201,11 @@ export interface GpuInfo {
   /** Minimum queue priority required to schedule on this GPU (inclusive).
    *  0 means no restriction. */
   min_priority: number;
+  /** True when a running JobRecord on the owning peer has reserved this
+   *  GPU. Stamped server-side so peers are authoritative for their own
+   *  reservations — used by the cluster Nodes panel to mark a peer GPU
+   *  BUSY without needing cross-node job visibility. */
+  reserved: boolean;
   /** True when total_mem_bytes reports host system RAM rather than a
    *  discrete VRAM pool — set for GPUs like GB10 / Jetson where NVML
    *  returns "Not Supported" for memory info and the device shares
@@ -1616,6 +1621,52 @@ export const api = {
       throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
     }
     return r.json() as Promise<{ restart: string }>;
+  },
+  shutdownServer: async (opts: { stopJobs?: boolean } = {}) => {
+    const r = await fetch("/api/server/shutdown", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stop_jobs: !!opts.stopJobs }),
+    });
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<{
+      shutdown: string;
+      stopped_jobs: string[];
+    }>;
+  },
+  // Cluster maintenance: master forwards to the named node via mTLS.
+  // For the local node, the master short-circuits to the local helper.
+  restartNode: async (nodeId: string) => {
+    const r = await fetch(
+      `/api/cluster/nodes/${encodeURIComponent(nodeId)}/restart`,
+      { method: "POST" },
+    );
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<{ restart: string }>;
+  },
+  shutdownNode: async (
+    nodeId: string,
+    opts: { stopJobs?: boolean } = {},
+  ) => {
+    const r = await fetch(
+      `/api/cluster/nodes/${encodeURIComponent(nodeId)}/shutdown`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stop_jobs: !!opts.stopJobs }),
+      },
+    );
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<{
+      shutdown: string;
+      stopped_jobs: string[];
+    }>;
   },
   setServiceEnabled: async (type: string, name: string, enabled: boolean) => {
     const r = await fetch(

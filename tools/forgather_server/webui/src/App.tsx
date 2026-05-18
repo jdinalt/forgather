@@ -29,6 +29,7 @@ import { DocsPanel } from "./components/DocsPanel";
 import { FilesPanel } from "./components/FilesPanel";
 import { FilesTree } from "./components/FilesTree";
 import { SearchRootsPanel } from "./components/SearchRootsPanel";
+import { ShutdownModal } from "./components/ShutdownModal";
 import { useFilesState } from "./files-state";
 
 type View =
@@ -100,6 +101,29 @@ function RestartIcon() {
       aria-hidden="true"
     >
       <path d="M12 5 V1 L 7 6 l 5 5 V 7 c 3.31 0 6 2.69 6 6 s -2.69 6 -6 6 s -6 -2.69 -6 -6 H 4 c 0 4.42 3.58 8 8 8 s 8 -3.58 8 -8 S 16.42 5 12 5 z" />
+    </svg>
+  );
+}
+
+// Classic power-button glyph: a broken circle with a vertical stroke
+// pointing up through the gap. Means "shutdown" — visually distinct
+// from the RestartIcon's circular arrow (in-place reboot) and the
+// ReloadIcon (refresh data).
+function PowerIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3 v9" />
+      <path d="M6.4 7.2 a8 8 0 1 0 11.2 0" />
     </svg>
   );
 }
@@ -644,6 +668,19 @@ export default function App() {
     );
   }, []);
 
+  // Shutdown is a one-way exit (unlike restart, which polls /api/health
+  // until the rebooted process answers again). We just open a modal so
+  // the operator can pick "stop server only" vs "stop all jobs and
+  // shutdown"; the modal calls api.shutdownServer and then we flip
+  // ``shuttingDown`` so the rest of the UI shows that the server is
+  // going away rather than that the request is hanging.
+  const [shutdownOpen, setShutdownOpen] = useState(false);
+  const [shuttingDown, setShuttingDown] = useState(false);
+  const onShutdownStarted = useCallback(() => {
+    setShutdownOpen(false);
+    setShuttingDown(true);
+  }, []);
+
   const openHelp = useCallback(
     async (menu: ToolHelpMenu) => {
       // 1. Build the absolute path the Docs API expects.
@@ -1157,7 +1194,7 @@ export default function App() {
             <button
               className="sidebar-footer-gear"
               onClick={restartServer}
-              disabled={restarting}
+              disabled={restarting || shuttingDown}
               title={
                 restarting
                   ? "Waiting for the server to come back up…"
@@ -1166,6 +1203,19 @@ export default function App() {
               aria-label="Restart server"
             >
               <RestartIcon />
+            </button>
+            <button
+              className="sidebar-footer-gear"
+              onClick={() => setShutdownOpen(true)}
+              disabled={shuttingDown || restarting}
+              title={
+                shuttingDown
+                  ? "Shutdown in progress…"
+                  : "Shutdown the forgather server"
+              }
+              aria-label="Shutdown server"
+            >
+              <PowerIcon />
             </button>
             <button
               className="sidebar-footer-gear"
@@ -1338,6 +1388,12 @@ export default function App() {
           onClose={() => setMkdocsOpen(false)}
           onSubmitted={onJobSubmitted}
           onServiceCreated={expandServicesCategory}
+        />
+      )}
+      {shutdownOpen && (
+        <ShutdownModal
+          onClose={() => setShutdownOpen(false)}
+          onShutdownStarted={onShutdownStarted}
         />
       )}
       {convertOpen && (

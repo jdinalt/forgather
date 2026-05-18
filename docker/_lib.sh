@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared scaffolding for the Forgather run scripts (docker/run.sh and
+# Shared scaffolding for the Forgather run scripts (docker/run and
 # docker/runtime/run.sh). NOT a standalone script — sourced by the
 # wrappers via `. "$(dirname "${BASH_SOURCE[0]}")/_lib.sh"` (or with
 # the appropriate relative path).
@@ -35,8 +35,8 @@
 # ~/.config/forgather/docker.env) so operators can persist EXTRA_MOUNTS,
 # GPUS, NETWORK, etc., across invocations. Any var the caller wants to
 # pick up from the config file must use the `: "${VAR:=default}"`
-# pattern *after* this returns, so a command-line `VAR=... run.sh`
-# still wins over the file.
+# pattern *after* this returns, so a command-line `VAR=... ./run`
+# (or `VAR=... runtime/run.sh`) still wins over the file.
 lib_load_config() {
     local config_file="${FORGATHER_DOCKER_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/forgather/docker.env}"
     if [[ -f "${config_file}" ]]; then
@@ -73,7 +73,7 @@ lib_ensure_running() {
         running)
             ;;
         stopped)
-            echo "[run.sh] starting existing container ${NAME}" >&2
+            echo "[${0##*/}] starting existing container ${NAME}" >&2
             docker start "${NAME}" > /dev/null
             ;;
         absent)
@@ -136,19 +136,19 @@ lib_handle_common_subcommand() {
             ;;
         --stop)
             if [[ "$(lib_container_state)" == "running" ]]; then
-                echo "[run.sh] stopping ${NAME}" >&2
+                echo "[${0##*/}] stopping ${NAME}" >&2
                 docker stop "${NAME}" > /dev/null
             else
-                echo "[run.sh] container ${NAME} is not running" >&2
+                echo "[${0##*/}] container ${NAME} is not running" >&2
             fi
             return 0
             ;;
         --rm)
             if [[ "$(lib_container_state)" != "absent" ]]; then
-                echo "[run.sh] removing ${NAME}" >&2
+                echo "[${0##*/}] removing ${NAME}" >&2
                 docker rm -f "${NAME}" > /dev/null
             else
-                echo "[run.sh] container ${NAME} does not exist" >&2
+                echo "[${0##*/}] container ${NAME} does not exist" >&2
             fi
             return 0
             ;;

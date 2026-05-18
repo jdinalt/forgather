@@ -2,7 +2,7 @@
 
 The full reference for both the dev image and the runtime
 (distributable) image — including the CLI listing for every
-`build.sh` / `run.sh` flag and env var, multi-node operation,
+`build` / `run` flag and env var, multi-node operation,
 troubleshooting, and the design rationale for the PUID/PGID
 remap and immutable-by-design contract — lives in the docs site:
 
@@ -15,10 +15,10 @@ so you can browse it without cloning the repo.
 
 | File | Purpose |
 | - | - |
-| `build.sh` | Build the dev image (`Dockerfile`) |
-| `run.sh` | Launch / attach the dev container |
+| `build` | Build the dev image (`Dockerfile`) |
+| `run` | Launch / attach the dev container |
 | `entrypoint.sh` | Shared entrypoint (`nvidia-smi` probe, PUID/PGID remap on the runtime image, editable install when `FORGATHER_REPO` is set) |
-| `_lib.sh` | Shared shell library used by both `run.sh` scripts |
+| `_lib.sh` | Shared shell library used by both run-scripts (`run` and `runtime/run.sh`) |
 | `runtime/build.sh` | Build the runtime image (`Dockerfile.runtime`) |
 | `runtime/run.sh` | Launch / manage the runtime container |
 | `patches/` | Backport patches applied at image-build time |

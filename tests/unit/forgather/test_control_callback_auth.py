@@ -204,7 +204,41 @@ def test_on_train_begin_generates_token_and_persists(isolated_home, caplog):
         cb.on_train_end(args, state, MagicMock())
 
 
-def test_on_train_begin_logs_warning_for_non_loopback_host(isolated_home, caplog):
+_CONTROL_CALLBACK_LOGGER = "forgather.ml.trainer.callbacks.control_callback"
+
+
+class _RecordCollector(logging.Handler):
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+
+@pytest.fixture
+def control_log_records():
+    """Attach a direct handler to the control_callback logger.
+
+    The module's logger has ``propagate=False`` (set by ``prefix_logger_rank``),
+    so pytest's ``caplog`` doesn't see its emissions. This fixture captures
+    records directly from that logger and restores its state on teardown.
+    """
+    log = logging.getLogger(_CONTROL_CALLBACK_LOGGER)
+    handler = _RecordCollector()
+    prev_level = log.level
+    log.addHandler(handler)
+    log.setLevel(logging.DEBUG)
+    try:
+        yield handler.records
+    finally:
+        log.removeHandler(handler)
+        log.setLevel(prev_level)
+
+
+def test_on_train_begin_logs_warning_for_non_loopback_host(
+    isolated_home, control_log_records
+):
     """0.0.0.0 (or other non-loopback) bind triggers an explicit warning."""
     cb = TrainerControlCallback(
         job_id="test_exposed", port=0, host="0.0.0.0", enable_http=False
@@ -215,27 +249,27 @@ def test_on_train_begin_logs_warning_for_non_loopback_host(isolated_home, caplog
     state = _fake_state(rank_zero=True)
     args = _fake_args()
     try:
-        with caplog.at_level(logging.WARNING):
-            cb.on_train_begin(args, state, MagicMock())
+        cb.on_train_begin(args, state, MagicMock())
         assert any(
             "exposed beyond loopback" in rec.getMessage()
             and rec.levelno == logging.WARNING
-            for rec in caplog.records
+            for rec in control_log_records
         )
     finally:
         cb.on_train_end(args, state, MagicMock())
 
 
-def test_on_train_begin_logs_warning_when_auth_disabled(isolated_home, caplog):
+def test_on_train_begin_logs_warning_when_auth_disabled(
+    isolated_home, control_log_records
+):
     cb = TrainerControlCallback(
         job_id="test_no_auth_warn", port=0, host="127.0.0.1", disable_auth=True
     )
     state = _fake_state(rank_zero=True)
     args = _fake_args()
     try:
-        with caplog.at_level(logging.WARNING):
-            cb.on_train_begin(args, state, MagicMock())
-        assert any("auth DISABLED" in rec.getMessage() for rec in caplog.records)
+        cb.on_train_begin(args, state, MagicMock())
+        assert any("auth DISABLED" in rec.getMessage() for rec in control_log_records)
         # And no token file should be on disk.
         token_file = isolated_home / "jobs" / cb.job_id / "auth_token"
         assert not token_file.exists()

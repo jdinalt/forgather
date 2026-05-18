@@ -15,23 +15,23 @@
 # moment they start it. Skip this post-step with SKIP_WEBUI_BUILD=1.
 #
 # Usage:
-#   docker/build.sh                    # tag: forgather-dev:<host-user>
-#   docker/build.sh my-tag             # custom tag
-#   docker/build.sh --claude           # also bake in Claude Code (npm global)
-#   docker/build.sh --cpu              # CPU-only torch (much smaller image,
+#   docker/build                       # tag: forgather-dev:<host-user>
+#   docker/build my-tag                # custom tag
+#   docker/build --claude              # also bake in Claude Code (npm global)
+#   docker/build --cpu                 # CPU-only torch (much smaller image,
 #                                      # no nvidia-* libs; for CI / docs /
 #                                      # GPU-less hosts)
-#   docker/build.sh -- --no-cache      # pass extra args to docker build
+#   docker/build -- --no-cache         # pass extra args to docker build
 #
 # Flags can be combined with the tag:
-#   docker/build.sh forgather-dev:claude --claude
-#   docker/build.sh --cpu forgather-dev:cpu
-#   docker/build.sh --claude my-tag -- --no-cache
+#   docker/build forgather-dev:claude --claude
+#   docker/build --cpu forgather-dev:cpu
+#   docker/build --claude my-tag -- --no-cache
 #
 # Skip the webui post-step (e.g. you'll iterate on the SPA via
 # `npm run dev` instead of the static dist/):
 #
-#   SKIP_WEBUI_BUILD=1 docker/build.sh
+#   SKIP_WEBUI_BUILD=1 docker/build
 
 set -euo pipefail
 
@@ -76,11 +76,11 @@ HOST_USER="$(id -un)"
 # "UID 0 is not unique" error several layers in. Bail early with a
 # clear message and a workaround.
 if [[ "${HOST_UID}" == "0" ]]; then
-    echo "[build.sh] error: refusing to build the dev image as root" >&2
-    echo "[build.sh]   the dev image bakes the host operator's identity in;" >&2
-    echo "[build.sh]   uid 0 collides with the in-image root account." >&2
-    echo "[build.sh]   re-run as a regular user, or use the runtime image" >&2
-    echo "[build.sh]   (Dockerfile.runtime) which IS user-agnostic." >&2
+    echo "[build] error: refusing to build the dev image as root" >&2
+    echo "[build]   the dev image bakes the host operator's identity in;" >&2
+    echo "[build]   uid 0 collides with the in-image root account." >&2
+    echo "[build]   re-run as a regular user, or use the runtime image" >&2
+    echo "[build]   (Dockerfile.runtime) which IS user-agnostic." >&2
     exit 2
 fi
 
@@ -93,7 +93,7 @@ else
     shift || true
 fi
 # Drop a leading "--" separator so callers can pass extra docker args:
-#   docker/build.sh forgather-dev:dinalt -- --progress=plain
+#   docker/build forgather-dev:dinalt -- --progress=plain
 if [[ "${1:-}" == "--" ]]; then shift; fi
 
 echo "Building ${TAG}"
@@ -115,13 +115,13 @@ docker build \
     "${REPO_ROOT}"
 
 if [[ -n "${SKIP_WEBUI_BUILD:-}" ]]; then
-    echo "[build.sh] SKIP_WEBUI_BUILD set; not running ./build-webui.sh"
+    echo "[build] SKIP_WEBUI_BUILD set; not running ./build-webui.sh"
     exit 0
 fi
 
 echo
-echo "[build.sh] running ./build-webui.sh in the just-built image"
-echo "[build.sh] (one-time; skip with SKIP_WEBUI_BUILD=1)"
+echo "[build] running ./build-webui.sh in the just-built image"
+echo "[build] (one-time; skip with SKIP_WEBUI_BUILD=1)"
 
 # The image's in-container user is already the host operator (baked
 # in via build args above), so files created inside the container
@@ -136,4 +136,4 @@ docker run --rm \
     "${TAG}" \
     -lc "./build-webui.sh"
 
-echo "[build.sh] webui build complete: ${REPO_ROOT}/tools/forgather_server/webui/dist"
+echo "[build] webui build complete: ${REPO_ROOT}/tools/forgather_server/webui/dist"

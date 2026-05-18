@@ -905,6 +905,16 @@ class TestClusterJobSubmit:
         for nid, v in is_host_by_id.items():
             if nid != rdzv_node_id:
                 assert v is False
+        # Every peer must receive its own routable address as
+        # local_addr so torchrun emits --local-addr <ip>. Without this,
+        # rank 0's elastic agent stores socket.getfqdn() in the c10d
+        # store as MASTER_ADDR — a bare hostname like "hal9000" that
+        # peers without DNS can't resolve.
+        local_addr_by_id = {
+            c[0]: c[1]["rdzv_args"]["local_addr"] for c in captured
+        }
+        assert local_addr_by_id[ident.node_id] == "192.168.1.27"
+        assert local_addr_by_id[peer_id] == "192.168.1.162"
 
     def test_version_mismatch_blocks_without_override(self, monkeypatch):
         ident, peer_id = self._activate_with_two_members(

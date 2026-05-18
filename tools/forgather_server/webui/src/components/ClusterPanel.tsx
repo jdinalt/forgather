@@ -18,6 +18,7 @@ import {
 } from "../api";
 import { DatasetsClusterTab } from "./DatasetsPanel";
 import type { SelectedLeaf } from "./DatasetsExploreTab";
+import { ShutdownModal } from "./ShutdownModal";
 /** Format a byte count as a compact MiB/GiB string. Local to the
  *  Nodes panel so the cluster view doesn't depend on GpuPanel's
  *  internal helper. */
@@ -543,7 +544,7 @@ export function ClusterPanel({
   // cluster comes online and the panel renders for the first time,
   // we want the user's tab selection to persist across loading
   // states (e.g. a transient membersQ.isLoading after a refetch).
-  const [tab, setTab] = useState<ClusterTab>("jobs");
+  const [tab, setTab] = useState<ClusterTab>("nodes");
   const membersQ = useQuery<ClusterMembersResponse>({
     queryKey: ["cluster", "members"],
     queryFn: api.getClusterMembers,
@@ -760,6 +761,42 @@ export function ClusterPanel({
 
 type ClusterTab = "jobs" | "network" | "nodes" | "datasets";
 
+// Same glyphs as App.tsx's sidebar-footer buttons — duplicated here so
+// NodeGroup doesn't need to import internals from App. Two SVGs is less
+// churn than a shared icons file.
+function NodeRestartIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M12 5 V1 L 7 6 l 5 5 V 7 c 3.31 0 6 2.69 6 6 s -2.69 6 -6 6 s -6 -2.69 -6 -6 H 4 c 0 4.42 3.58 8 8 8 s 8 -3.58 8 -8 S 16.42 5 12 5 z" />
+    </svg>
+  );
+}
+
+function NodePowerIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3 v9" />
+      <path d="M6.4 7.2 a8 8 0 1 0 11.2 0" />
+    </svg>
+  );
+}
+
 function NodeGroup({
   member,
   isSelf,
@@ -794,6 +831,69 @@ function NodeGroup({
     onSuccess: () => qc.invalidateQueries({ queryKey: ["cluster", "gpus"] }),
     onError: (e) => alert(`Policy update failed: ${String(e)}`),
   });
+  const [restarting, setRestarting] = useState(false);
+  const [shutdownOpen, setShutdownOpen] = useState(false);
+  const [shuttingDown, setShuttingDown] = useState(false);
+  // Restart the named node. For the local node, mirror App.tsx's
+  // restartServer flow: poll /api/health until the rebooted process
+  // answers and then reload so cached queries refetch. For a peer node
+  // the webui stays put — just invalidate the cluster queries so the
+  // peer's transient ``unreachable`` state lands in the UI.
+  const onRestart = async () => {
+    if (
+      !window.confirm(
+        `Restart node ${member.hostname}? Running jobs survive the exec.`,
+      )
+    ) {
+      return;
+    }
+    setRestarting(true);
+    try {
+      await api.restartNode(member.node_id);
+    } catch (e) {
+      window.alert(`Restart failed: ${e instanceof Error ? e.message : String(e)}`);
+      setRestarting(false);
+      return;
+    }
+    if (isSelf) {
+      let sawDown = false;
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline) {
+        try {
+          const r = await fetch("/api/health", { cache: "no-store" });
+          if (r.ok) {
+            if (sawDown) {
+              window.location.reload();
+              return;
+            }
+          } else {
+            sawDown = true;
+          }
+        } catch {
+          sawDown = true;
+        }
+        await new Promise((res) => setTimeout(res, 750));
+      }
+      setRestarting(false);
+      window.alert(
+        "Server did not come back within 60 seconds. Check the terminal where it was launched.",
+      );
+    } else {
+      qc.invalidateQueries({ queryKey: ["cluster", "members"] });
+      qc.invalidateQueries({ queryKey: ["cluster", "gpus"] });
+      qc.invalidateQueries({ queryKey: ["cluster", "jobs"] });
+      setRestarting(false);
+    }
+  };
+  const onShutdownStarted = () => {
+    setShutdownOpen(false);
+    setShuttingDown(true);
+    // Refetch so the peer's transition to ``unreachable`` lands in the
+    // UI as soon as membership detects the drop. For self, the webui
+    // will disconnect on its own when uvicorn unwinds.
+    qc.invalidateQueries({ queryKey: ["cluster", "members"] });
+    qc.invalidateQueries({ queryKey: ["cluster", "gpus"] });
+  };
   const cpu = member.probe?.cpu;
   return (
     <section
@@ -818,6 +918,42 @@ function NodeGroup({
         {!member.reachable && (
           <span className="node-tag node-tag-err">unreachable</span>
         )}
+        {/* Maintenance controls — sit immediately to the right of the
+            tags so they're impossible to miss. ``.node-group-meta``'s
+            margin-left:auto still pushes the address/CPU info to the
+            far right; the actions get the space between. */}
+        <span className="node-group-actions">
+          <button
+            className="sidebar-footer-gear node-group-action"
+            onClick={onRestart}
+            disabled={restarting || shuttingDown || !member.reachable}
+            title={
+              !member.reachable
+                ? "Node is unreachable — cannot restart"
+                : restarting
+                  ? "Restart in progress…"
+                  : `Restart ${member.hostname} (running jobs survive)`
+            }
+            aria-label={`Restart ${member.hostname}`}
+          >
+            <NodeRestartIcon />
+          </button>
+          <button
+            className="sidebar-footer-gear node-group-action"
+            onClick={() => setShutdownOpen(true)}
+            disabled={restarting || shuttingDown || !member.reachable}
+            title={
+              !member.reachable
+                ? "Node is unreachable — cannot shut down"
+                : shuttingDown
+                  ? "Shutdown in progress…"
+                  : `Shutdown ${member.hostname}`
+            }
+            aria-label={`Shutdown ${member.hostname}`}
+          >
+            <NodePowerIcon />
+          </button>
+        </span>
         <span className="node-group-meta">
           <span className="node-address">
             {member.address}:{member.port}
@@ -852,6 +988,14 @@ function NodeGroup({
           togglePolicy.mutate({ gpu_index, disabled })
         }
       />
+      {shutdownOpen && (
+        <ShutdownModal
+          nodeId={member.node_id}
+          nodeLabel={member.hostname}
+          onClose={() => setShutdownOpen(false)}
+          onShutdownStarted={onShutdownStarted}
+        />
+      )}
     </section>
   );
 }
@@ -891,7 +1035,11 @@ function NodeGpuList({
   }
   const total = gpus.length;
   const idleCount = gpus.filter(
-    (g) => !g.excluded && !g.disabled && !(reservedGpus?.has(g.index) ?? false),
+    (g) =>
+      !g.excluded &&
+      !g.disabled &&
+      !g.reserved &&
+      !(reservedGpus?.has(g.index) ?? false),
   ).length;
   return (
     <details className="node-group-gpus" open>
@@ -909,12 +1057,20 @@ function NodeGpuList({
               <th>Memory</th>
               <th>Util</th>
               <th>Temp</th>
+              <th>Fan</th>
+              <th>Power</th>
               <th>Status</th>
             </tr>
           </thead>
           <tbody>
             {gpus.map((g) => {
-              const reserved = reservedGpus?.has(g.index) ?? false;
+              // ``g.reserved`` is stamped by the owning peer (authoritative
+              // for that node's running jobs); ``reservedGpus`` is the
+              // local-jobs fallback used for older peers that don't ship
+              // the field yet. OR them so a single source missing the
+              // signal still flips the row to BUSY.
+              const reserved =
+                g.reserved || (reservedGpus?.has(g.index) ?? false);
               const idle = !g.excluded && !g.disabled && !reserved;
               const statusLabel = g.excluded
                 ? "excluded"
@@ -969,6 +1125,12 @@ function NodeGpuList({
                   </td>
                   <td className="gpu-row-temp">
                     {g.temp_c !== null ? `${g.temp_c}°C` : "—"}
+                  </td>
+                  <td className="gpu-row-fan">
+                    {g.fan_pct !== null ? `${g.fan_pct}%` : "—"}
+                  </td>
+                  <td className="gpu-row-power">
+                    {g.power_w !== null ? `${Math.round(g.power_w)} W` : "—"}
                   </td>
                   <td className="gpu-row-status">
                     <span className={"gpu-row-status-tag tag-" + statusLabel}>

@@ -26,12 +26,12 @@
 #     runtime image's source tree is baked from the image we ship).
 #
 # Usage:
-#   scripts/smoke_runtime_multinode.sh                # default: muthur
-#   scripts/smoke_runtime_multinode.sh --remote box2  # custom remote
-#   scripts/smoke_runtime_multinode.sh --keep         # leave containers running on success
-#   scripts/smoke_runtime_multinode.sh --diagnose-on-failure
+#   tests/smoke_runtime_multinode.sh                # default: muthur
+#   tests/smoke_runtime_multinode.sh --remote box2  # custom remote
+#   tests/smoke_runtime_multinode.sh --keep         # leave containers running on success
+#   tests/smoke_runtime_multinode.sh --diagnose-on-failure
 #                                                     # default; explicit toggle
-#   scripts/smoke_runtime_multinode.sh --no-build     # skip rebuild + redeploy
+#   tests/smoke_runtime_multinode.sh --no-build     # skip rebuild + redeploy
 #
 # Exit codes: 0 on success, non-zero on any failure (and diagnose runs).
 

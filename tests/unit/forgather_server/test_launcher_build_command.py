@@ -176,6 +176,46 @@ class TestRdzvMode:
         idx = cmd.index("--rdzv-conf")
         assert cmd[idx + 1] == "is_host=false"
 
+    def test_emits_local_addr_when_present(self, monkeypatch):
+        # local_addr must reach torchrun as ``--local-addr <ip>`` so
+        # rank 0's elastic agent writes an IP into the c10d store as
+        # MASTER_ADDR instead of falling back to socket.getfqdn(),
+        # which yields an unresolvable hostname on LANs without DNS.
+        meta, env, materialized = _patched_meta()
+        monkeypatch.setattr(launcher, "MetaConfig", lambda *a, **kw: meta)
+        monkeypatch.setattr(launcher, "get_env", lambda *a, **kw: env)
+        monkeypatch.setattr(
+            launcher.Latent, "materialize", lambda x: materialized
+        )
+        rdzv = {
+            "nnodes": 2,
+            "node_rank": 0,
+            "rdzv_endpoint": "192.168.9.95:29400",
+            "rdzv_id": "abc",
+            "local_addr": "192.168.9.95",
+        }
+        cmd = launcher.build_command("/proj", "train.yaml", {}, rdzv_args=rdzv)
+        idx = cmd.index("--local-addr")
+        assert cmd[idx + 1] == "192.168.9.95"
+
+    def test_omits_local_addr_when_absent(self, monkeypatch):
+        # Backwards-compat: callers that never set local_addr must keep
+        # working — torch falls back to its own hostname lookup.
+        meta, env, materialized = _patched_meta()
+        monkeypatch.setattr(launcher, "MetaConfig", lambda *a, **kw: meta)
+        monkeypatch.setattr(launcher, "get_env", lambda *a, **kw: env)
+        monkeypatch.setattr(
+            launcher.Latent, "materialize", lambda x: materialized
+        )
+        rdzv = {
+            "nnodes": 2,
+            "node_rank": 0,
+            "rdzv_endpoint": "wopr:29400",
+            "rdzv_id": "abc",
+        }
+        cmd = launcher.build_command("/proj", "train.yaml", {}, rdzv_args=rdzv)
+        assert "--local-addr" not in cmd
+
     def test_omits_rdzv_conf_when_is_host_absent(self, monkeypatch):
         # Backwards-compat: callers that never set is_host must keep
         # working — torch's autodetection runs and we don't inject a

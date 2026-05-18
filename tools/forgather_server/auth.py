@@ -159,6 +159,16 @@ _PEER_ALLOWED_MUTATIONS = frozenset(
         # token so port scans during a measurement can't poison
         # the result.
         "/api/cluster/bandwidth_prep",
+        # Per-node maintenance: master forwards a restart / shutdown
+        # request to the named peer via these cluster-scoped wrappers
+        # (rather than carving out /api/server/{restart,shutdown}
+        # directly). The mTLS peer trust already concedes arbitrary
+        # code execution on the peer (see ``peer_session``), so adding
+        # process-lifecycle control to that surface is not a new
+        # escalation — but each entry here is still a deliberate
+        # decision, kept narrow and explicit.
+        "/api/cluster/server_restart_local",
+        "/api/cluster/server_shutdown_local",
     }
 )
 
