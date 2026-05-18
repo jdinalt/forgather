@@ -11,6 +11,13 @@
       server can rebind. Config-file changes take effect on the new
       boot.
 
+  POST /api/server/shutdown
+      Graceful process exit. Optional body ``{"stop_jobs": true}``
+      first SIGTERMs every non-terminal JobRecord's process group
+      (training, inference, dataset_server, …) so those subprocesses
+      go down with the server instead of being left detached on the
+      host.
+
 Spawned subprocesses (training, inference, dataset_server, …) keep
 running across the exec — they belong to their own process groups,
 and the new server reattaches via the existing
@@ -22,9 +29,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
 import sys
 
 from fastapi import APIRouter
+from pydantic import BaseModel
+
+from .. import job_records, scheduler
 
 log = logging.getLogger("forgather_server.admin")
 router = APIRouter(tags=["admin"])
@@ -69,3 +80,49 @@ async def restart_server():
 
     asyncio.create_task(_exec_after_response())
     return {"restart": "scheduled"}
+
+
+class ShutdownRequest(BaseModel):
+    stop_jobs: bool = False
+
+
+@router.post("/server/shutdown")
+async def shutdown_server(req: ShutdownRequest):
+    """Schedule a graceful exit.
+
+    When ``stop_jobs`` is true, SIGTERM every non-terminal JobRecord's
+    process group first so spawned trainers / inference servers / etc.
+    are torn down with the server. Otherwise the subprocesses are left
+    running and the next ``forgather server`` boot will reattach them.
+    """
+    stop_jobs = bool(req.stop_jobs)
+    killed: list[str] = []
+    if stop_jobs:
+        for rec in job_records.list_records():
+            if rec.status in job_records.TERMINAL_STATUSES:
+                continue
+            try:
+                if scheduler.abort_record(rec.queue_id):
+                    killed.append(rec.queue_id)
+            except Exception:
+                log.exception("failed to abort %s during shutdown", rec.queue_id)
+
+    async def _exit_after_response():
+        await asyncio.sleep(0.5)
+        log.info("shutdown requested; exiting (stop_jobs=%s)", stop_jobs)
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        # SIGTERM to ourselves so uvicorn's signal handler unwinds the
+        # ASGI app cleanly. If anything in the handler chain hangs, the
+        # supervisor (or operator) can still SIGKILL from outside.
+        try:
+            os.kill(os.getpid(), signal.SIGTERM)
+        except Exception:
+            log.exception("self-SIGTERM failed; exiting hard")
+            os._exit(0)
+
+    asyncio.create_task(_exit_after_response())
+    return {"shutdown": "scheduled", "stopped_jobs": killed}

@@ -1617,6 +1617,20 @@ export const api = {
     }
     return r.json() as Promise<{ restart: string }>;
   },
+  shutdownServer: async (opts: { stopJobs?: boolean } = {}) => {
+    const r = await fetch("/api/server/shutdown", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stop_jobs: !!opts.stopJobs }),
+    });
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<{
+      shutdown: string;
+      stopped_jobs: string[];
+    }>;
+  },
   setServiceEnabled: async (type: string, name: string, enabled: boolean) => {
     const r = await fetch(
       `/api/services/${encodeURIComponent(type)}/${encodeURIComponent(name)}/enabled`,
