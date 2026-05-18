@@ -25,7 +25,13 @@ from forgather.tls import httpx_peer_kwargs
 
 from .. import cluster, cluster_dataset_inventory, cluster_jobs, dataset_source
 from ..dataset_source import DatasetSourceError
-from .gpus import GpuInfoModel, GpuPolicyModel, SetGpuPolicyRequest, _to_model
+from .gpus import (
+    GpuInfoModel,
+    GpuPolicyModel,
+    SetGpuPolicyRequest,
+    _to_model,
+    local_reserved_gpu_indices,
+)
 
 log = logging.getLogger("forgather_server.routes.cluster")
 
@@ -350,7 +356,8 @@ def gpus_local(response: Response):
     ident = cluster.self_identity()
     if ident is not None:
         response.headers["X-Forgather-Node-Id"] = ident.node_id
-    return [_to_model(g) for g in gpu_monitor.snapshot()]
+    reserved = local_reserved_gpu_indices()
+    return [_to_model(g, reserved) for g in gpu_monitor.snapshot()]
 
 
 # ---------------------------------------------------------------------------
@@ -991,12 +998,13 @@ async def _fetch_peer_gpus(
         # entry happens to list its public address.
         from .. import gpu_monitor
 
+        reserved = local_reserved_gpu_indices()
         return ClusterGpusEntry(
             node_id=member.node_id,
             hostname=member.hostname,
             address=member.address,
             reachable=True,
-            gpus=[_to_model(g) for g in gpu_monitor.snapshot()],
+            gpus=[_to_model(g, reserved) for g in gpu_monitor.snapshot()],
         )
     if not member.reachable:
         return ClusterGpusEntry(

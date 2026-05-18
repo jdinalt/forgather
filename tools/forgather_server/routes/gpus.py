@@ -9,7 +9,8 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from .. import gpu_monitor, gpu_policy
+from .. import gpu_monitor, gpu_policy, job_records
+from ..job_records import RUNNING_STATUSES
 
 log = logging.getLogger("forgather_server.gpus")
 
@@ -43,6 +44,11 @@ class GpuInfoModel(BaseModel):
     excluded: bool = False
     disabled: bool = False
     min_priority: int = 0
+    # True when a running JobRecord on the owning peer has reserved this
+    # GPU. Stamped server-side so the cluster Nodes panel can mark peer
+    # GPUs busy without needing cross-node job visibility — each peer
+    # is authoritative for its own reservations.
+    reserved: bool = False
 
 
 class GpuPolicyModel(BaseModel):
@@ -55,7 +61,25 @@ class SetGpuPolicyRequest(BaseModel):
     min_priority: Optional[int] = None
 
 
-def _to_model(g: gpu_monitor.GpuInfo) -> GpuInfoModel:
+def local_reserved_gpu_indices() -> set[int]:
+    """GPU indices reserved by this peer's running JobRecords.
+
+    Mirrors ``scheduler._reserved_gpu_set`` but lives here so the routes
+    layer doesn't have to import the scheduler module (which pulls in
+    dataset_server / trainer_control / etc.). Both paths read the same
+    job_records file, so the result is identical.
+    """
+    reserved: set[int] = set()
+    for r in job_records.list_records():
+        if r.status in RUNNING_STATUSES:
+            reserved.update(r.gpu_indices)
+    return reserved
+
+
+def _to_model(
+    g: gpu_monitor.GpuInfo,
+    reserved_indices: Optional[set[int]] = None,
+) -> GpuInfoModel:
     return GpuInfoModel(
         index=g.index,
         name=g.name,
@@ -80,12 +104,16 @@ def _to_model(g: gpu_monitor.GpuInfo) -> GpuInfoModel:
         excluded=g.excluded,
         disabled=g.disabled,
         min_priority=g.min_priority,
+        reserved=(
+            reserved_indices is not None and g.index in reserved_indices
+        ),
     )
 
 
 @router.get("/gpus", response_model=List[GpuInfoModel])
 def list_gpus():
-    return [_to_model(g) for g in gpu_monitor.snapshot()]
+    reserved = local_reserved_gpu_indices()
+    return [_to_model(g, reserved) for g in gpu_monitor.snapshot()]
 
 
 @router.websocket("/gpus/stream")
@@ -109,7 +137,8 @@ async def stream_gpus(ws: WebSocket):
     try:
         while True:
             snap = await asyncio.to_thread(gpu_monitor.snapshot)
-            payload = [_to_model(g).model_dump() for g in snap]
+            reserved = await asyncio.to_thread(local_reserved_gpu_indices)
+            payload = [_to_model(g, reserved).model_dump() for g in snap]
             await ws.send_json(payload)
             await asyncio.sleep(STREAM_INTERVAL_SECONDS)
     except WebSocketDisconnect:

@@ -201,6 +201,11 @@ export interface GpuInfo {
   /** Minimum queue priority required to schedule on this GPU (inclusive).
    *  0 means no restriction. */
   min_priority: number;
+  /** True when a running JobRecord on the owning peer has reserved this
+   *  GPU. Stamped server-side so peers are authoritative for their own
+   *  reservations — used by the cluster Nodes panel to mark a peer GPU
+   *  BUSY without needing cross-node job visibility. */
+  reserved: boolean;
   /** True when total_mem_bytes reports host system RAM rather than a
    *  discrete VRAM pool — set for GPUs like GB10 / Jetson where NVML
    *  returns "Not Supported" for memory info and the device shares

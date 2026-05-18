@@ -891,7 +891,11 @@ function NodeGpuList({
   }
   const total = gpus.length;
   const idleCount = gpus.filter(
-    (g) => !g.excluded && !g.disabled && !(reservedGpus?.has(g.index) ?? false),
+    (g) =>
+      !g.excluded &&
+      !g.disabled &&
+      !g.reserved &&
+      !(reservedGpus?.has(g.index) ?? false),
   ).length;
   return (
     <details className="node-group-gpus" open>
@@ -914,7 +918,13 @@ function NodeGpuList({
           </thead>
           <tbody>
             {gpus.map((g) => {
-              const reserved = reservedGpus?.has(g.index) ?? false;
+              // ``g.reserved`` is stamped by the owning peer (authoritative
+              // for that node's running jobs); ``reservedGpus`` is the
+              // local-jobs fallback used for older peers that don't ship
+              // the field yet. OR them so a single source missing the
+              // signal still flips the row to BUSY.
+              const reserved =
+                g.reserved || (reservedGpus?.has(g.index) ?? false);
               const idle = !g.excluded && !g.disabled && !reserved;
               const statusLabel = g.excluded
                 ? "excluded"
