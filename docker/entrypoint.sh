@@ -206,7 +206,7 @@ if spec and spec.origin:
                 echo "[forgather-entrypoint] WARNING: editable install failed" >&2
         fi
 
-        # The webui dist/ is checkout-local — docker/build.sh runs
+        # The webui dist/ is checkout-local — docker/build runs
         # ./build-webui.sh as a post-step against the host clone. If
         # dist/ is still missing here (different checkout, manual
         # build, etc.), warn so the user knows to run it themselves.
