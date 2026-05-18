@@ -41,13 +41,14 @@ log = logging.getLogger("forgather_server.admin")
 router = APIRouter(tags=["admin"])
 
 
-@router.post("/server/restart")
-async def restart_server():
-    """Schedule an in-place ``execv`` restart.
+def schedule_restart() -> dict:
+    """Schedule an in-place ``execv`` restart of this process.
 
-    Returns immediately so the HTTP response can flush before the
-    exec replaces the process image; without the short sleep the
-    browser would occasionally see a truncated body.
+    Shared by ``POST /api/server/restart`` and the cluster carve-out
+    that lets the master forward a restart to a peer. Returns the same
+    {"restart": "scheduled"} body either way; the actual exec happens
+    half a second later from a background task so the HTTP response
+    can flush first.
     """
 
     async def _exec_after_response():
@@ -82,20 +83,14 @@ async def restart_server():
     return {"restart": "scheduled"}
 
 
-class ShutdownRequest(BaseModel):
-    stop_jobs: bool = False
+def schedule_shutdown(stop_jobs: bool) -> dict:
+    """Schedule a graceful exit of this process.
 
-
-@router.post("/server/shutdown")
-async def shutdown_server(req: ShutdownRequest):
-    """Schedule a graceful exit.
-
-    When ``stop_jobs`` is true, SIGTERM every non-terminal JobRecord's
-    process group first so spawned trainers / inference servers / etc.
-    are torn down with the server. Otherwise the subprocesses are left
-    running and the next ``forgather server`` boot will reattach them.
+    Shared with the cluster carve-out (master forwarding a shutdown to
+    a peer). When ``stop_jobs`` is true the caller's running JobRecords
+    are SIGTERMed first; otherwise the subprocesses are left running so
+    the next ``forgather server`` boot reattaches them.
     """
-    stop_jobs = bool(req.stop_jobs)
     killed: list[str] = []
     if stop_jobs:
         for rec in job_records.list_records():
@@ -126,3 +121,30 @@ async def shutdown_server(req: ShutdownRequest):
 
     asyncio.create_task(_exit_after_response())
     return {"shutdown": "scheduled", "stopped_jobs": killed}
+
+
+@router.post("/server/restart")
+async def restart_server():
+    """Schedule an in-place ``execv`` restart.
+
+    Returns immediately so the HTTP response can flush before the
+    exec replaces the process image; without the short sleep the
+    browser would occasionally see a truncated body.
+    """
+    return schedule_restart()
+
+
+class ShutdownRequest(BaseModel):
+    stop_jobs: bool = False
+
+
+@router.post("/server/shutdown")
+async def shutdown_server(req: ShutdownRequest):
+    """Schedule a graceful exit.
+
+    When ``stop_jobs`` is true, SIGTERM every non-terminal JobRecord's
+    process group first so spawned trainers / inference servers / etc.
+    are torn down with the server. Otherwise the subprocesses are left
+    running and the next ``forgather server`` boot will reattach them.
+    """
+    return schedule_shutdown(bool(req.stop_jobs))

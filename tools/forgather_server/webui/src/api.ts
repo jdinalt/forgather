@@ -1636,6 +1636,38 @@ export const api = {
       stopped_jobs: string[];
     }>;
   },
+  // Cluster maintenance: master forwards to the named node via mTLS.
+  // For the local node, the master short-circuits to the local helper.
+  restartNode: async (nodeId: string) => {
+    const r = await fetch(
+      `/api/cluster/nodes/${encodeURIComponent(nodeId)}/restart`,
+      { method: "POST" },
+    );
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<{ restart: string }>;
+  },
+  shutdownNode: async (
+    nodeId: string,
+    opts: { stopJobs?: boolean } = {},
+  ) => {
+    const r = await fetch(
+      `/api/cluster/nodes/${encodeURIComponent(nodeId)}/shutdown`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stop_jobs: !!opts.stopJobs }),
+      },
+    );
+    if (!r.ok) {
+      throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
+    }
+    return r.json() as Promise<{
+      shutdown: string;
+      stopped_jobs: string[];
+    }>;
+  },
   setServiceEnabled: async (type: string, name: string, enabled: boolean) => {
     const r = await fetch(
       `/api/services/${encodeURIComponent(type)}/${encodeURIComponent(name)}/enabled`,

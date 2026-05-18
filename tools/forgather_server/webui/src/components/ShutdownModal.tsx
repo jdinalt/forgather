@@ -7,12 +7,22 @@ interface Props {
   // Called after the shutdown request was accepted by the server, so the
   // caller can swap the UI into a "server going down" state.
   onShutdownStarted: () => void;
+  // Optional: target a specific cluster node. When omitted, defaults to
+  // shutting down the local server. ``nodeLabel`` is shown in the modal
+  // title/body so the operator can tell which node they're acting on.
+  nodeId?: string;
+  nodeLabel?: string;
 }
 
 // Two-button confirmation: shut the server down on its own, or first
 // SIGTERM every running job (training, inference, dataset_server, …)
 // and then shut down. Cancel just dismisses.
-export function ShutdownModal({ onClose, onShutdownStarted }: Props) {
+export function ShutdownModal({
+  onClose,
+  onShutdownStarted,
+  nodeId,
+  nodeLabel,
+}: Props) {
   const [busy, setBusy] = useState<"plain" | "with-jobs" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -20,7 +30,11 @@ export function ShutdownModal({ onClose, onShutdownStarted }: Props) {
     setBusy(stopJobs ? "with-jobs" : "plain");
     setError(null);
     try {
-      await api.shutdownServer({ stopJobs });
+      if (nodeId) {
+        await api.shutdownNode(nodeId, { stopJobs });
+      } else {
+        await api.shutdownServer({ stopJobs });
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setBusy(null);
@@ -29,16 +43,21 @@ export function ShutdownModal({ onClose, onShutdownStarted }: Props) {
     onShutdownStarted();
   };
 
+  const targetLabel = nodeLabel ?? "forgather server";
+  const disconnectNotice = nodeId
+    ? `The node will drop off the cluster once the process exits.`
+    : `The webui will disconnect once the process exits.`;
+
   return (
     <ModalBackdrop onClose={busy ? () => {} : onClose}>
       <div
         className="modal shutdown-modal"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-label="Shutdown server"
+        aria-label={`Shutdown ${targetLabel}`}
       >
         <header className="modal-header">
-          <h3>Shutdown forgather server</h3>
+          <h3>Shutdown {targetLabel}</h3>
           <button
             className="tiny"
             onClick={onClose}
@@ -51,8 +70,9 @@ export function ShutdownModal({ onClose, onShutdownStarted }: Props) {
 
         <div className="modal-body">
           <p>
-            Choose how to shut down the server. The webui will disconnect
-            once the process exits.
+            Choose how to shut down{" "}
+            {nodeId ? <code>{targetLabel}</code> : "the server"}.{" "}
+            {disconnectNotice}
           </p>
           <ul>
             <li>
