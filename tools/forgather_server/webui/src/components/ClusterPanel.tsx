@@ -913,6 +913,8 @@ function NodeGpuList({
               <th>Memory</th>
               <th>Util</th>
               <th>Temp</th>
+              <th>Fan</th>
+              <th>Power</th>
               <th>Status</th>
             </tr>
           </thead>
@@ -979,6 +981,12 @@ function NodeGpuList({
                   </td>
                   <td className="gpu-row-temp">
                     {g.temp_c !== null ? `${g.temp_c}°C` : "—"}
+                  </td>
+                  <td className="gpu-row-fan">
+                    {g.fan_pct !== null ? `${g.fan_pct}%` : "—"}
+                  </td>
+                  <td className="gpu-row-power">
+                    {g.power_w !== null ? `${Math.round(g.power_w)} W` : "—"}
                   </td>
                   <td className="gpu-row-status">
                     <span className={"gpu-row-status-tag tag-" + statusLabel}>
