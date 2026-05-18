@@ -680,11 +680,11 @@ A pre-built shell script exercises the entire flow against the
 runtime image, with no manual steps:
 
 ```bash
-scripts/smoke_runtime_multinode.sh                       # default: REMOTE=muthur, port 18765
-scripts/smoke_runtime_multinode.sh --no-build            # skip image rebuild + deploy (after first run)
-scripts/smoke_runtime_multinode.sh --keep                # leave containers running on success
-scripts/smoke_runtime_multinode.sh --remote box2         # alternate remote host
-SMOKE_PORT=28765 scripts/smoke_runtime_multinode.sh      # override the test port
+tests/smoke_runtime_multinode.sh                       # default: REMOTE=muthur, port 18765
+tests/smoke_runtime_multinode.sh --no-build            # skip image rebuild + deploy (after first run)
+tests/smoke_runtime_multinode.sh --keep                # leave containers running on success
+tests/smoke_runtime_multinode.sh --remote box2         # alternate remote host
+SMOKE_PORT=28765 tests/smoke_runtime_multinode.sh      # override the test port
 ```
 
 What it does:
@@ -751,7 +751,7 @@ config (e.g. a custom finetune), pass `--project-dir` and
 `--config`:
 
 ```bash
-scripts/smoke_runtime_multinode.sh \
+tests/smoke_runtime_multinode.sh \
     --project-dir /mnt/rust/aiassets/my-project \
     --config train.yaml
 ```

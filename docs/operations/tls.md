@@ -760,7 +760,7 @@ CLUSTER=mycluster NETWORK=host \
 ```
 
 > **`NO_AUTH=1` is independent of TLS.** Set both for the smoke-test
-> mode used by `scripts/smoke_runtime_multinode.sh`; set neither for
+> mode used by `tests/smoke_runtime_multinode.sh`; set neither for
 > a production-shape deployment. `TLS_INIT=1` + `NO_AUTH=1`
 > together gives encrypted-transport-but-no-token-required, which
 > is the right tradeoff for a fully trusted LAN where peers can't

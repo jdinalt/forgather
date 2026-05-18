@@ -230,11 +230,11 @@ Hostnames in `--member` resolve to UUIDs via the membership table — no UUIDs i
 Runnable end-to-end test of the runtime image's multi-node story: builds the runtime image locally, deploys to a remote host via NFS-shared `docker save`/`load`, starts a cluster on both, runs Tiny Llama v2 across all GPUs, verifies the checkpoint, and cleans up.
 
 ```bash
-scripts/smoke_runtime_multinode.sh                       # default: REMOTE=muthur, port 18765
-scripts/smoke_runtime_multinode.sh --no-build            # skip image rebuild + deploy (after first run)
-scripts/smoke_runtime_multinode.sh --keep                # leave containers running on success
-scripts/smoke_runtime_multinode.sh --remote box2         # alternate remote host
-SMOKE_PORT=28765 scripts/smoke_runtime_multinode.sh      # override the test port
+tests/smoke_runtime_multinode.sh                       # default: REMOTE=muthur, port 18765
+tests/smoke_runtime_multinode.sh --no-build            # skip image rebuild + deploy (after first run)
+tests/smoke_runtime_multinode.sh --keep                # leave containers running on success
+tests/smoke_runtime_multinode.sh --remote box2         # alternate remote host
+SMOKE_PORT=28765 tests/smoke_runtime_multinode.sh      # override the test port
 ```
 
 Prerequisites:
