@@ -543,7 +543,7 @@ export function ClusterPanel({
   // cluster comes online and the panel renders for the first time,
   // we want the user's tab selection to persist across loading
   // states (e.g. a transient membersQ.isLoading after a refetch).
-  const [tab, setTab] = useState<ClusterTab>("jobs");
+  const [tab, setTab] = useState<ClusterTab>("nodes");
   const membersQ = useQuery<ClusterMembersResponse>({
     queryKey: ["cluster", "members"],
     queryFn: api.getClusterMembers,
