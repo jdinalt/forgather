@@ -711,6 +711,14 @@ Response shape (the relevant `logprobs` block under `choices[0]`):
 Position 0 is `null` because a causal LM has no prediction for the first token.
 Per-token cross-entropy loss is `-token_logprobs[i]`; perplexity is `exp(loss)`.
 
+**Forgather extension — `token_entropies`:** the response also includes a
+non-standard `token_entropies` field — the Shannon entropy (nats) of the full
+vocabulary distribution at each prediction position, aligned with
+`token_logprobs` (index 0 is `null`). Unlike the OpenAI-standard top-K
+logprobs, this needs the full distribution and can't be reconstructed by the
+client. OpenAI / vLLM do not return this field; clients should treat it as
+optional and fall back to loss when absent.
+
 ### Test with OpenAI Python client
 
 #### Chat Completions

@@ -24,10 +24,12 @@ type Status =
 const DEFAULT_TOP_K = 10;
 
 type ScaleMode = "auto" | "manual";
+type Metric = "loss" | "entropy";
 
 const STORAGE_KEY = "forgather-analyze-prefs";
 
 interface AnalyzePrefs {
+  metric: Metric;
   cmap: string;
   scaleMode: ScaleMode;
   manualLo: number;
@@ -35,10 +37,14 @@ interface AnalyzePrefs {
 }
 
 const DEFAULT_PREFS: AnalyzePrefs = {
+  metric: "loss",
   cmap: "viridis",
   scaleMode: "auto",
   // Reasonable defaults for causal-LM loss in nats: <0.1 trivial,
   // >5 quite surprising. User can dial these in once data is on screen.
+  // Entropy ranges higher (up to log(vocab) ≈ 10 nats for 32k vocab),
+  // but loss is the default metric so these are loss-tuned. Users
+  // adjust manually after switching to entropy.
   manualLo: 0,
   manualHi: 5,
 };
@@ -49,6 +55,8 @@ function loadPrefs(): AnalyzePrefs {
   try {
     const parsed = JSON.parse(raw) as Partial<AnalyzePrefs>;
     return {
+      metric:
+        parsed.metric === "entropy" ? "entropy" : "loss",
       cmap:
         typeof parsed.cmap === "string" ? parsed.cmap : DEFAULT_PREFS.cmap,
       scaleMode:
@@ -169,6 +177,18 @@ export function InferenceAnalyzePanel({ state }: Props) {
         >
           Clear
         </button>
+        <label title="Quantity color-encoded across tokens. Entropy is a Forgather extension and falls back to loss when the server doesn't provide it.">
+          metric
+          <select
+            value={prefs.metric}
+            onChange={(e) =>
+              updatePrefs({ metric: e.target.value as Metric })
+            }
+          >
+            <option value="loss">loss</option>
+            <option value="entropy">entropy</option>
+          </select>
+        </label>
         <label title="Color encoding">
           colormap
           <select
@@ -291,8 +311,28 @@ function ScoredText({
   scores: TokenScores;
   prefs: AnalyzePrefs;
 }) {
-  const { tokens, token_logprobs, top_logprobs } = scores;
+  const { tokens, token_logprobs, top_logprobs, token_entropies } = scores;
   const [hover, setHover] = useState<HoverState | null>(null);
+
+  // Entropy is a Forgather extension; an OpenAI/vLLM server won't
+  // return it. If the user picked "entropy" and the response has none,
+  // silently fall back to loss for coloring + display a one-line note
+  // above the rendered text so they know why.
+  const entropyAvailable = Array.isArray(token_entropies);
+  const effectiveMetric: Metric =
+    prefs.metric === "entropy" && !entropyAvailable ? "loss" : prefs.metric;
+  const fellBack = prefs.metric !== effectiveMetric;
+
+  // Pull the active per-position values for the chosen metric, with
+  // null at positions that have no prediction (index 0).
+  const values = useMemo<(number | null)[]>(() => {
+    if (effectiveMetric === "entropy") {
+      return (token_entropies ?? []).slice();
+    }
+    return token_logprobs.map((lp) =>
+      typeof lp === "number" ? -lp : null,
+    );
+  }, [effectiveMetric, token_logprobs, token_entropies]);
 
   const { lo, hi } = useMemo(() => {
     if (prefs.scaleMode === "manual") {
@@ -300,30 +340,41 @@ function ScoredText({
       const b = Math.max(prefs.manualLo, prefs.manualHi);
       return { lo: a, hi: b > a ? b : a + 1 };
     }
-    const losses: number[] = [];
-    for (const lp of token_logprobs) {
-      if (typeof lp === "number") losses.push(-lp);
+    const samples: number[] = [];
+    for (const v of values) {
+      if (typeof v === "number") samples.push(v);
     }
-    if (losses.length === 0) return { lo: 0, hi: 1 };
-    const sorted = losses.slice().sort((a, b) => a - b);
+    if (samples.length === 0) return { lo: 0, hi: 1 };
+    const sorted = samples.slice().sort((a, b) => a - b);
     const lo = sorted[Math.floor(sorted.length * 0.05)] ?? sorted[0];
     const hi =
       sorted[Math.floor(sorted.length * 0.95)] ?? sorted[sorted.length - 1];
     return { lo, hi: hi > lo ? hi : lo + 1 };
-  }, [token_logprobs, prefs.scaleMode, prefs.manualLo, prefs.manualHi]);
+  }, [values, prefs.scaleMode, prefs.manualLo, prefs.manualHi]);
 
   const cmap = useMemo(() => getColormap(prefs.cmap), [prefs.cmap]);
 
   return (
     <>
+      {fellBack && (
+        <div className="analyze-fallback-note muted">
+          This server didn't return entropy — coloring by loss. (Entropy is a
+          Forgather extension; OpenAI/vLLM don't expose it.)
+        </div>
+      )}
       <div className="scored-text">
         {tokens.map((tok, i) => {
           const lp = token_logprobs[i];
           const loss = typeof lp === "number" ? -lp : null;
+          const entropy =
+            entropyAvailable && typeof token_entropies![i] === "number"
+              ? (token_entropies![i] as number)
+              : null;
+          const v = values[i];
           let bg = "transparent";
           let fg = "inherit";
-          if (loss !== null) {
-            const t = (loss - lo) / (hi - lo);
+          if (typeof v === "number") {
+            const t = (v - lo) / (hi - lo);
             const rgb = cmap.fn(t);
             bg = cssColor(rgb);
             fg = readableForeground(rgb);
@@ -333,6 +384,7 @@ function ScoredText({
               key={i}
               token={tok}
               loss={loss}
+              entropy={entropy}
               background={bg}
               foreground={fg}
               topLogprobs={top_logprobs[i]}
@@ -349,6 +401,7 @@ function ScoredText({
 interface HoverState {
   token: string;
   loss: number | null;
+  entropy: number | null;
   topLogprobs: Record<string, number> | null;
   anchor: DOMRect;
 }
@@ -356,6 +409,7 @@ interface HoverState {
 interface TokenSpanProps {
   token: string;
   loss: number | null;
+  entropy: number | null;
   background: string;
   foreground: string;
   topLogprobs: Record<string, number> | null;
@@ -365,6 +419,7 @@ interface TokenSpanProps {
 function TokenSpan({
   token,
   loss,
+  entropy,
   background,
   foreground,
   topLogprobs,
@@ -383,6 +438,7 @@ function TokenSpan({
         onHoverChange({
           token,
           loss,
+          entropy,
           topLogprobs,
           anchor: e.currentTarget.getBoundingClientRect(),
         })
@@ -455,6 +511,7 @@ function FloatingTooltip({ data }: { data: HoverState }) {
       <TooltipBody
         token={data.token}
         loss={data.loss}
+        entropy={data.entropy}
         topLogprobs={data.topLogprobs}
       />
     </div>
@@ -464,10 +521,12 @@ function FloatingTooltip({ data }: { data: HoverState }) {
 function TooltipBody({
   token,
   loss,
+  entropy,
   topLogprobs,
 }: {
   token: string;
   loss: number | null;
+  entropy: number | null;
   topLogprobs: Record<string, number> | null;
 }) {
   const ppx = loss !== null ? Math.exp(loss) : null;
@@ -481,6 +540,11 @@ function TooltipBody({
       {loss !== null && (
         <div className="tt-metrics">
           loss: {loss.toFixed(3)} · perplexity: {ppx!.toFixed(2)}
+          {entropy !== null && (
+            <>
+              {" · "}entropy: {entropy.toFixed(3)} nats
+            </>
+          )}
         </div>
       )}
       {ranked.length > 0 && (

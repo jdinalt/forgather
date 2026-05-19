@@ -567,18 +567,23 @@ class InferenceService:
         """Score an input string with per-token causal-LM logprobs.
 
         Runs a single forward pass (no ``generate()``) and returns the
-        OpenAI legacy-completions ``logprobs`` structure:
+        OpenAI legacy-completions ``logprobs`` structure plus a
+        Forgather extension field:
 
             {
               "tokens": [...],
               "token_logprobs": [None, lp1, lp2, ...],
               "top_logprobs": [None, {tok: lp, ...}, ...],
               "text_offset": [0, off1, off2, ...],
+              "token_entropies": [None, h1, h2, ...],   # Forgather extension
             }
 
         Position 0 is ``None`` because a causal LM has no prediction
         for the first token. Matches what vLLM returns for the same
-        request shape (``echo=true, logprobs=K, max_tokens=0``).
+        request shape (``echo=true, logprobs=K, max_tokens=0``); the
+        ``token_entropies`` field is non-standard (the full-vocab
+        Shannon entropy in nats at each prediction position) and only
+        Forgather returns it — clients should treat it as optional.
         """
         # Tokenize without padding so the returned length equals the
         # actual token count — needed for accurate alignment.
@@ -624,6 +629,7 @@ class InferenceService:
 
         token_logprobs: list = [None]
         top_logprobs: list = [None]
+        token_entropies: list = [None]
 
         if n > 1:
             # Position i (i >= 1) is predicted by logits at position i-1.
@@ -631,15 +637,25 @@ class InferenceService:
             pred = logprobs_all[:-1]  # (N-1, V)
             actual_lp = pred.gather(-1, target_ids.unsqueeze(-1)).squeeze(-1)
 
+            # Shannon entropy (nats) of the full vocabulary distribution
+            # at each predicting position. Reuses the log_softmax we
+            # already have: H = -sum(p * log_p) = -sum(exp(lp) * lp).
+            # Sliced to the predicting positions (0..N-2) — the final
+            # position would predict a token past the input, which we
+            # don't score.
+            entropies = -(pred.exp() * pred).sum(dim=-1)  # (N-1,)
+
             k = min(int(top_k), pred.shape[-1])
             top_vals, top_idx = torch.topk(pred, k=k, dim=-1)
 
             actual_lp_list = actual_lp.tolist()
+            entropies_list = entropies.tolist()
             top_vals_list = top_vals.tolist()
             top_idx_list = top_idx.tolist()
 
             for i in range(n - 1):
                 token_logprobs.append(actual_lp_list[i])
+                token_entropies.append(entropies_list[i])
                 top_dict: dict = {}
                 for j in range(k):
                     tok_str = self.tokenizer.decode([top_idx_list[i][j]])
@@ -657,6 +673,7 @@ class InferenceService:
             "token_logprobs": token_logprobs,
             "top_logprobs": top_logprobs,
             "text_offset": text_offset,
+            "token_entropies": token_entropies,
         }
 
     def tokenize(self, text: str, add_special_tokens: bool = False) -> List[int]:

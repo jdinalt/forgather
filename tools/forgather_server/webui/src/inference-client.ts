@@ -293,6 +293,13 @@ export interface TokenScores {
   token_logprobs: (number | null)[];
   top_logprobs: (Record<string, number> | null)[];
   text_offset: number[];
+  /** Forgather extension: Shannon entropy (nats) of the full
+   *  vocabulary distribution at each prediction position. Aligned
+   *  with ``token_logprobs`` — index 0 is ``null``. Absent on OpenAI
+   *  / vLLM responses (which only expose top-K logprobs, from which
+   *  full-vocab entropy can't be reconstructed). Clients should
+   *  treat as optional and fall back when missing. */
+  token_entropies?: (number | null)[];
 }
 
 /** Score input text by running a single forward pass on the server and

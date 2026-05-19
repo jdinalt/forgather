@@ -3590,6 +3590,14 @@ li.config.selected button.link:hover {
   font-style: italic;
   padding: 4px 0;
 }
+.analyze-fallback-note {
+  font-size: 11px;
+  padding: 4px 8px;
+  margin-bottom: 8px;
+  background: var(--bg-alt);
+  border-left: 2px solid var(--accent);
+  border-radius: 2px;
+}
 .scored-text {
   font-family: "SF Mono", Menlo, Consolas, monospace;
   font-size: 13px;
