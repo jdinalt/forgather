@@ -12,8 +12,12 @@ from typing import Optional
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 
-from .models.chat import ChatCompletionRequest
-from .models.completion import CompletionRequest
+from .models.chat import ChatCompletionRequest, ChatCompletionUsage
+from .models.completion import (
+    CompletionChoice,
+    CompletionRequest,
+    CompletionResponse,
+)
 from .models.tokenize import TokenizeRequest, TokenizeResponse
 from .service import InferenceService
 from .strategies import (
@@ -114,6 +118,53 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
 
         if request.n != 1:
             raise HTTPException(status_code=400, detail="n > 1 not supported yet")
+
+        # Scoring path: echo + logprobs + max_tokens=0 → run a single
+        # forward pass and return per-token logprobs in OpenAI's
+        # legacy-completions shape. Matches vLLM's behavior for the
+        # same request shape; bypasses generate() entirely.
+        if (
+            request.echo
+            and request.max_tokens == 0
+            and request.logprobs is not None
+            and request.logprobs > 0
+            and not request.stream
+        ):
+            try:
+                prompt_text = (
+                    request.prompt[0]
+                    if isinstance(request.prompt, list)
+                    else request.prompt
+                )
+                scores = inference_service.score_prompt(
+                    prompt_text, top_k=request.logprobs
+                )
+                prompt_tokens = len(scores["tokens"])
+                return CompletionResponse(
+                    id=f"cmpl-{int(time.time() * 1000):x}",
+                    created=int(time.time()),
+                    model=request.model,
+                    choices=[
+                        CompletionChoice(
+                            text=prompt_text,
+                            index=0,
+                            logprobs=scores,
+                            finish_reason="length",
+                        )
+                    ],
+                    usage=ChatCompletionUsage(
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=0,
+                        total_tokens=prompt_tokens,
+                    ),
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                traceback.print_exception(e)
+                raise HTTPException(
+                    status_code=500, detail=f"Scoring failed: {str(e)}"
+                )
 
         try:
             if request.stream:

@@ -279,6 +279,61 @@ export async function* streamChatCompletion(
   );
 }
 
+/** Per-token scoring result returned by ``scorePrompt``. Shape matches
+ *  OpenAI legacy-completions ``choices[0].logprobs`` so the same client
+ *  works against vLLM (or any compatible server) using
+ *  ``echo=true, logprobs=K, max_tokens=0``.
+ *
+ *  ``tokens[i]`` is the decoded string for the i-th token. The first
+ *  entry of ``token_logprobs`` / ``top_logprobs`` is ``null`` because a
+ *  causal LM has no prediction for the first token. Per-token loss is
+ *  ``-token_logprobs[i]``; perplexity is ``Math.exp(loss)``. */
+export interface TokenScores {
+  tokens: string[];
+  token_logprobs: (number | null)[];
+  top_logprobs: (Record<string, number> | null)[];
+  text_offset: number[];
+}
+
+/** Score input text by running a single forward pass on the server and
+ *  returning per-token logprobs + top-K alternatives. Uses the standard
+ *  ``echo=true, logprobs=K, max_tokens=0`` shape — works against vLLM
+ *  and our inference server identically. */
+export async function scorePrompt(
+  baseUrl: string,
+  model: string,
+  prompt: string,
+  topK: number,
+  signal: AbortSignal,
+  authToken?: string,
+): Promise<TokenScores> {
+  const body: Record<string, unknown> = {
+    model: model || "inference-server",
+    prompt,
+    echo: true,
+    logprobs: topK,
+    max_tokens: 0,
+    stream: false,
+  };
+  const r = await fetch(proxyUrl("completions", baseUrl), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!r.ok) {
+    throw new Error(`${r.status} ${r.statusText}: ${await r.text()}`);
+  }
+  const data = (await r.json()) as {
+    choices?: Array<{ logprobs?: TokenScores | null }>;
+  };
+  const lp = data.choices?.[0]?.logprobs;
+  if (!lp || !Array.isArray(lp.tokens)) {
+    throw new Error("Server did not return logprobs in response");
+  }
+  return lp;
+}
+
 /** vLLM-compatible /tokenize response. ``prompt`` is a Forgather
  *  extension carrying the rendered chat-template string — saves the
  *  caller a detokenize round trip when they want the text. */

@@ -671,6 +671,46 @@ curl -X POST http://localhost:8137/v1/completions \
   }'
 ```
 
+#### Per-Token Scoring (echo + logprobs + max_tokens=0)
+
+The `/v1/completions` endpoint supports OpenAI legacy "score-the-prompt" mode: setting
+`echo=true`, `logprobs=K`, and `max_tokens=0` runs a single forward pass on the prompt
+and returns per-token log-probabilities (and the top-K alternatives at each position)
+instead of generating new text. Useful for analyzing how a model scores existing text
+and for token-level visualizations. Same request shape as vLLM.
+
+```bash
+curl -X POST http://localhost:8137/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "test-model",
+    "prompt": "The cat sat on the",
+    "echo": true,
+    "logprobs": 10,
+    "max_tokens": 0
+  }'
+```
+
+Response shape (the relevant `logprobs` block under `choices[0]`):
+
+```json
+{
+  "logprobs": {
+    "tokens": ["The", " cat", " sat", " on", " the"],
+    "token_logprobs": [null, -8.21, -3.04, -1.97, -0.45],
+    "top_logprobs": [
+      null,
+      {" cat": -3.04, " dog": -3.42, " quick": -4.10, "...": "..."},
+      "..."
+    ],
+    "text_offset": [0, 3, 7, 11, 14]
+  }
+}
+```
+
+Position 0 is `null` because a causal LM has no prediction for the first token.
+Per-token cross-entropy loss is `-token_logprobs[i]`; perplexity is `exp(loss)`.
+
 ### Test with OpenAI Python client
 
 #### Chat Completions

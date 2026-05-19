@@ -563,6 +563,102 @@ class InferenceService:
             self.logger.logger.error(f"Unexpected error in template rendering: {e}")
             return self._fallback_format_messages(messages)
 
+    def score_prompt(self, text: str, top_k: int = 10) -> dict:
+        """Score an input string with per-token causal-LM logprobs.
+
+        Runs a single forward pass (no ``generate()``) and returns the
+        OpenAI legacy-completions ``logprobs`` structure:
+
+            {
+              "tokens": [...],
+              "token_logprobs": [None, lp1, lp2, ...],
+              "top_logprobs": [None, {tok: lp, ...}, ...],
+              "text_offset": [0, off1, off2, ...],
+            }
+
+        Position 0 is ``None`` because a causal LM has no prediction
+        for the first token. Matches what vLLM returns for the same
+        request shape (``echo=true, logprobs=K, max_tokens=0``).
+        """
+        # Tokenize without padding so the returned length equals the
+        # actual token count — needed for accurate alignment.
+        enc = self.tokenizer_wrapper.tokenize_and_move_to_device(
+            text,
+            max_length=2048,
+            padding=False,
+            truncation=True,
+        )
+        input_ids = enc["input_ids"]  # (1, N)
+        n = int(input_ids.shape[1])
+        if n == 0:
+            return {
+                "tokens": [],
+                "token_logprobs": [],
+                "top_logprobs": [],
+                "text_offset": [],
+            }
+
+        with torch.inference_mode():
+            outputs = self.model(
+                input_ids=input_ids,
+                use_cache=False,
+                return_dict=True,
+            )
+        # Logits in float32 for numerically stable log_softmax; bf16
+        # log_softmax across a 32k+ vocab loses too much precision in
+        # the tail and breaks the top-K ranking.
+        logits = outputs.logits[0].float()  # (N, V)
+        logprobs_all = torch.log_softmax(logits, dim=-1)  # (N, V)
+
+        ids = input_ids[0].tolist()
+        # Decode each id individually so the returned strings line up
+        # 1:1 with the token positions — batch_decode would merge BPE
+        # sub-tokens and break the alignment.
+        tokens = [self.tokenizer.decode([tid]) for tid in ids]
+
+        text_offset: List[int] = []
+        acc = 0
+        for tok in tokens:
+            text_offset.append(acc)
+            acc += len(tok)
+
+        token_logprobs: list = [None]
+        top_logprobs: list = [None]
+
+        if n > 1:
+            # Position i (i >= 1) is predicted by logits at position i-1.
+            target_ids = input_ids[0, 1:]  # (N-1,)
+            pred = logprobs_all[:-1]  # (N-1, V)
+            actual_lp = pred.gather(-1, target_ids.unsqueeze(-1)).squeeze(-1)
+
+            k = min(int(top_k), pred.shape[-1])
+            top_vals, top_idx = torch.topk(pred, k=k, dim=-1)
+
+            actual_lp_list = actual_lp.tolist()
+            top_vals_list = top_vals.tolist()
+            top_idx_list = top_idx.tolist()
+
+            for i in range(n - 1):
+                token_logprobs.append(actual_lp_list[i])
+                top_dict: dict = {}
+                for j in range(k):
+                    tok_str = self.tokenizer.decode([top_idx_list[i][j]])
+                    # Distinct vocab ids can decode to the same string
+                    # (e.g. byte-fallback aliases). Keep the higher of
+                    # the colliding logprobs so the rendered entry
+                    # reflects the most-probable instance.
+                    existing = top_dict.get(tok_str)
+                    if existing is None or top_vals_list[i][j] > existing:
+                        top_dict[tok_str] = top_vals_list[i][j]
+                top_logprobs.append(top_dict)
+
+        return {
+            "tokens": tokens,
+            "token_logprobs": token_logprobs,
+            "top_logprobs": top_logprobs,
+            "text_offset": text_offset,
+        }
+
     def tokenize(self, text: str, add_special_tokens: bool = False) -> List[int]:
         """Tokenize a raw string with the loaded tokenizer.
 

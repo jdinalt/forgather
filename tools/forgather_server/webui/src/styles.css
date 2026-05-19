@@ -3533,6 +3533,136 @@ li.config.selected button.link:hover {
   background: var(--bg);
 }
 
+/* ─── Analyze sub-tab ─── Two-column layout: input textarea on the
+   left, color-coded scored tokens on the right. Action bar mirrors the
+   completion panel's so the row of controls stays familiar. */
+.inference-analyze {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.inference-analyze-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.inference-analyze-bar label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.inference-analyze-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.inference-analyze-input {
+  flex: 1 1 50%;
+  min-width: 0;
+  min-height: 0;
+  border: none;
+  border-right: 1px solid var(--border);
+  background: var(--bg-alt);
+  color: var(--fg);
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 12px 16px;
+  resize: none;
+  outline: none;
+}
+.inference-analyze-input:focus {
+  background: var(--bg);
+}
+.inference-analyze-output {
+  flex: 1 1 50%;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 16px;
+  background: var(--bg);
+}
+.analyze-empty {
+  font-style: italic;
+  padding: 4px 0;
+}
+.scored-text {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.7;
+  /* Preserve spaces and newlines so token boundaries are visible and
+     the rendered layout mirrors the input. */
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.scored-token {
+  /* Foreground color is set inline per-token based on the colormap's
+     swatch luminance, so light-on-dark and dark-on-light both render
+     readably as the user flips between viridis / plasma / etc. */
+  border-radius: 2px;
+  padding: 1px 0;
+}
+.scored-token:hover {
+  outline: 1px solid var(--accent);
+}
+/* Tooltip is position:fixed and rendered as a sibling of the token
+   list — JS sets ``top``/``left`` relative to the viewport with
+   flip-above/below + horizontal clamp logic, so it escapes the output
+   pane's ``overflow: auto`` clip and never crosses a window edge. */
+.scored-token-tooltip {
+  position: fixed;
+  z-index: 1000;
+  width: 320px;
+  max-width: 92vw;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: normal;
+  text-align: left;
+  pointer-events: none;
+}
+.scored-token-tooltip .tt-token {
+  margin-bottom: 4px;
+}
+.scored-token-tooltip .tt-metrics {
+  margin-bottom: 4px;
+  color: var(--muted, #b0b0b0);
+}
+.scored-token-tooltip .tt-divider {
+  margin-top: 6px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--muted, #b0b0b0);
+  border-top: 1px solid var(--border);
+  padding-top: 4px;
+}
+.scored-token-tooltip .tt-topk {
+  width: 100%;
+  border-collapse: collapse;
+}
+.scored-token-tooltip .tt-topk td {
+  padding: 1px 4px;
+  vertical-align: top;
+}
+.scored-token-tooltip .tt-prob {
+  text-align: right;
+  white-space: nowrap;
+  color: var(--muted, #b0b0b0);
+  width: 50px;
+}
+.scored-token-tooltip .tt-tok code {
+  font-size: 11px;
+}
+
 /* ─── Chat sub-tab ─── Sibling layout to .inference-completion: a top
    action bar, an optional collapsible system-message panel, a scrolling
    transcript, and a sticky compose row at the bottom. */

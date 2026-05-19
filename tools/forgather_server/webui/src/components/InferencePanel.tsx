@@ -2,11 +2,12 @@ import { useEffect, useState } from "react";
 
 import { GenerationParams } from "../inference-client";
 import { persistGet, persistSet } from "../persist";
+import { InferenceAnalyzePanel } from "./InferenceAnalyzePanel";
 import { InferenceChatPanel } from "./InferenceChatPanel";
 import { InferenceCompletionPanel } from "./InferenceCompletionPanel";
 import { InferenceModelPanel } from "./InferenceModelPanel";
 
-type SubTab = "model" | "completion" | "chat";
+type SubTab = "model" | "completion" | "chat" | "analyze";
 
 export interface InferenceState {
   baseUrl: string;
@@ -105,6 +106,13 @@ export function InferencePanel() {
             >
               chat
             </button>
+            <button
+              className={tab === "analyze" ? "active" : ""}
+              onClick={() => setTab("analyze")}
+              title="Score input text per-token (loss + top-K predictions)"
+            >
+              analyze
+            </button>
           </nav>
         </div>
       </header>
@@ -141,6 +149,16 @@ export function InferencePanel() {
           state={state}
           onSendToCompletion={onSendToCompletion}
         />
+      </div>
+      <div
+        style={{
+          display: tab === "analyze" ? "flex" : "none",
+          flex: 1,
+          minHeight: 0,
+          flexDirection: "column",
+        }}
+      >
+        <InferenceAnalyzePanel state={state} />
       </div>
     </div>
   );
