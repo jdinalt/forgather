@@ -17,6 +17,7 @@ import {
   api,
 } from "../api";
 import { persistGet, persistSet } from "../persist";
+import { ContextMenu } from "./ContextMenu";
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
 const DEFAULT_PAGE_SIZE = 25;
@@ -1143,6 +1144,21 @@ function RowsTable({
     return Array.from(seen);
   }, [columns, rows]);
 
+  // Mousedown position per row, used to distinguish a click (toggle
+  // expand) from a drag-select (don't toggle, let the user copy the
+  // text they just selected). Without this, any text selection inside
+  // the row collapses it on mouseup, which makes copy/paste from a
+  // collapsed example impossible. Threshold: 4px of movement or any
+  // active non-empty selection at click time suppresses the toggle.
+  const dragRef = useRef<{ x: number; y: number } | null>(null);
+
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    column: string;
+    value: unknown;
+  } | null>(null);
+
   if (rows.length === 0) {
     return <div className="pane-state muted">No rows in this page.</div>;
   }
@@ -1165,11 +1181,50 @@ function RowsTable({
               <tr
                 key={idx}
                 className={isExpanded ? "expanded" : ""}
-                onClick={() => setExpandedRow(isExpanded ? null : idx)}
+                onMouseDown={(e) => {
+                  // Only left-button starts a candidate-click. Middle
+                  // and right buttons must not arm the drag check, or
+                  // a right-click drag would suppress the next real
+                  // click.
+                  if (e.button !== 0) return;
+                  dragRef.current = { x: e.clientX, y: e.clientY };
+                }}
+                onClick={(e) => {
+                  const start = dragRef.current;
+                  dragRef.current = null;
+                  // Suppress toggle if the user dragged > 4px (likely
+                  // a drag-select gesture) or if mouseup landed with
+                  // text selected (the user is mid-selection — they
+                  // want to copy, not collapse). The browser clears
+                  // any prior selection on mousedown of a fresh click,
+                  // so a non-empty selection at click time always
+                  // means "selected during this gesture."
+                  if (start) {
+                    const dx = e.clientX - start.x;
+                    const dy = e.clientY - start.y;
+                    if (dx * dx + dy * dy > 16) return;
+                  }
+                  const sel = window.getSelection();
+                  if (sel && !sel.isCollapsed && sel.toString().length > 0) {
+                    return;
+                  }
+                  setExpandedRow(isExpanded ? null : idx);
+                }}
               >
                 <td className="row-index">{absIdx.toLocaleString()}</td>
                 {cols.map((c) => (
-                  <td key={c}>
+                  <td
+                    key={c}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        column: c,
+                        value: row[c],
+                      });
+                    }}
+                  >
                     <Cell
                       value={row[c]}
                       expanded={isExpanded}
@@ -1181,8 +1236,53 @@ function RowsTable({
           })}
         </tbody>
       </table>
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
+          <div className="context-menu-header muted">{menu.column}</div>
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              void copyCellValue(menu.value);
+              setMenu(null);
+            }}
+          >
+            Copy cell text
+          </button>
+        </ContextMenu>
+      )}
     </div>
   );
+}
+
+/** Serialize a cell value the same way the Cell component does for
+ *  display, but without truncation — that's the whole point of the
+ *  context-menu copy: get the full underlying text, not the visible
+ *  truncated form. Async because navigator.clipboard.writeText is. */
+async function copyCellValue(value: unknown): Promise<void> {
+  let text: string;
+  if (value == null) {
+    text = "";
+  } else if (typeof value === "string") {
+    text = value;
+  } else if (typeof value === "number" || typeof value === "boolean") {
+    text = String(value);
+  } else {
+    try {
+      text = JSON.stringify(value, null, 2);
+    } catch {
+      text = String(value);
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    // clipboard API can fail under permissions-policy or non-secure
+    // contexts; surface enough to triage without spamming console
+    // noise on every right-click.
+    alert(
+      `Copy failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
 }
 
 function Cell({
