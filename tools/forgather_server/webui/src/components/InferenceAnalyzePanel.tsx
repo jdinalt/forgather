@@ -34,6 +34,12 @@ interface AnalyzePrefs {
   scaleMode: ScaleMode;
   manualLo: number;
   manualHi: number;
+  /** Exponential moving average factor applied to the color-encoded
+   *  signal, in [0, 1). 0 = disabled (raw values); higher = smoother.
+   *  Formula: ``s[i] = α·s[i-1] + (1-α)·raw[i]``. Useful for spotting
+   *  region-scale trends in long inputs where the per-token signal is
+   *  too noisy to read. Tooltip values stay raw. */
+  emaAlpha: number;
 }
 
 const DEFAULT_PREFS: AnalyzePrefs = {
@@ -47,6 +53,7 @@ const DEFAULT_PREFS: AnalyzePrefs = {
   // adjust manually after switching to entropy.
   manualLo: 0,
   manualHi: 5,
+  emaAlpha: 0,
 };
 
 function loadPrefs(): AnalyzePrefs {
@@ -69,6 +76,12 @@ function loadPrefs(): AnalyzePrefs {
         typeof parsed.manualHi === "number"
           ? parsed.manualHi
           : DEFAULT_PREFS.manualHi,
+      emaAlpha:
+        typeof parsed.emaAlpha === "number" &&
+        parsed.emaAlpha >= 0 &&
+        parsed.emaAlpha < 1
+          ? parsed.emaAlpha
+          : DEFAULT_PREFS.emaAlpha,
     };
   } catch {
     return DEFAULT_PREFS;
@@ -267,6 +280,24 @@ export function InferenceAnalyzePanel({ state }: Props) {
             </label>
           </>
         )}
+        <label title="Exponential moving average over the color-encoded signal. 0 = off (raw values); higher = smoother. Formula: s[i] = α·s[i-1] + (1-α)·raw[i]. Tooltip values stay raw.">
+          smooth
+          <input
+            type="number"
+            min={0}
+            max={0.99}
+            step={0.05}
+            value={prefs.emaAlpha}
+            onChange={(e) => {
+              const raw = Number(e.target.value);
+              const v = Number.isFinite(raw)
+                ? Math.min(0.99, Math.max(0, raw))
+                : 0;
+              updatePrefs({ emaAlpha: v });
+            }}
+            style={{ width: 60 }}
+          />
+        </label>
         <div className="muted inference-status">
           <StatusLine status={status} />
         </div>
@@ -373,15 +404,41 @@ function ScoredText({
   const fellBack = prefs.metric !== effectiveMetric;
 
   // Pull the active per-position values for the chosen metric, with
-  // null at positions that have no prediction (index 0).
+  // null at positions that have no prediction (index 0). When the EMA
+  // factor is > 0, smooth the signal with s[i] = α·s[i-1] + (1-α)·v[i],
+  // seeding from the first valid value. Null positions pass through
+  // untouched (they have no prediction) and reset the EMA chain — a
+  // contiguous block of nulls in the middle of the input shouldn't
+  // bridge unrelated regions of text.
   const values = useMemo<(number | null)[]>(() => {
-    if (effectiveMetric === "entropy") {
-      return (token_entropies ?? []).slice();
+    const raw: (number | null)[] =
+      effectiveMetric === "entropy"
+        ? (token_entropies ?? []).slice()
+        : token_logprobs.map((lp) =>
+            typeof lp === "number" ? -lp : null,
+          );
+    if (prefs.emaAlpha <= 0) return raw;
+    const alpha = Math.min(0.99, prefs.emaAlpha);
+    const out: (number | null)[] = [];
+    let prev: number | null = null;
+    for (const v of raw) {
+      if (typeof v !== "number") {
+        out.push(null);
+        prev = null;
+        continue;
+      }
+      const s: number =
+        prev === null ? v : alpha * prev + (1 - alpha) * v;
+      out.push(s);
+      prev = s;
     }
-    return token_logprobs.map((lp) =>
-      typeof lp === "number" ? -lp : null,
-    );
-  }, [effectiveMetric, token_logprobs, token_entropies]);
+    return out;
+  }, [
+    effectiveMetric,
+    token_logprobs,
+    token_entropies,
+    prefs.emaAlpha,
+  ]);
 
   const { lo, hi } = useMemo(() => {
     if (prefs.scaleMode === "manual") {
