@@ -81,7 +81,9 @@ export function InferenceAnalyzePanel({ state }: Props) {
   const [scores, setScores] = useState<TokenScores | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [prefs, setPrefs] = useState<AnalyzePrefs>(loadPrefs);
+  const [selectionLen, setSelectionLen] = useState<number>(0);
   const abortRef = useRef<AbortController | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const busy = status.kind === "scoring";
 
@@ -94,7 +96,18 @@ export function InferenceAnalyzePanel({ state }: Props) {
   };
 
   const runAnalyze = async () => {
-    if (!text.trim()) return;
+    // If the user has a non-empty selection in the textarea, score
+    // just the selected substring. Big inputs (a whole novel pasted
+    // in) are unusable to score in one go — selecting a paragraph
+    // and analyzing only that is far more useful than truncating
+    // arbitrarily. Selection state is read from the DOM at click
+    // time, not from the cached selectionLen, so it's always fresh.
+    const ta = textareaRef.current;
+    let prompt = text;
+    if (ta && ta.selectionStart !== ta.selectionEnd) {
+      prompt = text.substring(ta.selectionStart, ta.selectionEnd);
+    }
+    if (!prompt.trim()) return;
     const ac = new AbortController();
     abortRef.current = ac;
     setStatus({ kind: "scoring" });
@@ -103,7 +116,7 @@ export function InferenceAnalyzePanel({ state }: Props) {
       const result = await scorePrompt(
         state.baseUrl,
         state.model,
-        text,
+        prompt,
         topK,
         ac.signal,
         state.authToken || undefined,
@@ -154,8 +167,20 @@ export function InferenceAnalyzePanel({ state }: Props) {
             style={{ width: 60 }}
           />
         </label>
-        <button onClick={runAnalyze} disabled={busy || !state.baseUrl || !text.trim()}>
-          {busy ? "Analyzing…" : "Analyze"}
+        <button
+          onClick={runAnalyze}
+          disabled={busy || !state.baseUrl || !text.trim()}
+          title={
+            selectionLen > 0
+              ? `Score only the selected ${selectionLen.toLocaleString()} characters`
+              : "Score the entire input"
+          }
+        >
+          {busy
+            ? "Analyzing…"
+            : selectionLen > 0
+              ? `Analyze selection (${selectionLen.toLocaleString()} ch)`
+              : "Analyze"}
         </button>
         <button
           className="secondary"
@@ -248,11 +273,35 @@ export function InferenceAnalyzePanel({ state }: Props) {
       </div>
       <div className="inference-analyze-body">
         <textarea
+          ref={textareaRef}
           className="inference-analyze-input"
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            // Selection collapses on edit; mirror that so the button
+            // label switches back to plain "Analyze".
+            setSelectionLen(0);
+          }}
+          onSelect={(e) => {
+            const el = e.currentTarget;
+            setSelectionLen(
+              Math.max(0, el.selectionEnd - el.selectionStart),
+            );
+          }}
+          onBlur={() => {
+            // Keep the cached length in sync with the DOM. When the
+            // user clicks Analyze, focus moves and the textarea
+            // retains its selection — selectionLen should stay
+            // accurate so the button label is correct.
+            const el = textareaRef.current;
+            if (el) {
+              setSelectionLen(
+                Math.max(0, el.selectionEnd - el.selectionStart),
+              );
+            }
+          }}
           onKeyDown={onKeyDown}
-          placeholder="Paste or type text to score. Ctrl+Enter to Analyze. The right pane will render each token color-coded by its causal-LM loss; hover for top-K alternatives."
+          placeholder="Paste or type text to score. Select a passage to score just that — useful for sampling out of a large pasted document. Ctrl+Enter to Analyze."
           spellCheck={false}
         />
         <div className="inference-analyze-output">
