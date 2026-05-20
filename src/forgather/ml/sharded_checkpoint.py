@@ -283,18 +283,30 @@ def _tied_aliases_in_module(
 
 
 def _synthesize_tied_aliases(
-    module: nn.Module, state_dict: Dict[str, Tensor]
+    module: nn.Module,
+    state_dict: Dict[str, Tensor],
+    sharing_metadata: Optional[List[List[str]]] = None,
 ) -> None:
     """In-place: add missing tied aliases to ``state_dict`` pointing at the canonical tensor.
 
     Mirrors HF safetensors load semantics: when a tied group has one
     canonical member present in the checkpoint and other members missing,
     aliasing the missing names to the same tensor lets a downstream
-    ``module.load_state_dict(strict=True)`` succeed. The caller is still
-    expected to invoke ``module.tie_weights()`` afterward to restore
-    actual storage sharing when ``assign=True`` rebinds parameters.
+    ``module.load_state_dict(strict=True)`` succeed.
+
+    With ``assign=True`` the resulting Parameters wrap the same underlying
+    storage (data_ptr matches) but are no longer ``is``-identical; callers
+    that care about identity (e.g. before re-saving) must invoke
+    ``module.tie_weights()`` afterward. The built-in trainer's
+    ``_load_model_from_checkpoint`` does this; non-trainer callers that
+    use ``assign=True`` (``model_conversion/finalize.py``,
+    ``tools/update_model/update.py``) should also call it before saving.
+
+    ``sharing_metadata`` may be passed in to avoid re-walking the module
+    when the caller has already computed it.
     """
-    sharing_metadata = create_sharing_metadata(module)
+    if sharing_metadata is None:
+        sharing_metadata = create_sharing_metadata(module)
     if not sharing_metadata:
         return
     for group in sharing_metadata:

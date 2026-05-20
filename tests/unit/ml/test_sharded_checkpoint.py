@@ -1381,6 +1381,54 @@ class TestLoadCheckpointWithTiedWeights(unittest.TestCase):
         with self.assertRaises(Exception):
             load_checkpoint(self.tmpdir, target, device="cpu", strict=True)
 
+    def test_sharded_genuinely_missing_key_still_fails(self):
+        """Sharded variant: untied missing keys must still raise under strict."""
+        from safetensors.torch import save_file
+
+        sd = {"linear1.weight": torch.randn(5, 10)}
+        index = make_shard_index([sd], safetensors=True)
+        with open(os.path.join(self.tmpdir, SAFE_WEIGHTS_INDEX_NAME), "w") as f:
+            json.dump(index, f)
+        shard_file = next(iter(set(index["weight_map"].values())))
+        save_file(sd, os.path.join(self.tmpdir, shard_file))
+
+        target = SimpleModel()
+        with self.assertRaises(Exception):
+            load_checkpoint(self.tmpdir, target, device="cpu", strict=True)
+
+    def test_assign_true_breaks_identity_recoverable_by_retie(self):
+        """assign=True load: aliases share storage but lose ``is``-identity; manual retie restores it.
+
+        Documents the contract: callers that use ``assign=True`` against a
+        tied-embedding checkpoint must invoke ``tie_weights()`` afterward
+        before any code path that depends on Parameter identity (e.g.
+        save_checkpoint with safetensors=True).
+        """
+        from safetensors.torch import save_file
+
+        source = TiedModel()
+        with torch.no_grad():
+            source.embedding.weight.normal_()
+        self._write_deduped_safetensors(source, omit_key="lm_head.weight")
+
+        target = TiedModel()
+        load_checkpoint(self.tmpdir, target, device="cpu", strict=True, assign=True)
+
+        # Data is correct via shared storage.
+        torch.testing.assert_close(target.embedding.weight, source.embedding.weight)
+        torch.testing.assert_close(target.lm_head.weight, source.embedding.weight)
+        self.assertEqual(
+            target.lm_head.weight.data_ptr(),
+            target.embedding.weight.data_ptr(),
+            "assign=True synthesis aliases must share underlying storage",
+        )
+        # But Parameter identity is broken (the assign=True contract).
+        self.assertIsNot(target.lm_head.weight, target.embedding.weight)
+
+        # Manual re-tie (what the trainer does post-load) restores identity.
+        target.lm_head.weight = target.embedding.weight
+        self.assertIs(target.lm_head.weight, target.embedding.weight)
+
 
 if __name__ == "__main__":
     unittest.main()
