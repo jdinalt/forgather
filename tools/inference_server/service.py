@@ -601,6 +601,7 @@ class InferenceService:
                 "token_logprobs": [],
                 "top_logprobs": [],
                 "text_offset": [],
+                "token_entropies": [],
             }
 
         with torch.inference_mode():
@@ -617,9 +618,11 @@ class InferenceService:
 
         ids = input_ids[0].tolist()
         # Decode each id individually so the returned strings line up
-        # 1:1 with the token positions — batch_decode would merge BPE
-        # sub-tokens and break the alignment.
-        tokens = [self.tokenizer.decode([tid]) for tid in ids]
+        # 1:1 with the token positions. ``batch_decode`` over a list of
+        # single-element lists keeps the alignment but does the decode
+        # work in one tokenizer call — measurably faster than N Python
+        # round-trips for long inputs.
+        tokens = self.tokenizer.batch_decode([[tid] for tid in ids])
 
         text_offset: List[int] = []
         acc = 0
@@ -653,16 +656,29 @@ class InferenceService:
             top_vals_list = top_vals.tolist()
             top_idx_list = top_idx.tolist()
 
+            # Batch-decode every top-K id in one tokenizer call instead
+            # of (N-1)*k individual decodes — for a 2k-token input with
+            # k=10 that's 20k Python round-trips vs. one C-side batch.
+            flat_top_ids = [tid for row in top_idx_list for tid in row]
+            flat_top_strs = self.tokenizer.batch_decode(
+                [[tid] for tid in flat_top_ids]
+            )
+
             for i in range(n - 1):
                 token_logprobs.append(actual_lp_list[i])
                 token_entropies.append(entropies_list[i])
                 top_dict: dict = {}
+                row_off = i * k
                 for j in range(k):
-                    tok_str = self.tokenizer.decode([top_idx_list[i][j]])
+                    tok_str = flat_top_strs[row_off + j]
                     # Distinct vocab ids can decode to the same string
                     # (e.g. byte-fallback aliases). Keep the higher of
                     # the colliding logprobs so the rendered entry
-                    # reflects the most-probable instance.
+                    # reflects the most-probable instance. ``topk``
+                    # already returns descending order so the first
+                    # write for a given string is the maximum — but
+                    # check anyway in case a future call passes
+                    # unsorted top-K.
                     existing = top_dict.get(tok_str)
                     if existing is None or top_vals_list[i][j] > existing:
                         top_dict[tok_str] = top_vals_list[i][j]

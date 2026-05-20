@@ -130,6 +130,13 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
             and request.logprobs > 0
             and not request.stream
         ):
+            # Cap top-K at a sane bound — OpenAI's spec maxes at 5,
+            # vLLM at 20; a client requesting ``logprobs=128000`` would
+            # force a full-vocab topk + per-id decode loop, which is
+            # both expensive and useless (no UI would render 100k
+            # alternatives). 20 matches vLLM, generous enough for our
+            # webui (default 10).
+            top_k = min(request.logprobs, 20)
             try:
                 prompt_text = (
                     request.prompt[0]
@@ -137,7 +144,7 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
                     else request.prompt
                 )
                 scores = inference_service.score_prompt(
-                    prompt_text, top_k=request.logprobs
+                    prompt_text, top_k=top_k
                 )
                 prompt_tokens = len(scores["tokens"])
                 return CompletionResponse(
