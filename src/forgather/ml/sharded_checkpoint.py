@@ -273,6 +273,17 @@ def _tied_aliases_in_module(
     ``copy_`` of the canonical key updates the shared storage in one shot,
     and the caller's ``tie_weights()`` step restores sharing if anything
     (e.g. ``assign=True``) broke it.
+
+    Pipeline-parallel caveat: ``create_sharing_metadata`` groups by
+    ``id()`` within the passed ``module`` only. When the caller iterates
+    pipeline stage sub-modules separately (as ``checkpoint_manager`` does),
+    a tied group whose two sides live on different stages is invisible to
+    each per-stage call — the missing side would still be reported as a
+    genuine missing key. This isn't reachable from current workflows
+    (Forgather-native pipeline saves preserve both names in the
+    checkpoint), but if an HF-deduped checkpoint is ever loaded into a
+    pipeline-split model, consult ``shard_index["metadata"]["param_sharing"]``
+    (already populated by ``make_shard_index``) for the global view.
     """
     sharing_metadata = create_sharing_metadata(module)
     aliases: Set[str] = set()
