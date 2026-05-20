@@ -2143,7 +2143,7 @@ What the algorithm intentionally does **not** do:
 
 An in-browser replacement for `forgather inf client` that talks to
 running inference-server jobs (or any OpenAI-compatible endpoint).
-Three sub-tabs sharing the same `InferenceState` (base URL, model,
+Four sub-tabs sharing the same `InferenceState` (base URL, model,
 generation params — persisted to `localStorage`):
 
 - **Model** — base URL entry with a reachability test, picker for
@@ -2167,6 +2167,43 @@ generation params — persisted to `localStorage`):
   multi-line compose with Ctrl/Cmd+Enter to send. Regenerate-last,
   per-message edit (truncate + re-run), per-message delete. History
   + system text persist under `forgather-inference-chat-v1`.
+- **Analyze** — per-token causal-LM scoring + visualization. Sends
+  `echo=true, logprobs=K, max_tokens=0` to `/v1/completions`, which
+  runs a single forward pass and returns per-token logprobs + top-K
+  alternatives — see the inference server's "Per-Token Scoring"
+  section. Split layout: textarea on the left, color-coded token
+  output on the right, with optional histogram below. Both splits
+  have drag handles (double-click to reset); state persists under
+  `forgather-analyze-prefs`.
+  - **Metric**: `loss` (default) or `entropy`. Entropy is a Forgather
+    extension that needs the full vocab distribution, so the server
+    returns it as a non-standard `token_entropies` field; if a
+    non-Forgather server (vLLM, OpenAI) is in use the panel falls
+    back to loss for coloring and shows a one-line note.
+  - **Colormap**: viridis (default), plasma, magma, inferno, turbo,
+    or a fallback green→red HSL ramp. Implemented via degree-6
+    polynomial fits in `colormaps.ts` — no LUT, no dep. Foreground
+    text color is auto-picked per-token from background luminance.
+  - **Scale**: `auto` (5th/95th percentile of the response's own
+    values, outlier-robust) or `manual` (fixed `min`/`max` so the
+    same color encodes the same value across runs).
+  - **Smooth**: exponential moving average over the color-encoded
+    signal, α in `[0, 1)`. 0 = off; higher = smoother. Tooltip values
+    stay raw — smoothing is purely a coloring aid.
+  - **Histogram**: SVG (resolution-independent, `viewBox` + `width:
+    100%`), 30 bins over the raw metric values. Bars are colored
+    using the same colormap and scale so the histogram doubles as a
+    legend.
+  - **Selection-aware**: if the user has a non-empty selection in
+    the textarea, Analyze scores only the selected substring instead
+    of the whole input. Button label changes to `Analyze selection
+    (N ch)` so the mode is unambiguous. Lets the user probe a single
+    paragraph out of a pasted novel without truncation.
+  - **Tooltip on hover**: shows the actual token, loss, perplexity,
+    entropy (if available), and the ranked top-K alternatives with
+    their probabilities. Rendered as `position: fixed` with
+    flip-above/below + viewport-edge clamping so it escapes the
+    pane's `overflow: auto` clip and never gets cropped.
 
 **Inference… (sidebar Services section)** — opens `InferenceModal`
 in ad-hoc mode: the model path becomes a `PathField` instead of a
@@ -2242,9 +2279,26 @@ per-node only:
   truncation cap. The browse pane has a draggable vertical
   divider — drag to resize, double-click to reset, ←/→ to nudge
   (Shift for x4); width persists in localStorage. Pager elides
-  the middle (`‹ Prev 1 … 42 43 44 … 588 Next ›`); 25 / 50 / 100
-  rows-per-page selector plus a **Go to** input for jumping
-  directly to a page number.
+  the middle (`‹ Prev 1 … 42 43 44 … 588 Next ›`) with a 🎲 button
+  that jumps to a random page and expands a random row on it
+  (handy for sampling a large corpus); 25 / 50 / 100 rows-per-page
+  selector plus a **Go to** input for jumping directly to a page.
+
+  Row expand-on-click ignores drag-select gestures: if the user
+  moves the cursor more than ~4 px between mousedown and mouseup,
+  or releases with a non-empty selection, the row stays expanded
+  so they can copy text out of it.
+
+  Each cell has a right-click context menu with:
+  - **Copy cell text** — writes the full underlying value (not the
+    truncated displayed form) to the clipboard via `navigator.
+    clipboard.writeText`. Non-string values are JSON-stringified.
+  - **Analyze in Inference…** — jumps to *Inference > Analyze*
+    with this cell's full text already loaded into the textarea and
+    scoring kicked off, one click. Wired through an App-level
+    `pendingAnalyze: {text, key}` slot (mirrors the existing
+    Cluster→Datasets `pendingExplore` pattern); the key nonce
+    dedups so flipping tabs back doesn't re-fire stale requests.
 
   Cross-view click-through: clicking a row in the *Cluster view →
   datasets* tab opens this Explore tab with the first healthy host's

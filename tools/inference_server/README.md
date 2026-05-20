@@ -778,13 +778,26 @@ This mechanism allows you to use any HuggingFace generation parameter while main
 ## API Endpoints
 
 - `GET /v1/models` - List available models
-- `POST /v1/chat/completions` - Create chat completion
-- `POST /v1/completions` - Create text completion
-- `GET /health` - Health check
+- `POST /v1/chat/completions` - Create chat completion (streaming + non-streaming)
+- `POST /v1/completions` - Create text completion (streaming + non-streaming).
+  Also handles the per-token scoring shape: `echo=true, logprobs=K, max_tokens=0`
+  short-circuits to a single forward pass and returns per-token logprobs +
+  top-K alternatives — see "Per-Token Scoring" above.
+- `POST /tokenize`, `POST /v1/tokenize` - vLLM-compatible tokenize endpoint;
+  renders chat templates and returns token IDs (and, as a Forgather extension,
+  the rendered prompt string in `prompt`).
+- `GET /health` - Health check (intentionally unauthenticated so the
+  forgather-server's same-origin proxy can probe upstream readiness before
+  the model finishes loading).
 
 ## Features
 
 - **OpenAI API Compatibility**: Full support for both chat completions and text completions endpoints
+- **Per-Token Scoring**: `echo + logprobs + max_tokens=0` runs a single forward
+  pass and returns per-token logprobs + top-K alternatives in OpenAI's
+  legacy-completions shape. Plus a Forgather extension field `token_entropies`
+  carrying full-vocab Shannon entropy at each prediction position. The
+  forgather-server's webui Inference > Analyze tab consumes this directly.
 - **YAML Configuration Support**: Both server and client support YAML config files with CLI override capability
 - **HuggingFace GenerationConfig Integration**: Automatically loads generation_config.json from model directories
 - **HuggingFace Generation Parameters**: Comprehensive support for all HuggingFace generation options
