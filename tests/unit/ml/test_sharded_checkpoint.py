@@ -1306,5 +1306,81 @@ class TestSafetensorsTiedWeights(unittest.TestCase):
         torch.testing.assert_close(model2.embedding.weight, model.embedding.weight)
 
 
+class TestLoadCheckpointWithTiedWeights(unittest.TestCase):
+    """load_checkpoint must accept HF-style deduplicated tied weights.
+
+    Regression: Gemma3 and other HF models with tied embedding/lm_head store
+    only ``model.embed_tokens.weight`` in safetensors; ``lm_head.weight`` is
+    omitted. Strict-mode load_state_dict would reject this without the
+    tied-alias synthesis in ``load_checkpoint``.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_deduped_safetensors(self, model, omit_key):
+        from safetensors.torch import save_file
+
+        state_dict = {k: v for k, v in model.state_dict().items() if k != omit_key}
+        path = os.path.join(self.tmpdir, SAFE_WEIGHTS_NAME)
+        save_file(state_dict, path)
+
+    def test_single_file_safetensors_strict_load(self):
+        """Single-file safetensors with deduped tied weight loads under strict=True."""
+        source = TiedModel()
+        with torch.no_grad():
+            source.embedding.weight.normal_()
+        self._write_deduped_safetensors(source, omit_key="lm_head.weight")
+
+        target = TiedModel()
+        # Sanity: target's lm_head.weight starts different from source.
+        self.assertFalse(
+            torch.allclose(target.embedding.weight, source.embedding.weight)
+        )
+
+        load_checkpoint(self.tmpdir, target, device="cpu", strict=True)
+
+        torch.testing.assert_close(target.embedding.weight, source.embedding.weight)
+        # Tied storage is preserved through copy_-mode load_state_dict.
+        self.assertIs(target.lm_head.weight, target.embedding.weight)
+
+    def test_sharded_safetensors_strict_load(self):
+        """Sharded safetensors with deduped tied weight loads under strict=True."""
+        from safetensors.torch import save_file
+
+        source = TiedModel()
+        with torch.no_grad():
+            source.embedding.weight.normal_()
+
+        # Write an HF-style sharded index where lm_head.weight is omitted.
+        deduped = {k: v for k, v in source.state_dict().items() if k != "lm_head.weight"}
+        index = make_shard_index([deduped], safetensors=True)
+        with open(os.path.join(self.tmpdir, SAFE_WEIGHTS_INDEX_NAME), "w") as f:
+            json.dump(index, f)
+        shard_file = next(iter(set(index["weight_map"].values())))
+        save_file(deduped, os.path.join(self.tmpdir, shard_file))
+
+        target = TiedModel()
+        load_checkpoint(self.tmpdir, target, device="cpu", strict=True)
+
+        torch.testing.assert_close(target.embedding.weight, source.embedding.weight)
+        self.assertIs(target.lm_head.weight, target.embedding.weight)
+
+    def test_genuinely_missing_key_still_fails(self):
+        """Untied keys missing from the checkpoint must still trigger strict-mode failure."""
+        from safetensors.torch import save_file
+
+        # Save a checkpoint with only one of SimpleModel's four params.
+        sd = {"linear1.weight": torch.randn(5, 10)}
+        save_file(sd, os.path.join(self.tmpdir, SAFE_WEIGHTS_NAME))
+
+        target = SimpleModel()
+        with self.assertRaises(Exception):
+            load_checkpoint(self.tmpdir, target, device="cpu", strict=True)
+
+
 if __name__ == "__main__":
     unittest.main()
