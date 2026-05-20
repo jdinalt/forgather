@@ -176,6 +176,10 @@ export function InferenceModal({
     setKeepOnGpu(false);
     setChatTemplate("");
     setRequestedGpus(1);
+    // Priority is per-session (not persisted) but resetting it here too
+    // matches the operator's expectation that "Reset to defaults" puts
+    // the form into the same shape it had on first open.
+    setPriority(0);
   };
 
   const maxGpus = Math.max(1, gpusQ.data?.length ?? 1);

@@ -54,6 +54,24 @@ from .models.completion import CompletionRequest
 _MODULE_LOGGER = logging.getLogger("inference_server")
 
 
+class ModelNotFoundError(LookupError):
+    """Raised by :meth:`InferenceService._resolve_entry` when the OpenAI
+    ``model`` field on a request doesn't match any registered entry on
+    a multi-model server.
+
+    Domain exception — the FastAPI route layer translates this to a
+    404 in :mod:`routes`. The service itself stays transport-agnostic
+    so unit tests can drive it without spinning up the framework.
+    """
+
+    def __init__(self, requested: Optional[str], available: List[str]) -> None:
+        self.requested = requested
+        self.available = available
+        super().__init__(
+            f"model not found: {requested!r}. Available: {available}"
+        )
+
+
 def resolve_dtype(dtype_str: Optional[str]) -> torch.dtype:
     """Resolve a dtype string to ``torch.dtype`` with intelligent defaults.
 
@@ -354,6 +372,7 @@ class InferenceService:
         from_checkpoint: Union[bool, str] = False,
         ignore_eos: bool = False,
         keep_on_gpu: bool = False,
+        eager_load: bool = False,
     ) -> None:
         if not entries:
             raise ValueError("InferenceService requires at least one ModelEntry")
@@ -401,15 +420,29 @@ class InferenceService:
 
         # Preserve "fail fast at startup" behavior for single-model setups
         # (which is what every existing call site does today). Multi-model
-        # mode lazy-loads.
-        if len(entries) == 1:
-            only = next(iter(self.entries.values()))
-            only.load(
-                self.device,
-                self.from_checkpoint,
-                self.get_default_chat_template,
-            )
-            self.active = only
+        # mode lazy-loads unless ``eager_load`` is set; eager-loading every
+        # entry forces broken checkpoints / bad paths to surface at startup
+        # rather than waiting for the first request to land on them.
+        if len(entries) == 1 or eager_load:
+            entry_list = list(self.entries.values())
+            for entry in entry_list:
+                # In eager-load mode every entry loads; in keep_on_gpu mode
+                # they all stay on GPU. Without keep_on_gpu the last one
+                # eager-loaded ends up on GPU and earlier ones get
+                # demoted to CPU — same end-state the swap protocol
+                # would produce after one round of requests.
+                if (
+                    not keep_on_gpu
+                    and self.active is not None
+                    and len(entry_list) > 1
+                ):
+                    self._move_active_to_cpu()
+                entry.load(
+                    self.device,
+                    self.from_checkpoint,
+                    self.get_default_chat_template,
+                )
+                self.active = entry
 
     # ---------- Registry lifecycle ----------
 
@@ -472,21 +505,20 @@ class InferenceService:
     def _resolve_entry(self, name: Optional[str]) -> ModelEntry:
         """Pick which entry a request targets.
 
-        Empty/missing name + single-model server → the sole entry (legacy
-        permissive behavior). Empty name + multi-model server → 404.
-        Name matches an entry → that entry. Otherwise 404.
+        Empty/missing name + single-model server → the sole entry
+        (legacy permissive behavior). Empty name + multi-model server
+        → raises :class:`ModelNotFoundError`. Name matches an entry →
+        that entry. Otherwise raises :class:`ModelNotFoundError`.
+
+        Raises a domain exception (not ``HTTPException``) so the
+        service module stays free of web-framework imports. The route
+        layer translates it to a 404.
         """
         if name and name in self.entries:
             return self.entries[name]
         if len(self.entries) == 1:
             return next(iter(self.entries.values()))
-        from fastapi import HTTPException
-
-        available = list(self.entries.keys())
-        raise HTTPException(
-            status_code=404,
-            detail=f"model not found: {name!r}. Available: {available}",
-        )
+        raise ModelNotFoundError(name, list(self.entries.keys()))
 
     # ---------- Active-entry property shims (strategy/code touch these) ----------
 

@@ -19,7 +19,7 @@ from .models.completion import (
     CompletionResponse,
 )
 from .models.tokenize import TokenizeRequest, TokenizeResponse
-from .service import InferenceService
+from .service import InferenceService, ModelNotFoundError
 from .strategies import (
     ChatGenerationStrategy,
     CompletionGenerationStrategy,
@@ -68,6 +68,16 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
     """
     app = FastAPI(title="HuggingFace OpenAI API Server", version="1.0.0")
 
+    # ModelNotFoundError is raised from inside ``service.acquire(name)``
+    # when a multi-model request names an unknown entry. The service
+    # module deliberately raises a domain exception (not HTTPException)
+    # so it stays transport-agnostic; we translate to 404 here.
+    @app.exception_handler(ModelNotFoundError)
+    async def _model_not_found_handler(_request, exc: ModelNotFoundError):
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
     deps = [Depends(_make_verify_bearer(auth_token))] if auth_token else []
 
     @app.get("/v1/models", dependencies=deps)
@@ -110,7 +120,10 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
                 async with inference_service.acquire(request.model):
                     strategy = ChatGenerationStrategy(inference_service)
                     return strategy.generate(request)
-        except HTTPException:
+        except (HTTPException, ModelNotFoundError):
+            # ModelNotFoundError reaches the exception_handler installed
+            # on the app for translation to 404; re-raising HTTPException
+            # preserves its status code (e.g. the 400 above).
             raise
         except Exception as e:
             traceback.print_exception(e)
@@ -167,7 +180,7 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
                         total_tokens=prompt_tokens,
                     ),
                 )
-            except HTTPException:
+            except (HTTPException, ModelNotFoundError):
                 raise
             except Exception as e:
                 traceback.print_exception(e)
@@ -189,7 +202,10 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
                 async with inference_service.acquire(request.model):
                     strategy = CompletionGenerationStrategy(inference_service)
                     return strategy.generate(request)
-        except HTTPException:
+        except (HTTPException, ModelNotFoundError):
+            # ModelNotFoundError reaches the exception_handler installed
+            # on the app for translation to 404; re-raising HTTPException
+            # preserves its status code (e.g. the 400 above).
             raise
         except Exception as e:
             traceback.print_exception(e)
@@ -240,7 +256,7 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
                     token_strs=token_strs,
                     prompt=rendered,
                 )
-        except HTTPException:
+        except (HTTPException, ModelNotFoundError):
             raise
         except Exception as e:
             traceback.print_exception(e)

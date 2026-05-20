@@ -107,18 +107,23 @@ export function InferenceModelPanel({ state, setState }: Props) {
     queryFn: api.getClusterSelf,
     refetchInterval: 30000,
   });
+  // ``isFetched`` rather than ``!!data`` so the picker can wait for
+  // the cluster gate to resolve. Without this, ``clusterActive`` is
+  // briefly ``false`` (data is undefined during the first fetch),
+  // the local-jobs query fires, the picker shows local-only rows,
+  // and then swaps to the cluster set when the gate resolves — a
+  // visible flicker on every load.
+  const clusterGateResolved = clusterSelfQ.isFetched;
   const clusterActive = !!clusterSelfQ.data;
 
-  // Local-jobs query (single-node setups, or the fallback when the
-  // cluster aggregator hasn't seen any servers yet). TanStack dedups
-  // against the same key used by GPU/Jobs/Models panels.
+  // Local-jobs query (single-node setups). Only enabled once we've
+  // confirmed the cluster gate is NOT active, so cluster masters
+  // never see the local-only intermediate state.
   const jobsQ = useQuery({
     queryKey: ["jobs", false],
     queryFn: () => api.listJobs(false),
     refetchInterval: 5000,
-    // Skip in cluster mode — the cluster endpoint is a superset
-    // (master polls every peer, including itself).
-    enabled: !clusterActive,
+    enabled: clusterGateResolved && !clusterActive,
   });
 
   // Cluster-aggregated picker contents. Includes servers running on
@@ -128,14 +133,18 @@ export function InferenceModelPanel({ state, setState }: Props) {
     queryKey: ["cluster", "inference_servers"],
     queryFn: api.getClusterInferenceServers,
     refetchInterval: 5000,
-    enabled: clusterActive,
+    enabled: clusterGateResolved && clusterActive,
   });
 
   // Unified picker rows. Both shapes (local Job and ClusterInferenceServer)
   // boil down to: a URL to dial, an auth token to attach, a display
   // label, and an optional health badge. The render path doesn't need
-  // to care which source the row came from.
-  const pickerRows = useMemo<PickerRow[]>(() => {
+  // to care which source the row came from. Returns ``null`` while the
+  // cluster gate is still resolving so the caller can render a
+  // placeholder instead of an empty list (which would render as "no
+  // live inference jobs" and is misleading during the gate fetch).
+  const pickerRows = useMemo<PickerRow[] | null>(() => {
+    if (!clusterGateResolved) return null;
     if (clusterActive) {
       return (clusterServersQ.data ?? []).map(_clusterEntryToRow);
     }
@@ -143,7 +152,7 @@ export function InferenceModelPanel({ state, setState }: Props) {
       .filter((j) => j.job_type === "inference" && j.alive)
       .map(_localJobToRow)
       .filter((r): r is PickerRow => r !== null);
-  }, [clusterActive, clusterServersQ.data, jobsQ.data]);
+  }, [clusterGateResolved, clusterActive, clusterServersQ.data, jobsQ.data]);
 
   const modelsQ = useQuery({
     // Token in the key so a paste/clear of the token retriggers the fetch
@@ -204,7 +213,7 @@ export function InferenceModelPanel({ state, setState }: Props) {
       <section>
         <h4 className="dyn-heading">
           Running inference servers
-          <span className="muted"> ({pickerRows.length})</span>
+          <span className="muted"> ({pickerRows?.length ?? 0})</span>
           {clusterActive && (
             <span className="muted" title="Aggregated across all cluster peers">
               {" "}
@@ -212,7 +221,10 @@ export function InferenceModelPanel({ state, setState }: Props) {
             </span>
           )}
         </h4>
-        {pickerRows.length === 0 && (
+        {pickerRows === null && (
+          <div className="muted pane-state-small">Loading…</div>
+        )}
+        {pickerRows !== null && pickerRows.length === 0 && (
           <div className="muted pane-state-small">
             {clusterActive
               ? "No live inference jobs anywhere in the cluster — start one from the Models panel."
@@ -220,7 +232,7 @@ export function InferenceModelPanel({ state, setState }: Props) {
           </div>
         )}
         <ul className="inference-server-list">
-          {pickerRows.map((row) => {
+          {(pickerRows ?? []).map((row) => {
             const selected = row.url === state.baseUrl;
             return (
               <li

@@ -47,7 +47,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .. import job_records
+from .. import cluster_inference_inventory, job_records
 
 log = logging.getLogger("forgather_server.inference_proxy")
 
@@ -224,13 +224,8 @@ def _token_for(base: str) -> Optional[str]:
             return _token_cache.get((host, parsed.port))
     # Off-host: consult the cluster inventory. On master nodes this
     # has the full picture; on non-master nodes it's empty and the
-    # caller must rely on the header.
-    try:
-        from .. import cluster_inference_inventory
-
-        return cluster_inference_inventory.master_inventory.token_for_url(base)
-    except Exception:
-        return None
+    # caller must rely on the ``X-Inference-Auth-Token`` header.
+    return cluster_inference_inventory.master_inventory.token_for_url(base)
 
 
 def _root_of(base: str) -> str:

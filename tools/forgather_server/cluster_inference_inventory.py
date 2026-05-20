@@ -102,8 +102,48 @@ def server_id_for(base_url: str) -> str:
     return hashlib.sha256(base_url.encode("utf-8")).hexdigest()[:12]
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
 def _normalize(base_url: str) -> str:
-    return base_url.rstrip("/")
+    """Canonical form for URL string comparison.
+
+    Inventory entries and lookup queries both flow through here so a
+    URL written as ``HTTP://Host:8137`` matches one stored as
+    ``http://host:8137``. Specifically:
+
+      - scheme + hostname lowercased;
+      - default ports stripped (``http://x:80`` ↔ ``http://x``);
+      - IPv6 literals re-bracketed via :func:`_bracket_ipv6`;
+      - trailing slash dropped.
+
+    Falls back to a plain ``rstrip("/")`` if ``urlparse`` can't make
+    sense of the input — never raises.
+    """
+    raw = (base_url or "").rstrip("/")
+    try:
+        p = urlparse(raw)
+    except Exception:
+        return raw
+    if not p.scheme or not p.hostname:
+        return raw
+    scheme = p.scheme.lower()
+    host = _bracket_ipv6(p.hostname.lower())
+    port = p.port
+    if port is None or port == _DEFAULT_PORTS.get(scheme):
+        netloc = host
+    else:
+        netloc = f"{host}:{port}"
+    # Preserve userinfo if any. URLs reaching the inventory don't
+    # carry credentials today, but a defensive pass-through is cheap.
+    if p.username is not None:
+        userinfo = p.username
+        if p.password is not None:
+            userinfo += f":{p.password}"
+        netloc = f"{userinfo}@{netloc}"
+    rebuilt = f"{scheme}://{netloc}"
+    # Drop the path entirely — base URLs are netloc-only in this module.
+    return rebuilt
 
 
 def _is_loopback_url(url: str) -> bool:
@@ -397,13 +437,17 @@ class MasterInventory:
         """Look up the bearer token for a base URL across the cluster.
 
         Used by the inference proxy's token-attach path when the webui
-        asks to talk to an off-host server. Match is exact (after
-        normalization); no DNS or alias resolution.
+        asks to talk to an off-host server. Match is on the canonical
+        URL form produced by :func:`_normalize` — scheme + host
+        lowercased, IPv6 brackets restored, default ports stripped —
+        so ``HTTP://Host:8137`` and ``http://host:8137`` both find an
+        entry stored as ``http://host:8137``. No DNS / alias
+        resolution.
         """
         norm = _normalize(base_url)
         with self._lock:
             for s in self._servers.values():
-                if s.base_url == norm:
+                if _normalize(s.base_url) == norm:
                     return s.auth_token or None
         return None
 
@@ -587,10 +631,16 @@ def _register_wake_event() -> asyncio.Event:
 def wake_loops() -> None:
     """Signal every registered loop to run one immediate tick.
 
-    Called from the membership listener on master transitions and from
-    the inference scheduler when a job starts/stops, so the inventory
-    converges in seconds rather than waiting on the steady-state
-    cadence.
+    Called from:
+
+      - the membership role-change listener so a newly-elected master
+        populates its inventory within seconds of the transition;
+      - the inference scheduler's spawn / reap / abort paths via
+        ``scheduler._wake_inference_inventory`` so the picker reflects
+        new + finished jobs in ~1s rather than waiting on the
+        ``COLLECT_INTERVAL_SECONDS`` cadence;
+      - the ``POST /api/cluster/inference_servers/refresh`` endpoint
+        for an explicit operator-driven refresh.
     """
     for ev in _wake_events:
         try:

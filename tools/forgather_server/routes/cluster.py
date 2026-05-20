@@ -1046,13 +1046,20 @@ async def _proxy_inference_servers_to_master() -> Optional[List[Dict[str, Any]]]
     "/inference_servers", response_model=List[ClusterInferenceServerModel]
 )
 async def inference_servers() -> List[ClusterInferenceServerModel]:
-    """Master-aggregated inference-server list, token-stripped.
+    """Master-aggregated inference-server list.
 
     Browser-facing: the InferenceModelPanel queries this to populate
     its "Running inference servers" picker so jobs running on any
-    cluster peer show up alongside local jobs. The matching tokens
-    stay on the master and the inference proxy attaches them on the
-    server side at request time — the browser never sees them.
+    cluster peer show up alongside local jobs.
+
+    **Token exposure.** Each entry includes ``auth_token`` — the
+    picker carries it in the ``X-Inference-Auth-Token`` header so the
+    proxy can dial off-host upstreams from any cluster node. This is
+    the same surface the existing ``/api/jobs`` endpoint exposes per
+    job for locally-spawned servers (``JobModel.auth_token``); the
+    cluster endpoint just extends it to remote-peer servers. See
+    :class:`ClusterInferenceServerModel`'s docstring for the full
+    rationale and the cleaner follow-up design.
     """
     if _self_is_master():
         return [

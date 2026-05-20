@@ -187,6 +187,19 @@ def main():
             "CPU memory."
         ),
     )
+    parser.add_argument(
+        "--eager-load",
+        action="store_true",
+        help=(
+            "Multi-model only: load every configured model at startup "
+            "rather than lazily on first request. Matches the fail-fast "
+            "behavior of single-model setups (a broken checkpoint surfaces "
+            "as a startup error instead of waiting for a request to land "
+            "on it). Cost: startup time grows linearly with model count "
+            "and each model briefly occupies the GPU; pair with --keep-on-"
+            "gpu only when total GPU memory fits all of them."
+        ),
+    )
 
     # Bearer-token auth (default-on). Either supply a token, point at a file
     # holding one, or generate one at startup. ``--no-auth`` disables auth
@@ -314,6 +327,7 @@ def main():
         from_checkpoint=args.from_checkpoint,
         ignore_eos=args.ignore_eos,
         keep_on_gpu=args.keep_on_gpu,
+        eager_load=args.eager_load,
     )
 
     # Resolve auth token. --no-auth wins; otherwise prefer an explicit token,

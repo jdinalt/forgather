@@ -28,6 +28,7 @@ from inference_server.config import (  # noqa: E402
 from inference_server.service import (  # noqa: E402
     InferenceService,
     ModelEntry,
+    ModelNotFoundError,
     resolve_dtype,
 )
 
@@ -197,25 +198,21 @@ class TestResolveEntry:
         assert svc._resolve_entry("") is a
         assert svc._resolve_entry(None) is a
 
-    def test_unknown_name_multi_model_raises_404(self):
-        from fastapi import HTTPException
-
+    def test_unknown_name_multi_model_raises_model_not_found(self):
         a = _fake_entry("a")
         b = _fake_entry("b")
         svc = _make_service([a, b])
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(ModelNotFoundError) as exc:
             svc._resolve_entry("nonexistent")
-        assert exc.value.status_code == 404
+        assert exc.value.requested == "nonexistent"
+        assert set(exc.value.available) == {"a", "b"}
 
-    def test_empty_name_multi_model_raises_404(self):
-        from fastapi import HTTPException
-
+    def test_empty_name_multi_model_raises_model_not_found(self):
         a = _fake_entry("a")
         b = _fake_entry("b")
         svc = _make_service([a, b])
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(ModelNotFoundError):
             svc._resolve_entry(None)
-        assert exc.value.status_code == 404
 
 
 class TestAcquireSwap:
@@ -259,8 +256,6 @@ class TestAcquireSwap:
             asyncio.run(run())
 
     def test_unknown_name_raises_before_lock_held(self):
-        from fastapi import HTTPException
-
         a = _fake_entry("a")
         b = _fake_entry("b")
         svc = _make_service([a, b])
@@ -269,9 +264,8 @@ class TestAcquireSwap:
             async with svc.acquire("does-not-exist"):
                 pass  # pragma: no cover
 
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(ModelNotFoundError):
             asyncio.run(run())
-        assert exc.value.status_code == 404
 
 
 class TestKeepOnGpu:
