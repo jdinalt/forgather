@@ -5152,6 +5152,11 @@ li.config.selected button.link:hover {
   padding: 0 4px;
   font-size: 12px;
 }
+.pager-random {
+  margin-left: 8px;
+  font-size: 14px;
+  line-height: 1;
+}
 .pager-goto {
   display: flex;
   align-items: center;

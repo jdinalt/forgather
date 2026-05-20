@@ -1085,6 +1085,35 @@ function PreviewPane({
 }: PreviewPaneProps) {
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const handle = loadQ.data?.handle;
+
+  // "Random" navigation: pick a random page, then expand a random row
+  // on it once the new page's data arrives. ``pendingRandomExpand``
+  // gates the expand-row step until iterQ has settled on the target
+  // page — without it, we'd briefly flash an expansion on stale data
+  // before the new page's rows arrive. Clears itself when consumed or
+  // when the page has no rows.
+  const [pendingRandomExpand, setPendingRandomExpand] = useState(false);
+  const onRandomize = useCallback(() => {
+    if (totalPages <= 0) return;
+    const p = Math.floor(Math.random() * totalPages);
+    setPage(p);
+    setPendingRandomExpand(true);
+  }, [totalPages, setPage]);
+
+  useEffect(() => {
+    if (!pendingRandomExpand) return;
+    if (iterQ.isFetching) return; // wait for the target page's data
+    const rows = iterQ.data?.rows;
+    if (!rows || rows.length === 0) {
+      // Empty page — drop the flag so the user can try again rather
+      // than getting stuck waiting for data that won't come.
+      setPendingRandomExpand(false);
+      return;
+    }
+    setExpandedRow(Math.floor(Math.random() * rows.length));
+    setPendingRandomExpand(false);
+  }, [pendingRandomExpand, iterQ.isFetching, iterQ.data]);
+
   return (
     <div className="preview-pane">
       {loadQ.isLoading && (
@@ -1119,7 +1148,12 @@ function PreviewPane({
       {loadQ.data?.length != null ||
         (selected.hint_rows != null && totalPages > 0) ? (
         <footer className="preview-pager">
-          <Pager page={page} totalPages={totalPages} setPage={setPage} />
+          <Pager
+            page={page}
+            totalPages={totalPages}
+            setPage={setPage}
+            onRandomize={onRandomize}
+          />
         </footer>
       ) : null}
     </div>
@@ -1349,12 +1383,15 @@ interface PagerProps {
   page: number;
   totalPages: number;
   setPage: (p: number) => void;
+  /** Optional "shuffle" action: jump to a random page and expand a
+   *  random row on it. Surfaced as the dice button when present. */
+  onRandomize?: () => void;
 }
 
 /** Compact pager with first/last + neighbors + ellipsis. Pages are
  *  zero-indexed internally; the UI displays 1-based numbers because
  *  that's what users expect for "page 1 of N". */
-function Pager({ page, totalPages, setPage }: PagerProps) {
+function Pager({ page, totalPages, setPage, onRandomize }: PagerProps) {
   const tokens = useMemo<Array<number | "...">>(() => {
     const out: Array<number | "..."> = [];
     if (totalPages <= 7) {
@@ -1428,6 +1465,16 @@ function Pager({ page, totalPages, setPage }: PagerProps) {
       >
         Next ›
       </button>
+      {onRandomize && totalPages > 0 && (
+        <button
+          className="secondary pager-random"
+          onClick={onRandomize}
+          title="Jump to a random page and expand a random example on it"
+          aria-label="Random page and example"
+        >
+          🎲
+        </button>
+      )}
       {totalPages > 1 && (
         <form
           className="pager-goto"
