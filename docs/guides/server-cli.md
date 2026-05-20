@@ -120,6 +120,15 @@ forgather mkdocs -f docs/mkdocs.yml --enqueue --port 8001 --strict
 
 forgather inf server --enqueue -m output_models/my_model           # default port 8137
 forgather inf server --enqueue -m output_models/my_model -p 8138 --dtype float16
+
+# Multi-model server: -m is repeatable. NAME=PATH gives an explicit
+# routing name; bare PATH derives the name from the basename.
+forgather inf server --enqueue -m a=output_models/a -m b=output_models/b
+
+# Multi-model with all entries pinned to GPU (no CPU swap). Required on
+# unified-memory hardware (DGX Spark, Grace-Hopper).
+forgather inf server --enqueue \
+    -m a=output_models/a -m b=output_models/b --keep-on-gpu
 ```
 
 `forgather inf server`, `convert`, and `finalize` use a different

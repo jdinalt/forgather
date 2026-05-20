@@ -102,12 +102,28 @@ transparently.
 **Start server**
 
 ```bash
-# Load model in directory using AutoModelForCausalLM.from_pretrained()
-# This defaults to bfloat16 on cuda:0
+# Single model — defaults to bfloat16 on cuda:0
 forgather inf server -m /path/to/model
 
-# Load model from latest Forgather checkpoint
+# Load from latest Forgather checkpoint (native loader)
 forgather inf server -c -m /path/to/model
+
+# Multi-model: one server hosts several models at once. Requests
+# dispatch by the OpenAI ``model`` field. Models lazy-load on first
+# use and swap between CPU and GPU memory; one model is GPU-resident
+# at a time. NAME=PATH gives the routing name; bare PATH derives
+# the name from the basename.
+forgather inf server -m gpt2=/path/to/gpt2 -m gemma=/path/to/gemma
+
+# Multi-model + keep every loaded model GPU-resident (no swap).
+# Use when total GPU memory > sum of model sizes — avoids the
+# CPU↔GPU copy on every model switch. Required on unified-memory
+# hardware (DGX Spark, Grace-Hopper) where .to("cpu") still copies.
+forgather inf server -m a=/path/a -m b=/path/b --keep-on-gpu
+
+# Eager-load every entry at startup (fail-fast like single-model).
+# Without this, multi-model entries load lazily on first request.
+forgather inf server -m a=/path/a -m b=/path/b --eager-load
 ```
 **Start client**
 
@@ -177,7 +193,9 @@ forgather inf server server_config.yaml --port 8001 --log-level DEBUG
 
 Options:
 - `config`: YAML configuration file (optional positional argument)
-- `--model`: HuggingFace model path or name (required, can be in config file)
+- `-m` / `--model`: model path. **Repeatable.** Accepts either `PATH` (routing
+  name derived from the basename) or `NAME=PATH` (explicit routing name).
+  Required, but may instead be supplied via the config file's `models:` list.
 - `--host`: Host to bind to (default: 127.0.0.1)
 - `--port`: Port to bind to (default: 8137)
 - `--device`: Device to use - cuda, cpu, or auto (default: cuda:0)
@@ -185,7 +203,21 @@ Options:
 - `--dtype`: Model data type (optional, see Data Types section)
 - `--stop-sequences`: Custom stop sequences to halt generation (optional)
 - `--ignore-eos`: Ignore EOS tokens during generation (optional, default: False)
+- `--keep-on-gpu`: Multi-model only. Don't demote inactive models to CPU after
+  a swap; every loaded model stays GPU-resident. Use when total GPU memory >
+  sum(model sizes) or on unified-memory hardware where `.to("cpu")` still
+  copies. (default: False)
+- `--eager-load`: Load every configured model at startup rather than lazily
+  on first request. Matches single-model's fail-fast behavior at the cost
+  of startup time. (default: False; single-model setups always eager-load)
 - `--log-level`: Logging level - DEBUG, INFO, WARNING, ERROR (default: INFO)
+
+Multi-model invariants enforced at startup:
+- `-c <PATH>` (specific checkpoint) is rejected with more than one `-m`. Use
+  the boolean `-c` to load each model's latest checkpoint instead.
+- `--device auto` is rejected with more than one `-m`; specify an explicit
+  device (e.g. `cuda:0`).
+- Duplicate routing names are rejected — use `NAME=PATH` to disambiguate.
 
 **Note**: CLI arguments always override values from the configuration file.
 
@@ -198,12 +230,12 @@ The server supports YAML configuration files for convenient parameter management
 Create a `server_config.yaml` file:
 
 ```yaml
-# Model configuration
+# Single-model: a scalar ``model`` field.
 model: "/path/to/your/model"
 device: "cuda:0"
 dtype: "bfloat16"
 
-# Server configuration  
+# Server configuration
 host: "127.0.0.1"
 port: 8007
 log-level: "INFO"
@@ -217,6 +249,37 @@ stop-sequences:
   - "The End"
   - "</s>"
 ```
+
+For multi-model setups, use a `models:` list instead. Each entry may
+override the top-level dtype / stop_sequences / chat_template /
+attn_implementation / cache_implementation / compile_args / use_cache —
+CLI flags otherwise apply to every entry uniformly.
+
+```yaml
+device: "cuda:0"
+dtype: "bfloat16"        # default for every entry below
+from-checkpoint: true    # global; applies to every entry
+host: "127.0.0.1"
+port: 8007
+
+# Optional global flags (the YAML equivalents of --keep-on-gpu /
+# --eager-load on the CLI). Both are off by default.
+keep-on-gpu: false
+eager-load: false
+
+models:
+  - name: tinyllama
+    path: /path/to/tinyllama
+    stop_sequences: ["</s>"]
+    chat_template: /path/to/template.jinja
+  - name: gemma
+    path: /path/to/gemma
+    # dtype/etc. omitted → fall back to the top-level defaults
+```
+
+When the config carries `models:` AND the CLI passes `-m`, the CLI
+wins (the config's `models:` is ignored entirely). Operators editing a
+running server typically want CLI changes to take precedence.
 
 #### Usage Patterns
 
@@ -777,8 +840,16 @@ This mechanism allows you to use any HuggingFace generation parameter while main
 
 ## API Endpoints
 
-- `GET /v1/models` - List available models
-- `POST /v1/chat/completions` - Create chat completion (streaming + non-streaming)
+- `GET /v1/models` - List configured models. Each entry carries the standard
+  OpenAI fields plus two Forgather extensions: `x_state` (`unloaded` | `cpu` |
+  `gpu`) reflecting the registry's current lifecycle state, and `x_model_path`
+  with the backing filesystem path. Useful for checking which model is on
+  GPU right now without instrumenting the server. Multi-model servers list
+  every configured entry; single-model servers list one.
+- `POST /v1/chat/completions` - Create chat completion (streaming + non-streaming).
+  In multi-model mode the request's OpenAI `model` field selects which entry
+  serves the request. Unknown name → HTTP 404 with the list of available
+  routing names in the response body.
 - `POST /v1/completions` - Create text completion (streaming + non-streaming).
   Also handles the per-token scoring shape: `echo=true, logprobs=K, max_tokens=0`
   short-circuits to a single forward pass and returns per-token logprobs +
@@ -793,6 +864,12 @@ This mechanism allows you to use any HuggingFace generation parameter while main
 ## Features
 
 - **OpenAI API Compatibility**: Full support for both chat completions and text completions endpoints
+- **Multi-Model Hosting**: One server can host any number of models; requests
+  dispatch by the OpenAI `model` field. Models lazy-load on first use and
+  swap between CPU and GPU memory, with `--keep-on-gpu` to pin every model
+  to VRAM and `--eager-load` for fail-fast startup. See the multi-model
+  examples in **Quick Start** and the YAML `models:` list in **Server
+  Configuration Format**.
 - **Per-Token Scoring**: `echo + logprobs + max_tokens=0` runs a single forward
   pass and returns per-token logprobs + top-K alternatives in OpenAI's
   legacy-completions shape. Plus a Forgather extension field `token_entropies`
@@ -845,5 +922,11 @@ The server supports all major HuggingFace generation parameters for fine-tuning 
 
 ## Limitations
 
-- Single model per server instance
 - Multi-token stop sequences require post-processing (slight performance impact)
+- Requests serialize on the registry's `asyncio.Lock`. Concurrent requests
+  to *the same* model don't batch — each runs `model.generate()` end-to-end
+  before the next starts. Concurrent requests to *different* models
+  serialize on the same lock and trigger a CPU↔GPU swap between them
+  (unless `--keep-on-gpu` is set). The server is sized for low-concurrency
+  research workloads, not high-QPS production serving; pair it with vLLM
+  or similar if you need batching.

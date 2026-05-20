@@ -426,6 +426,11 @@ forgather -t train.yaml train --enqueue --priority 5 --requested-gpus 2
 forgather eval test c4 -M output_models/my_model --enqueue
 forgather tb --enqueue --port 6006
 forgather inf server --enqueue -m output_models/my_model
+# Multi-model server (one process hosts several models):
+forgather inf server --enqueue -m a=output_models/a -m b=output_models/b
+# With every loaded model pinned to GPU (no CPU swap; required on
+# unified-memory hardware like DGX Spark / Grace-Hopper):
+forgather inf server --enqueue -m a=output_models/a -m b=output_models/b --keep-on-gpu
 forgather convert --enqueue --src output_models/my_model --dst /tmp/hf_export
 forgather finalize --enqueue --source output_models/my_model --dest /tmp/final
 forgather update --enqueue --src output_models/my_model --dst /tmp/my_model_v2
@@ -1164,11 +1169,13 @@ which picks a healthy server at random across the candidate set
 Three master-only background loops, started from the lifespan and
 self-gated on `cluster.is_self_master`, keep the inventory live:
 
-| loop                              | interval               | what it does                                                                 |
-|-----------------------------------|------------------------|------------------------------------------------------------------------------|
-| `master_collect_servers_loop`     | 10 s                   | GET each peer's `/api/cluster/dataset_servers_local`, merge into the set     |
-| `master_health_loop`              | 10 s                   | GET `/v1/health` on every server, flip the per-server healthy flag           |
-| `master_dataset_refresh_loop`     | 10 s (warm-up) / 60 s  | GET `/v1/datasets` + `/v1/local`, rebuild the `local/<name>` routing index   |
+| loop                                                    | interval               | what it does                                                                 |
+|---------------------------------------------------------|------------------------|------------------------------------------------------------------------------|
+| `cluster_dataset_inventory.master_collect_servers_loop` | 10 s                   | GET each peer's `/api/cluster/dataset_servers_local`, merge into the set     |
+| `cluster_dataset_inventory.master_health_loop`          | 10 s                   | GET `/v1/health` on every dataset server, flip the per-server healthy flag   |
+| `cluster_dataset_inventory.master_dataset_refresh_loop` | 10 s (warm-up) / 60 s  | GET `/v1/datasets` + `/v1/local`, rebuild the `local/<name>` routing index   |
+| `cluster_inference_inventory.master_collect_servers_loop` | 10 s                 | GET each peer's `/api/cluster/inference_servers_local` for the picker        |
+| `cluster_inference_inventory.master_health_loop`        | 10 s                   | GET `/health` on every inference server (root-mounted, not `/v1/health`)     |
 
 On a master transition the new master clears its inventory and the
 router returns `503 Retry-After: 5` until the first dataset-refresh
@@ -2155,6 +2162,16 @@ generation params — persisted to `localStorage`):
   expandable Advanced section. Tri-state selects let the user override
   `do_sample` / `early_stopping` explicitly rather than being stuck with
   temperature-derived defaults.
+
+  In **cluster mode** the picker queries `/api/cluster/inference_servers`
+  (master-aggregated) so jobs running on any reachable cluster peer
+  appear alongside local ones — see the "Cluster inference picker"
+  subsection below. The picker waits for the cluster-mode gate to
+  resolve before showing rows, so it never flickers from local-only
+  to the full cluster set on first paint. Outside cluster mode the
+  picker queries `/api/jobs` directly. Rows that came from the cluster
+  endpoint also show a short peer-id badge and a ⚠ indicator when the
+  master's health-poll reports the server unhealthy.
 - **Completion** — textarea + Send/Stop/Clear. Streams via
   `POST /v1/completions` (SSE) with an async iterator; `stream`
   checkbox falls back to a one-shot `stream: false` POST so beam-search
@@ -2214,6 +2231,69 @@ persist under `forgather-adhoc-inference-v1` — the next invocation
 defaults to the last-submitted values. Requested GPUs and priority
 stay fresh each invocation since the "right" value depends on current
 queue occupancy.
+
+**Multi-model UX (ad-hoc only).** A "+ Add model" button under the
+model PathField adds another row. Each row carries a path picker and
+an optional name override (auto-derived from the basename when blank);
+the picker remembers the parent of the last-picked path under
+`pathfield.last:inference.model` so each row reopens at the same
+directory the previous one came from. With more than one row the rows
+live in a scrollable container (`max(240px, 30vh)` cap) so a long list
+doesn't overflow the modal. A `Keep all models on GPU (no CPU swap)`
+checkbox surfaces in the same UI; it maps to `--keep-on-gpu` on the
+spawned server. The specific-checkpoint-path field is hidden in
+multi-model mode (the server rejects `-c <PATH>` with more than one
+model — the boolean `from_checkpoint` toggle still applies globally
+and loads each model's latest checkpoint).
+
+The "Create service…" suggested name is the single model's basename
+in one-model mode, or `host-port` in multi-model mode — concatenating
+many model names produces ugly long names quickly.
+
+### Cluster inference picker
+
+Mirror of the dataset-server cluster inventory in
+`cluster_dataset_inventory.py`, sized for inference. Implemented in
+`cluster_inference_inventory.py`:
+
+- `LocalInference` (per-peer enumeration): scans `job_records` for
+  `job_type == "inference"` in the `starting` / `running` state.
+  Single-model jobs derive a one-element `models[]` from
+  `model_path`'s basename; multi-model jobs use the configured `-m`
+  names. `0.0.0.0` binds are rewritten to the cluster identity's
+  hostname; pure-loopback binds stay in the list but are flagged
+  `loopback=true`.
+- Master aggregation: two async loops self-gating on master role:
+  - `master_collect_servers_loop` every 10 s pulls each peer's
+    `/api/cluster/inference_servers_local` and merges into a master
+    snapshot.
+  - `master_health_loop` every 10 s probes each server's `/health`
+    (unauthenticated, root-mounted on the inference server) and
+    updates the `healthy` flag.
+- Endpoints (all under `/api/cluster/`):
+  - `GET /inference_servers_local` — per-peer view, tokens included,
+    peer-mTLS allowed (the master polls this).
+  - `GET /inference_servers` — master-aggregated browser-facing list.
+    On non-master nodes the route proxies to the master so every
+    webui sees the same set. **Includes the bearer token** — see the
+    discussion in the route's docstring; the picker carries the
+    token via `X-Inference-Auth-Token` so the proxy can dial off-host
+    upstreams from any cluster node.
+  - `POST /inference_servers/refresh` — wake hook called by the
+    scheduler on inference-job spawn / reap / abort so the picker
+    reflects the change in ~1s rather than waiting for the 10s
+    collect tick. Also surfaced manually via the webui (not currently
+    wired to a button, but reachable for operator-driven refreshes).
+
+Auth token surface: `auth.py:_PEER_ALLOWED_PATHS` carves out
+`inference_servers_local` and `inference_servers`;
+`auth.py:_PEER_ALLOWED_MUTATIONS` carves out
+`inference_servers/refresh`.
+
+Token-stripping the browser response (so remote-peer tokens never
+leave the master) is tracked as a follow-up; the current behavior
+matches `/api/jobs`, which already ships per-job tokens to the
+authenticated session.
 
 **Generation presets** — save/load named JSON presets of the current
 generation params. Served by `/api/generation-configs/*`, which merges
