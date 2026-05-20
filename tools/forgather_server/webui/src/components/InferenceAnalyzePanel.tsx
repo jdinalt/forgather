@@ -25,6 +25,9 @@ interface Props {
    *  fires on each fresh request without re-firing on parent
    *  re-renders. */
   pendingAnalyze?: { text: string; key: number } | null;
+  /** Clears the parent's pendingAnalyze slot after consumption so an
+   *  unmount/remount of this panel can't re-fire the same payload. */
+  onPendingAnalyzeConsumed?: () => void;
 }
 
 type Status =
@@ -129,7 +132,11 @@ function loadPrefs(): AnalyzePrefs {
   }
 }
 
-export function InferenceAnalyzePanel({ state, pendingAnalyze }: Props) {
+export function InferenceAnalyzePanel({
+  state,
+  pendingAnalyze,
+  onPendingAnalyzeConsumed,
+}: Props) {
   const [text, setText] = useState<string>("");
   const [topK, setTopK] = useState<number>(DEFAULT_TOP_K);
   const [scores, setScores] = useState<TokenScores | null>(null);
@@ -143,8 +150,10 @@ export function InferenceAnalyzePanel({ state, pendingAnalyze }: Props) {
 
   // Drag handlers convert per-move pixel deltas to percentage updates
   // against the relevant parent dimension. Clamped to keep either pane
-  // from collapsing to zero. The pref write-back is the same throttling
-  // we already use for other prefs — state update + persist.
+  // from collapsing to zero. State updates fire on every pointermove
+  // (for responsive layout), but the localStorage write is deferred to
+  // pointerup via onDragEnd — a fast drag would otherwise emit
+  // hundreds of localStorage.setItem calls a second.
   const onSplitXDelta = useCallback(
     (dx: number) => {
       const body = bodyRef.current;
@@ -157,9 +166,7 @@ export function InferenceAnalyzePanel({ state, pendingAnalyze }: Props) {
           Math.min(85, prev.leftWidthPct + (dx / w) * 100),
         );
         if (next === prev.leftWidthPct) return prev;
-        const updated = { ...prev, leftWidthPct: next };
-        persistSet(STORAGE_KEY, JSON.stringify(updated));
-        return updated;
+        return { ...prev, leftWidthPct: next };
       });
     },
     [],
@@ -177,13 +184,16 @@ export function InferenceAnalyzePanel({ state, pendingAnalyze }: Props) {
           Math.min(80, prev.histHeightPct - (dy / h) * 100),
         );
         if (next === prev.histHeightPct) return prev;
-        const updated = { ...prev, histHeightPct: next };
-        persistSet(STORAGE_KEY, JSON.stringify(updated));
-        return updated;
+        return { ...prev, histHeightPct: next };
       });
     },
     [],
   );
+  const persistPrefsRef = useRef(prefs);
+  persistPrefsRef.current = prefs;
+  const persistCurrentPrefs = useCallback(() => {
+    persistSet(STORAGE_KEY, JSON.stringify(persistPrefsRef.current));
+  }, []);
 
   const busy = status.kind === "scoring";
 
@@ -215,7 +225,28 @@ export function InferenceAnalyzePanel({ state, pendingAnalyze }: Props) {
         prompt = text.substring(ta.selectionStart, ta.selectionEnd);
       }
     }
-    if (!prompt.trim()) return;
+    // Surface configuration errors as a status update instead of
+    // silently swallowing them — particularly important on the
+    // cross-section path where the user didn't click the button so
+    // a no-op gives them nothing to react to.
+    if (!state.baseUrl) {
+      setStatus({
+        kind: "error",
+        message: "No inference server configured (set URL on the Model tab)",
+      });
+      return;
+    }
+    if (!state.model) {
+      setStatus({
+        kind: "error",
+        message: "No model selected (pick one on the Model tab)",
+      });
+      return;
+    }
+    if (!prompt.trim()) {
+      setStatus({ kind: "error", message: "Nothing to score" });
+      return;
+    }
     const ac = new AbortController();
     abortRef.current = ac;
     setStatus({ kind: "scoring" });
@@ -239,10 +270,21 @@ export function InferenceAnalyzePanel({ state, pendingAnalyze }: Props) {
       if (ac.signal.aborted) {
         setStatus({ kind: "stopped" });
       } else {
-        setStatus({
-          kind: "error",
-          message: err instanceof Error ? err.message : String(err),
-        });
+        const raw = err instanceof Error ? err.message : String(err);
+        // ``scorePrompt`` throws a string starting with the HTTP code
+        // ("401 Unauthorized: …"). Surface a user-readable hint for
+        // the common cases — the raw HTTP detail goes in the title
+        // attribute so it's still recoverable for debugging.
+        let message: string;
+        if (/^401\b/.test(raw) || /^403\b/.test(raw)) {
+          message =
+            "Authentication failed — check the auth token on the Model tab";
+        } else if (/^5\d\d\b/.test(raw)) {
+          message = `Server error · ${raw.slice(0, 80)}`;
+        } else {
+          message = raw;
+        }
+        setStatus({ kind: "error", message });
       }
     } finally {
       abortRef.current = null;
@@ -252,10 +294,12 @@ export function InferenceAnalyzePanel({ state, pendingAnalyze }: Props) {
   const onStop = () => abortRef.current?.abort();
 
   // Consume pendingAnalyze when its key is fresh. Replaces the
-  // textarea contents with the inbound text and immediately runs
-  // scoring on it. Ref-gated by key so flipping tabs back to Analyze
-  // later doesn't re-trigger. ``runAnalyze`` is read via a ref so the
-  // effect doesn't refire every render the function identity changes.
+  // textarea contents with the inbound text, immediately runs scoring
+  // on it, then signals the parent to clear the slot. Ref-gated by
+  // key as a belt-and-suspenders so a parent re-render between the
+  // setState and the clear doesn't double-fire. ``runAnalyze`` is
+  // read via a ref so the effect doesn't refire every render the
+  // function identity changes.
   const lastPendingKeyRef = useRef<number | null>(null);
   const runAnalyzeRef = useRef(runAnalyze);
   runAnalyzeRef.current = runAnalyze;
@@ -266,7 +310,8 @@ export function InferenceAnalyzePanel({ state, pendingAnalyze }: Props) {
     setText(pendingAnalyze.text);
     setSelectionLen(0);
     void runAnalyzeRef.current(pendingAnalyze.text);
-  }, [pendingAnalyze]);
+    onPendingAnalyzeConsumed?.();
+  }, [pendingAnalyze, onPendingAnalyzeConsumed]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
@@ -465,6 +510,7 @@ export function InferenceAnalyzePanel({ state, pendingAnalyze }: Props) {
           axis="x"
           ariaLabel="Resize input vs output panes"
           onDragDelta={onSplitXDelta}
+          onDragEnd={persistCurrentPrefs}
           onDoubleClick={() => updatePrefs({ leftWidthPct: 50 })}
         />
         <div
@@ -495,6 +541,7 @@ export function InferenceAnalyzePanel({ state, pendingAnalyze }: Props) {
                 axis="y"
                 ariaLabel="Resize scored text vs histogram panes"
                 onDragDelta={onSplitYDelta}
+                onDragEnd={persistCurrentPrefs}
                 onDoubleClick={() => updatePrefs({ histHeightPct: 35 })}
               />
               <div
@@ -564,10 +611,13 @@ function ScoredText({
   const [hover, setHover] = useState<HoverState | null>(null);
 
   // Entropy is a Forgather extension; an OpenAI/vLLM server won't
-  // return it. If the user picked "entropy" and the response has none,
-  // silently fall back to loss for coloring + display a one-line note
-  // above the rendered text so they know why.
-  const entropyAvailable = Array.isArray(token_entropies);
+  // return it. If the user picked "entropy" and the response has none
+  // (field absent, or present-but-empty, or all-null), silently fall
+  // back to loss for coloring + display a one-line note above the
+  // rendered text so they know why.
+  const entropyAvailable =
+    Array.isArray(token_entropies) &&
+    token_entropies.some((v) => typeof v === "number");
   const effectiveMetric: Metric =
     prefs.metric === "entropy" && !entropyAvailable ? "loss" : prefs.metric;
   const fellBack = prefs.metric !== effectiveMetric;
@@ -844,6 +894,23 @@ function TooltipBody({
   );
 }
 
+/** Apply an exponential moving average to a non-sparse sequence —
+ *  ``s[i] = α·s[i-1] + (1-α)·v[i]``, seeded from the first value. Used
+ *  by the histogram to derive its auto-scale color domain from the
+ *  same signal the scored-text view colors with when the EMA filter
+ *  is on (so the bar colors stay a faithful legend). */
+function applyEma(values: number[], alpha: number): number[] {
+  if (alpha <= 0 || values.length === 0) return values;
+  const out: number[] = new Array(values.length);
+  let prev = values[0];
+  out[0] = prev;
+  for (let i = 1; i < values.length; i++) {
+    prev = alpha * prev + (1 - alpha) * values[i];
+    out[i] = prev;
+  }
+  return out;
+}
+
 /** Pointer-capture drag handle. ``axis="x"`` is a thin vertical strip
  *  that drags horizontally (col-resize); ``axis="y"`` is a horizontal
  *  strip that drags vertically (row-resize). Emits per-move pixel
@@ -854,11 +921,19 @@ function DragHandle({
   axis,
   ariaLabel,
   onDragDelta,
+  onDragEnd,
   onDoubleClick,
 }: {
   axis: "x" | "y";
   ariaLabel: string;
   onDragDelta: (delta: number) => void;
+  /** Called on pointerup / pointercancel / Home key, and after each
+   *  arrow-key nudge. Parent uses this to persist layout once a
+   *  gesture has settled — avoids hundreds of localStorage writes
+   *  per second during a fast drag. */
+  onDragEnd?: () => void;
+  /** Tied to the handle's double-click as well as the Home key for
+   *  keyboard users — both gestures mean "reset to default." */
   onDoubleClick?: () => void;
 }) {
   const lastRef = useRef<{ x: number; y: number; pointerId: number } | null>(
@@ -870,7 +945,8 @@ function DragHandle({
       role="separator"
       aria-orientation={axis === "x" ? "vertical" : "horizontal"}
       aria-label={ariaLabel}
-      title="Drag to resize · double-click to reset"
+      tabIndex={0}
+      title="Drag to resize · double-click or Home to reset · arrow keys to nudge (Shift for x4)"
       onPointerDown={(e) => {
         e.preventDefault();
         (e.currentTarget as Element).setPointerCapture(e.pointerId);
@@ -901,6 +977,7 @@ function DragHandle({
         }
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
+        onDragEnd?.();
       }}
       onPointerCancel={(e) => {
         lastRef.current = null;
@@ -911,8 +988,26 @@ function DragHandle({
         }
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
+        onDragEnd?.();
       }}
       onDoubleClick={onDoubleClick}
+      onKeyDown={(e) => {
+        const step = e.shiftKey ? 32 : 8;
+        const decrease = axis === "x" ? "ArrowLeft" : "ArrowUp";
+        const increase = axis === "x" ? "ArrowRight" : "ArrowDown";
+        if (e.key === decrease) {
+          e.preventDefault();
+          onDragDelta(-step);
+          onDragEnd?.();
+        } else if (e.key === increase) {
+          e.preventDefault();
+          onDragDelta(step);
+          onDragEnd?.();
+        } else if (e.key === "Home") {
+          e.preventDefault();
+          onDoubleClick?.();
+        }
+      }}
     />
   );
 }
@@ -937,11 +1032,14 @@ function HistogramView({
 }) {
   const { token_logprobs, token_entropies } = scores;
 
-  const entropyAvailable = Array.isArray(token_entropies);
+  const entropyAvailable =
+    Array.isArray(token_entropies) &&
+    token_entropies.some((v) => typeof v === "number");
   const effectiveMetric: Metric =
     prefs.metric === "entropy" && !entropyAvailable ? "loss" : prefs.metric;
 
-  // Raw (unsmoothed) values for the chosen metric.
+  // Raw (unsmoothed) values for the chosen metric — what the bins
+  // bucket on. The histogram exists to show the actual distribution.
   const rawValues = useMemo<number[]>(() => {
     const out: number[] = [];
     if (effectiveMetric === "entropy") {
@@ -956,29 +1054,48 @@ function HistogramView({
     return out;
   }, [effectiveMetric, token_logprobs, token_entropies]);
 
-  // Color domain = same lo/hi the tokens use. Auto mode here is also
-  // 5th/95th percentile but computed off raw values (the histogram
-  // shows raw, so the scale should match that). Manual mode uses the
-  // user-supplied bounds verbatim.
+  // Color domain = same lo/hi the *scored text* uses, so the
+  // histogram bars are a faithful legend for the colors painted on
+  // tokens. When the EMA filter is on, that means computing the
+  // auto-scale percentiles off the smoothed sequence — colors drawn
+  // on tokens come from the smoothed values, so the histogram's bar
+  // colors have to use the same domain or the "legend" claim is a
+  // lie. Manual mode uses user-supplied bounds verbatim.
   const { colorLo, colorHi } = useMemo(() => {
     if (prefs.scaleMode === "manual") {
       const a = Math.min(prefs.manualLo, prefs.manualHi);
       const b = Math.max(prefs.manualLo, prefs.manualHi);
       return { colorLo: a, colorHi: b > a ? b : a + 1 };
     }
-    if (rawValues.length === 0) return { colorLo: 0, colorHi: 1 };
-    const sorted = rawValues.slice().sort((a, b) => a - b);
+    const samples =
+      prefs.emaAlpha > 0
+        ? applyEma(rawValues, Math.min(0.99, prefs.emaAlpha))
+        : rawValues;
+    if (samples.length === 0) return { colorLo: 0, colorHi: 1 };
+    const sorted = samples.slice().sort((a, b) => a - b);
     const lo = sorted[Math.floor(sorted.length * 0.05)] ?? sorted[0];
     const hi =
       sorted[Math.floor(sorted.length * 0.95)] ?? sorted[sorted.length - 1];
     return { colorLo: lo, colorHi: hi > lo ? hi : lo + 1 };
-  }, [rawValues, prefs.scaleMode, prefs.manualLo, prefs.manualHi]);
+  }, [
+    rawValues,
+    prefs.scaleMode,
+    prefs.manualLo,
+    prefs.manualHi,
+    prefs.emaAlpha,
+  ]);
 
   const cmap = useMemo(() => getColormap(prefs.cmap), [prefs.cmap]);
 
   const bins = useMemo(() => {
     if (rawValues.length === 0) {
-      return { counts: [] as number[], xMin: 0, xMax: 1, max: 0 };
+      return {
+        counts: [] as number[],
+        xMin: 0,
+        xMax: 1,
+        max: 0,
+        degenerate: false,
+      };
     }
     let xMin = Infinity;
     let xMax = -Infinity;
@@ -986,7 +1103,11 @@ function HistogramView({
       if (v < xMin) xMin = v;
       if (v > xMax) xMax = v;
     }
-    if (xMin === xMax) xMax = xMin + 1;
+    // All values identical — a single tall bar in bin 0 would be more
+    // misleading than informative. Flag it and render a hint instead.
+    if (xMin === xMax) {
+      return { counts: [], xMin, xMax: xMin + 1, max: 0, degenerate: true };
+    }
     const counts = new Array<number>(HIST_BINS).fill(0);
     const span = xMax - xMin;
     for (const v of rawValues) {
@@ -996,11 +1117,20 @@ function HistogramView({
     }
     let max = 0;
     for (const c of counts) if (c > max) max = c;
-    return { counts, xMin, xMax, max };
+    return { counts, xMin, xMax, max, degenerate: false };
   }, [rawValues]);
 
   if (rawValues.length === 0) {
     return <div className="muted analyze-empty">No scored values yet.</div>;
+  }
+  if (bins.degenerate) {
+    return (
+      <div className="muted analyze-empty">
+        All {rawValues.length} tokens have the same value (
+        {bins.xMin.toFixed(3)}) — distribution is a single point, so the
+        histogram would be misleading.
+      </div>
+    );
   }
 
   // SVG layout — viewBox is fixed; SVG fills the pane via CSS. Padding
@@ -1028,7 +1158,13 @@ function HistogramView({
         className="analyze-histogram-svg"
         viewBox={`0 0 ${VW} ${VH}`}
         preserveAspectRatio="none"
+        role="img"
+        aria-label={`Histogram of ${metricLabel} across ${rawValues.length} tokens, range ${fmt(bins.xMin)} to ${fmt(bins.xMax)}`}
       >
+        <title>{`${metricLabel} distribution — n=${rawValues.length}`}</title>
+        <desc>
+          {`Histogram with ${bins.counts.length} bins spanning ${fmt(bins.xMin)} to ${fmt(bins.xMax)}. Bar colors mirror the colormap applied to tokens in the scored text above.`}
+        </desc>
         {/* axes */}
         <line
           x1={PAD_L}

@@ -1329,21 +1329,52 @@ function cellValueToString(value: unknown): string {
   }
 }
 
-/** Copy the cell's full text to the clipboard. Async wrapper that
- *  surfaces failures (Clipboard API can fail under permissions-policy
- *  or non-secure contexts). */
+/** Copy the cell's full text to the clipboard, with a graceful
+ *  fallback for non-secure contexts. The forgather webui is often
+ *  served over plain HTTP on a LAN, where ``navigator.clipboard`` is
+ *  undefined — without the fallback every right-click → Copy would
+ *  alert "Copy failed: undefined" instead of working. The
+ *  ``execCommand("copy")`` path uses a hidden textarea + a synchronous
+ *  copy, which works in HTTP contexts that the modern API rejects. */
 async function copyCellValue(value: unknown): Promise<void> {
   const text = cellValueToString(value);
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch (e) {
-    // clipboard API can fail under permissions-policy or non-secure
-    // contexts; surface enough to triage without spamming console
-    // noise on every right-click.
-    alert(
-      `Copy failed: ${e instanceof Error ? e.message : String(e)}`,
-    );
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // fall through to the legacy path
+    }
   }
+  if (legacyCopyToClipboard(text)) return;
+  alert(
+    "Copy failed: clipboard unavailable. Serve the webui over HTTPS or " +
+      "from localhost, or copy by selecting the cell text directly.",
+  );
+}
+
+/** Synchronous copy via a hidden textarea + ``document.execCommand``.
+ *  Deprecated, but it's the only API that works in non-secure browser
+ *  contexts and we still ship to those. Returns whether the copy was
+ *  reported successful. */
+function legacyCopyToClipboard(text: string): boolean {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "-9999px";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {
+    ok = false;
+  }
+  document.body.removeChild(ta);
+  return ok;
 }
 
 function Cell({
@@ -1472,7 +1503,7 @@ function Pager({ page, totalPages, setPage, onRandomize }: PagerProps) {
           title="Jump to a random page and expand a random example on it"
           aria-label="Random page and example"
         >
-          🎲
+          <span aria-hidden="true">🎲</span>
         </button>
       )}
       {totalPages > 1 && (

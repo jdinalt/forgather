@@ -329,6 +329,12 @@ export default function App() {
     setPendingAnalyze({ text, key: Date.now() });
     setView("inference");
   }, []);
+  // Stable identity so the analyze panel's consume-effect doesn't see
+  // a new callback on every App render. Mirrors clearPendingExplore.
+  const clearPendingAnalyze = useCallback(
+    () => setPendingAnalyze(null),
+    [],
+  );
 
   // Wired into every submit modal's onSubmitted prop. Reads the sticky
   // localStorage preference at submit time so a stale toggle from an earlier
@@ -1357,7 +1363,10 @@ export default function App() {
           className="view-panel"
           style={view === "inference" ? undefined : { display: "none" }}
         >
-          <InferencePanel pendingAnalyze={pendingAnalyze} />
+          <InferencePanel
+            pendingAnalyze={pendingAnalyze}
+            onAnalyzeConsumed={clearPendingAnalyze}
+          />
         </div>
         <div
           className="view-panel"

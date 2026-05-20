@@ -60,17 +60,24 @@ interface InferencePanelProps {
   /** Cross-section trigger from the Datasets cell context menu:
    *  ``{text, key}`` where ``key`` is a Date.now() nonce. When this
    *  changes (key flips), the panel switches to the Analyze sub-tab
-   *  and the AnalyzePanel picks up the text and runs scoring. Stays
-   *  set in App state after consumption — both consumers gate on key,
-   *  so a stale value is harmless. */
+   *  and the AnalyzePanel picks up the text and runs scoring. Cleared
+   *  by AnalyzePanel via ``onAnalyzeConsumed`` once it has handled
+   *  the request so unmount/remount can't re-fire the same payload. */
   pendingAnalyze?: { text: string; key: number } | null;
+  /** Called by AnalyzePanel after consuming pendingAnalyze so the
+   *  parent can reset App state. Mirrors the existing
+   *  pendingExplore / onPreselectConsumed pattern. */
+  onAnalyzeConsumed?: () => void;
 }
 
 /** Top-level Inference view. Holds the shared state (base URL, chosen
  *  model, generation params) so the Model sub-panel can configure it and
  *  the Completion sub-panel can consume it. Persists via localStorage so
  *  settings survive page reloads. */
-export function InferencePanel({ pendingAnalyze }: InferencePanelProps = {}) {
+export function InferencePanel({
+  pendingAnalyze,
+  onAnalyzeConsumed,
+}: InferencePanelProps = {}) {
   const [tab, setTab] = useState<SubTab>("model");
   // Flip to the Analyze tab whenever a fresh pendingAnalyze arrives.
   // Per-key dedup so flipping back to Inference later doesn't bounce
@@ -181,6 +188,7 @@ export function InferencePanel({ pendingAnalyze }: InferencePanelProps = {}) {
         <InferenceAnalyzePanel
           state={state}
           pendingAnalyze={pendingAnalyze}
+          onPendingAnalyzeConsumed={onAnalyzeConsumed}
         />
       </div>
     </div>
