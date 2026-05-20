@@ -23,7 +23,13 @@ from pydantic import BaseModel
 
 from forgather.tls import httpx_peer_kwargs
 
-from .. import cluster, cluster_dataset_inventory, cluster_jobs, dataset_source
+from .. import (
+    cluster,
+    cluster_dataset_inventory,
+    cluster_inference_inventory,
+    cluster_jobs,
+    dataset_source,
+)
 from ..dataset_source import DatasetSourceError
 from .gpus import (
     GpuInfoModel,
@@ -887,6 +893,198 @@ async def dataset_servers() -> List[ClusterDatasetServerModel]:
     if not isinstance(raw, list):
         return []
     return [ClusterDatasetServerModel(**item) for item in raw]
+
+
+# ---------------------------------------------------------------------------
+# Inference-server inventory (master-side aggregation, browser-facing list)
+# ---------------------------------------------------------------------------
+
+
+class LocalInferenceServerModel(BaseModel):
+    """Inference server entry returned from ``/inference_servers_local``
+    to a known cluster peer. Includes the bearer token — only the
+    mTLS-authenticated peer surface ships this."""
+
+    server_id: str
+    base_url: str
+    auth_token: str
+    label: str
+    peer_node_id: Optional[str] = None
+    source_id: Optional[str] = None
+    loopback: bool = False
+    models: List[str] = []
+
+
+class LocalInferenceServersResponse(BaseModel):
+    self_node_id: Optional[str] = None
+    servers: List[LocalInferenceServerModel] = []
+
+
+class ClusterInferenceServerModel(BaseModel):
+    """Master-aggregated inference-server entry.
+
+    Mirrors :class:`ClusterDatasetServerModel` minus the dataset-
+    specific dataset-refresh fields (inference servers have no
+    equivalent of ``/v1/datasets``). Inference servers are accessed by
+    the browser through the same-origin proxy at ``/api/inference/*``,
+    which needs the bearer token to forward upstream — so we include
+    ``auth_token`` here. This matches the per-job token exposure
+    already in ``/api/jobs`` (``JobModel.auth_token``) for locally-
+    spawned servers; the cluster endpoint just extends the same
+    surface to remote-peer servers.
+
+    Future hardening (server-side token attach via a non-master pull
+    loop) is tracked but out of scope for the initial parity work —
+    the existing local-jobs path also ships tokens to the browser, so
+    making the cluster path do the same is consistent, not a
+    regression.
+    """
+
+    server_id: str
+    base_url: str
+    auth_token: str = ""
+    label: str
+    peer_node_id: Optional[str] = None
+    source_id: Optional[str] = None
+    loopback: bool = False
+    models: List[str] = []
+    healthy: bool
+    last_health_check: float
+    last_health_error: str
+    total_health_polls: int = 0
+    health_failures: int = 0
+    consecutive_health_failures: int = 0
+
+
+@router.get(
+    "/inference_servers_local",
+    response_model=LocalInferenceServersResponse,
+)
+def inference_servers_local(response: Response):
+    """Per-peer inference-server inventory.
+
+    The master fans GETs to this endpoint every aggregation tick to
+    build the cluster-wide picker contents. Carved out of the
+    bearer-token gate for mTLS-authenticated cluster peers — see
+    ``auth._PEER_ALLOWED_PATHS``.
+
+    Tokens are in the body. The trust boundary is the same one that
+    already lets peers exchange dataset-server tokens; an attacker
+    able to forge a cluster CA cert already has full cluster control.
+    """
+    ident = cluster.self_identity()
+    if ident is not None:
+        response.headers["X-Forgather-Node-Id"] = ident.node_id
+    servers = cluster_inference_inventory.local_servers()
+    return LocalInferenceServersResponse(
+        self_node_id=ident.node_id if ident is not None else None,
+        servers=[
+            LocalInferenceServerModel(
+                server_id=s.server_id,
+                base_url=s.base_url,
+                auth_token=s.auth_token,
+                label=s.label,
+                peer_node_id=s.peer_node_id,
+                source_id=s.source_id,
+                loopback=s.loopback,
+                models=list(s.models),
+            )
+            for s in servers
+        ],
+    )
+
+
+def _to_inference_server_model(
+    e: "cluster_inference_inventory.MasterServerEntry",
+) -> ClusterInferenceServerModel:
+    return ClusterInferenceServerModel(
+        server_id=e.server_id,
+        base_url=e.base_url,
+        auth_token=e.auth_token,
+        label=e.label,
+        peer_node_id=e.peer_node_id,
+        source_id=e.source_id,
+        loopback=e.loopback,
+        models=list(e.models),
+        healthy=e.healthy,
+        last_health_check=e.last_health_check,
+        last_health_error=e.last_health_error,
+        total_health_polls=e.total_health_polls,
+        health_failures=e.health_failures,
+        consecutive_health_failures=e.consecutive_health_failures,
+    )
+
+
+async def _proxy_inference_servers_to_master() -> Optional[List[Dict[str, Any]]]:
+    """Non-master nodes proxy ``/inference_servers`` to the master so
+    every webui sees the same picker contents."""
+    master = _master_member()
+    if master is None:
+        return None
+    url = _peer_url(master, "/api/cluster/inference_servers")
+    try:
+        async with _peer_client(timeout=5.0) as client:
+            r = await client.get(url)
+    except (httpx.HTTPError, OSError) as e:
+        log.warning("inference_servers proxy: %s -> %s", master.hostname, e)
+        return None
+    if r.status_code != 200:
+        log.warning(
+            "inference_servers proxy non-200: %s status=%d",
+            master.hostname,
+            r.status_code,
+        )
+        return None
+    try:
+        body = r.json()
+    except ValueError:
+        return None
+    return body if isinstance(body, list) else None
+
+
+@router.get(
+    "/inference_servers", response_model=List[ClusterInferenceServerModel]
+)
+async def inference_servers() -> List[ClusterInferenceServerModel]:
+    """Master-aggregated inference-server list, token-stripped.
+
+    Browser-facing: the InferenceModelPanel queries this to populate
+    its "Running inference servers" picker so jobs running on any
+    cluster peer show up alongside local jobs. The matching tokens
+    stay on the master and the inference proxy attaches them on the
+    server side at request time — the browser never sees them.
+    """
+    if _self_is_master():
+        return [
+            _to_inference_server_model(s)
+            for s in cluster_inference_inventory.master_inventory.servers_snapshot()
+        ]
+    proxied = await _proxy_inference_servers_to_master()
+    if proxied is None:
+        return []
+    return [ClusterInferenceServerModel(**item) for item in proxied]
+
+
+@router.post("/inference_servers/refresh", status_code=204)
+async def refresh_inference_servers() -> Response:
+    """Wake the inference-server collect loop on demand.
+
+    Called by the scheduler when an inference job starts or stops so
+    the cluster picker converges within ~1 s instead of waiting for
+    the next steady-state collect tick. Best-effort: 204 regardless
+    of whether the master is reachable.
+    """
+    cluster_inference_inventory.wake_loops()
+    if not _self_is_master():
+        master = _master_member()
+        if master is not None:
+            url = _peer_url(master, "/api/cluster/inference_servers/refresh")
+            try:
+                async with _peer_client(timeout=2.0) as client:
+                    await client.post(url)
+            except (httpx.HTTPError, OSError):
+                pass
+    return Response(status_code=204)
 
 
 @router.get(

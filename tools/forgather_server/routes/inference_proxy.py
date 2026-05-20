@@ -188,24 +188,49 @@ def _build_token_index() -> Dict[tuple, Optional[str]]:
 def _token_for(base: str) -> Optional[str]:
     """Look up the bearer token of the inference job listening on ``base``.
 
-    Returns ``None`` when no JobRecord matches (user pointed the proxy at
-    something we didn't spawn) or when the matching record was started
-    with ``--no-auth`` (auth_token is None on that record).
+    Two-tier lookup:
+
+      1. **Local loopback fast path** — when ``base`` is a localhost
+         URL, scan this peer's JobRecords. Cheap, cached, and the only
+         path needed on single-node setups.
+      2. **Master inventory** — for off-host URLs, consult the cluster
+         inference inventory. This path only finds a token on the
+         master node (which holds the aggregated snapshot); non-master
+         peers return ``None`` and rely on the webui to pass the token
+         via the ``X-Inference-Auth-Token`` header (the picker has it,
+         since :class:`ClusterInferenceServerModel` includes the
+         token). Future work could add a non-master pull loop so the
+         proxy auto-attaches on every node, but the current shape
+         matches today's local-jobs behavior and keeps the surface
+         narrow.
+
+    The ``X-Inference-Auth-Token`` header takes precedence over both —
+    see :func:`_auth_headers_for`.
     """
     try:
         parsed = urlparse(base)
     except Exception:
         return None
-    host = (parsed.hostname or "").lower()
-    if host not in _LOCALHOST_HOSTS or parsed.port is None:
+    if parsed.port is None:
         return None
-    now = time.monotonic()
-    global _token_cache, _token_cache_built_at
-    with _token_cache_lock:
-        if now - _token_cache_built_at > _TOKEN_CACHE_TTL_S:
-            _token_cache = _build_token_index()
-            _token_cache_built_at = now
-        return _token_cache.get((host, parsed.port))
+    host = (parsed.hostname or "").lower()
+    if host in _LOCALHOST_HOSTS:
+        now = time.monotonic()
+        global _token_cache, _token_cache_built_at
+        with _token_cache_lock:
+            if now - _token_cache_built_at > _TOKEN_CACHE_TTL_S:
+                _token_cache = _build_token_index()
+                _token_cache_built_at = now
+            return _token_cache.get((host, parsed.port))
+    # Off-host: consult the cluster inventory. On master nodes this
+    # has the full picture; on non-master nodes it's empty and the
+    # caller must rely on the header.
+    try:
+        from .. import cluster_inference_inventory
+
+        return cluster_inference_inventory.master_inventory.token_for_url(base)
+    except Exception:
+        return None
 
 
 def _root_of(base: str) -> str:
