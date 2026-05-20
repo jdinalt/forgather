@@ -1,4 +1,11 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import {
   COLORMAPS,
@@ -12,6 +19,12 @@ import { InferenceState } from "./InferencePanel";
 
 interface Props {
   state: InferenceState;
+  /** Inbound request from elsewhere in the app (e.g. the Datasets
+   *  cell context menu) to replace the input text and run scoring
+   *  immediately. ``key`` is a Date.now() nonce — keyed-effect dedup
+   *  fires on each fresh request without re-firing on parent
+   *  re-renders. */
+  pendingAnalyze?: { text: string; key: number } | null;
 }
 
 type Status =
@@ -116,7 +129,7 @@ function loadPrefs(): AnalyzePrefs {
   }
 }
 
-export function InferenceAnalyzePanel({ state }: Props) {
+export function InferenceAnalyzePanel({ state, pendingAnalyze }: Props) {
   const [text, setText] = useState<string>("");
   const [topK, setTopK] = useState<number>(DEFAULT_TOP_K);
   const [scores, setScores] = useState<TokenScores | null>(null);
@@ -182,17 +195,25 @@ export function InferenceAnalyzePanel({ state }: Props) {
     });
   };
 
-  const runAnalyze = async () => {
-    // If the user has a non-empty selection in the textarea, score
-    // just the selected substring. Big inputs (a whole novel pasted
-    // in) are unusable to score in one go — selecting a paragraph
-    // and analyzing only that is far more useful than truncating
+  const runAnalyze = async (textOverride?: string) => {
+    // An explicit override (e.g. from the cross-section pendingAnalyze
+    // path) wins over both ``text`` state and any textarea selection
+    // — the caller has already decided what to score. Otherwise, if
+    // the user has a non-empty selection in the textarea, score just
+    // the selected substring. Big inputs (a whole novel pasted in) are
+    // unusable to score in one go — selecting a paragraph and
+    // analyzing only that is far more useful than truncating
     // arbitrarily. Selection state is read from the DOM at click
     // time, not from the cached selectionLen, so it's always fresh.
-    const ta = textareaRef.current;
-    let prompt = text;
-    if (ta && ta.selectionStart !== ta.selectionEnd) {
-      prompt = text.substring(ta.selectionStart, ta.selectionEnd);
+    let prompt: string;
+    if (textOverride !== undefined) {
+      prompt = textOverride;
+    } else {
+      const ta = textareaRef.current;
+      prompt = text;
+      if (ta && ta.selectionStart !== ta.selectionEnd) {
+        prompt = text.substring(ta.selectionStart, ta.selectionEnd);
+      }
     }
     if (!prompt.trim()) return;
     const ac = new AbortController();
@@ -230,6 +251,23 @@ export function InferenceAnalyzePanel({ state }: Props) {
 
   const onStop = () => abortRef.current?.abort();
 
+  // Consume pendingAnalyze when its key is fresh. Replaces the
+  // textarea contents with the inbound text and immediately runs
+  // scoring on it. Ref-gated by key so flipping tabs back to Analyze
+  // later doesn't re-trigger. ``runAnalyze`` is read via a ref so the
+  // effect doesn't refire every render the function identity changes.
+  const lastPendingKeyRef = useRef<number | null>(null);
+  const runAnalyzeRef = useRef(runAnalyze);
+  runAnalyzeRef.current = runAnalyze;
+  useEffect(() => {
+    if (!pendingAnalyze) return;
+    if (pendingAnalyze.key === lastPendingKeyRef.current) return;
+    lastPendingKeyRef.current = pendingAnalyze.key;
+    setText(pendingAnalyze.text);
+    setSelectionLen(0);
+    void runAnalyzeRef.current(pendingAnalyze.text);
+  }, [pendingAnalyze]);
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
@@ -255,7 +293,7 @@ export function InferenceAnalyzePanel({ state }: Props) {
           />
         </label>
         <button
-          onClick={runAnalyze}
+          onClick={() => void runAnalyze()}
           disabled={busy || !state.baseUrl || !text.trim()}
           title={
             selectionLen > 0

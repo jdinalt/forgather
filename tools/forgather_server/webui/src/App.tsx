@@ -317,6 +317,19 @@ export default function App() {
   // doesn't see a new callback on every App render.
   const clearPendingExplore = useCallback(() => setPendingExplore(null), []);
 
+  // Cross-section: "Analyze…" item on a Datasets cell context menu
+  // sends the cell's full text to the Inference > Analyze tab and
+  // kicks off scoring. ``key`` is a render-stable nonce that lets the
+  // analyze panel's effect distinguish a fresh request from a stale
+  // re-render — without it, switching tabs and back would re-trigger.
+  const [pendingAnalyze, setPendingAnalyze] = useState<
+    { text: string; key: number } | null
+  >(null);
+  const analyzeText = useCallback((text: string) => {
+    setPendingAnalyze({ text, key: Date.now() });
+    setView("inference");
+  }, []);
+
   // Wired into every submit modal's onSubmitted prop. Reads the sticky
   // localStorage preference at submit time so a stale toggle from an earlier
   // modal can't trigger an unintended view switch.
@@ -1344,7 +1357,7 @@ export default function App() {
           className="view-panel"
           style={view === "inference" ? undefined : { display: "none" }}
         >
-          <InferencePanel />
+          <InferencePanel pendingAnalyze={pendingAnalyze} />
         </div>
         <div
           className="view-panel"
@@ -1354,6 +1367,7 @@ export default function App() {
             pendingExplore={pendingExplore}
             onPreselectConsumed={clearPendingExplore}
             onOpenInExplore={openInExplore}
+            onAnalyzeText={analyzeText}
           />
         </div>
       </div>

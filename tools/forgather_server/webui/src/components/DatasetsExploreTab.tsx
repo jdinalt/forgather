@@ -134,6 +134,10 @@ interface Props {
    *  re-trigger the seed). */
   preselect?: SelectedLeaf | null;
   onPreselectConsumed?: () => void;
+  /** Cross-section: "Analyze…" item in the cell context menu hands
+   *  the full text up to App, which switches to Inference > Analyze
+   *  and triggers scoring. Omitted = item is hidden. */
+  onAnalyzeText?: (text: string) => void;
 }
 
 export function DatasetsExploreTab({
@@ -143,6 +147,7 @@ export function DatasetsExploreTab({
   clusterActive,
   preselect,
   onPreselectConsumed,
+  onAnalyzeText,
 }: Props) {
   const servers: ServerOption[] = useMemo(() => {
     if (clusterActive) {
@@ -593,6 +598,7 @@ export function DatasetsExploreTab({
               setPage={setPage}
               pageSize={pageSize}
               totalPages={totalPages}
+              onAnalyzeText={onAnalyzeText}
             />
           ) : resolveHint ? (
             <div className="pane-state warn">{resolveHint}</div>
@@ -1063,6 +1069,7 @@ interface PreviewPaneProps {
   setPage: (p: number) => void;
   pageSize: number;
   totalPages: number;
+  onAnalyzeText?: (text: string) => void;
 }
 
 function PreviewPane({
@@ -1074,6 +1081,7 @@ function PreviewPane({
   setPage,
   pageSize,
   totalPages,
+  onAnalyzeText,
 }: PreviewPaneProps) {
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const handle = loadQ.data?.handle;
@@ -1101,6 +1109,7 @@ function PreviewPane({
               expandedRow={expandedRow}
               setExpandedRow={setExpandedRow}
               pageOffset={page * pageSize}
+              onAnalyzeText={onAnalyzeText}
             />
           )}
         </>
@@ -1123,6 +1132,7 @@ interface RowsTableProps {
   expandedRow: number | null;
   setExpandedRow: (n: number | null) => void;
   pageOffset: number;
+  onAnalyzeText?: (text: string) => void;
 }
 
 function RowsTable({
@@ -1131,6 +1141,7 @@ function RowsTable({
   expandedRow,
   setExpandedRow,
   pageOffset,
+  onAnalyzeText,
 }: RowsTableProps) {
   // If the server didn't report column_names (vocab streams, unusual
   // sources), derive the union of keys across the visible window so the
@@ -1248,6 +1259,19 @@ function RowsTable({
           >
             Copy cell text
           </button>
+          {onAnalyzeText && (
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                const text = cellValueToString(menu.value);
+                setMenu(null);
+                if (text) onAnalyzeText(text);
+              }}
+              title="Open Inference > Analyze with this cell's full text and run scoring"
+            >
+              Analyze in Inference…
+            </button>
+          )}
         </ContextMenu>
       )}
     </div>
@@ -1255,24 +1279,27 @@ function RowsTable({
 }
 
 /** Serialize a cell value the same way the Cell component does for
- *  display, but without truncation — that's the whole point of the
- *  context-menu copy: get the full underlying text, not the visible
- *  truncated form. Async because navigator.clipboard.writeText is. */
-async function copyCellValue(value: unknown): Promise<void> {
-  let text: string;
-  if (value == null) {
-    text = "";
-  } else if (typeof value === "string") {
-    text = value;
-  } else if (typeof value === "number" || typeof value === "boolean") {
-    text = String(value);
-  } else {
-    try {
-      text = JSON.stringify(value, null, 2);
-    } catch {
-      text = String(value);
-    }
+ *  display, but without truncation — used by both the copy and
+ *  analyze actions in the context menu. Strings pass through; numbers
+ *  and booleans stringify; objects JSON-encode (pretty, two-space). */
+function cellValueToString(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
   }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+/** Copy the cell's full text to the clipboard. Async wrapper that
+ *  surfaces failures (Clipboard API can fail under permissions-policy
+ *  or non-secure contexts). */
+async function copyCellValue(value: unknown): Promise<void> {
+  const text = cellValueToString(value);
   try {
     await navigator.clipboard.writeText(text);
   } catch (e) {

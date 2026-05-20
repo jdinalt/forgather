@@ -71,12 +71,17 @@ interface DatasetsPanelProps {
    *  so the same flow works whether the trigger came from inside
    *  this panel or from the Cluster view. */
   onOpenInExplore?: (leaf: SelectedLeaf) => void;
+  /** Hand a chunk of text up to the parent so it can swap to the
+   *  Inference > Analyze tab and kick off scoring. Wired into the
+   *  cell context menu in DatasetsExploreTab. */
+  onAnalyzeText?: (text: string) => void;
 }
 
 export function DatasetsPanel({
   pendingExplore,
   onPreselectConsumed,
   onOpenInExplore,
+  onAnalyzeText,
 }: DatasetsPanelProps = {}) {
   // Detect cluster mode via the same query the App-level gate uses.
   // TanStack dedups by ``queryKey`` so this doesn't cost an extra HTTP
@@ -169,6 +174,7 @@ export function DatasetsPanel({
           clusterActive={clusterActive}
           preselect={pendingExplore ?? null}
           onPreselectConsumed={onPreselectConsumed}
+          onAnalyzeText={onAnalyzeText}
         />
       </div>
     </div>
