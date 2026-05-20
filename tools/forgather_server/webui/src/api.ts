@@ -798,6 +798,39 @@ export interface ClusterDatasetServer {
   loopback?: boolean;
 }
 
+/** Master-aggregated inference-server entry, used by the cluster
+ *  picker in InferenceModelPanel.
+ *
+ *  Includes ``auth_token`` so the panel can attach the upstream
+ *  bearer via the ``X-Inference-Auth-Token`` header — the proxy on
+ *  non-master peers can't auto-discover off-host tokens, so the
+ *  picker carries it. This matches the per-job ``auth_token`` field
+ *  that already flows through ``/api/jobs`` for locally-spawned
+ *  servers.
+ *
+ *  Hardening this surface (server-side token attach via a non-master
+ *  pull loop, browser never sees tokens) is tracked as follow-up. */
+export interface ClusterInferenceServer {
+  server_id: string;
+  base_url: string;
+  auth_token: string;
+  label: string;
+  peer_node_id: string | null;
+  source_id?: string | null;
+  loopback?: boolean;
+  /** Configured OpenAI routing names this server hosts (one entry
+   *  per ``--model`` flag the inference server was launched with).
+   *  Empty list ⇒ the JobRecord didn't carry a usable hint; the
+   *  picker falls back to the URL as the label. */
+  models: string[];
+  healthy: boolean;
+  last_health_check: number;
+  last_health_error: string;
+  total_health_polls?: number;
+  health_failures?: number;
+  consecutive_health_failures?: number;
+}
+
 /** Aggregate counters across the inventory. */
 export interface ClusterDatasetInventoryMetrics {
   healthy_servers: number;
@@ -1818,6 +1851,15 @@ export const api = {
    *  a smaller payload for the Explore + Servers tabs. */
   getClusterDatasetServers: () =>
     fetchJson<ClusterDatasetServer[]>("/api/cluster/dataset_servers"),
+  /** Cluster-aggregated inference servers (master-polled + health-
+   *  tracked). Includes ``auth_token`` per entry so the
+   *  InferenceModelPanel can pin the bearer in the
+   *  ``X-Inference-Auth-Token`` header when dialling a remote-peer
+   *  upstream — same surface the per-job ``auth_token`` on
+   *  :ref:`/api/jobs` already exposes for locally-spawned servers.
+   *  Returns an empty list when cluster mode is inactive. */
+  getClusterInferenceServers: () =>
+    fetchJson<ClusterInferenceServer[]>("/api/cluster/inference_servers"),
   /** Wake the master's collect/health/refresh loops on demand.
    *  Best-effort — fire-and-forget. Used right after a registry
    *  add/delete so the cluster inventory reflects the change within

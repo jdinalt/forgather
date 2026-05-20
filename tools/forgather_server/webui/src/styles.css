@@ -1327,6 +1327,26 @@ button.jobs-tty-toggle.active {
   margin-bottom: 10px;
   flex-wrap: wrap;
 }
+/* Multi-model row container in InferenceModal. Bare class is a no-op
+   wrapper (single-model UX unchanged). The -scroll variant caps height
+   and scrolls when many models are added so the modal doesn't outgrow
+   the viewport. The inner padding-right reserves space for the
+   scrollbar so rows don't visually shift when one appears. */
+.inference-model-rows-scroll {
+  /* Cap on short viewports (~6 rows visible), but grow up to ~30vh on
+     tall screens so operators with a 1440p monitor see more without
+     having to scroll inside the modal. ``max`` keeps the lower bound
+     as a floor for laptop / devtools-open viewports. */
+  max-height: max(240px, 30vh);
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 12px 0 8px;
+  margin-bottom: 10px;
+}
+.inference-model-rows-scroll .submit-row:last-child {
+  margin-bottom: 8px;
+}
 .submit-row label {
   display: flex;
   gap: 6px;

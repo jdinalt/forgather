@@ -28,14 +28,22 @@ if __name__ == "__main__" and __package__ is None:
         standalone_token_file,
         write_standalone_token,
     )
-    from inference_server.config import load_config_from_yaml, merge_config_with_args
+    from inference_server.config import (
+        load_config_from_yaml,
+        merge_config_with_args,
+        merge_model_entries,
+    )
     from inference_server.routes import create_app, set_inference_service
-    from inference_server.service import InferenceService
+    from inference_server.service import InferenceService, ModelEntry, resolve_dtype
 else:
     # Running as module - use relative imports
     from .auth_paths import standalone_token_file, write_standalone_token
-    from .config import load_config_from_yaml, merge_config_with_args
-    from .service import InferenceService
+    from .config import (
+        load_config_from_yaml,
+        merge_config_with_args,
+        merge_model_entries,
+    )
+    from .service import InferenceService, ModelEntry, resolve_dtype
     from .routes import create_app, set_inference_service
 
 import uvicorn
@@ -90,7 +98,17 @@ def main():
         help="YAML configuration file (optional)",
     )
     parser.add_argument(
-        "-m", "--model", type=os.path.expanduser, help="HuggingFace model path or name"
+        "-m",
+        "--model",
+        action="append",
+        default=None,
+        help=(
+            "HuggingFace model path or name. Either 'PATH' (name derived from "
+            "basename) or 'NAME=PATH' (explicit routing name). Pass multiple "
+            "times to host multiple models in one server: requests dispatch by "
+            "the OpenAI 'model' field. Models lazy-load on first request and "
+            "swap between CPU and GPU; one model is GPU-resident at a time."
+        ),
     )
     parser.add_argument(
         "-a",
@@ -158,6 +176,30 @@ def main():
         action="store_true",
         help="Ignore EOS tokens during generation (continue past EOS until max_tokens or stop_sequence)",
     )
+    parser.add_argument(
+        "--keep-on-gpu",
+        action="store_true",
+        help=(
+            "Multi-model only: when set, do not demote inactive models to "
+            "CPU after a swap. Each model loads to GPU on first request "
+            "and stays there. Use when total GPU memory > sum(model sizes) "
+            "and swap latency matters. Default: swap inactive models to "
+            "CPU memory."
+        ),
+    )
+    parser.add_argument(
+        "--eager-load",
+        action="store_true",
+        help=(
+            "Multi-model only: load every configured model at startup "
+            "rather than lazily on first request. Matches the fail-fast "
+            "behavior of single-model setups (a broken checkpoint surfaces "
+            "as a startup error instead of waiting for a request to land "
+            "on it). Cost: startup time grows linearly with model count "
+            "and each model briefly occupies the GPU; pair with --keep-on-"
+            "gpu only when total GPU memory fits all of them."
+        ),
+    )
 
     # Bearer-token auth (default-on). Either supply a token, point at a file
     # holding one, or generate one at startup. ``--no-auth`` disables auth
@@ -185,12 +227,19 @@ def main():
     args = parser.parse_args()
 
     # Load config file if provided
+    config: dict = {}
     if args.config:
         config = load_config_from_yaml(args.config, use_logging=True)
         args = merge_config_with_args(config, args, parser)
 
-    # Validate required arguments
-    if not args.model:
+    # Reconcile model entries: CLI -m flags + config 'models:' list +
+    # legacy single 'model:' field. Result is a list of (name, path) pairs.
+    try:
+        model_specs = merge_model_entries(args.model, config)
+    except ValueError as e:
+        parser.error(str(e))
+
+    if not model_specs:
         parser.error("--model is required (can be specified in config file)")
 
     # Setup logging - configure the root logger and our dedicated application logger
@@ -227,19 +276,58 @@ def main():
     else:
         use_cache = None
 
+    # Validate -c with explicit checkpoint path against multi-model.
+    if len(model_specs) > 1 and isinstance(args.from_checkpoint, str):
+        parser.error(
+            "specific-checkpoint path (-c <PATH>) is not supported with multiple "
+            "--model; use -c with no path to load each model's latest checkpoint."
+        )
+    if len(model_specs) > 1 and args.device == "auto":
+        parser.error("--device auto is not supported with multiple --model")
+    if len(model_specs) > 1 and args.compile:
+        logging.warning(
+            "--compile with multiple models: torch.compile artifacts may not "
+            "survive CPU<->GPU swaps; expect recompilation on each swap."
+        )
+
+    # Build ModelEntry objects. CLI per-model overrides aren't supported;
+    # per-model overrides come from the YAML config's models[] entries.
+    # Top-level CLI args apply uniformly.
+    cli_dtype = resolve_dtype(args.dtype)
+    entries: list[ModelEntry] = []
+    for spec in model_specs:
+        # spec may include per-model overrides loaded from YAML.
+        per_model_dtype = (
+            resolve_dtype(spec["dtype"]) if spec.get("dtype") else cli_dtype
+        )
+        entries.append(
+            ModelEntry(
+                name=spec["name"],
+                model_path=spec["path"],
+                dtype=per_model_dtype,
+                attn_implementation=spec.get(
+                    "attn_implementation", args.attn_implementation
+                ),
+                chat_template_path=spec.get(
+                    "chat_template", getattr(args, "chat_template", None)
+                ),
+                stop_sequences=spec.get("stop_sequences", args.stop_sequences or []),
+                compile_args=spec.get("compile_args", compile_args),
+                cache_implementation=spec.get(
+                    "cache_implementation", args.cache_implementation
+                ),
+                use_cache=spec.get("use_cache", use_cache),
+            )
+        )
+
     # Create inference service
     service = InferenceService(
-        model_path=args.model,
+        entries=entries,
         device=args.device,
-        attn_implementation=args.attn_implementation,
         from_checkpoint=args.from_checkpoint,
-        chat_template_path=getattr(args, "chat_template", None),
-        dtype=args.dtype,
-        stop_sequences=args.stop_sequences,
-        compile_args=compile_args,
-        cache_implementation=args.cache_implementation,
-        use_cache=use_cache,
         ignore_eos=args.ignore_eos,
+        keep_on_gpu=args.keep_on_gpu,
+        eager_load=args.eager_load,
     )
 
     # Resolve auth token. --no-auth wins; otherwise prefer an explicit token,

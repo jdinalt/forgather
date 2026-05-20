@@ -291,10 +291,11 @@ def spawn_eval_process(
 
 def spawn_inference_process(
     *,
-    model_path: str,
     port: int,
     gpu_indices: List[int],
     tty_log_path: Path,
+    model_path: Optional[str] = None,
+    models: Optional[List[Dict[str, Any]]] = None,
     host: str = "127.0.0.1",
     dtype: Optional[str] = None,
     attn_implementation: Optional[str] = None,
@@ -303,6 +304,7 @@ def spawn_inference_process(
     compile: bool = False,
     disable_kv_cache: bool = False,
     ignore_eos: bool = False,
+    keep_on_gpu: bool = False,
     chat_template: Optional[str] = None,
     cache_implementation: Optional[str] = None,
     compile_args: Optional[str] = None,
@@ -315,9 +317,13 @@ def spawn_inference_process(
 
     Long-lived — runs until killed. No control protocol; the only
     supported lifecycle actions are kill / force-kill, like eval.
+
+    Pass either ``model_path`` (single-model) or ``models`` (multi-model,
+    a list of ``{"name", "path"}`` dicts). Exactly one is required.
     """
     cmd = inference_ops.build_inference_command(
         model_path=model_path,
+        models=models,
         port=port,
         host=host,
         dtype=dtype,
@@ -327,6 +333,7 @@ def spawn_inference_process(
         compile=compile,
         disable_kv_cache=disable_kv_cache,
         ignore_eos=ignore_eos,
+        keep_on_gpu=keep_on_gpu,
         chat_template=chat_template,
         cache_implementation=cache_implementation,
         compile_args=compile_args,

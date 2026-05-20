@@ -111,6 +111,17 @@ _PEER_ALLOWED_PATHS = frozenset(
         "/api/cluster/dataset_inventory",
         "/api/cluster/dataset_servers",
         "/api/cluster/dataset_router/resolve",
+        # Inference-server inventory: each peer's local list of
+        # inference servers (JobRecord-spawned), including bearer
+        # tokens. Master aggregator polls every ~10s. Same cluster-
+        # bearer trust boundary as the dataset side — see
+        # cluster_inference_inventory.py.
+        "/api/cluster/inference_servers_local",
+        # Master-aggregated inference inventory. Non-master nodes
+        # proxy here so every webui sees the same picker contents.
+        # Token-stripped: the proxy attaches tokens server-side from
+        # the master's snapshot, never via the browser.
+        "/api/cluster/inference_servers",
         # Cross-node webui SSO. The local node calls this on the target
         # peer over mTLS to obtain the peer's bearer token, which is
         # then folded into a ``?token=...`` URL the browser opens in a
@@ -151,6 +162,10 @@ _PEER_ALLOWED_MUTATIONS = frozenset(
         # within ~1 s instead of one collect tick. Read-only-ish:
         # the handler just sets an asyncio.Event.
         "/api/cluster/dataset_servers/refresh",
+        # Same wake hook for the inference-server collect loop.
+        # Triggered when an inference job starts or stops so the
+        # picker converges within ~1s of a state change.
+        "/api/cluster/inference_servers/refresh",
         # Bandwidth-test control plane. Opens a one-shot ephemeral
         # TCP listener and returns its (port, token) so the caller
         # can transfer over plain TCP instead of through the

@@ -202,6 +202,10 @@ def _reap_finished() -> None:
         if updated is not None:
             _gc.relocate_tty_to_logs(updated)
             _cleanup_inference_token(updated)
+            # Same wake hook as the spawn path — remove the entry
+            # from the cluster picker promptly when the server stops.
+            if updated.job_type == "inference":
+                _wake_inference_inventory()
         if rc is not None:
             log.info("reaped %s: rc=%d status=%s", qid, rc, new_status)
         else:
@@ -322,8 +326,13 @@ def _build_inference(item, gpu_indices, tty_path):
     auth_token_file: Optional[str] = None
     if not no_auth:
         auth_token_file = str(inference_token_file(item.queue_id))
+    # Multi-model: ``models`` is a list of {name, path}; single-model:
+    # ``model_path`` is a string. Exactly one is expected from the
+    # enqueue layer (CLI or webui InferenceModal).
+    models = p.get("models")
     return launcher.spawn_inference_process(
-        model_path=p["model_path"],
+        model_path=p.get("model_path") if not models else None,
+        models=models,
         port=int(p["port"]),
         host=p.get("host", "127.0.0.1"),
         dtype=p.get("dtype"),
@@ -333,6 +342,7 @@ def _build_inference(item, gpu_indices, tty_path):
         compile=bool(p.get("compile", False)),
         disable_kv_cache=bool(p.get("disable_kv_cache", False)),
         ignore_eos=bool(p.get("ignore_eos", False)),
+        keep_on_gpu=bool(p.get("keep_on_gpu", False)),
         chat_template=p.get("chat_template"),
         cache_implementation=p.get("cache_implementation"),
         compile_args=p.get("compile_args"),
@@ -912,6 +922,13 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
     with _state._lock:
         _state.running[item.queue_id] = result.proc
     job_records.update_record(item.queue_id, status="running", pid=result.pid)
+    # Inference jobs are tracked in the cluster picker inventory.
+    # Waking the collect loop on spawn drops the picker-convergence
+    # latency from up to ``COLLECT_INTERVAL_SECONDS`` (10s) to ~1s
+    # so an operator who just clicked "Start server" sees the new
+    # entry before they can switch tabs.
+    if item.job_type == "inference":
+        _wake_inference_inventory()
 
 
 def _pid_ancestors(pid: int) -> List[int]:
@@ -1065,6 +1082,8 @@ def _kill_record(queue_id: str, sig: int) -> bool:
     if updated is not None:
         _gc.relocate_tty_to_logs(updated)
         _cleanup_inference_token(updated)
+        if updated.job_type == "inference":
+            _wake_inference_inventory()
     return updated is not None
 
 
@@ -1088,6 +1107,22 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
             return True
         time.sleep(0.05)
     return not _pid_is_alive(pid)
+
+
+def _wake_inference_inventory() -> None:
+    """Signal the cluster inference-server inventory to re-poll.
+
+    Lazy import so the scheduler stays usable in tests + standalone
+    setups that don't load the cluster machinery. Wake is a latency
+    hint, not correctness-critical — silently swallow failures so a
+    missing/broken cluster module never breaks the scheduler.
+    """
+    try:
+        from . import cluster_inference_inventory
+
+        cluster_inference_inventory.wake_loops()
+    except Exception:
+        pass
 
 
 def _cleanup_inference_token(record: JobRecord) -> None:

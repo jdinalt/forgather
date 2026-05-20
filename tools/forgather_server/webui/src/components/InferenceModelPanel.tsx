@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 
-import { api, Job } from "../api";
+import { api, ClusterInferenceServer, Job } from "../api";
 import {
   GenerationParams,
   ModelEntry,
@@ -100,19 +100,59 @@ export function InferenceModelPanel({ state, setState }: Props) {
     setActivePreset("");
   };
 
-  // Shared Jobs query — same key the GPU / Jobs / Models panels use, so
-  // TanStack Query serves this from the already-polling cache.
+  // Cluster-mode detection — same pattern DatasetsPanel uses. TanStack
+  // dedups by queryKey so this shares cache with App.tsx's gate query.
+  const clusterSelfQ = useQuery({
+    queryKey: ["cluster-self"],
+    queryFn: api.getClusterSelf,
+    refetchInterval: 30000,
+  });
+  // ``isFetched`` rather than ``!!data`` so the picker can wait for
+  // the cluster gate to resolve. Without this, ``clusterActive`` is
+  // briefly ``false`` (data is undefined during the first fetch),
+  // the local-jobs query fires, the picker shows local-only rows,
+  // and then swaps to the cluster set when the gate resolves — a
+  // visible flicker on every load.
+  const clusterGateResolved = clusterSelfQ.isFetched;
+  const clusterActive = !!clusterSelfQ.data;
+
+  // Local-jobs query (single-node setups). Only enabled once we've
+  // confirmed the cluster gate is NOT active, so cluster masters
+  // never see the local-only intermediate state.
   const jobsQ = useQuery({
     queryKey: ["jobs", false],
     queryFn: () => api.listJobs(false),
     refetchInterval: 5000,
+    enabled: clusterGateResolved && !clusterActive,
   });
 
-  const runningInference = useMemo(() => {
-    return (jobsQ.data ?? []).filter(
-      (j) => j.job_type === "inference" && j.alive,
-    );
-  }, [jobsQ.data]);
+  // Cluster-aggregated picker contents. Includes servers running on
+  // every reachable peer plus this one's own. On non-master nodes the
+  // endpoint proxies to the master so every webui sees the same list.
+  const clusterServersQ = useQuery({
+    queryKey: ["cluster", "inference_servers"],
+    queryFn: api.getClusterInferenceServers,
+    refetchInterval: 5000,
+    enabled: clusterGateResolved && clusterActive,
+  });
+
+  // Unified picker rows. Both shapes (local Job and ClusterInferenceServer)
+  // boil down to: a URL to dial, an auth token to attach, a display
+  // label, and an optional health badge. The render path doesn't need
+  // to care which source the row came from. Returns ``null`` while the
+  // cluster gate is still resolving so the caller can render a
+  // placeholder instead of an empty list (which would render as "no
+  // live inference jobs" and is misleading during the gate fetch).
+  const pickerRows = useMemo<PickerRow[] | null>(() => {
+    if (!clusterGateResolved) return null;
+    if (clusterActive) {
+      return (clusterServersQ.data ?? []).map(_clusterEntryToRow);
+    }
+    return (jobsQ.data ?? [])
+      .filter((j) => j.job_type === "inference" && j.alive)
+      .map(_localJobToRow)
+      .filter((r): r is PickerRow => r !== null);
+  }, [clusterGateResolved, clusterActive, clusterServersQ.data, jobsQ.data]);
 
   const modelsQ = useQuery({
     // Token in the key so a paste/clear of the token retriggers the fetch
@@ -152,41 +192,11 @@ export function InferenceModelPanel({ state, setState }: Props) {
   const setParams = (patch: Partial<GenerationParams>) =>
     setState((prev) => ({ ...prev, params: { ...prev.params, ...patch } }));
 
-  const pickJob = (job: Job) => {
-    const host =
-      typeof job.job_params?.host === "string"
-        ? (job.job_params.host as string)
-        : "localhost";
-    const port =
-      typeof job.job_params?.port === "number"
-        ? (job.job_params.port as number)
-        : null;
-    if (!port) return;
-    // 0.0.0.0 isn't dialable. Prefer the server-stamped
-    // ``routable_host`` (the inference server's LAN address —
-    // reachable from any peer, the browser, etc.); fall back to
-    // localhost only when the server didn't supply one. For
-    // explicit bind hosts (not 0.0.0.0), trust what the operator typed.
-    const routable =
-      typeof job.job_params?.routable_host === "string"
-        ? (job.job_params.routable_host as string)
-        : null;
-    const browserHost =
-      host === "0.0.0.0" || host === "::" || !host
-        ? routable || "localhost"
-        : host;
-    const scheme =
-      typeof job.job_params?.scheme === "string"
-        ? (job.job_params.scheme as string)
-        : "http";
-    const url = `${scheme}://${browserHost}:${port}/v1`;
-    // Auto-populate auth token from the JobRecord. ``null`` here means
-    // either the spawn ran with --no-auth or it's a non-server job —
-    // either way, blank the field to match the actual upstream policy.
+  const pickRow = (row: PickerRow) => {
     setState((prev) => ({
       ...prev,
-      baseUrl: url,
-      authToken: job.auth_token ?? "",
+      baseUrl: row.url,
+      authToken: row.authToken,
     }));
     setHealth({ kind: "unknown" });
     // Re-fetch models against the new URL.
@@ -197,58 +207,58 @@ export function InferenceModelPanel({ state, setState }: Props) {
     <div className="inference-model-panel">
       {/* Running inference servers — top of the list because the typical
           flow is: pick the server you just started, then pick a model on
-          it, then tweak the URL only if you need a non-discovered host. */}
+          it, then tweak the URL only if you need a non-discovered host.
+          In cluster mode this list also includes servers running on
+          other peers; the master polls every member every ~10s. */}
       <section>
         <h4 className="dyn-heading">
           Running inference servers
-          <span className="muted"> ({runningInference.length})</span>
+          <span className="muted"> ({pickerRows?.length ?? 0})</span>
+          {clusterActive && (
+            <span className="muted" title="Aggregated across all cluster peers">
+              {" "}
+              · cluster
+            </span>
+          )}
         </h4>
-        {runningInference.length === 0 && (
+        {pickerRows === null && (
+          <div className="muted pane-state-small">Loading…</div>
+        )}
+        {pickerRows !== null && pickerRows.length === 0 && (
           <div className="muted pane-state-small">
-            No live inference jobs — start one from the Models panel.
+            {clusterActive
+              ? "No live inference jobs anywhere in the cluster — start one from the Models panel."
+              : "No live inference jobs — start one from the Models panel."}
           </div>
         )}
         <ul className="inference-server-list">
-          {runningInference.map((j) => {
-            const host =
-              typeof j.job_params?.host === "string"
-                ? (j.job_params.host as string)
-                : "localhost";
-            const port =
-              typeof j.job_params?.port === "number"
-                ? (j.job_params.port as number)
-                : null;
-            const model =
-              typeof j.job_params?.model_path === "string"
-                ? basename(j.job_params.model_path as string)
-                : "?";
-            const routable =
-              typeof j.job_params?.routable_host === "string"
-                ? (j.job_params.routable_host as string)
-                : null;
-            const browserHost =
-              host === "0.0.0.0" || host === "::" || !host
-                ? routable || "localhost"
-                : host;
-            const scheme =
-              typeof j.job_params?.scheme === "string"
-                ? (j.job_params.scheme as string)
-                : "http";
-            const url = port ? `${scheme}://${browserHost}:${port}/v1` : null;
-            const selected = url === state.baseUrl;
+          {(pickerRows ?? []).map((row) => {
+            const selected = row.url === state.baseUrl;
             return (
               <li
-                key={j.id}
+                key={row.id}
                 className={
                   "inference-server-row" + (selected ? " selected" : "")
                 }
-                onClick={() => pickJob(j)}
+                onClick={() => pickRow(row)}
+                title={row.titleHint}
               >
-                <span className="inf-server-model">{model}</span>
-                <span className="muted">
-                  {host}:{port ?? "?"}
-                </span>
-                <span className="muted inf-server-id">{j.id}</span>
+                <span className="inf-server-model">{row.label}</span>
+                <span className="muted">{row.hostPortLabel}</span>
+                <span className="muted inf-server-id">{row.id}</span>
+                {row.healthy === false && (
+                  <span
+                    className="muted"
+                    title={row.healthError || "unhealthy"}
+                  >
+                    ⚠
+                  </span>
+                )}
+                {row.peerHint && (
+                  <span className="muted" title={`Peer node ${row.peerHint}`}>
+                    {row.peerHint.slice(0, 8)}
+                  </span>
+                )}
               </li>
             );
           })}
@@ -784,4 +794,114 @@ function TriBoolField({
 function basename(p: string): string {
   const i = p.replace(/\/+$/, "").lastIndexOf("/");
   return i < 0 ? p : p.slice(i + 1);
+}
+
+/** Unified shape consumed by the picker rendering loop. Both local
+ *  ``Job`` entries and ``ClusterInferenceServer`` entries adapt to
+ *  this, so the JSX doesn't branch on source. */
+interface PickerRow {
+  /** Stable key + display id. Cluster: ``server_id``. Local: job id. */
+  id: string;
+  /** Full v1 base URL ready to set on state.baseUrl. */
+  url: string;
+  /** Upstream bearer token, or empty string for ``--no-auth`` upstreams. */
+  authToken: string;
+  /** Primary label shown in the row — the model name(s) the server
+   *  is configured to host. */
+  label: string;
+  /** Muted secondary label: ``host:port``. */
+  hostPortLabel: string;
+  /** Health flag (cluster only — local jobs are assumed healthy when
+   *  ``alive``). ``undefined`` ⇒ unknown; render nothing. */
+  healthy?: boolean;
+  /** Health-check error text used as the ⚠ icon's tooltip. */
+  healthError?: string;
+  /** Cluster peer that owns this server, when known. Renders as a
+   *  short prefix badge so the operator can tell remote-peer servers
+   *  apart from local ones at a glance. */
+  peerHint?: string | null;
+  /** Tooltip on the row itself — fuller URL / peer info when the
+   *  short badges aren't enough. */
+  titleHint?: string;
+}
+
+function _clusterEntryToRow(s: ClusterInferenceServer): PickerRow {
+  // The cluster base_url already carries scheme://host:port — append
+  // /v1 so it matches the picker's expected baseUrl shape.
+  const url = `${s.base_url.replace(/\/+$/, "")}/v1`;
+  // Label: prefer the configured model routing names (one entry per
+  // ``-m`` flag at spawn), fall back to the human label, then the URL.
+  const label =
+    s.models && s.models.length > 0
+      ? s.models.join(", ")
+      : s.label || s.base_url;
+  // host:port from the base URL. URL() handles bracketed IPv6.
+  let hostPort = "";
+  try {
+    const parsed = new URL(s.base_url);
+    hostPort = parsed.host;
+  } catch {
+    hostPort = s.base_url;
+  }
+  return {
+    id: s.server_id,
+    url,
+    authToken: s.auth_token,
+    label,
+    hostPortLabel: hostPort,
+    healthy: s.healthy,
+    healthError: s.last_health_error,
+    peerHint: s.peer_node_id,
+    titleHint: s.peer_node_id ? `${s.base_url} — peer ${s.peer_node_id}` : s.base_url,
+  };
+}
+
+function _localJobToRow(j: Job): PickerRow | null {
+  const host =
+    typeof j.job_params?.host === "string"
+      ? (j.job_params.host as string)
+      : "localhost";
+  const port =
+    typeof j.job_params?.port === "number"
+      ? (j.job_params.port as number)
+      : null;
+  if (!port) return null;
+  // 0.0.0.0 isn't dialable. Prefer the server-stamped ``routable_host``
+  // (the inference server's LAN address); fall back to localhost only
+  // when the server didn't supply one. For explicit binds (not
+  // 0.0.0.0), trust what the operator typed.
+  const routable =
+    typeof j.job_params?.routable_host === "string"
+      ? (j.job_params.routable_host as string)
+      : null;
+  const browserHost =
+    host === "0.0.0.0" || host === "::" || !host
+      ? routable || "localhost"
+      : host;
+  const scheme =
+    typeof j.job_params?.scheme === "string"
+      ? (j.job_params.scheme as string)
+      : "http";
+  const url = `${scheme}://${browserHost}:${port}/v1`;
+  // Label: multi-model job_params carry ``models: [{name,...}]``;
+  // single-model carry ``model_path``. Read either shape.
+  let label = "?";
+  const modelsField = j.job_params?.models;
+  if (Array.isArray(modelsField) && modelsField.length > 0) {
+    const names = modelsField
+      .map((e) => (e && typeof (e as { name?: unknown }).name === "string"
+        ? ((e as { name: string }).name)
+        : ""))
+      .filter(Boolean);
+    if (names.length > 0) label = names.join(", ");
+  } else if (typeof j.job_params?.model_path === "string") {
+    label = basename(j.job_params.model_path as string);
+  }
+  return {
+    id: j.id,
+    url,
+    authToken: j.auth_token ?? "",
+    label,
+    hostPortLabel: `${host}:${port}`,
+  };
 }
