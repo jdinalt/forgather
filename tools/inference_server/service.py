@@ -1,11 +1,30 @@
 """
 Inference service core - model loading and infrastructure.
+
+Supports multiple models per server. Each ``ModelEntry`` holds the per-model
+state (tokenizer, weights, generation config, chat template, stop tokens,
+per-model utility objects). ``InferenceService`` owns the entries dict, the
+swap lock, and the server-wide defaults (device, ignore_eos, from_checkpoint
+policy, the shared logger).
+
+At any moment at most one entry is on GPU (``state == "gpu"``). Others are
+either ``"cpu"`` (loaded, weights parked in CPU memory) or ``"unloaded"``
+(never loaded since startup). Requests acquire the active entry via
+``InferenceService.acquire(name)``, which serializes via an ``asyncio.Lock``
+and performs swap-to-CPU / lazy load as needed.
+
+Strategy classes still reach into the service via ``service.model``,
+``service.tokenizer``, ``service.stop_processor`` etc. — those are now
+``@property`` shims that route to the active entry, so no strategy code
+changed.
 """
 
+import asyncio
 import logging
 import os
-from dataclasses import dataclass
-from typing import Any, Callable, List, Optional, Set, Union
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 import torch
 from jinja2 import BaseLoader, Environment, TemplateError
@@ -14,6 +33,8 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     GenerationConfig,
+    PreTrainedModel,
+    PreTrainedTokenizer,
 )
 
 from forgather.ml.construct import torch_dtype
@@ -30,386 +51,573 @@ from .core import (
 from .models.chat import ChatCompletionRequest, ChatMessage
 from .models.completion import CompletionRequest
 
+_MODULE_LOGGER = logging.getLogger("inference_server")
 
-class InferenceService:
+
+def resolve_dtype(dtype_str: Optional[str]) -> torch.dtype:
+    """Resolve a dtype string to ``torch.dtype`` with intelligent defaults.
+
+    Module-level so callers (server CLI, YAML loader) can resolve dtypes
+    when building model entries without instantiating the service.
     """
-    Core inference service handling model, tokenizer, and generation infrastructure.
+    if dtype_str is None:
+        if torch.cuda.is_available():
+            if torch.cuda.is_bf16_supported():
+                return torch.bfloat16
+            return torch.float16
+        return torch.float32
 
-    This service manages the model lifecycle, tokenization, and provides utilities
-    for generation strategies. It does not perform generation itself - that's
-    delegated to strategy classes.
-
-    Example:
-        Basic usage with default settings:
-        >>> service = InferenceService(
-        ...     model_path="./my_model",
-        ...     device="cuda:0",
-        ...     dtype="bfloat16"
-        ... )
-
-        Loading from checkpoint:
-        >>> service = InferenceService(
-        ...     model_path="./my_model",
-        ...     device="cuda:0",
-        ...     from_checkpoint=True  # Auto-find latest checkpoint
-        ... )
-
-        With custom stop sequences and chat template:
-        >>> service = InferenceService(
-        ...     model_path="./my_model",
-        ...     stop_sequences=["<|im_end|>", "</s>"],
-        ...     chat_template_path="./custom_template.jinja"
-        ... )
-
-    Attributes:
-        model: Loaded HuggingFace model
-        tokenizer: Loaded HuggingFace tokenizer
-        stop_processor: Utility for trimming at stop sequences
-        finish_detector: Utility for determining finish reasons
-        tokenizer_wrapper: Utility for tokenization and device placement
-        logger: Utility for consistent logging
-    """
-
-    def __init__(
-        self,
-        model_path: str,
-        device: str = "auto",
-        attn_implementation: Optional[str] = None,
-        from_checkpoint: bool | str = False,
-        chat_template_path: Optional[str] = None,
-        dtype: Optional[str] = None,
-        stop_sequences: Optional[List[str]] = None,
-        compile_args: Optional[dict[str, Any]] = None,
-        cache_implementation: Optional[str] = None,
-        use_cache: Optional[bool] = None,
-        ignore_eos: bool = False,
-    ) -> None:
-        """
-        Initialize inference service.
-
-        Args:
-            model_path: Path to model directory
-            device: Device to use (cuda:0, cpu, auto)
-            attn_implementation: Attention implementation (eager, sdpa, flash_attention_2, flex_attention)
-            from_checkpoint: Load from checkpoint (bool or checkpoint path)
-            chat_template_path: Path to custom chat template file
-            dtype: Model dtype (float32, float16, bfloat16, etc.)
-            stop_sequences: Custom stop sequences
-            compile_args: Arguments for torch.compile
-            cache_implementation: KV cache implementation
-            use_cache: Whether to use KV cache
-            ignore_eos: Server-level default for ignoring EOS tokens (can be overridden per-request)
-
-        Raises:
-            ValueError: If invalid device, checkpoint path, or dtype specified
-        """
-        # Create dedicated logger for this application
-        self.logger = GenerationLogger(
-            logging.getLogger("inference_server"),
-            None,  # Will be set after tokenizer is loaded
+    requested = torch_dtype(dtype_str.lower())
+    if (
+        requested == torch.bfloat16
+        and torch.cuda.is_available()
+        and not torch.cuda.is_bf16_supported()
+    ):
+        _MODULE_LOGGER.warning(
+            "bfloat16 not supported on this GPU, falling back to float16"
         )
+        return torch.float16
+    return requested
 
-        self.model_path = model_path
-        self.device = device
-        self.attn_implementation = attn_implementation
-        self.from_checkpoint = from_checkpoint
-        self.chat_template_path = chat_template_path
-        self.dtype = self._resolve_dtype(dtype)
-        self.stop_sequences = stop_sequences or []
-        self.chat_template = None
-        self.tokenizer = None
-        self.model = None
-        self.default_generation_config = None
-        self.jinja_env = Environment(loader=BaseLoader())
-        self.compile_args = compile_args
-        self.cache_implementation = cache_implementation
-        self.use_cache = use_cache
-        self.ignore_eos = ignore_eos
 
-        # Load model and setup
-        self.load_model()
-        self.setup_chat_template()
-        self._setup_stop_tokens()
+@dataclass
+class ModelEntry:
+    """Per-model state: weights, tokenizer, derived utilities, lifecycle.
 
-        # Initialize core utilities after model/tokenizer are loaded
-        self.stop_processor = StopSequenceProcessor(self.tokenizer)
-        self.finish_detector = FinishReasonDetector(self.tokenizer, self.stop_token_ids)
-        self.tokenizer_wrapper = TokenizerWrapper(self.tokenizer, self.model)
+    Created by the CLI/YAML layer (server.py) and registered with the
+    service. ``load()`` populates the tokenizer/model and downstream
+    utility objects on demand.
+    """
 
-        # Update logger's tokenizer reference
-        self.logger.tokenizer = self.tokenizer
+    name: str
+    model_path: str
+    dtype: torch.dtype
+    attn_implementation: Optional[str] = None
+    chat_template_path: Optional[str] = None
+    stop_sequences: List[str] = field(default_factory=list)
+    compile_args: Optional[Dict[str, Any]] = None
+    cache_implementation: Optional[str] = None
+    use_cache: Optional[bool] = None
 
-    def load_model(self):
-        """Load model and tokenizer from directory."""
-        self.logger.logger.info(f"Loading model from directory {self.model_path}")
+    # Populated by load()
+    tokenizer: Optional[PreTrainedTokenizer] = None
+    model: Optional[PreTrainedModel] = None
+    default_generation_config: Optional[GenerationConfig] = None
+    chat_template: Optional[str] = None
+    stop_token_ids: Optional[Set[int]] = None
+    stop_processor: Optional[StopSequenceProcessor] = None
+    finish_detector: Optional[FinishReasonDetector] = None
+    tokenizer_wrapper: Optional[TokenizerWrapper] = None
 
-        # This can speed up float32 ops on newer GPUs
+    # Lifecycle: "unloaded" | "cpu" | "gpu"
+    state: str = "unloaded"
+
+    def load(
+        self,
+        device: str,
+        from_checkpoint: Union[bool, str],
+        default_chat_template_factory: Callable[[], str],
+    ) -> None:
+        """Load tokenizer + model + utilities, leaving the entry on ``device``.
+
+        Sets ``state = "gpu"`` (or whatever ``device`` happens to be; the
+        registry always promotes via this path or via ``to_device()``).
+        """
+        _MODULE_LOGGER.info(
+            "[%s] loading model from %s (device=%s, from_checkpoint=%r)",
+            self.name,
+            self.model_path,
+            device,
+            from_checkpoint,
+        )
         torch.set_float32_matmul_precision("high")
 
+        self._load_tokenizer()
+        self._load_model(device, from_checkpoint)
+        self._load_generation_config()
+        self._setup_chat_template(default_chat_template_factory)
+        self._setup_stop_tokens()
+        self._setup_utilities()
+
+        self.state = "gpu" if str(device).startswith("cuda") else "cpu"
+        _MODULE_LOGGER.info(
+            "[%s] model loaded on device %s with dtype %s",
+            self.name,
+            self.model.device,
+            self.dtype,
+        )
+
+    def to_device(self, device: str) -> None:
+        """Move the (already-loaded) model between CPU and GPU."""
+        if self.model is None:
+            raise RuntimeError(f"entry {self.name!r} is not loaded")
+        self.model.to(device)
+        self.state = "gpu" if str(device).startswith("cuda") else "cpu"
+
+    def _load_tokenizer(self) -> None:
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_path, trust_remote_code=True
         )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        if self.from_checkpoint:
-            if self.device == "auto":
+    def _load_model(self, device: str, from_checkpoint: Union[bool, str]) -> None:
+        if from_checkpoint:
+            if device == "auto":
                 raise ValueError(
-                    "Cannot use 'auto' device with checkpoint loading. Please specify a device explicitly."
+                    "Cannot use 'auto' device with checkpoint loading. "
+                    "Specify an explicit device."
                 )
 
-            if isinstance(self.from_checkpoint, bool):
+            if isinstance(from_checkpoint, bool):
                 checkpoint_path = find_latest_checkpoint(self.model_path)
                 if not checkpoint_path:
                     raise ValueError(
-                        f"No checkpoints found in {self.model_path}. Please provide a valid model directory."
+                        f"No checkpoints found in {self.model_path}. "
+                        "Provide a valid model directory."
                     )
-            elif isinstance(self.from_checkpoint, str):
-                checkpoint_path = self.from_checkpoint
             else:
-                raise ValueError("from_checkpoint must be a boolean or a string path")
+                checkpoint_path = from_checkpoint
             if not os.path.exists(checkpoint_path):
                 raise ValueError(f"Checkpoint path {checkpoint_path} does not exist.")
 
-            self.logger.logger.info(f"Loading model from checkpoint: {checkpoint_path}")
+            _MODULE_LOGGER.info(
+                "[%s] loading from checkpoint: %s", self.name, checkpoint_path
+            )
             model_config = AutoConfig.from_pretrained(
                 self.model_path, trust_remote_code=True
             )
-
-            # Create model on target device with no_init_weights()
             with (
-                torch.device(self.device),
+                torch.device(device),
                 default_dtype(dtype=self.dtype),
                 no_init_weights(),
             ):
-                model = AutoModelForCausalLM.from_config(
+                self.model = AutoModelForCausalLM.from_config(
                     model_config,
                     trust_remote_code=True,
                     attn_implementation=self.attn_implementation,
                 )
-
-            # Load checkpoint parameters
-            load_checkpoint(checkpoint_path, model, device=self.device, strict=True)
-            self.model = model
-
+            load_checkpoint(checkpoint_path, self.model, device=device, strict=True)
         else:
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_path,
                 dtype=self.dtype,
-                device_map=self.device if self.device != "auto" else "auto",
+                device_map=device if device != "auto" else "auto",
                 attn_implementation=self.attn_implementation,
                 trust_remote_code=True,
             )
-
-            if self.device != "auto" and torch.cuda.is_available():
-                self.model = self.model.to(self.device)
+            if device != "auto" and torch.cuda.is_available():
+                self.model = self.model.to(device)
 
         self.model.eval()
 
         if self.compile_args is not None:
-            if self.compile_args.get("backend", "") == "tensorrt":
+            args = dict(self.compile_args)
+            if args.get("backend", "") == "tensorrt":
                 try:
-                    import torch_tensorrt
-                except Exception as e:
-                    logging.warning(
-                        "torch_tensor module not available; falling back to default."
+                    import torch_tensorrt  # noqa: F401
+                except Exception:
+                    _MODULE_LOGGER.warning(
+                        "torch_tensorrt not available; falling back to default backend."
                     )
-                    self.compile_args.pop("backend")
+                    args.pop("backend")
+            self.model.compile(**args)
 
-            self.model.compile(**self.compile_args)
-
-        # Load generation config from model directory if available
-        self._load_generation_config()
-
-        self.logger.logger.info(
-            f"Model loaded successfully on device: {self.model.device} with dtype: {self.dtype}"
-        )
-        self.logger.logger.debug(self.model)
-
-    def _load_generation_config(self):
-        """Load generation config from model directory if available."""
+    def _load_generation_config(self) -> None:
         try:
             self.default_generation_config = GenerationConfig.from_pretrained(
                 self.model_path
             )
-            self.logger.logger.info(
-                f"Loaded generation config from model directory: {self.model_path}"
-            )
-            self.logger.logger.info(
-                f"Default generation config: {self.default_generation_config}"
+            _MODULE_LOGGER.info(
+                "[%s] loaded generation config from %s", self.name, self.model_path
             )
         except Exception as e:
-            self.logger.logger.info(
-                f"No generation config found in model directory or failed to load: {e}"
+            _MODULE_LOGGER.info(
+                "[%s] no generation config in model dir (%s); using model defaults",
+                self.name,
+                e,
             )
-            # Fallback to model's generation config if available
-            if (
-                hasattr(self.model, "generation_config")
-                and self.model.generation_config is not None
-            ):
-                self.default_generation_config = self.model.generation_config
-                self.logger.logger.info("Using model's built-in generation config")
+            built_in = getattr(self.model, "generation_config", None)
+            if built_in is not None:
+                self.default_generation_config = built_in
+                _MODULE_LOGGER.info("[%s] using model's built-in generation config", self.name)
             else:
                 self.default_generation_config = GenerationConfig()
-                self.logger.logger.info("Using default GenerationConfig")
-        self.logger.logger.info(
-            f"Final default generation config: {self.default_generation_config}"
-        )
+                _MODULE_LOGGER.info("[%s] using default GenerationConfig", self.name)
+
         if (
             self.default_generation_config.temperature != 0.0
             and self.default_generation_config.top_p != 0.0
         ):
-            self.logger.logger.warning(
-                f"Both temperature ({self.default_generation_config.temperature}) and top_p "
-                f"({self.default_generation_config.top_p}) are set != 1 in generation config. "
-                "It is recommend to set only one of these to != 1. "
-                "See: https://platform.openai.com/docs/api-reference/completions/create"
+            _MODULE_LOGGER.warning(
+                "[%s] both temperature (%s) and top_p (%s) are set != 1 in "
+                "generation config; recommend setting only one. See "
+                "https://platform.openai.com/docs/api-reference/completions/create",
+                self.name,
+                self.default_generation_config.temperature,
+                self.default_generation_config.top_p,
             )
 
-    def _resolve_dtype(self, dtype_str: Optional[str]) -> torch.dtype:
-        """Resolve dtype string to torch.dtype with intelligent defaults."""
-        if dtype_str is None:
-            # Default to bfloat16 if supported, otherwise float16 on GPU, float32 on CPU
-            if torch.cuda.is_available():
-                if torch.cuda.is_bf16_supported():
-                    return torch.bfloat16
-                else:
-                    return torch.float16
-            else:
-                return torch.float32
-
-        dtype_str = dtype_str.lower()
-        requested_dtype = torch_dtype(dtype_str)
-
-        # Validate bfloat16 support
-        if (
-            requested_dtype == torch.bfloat16
-            and torch.cuda.is_available()
-            and not torch.cuda.is_bf16_supported()
-        ):
-            self.logger.logger.warning(
-                f"bfloat16 not supported on this GPU, falling back to float16"
-            )
-            return torch.float16
-
-        return requested_dtype
-
-    def setup_chat_template(self):
-        """Setup chat template with priority: custom file > tokenizer > default fallback."""
+    def _setup_chat_template(self, default_factory: Callable[[], str]) -> None:
         if self.chat_template_path and os.path.exists(self.chat_template_path):
-            # Use custom template file
             with open(self.chat_template_path, "r") as f:
                 self.chat_template = f.read()
-            self.logger.logger.info(
-                f"Using custom chat template from: {self.chat_template_path}"
+            _MODULE_LOGGER.info(
+                "[%s] using custom chat template from: %s",
+                self.name,
+                self.chat_template_path,
             )
-        elif hasattr(self.tokenizer, "chat_template") and self.tokenizer.chat_template:
-            # Use tokenizer's built-in template
+        elif (
+            hasattr(self.tokenizer, "chat_template") and self.tokenizer.chat_template
+        ):
             self.chat_template = self.tokenizer.chat_template
-            self.logger.logger.info("Using tokenizer's built-in chat template")
+            _MODULE_LOGGER.info("[%s] using tokenizer's built-in chat template", self.name)
         else:
-            # Use default fallback template
-            self.chat_template = self.get_default_chat_template()
-            self.logger.logger.info("Using default fallback chat template")
-        self.logger.logger.info(f"Chat template loaded: {repr(self.chat_template)}")
+            self.chat_template = default_factory()
+            _MODULE_LOGGER.info("[%s] using default fallback chat template", self.name)
 
-    def _setup_stop_tokens(self):
-        """Setup stop token IDs from stop sequences."""
-        self.stop_token_ids: Set[int] = set()
-
-        # Always include native EOS token
+    def _setup_stop_tokens(self) -> None:
+        ids: Set[int] = set()
         if self.tokenizer.eos_token_id is not None:
-            self.stop_token_ids.add(self.tokenizer.eos_token_id)
-
-        # Add custom stop sequences
+            ids.add(self.tokenizer.eos_token_id)
         for sequence in self.stop_sequences:
             try:
                 token_ids = self.tokenizer.encode(sequence, add_special_tokens=False)
                 if len(token_ids) == 1:
-                    # Single token - can use as direct stopping criterion
-                    self.stop_token_ids.add(token_ids[0])
-                    self.logger.logger.info(
-                        f"Added single-token stop sequence: {repr(sequence)} -> token ID {token_ids[0]}"
+                    ids.add(token_ids[0])
+                    _MODULE_LOGGER.info(
+                        "[%s] added single-token stop sequence: %r -> %d",
+                        self.name,
+                        sequence,
+                        token_ids[0],
                     )
                 else:
-                    # Multi-token sequence - will need post-processing
-                    self.logger.logger.info(
-                        f"Added multi-token stop sequence: {repr(sequence)} -> token IDs {token_ids}"
+                    _MODULE_LOGGER.info(
+                        "[%s] added multi-token stop sequence: %r -> %s",
+                        self.name,
+                        sequence,
+                        token_ids,
                     )
             except Exception as e:
-                self.logger.logger.warning(
-                    f"Failed to tokenize stop sequence {repr(sequence)}: {e}"
+                _MODULE_LOGGER.warning(
+                    "[%s] failed to tokenize stop sequence %r: %s",
+                    self.name,
+                    sequence,
+                    e,
+                )
+        self.stop_token_ids = ids
+        _MODULE_LOGGER.info("[%s] stop token IDs: %s", self.name, sorted(ids))
+
+    def _setup_utilities(self) -> None:
+        self.stop_processor = StopSequenceProcessor(self.tokenizer)
+        self.finish_detector = FinishReasonDetector(self.tokenizer, self.stop_token_ids)
+        self.tokenizer_wrapper = TokenizerWrapper(self.tokenizer, self.model)
+
+
+class InferenceService:
+    """
+    Multi-model inference service.
+
+    Holds a registry of ``ModelEntry`` objects plus server-wide defaults.
+    Requests resolve to an entry via the OpenAI ``model`` field; the
+    ``acquire(name)`` async context manager handles lazy loading and
+    CPU↔GPU swap under a single lock.
+
+    Strategy classes touch the service through ``service.model``,
+    ``service.tokenizer``, etc. — these are properties that route to the
+    currently-active entry. Strategy code is unchanged.
+
+    Example (single model, eager-load like the old behavior):
+
+        >>> entry = ModelEntry(
+        ...     name="my_model",
+        ...     model_path="./my_model",
+        ...     dtype=resolve_dtype("bfloat16"),
+        ... )
+        >>> service = InferenceService(
+        ...     entries=[entry], device="cuda:0", ignore_eos=False
+        ... )
+
+    Multiple models (lazy):
+
+        >>> a = ModelEntry(name="a", model_path="./a", dtype=torch.bfloat16)
+        >>> b = ModelEntry(name="b", model_path="./b", dtype=torch.bfloat16)
+        >>> service = InferenceService(entries=[a, b], device="cuda:0")
+        >>> async with service.acquire("a"):
+        ...     ...   # 'a' lazily loads to GPU on first use
+    """
+
+    def __init__(
+        self,
+        entries: List[ModelEntry],
+        device: str,
+        from_checkpoint: Union[bool, str] = False,
+        ignore_eos: bool = False,
+        keep_on_gpu: bool = False,
+    ) -> None:
+        if not entries:
+            raise ValueError("InferenceService requires at least one ModelEntry")
+
+        names = [e.name for e in entries]
+        if len(set(names)) != len(names):
+            raise ValueError(f"Duplicate model names in entries: {names}")
+
+        if len(entries) > 1:
+            if isinstance(from_checkpoint, str):
+                raise ValueError(
+                    "Specific checkpoint path (-c <path>) is not supported "
+                    "with multiple models; use -c with no path to load each "
+                    "model's latest checkpoint."
+                )
+            if device == "auto":
+                raise ValueError(
+                    "device='auto' is not supported with multiple models; "
+                    "specify an explicit device (e.g. cuda:0)."
                 )
 
-        self.logger.logger.info(f"Stop token IDs: {sorted(self.stop_token_ids)}")
+        self.device = device
+        self.from_checkpoint = from_checkpoint
+        self.ignore_eos = ignore_eos
+        # ``keep_on_gpu``: never demote inactive models to CPU. They load
+        # to GPU on first request and stay there. Only useful when total
+        # GPU memory > sum(model sizes); the operator opts in. Default
+        # off — swap-on-demand is the safer behavior for the typical
+        # multi-model setup.
+        self.keep_on_gpu = keep_on_gpu
+        self.jinja_env = Environment(loader=BaseLoader())
+
+        # Logger reads the current active tokenizer lazily so log decodes
+        # follow whichever model is on GPU.
+        self.logger = GenerationLogger(
+            logging.getLogger("inference_server"),
+            tokenizer_factory=lambda: self._active_or_none("tokenizer"),
+        )
+
+        self.entries: Dict[str, ModelEntry] = {e.name: e for e in entries}
+        self.active: Optional[ModelEntry] = None
+        # asyncio.Lock created lazily on first acquire() so the service can
+        # be constructed outside a running event loop.
+        self._swap_lock: Optional[asyncio.Lock] = None
+
+        # Preserve "fail fast at startup" behavior for single-model setups
+        # (which is what every existing call site does today). Multi-model
+        # mode lazy-loads.
+        if len(entries) == 1:
+            only = next(iter(self.entries.values()))
+            only.load(
+                self.device,
+                self.from_checkpoint,
+                self.get_default_chat_template,
+            )
+            self.active = only
+
+    # ---------- Registry lifecycle ----------
+
+    def list_entries(self) -> List[ModelEntry]:
+        """Return all entries in registration order (for ``/v1/models``)."""
+        return list(self.entries.values())
+
+    @asynccontextmanager
+    async def acquire(self, requested_name: Optional[str]):
+        """Acquire a model by name; lazy-load or swap as needed.
+
+        Holds the lock for the full duration of the request — preserves
+        the existing one-request-at-a-time semantics and makes mid-flight
+        swap impossible by construction.
+        """
+        entry = self._resolve_entry(requested_name)
+        if self._swap_lock is None:
+            self._swap_lock = asyncio.Lock()
+        async with self._swap_lock:
+            if entry.state == "unloaded":
+                # First-time load. In swap mode, demote the previous
+                # active first to free GPU memory; in keep_on_gpu mode,
+                # leave it where it is and stack the new model alongside.
+                if (
+                    not self.keep_on_gpu
+                    and self.active is not None
+                    and self.active is not entry
+                ):
+                    self._move_active_to_cpu()
+                entry.load(
+                    self.device,
+                    self.from_checkpoint,
+                    self.get_default_chat_template,
+                )
+                self.active = entry
+            elif self.active is not entry:
+                # Re-targeting an already-loaded entry. In swap mode,
+                # demote the previous active and promote the chosen one
+                # if it had been demoted earlier. In keep_on_gpu mode,
+                # both stay on GPU; if the chosen entry was somehow on
+                # CPU (e.g. keep_on_gpu was flipped at runtime — not
+                # currently exposed, but defensively handled), promote
+                # it without demoting the other.
+                if not self.keep_on_gpu and self.active is not None:
+                    self._move_active_to_cpu()
+                if entry.state != "gpu":
+                    entry.to_device(self.device)
+                self.active = entry
+            yield entry
+
+    def _move_active_to_cpu(self) -> None:
+        if self.active is None:
+            return
+        if self.active.state == "gpu":
+            _MODULE_LOGGER.info("[%s] moving to CPU", self.active.name)
+            self.active.to_device("cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    def _resolve_entry(self, name: Optional[str]) -> ModelEntry:
+        """Pick which entry a request targets.
+
+        Empty/missing name + single-model server → the sole entry (legacy
+        permissive behavior). Empty name + multi-model server → 404.
+        Name matches an entry → that entry. Otherwise 404.
+        """
+        if name and name in self.entries:
+            return self.entries[name]
+        if len(self.entries) == 1:
+            return next(iter(self.entries.values()))
+        from fastapi import HTTPException
+
+        available = list(self.entries.keys())
+        raise HTTPException(
+            status_code=404,
+            detail=f"model not found: {name!r}. Available: {available}",
+        )
+
+    # ---------- Active-entry property shims (strategy/code touch these) ----------
+
+    def _active_attr(self, attr: str) -> Any:
+        if self.active is None:
+            raise RuntimeError(
+                f"No active model; cannot access service.{attr}. "
+                "Wrap the call site in `async with service.acquire(name):`."
+            )
+        return getattr(self.active, attr)
+
+    def _active_or_none(self, attr: str) -> Any:
+        if self.active is None:
+            return None
+        return getattr(self.active, attr)
+
+    @property
+    def model(self) -> PreTrainedModel:
+        return self._active_attr("model")
+
+    @property
+    def tokenizer(self) -> PreTrainedTokenizer:
+        return self._active_attr("tokenizer")
+
+    @property
+    def default_generation_config(self) -> Optional[GenerationConfig]:
+        return self._active_attr("default_generation_config")
+
+    @property
+    def chat_template(self) -> Optional[str]:
+        return self._active_attr("chat_template")
+
+    @property
+    def stop_sequences(self) -> List[str]:
+        return self._active_attr("stop_sequences")
+
+    @property
+    def stop_token_ids(self) -> Set[int]:
+        return self._active_attr("stop_token_ids")
+
+    @property
+    def stop_processor(self) -> StopSequenceProcessor:
+        return self._active_attr("stop_processor")
+
+    @property
+    def finish_detector(self) -> FinishReasonDetector:
+        return self._active_attr("finish_detector")
+
+    @property
+    def tokenizer_wrapper(self) -> TokenizerWrapper:
+        return self._active_attr("tokenizer_wrapper")
+
+    @property
+    def use_cache(self) -> Optional[bool]:
+        return self._active_attr("use_cache")
+
+    @property
+    def cache_implementation(self) -> Optional[str]:
+        return self._active_attr("cache_implementation")
+
+    @property
+    def model_path(self) -> str:
+        """Path of the currently-active model.
+
+        Kept for legacy compatibility (``/v1/models`` listed
+        ``model_path.split("/")[-1]`` before multi-model support). New
+        code should iterate ``list_entries()`` instead.
+        """
+        return self._active_attr("model_path")
+
+    # ---------- Generation config and per-request helpers ----------
 
     def _build_generation_config(
         self, request: Union[ChatCompletionRequest, CompletionRequest]
     ) -> GenerationConfig:
-        """Build a GenerationConfig from request parameters."""
-        # Base parameters that are always used
+        """Build a GenerationConfig from request parameters + active model defaults."""
         max_tokens = getattr(request, "max_new_tokens", None) or getattr(
             request, "max_tokens", 16
         )
 
-        # Start with the loaded default generation config
         if self.default_generation_config is not None:
-            # Create a copy to avoid modifying the default
             generation_config = GenerationConfig(
                 **self.default_generation_config.to_dict()
             )
         else:
             generation_config = GenerationConfig()
 
-        # Core parameters
         generation_config.max_new_tokens = max_tokens
         if request.temperature is not None:
             generation_config.temperature = request.temperature
-
         if request.top_p is not None:
             generation_config.top_p = request.top_p
         generation_config.do_sample = (
             request.temperature is None or request.temperature > 0
         )
+
+        tokenizer = self.tokenizer
         if (
             not hasattr(generation_config, "pad_token_id")
             or generation_config.pad_token_id is None
         ):
-            generation_config.pad_token_id = self.tokenizer.pad_token_id
+            generation_config.pad_token_id = tokenizer.pad_token_id
 
-        # Handle EOS token - conditionally disable if ignore_eos is True
-        # Check request-level ignore_eos, fall back to server-level default
         request_ignore_eos = getattr(request, "ignore_eos", None)
         ignore_eos = (
             request_ignore_eos if request_ignore_eos is not None else self.ignore_eos
         )
         if ignore_eos:
-            # Set to -1 (impossible token ID) to prevent HF from stopping on EOS
-            # Note: Setting to None doesn't work because HuggingFace fills it from model defaults
+            # Setting eos_token_id to None doesn't work — HF refills it from
+            # model defaults. Use -1 (impossible token ID) instead.
             generation_config.eos_token_id = -1
         else:
-            # Normal behavior: ensure eos_token_id is set
             if (
                 not hasattr(generation_config, "eos_token_id")
                 or generation_config.eos_token_id is None
             ):
-                generation_config.eos_token_id = self.tokenizer.eos_token_id
+                generation_config.eos_token_id = tokenizer.eos_token_id
 
         if (
             not hasattr(generation_config, "bos_token_id")
             or generation_config.bos_token_id is None
         ):
-            generation_config.bos_token_id = self.tokenizer.bos_token_id
+            generation_config.bos_token_id = tokenizer.bos_token_id
 
         generation_config.return_dict_in_generate = True
         generation_config.output_scores = False
 
-        # Set early_stopping properly - only use with beam search (num_beams > 1)
         early_stopping_value = getattr(request, "early_stopping", None)
         if early_stopping_value is not None:
             generation_config.early_stopping = early_stopping_value
 
-        # Add HuggingFace specific parameters if they are not None
         hf_params = [
             "repetition_penalty",
             "length_penalty",
@@ -432,41 +640,31 @@ class InferenceService:
             "presence_penalty",
             "frequency_penalty",
         ]
-
         for param in hf_params:
             value = getattr(request, param, None)
             if value is not None:
                 setattr(generation_config, param, value)
 
-        # Explicit do_sample override wins over the temperature-derived
-        # default set above. Lets the user force greedy decoding even when
-        # temperature is set, or force sampling when temperature is 0.
         do_sample_override = getattr(request, "do_sample", None)
         if do_sample_override is not None:
             generation_config.do_sample = do_sample_override
 
-        # Handle special cases
         if hasattr(request, "seed") and request.seed is not None:
-            # Set random seed for reproducibility
             torch.manual_seed(request.seed)
 
         if self.use_cache is not None:
             generation_config.use_cache = self.use_cache
-
         if self.cache_implementation is not None:
             generation_config.cache_implementation = self.cache_implementation
 
-        # If using beam search, adjust sampling and early_stopping
         if generation_config.num_beams and generation_config.num_beams > 1:
-            generation_config.do_sample = False  # Beam search doesn't use sampling
-            # Only enable early_stopping with beam search if not explicitly set
+            generation_config.do_sample = False
             if early_stopping_value is None:
                 generation_config.early_stopping = True
 
         return generation_config
 
     def get_default_chat_template(self) -> str:
-        """Return a reasonable default chat template as Jinja2."""
         return """{%- for message in messages %}
     {%- if message['role'] == 'system' -%}
         System: {{ message['content'] }}\\n\\n
@@ -487,32 +685,25 @@ class InferenceService:
         add_generation_prompt: Optional[bool] = None,
         continue_final_message: bool = False,
     ) -> str:
-        """Convert chat messages to a single prompt string using Jinja2 template.
+        """Render chat messages with the active model's template.
 
         ``next_role`` selects which role the model generates as. ``"user"``
         enables "impersonate": the template is rendered twice, the
         assistant role-opener is extracted, and ``assistant`` is
         substituted with ``user`` so the model generates inside an
-        opened user-role span. Works with any chat template that spells
-        the literal role name in its role marker (ChatML, Llama 3, Qwen,
-        Mistral, Gemma, …) — i.e., effectively all of them — without
-        depending on ``continue_final_message`` being honored.
-
-        ``add_generation_prompt`` / ``continue_final_message`` mirror
-        the vLLM /tokenize flags. ``next_role`` overrides them when set
-        to ``"user"``. When ``add_generation_prompt`` is None, defaults
-        to True (the chat-completion path) — this preserves the
-        existing call sites that don't pass it.
+        opened user-role span.
         """
+        tokenizer = self.tokenizer
+        chat_template = self.chat_template
         try:
             message_data = [
                 {"role": msg.role, "content": msg.content} for msg in messages
             ]
-            template = self.jinja_env.from_string(self.chat_template)
+            template = self.jinja_env.from_string(chat_template)
             role = (next_role or "assistant").lower()
             render_kwargs = dict(
-                bos_token=self.tokenizer.bos_token,
-                eos_token=self.tokenizer.eos_token,
+                bos_token=tokenizer.bos_token,
+                eos_token=tokenizer.eos_token,
             )
 
             if role == "user":
@@ -531,16 +722,10 @@ class InferenceService:
                 if (
                     with_prompt.startswith(closed)
                     and len(with_prompt) > len(closed)
-                    and "assistant" in with_prompt[len(closed) :]
+                    and "assistant" in with_prompt[len(closed):]
                 ):
-                    opener = with_prompt[len(closed) :]
+                    opener = with_prompt[len(closed):]
                     return closed + opener.replace("assistant", "user")
-                # The template doesn't expose a usable assistant opener
-                # (doesn't honor add_generation_prompt, normalizes
-                # whitespace, or uses a non-literal role marker). Log
-                # and fall through to the standard path so the caller
-                # at least gets a working completion — impersonate
-                # silently degrades to a normal assistant turn.
                 self.logger.logger.warning(
                     "format_messages: cannot synthesize user-role opener from "
                     "this chat template; falling back to standard assistant turn."
@@ -557,7 +742,6 @@ class InferenceService:
 
         except TemplateError as e:
             self.logger.logger.error(f"Template error: {e}")
-            # Fallback to simple formatting if template fails
             return self._fallback_format_messages(messages)
         except Exception as e:
             self.logger.logger.error(f"Unexpected error in template rendering: {e}")
@@ -567,33 +751,16 @@ class InferenceService:
         """Score an input string with per-token causal-LM logprobs.
 
         Runs a single forward pass (no ``generate()``) and returns the
-        OpenAI legacy-completions ``logprobs`` structure plus a
-        Forgather extension field:
-
-            {
-              "tokens": [...],
-              "token_logprobs": [None, lp1, lp2, ...],
-              "top_logprobs": [None, {tok: lp, ...}, ...],
-              "text_offset": [0, off1, off2, ...],
-              "token_entropies": [None, h1, h2, ...],   # Forgather extension
-            }
-
-        Position 0 is ``None`` because a causal LM has no prediction
-        for the first token. Matches what vLLM returns for the same
-        request shape (``echo=true, logprobs=K, max_tokens=0``); the
-        ``token_entropies`` field is non-standard (the full-vocab
-        Shannon entropy in nats at each prediction position) and only
-        Forgather returns it — clients should treat it as optional.
+        OpenAI legacy-completions ``logprobs`` structure plus a Forgather
+        extension (``token_entropies``).
         """
-        # Tokenize without padding so the returned length equals the
-        # actual token count — needed for accurate alignment.
         enc = self.tokenizer_wrapper.tokenize_and_move_to_device(
             text,
             max_length=2048,
             padding=False,
             truncation=True,
         )
-        input_ids = enc["input_ids"]  # (1, N)
+        input_ids = enc["input_ids"]
         n = int(input_ids.shape[1])
         if n == 0:
             return {
@@ -610,19 +777,16 @@ class InferenceService:
                 use_cache=False,
                 return_dict=True,
             )
-        # Logits in float32 for numerically stable log_softmax; bf16
-        # log_softmax across a 32k+ vocab loses too much precision in
-        # the tail and breaks the top-K ranking.
-        logits = outputs.logits[0].float()  # (N, V)
-        logprobs_all = torch.log_softmax(logits, dim=-1)  # (N, V)
+        # log_softmax in float32 — bf16 across a 32k+ vocab loses too much
+        # precision in the tail and breaks the top-K ranking.
+        logits = outputs.logits[0].float()
+        logprobs_all = torch.log_softmax(logits, dim=-1)
 
+        tokenizer = self.tokenizer
         ids = input_ids[0].tolist()
-        # Decode each id individually so the returned strings line up
-        # 1:1 with the token positions. ``batch_decode`` over a list of
-        # single-element lists keeps the alignment but does the decode
-        # work in one tokenizer call — measurably faster than N Python
-        # round-trips for long inputs.
-        tokens = self.tokenizer.batch_decode([[tid] for tid in ids])
+        # batch_decode over [[tid]] keeps 1:1 alignment with positions but
+        # does the decode in one C-side call rather than N round-trips.
+        tokens = tokenizer.batch_decode([[tid] for tid in ids])
 
         text_offset: List[int] = []
         acc = 0
@@ -635,18 +799,10 @@ class InferenceService:
         token_entropies: list = [None]
 
         if n > 1:
-            # Position i (i >= 1) is predicted by logits at position i-1.
-            target_ids = input_ids[0, 1:]  # (N-1,)
-            pred = logprobs_all[:-1]  # (N-1, V)
+            target_ids = input_ids[0, 1:]
+            pred = logprobs_all[:-1]
             actual_lp = pred.gather(-1, target_ids.unsqueeze(-1)).squeeze(-1)
-
-            # Shannon entropy (nats) of the full vocabulary distribution
-            # at each predicting position. Reuses the log_softmax we
-            # already have: H = -sum(p * log_p) = -sum(exp(lp) * lp).
-            # Sliced to the predicting positions (0..N-2) — the final
-            # position would predict a token past the input, which we
-            # don't score.
-            entropies = -(pred.exp() * pred).sum(dim=-1)  # (N-1,)
+            entropies = -(pred.exp() * pred).sum(dim=-1)
 
             k = min(int(top_k), pred.shape[-1])
             top_vals, top_idx = torch.topk(pred, k=k, dim=-1)
@@ -656,13 +812,8 @@ class InferenceService:
             top_vals_list = top_vals.tolist()
             top_idx_list = top_idx.tolist()
 
-            # Batch-decode every top-K id in one tokenizer call instead
-            # of (N-1)*k individual decodes — for a 2k-token input with
-            # k=10 that's 20k Python round-trips vs. one C-side batch.
             flat_top_ids = [tid for row in top_idx_list for tid in row]
-            flat_top_strs = self.tokenizer.batch_decode(
-                [[tid] for tid in flat_top_ids]
-            )
+            flat_top_strs = tokenizer.batch_decode([[tid] for tid in flat_top_ids])
 
             for i in range(n - 1):
                 token_logprobs.append(actual_lp_list[i])
@@ -671,14 +822,8 @@ class InferenceService:
                 row_off = i * k
                 for j in range(k):
                     tok_str = flat_top_strs[row_off + j]
-                    # Distinct vocab ids can decode to the same string
-                    # (e.g. byte-fallback aliases). Keep the higher of
-                    # the colliding logprobs so the rendered entry
-                    # reflects the most-probable instance. ``topk``
-                    # already returns descending order so the first
-                    # write for a given string is the maximum — but
-                    # check anyway in case a future call passes
-                    # unsorted top-K.
+                    # Distinct vocab ids can decode to the same string;
+                    # keep the higher of the colliding logprobs.
                     existing = top_dict.get(tok_str)
                     if existing is None or top_vals_list[i][j] > existing:
                         top_dict[tok_str] = top_vals_list[i][j]
@@ -693,12 +838,7 @@ class InferenceService:
         }
 
     def tokenize(self, text: str, add_special_tokens: bool = False) -> List[int]:
-        """Tokenize a raw string with the loaded tokenizer.
-
-        Helper for the ``/tokenize`` endpoint. Returns a flat list of
-        token IDs without padding/truncation; the caller is responsible
-        for length-checking against ``max_model_len`` if needed.
-        """
+        """Tokenize a raw string with the active model's tokenizer."""
         encoded = self.tokenizer(
             text,
             add_special_tokens=add_special_tokens,
@@ -707,20 +847,12 @@ class InferenceService:
             truncation=False,
         )
         ids = encoded["input_ids"]
-        # ``return_tensors=None`` gives a plain list (or list-of-list
-        # for batched input). We always pass a single string.
         if ids and isinstance(ids[0], list):
             ids = ids[0]
         return list(ids)
 
     def get_max_model_len(self) -> int:
-        """Best-effort max sequence length for /tokenize responses.
-
-        ``tokenizer.model_max_length`` defaults to a sentinel
-        (``int(1e30)``) when the tokenizer doesn't know — fall back to
-        the model config's ``max_position_embeddings`` in that case,
-        and a conservative 2048 if neither source has a real value.
-        """
+        """Best-effort max sequence length for the active model."""
         max_len = getattr(self.tokenizer, "model_max_length", 0) or 0
         if max_len > 10**9 or max_len <= 0:
             cfg = getattr(self.model, "config", None)
@@ -728,7 +860,6 @@ class InferenceService:
         return int(max_len)
 
     def _fallback_format_messages(self, messages: List[ChatMessage]) -> str:
-        """Simple fallback formatting if template fails."""
         formatted = ""
         for message in messages:
             if message.role == "system":
@@ -737,6 +868,5 @@ class InferenceService:
                 formatted += f"User: {message.content}\n\n"
             elif message.role == "assistant":
                 formatted += f"Assistant: {message.content}\n\n"
-
         formatted += "Assistant: "
         return formatted

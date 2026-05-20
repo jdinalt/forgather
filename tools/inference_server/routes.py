@@ -7,7 +7,7 @@ from __future__ import annotations
 import hmac
 import time
 import traceback
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
@@ -72,20 +72,21 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
 
     @app.get("/v1/models", dependencies=deps)
     async def list_models():
-        """List available models."""
+        """List configured models, with a Forgather-extension ``x_state`` field."""
+        if inference_service is None:
+            return {"object": "list", "data": []}
         return {
             "object": "list",
             "data": [
                 {
-                    "id": (
-                        inference_service.model_path.split("/")[-1]
-                        if inference_service
-                        else "unknown"
-                    ),
+                    "id": entry.name,
                     "object": "model",
                     "created": int(time.time()),
                     "owned_by": "huggingface",
+                    "x_state": entry.state,
+                    "x_model_path": entry.model_path,
                 }
+                for entry in inference_service.list_entries()
             ],
         }
 
@@ -99,13 +100,18 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
             if request.stream:
                 strategy = StreamingChatStrategy(inference_service)
                 return StreamingResponse(
-                    strategy.generate(request),
+                    _stream_under_lock(
+                        inference_service, request.model, strategy, request
+                    ),
                     media_type="text/event-stream",
                     headers={"Cache-Control": "no-cache", "Connection": "close"},
                 )
             else:
-                strategy = ChatGenerationStrategy(inference_service)
-                return strategy.generate(request)
+                async with inference_service.acquire(request.model):
+                    strategy = ChatGenerationStrategy(inference_service)
+                    return strategy.generate(request)
+        except HTTPException:
+            raise
         except Exception as e:
             traceback.print_exception(e)
             raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
@@ -119,10 +125,10 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
         if request.n != 1:
             raise HTTPException(status_code=400, detail="n > 1 not supported yet")
 
-        # Scoring path: echo + logprobs + max_tokens=0 → run a single
-        # forward pass and return per-token logprobs in OpenAI's
-        # legacy-completions shape. Matches vLLM's behavior for the
-        # same request shape; bypasses generate() entirely.
+        # Scoring path: echo + logprobs + max_tokens=0 → single forward
+        # pass returning per-token logprobs in OpenAI's legacy-completions
+        # shape. Matches vLLM's behavior for the same request shape;
+        # bypasses generate() entirely.
         if (
             request.echo
             and request.max_tokens == 0
@@ -130,12 +136,9 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
             and request.logprobs > 0
             and not request.stream
         ):
-            # Cap top-K at a sane bound — OpenAI's spec maxes at 5,
-            # vLLM at 20; a client requesting ``logprobs=128000`` would
-            # force a full-vocab topk + per-id decode loop, which is
-            # both expensive and useless (no UI would render 100k
-            # alternatives). 20 matches vLLM, generous enough for our
-            # webui (default 10).
+            # Cap top-K. OpenAI's spec maxes at 5, vLLM at 20; a client
+            # requesting ``logprobs=128000`` would force a full-vocab
+            # topk + per-id decode loop, expensive and useless.
             top_k = min(request.logprobs, 20)
             try:
                 prompt_text = (
@@ -143,9 +146,8 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
                     if isinstance(request.prompt, list)
                     else request.prompt
                 )
-                scores = inference_service.score_prompt(
-                    prompt_text, top_k=top_k
-                )
+                async with inference_service.acquire(request.model):
+                    scores = inference_service.score_prompt(prompt_text, top_k=top_k)
                 prompt_tokens = len(scores["tokens"])
                 return CompletionResponse(
                     id=f"cmpl-{int(time.time() * 1000):x}",
@@ -177,13 +179,18 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
             if request.stream:
                 strategy = StreamingCompletionStrategy(inference_service)
                 return StreamingResponse(
-                    strategy.generate(request),
+                    _stream_under_lock(
+                        inference_service, request.model, strategy, request
+                    ),
                     media_type="text/event-stream",
                     headers={"Cache-Control": "no-cache", "Connection": "close"},
                 )
             else:
-                strategy = CompletionGenerationStrategy(inference_service)
-                return strategy.generate(request)
+                async with inference_service.acquire(request.model):
+                    strategy = CompletionGenerationStrategy(inference_service)
+                    return strategy.generate(request)
+        except HTTPException:
+            raise
         except Exception as e:
             traceback.print_exception(e)
             raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
@@ -205,54 +212,81 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
             )
 
         try:
-            if request.messages:
-                rendered = inference_service.format_messages(
-                    request.messages,
-                    next_role=request.next_role,
-                    add_generation_prompt=request.add_generation_prompt,
-                    continue_final_message=request.continue_final_message,
+            async with inference_service.acquire(request.model):
+                if request.messages:
+                    rendered = inference_service.format_messages(
+                        request.messages,
+                        next_role=request.next_role,
+                        add_generation_prompt=request.add_generation_prompt,
+                        continue_final_message=request.continue_final_message,
+                    )
+                else:
+                    rendered = request.prompt or ""
+
+                tokens = inference_service.tokenize(
+                    rendered, add_special_tokens=request.add_special_tokens
                 )
-            else:
-                rendered = request.prompt or ""
+                token_strs: Optional[list] = None
+                if request.return_token_strs:
+                    token_strs = [
+                        inference_service.tokenizer.convert_ids_to_tokens(t)
+                        for t in tokens
+                    ]
 
-            tokens = inference_service.tokenize(
-                rendered, add_special_tokens=request.add_special_tokens
-            )
-            token_strs: Optional[list] = None
-            if request.return_token_strs:
-                token_strs = [
-                    inference_service.tokenizer.convert_ids_to_tokens(t) for t in tokens
-                ]
-
-            return TokenizeResponse(
-                count=len(tokens),
-                max_model_len=inference_service.get_max_model_len(),
-                tokens=tokens,
-                token_strs=token_strs,
-                prompt=rendered,
-            )
+                return TokenizeResponse(
+                    count=len(tokens),
+                    max_model_len=inference_service.get_max_model_len(),
+                    tokens=tokens,
+                    token_strs=token_strs,
+                    prompt=rendered,
+                )
         except HTTPException:
             raise
         except Exception as e:
             traceback.print_exception(e)
             raise HTTPException(status_code=500, detail=f"Tokenize failed: {str(e)}")
 
-    # vLLM serves /tokenize without the /v1 prefix; we register both
-    # paths so existing vLLM clients work and our other-endpoint
-    # symmetry is preserved.
+    # vLLM serves /tokenize without the /v1 prefix; register both.
     app.post("/tokenize", response_model=TokenizeResponse, dependencies=deps)(_tokenize)
     app.post("/v1/tokenize", response_model=TokenizeResponse, dependencies=deps)(
         _tokenize
     )
 
-    # /health stays open so the proxy can probe before the model is fully
-    # loaded — auth would create a chicken-and-egg with health checks.
+    # /health stays open so the proxy can probe before any model loads.
     @app.get("/health")
     async def health_check():
         """Health check endpoint."""
-        return {"status": "healthy", "model_loaded": inference_service is not None}
+        return {
+            "status": "healthy",
+            "model_loaded": (
+                inference_service is not None and inference_service.active is not None
+            ),
+            "models_configured": (
+                [e.name for e in inference_service.list_entries()]
+                if inference_service is not None
+                else []
+            ),
+        }
 
     return app
+
+
+async def _stream_under_lock(
+    service: InferenceService,
+    model_name: Optional[str],
+    strategy,
+    request,
+) -> AsyncIterator[str]:
+    """Acquire the swap-lock, then iterate the strategy's sync SSE
+    generator and re-yield chunks into the FastAPI event loop.
+
+    Holding the lock for the entire stream is what keeps the active
+    model on GPU until the stream completes — otherwise the next
+    request could swap it out mid-flight.
+    """
+    async with service.acquire(model_name):
+        for chunk in strategy.generate(request):
+            yield chunk
 
 
 def set_inference_service(service: InferenceService):

@@ -8,6 +8,14 @@ import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
 import { ModalBackdrop } from "./ModalBackdrop";
 
+interface ModelRow {
+  /** Filesystem path to the model directory. */
+  path: string;
+  /** Routing name for the OpenAI ``model`` field. Empty → auto-derive
+   *  from the path basename at submit time. */
+  name: string;
+}
+
 /** Settings persisted across ad-hoc "Start Server…" invocations. Project-
  *  backed flows don't read/write this — they derive initial values from
  *  their props instead. Only the fields the user typically customizes go
@@ -15,7 +23,12 @@ import { ModalBackdrop } from "./ModalBackdrop";
  *  on what's currently running. ``requestedGpus`` is sticky so the user
  *  doesn't have to retype 4 GPUs every server start. */
 interface PersistedAdHoc {
-  modelPath: string;
+  /** Legacy single-model field, still read on load for back-compat with
+   *  pre-multi-model persisted state. New writes go to ``models``. */
+  modelPath?: string;
+  /** Multi-model rows. When >1 entry, the server hosts all of them and
+   *  dispatches by the OpenAI ``model`` field. */
+  models?: ModelRow[];
   port: number;
   host: string;
   fromCheckpoint: boolean;
@@ -26,6 +39,8 @@ interface PersistedAdHoc {
   compileFlag: boolean;
   compileArgs: string;
   disableKvCache: boolean;
+  /** Multi-model: keep all entries GPU-resident (no swap to CPU). */
+  keepOnGpu: boolean;
   chatTemplate: string;
   requestedGpus: number;
 }
@@ -47,29 +62,12 @@ function saveAdHoc(s: PersistedAdHoc) {
   persistSet(AD_HOC_STORAGE_KEY, JSON.stringify(s));
 }
 
-interface Props {
-  /** Pre-populated model path (a project's ``output_dir``). Omit or
-   *  pass empty string for ad-hoc mode — the modal then renders a
-   *  PathField so the user can pick or type any model directory. */
-  modelOutputDir?: string;
-  /** Human-facing label for the modal title. In ad-hoc mode the
-   *  basename of the chosen path is used once one is entered. */
-  modelName?: string;
-  /** If set, the server loads that specific checkpoint via ``-c <path>``;
-   *  else ``from_checkpoint`` determines whether ``-c`` (latest) or no
-   *  checkpoint flag at all is passed. Seeded by the caller: from a
-   *  checkpoint right-click, set to the checkpoint dir; from a model
-   *  right-click, null with ``from_checkpoint`` defaulting to true
-   *  (load latest Forgather checkpoint). */
-  checkpointPath: string | null;
-  projectDir?: string;
-  onClose: () => void;
-  onSubmitted?: (queueId: string) => void;
-  /** Fired after the "Create service…" button successfully persists a
-   *  new service entry. The caller uses this to auto-expand the
-   *  matching launcher row in the sidebar so the new instance is
-   *  immediately visible. */
-  onServiceCreated?: (type: "inference") => void;
+function deriveName(path: string): string {
+  return path
+    .replace(/\/+$/, "")
+    .split("/")
+    .filter(Boolean)
+    .pop() ?? "";
 }
 
 export function InferenceModal({
@@ -93,19 +91,16 @@ export function InferenceModal({
   // summary. Relevant defaults shift: from_checkpoint starts off (a bare
   // HuggingFace directory typically loads via ``from_pretrained``).
   const adHoc = !modelOutputDir;
-  // Persisted settings are loaded in BOTH modes. Project-backed flows
-  // (modelOutputDir set) take the model path from props but otherwise
-  // remember the operator's prior choices for host/port/dtype/etc — the
-  // "I always bind to 0.0.0.0 on this machine" knob shouldn't get reset
-  // every time the modal opens from a different model's context menu.
-  // Earlier the load was gated on ad-hoc; that conflated "which model"
-  // (correctly from props) with "which knobs" (which the operator
-  // expects to persist across opens). Saving stays unconditional on
-  // submit; resetDefaults clears for both modes.
   const persisted = loadAdHoc();
-  const [modelPath, setModelPath] = useState<string>(
-    modelOutputDir ?? persisted.modelPath ?? "",
-  );
+
+  // Model rows. Project-backed flows always have exactly one (from props
+  // — no add/remove UI). Ad-hoc flows can have many.
+  const initialModels: ModelRow[] = modelOutputDir
+    ? [{ path: modelOutputDir, name: "" }]
+    : persisted.models && persisted.models.length > 0
+      ? persisted.models
+      : [{ path: persisted.modelPath ?? "", name: "" }];
+  const [models, setModels] = useState<ModelRow[]>(initialModels);
 
   // Default port: the inference server's own default. Many users have
   // SSH port-forwards keyed to this port, so keep the canonical default
@@ -116,8 +111,6 @@ export function InferenceModal({
   // same loopback addresses, but some browsers (notably ChromeOS over
   // SSH port-forwards) only follow clickable links to "localhost".
   const [host, setHost] = useState<string>(persisted.host ?? "localhost");
-  // priority stays fresh each time — its "right" value depends on
-  // current queue state. requestedGpus is sticky in both modes.
   const [requestedGpus, setRequestedGpus] = useState<number>(
     persisted.requestedGpus ?? 1,
   );
@@ -125,19 +118,10 @@ export function InferenceModal({
   const [ckptPath, setCkptPath] = useState<string>(
     checkpointPath ?? persisted.ckptPath ?? "",
   );
-  // ``from_checkpoint`` on: use Forgather checkpoint loading (either the
-  // path above, or the latest if empty). Off: use Transformers
-  // ``from_pretrained`` against the model dir. Default on for project
-  // models (user wants the -c flag path); default off for ad-hoc paths
-  // that usually point at a plain HF model directory. The persisted
-  // value wins over the mode-derived default — if the user explicitly
-  // set it last time, respect that choice on reopen.
   const [fromCheckpoint, setFromCheckpoint] = useState<boolean>(
     persisted.fromCheckpoint ?? !adHoc,
   );
   const [dtype, setDtype] = useState<string>(persisted.dtype ?? "bfloat16");
-  // "default" is a UI-only pseudo-value meaning "don't pass the flag,
-  // let the server use its own default". Same applies to cacheImpl.
   const [attn, setAttn] = useState<string>(persisted.attn ?? "sdpa");
   const [cacheImpl, setCacheImpl] = useState<string>(
     persisted.cacheImpl ?? "default",
@@ -151,16 +135,34 @@ export function InferenceModal({
   const [disableKvCache, setDisableKvCache] = useState<boolean>(
     persisted.disableKvCache ?? false,
   );
+  const [keepOnGpu, setKeepOnGpu] = useState<boolean>(
+    persisted.keepOnGpu ?? false,
+  );
   const [chatTemplate, setChatTemplate] = useState<string>(
     persisted.chatTemplate ?? "",
   );
 
-  // Only meaningful in ad-hoc mode — project-backed flows don't
-  // touch persistence and derive everything from props, so a reset
-  // would only trigger surprise re-renders.
+  // Project-backed flows force exactly one model row; the add/remove UI
+  // never appears. Multi-model is an ad-hoc-only concern (a project is a
+  // single model, by definition).
+  const allowMultiModel = adHoc;
+  const isMultiModel = models.length > 1;
+
+  const updateModel = (idx: number, patch: Partial<ModelRow>) => {
+    setModels((rows) =>
+      rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)),
+    );
+  };
+  const addModelRow = () => {
+    setModels((rows) => [...rows, { path: "", name: "" }]);
+  };
+  const removeModelRow = (idx: number) => {
+    setModels((rows) => rows.filter((_, i) => i !== idx));
+  };
+
   const resetDefaults = () => {
     persistRemove(AD_HOC_STORAGE_KEY);
-    setModelPath("");
+    setModels([{ path: "", name: "" }]);
     setPort(8137);
     setHost("localhost");
     setFromCheckpoint(false);
@@ -171,6 +173,7 @@ export function InferenceModal({
     setCompileFlag(false);
     setCompileArgs("");
     setDisableKvCache(false);
+    setKeepOnGpu(false);
     setChatTemplate("");
     setRequestedGpus(1);
   };
@@ -191,14 +194,33 @@ export function InferenceModal({
     },
   });
 
-  // Single source of truth for the job_params shape, factored out so
-  // ``Create service…`` can persist the exact same args the modal
-  // would have submitted.
-  const buildArgs = (
-    finalPath: string,
-  ): Record<string, unknown> => {
+  // Resolve the entered rows into the wire shape. Single row → legacy
+  // ``model_path: PATH``; multi-row → ``models: [{name, path}]`` with
+  // names auto-derived from path basenames when the user didn't override.
+  const resolvedModels = useMemo(() => {
+    return models
+      .map((r) => ({
+        path: r.path.trim(),
+        name: (r.name.trim() || deriveName(r.path.trim())).trim(),
+      }))
+      .filter((r) => r.path !== "");
+  }, [models]);
+
+  // Detect duplicate routing names — the server would reject these at
+  // startup, but it's friendlier to flag in-UI than wait for the spawn
+  // to fail.
+  const dupNames = useMemo(() => {
+    const seen = new Set<string>();
+    const dup = new Set<string>();
+    for (const r of resolvedModels) {
+      if (r.name && seen.has(r.name)) dup.add(r.name);
+      seen.add(r.name);
+    }
+    return Array.from(dup);
+  }, [resolvedModels]);
+
+  const buildArgs = (): Record<string, unknown> => {
     const args: Record<string, unknown> = {
-      model_path: finalPath,
       port,
       host,
       dtype,
@@ -206,10 +228,25 @@ export function InferenceModal({
       compile: compileFlag,
       disable_kv_cache: disableKvCache,
     };
+    // keep_on_gpu only matters with multiple models; single-model
+    // servers already keep the sole model resident.
+    if (isMultiModel && keepOnGpu) args.keep_on_gpu = true;
+    if (resolvedModels.length === 1) {
+      // Single-model: legacy job_params shape (scheduler/inference_ops
+      // still read ``model_path`` directly for one-model jobs).
+      args.model_path = resolvedModels[0].path;
+    } else {
+      args.models = resolvedModels;
+    }
     if (attn !== "default") args.attn_implementation = attn;
     if (cacheImpl !== "default") args.cache_implementation = cacheImpl;
-    const ck = ckptPath.trim();
-    if (ck) args.checkpoint_path = ck;
+    // Specific-checkpoint path is single-model only; multi-model uses
+    // the boolean ``fromCheckpoint`` toggle to load each model's
+    // latest checkpoint.
+    if (!isMultiModel) {
+      const ck = ckptPath.trim();
+      if (ck) args.checkpoint_path = ck;
+    }
     const ct = chatTemplate.trim();
     if (ct) args.chat_template = ct;
     const ca = compileArgs.trim();
@@ -217,22 +254,23 @@ export function InferenceModal({
     return args;
   };
 
+  const canSubmit =
+    resolvedModels.length >= 1 &&
+    dupNames.length === 0 &&
+    !(isMultiModel && ckptPath.trim());
+
   const submit = () => {
-    const finalPath = modelPath.trim();
-    if (!finalPath) return;
+    if (!canSubmit) return;
     // Persist the choices so the next "Start Server…" click defaults
     // to whatever the user just committed to. Saving pre-enqueue (not
     // in onSuccess) keeps this simple — if the request fails the
-    // persisted state still matches the last confirmed intent, which
-    // is what the user wants to see when they reopen the modal to
-    // retry. We don't persist modelPath in project-backed mode: the
-    // path comes from props (next open will be for a different model),
-    // and shoving the last-project-opened path into the ad-hoc default
-    // would silently override the ad-hoc user's prior choice on their
-    // next ad-hoc open. Everything else (host/port/dtype/…) is the
-    // operator's preference and persists in both modes.
+    // persisted state still matches the last confirmed intent.
+    // In project-backed mode we keep the existing ``modelPath`` field
+    // untouched so reopening the ad-hoc modal still shows the user's
+    // prior ad-hoc choice.
     saveAdHoc({
-      modelPath: adHoc ? finalPath : persisted.modelPath ?? "",
+      modelPath: adHoc ? resolvedModels[0]?.path ?? "" : persisted.modelPath,
+      models: adHoc ? models : undefined,
       port,
       host,
       fromCheckpoint,
@@ -243,18 +281,18 @@ export function InferenceModal({
       compileFlag,
       compileArgs: compileArgs.trim(),
       disableKvCache,
+      keepOnGpu,
       chatTemplate: chatTemplate.trim(),
       requestedGpus,
     });
-    // "default" attn / cache impl is UI-only — buildArgs omits the key
-    // so the server picks its own.
-    const job_params = buildArgs(finalPath);
-
+    const job_params = buildArgs();
+    // project_dir for the queue row: in project-backed mode use the
+    // caller's projectDir; in ad-hoc mode use the first model path so
+    // queue-list display has something to show.
+    const project_dir =
+      projectDir ?? resolvedModels[0]?.path ?? "";
     enqueue.mutate({
-      project_dir: projectDir ?? finalPath,
-      // Human label on the QueueItem / Job row — "inf:<port>" is more
-      // useful than the model name alone when several inference jobs
-      // run at once.
+      project_dir,
       config: `inference:${port}`,
       dynamic_args: {},
       requested_gpus: requestedGpus,
@@ -293,19 +331,90 @@ export function InferenceModal({
 
         <div className="modal-body">
           {adHoc ? (
-            <div className="submit-row">
-              <label className="wide">
-                Model path
-                <PathField
-                  value={modelPath}
-                  onChange={setModelPath}
-                  placeholder="/path/to/model or HuggingFace cache dir"
-                  mode="dirs-only"
-                  title="Pick model directory"
-                  wide
-                />
-              </label>
-            </div>
+            <>
+              <div
+                className={
+                  "inference-model-rows" +
+                  (isMultiModel ? " inference-model-rows-scroll" : "")
+                }
+              >
+                {models.map((row, idx) => (
+                  <div className="submit-row" key={idx}>
+                    <label className="wide">
+                      {isMultiModel ? `Model ${idx + 1}` : "Model path"}
+                      <PathField
+                        value={row.path}
+                        onChange={(v) => updateModel(idx, { path: v })}
+                        placeholder="/path/to/model or HuggingFace cache dir"
+                        mode="dirs-only"
+                        title="Pick model directory"
+                        wide
+                        // Adding a second model is almost always picking
+                        // a sibling of the first — open the browser at
+                        // the same parent dir on subsequent clicks.
+                        rememberKey="inference.model"
+                      />
+                    </label>
+                    {isMultiModel && (
+                      <>
+                        <label>
+                          Name
+                          <input
+                            type="text"
+                            value={row.name}
+                            onChange={(e) =>
+                              updateModel(idx, { name: e.target.value })
+                            }
+                            placeholder={deriveName(row.path) || "auto"}
+                          />
+                        </label>
+                        <button
+                          className="tiny"
+                          onClick={() => removeModelRow(idx)}
+                          title="Remove this model"
+                          aria-label="Remove model"
+                        >
+                          ×
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {allowMultiModel && (
+                <div className="submit-row">
+                  <button
+                    className="secondary"
+                    onClick={addModelRow}
+                    title="Host an additional model in the same server; requests dispatch by the OpenAI 'model' field. Models swap between CPU and GPU on demand."
+                  >
+                    + Add model
+                  </button>
+                  {dupNames.length > 0 && (
+                    <span className="muted">
+                      duplicate name{dupNames.length > 1 ? "s" : ""}:{" "}
+                      <code>{dupNames.join(", ")}</code>
+                    </span>
+                  )}
+                </div>
+              )}
+              {isMultiModel && (
+                <div className="submit-row">
+                  <label className="dyn-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={keepOnGpu}
+                      onChange={(e) => setKeepOnGpu(e.target.checked)}
+                    />
+                    Keep all models on GPU (no CPU swap)
+                    <span className="muted">
+                      avoids swap latency; only use if total GPU memory &gt;
+                      sum of model sizes
+                    </span>
+                  </label>
+                </div>
+              )}
+            </>
           ) : (
             <div className="submit-summary">
               <div>
@@ -381,7 +490,7 @@ export function InferenceModal({
               </span>
             </label>
           </div>
-          {fromCheckpoint && (
+          {fromCheckpoint && !isMultiModel && (
             <div className="submit-row">
               <label className="wide">
                 Checkpoint path
@@ -392,8 +501,19 @@ export function InferenceModal({
                   mode="dirs-only"
                   title="Pick checkpoint directory"
                   wide
+                  rememberKey="inference.checkpoint"
                 />
               </label>
+            </div>
+          )}
+          {fromCheckpoint && isMultiModel && (
+            <div className="submit-row">
+              <span className="muted">
+                Multi-model: loads each model's latest checkpoint. The
+                specific-checkpoint field is hidden because{" "}
+                <code>-c &lt;PATH&gt;</code> is not supported when hosting
+                multiple models in one server.
+              </span>
             </div>
           )}
 
@@ -428,6 +548,15 @@ export function InferenceModal({
               disable kv cache
             </label>
           </div>
+          {isMultiModel && compileFlag && (
+            <div className="submit-row">
+              <span className="muted">
+                <strong>compile</strong> with multi-model: torch.compile
+                artifacts may not survive CPU↔GPU swaps; expect
+                recompilation on each swap.
+              </span>
+            </div>
+          )}
           <div className="submit-row">
             <label className="wide">
               Attention Implementation
@@ -480,6 +609,7 @@ export function InferenceModal({
                 mode="files-and-dirs"
                 title="Pick chat template"
                 wide
+                rememberKey="inference.chat-template"
               />
             </label>
           </div>
@@ -499,8 +629,6 @@ export function InferenceModal({
           </div>
           <div className="btn-row">
             <AutoWatchTtyToggle />
-            {/* Reset is meaningful in both modes now that settings
-                persist regardless of how the modal was opened. */}
             <button
               className="secondary"
               onClick={resetDefaults}
@@ -514,20 +642,21 @@ export function InferenceModal({
             <button
               className="secondary"
               onClick={async () => {
-                const finalPath = modelPath.trim();
-                if (!finalPath) return;
+                if (!canSubmit) return;
                 const args = {
-                  ...buildArgs(finalPath),
+                  ...buildArgs(),
                   // Inference services need at least one GPU; persist
                   // the operator's choice so autostart respects it.
                   requested_gpus: requestedGpus,
                 };
-                // Default name: basename of the model path. Falls
-                // back to the empty string if sanitization eats the
-                // whole thing (the prompt then opens blank).
-                const suggested = sanitizeServiceName(
-                  finalPath.split("/").filter(Boolean).pop() ?? "",
-                );
+                // Suggested name:
+                //   - single model: that model's basename
+                //   - multi-model: ``host-port`` (concatenating all
+                //     model names doesn't scale past two or three)
+                const suggested =
+                  resolvedModels.length === 1
+                    ? sanitizeServiceName(deriveName(resolvedModels[0].path))
+                    : sanitizeServiceName(`${host}-${port}`);
                 const ok = await promptAndCreateService(
                   qc,
                   "inference",
@@ -539,14 +668,14 @@ export function InferenceModal({
                   onClose();
                 }
               }}
-              disabled={!modelPath.trim()}
+              disabled={!canSubmit}
               title="Persist these settings to the server config as an auto-start service"
             >
               Create service…
             </button>
             <button
               onClick={submit}
-              disabled={enqueue.isPending || !modelPath.trim()}
+              disabled={enqueue.isPending || !canSubmit}
             >
               {enqueue.isPending ? "Submitting…" : "Start server"}
             </button>
@@ -555,6 +684,31 @@ export function InferenceModal({
       </div>
     </ModalBackdrop>
   );
+}
+
+interface Props {
+  /** Pre-populated model path (a project's ``output_dir``). Omit or
+   *  pass empty string for ad-hoc mode — the modal then renders a
+   *  PathField so the user can pick or type any model directory. */
+  modelOutputDir?: string;
+  /** Human-facing label for the modal title. In ad-hoc mode the
+   *  basename of the chosen path is used once one is entered. */
+  modelName?: string;
+  /** If set, the server loads that specific checkpoint via ``-c <path>``;
+   *  else ``from_checkpoint`` determines whether ``-c`` (latest) or no
+   *  checkpoint flag at all is passed. Seeded by the caller: from a
+   *  checkpoint right-click, set to the checkpoint dir; from a model
+   *  right-click, null with ``from_checkpoint`` defaulting to true
+   *  (load latest Forgather checkpoint). */
+  checkpointPath: string | null;
+  projectDir?: string;
+  onClose: () => void;
+  onSubmitted?: (queueId: string) => void;
+  /** Fired after the "Create service…" button successfully persists a
+   *  new service entry. The caller uses this to auto-expand the
+   *  matching launcher row in the sidebar so the new instance is
+   *  immediately visible. */
+  onServiceCreated?: (type: "inference") => void;
 }
 
 function basename(p: string): string {

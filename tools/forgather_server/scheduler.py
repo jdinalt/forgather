@@ -322,8 +322,13 @@ def _build_inference(item, gpu_indices, tty_path):
     auth_token_file: Optional[str] = None
     if not no_auth:
         auth_token_file = str(inference_token_file(item.queue_id))
+    # Multi-model: ``models`` is a list of {name, path}; single-model:
+    # ``model_path`` is a string. Exactly one is expected from the
+    # enqueue layer (CLI or webui InferenceModal).
+    models = p.get("models")
     return launcher.spawn_inference_process(
-        model_path=p["model_path"],
+        model_path=p.get("model_path") if not models else None,
+        models=models,
         port=int(p["port"]),
         host=p.get("host", "127.0.0.1"),
         dtype=p.get("dtype"),
@@ -333,6 +338,7 @@ def _build_inference(item, gpu_indices, tty_path):
         compile=bool(p.get("compile", False)),
         disable_kv_cache=bool(p.get("disable_kv_cache", False)),
         ignore_eos=bool(p.get("ignore_eos", False)),
+        keep_on_gpu=bool(p.get("keep_on_gpu", False)),
         chat_template=p.get("chat_template"),
         cache_implementation=p.get("cache_implementation"),
         compile_args=p.get("compile_args"),

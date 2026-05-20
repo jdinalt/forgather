@@ -11,14 +11,18 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from .search_roots import forgather_repo_root
 
 
 def build_inference_command(
     *,
-    model_path: str,
+    # Single-model legacy path: pass ``model_path``.
+    # Multi-model path: pass ``models`` (list of {"name": str, "path": str}).
+    # Exactly one of the two must be set.
+    model_path: Optional[str] = None,
+    models: Optional[Sequence[Dict[str, Any]]] = None,
     port: int,
     host: str = "127.0.0.1",
     # Inside the subprocess ``CUDA_VISIBLE_DEVICES`` is restricted by the
@@ -36,6 +40,7 @@ def build_inference_command(
     compile: bool = False,
     disable_kv_cache: bool = False,
     ignore_eos: bool = False,
+    keep_on_gpu: bool = False,
     chat_template: Optional[str] = None,
     cache_implementation: Optional[str] = None,
     compile_args: Optional[str] = None,
@@ -52,6 +57,17 @@ def build_inference_command(
     loads the latest Forgather checkpoint; absent uses
     ``AutoModelForCausalLM.from_pretrained`` against ``model_path``.
     """
+    if (model_path is None) == (models is None):
+        raise ValueError(
+            "build_inference_command: exactly one of 'model_path' or 'models' "
+            "must be provided"
+        )
+    if models is not None and len(models) > 1 and checkpoint_path:
+        raise ValueError(
+            "checkpoint_path is not supported with multiple models; pass "
+            "from_checkpoint=True to load each model's latest checkpoint"
+        )
+
     forgather_dir = forgather_repo_root()
     server_script = os.path.join(
         forgather_dir, "tools", "inference_server", "server.py"
@@ -59,8 +75,6 @@ def build_inference_command(
     cmd: List[str] = [
         sys.executable,
         server_script,
-        "-m",
-        model_path,
         "-H",
         host,
         "-p",
@@ -70,6 +84,13 @@ def build_inference_command(
         "-l",
         log_level,
     ]
+    if models is not None:
+        for entry in models:
+            name = entry["name"]
+            path = entry["path"]
+            cmd.extend(["-m", f"{name}={path}"])
+    else:
+        cmd.extend(["-m", model_path])
     if dtype:
         cmd.extend(["-T", dtype])
     if attn_implementation:
@@ -84,6 +105,8 @@ def build_inference_command(
         cmd.append("--disable-kv-cache")
     if ignore_eos:
         cmd.append("--ignore-eos")
+    if keep_on_gpu:
+        cmd.append("--keep-on-gpu")
     if chat_template:
         cmd.extend(["-t", chat_template])
     if cache_implementation:

@@ -4,8 +4,9 @@ Shared configuration utilities for inference server and client.
 
 import argparse
 import logging
+import os
 import sys
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Union
 
 
 def load_config_from_yaml(config_path: str, use_logging: bool = True) -> Dict[str, Any]:
@@ -98,6 +99,13 @@ def merge_config_with_args(
                         setattr(args, key, value)
                     else:
                         setattr(args, key, value)
+                elif key == "model":
+                    # Server: -m is action="append"; YAML may carry a scalar
+                    # "model: PATH" (legacy) or a list. Normalize to a list.
+                    if isinstance(value, list):
+                        setattr(args, key, list(value))
+                    elif value:
+                        setattr(args, key, [value])
                 elif key in ("echo", "no_echo"):
                     # Client: handle boolean flags correctly
                     if isinstance(value, bool):
@@ -108,3 +116,124 @@ def merge_config_with_args(
                     setattr(args, key, value)
 
     return args
+
+
+def _parse_model_arg(raw: str) -> Dict[str, Any]:
+    """Parse a single -m argument into a ``{name, path}`` dict.
+
+    Accepts either ``PATH`` (name = basename of normpath) or ``NAME=PATH``.
+    ``~`` is expanded; the path is not required to exist (the loader will
+    error later with a more informative message).
+    """
+    if "=" in raw:
+        name, _, path = raw.partition("=")
+        name = name.strip()
+        path = path.strip()
+        if not name:
+            raise ValueError(f"--model {raw!r}: empty name before '='")
+        if not path:
+            raise ValueError(f"--model {raw!r}: empty path after '='")
+    else:
+        path = raw.strip()
+        if not path:
+            raise ValueError("--model: empty path")
+        # Derive name from path basename (after normalizing trailing slashes).
+        name = os.path.basename(os.path.normpath(path))
+        if not name:
+            raise ValueError(f"--model {raw!r}: cannot derive name from path")
+    return {"name": name, "path": os.path.expanduser(path)}
+
+
+_VALID_ENTRY_KEYS = {
+    "name",
+    "path",
+    "dtype",
+    "attn_implementation",
+    "chat_template",
+    "stop_sequences",
+    "compile_args",
+    "cache_implementation",
+    "use_cache",
+}
+
+
+def _parse_yaml_model_entry(idx: int, entry: Any) -> Dict[str, Any]:
+    """Validate and normalize one YAML ``models:`` list entry."""
+    if not isinstance(entry, dict):
+        raise ValueError(
+            f"models[{idx}]: expected a mapping, got {type(entry).__name__}"
+        )
+    # Allow "model_path" or "path"; "model" too for forgiveness.
+    path = entry.get("path") or entry.get("model_path") or entry.get("model")
+    if not path:
+        raise ValueError(f"models[{idx}]: missing 'path' (or 'model_path') field")
+    name = entry.get("name")
+    if not name:
+        name = os.path.basename(os.path.normpath(str(path)))
+        if not name:
+            raise ValueError(f"models[{idx}]: cannot derive name from path {path!r}")
+
+    out: Dict[str, Any] = {"name": str(name), "path": os.path.expanduser(str(path))}
+    for key in _VALID_ENTRY_KEYS:
+        if key in ("name", "path"):
+            continue
+        if key in entry:
+            out[key] = entry[key]
+    # Surface unknown keys early — typos in YAML are easy to miss.
+    unknown = set(entry.keys()) - _VALID_ENTRY_KEYS - {"model_path", "model"}
+    if unknown:
+        raise ValueError(
+            f"models[{idx}] ({name!r}): unknown keys: {sorted(unknown)}. "
+            f"Allowed: {sorted(_VALID_ENTRY_KEYS)}"
+        )
+    return out
+
+
+def merge_model_entries(
+    cli_models: Optional[List[str]],
+    config: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Reconcile CLI ``-m`` args and YAML ``models:`` list into specs.
+
+    Precedence:
+      1. If CLI passed any ``-m``: use those (config's ``models:`` is
+         ignored — operator-mode wins over file-mode).
+      2. Else if config has ``models:``: use that.
+      3. Else: empty list (the caller errors out: --model required).
+
+    Each returned spec is a dict with at least ``name`` and ``path``;
+    YAML entries may also carry per-model overrides
+    (``dtype``, ``stop_sequences``, ``chat_template``, etc.).
+
+    Raises ``ValueError`` on malformed input or duplicate names.
+    """
+    specs: List[Dict[str, Any]] = []
+
+    if cli_models:
+        for raw in cli_models:
+            specs.append(_parse_model_arg(raw))
+    else:
+        yaml_models = config.get("models")
+        if yaml_models:
+            if not isinstance(yaml_models, list):
+                raise ValueError(
+                    f"config 'models': expected a list, got {type(yaml_models).__name__}"
+                )
+            for idx, entry in enumerate(yaml_models):
+                specs.append(_parse_yaml_model_entry(idx, entry))
+
+    # Detect duplicate names early — easier to diagnose here than at load time.
+    names = [s["name"] for s in specs]
+    if len(set(names)) != len(names):
+        seen: set = set()
+        dups: List[str] = []
+        for n in names:
+            if n in seen and n not in dups:
+                dups.append(n)
+            seen.add(n)
+        raise ValueError(
+            f"duplicate model name(s): {dups}. "
+            "Use NAME=PATH form to disambiguate."
+        )
+
+    return specs
