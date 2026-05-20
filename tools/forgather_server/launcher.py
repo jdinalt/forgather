@@ -250,17 +250,8 @@ def spawn_eval_process(
     model_path: str,
     gpu_indices: List[int],
     tty_log_path: Path,
-    checkpoint_path: Optional[str] = None,
-    no_checkpoint: bool = False,
-    trainer: str = "ddp",
-    batch_size: Optional[int] = None,
-    max_length: Optional[int] = None,
-    max_steps: int = -1,
-    dtype: str = "bfloat16",
-    attn_implementation: str = "sdpa",
-    compile: bool = False,
-    output_dir: Optional[str] = None,
     extra_env: Optional[Dict[str, str]] = None,
+    **passthrough,
 ) -> LaunchResult:
     """Spawn an evaluation run via ``scripts/eval_script.py``.
 
@@ -270,21 +261,17 @@ def spawn_eval_process(
     that the web UI can stream. Unlike training, eval processes do not
     register with ``TrainerControlClient``; the scheduler correlates
     lifecycle by PID only.
+
+    All passthrough flags (``--trainer``, ``--checkpoint``, ``--fused-loss``,
+    etc.) are forwarded to :func:`eval_ops.build_eval_command`, which is
+    driven by the shared spec in
+    ``forgather.cli.eval_args._EVAL_SCRIPT_ARGS``.
     """
     cmd = eval_ops.build_eval_command(
         eval_project=eval_project,
         eval_template=eval_template,
         model_path=model_path,
-        checkpoint_path=checkpoint_path,
-        no_checkpoint=no_checkpoint,
-        trainer=trainer,
-        batch_size=batch_size,
-        max_length=max_length,
-        max_steps=max_steps,
-        dtype=dtype,
-        attn_implementation=attn_implementation,
-        compile=compile,
-        output_dir=output_dir,
+        **passthrough,
     )
     return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
 

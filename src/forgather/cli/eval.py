@@ -11,6 +11,8 @@ from forgather.meta_config import MetaConfig
 from forgather.project import Project
 from forgather.user_config import eval_search_paths
 
+from .eval_args import eval_script_args_to_job_params, forward_eval_script_args
+
 
 def _forgather_dir() -> str:
     """Locate the forgather repo root. Walk up from this file until we find
@@ -120,22 +122,8 @@ def test_cmd(args):
             "eval_project": project_dir,
             "eval_template": template,
             "model_path": model_path,
-            "trainer": args.trainer,
-            "max_steps": args.max_steps,
-            "dtype": args.dtype,
-            "attn_implementation": args.attn_implementation,
-            "compile": bool(args.compile),
+            **eval_script_args_to_job_params(args),
         }
-        if args.batch_size is not None:
-            job_params["batch_size"] = args.batch_size
-        if args.max_length is not None:
-            job_params["max_length"] = args.max_length
-        if args.checkpoint:
-            job_params["checkpoint_path"] = args.checkpoint
-        if args.no_checkpoint:
-            job_params["no_checkpoint"] = True
-        if args.output_dir:
-            job_params["output_dir"] = args.output_dir
         from .server_client import ServerClient, ServerUnreachable
 
         client = ServerClient.from_args(args)
@@ -179,28 +167,9 @@ def test_cmd(args):
             template,
             "--model",
             model_path,
-            "--trainer",
-            args.trainer,
-            "--dtype",
-            args.dtype,
-            "--attn-implementation",
-            args.attn_implementation,
-            "--max-steps",
-            str(args.max_steps),
         ]
     )
-    if args.batch_size is not None:
-        cmd.extend(["--batch-size", str(args.batch_size)])
-    if args.max_length is not None:
-        cmd.extend(["--max-length", str(args.max_length)])
-    if args.checkpoint:
-        cmd.extend(["--checkpoint", args.checkpoint])
-    if args.no_checkpoint:
-        cmd.append("--no-checkpoint")
-    if args.compile:
-        cmd.append("--compile")
-    if args.output_dir:
-        cmd.extend(["--output-dir", args.output_dir])
+    cmd.extend(forward_eval_script_args(args))
 
     print(" ".join(cmd))
     if args.dry_run:
