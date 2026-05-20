@@ -24,6 +24,7 @@ interface PersistedAdHoc {
   dtype: string;
   attn: string;
   compileFlag: boolean;
+  fusedLoss: boolean;
   ckptPath: string;
   outputDir: string;
   requestedGpus: number;
@@ -45,6 +46,7 @@ const AD_HOC_DEFAULTS: PersistedAdHoc = {
   dtype: "bfloat16",
   attn: "sdpa",
   compileFlag: false,
+  fusedLoss: false,
   ckptPath: "",
   outputDir: "",
   requestedGpus: 1,
@@ -141,6 +143,9 @@ export function EvalModal({
   const [compileFlag, setCompileFlag] = useState<boolean>(
     adHoc ? persisted.compileFlag ?? false : false,
   );
+  const [fusedLoss, setFusedLoss] = useState<boolean>(
+    adHoc ? persisted.fusedLoss ?? false : false,
+  );
   // ad-hoc users may want to point at a specific Forgather checkpoint
   // dir; project-backed flows pass that in via ``checkpointPath``.
   const [ckptPath, setCkptPath] = useState<string>(
@@ -176,6 +181,7 @@ export function EvalModal({
     setDtype(AD_HOC_DEFAULTS.dtype);
     setAttn(AD_HOC_DEFAULTS.attn);
     setCompileFlag(AD_HOC_DEFAULTS.compileFlag);
+    setFusedLoss(AD_HOC_DEFAULTS.fusedLoss);
     setCkptPath(AD_HOC_DEFAULTS.ckptPath);
     setOutputDir(AD_HOC_DEFAULTS.outputDir);
     setRequestedGpus(AD_HOC_DEFAULTS.requestedGpus);
@@ -222,6 +228,7 @@ export function EvalModal({
         dtype,
         attn,
         compileFlag,
+        fusedLoss,
         ckptPath: ckptPath.trim(),
         outputDir: outputDir.trim(),
         requestedGpus,
@@ -245,6 +252,7 @@ export function EvalModal({
       compile: compileFlag,
     };
     if (effectiveCheckpoint) job_params.checkpoint_path = effectiveCheckpoint;
+    if (fusedLoss) job_params.fused_loss = true;
     const bs = batchSize.trim();
     if (bs !== "") job_params.batch_size = Number(bs);
     const ml = maxLength.trim();
@@ -463,6 +471,17 @@ export function EvalModal({
                 onChange={(e) => setCompileFlag(e.target.checked)}
               />
               compile
+            </label>
+            <label
+              className="dyn-checkbox"
+              title="Fused output-linear + cross-entropy loss. Reduces eval-time memory on models with large vocabularies."
+            >
+              <input
+                type="checkbox"
+                checked={fusedLoss}
+                onChange={(e) => setFusedLoss(e.target.checked)}
+              />
+              fused loss
             </label>
           </div>
 
