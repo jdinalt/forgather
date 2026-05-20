@@ -35,9 +35,14 @@ path_type = lambda x: os.path.normpath(os.path.expanduser(x))
 #                           with non-None defaults the script depends on)
 #   enqueue_key:  key under which the value appears in ``job_params``.
 #                 None to omit from enqueue.
-#   enqueue_when: "always" | "truthy" — when to include in job_params.
-#                 (Use "truthy" for store_true bools and for value args
-#                 where None should be omitted.)
+#   enqueue_when: "always"   — always include in job_params (bool args
+#                              normalized via bool() for JSON cleanliness)
+#               | "truthy"   — include when truthy (store_true bools,
+#                              and value args where empty/falsy is a "no")
+#               | "not_none" — include when the value is not None.
+#                              Use this for numeric value args so the
+#                              local CLI path and the enqueue payload
+#                              agree on whether 0 is a legitimate value.
 _EVAL_SCRIPT_ARGS: list[dict[str, Any]] = [
     {
         "flags": ("--trainer",),
@@ -85,21 +90,21 @@ _EVAL_SCRIPT_ARGS: list[dict[str, Any]] = [
         "kwargs": dict(type=int, default=None),
         "forward": "value",
         "enqueue_key": "batch_size",
-        "enqueue_when": "truthy",
+        "enqueue_when": "not_none",
     },
     {
         "flags": ("--max-length",),
         "kwargs": dict(type=int, default=None),
         "forward": "value",
         "enqueue_key": "max_length",
-        "enqueue_when": "truthy",
+        "enqueue_when": "not_none",
     },
     {
         "flags": ("--stride",),
         "kwargs": dict(type=int, default=None),
         "forward": "value",
         "enqueue_key": "stride",
-        "enqueue_when": "truthy",
+        "enqueue_when": "not_none",
     },
     {
         "flags": ("--max-steps",),
@@ -172,6 +177,11 @@ def _forward_from_lookup(specs, get) -> list[str]:
             if val is not None:
                 tokens.extend([flag, str(val)])
         elif mode == "always":
+            # Fall back to the spec default if the caller passed None — without
+            # this, an "always" arg with an explicit ``None`` in a future
+            # job_params payload would emit the literal string ``"None"``.
+            if val is None:
+                val = default
             tokens.extend([flag, str(val)])
         else:  # pragma: no cover
             raise ValueError(f"unknown forward mode {mode!r} for {flag}")
@@ -223,9 +233,67 @@ def eval_script_args_to_job_params(args) -> dict[str, Any]:
         elif when == "truthy":
             if val:
                 out[key] = val
+        elif when == "not_none":
+            if val is not None:
+                out[key] = val
         else:  # pragma: no cover
             raise ValueError(f"unknown enqueue_when {when!r} for {spec['flags'][-1]}")
     return out
+
+
+_VALID_FORWARD_MODES = frozenset({"flag", "value", "always"})
+_VALID_ENQUEUE_WHEN = frozenset({"always", "truthy", "not_none"})
+
+
+def _validate_spec() -> None:
+    """Validate ``_EVAL_SCRIPT_ARGS`` at import time.
+
+    Catches typos in the enum-like ``forward`` / ``enqueue_when`` fields and
+    missing required keys, so a malformed spec entry fails loudly at import
+    instead of silently no-op'ing the first time the affected flag is used.
+    This is the bug class the spec exists to prevent in the first place.
+    """
+    seen_keys: set[str] = set()
+    for i, spec in enumerate(_EVAL_SCRIPT_ARGS):
+        prefix = f"_EVAL_SCRIPT_ARGS[{i}]"
+        for required in ("flags", "kwargs", "forward"):
+            if required not in spec:
+                raise RuntimeError(f"{prefix}: missing required key {required!r}")
+        if not isinstance(spec["flags"], tuple) or not spec["flags"]:
+            raise RuntimeError(f"{prefix}: 'flags' must be a non-empty tuple")
+        if spec["forward"] not in _VALID_FORWARD_MODES:
+            raise RuntimeError(
+                f"{prefix} ({spec['flags'][-1]}): forward={spec['forward']!r} "
+                f"not in {sorted(_VALID_FORWARD_MODES)}"
+            )
+        ek = spec.get("enqueue_key")
+        if ek is not None:
+            if ek in seen_keys:
+                raise RuntimeError(
+                    f"{prefix} ({spec['flags'][-1]}): duplicate enqueue_key {ek!r}"
+                )
+            seen_keys.add(ek)
+            when = spec.get("enqueue_when")
+            if when not in _VALID_ENQUEUE_WHEN:
+                raise RuntimeError(
+                    f"{prefix} ({spec['flags'][-1]}): enqueue_when={when!r} "
+                    f"not in {sorted(_VALID_ENQUEUE_WHEN)}"
+                )
+
+
+_validate_spec()
+
+
+def passthrough_enqueue_keys() -> frozenset[str]:
+    """Return the set of ``job_params`` keys this spec recognizes.
+
+    Useful for callers that want to filter a job_params dict down to keys
+    that will actually be forwarded (avoids leaking webui- or scheduler-
+    internal fields into the inner-script argv).
+    """
+    return frozenset(
+        s["enqueue_key"] for s in _EVAL_SCRIPT_ARGS if s.get("enqueue_key")
+    )
 
 
 def create_eval_parser(_global_args):
