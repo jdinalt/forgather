@@ -261,10 +261,66 @@ def format_results(record):
         "=" * 72,
         f"eval_loss:        {record['eval_loss']:.6f}",
         f"perplexity:       {record['perplexity']:.4f}",
-        f"wall_time:        {record['wall_time_s']:.2f} s",
-        "=" * 72,
     ]
+    if record.get("bpb") is not None:
+        lines.append(f"bpb:              {record['bpb']:.4f}")
+    if record.get("bpc") is not None:
+        lines.append(f"bpc:              {record['bpc']:.4f}")
+    if record.get("tokens_per_byte") is not None:
+        lines.append(f"tokens_per_byte:  {record['tokens_per_byte']:.4f}")
+    lines.append(f"wall_time:        {record['wall_time_s']:.2f} s")
+    lines.append("=" * 72)
     return "\n".join(lines)
+
+
+def _compute_corpus_stats(eval_dataset, tokenizer, max_examples, pad_token_id):
+    """Count bytes / chars / predicted tokens over the eval dataset prefix.
+
+    Iterates the *pre-collation* dataset, decoding each ``input_ids`` sequence
+    to UTF-8 text and counting predicted-token positions. Returns
+    ``(total_bytes, total_chars, total_predicted_tokens, n_examples)``.
+
+    Predicted-position semantics match the trainer's causal loss: positions
+    ``labels[1:]`` where the label is neither ``-100`` (explicit ignore) nor
+    ``pad_token_id`` (the collator's pad-as-ignore convention, which has
+    not been applied yet at pre-collation time).
+
+    ``max_examples`` caps the iteration; ``<= 0`` means scan everything.
+    """
+    total_bytes = 0
+    total_chars = 0
+    total_predicted_tokens = 0
+    n_examples = 0
+
+    if hasattr(eval_dataset, "__len__"):
+        ds_len = len(eval_dataset)
+        if max_examples is None or max_examples <= 0:
+            max_examples = ds_len
+        else:
+            max_examples = min(max_examples, ds_len)
+
+    for ex in eval_dataset:
+        if max_examples is not None and max_examples > 0 and n_examples >= max_examples:
+            break
+        input_ids = ex["input_ids"]
+        labels = ex.get("labels", input_ids)
+        if hasattr(input_ids, "tolist"):
+            input_ids = input_ids.tolist()
+        if hasattr(labels, "tolist"):
+            labels = labels.tolist()
+        text = tokenizer.decode(input_ids, skip_special_tokens=True)
+        total_bytes += len(text.encode("utf-8"))
+        total_chars += len(text)
+        # Predicted positions: only labels[1:] contribute to causal loss
+        # (position 0 is input-only). Drop both -100 (explicit ignore) and
+        # pad — pre-padded examples (pipeline trainer uses padding=max_length)
+        # would otherwise inflate the count vs. what the trainer counts.
+        total_predicted_tokens += sum(
+            1 for t in labels[1:] if t != -100 and t != pad_token_id
+        )
+        n_examples += 1
+
+    return total_bytes, total_chars, total_predicted_tokens, n_examples
 
 
 @record
@@ -360,6 +416,39 @@ def main():
     else:
         result = None
 
+    # Pre-pass: compute byte/char/predicted-token counts so we can report
+    # tokenizer-agnostic metrics (BPB/BPC) alongside the raw token PPL.
+    #
+    # Rebuild the dataset for this rank-0 pre-pass instead of iterating
+    # ``eval_dataset`` in place — iterable datasets (ComposableIterableDataset,
+    # HF streaming) carry an internal cursor, and a partial-iteration would
+    # leave the trainer reading from the post-prepass position. Two
+    # independent factory instances dodge the problem entirely.
+    #
+    # The example cap mirrors the trainer's max_eval_steps semantics. DDP
+    # with the default ``dispatch_batches=True`` and the simple/pipeline
+    # trainers all cap at ``max_steps * batch_size`` (one logical iterator
+    # over the corpus); DDP ``dispatch_batches=False`` (all-shards) caps
+    # per-rank, so the global cap is ``* world_size``.
+    corpus_stats = None
+    if is_rank_zero:
+        per_rank_shards = (
+            args.trainer == "ddp"
+            and hasattr(trainer, "_dispatch_eval_batches")
+            and not trainer._dispatch_eval_batches()
+        )
+        if args.max_steps and args.max_steps > 0:
+            shard_factor = max(world_size, 1) if per_rank_shards else 1
+            max_examples = args.max_steps * args.batch_size * shard_factor
+        else:
+            max_examples = 0  # signal "all examples"
+        prepass_dataset = dataset_proj(
+            test_config.dataset_target, tokenizer=tokenizer, preprocess_args=dict()
+        )
+        corpus_stats = _compute_corpus_stats(
+            prepass_dataset, tokenizer, max_examples, tokenizer.pad_token_id
+        )
+
     start = time.time()
     metrics = trainer.evaluate()
     wall_time = time.time() - start
@@ -368,12 +457,32 @@ def main():
 
     # Persist results (rank 0 only).
     if is_rank_zero:
-        from forgather.ml.analysis.metrics import get_perplexity
+        from forgather.ml.analysis.metrics import get_bpb, get_bpc, get_perplexity
 
         now = datetime.now(UTC)
         result.eval_loss = eval_loss
         result.perplexity = get_perplexity(eval_loss)
         result.wall_time_s = wall_time
+
+        # Fill in tokenizer-agnostic metrics from the pre-pass counts.
+        # Assumes ``eval_loss`` ≈ true token-mean cross-entropy. The trainer
+        # reports a mean of per-step-mean losses; when batches contain equal
+        # numbers of valid (non-ignored) tokens — the common case for eval
+        # with fixed ``max_length`` and full-length sequences — this equals
+        # the token-weighted mean exactly. Variable-length batches introduce
+        # a small (typically <1%) approximation error.
+        if corpus_stats is not None:
+            total_bytes, total_chars, total_predicted_tokens, _ = corpus_stats
+            result.total_bytes = total_bytes
+            result.total_chars = total_chars
+            result.total_predicted_tokens = total_predicted_tokens
+            if total_bytes > 0 and total_predicted_tokens > 0:
+                tokens_per_byte = total_predicted_tokens / total_bytes
+                result.tokens_per_byte = tokens_per_byte
+                result.bpb = get_bpb(eval_loss, tokens_per_byte)
+                if total_chars > 0:
+                    tokens_per_char = total_predicted_tokens / total_chars
+                    result.bpc = get_bpc(eval_loss, tokens_per_char)
         # UTC timestamp in ISO 8601 with a single trailing "Z" suffix.
         result.timestamp = now.replace(tzinfo=None).isoformat() + "Z"
 

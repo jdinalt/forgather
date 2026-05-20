@@ -31,6 +31,43 @@ def get_perplexity(value, metrics=None):
         return float("inf")
 
 
+def get_bpb(loss_nats: float, tokens_per_byte: float) -> float:
+    """Convert per-token cross-entropy (in nats) to bits-per-byte.
+
+    ``bpb = loss_nats * tokens_per_byte / ln(2)``. The result is the average
+    number of bits the model needs to encode one byte of UTF-8 source text,
+    which is independent of the tokenizer's vocabulary size and therefore
+    comparable across models that use different tokenizers.
+
+    Parameters
+    ----------
+    loss_nats : float
+        Mean cross-entropy loss per predicted token, in nats.
+    tokens_per_byte : float
+        Predicted tokens divided by source bytes over the same corpus prefix.
+        Must be strictly positive; otherwise ``float('nan')`` is returned.
+
+    Returns
+    -------
+    float
+        Bits-per-byte.
+    """
+    if not (tokens_per_byte > 0) or not math.isfinite(loss_nats):
+        return float("nan")
+    return loss_nats * tokens_per_byte / math.log(2)
+
+
+def get_bpc(loss_nats: float, tokens_per_char: float) -> float:
+    """Convert per-token cross-entropy (in nats) to bits-per-character.
+
+    Same idea as :func:`get_bpb` but normalised by Unicode code points
+    instead of UTF-8 bytes.
+    """
+    if not (tokens_per_char > 0) or not math.isfinite(loss_nats):
+        return float("nan")
+    return loss_nats * tokens_per_char / math.log(2)
+
+
 def compute_summary_statistics(log: TrainingLog) -> Dict[str, Any]:
     """Compute summary statistics from a training log.
 
