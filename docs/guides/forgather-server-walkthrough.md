@@ -349,12 +349,22 @@ Start in **Model**:
 
 1. Click the **Running inference servers** picker — the inference
    job you just started appears as an option. Selecting it auto-fills
-   the base URL.
+   the base URL. In **cluster mode** the picker also lists inference
+   jobs running on every reachable peer; rows from remote peers carry
+   a short peer-id badge so you can tell them apart at a glance.
 2. Click **Fetch models** to discover the model id the server
    advertises (`tiny_llama` or similar). Pick it.
 3. Optionally apply a generation preset from the picker — `creative`
    produces livelier outputs, `precise` is more deterministic. The
    `creative` preset is a good fit for TinyStories-style stories.
+
+> If you want one server to host several models at once (the same
+> process responds to multiple `model` values in the OpenAI request),
+> use the **Inference…** button in the sidebar's Services section
+> instead of the per-project Serve modal. It exposes a "+ Add model"
+> control that lets you stack any number of model directories into a
+> single multi-model server. Pair with **Keep all models on GPU** if
+> total VRAM > sum of model sizes.
 
 ![Inference Model tab with running server selected and creative preset applied](screenshots/16-inference-model-tab.png)
 
