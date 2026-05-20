@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import {
   COLORMAPS,
@@ -40,6 +40,15 @@ interface AnalyzePrefs {
    *  region-scale trends in long inputs where the per-token signal is
    *  too noisy to read. Tooltip values stay raw. */
   emaAlpha: number;
+  /** Toggle: show histogram of raw metric values below the scored text. */
+  showHistogram: boolean;
+  /** Percent of the body width allocated to the input textarea
+   *  (remainder is the output pane). Persisted; drag the vertical
+   *  handle between the panes to change. */
+  leftWidthPct: number;
+  /** Percent of the output pane's height allocated to the histogram
+   *  when shown. Persisted; drag the horizontal handle. */
+  histHeightPct: number;
 }
 
 const DEFAULT_PREFS: AnalyzePrefs = {
@@ -54,6 +63,9 @@ const DEFAULT_PREFS: AnalyzePrefs = {
   manualLo: 0,
   manualHi: 5,
   emaAlpha: 0,
+  showHistogram: false,
+  leftWidthPct: 50,
+  histHeightPct: 35,
 };
 
 function loadPrefs(): AnalyzePrefs {
@@ -82,6 +94,22 @@ function loadPrefs(): AnalyzePrefs {
         parsed.emaAlpha < 1
           ? parsed.emaAlpha
           : DEFAULT_PREFS.emaAlpha,
+      showHistogram:
+        typeof parsed.showHistogram === "boolean"
+          ? parsed.showHistogram
+          : DEFAULT_PREFS.showHistogram,
+      leftWidthPct:
+        typeof parsed.leftWidthPct === "number" &&
+        parsed.leftWidthPct >= 15 &&
+        parsed.leftWidthPct <= 85
+          ? parsed.leftWidthPct
+          : DEFAULT_PREFS.leftWidthPct,
+      histHeightPct:
+        typeof parsed.histHeightPct === "number" &&
+        parsed.histHeightPct >= 10 &&
+        parsed.histHeightPct <= 80
+          ? parsed.histHeightPct
+          : DEFAULT_PREFS.histHeightPct,
     };
   } catch {
     return DEFAULT_PREFS;
@@ -97,6 +125,52 @@ export function InferenceAnalyzePanel({ state }: Props) {
   const [selectionLen, setSelectionLen] = useState<number>(0);
   const abortRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const outputPaneRef = useRef<HTMLDivElement | null>(null);
+
+  // Drag handlers convert per-move pixel deltas to percentage updates
+  // against the relevant parent dimension. Clamped to keep either pane
+  // from collapsing to zero. The pref write-back is the same throttling
+  // we already use for other prefs — state update + persist.
+  const onSplitXDelta = useCallback(
+    (dx: number) => {
+      const body = bodyRef.current;
+      if (!body) return;
+      const w = body.getBoundingClientRect().width;
+      if (w <= 0) return;
+      setPrefs((prev) => {
+        const next = Math.max(
+          15,
+          Math.min(85, prev.leftWidthPct + (dx / w) * 100),
+        );
+        if (next === prev.leftWidthPct) return prev;
+        const updated = { ...prev, leftWidthPct: next };
+        persistSet(STORAGE_KEY, JSON.stringify(updated));
+        return updated;
+      });
+    },
+    [],
+  );
+  const onSplitYDelta = useCallback(
+    (dy: number) => {
+      const pane = outputPaneRef.current;
+      if (!pane) return;
+      const h = pane.getBoundingClientRect().height;
+      if (h <= 0) return;
+      setPrefs((prev) => {
+        // dy positive = handle moved down = histogram shrinks
+        const next = Math.max(
+          10,
+          Math.min(80, prev.histHeightPct - (dy / h) * 100),
+        );
+        if (next === prev.histHeightPct) return prev;
+        const updated = { ...prev, histHeightPct: next };
+        persistSet(STORAGE_KEY, JSON.stringify(updated));
+        return updated;
+      });
+    },
+    [],
+  );
 
   const busy = status.kind === "scoring";
 
@@ -280,6 +354,19 @@ export function InferenceAnalyzePanel({ state }: Props) {
             </label>
           </>
         )}
+        <label
+          className="dyn-checkbox"
+          title="Show a histogram of raw metric values below the scored text. Bars are colored by the same colormap and scale so they double as a legend."
+        >
+          <input
+            type="checkbox"
+            checked={prefs.showHistogram}
+            onChange={(e) =>
+              updatePrefs({ showHistogram: e.target.checked })
+            }
+          />
+          histogram
+        </label>
         <label title="Exponential moving average over the color-encoded signal. 0 = off (raw values); higher = smoother. Formula: s[i] = α·s[i-1] + (1-α)·raw[i]. Tooltip values stay raw.">
           smooth
           <input
@@ -302,10 +389,11 @@ export function InferenceAnalyzePanel({ state }: Props) {
           <StatusLine status={status} />
         </div>
       </div>
-      <div className="inference-analyze-body">
+      <div className="inference-analyze-body" ref={bodyRef}>
         <textarea
           ref={textareaRef}
           className="inference-analyze-input"
+          style={{ flex: `0 0 ${prefs.leftWidthPct}%` }}
           value={text}
           onChange={(e) => {
             setText(e.target.value);
@@ -335,15 +423,58 @@ export function InferenceAnalyzePanel({ state }: Props) {
           placeholder="Paste or type text to score. Select a passage to score just that — useful for sampling out of a large pasted document. Ctrl+Enter to Analyze."
           spellCheck={false}
         />
-        <div className="inference-analyze-output">
-          {scores ? (
-            <ScoredText scores={scores} prefs={prefs} />
-          ) : (
-            <div className="muted analyze-empty">
-              {status.kind === "scoring"
-                ? "Running forward pass…"
-                : "No scores yet. Click Analyze to score the input."}
-            </div>
+        <DragHandle
+          axis="x"
+          ariaLabel="Resize input vs output panes"
+          onDragDelta={onSplitXDelta}
+          onDoubleClick={() => updatePrefs({ leftWidthPct: 50 })}
+        />
+        <div
+          className="inference-analyze-output"
+          ref={outputPaneRef}
+        >
+          <div
+            className="inference-analyze-scored-pane"
+            style={
+              prefs.showHistogram
+                ? { flex: `1 1 ${100 - prefs.histHeightPct}%`, minHeight: 0 }
+                : { flex: 1, minHeight: 0 }
+            }
+          >
+            {scores ? (
+              <ScoredText scores={scores} prefs={prefs} />
+            ) : (
+              <div className="muted analyze-empty">
+                {status.kind === "scoring"
+                  ? "Running forward pass…"
+                  : "No scores yet. Click Analyze to score the input."}
+              </div>
+            )}
+          </div>
+          {prefs.showHistogram && (
+            <>
+              <DragHandle
+                axis="y"
+                ariaLabel="Resize scored text vs histogram panes"
+                onDragDelta={onSplitYDelta}
+                onDoubleClick={() => updatePrefs({ histHeightPct: 35 })}
+              />
+              <div
+                className="inference-analyze-hist-pane"
+                style={{
+                  flex: `0 0 ${prefs.histHeightPct}%`,
+                  minHeight: 0,
+                }}
+              >
+                {scores ? (
+                  <HistogramView scores={scores} prefs={prefs} />
+                ) : (
+                  <div className="muted analyze-empty">
+                    No data — run Analyze first.
+                  </div>
+                )}
+              </div>
+            </>
           )}
         </div>
       </div>
@@ -673,5 +804,292 @@ function TooltipBody({
       )}
     </>
   );
+}
+
+/** Pointer-capture drag handle. ``axis="x"`` is a thin vertical strip
+ *  that drags horizontally (col-resize); ``axis="y"`` is a horizontal
+ *  strip that drags vertically (row-resize). Emits per-move pixel
+ *  deltas — parent does the geometry math. Double-click invokes
+ *  ``onDoubleClick`` (used to reset to default split). Pattern lifted
+ *  from JobsPanel's split handle. */
+function DragHandle({
+  axis,
+  ariaLabel,
+  onDragDelta,
+  onDoubleClick,
+}: {
+  axis: "x" | "y";
+  ariaLabel: string;
+  onDragDelta: (delta: number) => void;
+  onDoubleClick?: () => void;
+}) {
+  const lastRef = useRef<{ x: number; y: number; pointerId: number } | null>(
+    null,
+  );
+  return (
+    <div
+      className={axis === "x" ? "analyze-split-x" : "analyze-split-y"}
+      role="separator"
+      aria-orientation={axis === "x" ? "vertical" : "horizontal"}
+      aria-label={ariaLabel}
+      title="Drag to resize · double-click to reset"
+      onPointerDown={(e) => {
+        e.preventDefault();
+        (e.currentTarget as Element).setPointerCapture(e.pointerId);
+        lastRef.current = {
+          x: e.clientX,
+          y: e.clientY,
+          pointerId: e.pointerId,
+        };
+        document.body.style.cursor =
+          axis === "x" ? "col-resize" : "row-resize";
+        document.body.style.userSelect = "none";
+      }}
+      onPointerMove={(e) => {
+        const last = lastRef.current;
+        if (!last) return;
+        const delta =
+          axis === "x" ? e.clientX - last.x : e.clientY - last.y;
+        if (delta !== 0) onDragDelta(delta);
+        lastRef.current = { ...last, x: e.clientX, y: e.clientY };
+      }}
+      onPointerUp={(e) => {
+        if (!lastRef.current) return;
+        lastRef.current = null;
+        try {
+          (e.currentTarget as Element).releasePointerCapture(e.pointerId);
+        } catch {
+          /* already released */
+        }
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      }}
+      onPointerCancel={(e) => {
+        lastRef.current = null;
+        try {
+          (e.currentTarget as Element).releasePointerCapture(e.pointerId);
+        } catch {
+          /* already released */
+        }
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      }}
+      onDoubleClick={onDoubleClick}
+    />
+  );
+}
+
+const HIST_BINS = 30;
+
+/** SVG histogram of the *raw* metric values (no smoothing — the
+ *  histogram exists to show the underlying distribution, so applying
+ *  the EMA filter would defeat the point). Bins span the data's
+ *  observed range; bars are colored by their bin-center value mapped
+ *  through the current colormap + scale, which makes the histogram
+ *  double as a colormap legend.
+ *
+ *  Pure SVG with a viewBox so it scales cleanly with the pane's
+ *  current size — no canvas, no dep on a charting library. */
+function HistogramView({
+  scores,
+  prefs,
+}: {
+  scores: TokenScores;
+  prefs: AnalyzePrefs;
+}) {
+  const { token_logprobs, token_entropies } = scores;
+
+  const entropyAvailable = Array.isArray(token_entropies);
+  const effectiveMetric: Metric =
+    prefs.metric === "entropy" && !entropyAvailable ? "loss" : prefs.metric;
+
+  // Raw (unsmoothed) values for the chosen metric.
+  const rawValues = useMemo<number[]>(() => {
+    const out: number[] = [];
+    if (effectiveMetric === "entropy") {
+      for (const e of token_entropies ?? []) {
+        if (typeof e === "number") out.push(e);
+      }
+    } else {
+      for (const lp of token_logprobs) {
+        if (typeof lp === "number") out.push(-lp);
+      }
+    }
+    return out;
+  }, [effectiveMetric, token_logprobs, token_entropies]);
+
+  // Color domain = same lo/hi the tokens use. Auto mode here is also
+  // 5th/95th percentile but computed off raw values (the histogram
+  // shows raw, so the scale should match that). Manual mode uses the
+  // user-supplied bounds verbatim.
+  const { colorLo, colorHi } = useMemo(() => {
+    if (prefs.scaleMode === "manual") {
+      const a = Math.min(prefs.manualLo, prefs.manualHi);
+      const b = Math.max(prefs.manualLo, prefs.manualHi);
+      return { colorLo: a, colorHi: b > a ? b : a + 1 };
+    }
+    if (rawValues.length === 0) return { colorLo: 0, colorHi: 1 };
+    const sorted = rawValues.slice().sort((a, b) => a - b);
+    const lo = sorted[Math.floor(sorted.length * 0.05)] ?? sorted[0];
+    const hi =
+      sorted[Math.floor(sorted.length * 0.95)] ?? sorted[sorted.length - 1];
+    return { colorLo: lo, colorHi: hi > lo ? hi : lo + 1 };
+  }, [rawValues, prefs.scaleMode, prefs.manualLo, prefs.manualHi]);
+
+  const cmap = useMemo(() => getColormap(prefs.cmap), [prefs.cmap]);
+
+  const bins = useMemo(() => {
+    if (rawValues.length === 0) {
+      return { counts: [] as number[], xMin: 0, xMax: 1, max: 0 };
+    }
+    let xMin = Infinity;
+    let xMax = -Infinity;
+    for (const v of rawValues) {
+      if (v < xMin) xMin = v;
+      if (v > xMax) xMax = v;
+    }
+    if (xMin === xMax) xMax = xMin + 1;
+    const counts = new Array<number>(HIST_BINS).fill(0);
+    const span = xMax - xMin;
+    for (const v of rawValues) {
+      const t = (v - xMin) / span;
+      const idx = Math.min(HIST_BINS - 1, Math.max(0, Math.floor(t * HIST_BINS)));
+      counts[idx] += 1;
+    }
+    let max = 0;
+    for (const c of counts) if (c > max) max = c;
+    return { counts, xMin, xMax, max };
+  }, [rawValues]);
+
+  if (rawValues.length === 0) {
+    return <div className="muted analyze-empty">No scored values yet.</div>;
+  }
+
+  // SVG layout — viewBox is fixed; SVG fills the pane via CSS. Padding
+  // values picked so axis labels don't crop at small heights.
+  const VW = 600;
+  const VH = 200;
+  const PAD_L = 36;
+  const PAD_R = 8;
+  const PAD_T = 6;
+  const PAD_B = 22;
+  const plotW = VW - PAD_L - PAD_R;
+  const plotH = VH - PAD_T - PAD_B;
+  const barW = plotW / bins.counts.length;
+  const colorSpan = colorHi - colorLo;
+  const metricLabel =
+    effectiveMetric === "entropy" ? "entropy (nats)" : "loss (nats)";
+  const mid = (bins.xMin + bins.xMax) / 2;
+
+  return (
+    <div className="analyze-histogram-wrap">
+      <div className="analyze-histogram-meta muted">
+        n = {rawValues.length} · {metricLabel}
+      </div>
+      <svg
+        className="analyze-histogram-svg"
+        viewBox={`0 0 ${VW} ${VH}`}
+        preserveAspectRatio="none"
+      >
+        {/* axes */}
+        <line
+          x1={PAD_L}
+          y1={PAD_T}
+          x2={PAD_L}
+          y2={PAD_T + plotH}
+          stroke="currentColor"
+          strokeOpacity={0.4}
+          vectorEffect="non-scaling-stroke"
+        />
+        <line
+          x1={PAD_L}
+          y1={PAD_T + plotH}
+          x2={PAD_L + plotW}
+          y2={PAD_T + plotH}
+          stroke="currentColor"
+          strokeOpacity={0.4}
+          vectorEffect="non-scaling-stroke"
+        />
+        {/* bars — colored by bin-center mapped through the colormap so
+            the histogram doubles as a legend for the color encoding */}
+        {bins.counts.map((c, i) => {
+          const binCenter =
+            bins.xMin + ((i + 0.5) / bins.counts.length) * (bins.xMax - bins.xMin);
+          const t = (binCenter - colorLo) / colorSpan;
+          const fill = cssColor(cmap.fn(t));
+          const h = (c / bins.max) * plotH;
+          return (
+            <rect
+              key={i}
+              x={PAD_L + i * barW}
+              y={PAD_T + plotH - h}
+              width={Math.max(0.5, barW - 0.5)}
+              height={h}
+              fill={fill}
+            >
+              <title>{`[${(bins.xMin + (i / bins.counts.length) * (bins.xMax - bins.xMin)).toFixed(3)}, ${(bins.xMin + ((i + 1) / bins.counts.length) * (bins.xMax - bins.xMin)).toFixed(3)}): ${c}`}</title>
+            </rect>
+          );
+        })}
+        {/* y-axis ticks: 0 and max */}
+        <text
+          x={PAD_L - 4}
+          y={PAD_T + 8}
+          fontSize={10}
+          fill="currentColor"
+          fillOpacity={0.7}
+          textAnchor="end"
+        >
+          {bins.max}
+        </text>
+        <text
+          x={PAD_L - 4}
+          y={PAD_T + plotH}
+          fontSize={10}
+          fill="currentColor"
+          fillOpacity={0.7}
+          textAnchor="end"
+        >
+          0
+        </text>
+        {/* x-axis ticks: min, mid, max — formatted by data magnitude */}
+        <text
+          x={PAD_L}
+          y={PAD_T + plotH + 14}
+          fontSize={10}
+          fill="currentColor"
+          fillOpacity={0.7}
+        >
+          {fmt(bins.xMin)}
+        </text>
+        <text
+          x={PAD_L + plotW / 2}
+          y={PAD_T + plotH + 14}
+          fontSize={10}
+          fill="currentColor"
+          fillOpacity={0.7}
+          textAnchor="middle"
+        >
+          {fmt(mid)}
+        </text>
+        <text
+          x={PAD_L + plotW}
+          y={PAD_T + plotH + 14}
+          fontSize={10}
+          fill="currentColor"
+          fillOpacity={0.7}
+          textAnchor="end"
+        >
+          {fmt(bins.xMax)}
+        </text>
+      </svg>
+    </div>
+  );
+
+  function fmt(v: number): string {
+    if (Math.abs(v) >= 100) return v.toFixed(0);
+    if (Math.abs(v) >= 10) return v.toFixed(1);
+    return v.toFixed(2);
+  }
 }
 
