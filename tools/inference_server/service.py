@@ -563,6 +563,135 @@ class InferenceService:
             self.logger.logger.error(f"Unexpected error in template rendering: {e}")
             return self._fallback_format_messages(messages)
 
+    def score_prompt(self, text: str, top_k: int = 10) -> dict:
+        """Score an input string with per-token causal-LM logprobs.
+
+        Runs a single forward pass (no ``generate()``) and returns the
+        OpenAI legacy-completions ``logprobs`` structure plus a
+        Forgather extension field:
+
+            {
+              "tokens": [...],
+              "token_logprobs": [None, lp1, lp2, ...],
+              "top_logprobs": [None, {tok: lp, ...}, ...],
+              "text_offset": [0, off1, off2, ...],
+              "token_entropies": [None, h1, h2, ...],   # Forgather extension
+            }
+
+        Position 0 is ``None`` because a causal LM has no prediction
+        for the first token. Matches what vLLM returns for the same
+        request shape (``echo=true, logprobs=K, max_tokens=0``); the
+        ``token_entropies`` field is non-standard (the full-vocab
+        Shannon entropy in nats at each prediction position) and only
+        Forgather returns it — clients should treat it as optional.
+        """
+        # Tokenize without padding so the returned length equals the
+        # actual token count — needed for accurate alignment.
+        enc = self.tokenizer_wrapper.tokenize_and_move_to_device(
+            text,
+            max_length=2048,
+            padding=False,
+            truncation=True,
+        )
+        input_ids = enc["input_ids"]  # (1, N)
+        n = int(input_ids.shape[1])
+        if n == 0:
+            return {
+                "tokens": [],
+                "token_logprobs": [],
+                "top_logprobs": [],
+                "text_offset": [],
+                "token_entropies": [],
+            }
+
+        with torch.inference_mode():
+            outputs = self.model(
+                input_ids=input_ids,
+                use_cache=False,
+                return_dict=True,
+            )
+        # Logits in float32 for numerically stable log_softmax; bf16
+        # log_softmax across a 32k+ vocab loses too much precision in
+        # the tail and breaks the top-K ranking.
+        logits = outputs.logits[0].float()  # (N, V)
+        logprobs_all = torch.log_softmax(logits, dim=-1)  # (N, V)
+
+        ids = input_ids[0].tolist()
+        # Decode each id individually so the returned strings line up
+        # 1:1 with the token positions. ``batch_decode`` over a list of
+        # single-element lists keeps the alignment but does the decode
+        # work in one tokenizer call — measurably faster than N Python
+        # round-trips for long inputs.
+        tokens = self.tokenizer.batch_decode([[tid] for tid in ids])
+
+        text_offset: List[int] = []
+        acc = 0
+        for tok in tokens:
+            text_offset.append(acc)
+            acc += len(tok)
+
+        token_logprobs: list = [None]
+        top_logprobs: list = [None]
+        token_entropies: list = [None]
+
+        if n > 1:
+            # Position i (i >= 1) is predicted by logits at position i-1.
+            target_ids = input_ids[0, 1:]  # (N-1,)
+            pred = logprobs_all[:-1]  # (N-1, V)
+            actual_lp = pred.gather(-1, target_ids.unsqueeze(-1)).squeeze(-1)
+
+            # Shannon entropy (nats) of the full vocabulary distribution
+            # at each predicting position. Reuses the log_softmax we
+            # already have: H = -sum(p * log_p) = -sum(exp(lp) * lp).
+            # Sliced to the predicting positions (0..N-2) — the final
+            # position would predict a token past the input, which we
+            # don't score.
+            entropies = -(pred.exp() * pred).sum(dim=-1)  # (N-1,)
+
+            k = min(int(top_k), pred.shape[-1])
+            top_vals, top_idx = torch.topk(pred, k=k, dim=-1)
+
+            actual_lp_list = actual_lp.tolist()
+            entropies_list = entropies.tolist()
+            top_vals_list = top_vals.tolist()
+            top_idx_list = top_idx.tolist()
+
+            # Batch-decode every top-K id in one tokenizer call instead
+            # of (N-1)*k individual decodes — for a 2k-token input with
+            # k=10 that's 20k Python round-trips vs. one C-side batch.
+            flat_top_ids = [tid for row in top_idx_list for tid in row]
+            flat_top_strs = self.tokenizer.batch_decode(
+                [[tid] for tid in flat_top_ids]
+            )
+
+            for i in range(n - 1):
+                token_logprobs.append(actual_lp_list[i])
+                token_entropies.append(entropies_list[i])
+                top_dict: dict = {}
+                row_off = i * k
+                for j in range(k):
+                    tok_str = flat_top_strs[row_off + j]
+                    # Distinct vocab ids can decode to the same string
+                    # (e.g. byte-fallback aliases). Keep the higher of
+                    # the colliding logprobs so the rendered entry
+                    # reflects the most-probable instance. ``topk``
+                    # already returns descending order so the first
+                    # write for a given string is the maximum — but
+                    # check anyway in case a future call passes
+                    # unsorted top-K.
+                    existing = top_dict.get(tok_str)
+                    if existing is None or top_vals_list[i][j] > existing:
+                        top_dict[tok_str] = top_vals_list[i][j]
+                top_logprobs.append(top_dict)
+
+        return {
+            "tokens": tokens,
+            "token_logprobs": token_logprobs,
+            "top_logprobs": top_logprobs,
+            "text_offset": text_offset,
+            "token_entropies": token_entropies,
+        }
+
     def tokenize(self, text: str, add_special_tokens: bool = False) -> List[int]:
         """Tokenize a raw string with the loaded tokenizer.
 

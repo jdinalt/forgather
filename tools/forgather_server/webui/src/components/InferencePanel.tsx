@@ -1,12 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { GenerationParams } from "../inference-client";
 import { persistGet, persistSet } from "../persist";
+import { InferenceAnalyzePanel } from "./InferenceAnalyzePanel";
 import { InferenceChatPanel } from "./InferenceChatPanel";
 import { InferenceCompletionPanel } from "./InferenceCompletionPanel";
 import { InferenceModelPanel } from "./InferenceModelPanel";
 
-type SubTab = "model" | "completion" | "chat";
+type SubTab = "model" | "completion" | "chat" | "analyze";
 
 export interface InferenceState {
   baseUrl: string;
@@ -55,12 +56,39 @@ function loadState(): InferenceState {
   }
 }
 
+interface InferencePanelProps {
+  /** Cross-section trigger from the Datasets cell context menu:
+   *  ``{text, key}`` where ``key`` is a Date.now() nonce. When this
+   *  changes (key flips), the panel switches to the Analyze sub-tab
+   *  and the AnalyzePanel picks up the text and runs scoring. Cleared
+   *  by AnalyzePanel via ``onAnalyzeConsumed`` once it has handled
+   *  the request so unmount/remount can't re-fire the same payload. */
+  pendingAnalyze?: { text: string; key: number } | null;
+  /** Called by AnalyzePanel after consuming pendingAnalyze so the
+   *  parent can reset App state. Mirrors the existing
+   *  pendingExplore / onPreselectConsumed pattern. */
+  onAnalyzeConsumed?: () => void;
+}
+
 /** Top-level Inference view. Holds the shared state (base URL, chosen
  *  model, generation params) so the Model sub-panel can configure it and
  *  the Completion sub-panel can consume it. Persists via localStorage so
  *  settings survive page reloads. */
-export function InferencePanel() {
+export function InferencePanel({
+  pendingAnalyze,
+  onAnalyzeConsumed,
+}: InferencePanelProps = {}) {
   const [tab, setTab] = useState<SubTab>("model");
+  // Flip to the Analyze tab whenever a fresh pendingAnalyze arrives.
+  // Per-key dedup so flipping back to Inference later doesn't bounce
+  // the user out of whatever tab they navigated to.
+  const lastAnalyzeKeyRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (pendingAnalyze && pendingAnalyze.key !== lastAnalyzeKeyRef.current) {
+      lastAnalyzeKeyRef.current = pendingAnalyze.key;
+      setTab("analyze");
+    }
+  }, [pendingAnalyze]);
   const [state, setState] = useState<InferenceState>(loadState);
   // Lifted up so the chat panel can hand a rendered prompt to the
   // completion textarea ("Send to completion") and switch tabs.
@@ -105,6 +133,13 @@ export function InferencePanel() {
             >
               chat
             </button>
+            <button
+              className={tab === "analyze" ? "active" : ""}
+              onClick={() => setTab("analyze")}
+              title="Score input text per-token (loss + top-K predictions)"
+            >
+              analyze
+            </button>
           </nav>
         </div>
       </header>
@@ -140,6 +175,20 @@ export function InferencePanel() {
         <InferenceChatPanel
           state={state}
           onSendToCompletion={onSendToCompletion}
+        />
+      </div>
+      <div
+        style={{
+          display: tab === "analyze" ? "flex" : "none",
+          flex: 1,
+          minHeight: 0,
+          flexDirection: "column",
+        }}
+      >
+        <InferenceAnalyzePanel
+          state={state}
+          pendingAnalyze={pendingAnalyze}
+          onPendingAnalyzeConsumed={onAnalyzeConsumed}
         />
       </div>
     </div>

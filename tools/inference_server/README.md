@@ -671,6 +671,54 @@ curl -X POST http://localhost:8137/v1/completions \
   }'
 ```
 
+#### Per-Token Scoring (echo + logprobs + max_tokens=0)
+
+The `/v1/completions` endpoint supports OpenAI legacy "score-the-prompt" mode: setting
+`echo=true`, `logprobs=K`, and `max_tokens=0` runs a single forward pass on the prompt
+and returns per-token log-probabilities (and the top-K alternatives at each position)
+instead of generating new text. Useful for analyzing how a model scores existing text
+and for token-level visualizations. Same request shape as vLLM.
+
+```bash
+curl -X POST http://localhost:8137/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "test-model",
+    "prompt": "The cat sat on the",
+    "echo": true,
+    "logprobs": 10,
+    "max_tokens": 0
+  }'
+```
+
+Response shape (the relevant `logprobs` block under `choices[0]`):
+
+```json
+{
+  "logprobs": {
+    "tokens": ["The", " cat", " sat", " on", " the"],
+    "token_logprobs": [null, -8.21, -3.04, -1.97, -0.45],
+    "top_logprobs": [
+      null,
+      {" cat": -3.04, " dog": -3.42, " quick": -4.10, "...": "..."},
+      "..."
+    ],
+    "text_offset": [0, 3, 7, 11, 14]
+  }
+}
+```
+
+Position 0 is `null` because a causal LM has no prediction for the first token.
+Per-token cross-entropy loss is `-token_logprobs[i]`; perplexity is `exp(loss)`.
+
+**Forgather extension — `token_entropies`:** the response also includes a
+non-standard `token_entropies` field — the Shannon entropy (nats) of the full
+vocabulary distribution at each prediction position, aligned with
+`token_logprobs` (index 0 is `null`). Unlike the OpenAI-standard top-K
+logprobs, this needs the full distribution and can't be reconstructed by the
+client. OpenAI / vLLM do not return this field; clients should treat it as
+optional and fall back to loss when absent.
+
 ### Test with OpenAI Python client
 
 #### Chat Completions
@@ -730,13 +778,26 @@ This mechanism allows you to use any HuggingFace generation parameter while main
 ## API Endpoints
 
 - `GET /v1/models` - List available models
-- `POST /v1/chat/completions` - Create chat completion
-- `POST /v1/completions` - Create text completion
-- `GET /health` - Health check
+- `POST /v1/chat/completions` - Create chat completion (streaming + non-streaming)
+- `POST /v1/completions` - Create text completion (streaming + non-streaming).
+  Also handles the per-token scoring shape: `echo=true, logprobs=K, max_tokens=0`
+  short-circuits to a single forward pass and returns per-token logprobs +
+  top-K alternatives — see "Per-Token Scoring" above.
+- `POST /tokenize`, `POST /v1/tokenize` - vLLM-compatible tokenize endpoint;
+  renders chat templates and returns token IDs (and, as a Forgather extension,
+  the rendered prompt string in `prompt`).
+- `GET /health` - Health check (intentionally unauthenticated so the
+  forgather-server's same-origin proxy can probe upstream readiness before
+  the model finishes loading).
 
 ## Features
 
 - **OpenAI API Compatibility**: Full support for both chat completions and text completions endpoints
+- **Per-Token Scoring**: `echo + logprobs + max_tokens=0` runs a single forward
+  pass and returns per-token logprobs + top-K alternatives in OpenAI's
+  legacy-completions shape. Plus a Forgather extension field `token_entropies`
+  carrying full-vocab Shannon entropy at each prediction position. The
+  forgather-server's webui Inference > Analyze tab consumes this directly.
 - **YAML Configuration Support**: Both server and client support YAML config files with CLI override capability
 - **HuggingFace GenerationConfig Integration**: Automatically loads generation_config.json from model directories
 - **HuggingFace Generation Parameters**: Comprehensive support for all HuggingFace generation options
