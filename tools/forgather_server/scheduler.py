@@ -295,24 +295,34 @@ def _try_dispatch() -> None:
 
 
 def _build_eval(item, gpu_indices, tty_path):
-    p = item.job_params
+    # The explicit args below are the script-required ones (eval_project,
+    # eval_template, model_path) and the scheduler-owned ones (extra_env).
+    # Every other ``--*`` flag is declared once in
+    # ``forgather.cli.eval_args._EVAL_SCRIPT_ARGS`` and forwarded by
+    # ``forward_eval_script_args_from_params`` deep in ``build_eval_command``;
+    # passing the whole ``job_params`` dict through avoids re-listing each
+    # key here just to call ``p.get(...)`` on it.
+    #
+    # Filter to keys the spec recognizes so future webui/queue fields (added
+    # for routing, accounting, etc.) don't leak through as kwargs to
+    # ``spawn_eval_process``. The forwarder itself already ignores unknown
+    # keys, but rejecting them up-front keeps the kwarg surface honest.
+    from forgather.cli.eval_args import passthrough_enqueue_keys
+
+    p = dict(item.job_params)
+    p.pop("eval_project")
+    p.pop("eval_template")
+    p.pop("model_path")
+    extra_env = p.pop("extra_env", None) or None
+    passthrough = {k: v for k, v in p.items() if k in passthrough_enqueue_keys()}
     return launcher.spawn_eval_process(
-        eval_project=p["eval_project"],
-        eval_template=p["eval_template"],
-        model_path=p["model_path"],
-        checkpoint_path=p.get("checkpoint_path"),
-        no_checkpoint=bool(p.get("no_checkpoint", False)),
-        trainer=p.get("trainer", "ddp"),
-        batch_size=p.get("batch_size"),
-        max_length=p.get("max_length"),
-        max_steps=int(p.get("max_steps", -1)),
-        dtype=p.get("dtype", "bfloat16"),
-        attn_implementation=p.get("attn_implementation", "sdpa"),
-        compile=bool(p.get("compile", False)),
-        output_dir=p.get("output_dir"),
+        eval_project=item.job_params["eval_project"],
+        eval_template=item.job_params["eval_template"],
+        model_path=item.job_params["model_path"],
         gpu_indices=gpu_indices,
         tty_log_path=tty_path,
-        extra_env=p.get("extra_env") or None,
+        extra_env=extra_env,
+        **passthrough,
     )
 
 

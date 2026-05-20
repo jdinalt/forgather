@@ -33,6 +33,7 @@ from torch import distributed as dist
 from torch.distributed.elastic.multiprocessing.errors import record
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
+from forgather.cli.eval_args import add_eval_script_args
 from forgather.eval_config import EvalResult, TestConfig
 
 logger = logging.getLogger(__name__)
@@ -57,30 +58,9 @@ def parse_args(argv=None):
     )
     parser.add_argument("--eval-config", required=True, help="Config template name")
     parser.add_argument("--model", required=True, help="Path to model directory")
-    parser.add_argument(
-        "--trainer",
-        choices=["ddp", "simple", "pipeline"],
-        default="ddp",
-        help="Trainer backend",
-    )
-    parser.add_argument("--checkpoint", default=None, help="Explicit checkpoint path")
-    parser.add_argument(
-        "--no-checkpoint",
-        action="store_true",
-        help="Skip checkpoint resume; load via from_pretrained on the model dir",
-    )
-    parser.add_argument("--batch-size", type=int, default=None)
-    parser.add_argument("--max-length", type=int, default=None)
-    parser.add_argument("--stride", type=int, default=None)
-    parser.add_argument("--dtype", default="bfloat16")
-    parser.add_argument("--attn-implementation", default="sdpa")
-    parser.add_argument("--compile", action="store_true")
-    parser.add_argument("--max-steps", type=int, default=-1)
-    parser.add_argument(
-        "--output-dir",
-        default=None,
-        help="Where to write evals/. Defaults to --model.",
-    )
+    # The args shared with `forgather eval test` are defined once in
+    # forgather.cli.eval_args and registered here via add_eval_script_args.
+    add_eval_script_args(parser)
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args(argv)
 
@@ -164,7 +144,12 @@ def resolve_checkpoint(args):
 def build_trainer(args, model_init, eval_dataset, data_collator, tokenizer, device):
     """Construct the selected trainer directly, no project involved."""
     from forgather.ml.distributed import DistributedEnvironment
-    from forgather.ml.loss import CausalLoss
+    from forgather.ml.loss import CausalLoss, LinearCrossEntropyLoss
+
+    if args.fused_loss:
+        fused_loss_factory = LinearCrossEntropyLoss
+    else:
+        fused_loss_factory = None
 
     checkpoint_arg, _ = resolve_checkpoint(args)
     output_dir = args.output_dir or args.model
@@ -201,6 +186,7 @@ def build_trainer(args, model_init, eval_dataset, data_collator, tokenizer, devi
             processing_class=tokenizer,
             compute_loss_func=loss_fn,
             distributed_env=init_distributed(),
+            fused_loss_factory=fused_loss_factory,
         )
     elif args.trainer == "simple":
         from forgather.ml.distributed import from_env
@@ -215,6 +201,7 @@ def build_trainer(args, model_init, eval_dataset, data_collator, tokenizer, devi
             processing_class=tokenizer,
             compute_loss_func=loss_fn,
             distributed_env=from_env(),
+            fused_loss_factory=fused_loss_factory,
         )
     elif args.trainer == "pipeline":
         from torch.distributed.pipelining import ScheduleGPipe
@@ -239,6 +226,7 @@ def build_trainer(args, model_init, eval_dataset, data_collator, tokenizer, devi
             distributed_env=init_distributed(),
             pipe_schedule_factory=ScheduleGPipe,
             model_splitter=create_manual_causal_lm_splitter(),
+            fused_loss_factory=fused_loss_factory,
         )
     else:  # pragma: no cover
         raise ValueError(f"Unknown trainer: {args.trainer}")
