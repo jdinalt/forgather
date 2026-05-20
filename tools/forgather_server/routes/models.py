@@ -58,6 +58,12 @@ class EvalResultModel(BaseModel):
     world_size: int
     eval_loss: Optional[float] = None
     perplexity: Optional[float] = None
+    bpb: Optional[float] = None
+    bpc: Optional[float] = None
+    tokens_per_byte: Optional[float] = None
+    total_bytes: Optional[int] = None
+    total_chars: Optional[int] = None
+    total_predicted_tokens: Optional[int] = None
     wall_time_s: Optional[float] = None
     timestamp: Optional[str] = None
 

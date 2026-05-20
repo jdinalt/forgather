@@ -637,6 +637,12 @@ export interface EvalResultData {
   world_size: number;
   eval_loss: number | null;
   perplexity: number | null;
+  bpb: number | null;
+  bpc: number | null;
+  tokens_per_byte: number | null;
+  total_bytes: number | null;
+  total_chars: number | null;
+  total_predicted_tokens: number | null;
   wall_time_s: number | null;
   timestamp: string | null;
 }

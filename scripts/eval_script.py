@@ -260,42 +260,39 @@ def format_results(record):
     lines = [
         "=" * 72,
         f"eval_loss:        {record['eval_loss']:.6f}",
-        f"perplexity:       {record['perplexity']:.4f}    (tokenizer-dependent)",
+        f"perplexity:       {record['perplexity']:.4f}",
     ]
     if record.get("bpb") is not None:
-        lines.append(
-            f"bpb:              {record['bpb']:.4f}    (tokenizer-agnostic — use for cross-model comparison)"
-        )
+        lines.append(f"bpb:              {record['bpb']:.4f}")
     if record.get("bpc") is not None:
         lines.append(f"bpc:              {record['bpc']:.4f}")
     if record.get("tokens_per_byte") is not None:
-        lines.append(f"tokens/byte:      {record['tokens_per_byte']:.4f}")
+        lines.append(f"tokens_per_byte:  {record['tokens_per_byte']:.4f}")
     lines.append(f"wall_time:        {record['wall_time_s']:.2f} s")
     lines.append("=" * 72)
     return "\n".join(lines)
 
 
-def _compute_corpus_stats(eval_dataset, tokenizer, max_examples):
+def _compute_corpus_stats(eval_dataset, tokenizer, max_examples, pad_token_id):
     """Count bytes / chars / predicted tokens over the eval dataset prefix.
 
     Iterates the *pre-collation* dataset, decoding each ``input_ids`` sequence
-    to UTF-8 text and counting predicted-token positions (``labels[1:] != -100``,
-    accounting for the causal shift). Returns ``(total_bytes, total_chars,
-    total_predicted_tokens, n_examples)``.
+    to UTF-8 text and counting predicted-token positions. Returns
+    ``(total_bytes, total_chars, total_predicted_tokens, n_examples)``.
 
-    ``max_examples`` caps the iteration; pass a non-positive value (or larger
-    than ``len(eval_dataset)``) to scan everything. When the dataset has no
-    ``labels`` field, falls back to ``input_ids`` for the label count, which
-    matches the standard causal-LM convention where labels == input_ids and
-    only padding is masked.
+    Predicted-position semantics match the trainer's causal loss: positions
+    ``labels[1:]`` where the label is neither ``-100`` (explicit ignore) nor
+    ``pad_token_id`` (the collator's pad-as-ignore convention, which has
+    not been applied yet at pre-collation time).
+
+    ``max_examples`` caps the iteration; ``<= 0`` means scan everything.
     """
     total_bytes = 0
     total_chars = 0
     total_predicted_tokens = 0
     n_examples = 0
 
-    has_len = hasattr(eval_dataset, "__len__")
-    if has_len:
+    if hasattr(eval_dataset, "__len__"):
         ds_len = len(eval_dataset)
         if max_examples is None or max_examples <= 0:
             max_examples = ds_len
@@ -315,10 +312,12 @@ def _compute_corpus_stats(eval_dataset, tokenizer, max_examples):
         total_bytes += len(text.encode("utf-8"))
         total_chars += len(text)
         # Predicted positions: only labels[1:] contribute to causal loss
-        # (position 0 is input-only). -100 marks ignored positions.
-        for tok in labels[1:]:
-            if tok != -100:
-                total_predicted_tokens += 1
+        # (position 0 is input-only). Drop both -100 (explicit ignore) and
+        # pad — pre-padded examples (pipeline trainer uses padding=max_length)
+        # would otherwise inflate the count vs. what the trainer counts.
+        total_predicted_tokens += sum(
+            1 for t in labels[1:] if t != -100 and t != pad_token_id
+        )
         n_examples += 1
 
     return total_bytes, total_chars, total_predicted_tokens, n_examples
@@ -418,27 +417,37 @@ def main():
         result = None
 
     # Pre-pass: compute byte/char/predicted-token counts so we can report
-    # tokenizer-agnostic metrics (BPB/BPC) alongside the raw token PPL. Done
-    # on rank 0 only — the eval_dataset is identical on every rank at this
-    # point (sharding happens inside the trainer's dataloader), so rank 0's
-    # tally covers the full corpus regardless of how the trainer shards it.
+    # tokenizer-agnostic metrics (BPB/BPC) alongside the raw token PPL.
     #
-    # When ``max_eval_steps`` truncates evaluation, scope counting to the
-    # same prefix the trainer will actually consume: the DDP all-shards loop
-    # caps each rank to ``max_eval_steps``, so the global cap is
-    # ``max_eval_steps * batch_size * world_size``. For the single-rank /
-    # dispatch-eval path the cap is ``max_eval_steps * batch_size``. We use
-    # the larger product, which over-counts only when world_size > 1 *and*
-    # dispatch_eval_batches=True — and in that mode the trainer feeds the
-    # full dataset across ranks anyway, so the larger figure is still right
-    # in the common case (uniform-length sequences in eval datasets).
+    # Rebuild the dataset for this rank-0 pre-pass instead of iterating
+    # ``eval_dataset`` in place — iterable datasets (ComposableIterableDataset,
+    # HF streaming) carry an internal cursor, and a partial-iteration would
+    # leave the trainer reading from the post-prepass position. Two
+    # independent factory instances dodge the problem entirely.
+    #
+    # The example cap mirrors the trainer's max_eval_steps semantics. DDP
+    # with the default ``dispatch_batches=True`` and the simple/pipeline
+    # trainers all cap at ``max_steps * batch_size`` (one logical iterator
+    # over the corpus); DDP ``dispatch_batches=False`` (all-shards) caps
+    # per-rank, so the global cap is ``* world_size``.
     corpus_stats = None
     if is_rank_zero:
+        per_rank_shards = (
+            args.trainer == "ddp"
+            and hasattr(trainer, "_dispatch_eval_batches")
+            and not trainer._dispatch_eval_batches()
+        )
         if args.max_steps and args.max_steps > 0:
-            max_examples = args.max_steps * args.batch_size * max(world_size, 1)
+            shard_factor = max(world_size, 1) if per_rank_shards else 1
+            max_examples = args.max_steps * args.batch_size * shard_factor
         else:
             max_examples = 0  # signal "all examples"
-        corpus_stats = _compute_corpus_stats(eval_dataset, tokenizer, max_examples)
+        prepass_dataset = dataset_proj(
+            test_config.dataset_target, tokenizer=tokenizer, preprocess_args=dict()
+        )
+        corpus_stats = _compute_corpus_stats(
+            prepass_dataset, tokenizer, max_examples, tokenizer.pad_token_id
+        )
 
     start = time.time()
     metrics = trainer.evaluate()
