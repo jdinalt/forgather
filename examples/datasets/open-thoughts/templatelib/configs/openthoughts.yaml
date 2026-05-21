@@ -1,21 +1,16 @@
--- extends "datasets/load_dataset.yaml"
+-- extends "datasets/load_packed_dataset.yaml"
 
 [config_metadata]
     == super()
     -- set ns.config_name = "OpenThoughts3"
-    -- set ns.config_description = "OpenThoughts3-1.2M: 1.2M reasoning conversations (math, code, science) annotated by QwQ-32B."
+    -- set ns.config_description = "OpenThoughts3-1.2M: 1.2M reasoning conversations (math, code, science) annotated by QwQ-32B, packed."
     -- set ns.source = "https://huggingface.co/datasets/open-thoughts/OpenThoughts3-1.2M"
-    -- set ns.load_method = "forgather.ml.datasets:fast_load_iterable_dataset"
     -- set ns.openthoughts_src = joinpath(project_dir, 'src', 'openthoughts.py')
     -- set ns.default_chat_template = joinpath(ns.forgather_dir, 'chat_templates', 'chatml.jinja')
     -- set ns.chat_template = chat_template | default(ns.default_chat_template)
     ## main_feature is advisory metadata only -- the openthoughts map function reads
     ## the conversations list directly rather than a single feature.
     -- set ns.main_feature = "conversations"
-
-[map_kwargs]
-    == super()
-    batch_size: 32
 
 [load_dataset_args]
     == super()
@@ -34,9 +29,18 @@
     split: "train[1000:10000]"
 
 [map_function]
-.define: &map_function !partial:{{ ns.openthoughts_src }}:openthoughts_map_fn
+.define: &map_function !partial:{{ ns.openthoughts_src }}:openthoughts_packed_map_fn
     chat_template: !singleton:{{ ns.openthoughts_src }}:load_chat_template
         path: "{{ ns.chat_template }}"
+    max_length: {{ max_length | default(512) }}
+    overflow: False
+    packed: True
+    packing_strategy: "best_fit"
+    shuffle_output: True
+    stride: {{ stride | default(0) }}
+    min_len: 32
+    add_bos: True
+    add_eos: True
 
 [dynamic_args]
     == super()
@@ -44,3 +48,4 @@
         names: "--chat-template"
         help: "Path to chat template file"
         type: "path"
+
