@@ -6,5 +6,4 @@ https://huggingface.co/datasets/allenai/c4
 
 ## Configurations
 
-- [en.yaml](./templatelib/configs/en.yaml) C4, English (`en`) split
-- [en-packed.yaml](./templatelib/configs/en-packed.yaml) C4 English with sequence packing
+- [en.yaml](./templatelib/configs/en.yaml) C4, English (`en`) split with best-fit sequence packing

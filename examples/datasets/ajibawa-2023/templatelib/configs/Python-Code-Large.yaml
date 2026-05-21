@@ -5,7 +5,6 @@
     -- set ns.config_name = "Python Code Large"
     -- set ns.config_description = "Large synthetic Python code dataset by Feynman Innovations"
     -- set ns.source = "https://huggingface.co/datasets/ajibawa-2023/Python-Code-Large"
-    -- set ns.load_method = "forgather.ml.datasets:fast_load_iterable_dataset"
     -- set ns.main_feature = "code"
 
 [load_dataset_args]
