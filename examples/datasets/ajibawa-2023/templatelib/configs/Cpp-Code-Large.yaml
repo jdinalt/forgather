@@ -1,4 +1,4 @@
--- extends "datasets/load_dataset.yaml"
+-- extends "datasets/load_packed_dataset.yaml"
 
 [config_metadata]
     == super()
@@ -7,10 +7,6 @@
     -- set ns.source = "https://huggingface.co/datasets/ajibawa-2023/Cpp-Code-Large"
     -- set ns.load_method = "forgather.ml.datasets:fast_load_iterable_dataset"
     -- set ns.main_feature = "code"
-
-[map_kwargs]
-    == super()
-    batch_size: 32
 
 [load_dataset_args]
     == super()

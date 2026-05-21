@@ -10,7 +10,9 @@
 .define: &tokenizer !var "tokenizer"
 
     [pp_kwargs]
-.define: &pp_kwargs !dict
+.define: &pp_kwargs
+    stride: {{ stride | default(0) }}
+    max_length: {{ max_length | default(512) }}
 
     [python_code]
 .define: &python_code !call:forgather:from_project

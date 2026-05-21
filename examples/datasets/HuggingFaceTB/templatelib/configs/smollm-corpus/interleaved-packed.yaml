@@ -1,5 +1,4 @@
 -- extends "configs/smollm-corpus/interleaved.yaml"
--- from "packed.yaml" import dynamic_args
 
 [config_metadata]
     == super()
@@ -18,7 +17,3 @@
 [cosmopedia]
     == super()
     config_template: "smollm-corpus/cosmopedia-v2-packed.yaml"
-
-[dynamic_args]
-    == super()
-{{ dynamic_args() }}

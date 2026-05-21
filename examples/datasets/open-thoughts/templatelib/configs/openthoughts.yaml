@@ -34,9 +34,18 @@
     split: "train[1000:10000]"
 
 [map_function]
-.define: &map_function !partial:{{ ns.openthoughts_src }}:openthoughts_map_fn
+.define: &map_function !partial:{{ ns.openthoughts_src }}:openthoughts_packed_map_fn
     chat_template: !singleton:{{ ns.openthoughts_src }}:load_chat_template
         path: "{{ ns.chat_template }}"
+    max_length: {{ max_length | default(512) }}
+    overflow: False
+    packed: True
+    packing_strategy: "best_fit"
+    shuffle_output: True
+    stride: 0
+    min_len: 32
+    add_bos: True
+    add_eos: True
 
 [dynamic_args]
     == super()

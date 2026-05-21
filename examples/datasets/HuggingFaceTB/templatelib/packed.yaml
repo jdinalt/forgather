@@ -16,15 +16,3 @@
 -- macro map_kwargs()
     batch_size: 250
 -- endmacro
-
-
--- macro dynamic_args()
-    max_length:
-        names: "--max-length"
-        type: "int"
-        help: "Maximum length of output sequences."
-    stride:
-        names: "--stride"
-        type: "int"
-        help: "Number of tokens to repeat from previous overflowing example."
--- endmacro

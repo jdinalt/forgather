@@ -5,17 +5,12 @@
     -- set ns.config_name = "Open Orca"
     -- set ns.config_description = "A rich collection of augmented FLAN data aligned with the distributions outlined in the Orca paper."
     -- set ns.source = "https://huggingface.co/datasets/Open-Orca/OpenOrca"
-    -- set ns.load_method = "forgather.ml.datasets:fast_load_iterable_dataset"
     -- set ns.orca_src = joinpath(project_dir, 'src', 'orca.py')
     -- set ns.default_chat_template = joinpath(ns.forgather_dir, 'chat_templates', 'chatml.jinja')
     -- set ns.chat_template = chat_template | default(ns.default_chat_template)
     ## main_feature is advisory metadata only -- the orca map function reads
     ## system_prompt/question/response directly rather than a single feature.
     -- set ns.main_feature = "question"
-
-[map_kwargs]
-    == super()
-    batch_size: 32
 
 [load_dataset_args]
     == super()
