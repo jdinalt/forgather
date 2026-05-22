@@ -2,6 +2,9 @@
 
 Most interaction with Forgather happens through the CLI or configuration files, but the Python API is available for programmatic use — loading projects in notebooks, building custom training loops, or integrating with external tooling.
 
+!!! note "Rendering"
+    These pages use `mkdocstrings` directives to pull docstrings from the source. The full MkDocs build renders them inline; the webui's lightweight Docs view does so via a pre-rendered cache populated by `forgather docs build` (run automatically by `./build-webui.sh`). When the cache is missing, the Docs view falls back to raw markdown and you'll see `::: forgather.foo.Bar` lines instead of expanded class docs — run `forgather docs build` to populate the cache. See [Serving the Forgather Docs with MkDocs](../guides/mkdocs.md#pre-rendering-api-directives-for-the-in-app-docs-view) for details.
+
 ## Modules
 
 | Module | Key classes |
