@@ -120,7 +120,16 @@ def main():
     parser.add_argument("-H", "--host", default="127.0.0.1", help="Host to bind to")
     parser.add_argument("-p", "--port", type=int, default=8137, help="Port to bind to")
     parser.add_argument(
-        "-d", "--device", default="cuda:0", help="Device to use (cuda, cpu, auto)"
+        "-d",
+        "--device",
+        default="auto",
+        help=(
+            "Device to use (cuda:0, cpu, auto). Default 'auto' lets HF's"
+            " device_map pick the best available device, so the server"
+            " starts on CPU when no CUDA device is visible (e.g. CPU-only"
+            " torch build, --gpus none under docker) without an explicit"
+            " -d cpu."
+        ),
     )
     parser.add_argument(
         "-t", "--chat-template", help="Path to custom Jinja2 chat template file"
