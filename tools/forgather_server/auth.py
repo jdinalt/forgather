@@ -342,6 +342,42 @@ def redact_sensitive_in_demo(value):
     return value
 
 
+def _demo_path_allowed(path: str) -> bool:
+    """True if ``path`` is on the demo-mode mutation allowlist.
+
+    Handles the static exact-match set plus a small set of templated
+    patterns (cluster proxies whose middle segment is a server_id /
+    queue_id / etc. that varies per request). Each pattern is a
+    ``(prefix, suffix)`` tuple matched as
+    ``path.startswith(prefix) and path.endswith(suffix)`` with the
+    extra constraint that the variable middle is a *single* segment
+    (no slashes) — so a crafted path can't tunnel through.
+    """
+    if path in _DEMO_MUTATION_ALLOWLIST:
+        return True
+    for prefix, suffix in _DEMO_MUTATION_ALLOWLIST_PATTERNS:
+        if not (path.startswith(prefix) and path.endswith(suffix)):
+            continue
+        middle = path[len(prefix) : len(path) - len(suffix)]
+        if middle and "/" not in middle:
+            return True
+    return False
+
+
+# Templated allowlist entries — (prefix, suffix). Used only for paths
+# whose middle segment varies per request; the matcher requires the
+# variable part to be a single segment so e.g.
+# /api/cluster/dataset_server_proxy/<id>/load doesn't accidentally
+# allowlist /api/cluster/dataset_server_proxy/<id>/../delete .
+_DEMO_MUTATION_ALLOWLIST_PATTERNS = (
+    # Cluster-routed dataset-server load: same shape as
+    # /api/dataset-server/proxy/load above, just dispatched to a
+    # specific node via server_id. Body carries a JSON dataset spec,
+    # response is the materialized handle the webui pages through.
+    ("/api/cluster/dataset_server_proxy/", "/load"),
+)
+
+
 def _blocked_by_demo_mode(scope_type: str, method: str, path: str) -> bool:
     """True if demo mode should reject this request."""
     if not _demo_mode:
@@ -350,7 +386,7 @@ def _blocked_by_demo_mode(scope_type: str, method: str, path: str) -> bool:
         return False
     if method not in ("POST", "PUT", "DELETE", "PATCH"):
         return False
-    return path not in _DEMO_MUTATION_ALLOWLIST
+    return not _demo_path_allowed(path)
 
 
 # ---------------------------------------------------------------------------
