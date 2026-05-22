@@ -68,10 +68,24 @@ export interface GenerationParams {
 
 /** OpenAI-style chat message. The server is stateless: clients must
  *  send the full conversation history (optionally led by a single
- *  ``system`` message) on every request. */
+ *  ``system`` message) on every request.
+ *
+ *  ``reasoning`` is a Forgather UI-only field: when a vLLM reasoning
+ *  parser is active, the model's pre-answer thinking trace lands here
+ *  during streaming so the panel can render it distinctly. It is
+ *  stripped before any request is sent to the server (reasoning of a
+ *  prior turn is per-turn scratch and should not be replayed). */
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
+  reasoning?: string;
+}
+
+/** Strip UI-only fields before sending the conversation to the server.
+ *  Currently just ``reasoning``; centralised so future UI-only fields
+ *  can't accidentally leak through a forgotten request body. */
+function stripUiFields(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((m) => ({ role: m.role, content: m.content }));
 }
 
 /** Base URL of the same-origin proxy. Empty string intentional: it
@@ -229,20 +243,18 @@ export async function* streamCompletion(
     stream: true,
     ...params,
   };
-  yield* streamSse(
+  yield* streamSse<string>(
     proxyUrl("completions", baseUrl),
     body,
     signal,
-    (frame) => frame?.choices?.[0]?.text,
+    (frame) => {
+      const t = frame?.choices?.[0]?.text;
+      return typeof t === "string" && t.length > 0 ? t : undefined;
+    },
     authToken,
   );
 }
 
-/** Stream a chat completion. Same SSE framing as ``streamCompletion``,
- *  but the per-frame text lives at ``choices[0].delta.content`` and the
- *  body uses ``messages`` instead of ``prompt``. The first frame
- *  typically carries ``delta.role: "assistant"`` with no content; we
- *  ignore role-only frames and only yield content deltas. */
 /** Options that ride alongside generation params on chat-completion
  *  requests but aren't part of the HF GenerationConfig surface.
  *  ``nextRole`` is a Forgather-specific extension on the inference
@@ -254,6 +266,24 @@ export interface ChatRequestOptions {
   nextRole?: "assistant" | "user";
 }
 
+/** Tagged streaming delta. ``content`` is the final assistant reply;
+ *  ``reasoning`` is the model's pre-answer thinking trace (emitted by
+ *  vLLM when a reasoning parser is active, e.g. ``--reasoning-parser
+ *  qwen3``). Consumers should render the two differently and only
+ *  persist ``content`` in conversation history — replaying the
+ *  thinking trace on subsequent turns is wasteful and the model
+ *  typically discards it anyway. */
+export type ChatDelta =
+  | { kind: "content"; text: string }
+  | { kind: "reasoning"; text: string };
+
+/** Stream a chat completion. Same SSE framing as ``streamCompletion``,
+ *  but the per-frame text lives at ``choices[0].delta.content`` (or
+ *  ``delta.reasoning`` when a vLLM reasoning parser is active) and the
+ *  body uses ``messages`` instead of ``prompt``. The first frame
+ *  typically carries ``delta.role: "assistant"`` with no content; we
+ *  ignore role-only frames and only yield non-empty content/reasoning
+ *  deltas. */
 export async function* streamChatCompletion(
   baseUrl: string,
   model: string,
@@ -262,19 +292,31 @@ export async function* streamChatCompletion(
   signal: AbortSignal,
   options?: ChatRequestOptions,
   authToken?: string,
-): AsyncIterable<string> {
+): AsyncIterable<ChatDelta> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
-    messages,
+    messages: stripUiFields(messages),
     stream: true,
     ...params,
   };
   if (options?.nextRole) body.next_role = options.nextRole;
-  yield* streamSse(
+  yield* streamSse<ChatDelta>(
     proxyUrl("chat/completions", baseUrl),
     body,
     signal,
-    (frame) => frame?.choices?.[0]?.delta?.content,
+    (frame) => {
+      const delta = frame?.choices?.[0]?.delta;
+      if (!delta) return undefined;
+      const r = delta.reasoning;
+      if (typeof r === "string" && r.length > 0) {
+        return { kind: "reasoning", text: r };
+      }
+      const c = delta.content;
+      if (typeof c === "string" && c.length > 0) {
+        return { kind: "content", text: c };
+      }
+      return undefined;
+    },
     authToken,
   );
 }
@@ -369,7 +411,7 @@ export async function tokenizeChat(
 ): Promise<TokenizeResponse> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
-    messages,
+    messages: stripUiFields(messages),
   };
   if (options?.nextRole) body.next_role = options.nextRole;
   if (typeof options?.addGenerationPrompt === "boolean") {
@@ -389,7 +431,18 @@ export async function tokenizeChat(
   return (await r.json()) as TokenizeResponse;
 }
 
-/** One-shot chat completion. Returns the assistant message text. */
+/** Result of a one-shot chat completion. ``content`` is the assistant's
+ *  final reply (empty string if the model exhausted its token budget
+ *  inside the reasoning trace). ``reasoning`` is the pre-answer
+ *  thinking text when a vLLM reasoning parser is active, undefined
+ *  otherwise. */
+export interface ChatResult {
+  content: string;
+  reasoning?: string;
+}
+
+/** One-shot chat completion. Returns the assistant message text plus
+ *  an optional reasoning trace. */
 export async function runChatCompletion(
   baseUrl: string,
   model: string,
@@ -398,10 +451,10 @@ export async function runChatCompletion(
   signal: AbortSignal,
   options?: ChatRequestOptions,
   authToken?: string,
-): Promise<string> {
+): Promise<ChatResult> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
-    messages,
+    messages: stripUiFields(messages),
     stream: false,
     ...params,
   };
@@ -416,22 +469,33 @@ export async function runChatCompletion(
     throw new Error(`${r.status} ${r.statusText}: ${await r.text()}`);
   }
   const data = (await r.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
+    choices?: Array<{
+      message?: { content?: string | null; reasoning?: string | null };
+    }>;
   };
-  return data.choices?.[0]?.message?.content ?? "";
+  const msg = data.choices?.[0]?.message;
+  return {
+    content: msg?.content ?? "",
+    reasoning: msg?.reasoning ?? undefined,
+  };
 }
 
 /** Shared SSE-stream consumer. Posts the JSON body, parses ``data: …``
  *  events terminated by a blank line, and yields whatever the supplied
  *  ``extract`` callback returns from each frame's parsed JSON. Stops on
- *  ``data: [DONE]`` or stream EOF. */
-async function* streamSse(
+ *  ``data: [DONE]`` or stream EOF.
+ *
+ *  Contract: ``extract`` returning ``undefined`` skips the frame; any
+ *  other return value is yielded verbatim. Callers that want to drop
+ *  empty strings (or other "no-op" values) must filter inside their
+ *  own ``extract`` — this consumer does not enforce non-empty yields. */
+async function* streamSse<T>(
   url: string,
   body: Record<string, unknown>,
   signal: AbortSignal,
-  extract: (frame: any) => string | undefined,
+  extract: (frame: any) => T | undefined,
   authToken?: string,
-): AsyncIterable<string> {
+): AsyncIterable<T> {
   const r = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
@@ -463,9 +527,9 @@ async function* streamSse(
         if (payload === "[DONE]") return;
         try {
           const parsed = JSON.parse(payload);
-          const text = extract(parsed);
-          if (typeof text === "string" && text.length > 0) {
-            yield text;
+          const item = extract(parsed);
+          if (item !== undefined) {
+            yield item;
           }
         } catch {
           // Ignore unparseable frames — the server never sends malformed
