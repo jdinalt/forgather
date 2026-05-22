@@ -7,7 +7,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from forgather_server.routes.docs import _maybe_built_variant
+from forgather_server.routes import docs as docs_routes
+from forgather_server.routes.docs import _maybe_built_variant, docs_root
 
 
 @pytest.fixture
@@ -80,3 +81,69 @@ class TestMaybeBuiltVariant:
         built.write_text("# expanded\n")
         with _with_repo_root(fake_repo):
             assert _maybe_built_variant(built) is None
+
+
+@pytest.fixture
+def reset_landing_override():
+    """Ensure DOCS_LANDING_OVERRIDE doesn't leak between tests."""
+    original = docs_routes.DOCS_LANDING_OVERRIDE
+    yield
+    docs_routes.DOCS_LANDING_OVERRIDE = original
+
+
+class TestDocsRoot:
+    def test_no_override_prefers_docs_readme(self, fake_repo, reset_landing_override):
+        (fake_repo / "docs" / "README.md").write_text("# index\n")
+        (fake_repo / "README.md").write_text("# root\n")
+        docs_routes.DOCS_LANDING_OVERRIDE = None
+        with _with_repo_root(fake_repo):
+            resp = docs_root()
+        assert resp.path == str(fake_repo / "docs" / "README.md")
+
+    def test_no_override_falls_back_to_root_readme(
+        self, fake_repo, reset_landing_override
+    ):
+        (fake_repo / "README.md").write_text("# root\n")
+        docs_routes.DOCS_LANDING_OVERRIDE = None
+        with _with_repo_root(fake_repo):
+            resp = docs_root()
+        assert resp.path == str(fake_repo / "README.md")
+
+    def test_no_override_returns_null_when_nothing_exists(
+        self, fake_repo, reset_landing_override
+    ):
+        docs_routes.DOCS_LANDING_OVERRIDE = None
+        with _with_repo_root(fake_repo):
+            resp = docs_root()
+        assert resp.path is None
+
+    def test_absolute_override_wins(self, fake_repo, reset_landing_override):
+        target = fake_repo / "docs" / "guides" / "intro.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("# intro\n")
+        # docs/README.md exists too — the override should still win.
+        (fake_repo / "docs" / "README.md").write_text("# index\n")
+        docs_routes.DOCS_LANDING_OVERRIDE = str(target)
+        with _with_repo_root(fake_repo):
+            resp = docs_root()
+        assert resp.path == str(target)
+
+    def test_relative_override_resolves_against_repo(
+        self, fake_repo, reset_landing_override
+    ):
+        target = fake_repo / "docs" / "guides" / "intro.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("# intro\n")
+        docs_routes.DOCS_LANDING_OVERRIDE = "docs/guides/intro.md"
+        with _with_repo_root(fake_repo):
+            resp = docs_root()
+        assert resp.path == str(target.resolve())
+
+    def test_missing_override_falls_back_to_default(
+        self, fake_repo, reset_landing_override
+    ):
+        (fake_repo / "docs" / "README.md").write_text("# index\n")
+        docs_routes.DOCS_LANDING_OVERRIDE = "docs/nowhere.md"
+        with _with_repo_root(fake_repo):
+            resp = docs_root()
+        assert resp.path == str(fake_repo / "docs" / "README.md")

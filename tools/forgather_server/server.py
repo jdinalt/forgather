@@ -154,6 +154,17 @@ def main():
     )
     add_server_tls_args(parser)
     parser.add_argument(
+        "--docs-landing",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path the Docs view opens by default (overrides the "
+            "built-in docs/README.md preference). Absolute, or relative "
+            "to the Forgather repo root. Falls back to the built-in "
+            "preference when the named file does not exist."
+        ),
+    )
+    parser.add_argument(
         "--lock-inference-proxy",
         action="store_true",
         help=(
@@ -232,6 +243,15 @@ def main():
 
     if args.cluster:
         _activate_cluster(args, tls_on=tls_on)
+
+    # The docs view reads this at request time to decide the default
+    # landing page. Set via module attribute so a hypothetical runtime
+    # toggle (config reload, etc.) can swap it without restarting.
+    if args.docs_landing:
+        from .routes import docs as _docs_routes
+
+        _docs_routes.DOCS_LANDING_OVERRIDE = args.docs_landing
+        logging.info("docs landing override: %s", args.docs_landing)
 
     # The inference proxy reads this flag at request time. Set it via
     # module attribute (rather than env var) so a future `forgather server

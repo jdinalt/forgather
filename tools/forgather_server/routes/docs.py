@@ -34,6 +34,15 @@ _MAX_ASSET_BYTES = 50 * 1024 * 1024  # 50 MiB
 # always works whether or not the build step has been run.
 _BUILT_SUBDIR = ".built"
 
+# Operator-supplied override for the default Docs landing page, set by
+# ``server.py`` from ``--docs-landing`` (or ``args.docs_landing`` in
+# ``server_config.yaml``). Absolute or repo-relative; ``None`` keeps
+# the built-in preference (docs/README.md → root README → empty state).
+# A module-level mutable name keeps this consistent with how the
+# inference-proxy lock-flag is wired — no extra config plumbing, swap
+# in place when a hypothetical runtime toggle is added.
+DOCS_LANDING_OVERRIDE: Optional[str] = None
+
 
 class DocsRootResponse(BaseModel):
     path: Optional[str] = None
@@ -135,14 +144,31 @@ def _abs_resolve(path: str) -> Path:
 def docs_root():
     """Default Docs landing page.
 
-    Prefers the documentation index at ``docs/README.md`` over the
-    repo-root README — the docs index is the curated entry point with
-    links to installation / tutorials / configuration / API, whereas
-    the root README is closer to a project elevator pitch. Falls back
-    to the root README if the docs index is missing, and finally to
-    ``null`` so the frontend can surface an empty state.
+    Resolution order:
+
+      1. ``DOCS_LANDING_OVERRIDE`` (from ``--docs-landing`` /
+         ``args.docs_landing`` in the server config). Absolute paths
+         are used as-is; relative paths resolve against the Forgather
+         repo root. A missing file falls through to the built-in
+         preference rather than being treated as a hard error — the
+         override is a hint, not a contract, so a misconfigured path
+         doesn't leave the panel empty.
+      2. ``docs/README.md`` — the curated docs index, with links to
+         installation / tutorials / configuration / API.
+      3. ``README.md`` at the repo root — closer to a project elevator
+         pitch but better than nothing if the docs index is missing.
+      4. ``null`` — the frontend surfaces an empty state.
     """
     repo = Path(sr.forgather_repo_root())
+
+    if DOCS_LANDING_OVERRIDE:
+        override = Path(DOCS_LANDING_OVERRIDE)
+        if not override.is_absolute():
+            override = repo / override
+        if override.is_file():
+            return DocsRootResponse(path=str(override.resolve()))
+        log.warning("docs landing override does not exist; falling back: %s", override)
+
     for candidate in (repo / "docs" / "README.md", repo / "README.md"):
         if candidate.is_file():
             return DocsRootResponse(path=str(candidate))

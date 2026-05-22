@@ -55,6 +55,7 @@ anything absent from both falls back to the defaults shown.
 | `--tls-cert PATH` / `--tls-key PATH` | resolved from shared config              | Override the certificate / private-key paths for this run.                                                            |
 | `--insecure`                         | off                                      | Allow binding a non-loopback host without TLS. Suppresses the "token in cleartext" abort.                             |
 | `--lock-inference-proxy`             | off                                      | Restrict the inference reverse proxy to localhost upstreams. The unconditional `http`/`https`-only scheme guard still applies. See [Network exposure](#network-exposure). |
+| `--docs-landing PATH`                | unset                                    | Path the Docs view opens by default, overriding the built-in `docs/README.md` preference. Absolute or repo-relative. A missing file falls back to the default — the override is a hint, not a hard requirement. |
 
 The `args:` mapping in `server_config.yaml` accepts the same names with
 dashes turned to underscores (`log_level`, `regen_token`,
@@ -2004,7 +2005,11 @@ calling out:
   rather than the repo-root README — the docs index is the curated
   entry point with links to installation / tutorials / config / API,
   whereas the root README is closer to a project elevator pitch.
-  Falls back to the root README if the docs index is missing.
+  Falls back to the root README if the docs index is missing, or
+  the empty state if neither exists. Operators can override the
+  default with `--docs-landing PATH` (or `args.docs_landing` in
+  `server_config.yaml`); a missing override falls back to the
+  built-in preference rather than failing hard.
 
 **Pre-rendered API directives.** The Docs view serves raw markdown,
 so `:::`-style `mkdocstrings` directives in `docs/api/*.md` would
