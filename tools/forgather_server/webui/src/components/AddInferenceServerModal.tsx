@@ -123,35 +123,49 @@ export function AddInferenceServerModal({
               Auth token
               <div className="path-field">
                 <input
-                  type={showAuthToken ? "text" : "password"}
+                  // In demo mode force masked + read-only and hide the
+                  // Show / Copy controls — the modal's submit is also
+                  // disabled, but the panel could pre-fill ``initialAuthToken``
+                  // and a careless Show click would dump the token to
+                  // the visitor's screen.
+                  type={demoMode || !showAuthToken ? "password" : "text"}
                   className="wide"
-                  value={authToken}
+                  value={demoMode ? "" : authToken}
                   onChange={(e) => setAuthToken(e.target.value)}
-                  placeholder="optional — leave blank if the server runs --no-auth"
+                  readOnly={demoMode}
+                  placeholder={
+                    demoMode
+                      ? "Token entry disabled in demo mode"
+                      : "optional — leave blank if the server runs --no-auth"
+                  }
                   autoComplete="new-password"
                   spellCheck={false}
                   name="inf-auth-token"
                 />
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={() => setShowAuthToken((v) => !v)}
-                  title={showAuthToken ? "Hide token" : "Show token"}
-                >
-                  {showAuthToken ? "Hide" : "Show"}
-                </button>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={() => {
-                    if (!authToken) return;
-                    navigator.clipboard?.writeText(authToken).catch(() => {});
-                  }}
-                  disabled={!authToken}
-                  title="Copy token to clipboard"
-                >
-                  Copy
-                </button>
+                {!demoMode && (
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => setShowAuthToken((v) => !v)}
+                    title={showAuthToken ? "Hide token" : "Show token"}
+                  >
+                    {showAuthToken ? "Hide" : "Show"}
+                  </button>
+                )}
+                {!demoMode && (
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => {
+                      if (!authToken) return;
+                      navigator.clipboard?.writeText(authToken).catch(() => {});
+                    }}
+                    disabled={!authToken}
+                    title="Copy token to clipboard"
+                  >
+                    Copy
+                  </button>
+                )}
               </div>
             </label>
           </div>

@@ -53,6 +53,7 @@ def build_inference_command(
     # in argv where any local user can read it via /proc or `ps`.
     auth_token_file: Optional[str] = None,
     no_auth: bool = False,
+    quiet_tokens: bool = False,
 ) -> List[str]:
     """Build the argv for ``tools/inference_server/server.py``.
 
@@ -121,4 +122,6 @@ def build_inference_command(
         cmd.append("--no-auth")
     elif auth_token_file:
         cmd.extend(["--auth-token-file", auth_token_file])
+    if quiet_tokens:
+        cmd.append("--quiet-tokens")
     return cmd

@@ -45,6 +45,8 @@ anything absent from both falls back to the defaults shown.
 | `-l` / `--log-level LEVEL`           | `INFO`                                   | `DEBUG`, `INFO`, `WARNING`, `ERROR`.                                                                                  |
 | `--reload`                           | off                                      | Uvicorn auto-reload — development convenience only; spawned jobs do not survive a hot-reload.                         |
 | `--no-auth`                          | off                                      | Disable the bearer-token / password gate. Single-trusted-user host only. See [Threat model](#threat-model).            |
+| `--demo`                             | off                                      | Read-only public-demo mode: blocks every POST/PUT/DELETE outside a narrow allowlist, redacts bearer tokens from API responses, and surfaces a "DEMO MODE" chip in the webui sidebar. See [Demo mode](#demo-mode-public-readonly-exposure). |
+| `--fs-root PATH`                     | unrestricted (or repo+search roots in `--demo`) | Restrict every path-accepting API to descendants of this directory. Repeatable. Default in `--demo` is the Forgather repo plus the registered search roots, so demo visitors can't browse outside curated content. See [Filesystem allowlist](#filesystem-allowlist---fs-root). |
 | `--regen-token`                      | off                                      | Rotate the persisted bearer token at startup. Invalidates every CLI client using the old token.                       |
 | `--persist-sessions`                 | off                                      | Persist browser session cookies to `<config>/server/sessions.json` (0600) so the webui survives restarts. See [Persisted sessions](#persisted-sessions). |
 | `--cluster NAME`                     | unset                                    | Join the named cluster (mDNS-scoped). Standalone otherwise. See [Cluster mode](#cluster-mode-multi-node-prototype).   |
@@ -332,6 +334,108 @@ elsewhere, the opt-in is explicit and the auth gate stays in place:
   section of the dataset_server README for the full client-side trust
   story; the short version is "only register URLs you'd `pip install`
   from."
+
+## Demo mode (public read-only exposure)
+
+`--demo` turns the server into a public-safe instance: every mutating
+request (`POST` / `PUT` / `DELETE` / `PATCH`) returns
+`403 {"detail":"Server is in read-only demo mode"}` with a
+`X-Forgather-Demo-Blocked: 1` header, and bearer tokens are stripped
+from `/api/jobs`, `/api/queue`, `/api/services` response bodies before
+they reach the browser. The webui surfaces a compact amber **"DEMO
+MODE"** chip in the sidebar header next to the Forgather version
+label.
+
+Pair with `--no-auth` for a fully anonymous public demo, or leave the
+auth gate on for a curated audience:
+
+```bash
+# Anonymous public demo
+forgather server --no-auth --demo --fs-root /path/to/example/projects
+
+# Token-gated demo (token still required to load the webui, but the
+# logged-in user can only read state)
+forgather server --demo --fs-root /path/to/example/projects
+```
+
+**What's allowlisted** (the only POSTs that still work in demo mode):
+- `/api/auth/logout` — session UX.
+- `/api/inference/{completions, chat/completions, tokenize}` — proxy
+  reads against an external inference upstream.
+- `/api/dataset-server/proxy/load` and
+  `/api/cluster/dataset_server_proxy/<server_id>/load` — proxy reads
+  against an external dataset server so the Datasets panel can open
+  a dataset for browsing.
+
+**What's still safe in demo mode** (defense in depth):
+- The "Copy bundle" button on local dataset-server rows is hidden in
+  the UI and the backend endpoint refuses with 403 (the bundle URI
+  embeds the real bearer token, which the redactor can't catch by
+  key name).
+- The server-config gear is hidden — the file it would open lives
+  outside any sane `--fs-root`.
+- The scheduler / restart / shutdown gears are disabled with
+  explanatory tooltips.
+
+**Recommended deployment**: container or VM, mount example projects
+read-only, run with `--no-auth --demo --fs-root <examples-dir>`.
+
+## Filesystem allowlist (`--fs-root`)
+
+Jupyter-Lab-style root restriction. Pass `--fs-root <path>`
+(repeatable) and every path-accepting API will refuse paths that don't
+resolve to a descendant of one of the listed roots, returning a 403
+with `X-Forgather-Fs-Root-Denied: 1`.
+
+```bash
+# Limit browsing/editing to a single project tree
+forgather server --fs-root /home/me/research
+
+# Multiple roots (union)
+forgather server --fs-root /home/me/research --fs-root /scratch/datasets
+```
+
+**Defaults**:
+- Without `--demo` and without `--fs-root`: unrestricted (historical
+  behaviour — the operator already trusts the box).
+- With `--demo` and no `--fs-root`: defaults to the Forgather repo
+  plus every directory in `search_roots.json`. That's the curated
+  project content the operator already declared browsable.
+- With `--fs-root` (regardless of `--demo`): exactly the supplied
+  roots, no implicit union with anything else.
+
+**Fail-closed**: if every supplied `--fs-root` is unresolvable or not
+a directory, the server refuses to start rather than silently falling
+back to unrestricted. Typos in the operator's argv aren't a security
+weakening.
+
+**What gets gated**: every `/api/fs/*` endpoint, every `/api/configs/*`
+and `/api/template/source` read/write, every `/api/docs/file` and
+`/api/docs/asset` read, every `/api/project*` endpoint that takes a
+`project_dir`, every `/api/workspace/*` creation flow, and
+`/api/config/dynamic-args`. The file-picker UI hides directory entries
+whose realpath would land outside the allowlist (so a symlink can't
+even be *clicked* to escape).
+
+## Quiet-tokens flag (spawned servers)
+
+Both the inference server (`tools/inference_server/server.py`) and the
+dataset server (`tools/dataset_server/server.py`) accept
+`--quiet-tokens`. When set, the bearer-token-bearing launch banner
+(and the `curl -H "Authorization: Bearer …"` example) is replaced
+with a one-line message that says auth is on but suppresses the
+value. The token is still written to its per-port file as usual, so
+the local CLI client / cluster peers still discover it; only the TTY
+log is sanitized.
+
+Surfaced in the webui:
+- **Inference modal** → "Quiet tokens" checkbox under the chat-template
+  field.
+- **Dataset server modal** → "Quiet tokens" checkbox under the auth
+  block, next to `--regen-token`.
+
+Intended for `--demo` deployments where the Jobs panel's TTY pane is
+visible to untrusted viewers.
 
 ## Authentication overview
 

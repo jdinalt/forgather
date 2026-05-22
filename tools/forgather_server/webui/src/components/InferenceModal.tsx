@@ -43,6 +43,11 @@ interface PersistedAdHoc {
   keepOnGpu: boolean;
   chatTemplate: string;
   requestedGpus: number;
+  /** Suppress the bearer token in the launch banner sent to the TTY
+   *  log. The token still works; clients pick it up from the per-job
+   *  token file. Intended for demo deployments where the TTY pane is
+   *  visible to untrusted viewers. */
+  quietTokens?: boolean;
   /** Explicit device override for the spawned server's -d flag. Empty
    *  string = "let the launcher decide" (cpu when 0 GPUs are
    *  reserved, else server-side _default_device). Other values pass
@@ -150,6 +155,9 @@ export function InferenceModal({
   const [chatTemplate, setChatTemplate] = useState<string>(
     persisted.chatTemplate ?? "",
   );
+  const [quietTokens, setQuietTokens] = useState<boolean>(
+    persisted.quietTokens ?? false,
+  );
 
   // Project-backed flows force exactly one model row; the add/remove UI
   // never appears. Multi-model is an ad-hoc-only concern (a project is a
@@ -184,6 +192,7 @@ export function InferenceModal({
     setDisableKvCache(false);
     setKeepOnGpu(false);
     setChatTemplate("");
+    setQuietTokens(false);
     setRequestedGpus(1);
     setDevice("");
     // Priority is per-session (not persisted) but resetting it here too
@@ -279,6 +288,7 @@ export function InferenceModal({
     if (ct) args.chat_template = ct;
     const ca = compileArgs.trim();
     if (ca) args.compile_args = ca;
+    if (quietTokens) args.quiet_tokens = true;
     return args;
   };
 
@@ -316,6 +326,7 @@ export function InferenceModal({
       disableKvCache,
       keepOnGpu,
       chatTemplate: chatTemplate.trim(),
+      quietTokens,
       requestedGpus,
       device,
     });
@@ -682,6 +693,22 @@ export function InferenceModal({
                 wide
                 rememberKey="inference.chat-template"
               />
+            </label>
+          </div>
+
+          <div className="submit-row">
+            <label className="dyn-checkbox">
+              <input
+                type="checkbox"
+                checked={quietTokens}
+                onChange={(e) => setQuietTokens(e.target.checked)}
+              />
+              <code>--quiet-tokens</code>
+              <span className="muted">
+                suppress the bearer token in the launch banner so the
+                TTY log is safe to expose publicly (clients still get
+                the token from the per-job file)
+              </span>
             </label>
           </div>
 

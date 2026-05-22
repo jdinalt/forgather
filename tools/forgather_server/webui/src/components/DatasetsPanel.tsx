@@ -632,6 +632,7 @@ interface DatasetServersTabProps {
 }
 
 function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
+  const demoMode = useDemoMode();
   const qc = useQueryClient();
   const localsQ = useQuery({
     queryKey: ["dataset-servers-local"],
@@ -763,7 +764,7 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
                   {s.has_auth_token && (
                     <span className="muted">· auth ✓</span>
                   )}
-                  {s.alive && (
+                  {s.alive && !demoMode && (
                     <button
                       className="secondary"
                       style={{ marginLeft: "auto" }}
@@ -794,7 +795,12 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
           <button
             style={{ marginLeft: 12 }}
             onClick={() => setAddOpen(true)}
-            title="Register a remote dataset_server URL"
+            disabled={demoMode}
+            title={
+              demoMode
+                ? "Read-only demo mode — server registry is locked"
+                : "Register a remote dataset_server URL"
+            }
           >
             + Add server
           </button>
@@ -825,7 +831,9 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
                     <span className="muted">· auth ✓</span>
                   )}
                   <button
-                    className="tiny"
+                    // ``destructive`` class so the global demo-mode CSS
+                    // rule disables this row's remove control.
+                    className="tiny destructive"
                     style={{ marginLeft: "auto" }}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -1890,35 +1898,47 @@ function AddServerModal({
                   the Inference Model panel uses. */}
               <div className="path-field">
                 <input
-                  type={showAuthToken ? "text" : "password"}
+                  // Mirror AddInferenceServerModal: in demo mode force
+                  // masked + read-only and hide Show / Copy so a
+                  // pre-filled token can't be revealed.
+                  type={demoMode || !showAuthToken ? "password" : "text"}
                   className="wide"
-                  value={authToken}
+                  value={demoMode ? "" : authToken}
                   onChange={(e) => setAuthToken(e.target.value)}
-                  placeholder="optional — leave blank if the server runs --no-auth"
+                  readOnly={demoMode}
+                  placeholder={
+                    demoMode
+                      ? "Token entry disabled in demo mode"
+                      : "optional — leave blank if the server runs --no-auth"
+                  }
                   autoComplete="new-password"
                   spellCheck={false}
                   name="ds-auth-token"
                 />
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={() => setShowAuthToken((v) => !v)}
-                  title={showAuthToken ? "Hide token" : "Show token"}
-                >
-                  {showAuthToken ? "Hide" : "Show"}
-                </button>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={() => {
-                    if (!authToken) return;
-                    navigator.clipboard?.writeText(authToken).catch(() => {});
-                  }}
-                  disabled={!authToken}
-                  title="Copy token to clipboard"
-                >
-                  Copy
-                </button>
+                {!demoMode && (
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => setShowAuthToken((v) => !v)}
+                    title={showAuthToken ? "Hide token" : "Show token"}
+                  >
+                    {showAuthToken ? "Hide" : "Show"}
+                  </button>
+                )}
+                {!demoMode && (
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => {
+                      if (!authToken) return;
+                      navigator.clipboard?.writeText(authToken).catch(() => {});
+                    }}
+                    disabled={!authToken}
+                    title="Copy token to clipboard"
+                  >
+                    Copy
+                  </button>
+                )}
               </div>
             </label>
           </div>

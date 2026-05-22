@@ -64,6 +64,16 @@ banner warns prominently when this is set. Only use it on hosts where
 you're the only user (or you don't care who uses the model). No cache
 file is written.
 
+**Suppressing the token in the startup banner** — `--quiet-tokens`
+replaces the bearer-value-bearing launch lines (the printed token and
+the `curl -H "Authorization: Bearer …"` example) with a one-line
+"auth enabled (value suppressed)" message. The token still works and
+is still cached to its per-port file when auto-generated, so the
+local CLI client still picks it up; only the captured TTY log is
+sanitized. Use this when the inference server runs under
+`forgather server --demo` and the Jobs panel's TTY pane is exposed to
+untrusted viewers.
+
 Examples:
 
 ```bash

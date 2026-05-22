@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from .. import auth as auth_mod
-from ..cluster import _forgather_version
+from ..cluster import forgather_version
 
 router = APIRouter(tags=["auth"], prefix="/auth")
 
@@ -54,7 +54,7 @@ def auth_status(request: Request):
         has_password=auth_mod.has_password(),
         auth_disabled=auth_mod.auth_disabled(),
         demo_mode=auth_mod.demo_mode_enabled(),
-        forgather_version=_forgather_version(),
+        forgather_version=forgather_version(),
     )
 
 

@@ -5363,11 +5363,24 @@ li.config.selected button.link:hover {
   white-space: nowrap;
   cursor: help;
 }
+/* Collapsed-sidebar variant: tight vertical strip under the toggle so
+   demo mode is still visible without the full chip. */
+.sidebar-header-demo-chip-collapsed {
+  display: block;
+  margin: 4px 4px 0;
+  padding: 1px 3px;
+  text-align: center;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
 .sidebar-header-version {
   font-size: 11px;
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 96px;
   cursor: default;
 }
 

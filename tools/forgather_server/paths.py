@@ -42,10 +42,17 @@ _fs_roots: tuple[Path, ...] = ()
 
 
 def configure_fs_roots(roots) -> None:
-    """Install the fs-root allowlist. Pass an empty list to disable."""
+    """Install the fs-root allowlist. Pass an empty list to disable.
+
+    Fail-closed: if the operator supplied roots but none resolved
+    (typo, all paths missing, all symlinks broken), raise rather than
+    silently falling back to unrestricted. That's the opposite of what
+    they asked for and the worst-of-both-worlds for a security gate.
+    """
     global _fs_roots
+    supplied = [r for r in roots]
     resolved: list[Path] = []
-    for r in roots:
+    for r in supplied:
         try:
             p = Path(os.path.expanduser(str(r))).resolve()
         except (OSError, RuntimeError) as e:
@@ -55,6 +62,13 @@ def configure_fs_roots(roots) -> None:
             log.warning("ignoring fs-root that isn't a directory: %s", p)
             continue
         resolved.append(p)
+    if supplied and not resolved:
+        raise ValueError(
+            f"--fs-root: none of the supplied paths resolved to an "
+            f"existing directory: {[str(r) for r in supplied]!r}. Refusing "
+            f"to start with an empty allowlist — that would silently "
+            f"open access to every path the server uid can read."
+        )
     # De-duplicate while preserving order; drop any root that's a descendant
     # of another (the ancestor already covers it).
     deduped: list[Path] = []
@@ -105,8 +119,15 @@ def is_path_in_fs_root(path) -> bool:
     """
     if not _fs_roots:
         return True
+    # Fail-closed on empty/whitespace input. ``Path("").resolve()`` lands
+    # on the server's cwd; if cwd happens to sit inside an fs-root
+    # (common — operators launch from the repo root), an empty path
+    # would silently pass the gate and surface CWD contents downstream.
+    s = str(path).strip()
+    if not s:
+        return False
     try:
-        resolved = Path(os.path.expanduser(str(path))).resolve()
+        resolved = Path(os.path.expanduser(s)).resolve()
     except (OSError, RuntimeError):
         return False
     return any(_is_descendant(resolved, root) for root in _fs_roots)

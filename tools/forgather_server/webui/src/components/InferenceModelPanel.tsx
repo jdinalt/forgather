@@ -350,7 +350,12 @@ export function InferenceModelPanel({ state, setState }: Props) {
           <button
             style={{ marginLeft: 12 }}
             onClick={() => setAddServerOpen(true)}
-            title="Register an external inference-server URL + token"
+            disabled={demoMode}
+            title={
+              demoMode
+                ? "Read-only demo mode — server registry is locked"
+                : "Register an external inference-server URL + token"
+            }
           >
             + Add server
           </button>
@@ -382,7 +387,10 @@ export function InferenceModelPanel({ state, setState }: Props) {
                   <span className="muted">auth ✓</span>
                 )}
                 <button
-                  className="tiny"
+                  // ``destructive`` class so the global demo-mode CSS
+                  // rule disables this row's remove control (same
+                  // treatment as the other DELETE-firing buttons).
+                  className="tiny destructive"
                   style={{ marginLeft: "auto" }}
                   onClick={(e) => {
                     e.stopPropagation();

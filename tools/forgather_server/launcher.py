@@ -376,6 +376,7 @@ def spawn_inference_process(
     log_level: str = "INFO",
     auth_token_file: Optional[str] = None,
     no_auth: bool = False,
+    quiet_tokens: bool = False,
     extra_env: Optional[Dict[str, str]] = None,
 ) -> LaunchResult:
     """Spawn an OpenAI-compatible inference server.
@@ -423,6 +424,7 @@ def spawn_inference_process(
         log_level=log_level,
         auth_token_file=auth_token_file,
         no_auth=no_auth,
+        quiet_tokens=quiet_tokens,
     )
     return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
 
@@ -748,6 +750,7 @@ def spawn_dataset_server_process(
     config_file: Optional[str] = None,
     auth_token_file: Optional[str] = None,
     no_auth: bool = False,
+    quiet_tokens: bool = False,
     extra_env: Optional[Dict[str, str]] = None,
 ) -> LaunchResult:
     """Spawn a Forgather dataset server.
@@ -767,6 +770,7 @@ def spawn_dataset_server_process(
         config_file=config_file,
         auth_token_file=auth_token_file,
         no_auth=no_auth,
+        quiet_tokens=quiet_tokens,
     )
     return _spawn_subprocess(cmd, [], tty_log_path, extra_env)
 

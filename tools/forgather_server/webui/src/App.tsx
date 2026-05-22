@@ -902,6 +902,16 @@ export default function App() {
           >
             <SidebarIcon />
           </button>
+          {demoMode && (
+            <span
+              className="sidebar-header-demo-chip sidebar-header-demo-chip-collapsed"
+              role="status"
+              aria-label="Read-only demo mode"
+              title="Read-only demo mode — mutating actions are blocked. Expand the sidebar for details."
+            >
+              DEMO
+            </span>
+          )}
           <nav className="sidebar-views icon-only">
             {visibleViews.map((v) => (
               <button
@@ -947,6 +957,12 @@ export default function App() {
             {demoMode && (
               <span
                 className="sidebar-header-demo-chip"
+                role="status"
+                aria-label={
+                  "Read-only demo mode is active. Mutating actions " +
+                  "(file edits, job submission, server admin) are " +
+                  "blocked; read-only browsing still works."
+                }
                 title={
                   "This server is running with --demo: mutating actions " +
                   "(file edits, job submission, server admin, etc.) are " +

@@ -245,9 +245,11 @@ _demo_mode: bool = False
 # durable server state in a way that would compromise the demo.
 _DEMO_MUTATION_ALLOWLIST = frozenset(
     {
-        # Login / logout: needed for session UX even when --no-auth is
-        # off. The set-password POST is intentionally NOT here.
-        "/api/auth/login",
+        # Logout: needed for session UX even when --no-auth is off.
+        # Login is reached via the ``_OPEN_PATHS`` short-circuit (the
+        # middleware skips path_requires_auth=False entirely), so it
+        # doesn't need to be listed here. The set-password POST is
+        # intentionally NOT allowlisted.
         "/api/auth/logout",
         # Inference proxy POSTs are read-through requests against an
         # external upstream; they don't touch local server state.
@@ -328,7 +330,18 @@ def redact_sensitive_in_demo(value):
 
     Replaces sensitive *values* with ``None`` rather than deleting the
     key so the response shape stays stable for clients that introspect
-    fields. Non-dict / non-list values pass through unchanged.
+    fields.
+
+    **Container coverage**: dict and list only. Tuples, sets, and any
+    custom container pass through unchanged — today's call sites
+    (``r.job_params``, ``svc.args``, ``item.dynamic_args``) are plain
+    dicts so this is fine. Callers introducing new containers that
+    might hold token-shaped fields should normalize to dict/list before
+    passing in, or this helper needs to grow a new branch. Note the
+    redaction is also keyed on *field name*, not value heuristics: a
+    bearer token tucked into a non-token-named field (e.g.
+    ``r.job_params["bundle"]``) slips through; gate such fields at the
+    endpoint instead of relying on this helper.
     """
     if not _demo_mode:
         return value
@@ -359,8 +372,18 @@ def _demo_path_allowed(path: str) -> bool:
         if not (path.startswith(prefix) and path.endswith(suffix)):
             continue
         middle = path[len(prefix) : len(path) - len(suffix)]
-        if middle and "/" not in middle:
-            return True
+        if not middle:
+            continue
+        # Reject anything in the variable middle that could carry a
+        # smuggled segment under a non-uvicorn ASGI server: forward and
+        # backslashes, NUL, and percent-encoded sequences (which would
+        # decode to slashes under a decoder that didn't run before the
+        # match). Cheap belt-and-suspenders — uvicorn already decodes
+        # %-escapes upstream of the ASGI scope, but the matcher
+        # shouldn't depend on the host ASGI server's normalization.
+        if any(c in middle for c in ("/", "\\", "\x00", "%")):
+            continue
+        return True
     return False
 
 
