@@ -70,6 +70,7 @@ def build_eval_command(
     eval_template: str,
     model_path: str,
     gpu_indices: Optional[List[int]] = None,
+    nproc_override: Optional[str] = None,
     **passthrough,
 ) -> List[str]:
     """Build the subprocess argv for an eval run.
@@ -97,15 +98,21 @@ def build_eval_command(
     if trainer == "simple":
         cmd: List[str] = [sys.executable, eval_script]
     else:
-        # Zero-GPU dispatch -> fall back from "gpu" to "1". Without
-        # this, torchrun's "gpu" sentinel resolves to 0 visible CUDA
-        # devices (the launcher sets CUDA_VISIBLE_DEVICES="" for
-        # empty gpu_indices) and aborts with "invalid literal for
-        # int() with base 10: 'gpu'". Mirrors the CLI's fallback in
-        # src/forgather/cli/eval.py. When gpu_indices is None the
-        # caller didn't tell us, so preserve the legacy "gpu"
-        # default (scheduler always passes a list).
-        nproc = "1" if gpu_indices is not None and not gpu_indices else "gpu"
+        # Explicit caller override (EvalModal nproc field, or another
+        # caller bypassing the default) wins. Otherwise: zero-GPU
+        # dispatch falls back from "gpu" to "1" so torchrun's "gpu"
+        # sentinel doesn't crash with "invalid literal for int() with
+        # base 10: 'gpu'" when CUDA_VISIBLE_DEVICES="" hides all
+        # devices (mirrors src/forgather/cli/eval.py). When
+        # gpu_indices is None the caller didn't tell us, so preserve
+        # the legacy "gpu" default (the scheduler always passes a
+        # list, so this branch is only hit by direct callers).
+        if nproc_override is not None:
+            nproc = nproc_override
+        elif gpu_indices is not None and not gpu_indices:
+            nproc = "1"
+        else:
+            nproc = "gpu"
         cmd = [
             "torchrun",
             "--standalone",

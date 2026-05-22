@@ -121,6 +121,13 @@ export function EvalModal({
   const [requestedGpus, setRequestedGpus] = useState<number>(
     adHoc ? persisted.requestedGpus ?? 1 : 1,
   );
+  // Optional override for torchrun's --nproc-per-node, sent through
+  // job_params.nproc. Blank = use the default ("gpu" -> 1 fallback
+  // when 0 GPUs are reserved). Free-form text so operators can type
+  // an integer or torchrun's "gpu" / "cpu" / "auto" sentinels.
+  // Only meaningful for --trainer ddp / pipeline (simple bypasses
+  // torchrun entirely).
+  const [nprocOverride, setNprocOverride] = useState<string>("");
   const [priority, setPriority] = useState<number>(0);
   const [trainer, setTrainer] = useState<"ddp" | "simple" | "pipeline">(
     (adHoc ? persisted.trainer : undefined) ?? "ddp",
@@ -185,6 +192,7 @@ export function EvalModal({
     setCkptPath(AD_HOC_DEFAULTS.ckptPath);
     setOutputDir(AD_HOC_DEFAULTS.outputDir);
     setRequestedGpus(AD_HOC_DEFAULTS.requestedGpus);
+    setNprocOverride("");
     setDatasetSource(null);
   };
 
@@ -275,6 +283,12 @@ export function EvalModal({
     if (ml !== "") job_params.max_length = Number(ml);
     const od = outputDir.trim();
     if (od !== "") job_params.output_dir = od;
+    // nproc is a server-side override (extracted by
+    // scheduler._build_eval, not a flag for eval_script.py). Only
+    // forward when the user typed something, and only when the
+    // trainer actually uses torchrun (simple bypasses it).
+    const np = nprocOverride.trim();
+    if (np !== "" && trainer !== "simple") job_params.nproc = np;
 
     // project_dir + config on the QueueItem are display hints only for
     // eval jobs — the scheduler reads job_params. Putting the eval name
@@ -394,6 +408,25 @@ export function EvalModal({
                   0 = run on CPU (--trainer ddp falls back to nproc=1)
                 </span>
               )}
+            </label>
+            <label>
+              nproc
+              <input
+                type="text"
+                value={nprocOverride}
+                onChange={(e) => setNprocOverride(e.target.value)}
+                placeholder={trainer === "simple" ? "n/a" : "auto"}
+                style={{ width: "6em" }}
+                disabled={trainer === "simple"}
+                title={
+                  "Override torchrun's --nproc-per-node for this " +
+                  "submit. Blank = default ('gpu', falling back to 1 " +
+                  "when 0 GPUs are reserved). Accepts an integer or " +
+                  "torchrun's 'gpu' / 'cpu' / 'auto' sentinels. " +
+                  "Ignored for --trainer simple (it bypasses torchrun)."
+                }
+              />
+              <span className="muted">override</span>
             </label>
             <label>
               Priority

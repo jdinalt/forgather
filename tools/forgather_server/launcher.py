@@ -293,6 +293,7 @@ def spawn_eval_process(
     gpu_indices: List[int],
     tty_log_path: Path,
     extra_env: Optional[Dict[str, str]] = None,
+    nproc_override: Optional[str] = None,
     **passthrough,
 ) -> LaunchResult:
     """Spawn an evaluation run via ``scripts/eval_script.py``.
@@ -314,6 +315,7 @@ def spawn_eval_process(
         eval_template=eval_template,
         model_path=model_path,
         gpu_indices=gpu_indices,
+        nproc_override=nproc_override,
         **passthrough,
     )
     return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)

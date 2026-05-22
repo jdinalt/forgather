@@ -314,6 +314,18 @@ def _build_eval(item, gpu_indices, tty_path):
     p.pop("eval_template")
     p.pop("model_path")
     extra_env = p.pop("extra_env", None) or None
+    # ``nproc`` is a server-side knob (torchrun --nproc-per-node
+    # override from the EvalModal), not a flag for eval_script.py
+    # itself -- extract it separately so it doesn't have to live in
+    # the _EVAL_SCRIPT_ARGS spec. Trimmed-empty / non-stringly-falsy
+    # -> None, which lets build_eval_command fall back to its
+    # gpu_indices-derived default.
+    raw_nproc = p.pop("nproc", None)
+    nproc_override = (
+        raw_nproc.strip()
+        if isinstance(raw_nproc, str) and raw_nproc.strip()
+        else (str(raw_nproc) if isinstance(raw_nproc, int) else None)
+    )
     passthrough = {k: v for k, v in p.items() if k in passthrough_enqueue_keys()}
     return launcher.spawn_eval_process(
         eval_project=item.job_params["eval_project"],
@@ -322,6 +334,7 @@ def _build_eval(item, gpu_indices, tty_path):
         gpu_indices=gpu_indices,
         tty_log_path=tty_path,
         extra_env=extra_env,
+        nproc_override=nproc_override,
         **passthrough,
     )
 
