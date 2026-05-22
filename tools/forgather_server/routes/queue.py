@@ -130,8 +130,14 @@ _REQUIRED_PARAMS_BY_TYPE = {
     "update": {"src_model_path", "dst_model_path"},
 }
 _VALID_MODEL_SUBCOMMANDS = {"construct", "test"}
-# Types that accept ``requested_gpus == 0``. Everything else still needs
-# at least one GPU (training / eval / inference all spawn CUDA workloads).
+# Types that accept ``requested_gpus == 0``. Inference is included now
+# that the spawn path passes ``-d cpu`` when no GPU is reserved (the
+# inference server's _default_device() detects CPU correctly, and CPU
+# inference is a legitimate path on hosts without a CUDA driver — e.g.
+# laptops / Chromebooks running ``--gpus none`` under docker). Training
+# and eval still require >= 1 GPU here even though the underlying
+# CLIs now support CPU; gating those at the queue layer is a separate
+# concern (they need user-facing knobs we haven't added yet).
 # Convert / finalize default to CPU (they're pure I/O + tensor reshape
 # work) but the user can opt into a GPU via the modal's device field.
 # ``model`` defaults to CPU/meta too — the user opts into a GPU via the
@@ -146,6 +152,7 @@ _ZERO_GPU_JOB_TYPES = {
     "dataset",
     "dataset_server",
     "construct",
+    "inference",
 }
 
 

@@ -308,11 +308,20 @@ def spawn_inference_process(
     Pass either ``model_path`` (single-model) or ``models`` (multi-model,
     a list of ``{"name", "path"}`` dicts). Exactly one is required.
     """
+    # Pin the spawned server to a real device. Zero-GPU dispatches
+    # (``requested_gpus=0``) get an explicit ``-d cpu`` so the CPU
+    # path is unambiguous in the argv and TTY log; GPU dispatches let
+    # the server's own _default_device() resolve to ``<accelerator>:0``
+    # against the CUDA_VISIBLE_DEVICES set by _spawn_subprocess
+    # (subprocess sees only the reserved GPU(s), so its index-0 IS
+    # the reserved device).
+    device = "cpu" if not gpu_indices else None
     cmd = inference_ops.build_inference_command(
         model_path=model_path,
         models=models,
         port=port,
         host=host,
+        device=device,
         dtype=dtype,
         attn_implementation=attn_implementation,
         checkpoint_path=checkpoint_path,

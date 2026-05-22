@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
@@ -182,12 +182,25 @@ export function InferenceModal({
     setPriority(0);
   };
 
-  const maxGpus = Math.max(1, gpusQ.data?.length ?? 1);
+  // No clamp to >=1: a CPU-only server has zero GPUs, and the scheduler
+  // dispatches requested_gpus=0 immediately (no GPU reservation). The
+  // launcher pins the spawned server to "-d cpu" in that case.
+  const maxGpus = gpusQ.data?.length ?? 0;
   const idleGpuCount = useMemo(() => {
     if (!gpusQ.data) return null;
     // Match the scheduler: only excluded / disabled gate dispatch.
     return gpusQ.data.filter((g) => !g.excluded && !g.disabled).length;
   }, [gpusQ.data]);
+
+  // Snap requestedGpus into [0, maxGpus] once the GPU list resolves.
+  // Without this, a persisted value of 1 on a CPU-only host (or a
+  // previously-set value larger than the now-available count after
+  // someone disabled GPUs) would render in the input as-is and submit
+  // unchanged unless the user happens to focus the field.
+  useEffect(() => {
+    if (gpusQ.data === undefined) return;
+    setRequestedGpus((cur) => Math.max(0, Math.min(maxGpus, cur)));
+  }, [gpusQ.data, maxGpus]);
 
   const enqueue = useMutation({
     mutationFn: api.enqueue,
@@ -433,18 +446,26 @@ export function InferenceModal({
               GPUs
               <input
                 type="number"
-                min={1}
+                min={0}
                 max={maxGpus}
                 value={requestedGpus}
-                onChange={(e) =>
-                  setRequestedGpus(
-                    Math.max(1, Math.min(maxGpus, Number(e.target.value) || 1)),
-                  )
-                }
+                onChange={(e) => {
+                  // Number("") -> NaN, which || 0 turns into 0; explicit 0
+                  // is valid (CPU server). Clamp to [0, maxGpus].
+                  const raw = Number(e.target.value);
+                  const n = Number.isFinite(raw) ? raw : 0;
+                  setRequestedGpus(Math.max(0, Math.min(maxGpus, n)));
+                }}
               />
               {idleGpuCount !== null && (
                 <span className="muted">
                   ({idleGpuCount} idle of {maxGpus})
+                  {maxGpus === 0 && " — CPU only"}
+                </span>
+              )}
+              {requestedGpus === 0 && maxGpus > 0 && (
+                <span className="muted">
+                  0 = run on CPU (no GPU reservation)
                 </span>
               )}
             </label>
