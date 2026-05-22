@@ -96,6 +96,17 @@ def _qat_recipes_global() -> list[str]:
     return list(QAT_RECIPES)
 
 
+# Process-level cache for get_peak_hardware_flops(). The function is
+# invoked repeatedly during a single ``forgather train`` invocation
+# (once for the dynamic-arg schema scan, once for required-args, once
+# for bounds validation, once for the real materialization, ...), so
+# without this cache the fallback warning fires 5+ times back-to-back
+# on every CPU-only run. The cache is per-process and not invalidated
+# by edits to ``hardware.yaml`` mid-run, which is the right behaviour:
+# a single training invocation should see a single peak value.
+_peak_flops_cache: float | None = None
+
+
 def get_peak_hardware_flops() -> float:
     """
     Return the peak BF16 FLOP/s (FP32 accumulation) for a single GPU.
@@ -114,6 +125,10 @@ def get_peak_hardware_flops() -> float:
        creating ``<forgather_config_dir>/hardware.yaml`` with a real value
        (see ``docs/trainers/training-performance-metrics.md``).
     """
+    global _peak_flops_cache
+    if _peak_flops_cache is not None:
+        return _peak_flops_cache
+
     home_dir = Path(forgather_config_dir())
     hardware_file = home_dir / _HARDWARE_YAML
 
@@ -124,7 +139,8 @@ def get_peak_hardware_flops() -> float:
             if isinstance(data, dict) and "peak_hardware_flops" in data:
                 value = data["peak_hardware_flops"]
                 if value is not None:
-                    return float(value)
+                    _peak_flops_cache = float(value)
+                    return _peak_flops_cache
         except (yaml.YAMLError, ValueError, OSError):
             pass
 
@@ -144,19 +160,28 @@ def get_peak_hardware_flops() -> float:
             )
         except OSError as exc:
             logger.debug("Could not write %s: %s", hardware_file, exc)
-        return flops
+        _peak_flops_cache = flops
+        return _peak_flops_cache
 
     # 4. No GPU recognized -- keep preprocessing functional with a stand-in.
-    logger.warning(
-        "peak_hardware_flops not set and no recognized GPU detected"
-        " (device_name=%r); using deliberately pessimistic placeholder"
-        " %.1f TFLOPS. MFU > 100%% in your dashboards = this fallback"
-        " fired and you need to override it via %s.",
-        device_name,
-        _FALLBACK_PEAK_HARDWARE_FLOPS / 1e12,
-        hardware_file,
-    )
-    return _FALLBACK_PEAK_HARDWARE_FLOPS
+    # device_name=None means torch couldn't see any CUDA device (CPU-only
+    # host, or --gpus none under docker). MFU is meaningless on CPU
+    # regardless of the placeholder, so silently swallow the warning in
+    # that case. An unrecognized GPU (device_name set, flops=None) is
+    # still worth flagging because the operator can fix it by adding a
+    # hardware.yaml entry.
+    if device_name is not None:
+        logger.warning(
+            "peak_hardware_flops not set and no recognized GPU detected"
+            " (device_name=%r); using deliberately pessimistic placeholder"
+            " %.1f TFLOPS. MFU > 100%% in your dashboards = this fallback"
+            " fired and you need to override it via %s.",
+            device_name,
+            _FALLBACK_PEAK_HARDWARE_FLOPS / 1e12,
+            hardware_file,
+        )
+    _peak_flops_cache = _FALLBACK_PEAK_HARDWARE_FLOPS
+    return _peak_flops_cache
 
 
 def split_templates(template, name=None):

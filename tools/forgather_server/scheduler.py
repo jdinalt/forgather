@@ -294,6 +294,24 @@ def _try_dispatch() -> None:
         _launch(it, assigned)
 
 
+def _coerce_nproc_override(raw):
+    """Normalise a job_params['nproc'] value for the launcher.
+
+    The webui sends a free-form string (typed into the modal's nproc
+    input); other callers might pass an integer. Trim whitespace,
+    treat empty as "not set" (return None so the launcher's
+    gpu_indices-derived default kicks in), pass everything else
+    through as a string (torchrun accepts an integer or one of
+    ``gpu`` / ``cpu`` / ``auto``).
+    """
+    if isinstance(raw, str):
+        trimmed = raw.strip()
+        return trimmed if trimmed else None
+    if isinstance(raw, int):
+        return str(raw)
+    return None
+
+
 def _build_eval(item, gpu_indices, tty_path):
     # The explicit args below are the script-required ones (eval_project,
     # eval_template, model_path) and the scheduler-owned ones (extra_env).
@@ -314,6 +332,19 @@ def _build_eval(item, gpu_indices, tty_path):
     p.pop("eval_template")
     p.pop("model_path")
     extra_env = p.pop("extra_env", None) or None
+    # ``nproc`` is a server-side knob (torchrun --nproc-per-node
+    # override from the EvalModal), not a flag for eval_script.py
+    # itself -- extract it separately so it doesn't have to live in
+    # the _EVAL_SCRIPT_ARGS spec.
+    nproc_override = _coerce_nproc_override(p.pop("nproc", None))
+    if not gpu_indices:
+        log.info(
+            "eval job %s dispatching with 0 GPUs reserved (CPU mode); "
+            "trainer=%r nproc_override=%r",
+            item.queue_id,
+            p.get("trainer", "ddp"),
+            nproc_override,
+        )
     passthrough = {k: v for k, v in p.items() if k in passthrough_enqueue_keys()}
     return launcher.spawn_eval_process(
         eval_project=item.job_params["eval_project"],
@@ -322,6 +353,7 @@ def _build_eval(item, gpu_indices, tty_path):
         gpu_indices=gpu_indices,
         tty_log_path=tty_path,
         extra_env=extra_env,
+        nproc_override=nproc_override,
         **passthrough,
     )
 
@@ -340,11 +372,18 @@ def _build_inference(item, gpu_indices, tty_path):
     # ``model_path`` is a string. Exactly one is expected from the
     # enqueue layer (CLI or webui InferenceModal).
     models = p.get("models")
+    # ``device`` from job_params is an explicit override (e.g. "auto"
+    # for HF device_map sharding across multiple GPUs, "cpu" to force
+    # CPU even when GPUs are reserved). When unset / blank, the
+    # launcher derives the right value from gpu_indices.
+    raw_device = p.get("device")
+    device = raw_device.strip() if isinstance(raw_device, str) and raw_device.strip() else None
     return launcher.spawn_inference_process(
         model_path=p.get("model_path") if not models else None,
         models=models,
         port=int(p["port"]),
         host=p.get("host", "127.0.0.1"),
+        device=device,
         dtype=p.get("dtype"),
         attn_implementation=p.get("attn_implementation"),
         checkpoint_path=p.get("checkpoint_path"),
@@ -626,6 +665,20 @@ def _build_training(item, gpu_indices, tty_path):
     # and the launcher falls back to ``--standalone``.
     rdzv_args = item.job_params.get("rdzv_args") or None
     extra_env = item.job_params.get("extra_env") or None
+    # ``nproc`` from job_params is an explicit single-node override
+    # (typed into the SubmitModal nproc field, or supplied by other
+    # callers that want to bypass the config's nproc_per_node).
+    # Falls back to either the config value or the CPU "gpu"->1
+    # dispatch fallback inside build_command when unset. Cluster
+    # dispatches ignore this in favor of rdzv_args's per-peer nproc.
+    nproc_override = _coerce_nproc_override(item.job_params.get("nproc"))
+    if not gpu_indices and rdzv_args is None:
+        log.info(
+            "training job %s dispatching with 0 GPUs reserved (CPU mode); "
+            "nproc_override=%r",
+            item.queue_id,
+            nproc_override,
+        )
     return launcher.spawn_training_process(
         project_dir=item.project_dir,
         config_name=item.config,
@@ -634,6 +687,7 @@ def _build_training(item, gpu_indices, tty_path):
         tty_log_path=tty_path,
         extra_env=extra_env,
         rdzv_args=rdzv_args,
+        nproc_override=nproc_override,
     )
 
 

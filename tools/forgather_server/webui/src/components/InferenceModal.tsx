@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
@@ -43,6 +43,14 @@ interface PersistedAdHoc {
   keepOnGpu: boolean;
   chatTemplate: string;
   requestedGpus: number;
+  /** Explicit device override for the spawned server's -d flag. Empty
+   *  string = "let the launcher decide" (cpu when 0 GPUs are
+   *  reserved, else server-side _default_device). Other values pass
+   *  through verbatim: "cpu" forces CPU, "auto" engages HF
+   *  device_map='auto' for multi-GPU sharding (HF loader only —
+   *  incompatible with --from-checkpoint), explicit "cuda:N" /
+   *  "xpu:N" pin to a specific device index. */
+  device: string;
 }
 
 const AD_HOC_STORAGE_KEY = "forgather-adhoc-inference-v1";
@@ -114,6 +122,7 @@ export function InferenceModal({
   const [requestedGpus, setRequestedGpus] = useState<number>(
     persisted.requestedGpus ?? 1,
   );
+  const [device, setDevice] = useState<string>(persisted.device ?? "");
   const [priority, setPriority] = useState<number>(0);
   const [ckptPath, setCkptPath] = useState<string>(
     checkpointPath ?? persisted.ckptPath ?? "",
@@ -176,18 +185,32 @@ export function InferenceModal({
     setKeepOnGpu(false);
     setChatTemplate("");
     setRequestedGpus(1);
+    setDevice("");
     // Priority is per-session (not persisted) but resetting it here too
     // matches the operator's expectation that "Reset to defaults" puts
     // the form into the same shape it had on first open.
     setPriority(0);
   };
 
-  const maxGpus = Math.max(1, gpusQ.data?.length ?? 1);
+  // No clamp to >=1: a CPU-only server has zero GPUs, and the scheduler
+  // dispatches requested_gpus=0 immediately (no GPU reservation). The
+  // launcher pins the spawned server to "-d cpu" in that case.
+  const maxGpus = gpusQ.data?.length ?? 0;
   const idleGpuCount = useMemo(() => {
     if (!gpusQ.data) return null;
     // Match the scheduler: only excluded / disabled gate dispatch.
     return gpusQ.data.filter((g) => !g.excluded && !g.disabled).length;
   }, [gpusQ.data]);
+
+  // Snap requestedGpus into [0, maxGpus] once the GPU list resolves.
+  // Without this, a persisted value of 1 on a CPU-only host (or a
+  // previously-set value larger than the now-available count after
+  // someone disabled GPUs) would render in the input as-is and submit
+  // unchanged unless the user happens to focus the field.
+  useEffect(() => {
+    if (gpusQ.data === undefined) return;
+    setRequestedGpus((cur) => Math.max(0, Math.min(maxGpus, cur)));
+  }, [gpusQ.data, maxGpus]);
 
   const enqueue = useMutation({
     mutationFn: api.enqueue,
@@ -232,6 +255,7 @@ export function InferenceModal({
       compile: compileFlag,
       disable_kv_cache: disableKvCache,
     };
+    if (device.trim()) args.device = device.trim();
     // keep_on_gpu only matters with multiple models; single-model
     // servers already keep the sole model resident.
     if (isMultiModel && keepOnGpu) args.keep_on_gpu = true;
@@ -261,7 +285,12 @@ export function InferenceModal({
   const canSubmit =
     resolvedModels.length >= 1 &&
     dupNames.length === 0 &&
-    !(isMultiModel && ckptPath.trim());
+    !(isMultiModel && ckptPath.trim()) &&
+    // The inference server's native checkpoint loader explicitly
+    // rejects ``device="auto"`` (it isn't a real torch.device string).
+    // Block the submit so the operator sees this in-UI instead of
+    // landing a job that crashes immediately.
+    !(device === "auto" && fromCheckpoint);
 
   const submit = () => {
     if (!canSubmit) return;
@@ -288,6 +317,7 @@ export function InferenceModal({
       keepOnGpu,
       chatTemplate: chatTemplate.trim(),
       requestedGpus,
+      device,
     });
     const job_params = buildArgs();
     // project_dir for the queue row: in project-backed mode use the
@@ -433,18 +463,55 @@ export function InferenceModal({
               GPUs
               <input
                 type="number"
-                min={1}
+                min={0}
                 max={maxGpus}
                 value={requestedGpus}
-                onChange={(e) =>
-                  setRequestedGpus(
-                    Math.max(1, Math.min(maxGpus, Number(e.target.value) || 1)),
-                  )
-                }
+                onChange={(e) => {
+                  // Number("") -> NaN, which || 0 turns into 0; explicit 0
+                  // is valid (CPU server). Clamp to [0, maxGpus].
+                  const raw = Number(e.target.value);
+                  const n = Number.isFinite(raw) ? raw : 0;
+                  setRequestedGpus(Math.max(0, Math.min(maxGpus, n)));
+                }}
               />
               {idleGpuCount !== null && (
                 <span className="muted">
                   ({idleGpuCount} idle of {maxGpus})
+                  {maxGpus === 0 && " — CPU only"}
+                </span>
+              )}
+              {requestedGpus === 0 && maxGpus > 0 && (
+                <span className="muted">
+                  0 = run on CPU (no GPU reservation)
+                </span>
+              )}
+            </label>
+            <label>
+              Device
+              <select
+                value={device}
+                onChange={(e) => setDevice(e.target.value)}
+                title={
+                  "Override the spawned server's -d flag. Default = let " +
+                  "the launcher choose (cpu when 0 GPUs reserved, else " +
+                  "cuda:0 / xpu:0 / etc.). 'auto' opts into HF " +
+                  "device_map='auto' multi-GPU sharding -- HF loader only, " +
+                  "incompatible with --from-checkpoint."
+                }
+              >
+                <option value="">default</option>
+                <option value="auto">auto (HF device_map shard)</option>
+                <option value="cpu">cpu</option>
+                <option value="cuda:0">cuda:0</option>
+              </select>
+              {device === "auto" && fromCheckpoint && (
+                <span className="muted" style={{ color: "var(--warn, #b58900)" }}>
+                  'auto' uses HuggingFace's <code>device_map</code>
+                  sharding (multi-GPU), which only works with
+                  <code> from_pretrained</code> — not with Forgather
+                  checkpoints. Either pick a specific device
+                  (cpu / cuda:0) or turn off
+                  <strong> Load via Forgather checkpoint</strong>.
                 </span>
               )}
             </label>

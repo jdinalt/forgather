@@ -41,6 +41,31 @@ from . import (
 log = logging.getLogger("forgather_server.launcher")
 
 
+def _isolate_cuda_extra_env(
+    gpu_indices: List[int], extra_env: Optional[Dict[str, str]]
+) -> Optional[Dict[str, str]]:
+    """Merge ``CUDA_VISIBLE_DEVICES=""`` into extra_env when gpu_indices is empty.
+
+    Used by spawn paths whose subprocess should never see CUDA when no
+    GPU is reserved (eval / training / inference for CPU debugging) --
+    without this, the subprocess inherits the parent's (typically
+    unset) CUDA_VISIBLE_DEVICES and torchrun's "gpu" sentinel grabs
+    every GPU on the box, defeating the point of reserving 0. Other
+    zero-GPU job types (convert / finalize / model with --device
+    cuda:0) deliberately opt INTO host CUDA without a reservation;
+    those callers don't invoke this helper.
+
+    Caller-supplied ``CUDA_VISIBLE_DEVICES`` wins over our empty-string
+    override -- explicit operator intent shouldn't be silently
+    rewritten.
+    """
+    if gpu_indices:
+        return extra_env
+    merged = dict(extra_env) if extra_env else {}
+    merged.setdefault("CUDA_VISIBLE_DEVICES", "")
+    return merged
+
+
 @dataclass
 class LaunchResult:
     proc: subprocess.Popen
@@ -55,6 +80,8 @@ def build_command(
     config_name: str,
     dynamic_args: Dict[str, Any],
     rdzv_args: Optional[Dict[str, Any]] = None,
+    gpu_indices: Optional[List[int]] = None,
+    nproc_override: Optional[str] = None,
 ) -> List[str]:
     """Preprocess the config enough to build the ``torchrun`` command.
 
@@ -106,6 +133,29 @@ def build_command(
     nproc_per_node = config_meta["nproc_per_node"]
     forgather_dir = config_meta["forgather_dir"]
     train_script_path = os.path.join(forgather_dir, "scripts", "train_script.py")
+
+    # Caller-supplied override (e.g. from the SubmitModal's nproc
+    # field, or a `forgather train --nproc N` style call) wins over
+    # everything else. Single-node only -- cluster dispatches use
+    # rdzv_args's cluster_nproc.
+    if rdzv_args is None and nproc_override is not None:
+        nproc_per_node = nproc_override
+    # CPU dispatch fallback: a zero-GPU reservation paired with
+    # nproc_per_node="gpu" would crash torchrun with "invalid literal
+    # for int() with base 10: 'gpu'" (the "gpu" sentinel resolves to
+    # 0 visible devices because _spawn_subprocess sets
+    # CUDA_VISIBLE_DEVICES="" for empty gpu_indices). Drop to 1 worker
+    # so CPU debugging of training works. Mirrors the train CLI's
+    # fallback in src/forgather/cli/train.py. Only applies in
+    # single-node (standalone) mode; cluster dispatches use
+    # cluster_nproc from rdzv_args instead.
+    elif (
+        rdzv_args is None
+        and gpu_indices is not None
+        and not gpu_indices
+        and nproc_per_node == "gpu"
+    ):
+        nproc_per_node = 1
 
     cmd: List[str] = ["torchrun"]
     if rdzv_args:
@@ -180,6 +230,15 @@ def _spawn_subprocess(
     proc_env = os.environ.copy()
     if gpu_indices:
         proc_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_indices)
+    # NOTE: we deliberately do NOT set CUDA_VISIBLE_DEVICES="" on the
+    # empty-gpu_indices path here. Some zero-GPU job types
+    # (convert / finalize / model with ``--device cuda:0``) opt into
+    # using a host GPU without a scheduler reservation -- hiding CUDA
+    # blanket-wise would silently break that combo. Spawn paths that
+    # need the subprocess truly isolated from CUDA (eval / training /
+    # inference for CPU debugging) call ``_isolate_cuda_in_env`` on
+    # their proc_env before invoking _spawn_subprocess, or pass
+    # ``extra_env={"CUDA_VISIBLE_DEVICES": ""}`` themselves.
     if extra_env:
         proc_env.update(extra_env)
 
@@ -230,6 +289,7 @@ def spawn_training_process(
     tty_log_path: Path,
     extra_env: Optional[Dict[str, str]] = None,
     rdzv_args: Optional[Dict[str, Any]] = None,
+    nproc_override: Optional[str] = None,
 ) -> LaunchResult:
     """Spawn a training run.
 
@@ -239,7 +299,15 @@ def spawn_training_process(
     so the NCCL backend picks the right interface. Both default to
     None so single-node submits are unchanged.
     """
-    cmd = build_command(project_dir, config_name, dynamic_args, rdzv_args)
+    cmd = build_command(
+        project_dir,
+        config_name,
+        dynamic_args,
+        rdzv_args,
+        gpu_indices=gpu_indices,
+        nproc_override=nproc_override,
+    )
+    extra_env = _isolate_cuda_extra_env(gpu_indices, extra_env)
     return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
 
 
@@ -251,6 +319,7 @@ def spawn_eval_process(
     gpu_indices: List[int],
     tty_log_path: Path,
     extra_env: Optional[Dict[str, str]] = None,
+    nproc_override: Optional[str] = None,
     **passthrough,
 ) -> LaunchResult:
     """Spawn an evaluation run via ``scripts/eval_script.py``.
@@ -271,8 +340,11 @@ def spawn_eval_process(
         eval_project=eval_project,
         eval_template=eval_template,
         model_path=model_path,
+        gpu_indices=gpu_indices,
+        nproc_override=nproc_override,
         **passthrough,
     )
+    extra_env = _isolate_cuda_extra_env(gpu_indices, extra_env)
     return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
 
 
@@ -284,6 +356,12 @@ def spawn_inference_process(
     model_path: Optional[str] = None,
     models: Optional[List[Dict[str, Any]]] = None,
     host: str = "127.0.0.1",
+    # Explicit device override. None -> derive from gpu_indices ("cpu"
+    # when no GPU is reserved, else let the server's _default_device()
+    # pick within CUDA_VISIBLE_DEVICES). Pass "auto" for HF's
+    # device_map='auto' (multi-GPU sharding, HF loader only); pass an
+    # explicit "cpu" / "cuda:N" / "xpu:N" for direct pinning.
+    device: Optional[str] = None,
     dtype: Optional[str] = None,
     attn_implementation: Optional[str] = None,
     checkpoint_path: Optional[str] = None,
@@ -308,11 +386,29 @@ def spawn_inference_process(
     Pass either ``model_path`` (single-model) or ``models`` (multi-model,
     a list of ``{"name", "path"}`` dicts). Exactly one is required.
     """
+    # Pin the spawned server to a real device. Caller's explicit value
+    # (e.g. "auto" for HF sharding) wins; otherwise derive:
+    #   - zero-GPU dispatch  -> "-d cpu"  (unambiguous in argv/TTY log)
+    #   - GPU dispatch       -> omit "-d" and let the server's own
+    #     _default_device() resolve to ``<accelerator>:0`` against the
+    #     CUDA_VISIBLE_DEVICES set by _spawn_subprocess (subprocess
+    #     sees only the reserved GPU(s), so index-0 IS the reserved
+    #     device).
+    if device is None:
+        device = "cpu" if not gpu_indices else None
+    # No CUDA isolation here: the inference server is single-process
+    # (no torchrun "gpu" sentinel to silently expand to all visible
+    # GPUs) and its ``-d`` flag pins the placement directly. An
+    # operator explicitly picking device="cuda:0" with
+    # requested_gpus=0 (the no-reservation host-CUDA escape hatch,
+    # same pattern as convert/finalize/model) should still see host
+    # CUDA.
     cmd = inference_ops.build_inference_command(
         model_path=model_path,
         models=models,
         port=port,
         host=host,
+        device=device,
         dtype=dtype,
         attn_implementation=attn_implementation,
         checkpoint_path=checkpoint_path,

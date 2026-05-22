@@ -52,6 +52,39 @@ from forgather.tls import (
     TLSRequiredError,
     enforce_non_loopback_policy,
 )
+
+
+def _default_device() -> str:
+    """Pick a safe default device for the ``-d/--device`` CLI arg.
+
+    Rules:
+      * If torch sees any accelerator (CUDA, XPU, MPS, ROCm, ...), return
+        ``"<accelerator>:0"`` -- a single, real torch.device. NEVER
+        ``"auto"`` (commandeers every visible GPU via HF's
+        device_map='auto' and isn't a torch.device string, so the
+        native checkpoint loader rejects it) and never a hard-coded
+        ``"cuda:0"`` (breaks on Intel XPU / Apple MPS / ROCm hosts).
+      * Otherwise return ``"cpu"`` so the server boots out of the box
+        on a CPU-only torch build / --gpus none docker container.
+
+    Computed at module import time -- the ``-d`` help text shows the
+    detected value, which is what operators expect from ``--help``.
+    """
+    import torch
+
+    try:
+        if torch.accelerator.is_available():
+            acc = torch.accelerator.current_accelerator()
+            if acc is not None:
+                return f"{acc.type}:0"
+    except (AttributeError, RuntimeError):
+        # AttributeError: torch < 2.6 (no torch.accelerator).
+        # RuntimeError: torch.accelerator API present but probing raised.
+        # Fall through to the legacy cuda check.
+        pass
+    if torch.cuda.is_available():
+        return "cuda:0"
+    return "cpu"
 from forgather.tls.runtime import (
     add_server_tls_args,
     uvicorn_ssl_kwargs as tls_uvicorn_ssl_kwargs,
@@ -120,7 +153,18 @@ def main():
     parser.add_argument("-H", "--host", default="127.0.0.1", help="Host to bind to")
     parser.add_argument("-p", "--port", type=int, default=8137, help="Port to bind to")
     parser.add_argument(
-        "-d", "--device", default="cuda:0", help="Device to use (cuda, cpu, auto)"
+        "-d",
+        "--device",
+        default=_default_device(),
+        help=(
+            "Device to use (cuda:0, xpu:0, cpu, auto, ...). Default is the"
+            " current accelerator's index-0 device (e.g. cuda:0 / xpu:0)"
+            " when any accelerator is visible, else cpu. The default"
+            " deliberately avoids 'auto': HF's device_map='auto' shards a"
+            " model across every visible GPU, and 'auto' is not a real"
+            " torch.device string -- it doesn't round-trip through the"
+            " native checkpoint loader."
+        ),
     )
     parser.add_argument(
         "-t", "--chat-template", help="Path to custom Jinja2 chat template file"

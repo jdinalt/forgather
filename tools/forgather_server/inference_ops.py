@@ -25,10 +25,14 @@ def build_inference_command(
     models: Optional[Sequence[Dict[str, Any]]] = None,
     port: int,
     host: str = "127.0.0.1",
-    # Inside the subprocess ``CUDA_VISIBLE_DEVICES`` is restricted by the
-    # launcher to the reserved GPU(s), so the device is always cuda:0 from
-    # the process's point of view regardless of the outside index.
-    device: str = "cuda:0",
+    # Device passed to the inference server's ``-d`` flag. None ->
+    # omit ``-d``, letting the server's own _default_device() detection
+    # pick cuda:0 / xpu:0 / cpu based on what torch can see (governed
+    # by CUDA_VISIBLE_DEVICES from the launcher, which restricts the
+    # subprocess to the reserved GPU(s) -- or none, for zero-GPU jobs).
+    # Callers should pass "cpu" explicitly for ``requested_gpus=0``
+    # jobs so the intent is documented in the spawned argv.
+    device: Optional[str] = None,
     dtype: Optional[str] = None,
     attn_implementation: Optional[str] = None,
     # Three checkpoint modes:
@@ -79,11 +83,11 @@ def build_inference_command(
         host,
         "-p",
         str(port),
-        "-d",
-        device,
         "-l",
         log_level,
     ]
+    if device is not None:
+        cmd.extend(["-d", device])
     if models is not None:
         for entry in models:
             name = entry["name"]
