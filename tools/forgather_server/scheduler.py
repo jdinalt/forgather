@@ -294,6 +294,24 @@ def _try_dispatch() -> None:
         _launch(it, assigned)
 
 
+def _coerce_nproc_override(raw):
+    """Normalise a job_params['nproc'] value for the launcher.
+
+    The webui sends a free-form string (typed into the modal's nproc
+    input); other callers might pass an integer. Trim whitespace,
+    treat empty as "not set" (return None so the launcher's
+    gpu_indices-derived default kicks in), pass everything else
+    through as a string (torchrun accepts an integer or one of
+    ``gpu`` / ``cpu`` / ``auto``).
+    """
+    if isinstance(raw, str):
+        trimmed = raw.strip()
+        return trimmed if trimmed else None
+    if isinstance(raw, int):
+        return str(raw)
+    return None
+
+
 def _build_eval(item, gpu_indices, tty_path):
     # The explicit args below are the script-required ones (eval_project,
     # eval_template, model_path) and the scheduler-owned ones (extra_env).
@@ -317,15 +335,16 @@ def _build_eval(item, gpu_indices, tty_path):
     # ``nproc`` is a server-side knob (torchrun --nproc-per-node
     # override from the EvalModal), not a flag for eval_script.py
     # itself -- extract it separately so it doesn't have to live in
-    # the _EVAL_SCRIPT_ARGS spec. Trimmed-empty / non-stringly-falsy
-    # -> None, which lets build_eval_command fall back to its
-    # gpu_indices-derived default.
-    raw_nproc = p.pop("nproc", None)
-    nproc_override = (
-        raw_nproc.strip()
-        if isinstance(raw_nproc, str) and raw_nproc.strip()
-        else (str(raw_nproc) if isinstance(raw_nproc, int) else None)
-    )
+    # the _EVAL_SCRIPT_ARGS spec.
+    nproc_override = _coerce_nproc_override(p.pop("nproc", None))
+    if not gpu_indices:
+        log.info(
+            "eval job %s dispatching with 0 GPUs reserved (CPU mode); "
+            "trainer=%r nproc_override=%r",
+            item.queue_id,
+            p.get("trainer", "ddp"),
+            nproc_override,
+        )
     passthrough = {k: v for k, v in p.items() if k in passthrough_enqueue_keys()}
     return launcher.spawn_eval_process(
         eval_project=item.job_params["eval_project"],
@@ -649,16 +668,17 @@ def _build_training(item, gpu_indices, tty_path):
     # ``nproc`` from job_params is an explicit single-node override
     # (typed into the SubmitModal nproc field, or supplied by other
     # callers that want to bypass the config's nproc_per_node).
-    # Trimmed-empty -> None, which falls back to either the config
-    # value or the CPU "gpu"->1 dispatch fallback inside
-    # build_command. Cluster dispatches ignore this in favor of
-    # rdzv_args's per-peer nproc.
-    raw_nproc = item.job_params.get("nproc")
-    nproc_override = (
-        raw_nproc.strip()
-        if isinstance(raw_nproc, str) and raw_nproc.strip()
-        else (str(raw_nproc) if isinstance(raw_nproc, int) else None)
-    )
+    # Falls back to either the config value or the CPU "gpu"->1
+    # dispatch fallback inside build_command when unset. Cluster
+    # dispatches ignore this in favor of rdzv_args's per-peer nproc.
+    nproc_override = _coerce_nproc_override(item.job_params.get("nproc"))
+    if not gpu_indices and rdzv_args is None:
+        log.info(
+            "training job %s dispatching with 0 GPUs reserved (CPU mode); "
+            "nproc_override=%r",
+            item.queue_id,
+            nproc_override,
+        )
     return launcher.spawn_training_process(
         project_dir=item.project_dir,
         config_name=item.config,

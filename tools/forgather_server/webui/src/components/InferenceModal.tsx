@@ -506,9 +506,12 @@ export function InferenceModal({
               </select>
               {device === "auto" && fromCheckpoint && (
                 <span className="muted" style={{ color: "var(--warn, #b58900)" }}>
-                  --from-checkpoint uses the native loader, which rejects
-                  'auto'. Pick a real device or turn the checkpoint
-                  toggle off.
+                  'auto' uses HuggingFace's <code>device_map</code>
+                  sharding (multi-GPU), which only works with
+                  <code> from_pretrained</code> — not with Forgather
+                  checkpoints. Either pick a specific device
+                  (cpu / cuda:0) or turn off
+                  <strong> Load via Forgather checkpoint</strong>.
                 </span>
               )}
             </label>

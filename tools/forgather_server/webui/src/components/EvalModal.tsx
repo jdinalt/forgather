@@ -415,7 +415,12 @@ export function EvalModal({
                 type="text"
                 value={nprocOverride}
                 onChange={(e) => setNprocOverride(e.target.value)}
-                placeholder={trainer === "simple" ? "n/a" : "auto"}
+                // Default for --trainer ddp / pipeline is torchrun's
+                // "gpu" sentinel (which the launcher falls back to 1
+                // when no GPU is reserved). Showing the actual
+                // default in the placeholder so the field's hint
+                // doesn't lie. Empty for simple (disabled anyway).
+                placeholder={trainer === "simple" ? "n/a" : "gpu"}
                 style={{ width: "6em" }}
                 disabled={trainer === "simple"}
                 title={

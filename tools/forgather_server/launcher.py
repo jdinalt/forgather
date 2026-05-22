@@ -41,6 +41,31 @@ from . import (
 log = logging.getLogger("forgather_server.launcher")
 
 
+def _isolate_cuda_extra_env(
+    gpu_indices: List[int], extra_env: Optional[Dict[str, str]]
+) -> Optional[Dict[str, str]]:
+    """Merge ``CUDA_VISIBLE_DEVICES=""`` into extra_env when gpu_indices is empty.
+
+    Used by spawn paths whose subprocess should never see CUDA when no
+    GPU is reserved (eval / training / inference for CPU debugging) --
+    without this, the subprocess inherits the parent's (typically
+    unset) CUDA_VISIBLE_DEVICES and torchrun's "gpu" sentinel grabs
+    every GPU on the box, defeating the point of reserving 0. Other
+    zero-GPU job types (convert / finalize / model with --device
+    cuda:0) deliberately opt INTO host CUDA without a reservation;
+    those callers don't invoke this helper.
+
+    Caller-supplied ``CUDA_VISIBLE_DEVICES`` wins over our empty-string
+    override -- explicit operator intent shouldn't be silently
+    rewritten.
+    """
+    if gpu_indices:
+        return extra_env
+    merged = dict(extra_env) if extra_env else {}
+    merged.setdefault("CUDA_VISIBLE_DEVICES", "")
+    return merged
+
+
 @dataclass
 class LaunchResult:
     proc: subprocess.Popen
@@ -205,15 +230,15 @@ def _spawn_subprocess(
     proc_env = os.environ.copy()
     if gpu_indices:
         proc_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_indices)
-    else:
-        # Zero-GPU dispatch (training/eval/inference for CPU debugging,
-        # tensorboard/mkdocs/etc. that just don't need a GPU). Set
-        # CUDA_VISIBLE_DEVICES="" so the subprocess truly sees no CUDA
-        # device, regardless of what the host has. Without this the
-        # subprocess inherits the parent's (typically unset)
-        # CUDA_VISIBLE_DEVICES and torchrun's "gpu" sentinel grabs
-        # every GPU on the box -- defeating the point of reserving 0.
-        proc_env["CUDA_VISIBLE_DEVICES"] = ""
+    # NOTE: we deliberately do NOT set CUDA_VISIBLE_DEVICES="" on the
+    # empty-gpu_indices path here. Some zero-GPU job types
+    # (convert / finalize / model with ``--device cuda:0``) opt into
+    # using a host GPU without a scheduler reservation -- hiding CUDA
+    # blanket-wise would silently break that combo. Spawn paths that
+    # need the subprocess truly isolated from CUDA (eval / training /
+    # inference for CPU debugging) call ``_isolate_cuda_in_env`` on
+    # their proc_env before invoking _spawn_subprocess, or pass
+    # ``extra_env={"CUDA_VISIBLE_DEVICES": ""}`` themselves.
     if extra_env:
         proc_env.update(extra_env)
 
@@ -282,6 +307,7 @@ def spawn_training_process(
         gpu_indices=gpu_indices,
         nproc_override=nproc_override,
     )
+    extra_env = _isolate_cuda_extra_env(gpu_indices, extra_env)
     return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
 
 
@@ -318,6 +344,7 @@ def spawn_eval_process(
         nproc_override=nproc_override,
         **passthrough,
     )
+    extra_env = _isolate_cuda_extra_env(gpu_indices, extra_env)
     return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
 
 
@@ -369,6 +396,13 @@ def spawn_inference_process(
     #     device).
     if device is None:
         device = "cpu" if not gpu_indices else None
+    # No CUDA isolation here: the inference server is single-process
+    # (no torchrun "gpu" sentinel to silently expand to all visible
+    # GPUs) and its ``-d`` flag pins the placement directly. An
+    # operator explicitly picking device="cuda:0" with
+    # requested_gpus=0 (the no-reservation host-CUDA escape hatch,
+    # same pattern as convert/finalize/model) should still see host
+    # CUDA.
     cmd = inference_ops.build_inference_command(
         model_path=model_path,
         models=models,
