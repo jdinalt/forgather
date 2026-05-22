@@ -2006,6 +2006,21 @@ calling out:
   whereas the root README is closer to a project elevator pitch.
   Falls back to the root README if the docs index is missing.
 
+**Pre-rendered API directives.** The Docs view serves raw markdown,
+so `:::`-style `mkdocstrings` directives in `docs/api/*.md` would
+otherwise appear unrendered. `forgather docs build` (see
+`src/forgather/docs_build/`) walks `docs/`, expands directives via
+griffe, and writes the result to `docs/.built/<rel>.md`. The
+`/api/docs/file` endpoint prefers the built copy when one exists
+and is not older than the source; otherwise it serves the raw
+source unchanged, so the Docs view always works whether or not
+the build step has been run. The cache is populated automatically
+by `./build-webui.sh` (and therefore by the Docker post-build
+step that runs it), and can be regenerated on demand with
+`forgather docs build` or removed with `forgather docs clean`.
+The reported response path is always the canonical source so
+relative asset references resolve against the right directory.
+
 `docs_hooks.py` is a MkDocs `on_page_markdown` hook (wired via
 `mkdocs.yml: hooks:`) that rewrites relative markdown links on
 pages whose source is a symlink. Many pages under `docs/` are
