@@ -71,11 +71,17 @@ export function installAuthFetch(): void {
       // both confusing and pointless — same tag-pattern as the two
       // headers above.
       const demoBlocked = r.headers.get("X-Forgather-Demo-Blocked") === "1";
+      // Same logic for fs-root policy refusals: the user is
+      // authenticated, the server just refuses to read a path outside
+      // the configured root.
+      const fsRootDenied =
+        r.headers.get("X-Forgather-Fs-Root-Denied") === "1";
       if (
         !url.includes("/api/auth/") &&
         !upstreamAuthFailed &&
         !proxyRefused &&
-        !demoBlocked
+        !demoBlocked &&
+        !fsRootDenied
       ) {
         window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT));
       }

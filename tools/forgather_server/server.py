@@ -28,10 +28,10 @@ if __name__ == "__main__" and __package__ is None:
     parent_dir = script_dir.parent
     if str(parent_dir) not in sys.path:
         sys.path.insert(0, str(parent_dir))
-    from forgather_server import auth, cluster, paths, server_config
+    from forgather_server import auth, cluster, paths, search_roots, server_config
     from forgather_server.app import create_app
 else:
-    from . import auth, cluster, paths, server_config
+    from . import auth, cluster, paths, search_roots, server_config
     from .app import create_app
 
 import uvicorn
@@ -107,6 +107,20 @@ def main():
             "and redact bearer tokens from API responses so the webui can "
             "be safely exposed to the public. Pair with --no-auth for a "
             "fully anonymous demo, or leave auth on for a curated audience."
+        ),
+    )
+    parser.add_argument(
+        "--fs-root",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "Restrict every path-accepting API to descendants of this "
+            "directory (jupyter-lab-style root). Repeatable. When "
+            "--demo is on and --fs-root is not given, defaults to the "
+            "Forgather repo + every registered search root, so the demo "
+            "can't browse outside curated project content. When --demo "
+            "is off, the default is unrestricted (historical behaviour)."
         ),
     )
     parser.add_argument(
@@ -214,6 +228,7 @@ def main():
         sys.exit(2)
 
     _configure_auth(args, tls_on=tls_on)
+    _configure_fs_roots(args)
 
     if args.cluster:
         _activate_cluster(args, tls_on=tls_on)
@@ -351,6 +366,33 @@ def _configure_auth(args, *, tls_on: bool = False) -> None:
         print()
         print(f"    TLS: serving HTTPS from {tls_load_config().server_cert}")
     print()
+
+
+def _configure_fs_roots(args) -> None:
+    """Install the path-accepting-API allowlist.
+
+    When --fs-root is given, use the operator's list verbatim. When
+    --demo is on but --fs-root isn't, default to the forgather repo
+    plus every registered search root — that's the project tree the
+    operator has already curated, so it's a safe browsable scope for
+    public access. Without --demo and without --fs-root, the
+    allowlist stays empty (unrestricted) to preserve historical
+    behaviour for local installs.
+    """
+    explicit = list(args.fs_root or [])
+    if explicit:
+        paths.configure_fs_roots(explicit)
+        return
+    if not args.demo:
+        return
+    defaults: list[str] = [search_roots.forgather_repo_root()]
+    try:
+        defaults.extend(r.path for r in search_roots.list_roots())
+    except Exception as e:
+        logging.getLogger("forgather_server").warning(
+            "could not load search roots for fs-root default: %s", e
+        )
+    paths.configure_fs_roots(defaults)
 
 
 def _activate_cluster(args, *, tls_on: bool = False) -> None:

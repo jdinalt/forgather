@@ -1229,11 +1229,13 @@ export default function App() {
                 (schedEnabled ? "running" : "paused")
               }
               onClick={() => toggleSched.mutate(!schedEnabled)}
-              disabled={toggleSched.isPending || schedQ.isLoading}
+              disabled={demoMode || toggleSched.isPending || schedQ.isLoading}
               title={
-                schedEnabled
-                  ? "Scheduler running — click to pause"
-                  : "Scheduler paused — click to run"
+                demoMode
+                  ? "Read-only demo mode — scheduler controls are disabled"
+                  : schedEnabled
+                    ? "Scheduler running — click to pause"
+                    : "Scheduler paused — click to run"
               }
               aria-label={schedEnabled ? "Pause scheduler" : "Run scheduler"}
             >
@@ -1242,11 +1244,13 @@ export default function App() {
             <button
               className="sidebar-footer-gear"
               onClick={restartServer}
-              disabled={restarting || shuttingDown}
+              disabled={demoMode || restarting || shuttingDown}
               title={
-                restarting
-                  ? "Waiting for the server to come back up…"
-                  : "Restart the forgather server (running jobs survive)"
+                demoMode
+                  ? "Read-only demo mode — server restart is disabled"
+                  : restarting
+                    ? "Waiting for the server to come back up…"
+                    : "Restart the forgather server (running jobs survive)"
               }
               aria-label="Restart server"
             >
@@ -1255,29 +1259,33 @@ export default function App() {
             <button
               className="sidebar-footer-gear"
               onClick={() => setShutdownOpen(true)}
-              disabled={shuttingDown || restarting}
+              disabled={demoMode || shuttingDown || restarting}
               title={
-                shuttingDown
-                  ? "Shutdown in progress…"
-                  : "Shutdown the forgather server"
+                demoMode
+                  ? "Read-only demo mode — server shutdown is disabled"
+                  : shuttingDown
+                    ? "Shutdown in progress…"
+                    : "Shutdown the forgather server"
               }
               aria-label="Shutdown server"
             >
               <PowerIcon />
             </button>
-            <button
-              className="sidebar-footer-gear"
-              onClick={openServerConfig}
-              disabled={!serverConfigQ.data?.path}
-              title={
-                serverConfigQ.data?.path
-                  ? `Open server config: ${serverConfigQ.data.path}`
-                  : "Server config path unavailable"
-              }
-              aria-label="Open server config"
-            >
-              <GearIcon />
-            </button>
+            {!demoMode && (
+              <button
+                className="sidebar-footer-gear"
+                onClick={openServerConfig}
+                disabled={!serverConfigQ.data?.path}
+                title={
+                  serverConfigQ.data?.path
+                    ? `Open server config: ${serverConfigQ.data.path}`
+                    : "Server config path unavailable"
+                }
+                aria-label="Open server config"
+              >
+                <GearIcon />
+              </button>
+            )}
           </div>
         </div>
       </aside>

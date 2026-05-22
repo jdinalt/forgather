@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from forgather.preprocess import ConfigDiagnostic
 
 from .. import _atomic, config_ops, overrides_store
+from .. import paths as fs_paths
 
 router = APIRouter(tags=["configs"])
 
@@ -69,6 +70,17 @@ class ConfigErrorDetail(BaseModel):
     source_context: Optional[str] = None
 
 
+def _enforce_fs_root(path) -> None:
+    """403 if the path isn't under the configured fs-root allowlist."""
+    if fs_paths.is_path_in_fs_root(path):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=f"path is outside the configured filesystem roots: {path}",
+        headers={"X-Forgather-Fs-Root-Denied": "1"},
+    )
+
+
 def _config_error_detail(exc: ConfigDiagnostic) -> Dict[str, Any]:
     return ConfigErrorDetail(
         kind=exc.kind,  # type: ignore[arg-type]
@@ -95,6 +107,7 @@ class OutputDirInfoModel(BaseModel):
 @router.get("/config/raw", response_class=PlainTextResponse)
 def get_config_raw(path: str):
     """Raw contents of the config template file at the given absolute path."""
+    _enforce_fs_root(path)
     try:
         return config_ops.read_raw(path)
     except FileNotFoundError:
@@ -113,6 +126,7 @@ def get_config_pp(
     Dynamic-args are not wired in this phase — the pp output uses default
     values only.
     """
+    _enforce_fs_root(project_dir)
     try:
         return config_ops.render_pp(project_dir, config)
     except ConfigDiagnostic as e:
@@ -139,6 +153,7 @@ def get_config_code(
     # Treat empty / missing target as "render the whole config" (None) so the
     # frontend can model "All targets" as just a target=<empty> request.
     target_arg: Optional[str] = target if target else None
+    _enforce_fs_root(project_dir)
     try:
         return config_ops.render_code(project_dir, config, target=target_arg)
     except ConfigDiagnostic as e:
@@ -155,6 +170,7 @@ def get_config_code_targets(project_dir: str, config: str):
     Used by the **code** webui panel to populate the target list. Same set
     of names ``forgather targets`` prints on the CLI.
     """
+    _enforce_fs_root(project_dir)
     try:
         return config_ops.list_code_targets(project_dir, config)
     except ConfigDiagnostic as e:
@@ -174,6 +190,7 @@ def get_config_debug(project_dir: str, config: str):
     frontend uses this to render a three-column view (template list + raw +
     preprocessed) so users can step through the render pipeline.
     """
+    _enforce_fs_root(project_dir)
     try:
         items = config_ops.render_pp_trace(project_dir, config)
     except ConfigDiagnostic as e:
@@ -204,6 +221,7 @@ def get_config_trefs(
     - ``dot``: Graphviz DOT source (passthrough for frontend wasm renderer).
     - ``tree``: ASCII tree (for debugging / text clients).
     """
+    _enforce_fs_root(project_dir)
     try:
         if format == "dot":
             return PlainTextResponse(config_ops.render_trefs_dot(project_dir, config))
@@ -234,6 +252,7 @@ def get_config_graph(
     numbers / lists / dicts) also appear as nodes; strings are truncated.
     """
     target_arg: Optional[str] = target if target else None
+    _enforce_fs_root(project_dir)
     try:
         return config_ops.render_graph_dot(
             project_dir,
@@ -251,6 +270,7 @@ def get_config_graph(
 @router.get("/config/templates", response_model=List[ReferencedTemplate])
 def get_config_templates(project_dir: str, config: str):
     """Flat list of every template consumed by the config (depth-ordered)."""
+    _enforce_fs_root(project_dir)
     try:
         return [
             ReferencedTemplate(level=level, name=name, path=path)
@@ -270,6 +290,7 @@ def get_config_output_dir(project_dir: str, config: str):
     ``/api/config/meta``, so call it on demand (e.g. when the Clean Output
     modal opens), not in a list response.
     """
+    _enforce_fs_root(project_dir)
     try:
         info = config_ops.load_output_dir_info(project_dir, config)
     except Exception as e:
@@ -294,6 +315,7 @@ def get_config_meta(project_dir: str, config: str):
     Expensive (full preprocess + YAML parse + materialize), so callers
     should fetch lazily when a project is expanded in the tree.
     """
+    _enforce_fs_root(project_dir)
     m = config_ops.load_config_meta(project_dir, config)
     return ConfigMetaModel(
         name=m.name,
@@ -333,6 +355,7 @@ def get_template_source(path: str):
     editor can surface a clear "this isn't a text file" message
     instead of streaming garbage into Monaco.
     """
+    _enforce_fs_root(path)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail=f"Not found: {path}")
     if _looks_binary(path):
@@ -395,6 +418,7 @@ def put_template_source(req: PutTemplateSourceRequest):
     """
     if not os.path.isabs(req.path):
         raise HTTPException(status_code=400, detail="path must be absolute")
+    _enforce_fs_root(req.path)
     target = Path(req.path)
     if not target.exists():
         raise HTTPException(status_code=404, detail=f"Not found: {req.path}")
@@ -470,6 +494,7 @@ def get_overrides(project_dir: str, config: str):
     Returns a stub with empty ``values`` and ``None`` siblings when no
     cache file exists.
     """
+    _enforce_fs_root(project_dir)
     payload = overrides_store.get_overrides_payload(project_dir, config)
     return OverridesResponse(
         values=payload["values"],
@@ -483,6 +508,7 @@ def get_overrides(project_dir: str, config: str):
 @router.post("/config/overrides", response_model=OverridesResponse)
 def set_overrides(req: SetOverridesRequest):
     """Persist override values for a config (upsert). Returns the new state."""
+    _enforce_fs_root(req.project_dir)
     payload = overrides_store.set_overrides(
         req.project_dir,
         req.config,
@@ -506,5 +532,6 @@ def delete_overrides(project_dir: str, config: str):
 
     Always returns 200 — clearing a non-existent cache is a no-op.
     """
+    _enforce_fs_root(project_dir)
     cleared = overrides_store.clear_overrides(project_dir, config)
     return {"cleared": cleared}
