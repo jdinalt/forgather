@@ -256,6 +256,15 @@ _DEMO_MUTATION_ALLOWLIST = frozenset(
         "/api/inference/completions",
         "/api/inference/chat/completions",
         "/api/inference/tokenize",
+        # Dataset-server load proxy: HTTP POST by convention because the
+        # body carries a JSON spec, but functionally a read — it asks
+        # the upstream dataset_server to materialize a handle so the
+        # webui can browse rows. No local state changes. The cluster
+        # variant lives under /api/cluster/dataset_server_proxy/<id>/load
+        # — not allowlisted here because cluster + demo is an unusual
+        # combo and the templated path doesn't fit exact-match; revisit
+        # if we ship a clustered demo.
+        "/api/dataset-server/proxy/load",
     }
 )
 
