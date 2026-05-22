@@ -5349,34 +5349,26 @@ li.config.selected button.link:hover {
   background: var(--fg-muted);
 }
 
-/* Read-only demo-mode banner. Always-visible amber strip across the
-   top so the user knows mutating actions are intentionally disabled
-   before they discover it by clicking a greyed-out button. Sits in
-   the padded top of .app so it overlays the row without breaking
-   the sidebar+main horizontal layout. */
-.app.demo-mode {
-  position: relative;
-  padding-top: 26px;
-  box-sizing: border-box;
-}
-.demo-mode-banner {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 26px;
+/* Read-only demo-mode chip in the sidebar header. Compact amber pill
+   next to "Forgather Server" so the user always sees the mode without
+   the loudness of a full-width banner. */
+.sidebar-header-demo-chip {
   background: #b45309;
   color: #fff7ed;
-  padding: 4px 12px;
-  font-size: 12px;
-  letter-spacing: 0.04em;
-  text-align: center;
-  border-bottom: 1px solid #7c2d12;
-  z-index: 1000;
-  box-sizing: border-box;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  cursor: help;
 }
-.demo-mode-banner strong {
-  margin-right: 6px;
+.sidebar-header-version {
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: default;
 }
 
 /* In demo mode, neuter every destructive button so they can't fire

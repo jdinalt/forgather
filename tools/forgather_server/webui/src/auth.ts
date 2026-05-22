@@ -23,6 +23,9 @@ export interface AuthStatus {
    *  mutating requests with 403 regardless, so this flag is a UX
    *  signal rather than a security boundary. */
   demo_mode: boolean;
+  /** Forgather package version (e.g. "0.1.0"). "unknown" when the
+   *  server is an editable install without dist-info. */
+  forgather_version: string;
 }
 
 let _installed = false;

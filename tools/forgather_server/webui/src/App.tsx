@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, CheckpointEntry, ConfigInfo, EvalEntry, ProjectInfo } from "./api";
 import { getAutoWatchTty } from "./autoWatch";
-import { useDemoMode } from "./demoMode";
+import { useDemoMode, useServerVersion } from "./demoMode";
 import { ContextMenu } from "./components/ContextMenu";
 import { ProjectTree } from "./components/ProjectTree";
 import { ConfigViewer } from "./components/ConfigViewer";
@@ -209,6 +209,7 @@ export type Selection =
 
 export default function App() {
   const demoMode = useDemoMode();
+  const serverVersion = useServerVersion();
   const [view, setView] = useState<View>("docs");
   const [selected, setSelected] = useState<Selection>(null);
   // Tab state lives here so opening a project can both pick its default
@@ -884,20 +885,6 @@ export default function App() {
         (demoMode ? " demo-mode" : "")
       }
     >
-      {demoMode && (
-        <div
-          className="demo-mode-banner"
-          role="status"
-          aria-label="Read-only demo mode"
-          title={
-            "This server is running with --demo: every action that would " +
-            "change state (file edits, job submission, server config, etc.) " +
-            "is blocked. Read-only browsing still works."
-          }
-        >
-          <strong>DEMO MODE</strong> — read-only · mutations are blocked
-        </div>
-      )}
       {/*
         Both the collapsed strip and the expanded layout stay mounted so
         ProjectTree's local expansion state (which workspaces / projects /
@@ -949,6 +936,26 @@ export default function App() {
             title="Right-click for help"
           >
             <h1>Forgather Server</h1>
+            {serverVersion && (
+              <span
+                className="sidebar-header-version"
+                title={`Forgather ${serverVersion}`}
+              >
+                v{serverVersion}
+              </span>
+            )}
+            {demoMode && (
+              <span
+                className="sidebar-header-demo-chip"
+                title={
+                  "This server is running with --demo: mutating actions " +
+                  "(file edits, job submission, server admin, etc.) are " +
+                  "blocked. Read-only browsing still works."
+                }
+              >
+                DEMO MODE
+              </span>
+            )}
             <div className="sidebar-header-actions">
               <button
                 className="sidebar-toggle"

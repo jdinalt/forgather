@@ -57,6 +57,7 @@ function Root() {
               has_password: false,
               auth_disabled: false,
               demo_mode: false,
+              forgather_version: "unknown",
             },
           });
         }
@@ -81,6 +82,7 @@ function Root() {
               has_password: false,
               auth_disabled: false,
               demo_mode: false,
+              forgather_version: "unknown",
             },
           }),
       );

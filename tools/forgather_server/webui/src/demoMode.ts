@@ -34,6 +34,14 @@ export function useDemoMode(): boolean {
   return useAuthStatus()?.demo_mode ?? false;
 }
 
+/** Forgather package version, or null until the status query resolves
+ *  (so the header chip stays empty rather than flashing "unknown"). */
+export function useServerVersion(): string | null {
+  const v = useAuthStatus()?.forgather_version;
+  if (!v || v === "unknown") return v ?? null;
+  return v;
+}
+
 /** Convenience: standard disabled / tooltip props for a button that
  *  would trigger a mutation. Spread onto the button:
  *
