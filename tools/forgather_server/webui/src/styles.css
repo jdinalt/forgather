@@ -5351,24 +5351,32 @@ li.config.selected button.link:hover {
 
 /* Read-only demo-mode banner. Always-visible amber strip across the
    top so the user knows mutating actions are intentionally disabled
-   before they discover it by clicking a greyed-out button. */
+   before they discover it by clicking a greyed-out button. Sits in
+   the padded top of .app so it overlays the row without breaking
+   the sidebar+main horizontal layout. */
+.app.demo-mode {
+  position: relative;
+  padding-top: 26px;
+  box-sizing: border-box;
+}
 .demo-mode-banner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 26px;
   background: #b45309;
   color: #fff7ed;
-  padding: 6px 12px;
+  padding: 4px 12px;
   font-size: 12px;
   letter-spacing: 0.04em;
   text-align: center;
   border-bottom: 1px solid #7c2d12;
-  flex: 0 0 auto;
   z-index: 1000;
+  box-sizing: border-box;
 }
 .demo-mode-banner strong {
   margin-right: 6px;
-}
-.app.demo-mode {
-  display: flex;
-  flex-direction: column;
 }
 
 /* In demo mode, neuter every destructive button so they can't fire
