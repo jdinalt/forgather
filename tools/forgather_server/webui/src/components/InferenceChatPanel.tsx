@@ -135,12 +135,15 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
   // transient state (draft, status, editingIndex). One writer covers
   // every state change.
   useEffect(() => {
+    // Reasoning is per-turn scratch from the model's thinking trace; it
+    // is intentionally not persisted (and the existing loadPersisted
+    // type-filter would discard it anyway). Serialize only {role,content}.
     const payload: PersistedChat = {
       systemText,
       systemOpen,
       settingsOpen,
       impersonateMode,
-      messages,
+      messages: messages.map((m) => ({ role: m.role, content: m.content })),
     };
     persistSet(STORAGE_KEY, JSON.stringify(payload));
   }, [systemText, systemOpen, settingsOpen, impersonateMode, messages]);
@@ -212,13 +215,32 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
           tokenCount += 1;
           setMessages((prev) => {
             // Append the delta to the trailing placeholder turn.
+            // ``reasoning`` and ``content`` accumulate independently so
+            // the bubble can render them in different styles. Note that
+            // interleaved reasoning/content from the model is normalized
+            // here: each kind is collapsed into a single contiguous blob
+            // and the panel always renders reasoning above content. This
+            // matches how vLLM's qwen3 reasoning parser actually emits
+            // tokens in practice; parsers that genuinely interleave the
+            // two would need an ordered segment list instead.
             const next = prev.slice();
-            const last = next[next.length - 1];
+            const idx = next.length - 1;
+            const last = next[idx];
             if (last && last.role === asRole) {
-              next[next.length - 1] = {
-                role: asRole,
-                content: last.content + delta,
-              };
+              // Re-read via index so future intermediate mutations
+              // above this line don't get silently overwritten by the
+              // spread.
+              if (delta.kind === "reasoning") {
+                next[idx] = {
+                  ...next[idx],
+                  reasoning: (next[idx].reasoning ?? "") + delta.text,
+                };
+              } else {
+                next[idx] = {
+                  ...next[idx],
+                  content: next[idx].content + delta.text,
+                };
+              }
             }
             return next;
           });
@@ -252,7 +274,7 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
     } else {
       setStatus({ kind: "generating", startedAt: started });
       try {
-        const full = await runChatCompletion(
+        const result = await runChatCompletion(
           state.baseUrl,
           state.model,
           payload,
@@ -261,7 +283,14 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
           reqOpts,
           state.authToken || undefined,
         );
-        setMessages([...msgs, { role: asRole, content: full }]);
+        setMessages([
+          ...msgs,
+          {
+            role: asRole,
+            content: result.content,
+            ...(result.reasoning ? { reasoning: result.reasoning } : {}),
+          },
+        ]);
         setStatus({
           kind: "done",
           tokens: -1,
@@ -787,13 +816,20 @@ function Message({
             </div>
           </div>
         ) : msg.role === "assistant" ? (
-          msg.content ? (
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {msg.content}
-            </ReactMarkdown>
-          ) : (
-            <span className="muted">…</span>
-          )
+          <>
+            {msg.reasoning ? (
+              <pre className="inference-chat-msg-reasoning">
+                {msg.reasoning}
+              </pre>
+            ) : null}
+            {msg.content ? (
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {msg.content}
+              </ReactMarkdown>
+            ) : msg.reasoning ? null : (
+              <span className="muted">…</span>
+            )}
+          </>
         ) : (
           <pre className="inference-chat-msg-user-text">{msg.content}</pre>
         )}
