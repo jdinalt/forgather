@@ -151,11 +151,36 @@ def test_cmd(args):
     if args.trainer == "simple":
         cmd = [sys.executable, eval_script]
     else:
+        # torchrun's "gpu" sentinel asks the launcher to count visible
+        # CUDA devices. On a host with none (CPU-only torch build,
+        # --gpus none under docker, ...) it aborts immediately with
+        # "invalid literal for int() with base 10: 'gpu'". Mirror the
+        # train CLI's fallback: drop to nproc=1 with a warning so
+        # `forgather eval test --trainer ddp` keeps working for CPU
+        # debugging. Operators with multiple GPUs still get "gpu".
+        try:
+            import torch
+
+            cuda_visible = (
+                torch.cuda.is_available() and torch.cuda.device_count() > 0
+            )
+        except (ImportError, RuntimeError):
+            cuda_visible = False
+        nproc = "gpu"
+        if not cuda_visible:
+            print(
+                "warning: --trainer %s wants --nproc-per-node 'gpu' but no"
+                " CUDA device is visible; falling back to nproc-per-node 1."
+                " (For purely CPU eval, '--trainer simple' skips torchrun"
+                " entirely.)" % args.trainer,
+                file=sys.stderr,
+            )
+            nproc = "1"
         cmd = [
             "torchrun",
             "--standalone",
             "--nproc-per-node",
-            "gpu",
+            nproc,
             eval_script,
         ]
 

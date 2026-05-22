@@ -96,11 +96,27 @@ def build_eval_command(
     if trainer == "simple":
         cmd: List[str] = [sys.executable, eval_script]
     else:
+        # Match the train and eval CLI fallback: if "gpu" would resolve
+        # to zero devices (CPU-only server, no visible CUDA), drop to
+        # nproc-per-node 1 so the job runs single-rank instead of
+        # aborting with torchrun's "invalid literal for int() with base
+        # 10: 'gpu'". The scheduler still gates GPUs via
+        # CUDA_VISIBLE_DEVICES upstream of this call, so when GPUs are
+        # available "gpu" picks up exactly the gated subset.
+        try:
+            import torch
+
+            cuda_visible = (
+                torch.cuda.is_available() and torch.cuda.device_count() > 0
+            )
+        except (ImportError, RuntimeError):
+            cuda_visible = False
+        nproc = "gpu" if cuda_visible else "1"
         cmd = [
             "torchrun",
             "--standalone",
             "--nproc-per-node",
-            "gpu",
+            nproc,
             eval_script,
         ]
 
