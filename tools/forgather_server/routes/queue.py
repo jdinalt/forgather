@@ -153,6 +153,16 @@ _ZERO_GPU_JOB_TYPES = {
     "dataset_server",
     "construct",
     "inference",
+    # Training and eval support CPU dispatch now that:
+    #   * the train CLI / launcher.build_command falls back from
+    #     nproc_per_node="gpu" to 1 when no GPU is reserved
+    #     (see distributed.py CPU/gloo backend fix);
+    #   * the eval CLI / eval_ops.build_eval_command does the same
+    #     for --trainer ddp / pipeline.
+    # Useful for CPU debugging of training/eval pipelines on hosts
+    # without a CUDA driver.
+    "training",
+    "eval",
 }
 
 

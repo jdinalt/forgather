@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { api, DatasetSource, EvalConfigEntry } from "../api";
 import { useDatasetSource } from "../dataset-source";
@@ -188,12 +188,28 @@ export function EvalModal({
     setDatasetSource(null);
   };
 
-  const maxGpus = Math.max(1, gpusQ.data?.length ?? 1);
+  // No clamp to >=1: zero-GPU eval dispatches go through (the
+  // scheduler routes them past the placement search, and
+  // eval_ops.build_eval_command falls back from --nproc-per-node 'gpu'
+  // to 1 when no GPU is reserved -- mirrors the CLI behaviour).
+  // Useful for CPU debugging of eval pipelines on hosts with no
+  // visible CUDA device.
+  const maxGpus = gpusQ.data?.length ?? 0;
   const idleGpuCount = useMemo(() => {
     if (!gpusQ.data) return null;
     // Match the scheduler: only excluded / disabled gate dispatch.
     return gpusQ.data.filter((g) => !g.excluded && !g.disabled).length;
   }, [gpusQ.data]);
+
+  // Snap requestedGpus into [0, maxGpus] once the GPU list resolves
+  // (mirrors InferenceModal). Without this, a persisted value of 1
+  // on a CPU-only host -- or a value larger than the now-available
+  // GPU count -- would render in the input as-is and submit unchanged
+  // unless the user happens to focus the field.
+  useEffect(() => {
+    if (gpusQ.data === undefined) return;
+    setRequestedGpus((cur) => Math.max(0, Math.min(maxGpus, cur)));
+  }, [gpusQ.data, maxGpus]);
 
   const selected: EvalConfigEntry | undefined = useMemo(
     () => configsQ.data?.find((e) => e.name === evalName),
@@ -358,18 +374,24 @@ export function EvalModal({
               GPUs
               <input
                 type="number"
-                min={1}
+                min={0}
                 max={maxGpus}
                 value={requestedGpus}
-                onChange={(e) =>
-                  setRequestedGpus(
-                    Math.max(1, Math.min(maxGpus, Number(e.target.value) || 1)),
-                  )
-                }
+                onChange={(e) => {
+                  const raw = Number(e.target.value);
+                  const n = Number.isFinite(raw) ? raw : 0;
+                  setRequestedGpus(Math.max(0, Math.min(maxGpus, n)));
+                }}
               />
               {idleGpuCount !== null && (
                 <span className="muted">
                   ({idleGpuCount} idle of {maxGpus})
+                  {maxGpus === 0 && " — CPU only"}
+                </span>
+              )}
+              {requestedGpus === 0 && maxGpus > 0 && (
+                <span className="muted">
+                  0 = run on CPU (--trainer ddp falls back to nproc=1)
                 </span>
               )}
             </label>

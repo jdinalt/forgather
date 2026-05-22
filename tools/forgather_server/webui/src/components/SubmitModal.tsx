@@ -109,7 +109,12 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     initial: overridesQ.data?.dataset_source ?? null,
   });
 
-  const maxGpus = Math.max(1, gpusQ.data?.length ?? 1);
+  // No clamp to >=1: zero-GPU training dispatches go through (the
+  // scheduler routes them past the placement search, and
+  // launcher.build_command falls back from nproc_per_node='gpu' to 1
+  // when no GPU is reserved -- mirrors the train CLI behaviour).
+  // Useful for CPU debugging on hosts with no visible CUDA device.
+  const maxGpus = gpusQ.data?.length ?? 0;
   const idleGpuCount = useMemo(() => {
     if (!gpusQ.data) return null;
     // Mirror the scheduler's dispatch rule: a GPU is available iff it
@@ -145,12 +150,12 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   useEffect(() => {
     if (gpusTouched) return;
     const cached = overridesQ.data?.requested_gpus;
-    if (typeof cached === "number" && cached >= 1) {
-      setRequestedGpus(Math.max(1, Math.min(maxGpus, cached)));
+    if (typeof cached === "number" && cached >= 0) {
+      setRequestedGpus(Math.max(0, Math.min(maxGpus, cached)));
       return;
     }
     if (fixedWorkerCount !== null) {
-      setRequestedGpus(Math.max(1, Math.min(maxGpus, fixedWorkerCount)));
+      setRequestedGpus(Math.max(0, Math.min(maxGpus, fixedWorkerCount)));
     }
   }, [fixedWorkerCount, gpusTouched, maxGpus, overridesQ.data?.requested_gpus]);
 
@@ -313,7 +318,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
       setValues({});
       setPriority(0);
       setGpusTouched(false);
-      setRequestedGpus(fixedWorkerCount !== null ? Math.max(1, Math.min(maxGpus, fixedWorkerCount)) : 1);
+      setRequestedGpus(fixedWorkerCount !== null ? Math.max(0, Math.min(maxGpus, fixedWorkerCount)) : 1);
       // Also reset cluster panel state — "Reset to defaults" now
       // means "drop everything we cached for this config", including
       // the multi-node selection. Re-seeded by the seeding effect on
@@ -474,22 +479,25 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
                   GPUs
                   <input
                     type="number"
-                    min={1}
+                    min={0}
                     max={maxGpus}
                     value={requestedGpus}
                     onChange={(e) => {
                       setGpusTouched(true);
-                      setRequestedGpus(
-                        Math.max(
-                          1,
-                          Math.min(maxGpus, Number(e.target.value) || 1),
-                        ),
-                      );
+                      const raw = Number(e.target.value);
+                      const n = Number.isFinite(raw) ? raw : 0;
+                      setRequestedGpus(Math.max(0, Math.min(maxGpus, n)));
                     }}
                   />
                   {idleGpuCount !== null && (
                     <span className="muted">
                       ({idleGpuCount} idle of {maxGpus})
+                      {maxGpus === 0 && " — CPU only"}
+                    </span>
+                  )}
+                  {requestedGpus === 0 && maxGpus > 0 && (
+                    <span className="muted">
+                      0 = run on CPU (nproc_per_node='gpu' falls back to 1)
                     </span>
                   )}
                 </label>

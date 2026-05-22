@@ -55,6 +55,7 @@ def build_command(
     config_name: str,
     dynamic_args: Dict[str, Any],
     rdzv_args: Optional[Dict[str, Any]] = None,
+    gpu_indices: Optional[List[int]] = None,
 ) -> List[str]:
     """Preprocess the config enough to build the ``torchrun`` command.
 
@@ -106,6 +107,23 @@ def build_command(
     nproc_per_node = config_meta["nproc_per_node"]
     forgather_dir = config_meta["forgather_dir"]
     train_script_path = os.path.join(forgather_dir, "scripts", "train_script.py")
+
+    # CPU dispatch fallback: a zero-GPU reservation paired with
+    # nproc_per_node="gpu" would crash torchrun with "invalid literal
+    # for int() with base 10: 'gpu'" (the "gpu" sentinel resolves to
+    # 0 visible devices because _spawn_subprocess sets
+    # CUDA_VISIBLE_DEVICES="" for empty gpu_indices). Drop to 1 worker
+    # so CPU debugging of training works. Mirrors the train CLI's
+    # fallback in src/forgather/cli/train.py. Only applies in
+    # single-node (standalone) mode; cluster dispatches use
+    # cluster_nproc from rdzv_args instead.
+    if (
+        rdzv_args is None
+        and gpu_indices is not None
+        and not gpu_indices
+        and nproc_per_node == "gpu"
+    ):
+        nproc_per_node = 1
 
     cmd: List[str] = ["torchrun"]
     if rdzv_args:
@@ -180,6 +198,15 @@ def _spawn_subprocess(
     proc_env = os.environ.copy()
     if gpu_indices:
         proc_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_indices)
+    else:
+        # Zero-GPU dispatch (training/eval/inference for CPU debugging,
+        # tensorboard/mkdocs/etc. that just don't need a GPU). Set
+        # CUDA_VISIBLE_DEVICES="" so the subprocess truly sees no CUDA
+        # device, regardless of what the host has. Without this the
+        # subprocess inherits the parent's (typically unset)
+        # CUDA_VISIBLE_DEVICES and torchrun's "gpu" sentinel grabs
+        # every GPU on the box -- defeating the point of reserving 0.
+        proc_env["CUDA_VISIBLE_DEVICES"] = ""
     if extra_env:
         proc_env.update(extra_env)
 
@@ -239,7 +266,9 @@ def spawn_training_process(
     so the NCCL backend picks the right interface. Both default to
     None so single-node submits are unchanged.
     """
-    cmd = build_command(project_dir, config_name, dynamic_args, rdzv_args)
+    cmd = build_command(
+        project_dir, config_name, dynamic_args, rdzv_args, gpu_indices=gpu_indices
+    )
     return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
 
 
@@ -271,6 +300,7 @@ def spawn_eval_process(
         eval_project=eval_project,
         eval_template=eval_template,
         model_path=model_path,
+        gpu_indices=gpu_indices,
         **passthrough,
     )
     return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)

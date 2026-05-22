@@ -69,6 +69,7 @@ def build_eval_command(
     eval_project: str,
     eval_template: str,
     model_path: str,
+    gpu_indices: Optional[List[int]] = None,
     **passthrough,
 ) -> List[str]:
     """Build the subprocess argv for an eval run.
@@ -96,22 +97,15 @@ def build_eval_command(
     if trainer == "simple":
         cmd: List[str] = [sys.executable, eval_script]
     else:
-        # Match the train and eval CLI fallback: if "gpu" would resolve
-        # to zero devices (CPU-only server, no visible CUDA), drop to
-        # nproc-per-node 1 so the job runs single-rank instead of
-        # aborting with torchrun's "invalid literal for int() with base
-        # 10: 'gpu'". The scheduler still gates GPUs via
-        # CUDA_VISIBLE_DEVICES upstream of this call, so when GPUs are
-        # available "gpu" picks up exactly the gated subset.
-        try:
-            import torch
-
-            cuda_visible = (
-                torch.cuda.is_available() and torch.cuda.device_count() > 0
-            )
-        except (ImportError, RuntimeError):
-            cuda_visible = False
-        nproc = "gpu" if cuda_visible else "1"
+        # Zero-GPU dispatch -> fall back from "gpu" to "1". Without
+        # this, torchrun's "gpu" sentinel resolves to 0 visible CUDA
+        # devices (the launcher sets CUDA_VISIBLE_DEVICES="" for
+        # empty gpu_indices) and aborts with "invalid literal for
+        # int() with base 10: 'gpu'". Mirrors the CLI's fallback in
+        # src/forgather/cli/eval.py. When gpu_indices is None the
+        # caller didn't tell us, so preserve the legacy "gpu"
+        # default (scheduler always passes a list).
+        nproc = "1" if gpu_indices is not None and not gpu_indices else "gpu"
         cmd = [
             "torchrun",
             "--standalone",
