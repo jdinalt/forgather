@@ -2977,14 +2977,29 @@ for the threat model.
 ### Inference proxy
 
 Same-origin forwarder so the browser can talk to inference-server jobs
-without running into CORS / PNA issues.
+without running into CORS / PNA issues. The endpoint set also includes a
+small **user-added-server registry** — the Inference → Model picker
+lists running spawned/cluster servers by default, and this registry adds
+a persistent "User-added servers" section so operators can one-click
+external OpenAI-compatible upstreams (vLLM, remote inference, a
+teammate's box) without retyping URL + token every session. Entries
+live at `<config>/server/inference_server_registry.json` (0600);
+tokens never round-trip back to the browser after the initial save.
 
-| Endpoint                                              | Purpose                                                        |
-| ----------------------------------------------------- | -------------------------------------------------------------- |
-| `GET /api/inference/health?base=`                     | Proxy `<base>/health`                                          |
-| `GET /api/inference/models?base=`                     | Proxy `<base>/models`                                          |
-| `POST /api/inference/completions?base=`               | Proxy `<base>/completions` (byte-for-byte SSE passthrough)     |
-| `POST /api/inference/chat/completions?base=`          | Proxy `<base>/chat/completions` (byte-for-byte SSE passthrough) |
+| Endpoint                                                                                | Purpose                                                              |
+| --------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `GET /api/inference/health?base=`                                                       | Proxy `<base>/health`                                                |
+| `GET /api/inference/models?base=`                                                       | Proxy `<base>/models`                                                |
+| `POST /api/inference/completions?base=`                                                 | Proxy `<base>/completions` (byte-for-byte SSE passthrough)           |
+| `POST /api/inference/chat/completions?base=`                                            | Proxy `<base>/chat/completions` (byte-for-byte SSE passthrough)      |
+| `GET /api/inference-servers/user`                                                       | List registered user URLs                                            |
+| `POST /api/inference-servers/user` `{label, base_url, auth_token?, verify_tls?}`        | Register an external inference server. Tokens with CR/LF rejected as 400. |
+| `DELETE /api/inference-servers/user/{entry_id}`                                         | Remove a registry entry                                              |
+
+Token resolution order for every inference-proxy call: explicit
+`X-Inference-Auth-Token` header → JobRecord auto-lookup (for spawned
+local servers) → cluster-inventory lookup (for off-host peer servers
+on master nodes) → registry lookup (for user-added entries) → none.
 
 ### Dataset_server registry + proxy
 

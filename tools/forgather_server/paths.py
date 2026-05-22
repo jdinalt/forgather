@@ -103,6 +103,16 @@ def dataset_server_registry_file() -> Path:
     return server_state_dir() / "dataset_server_registry.json"
 
 
+def inference_server_registry_file() -> Path:
+    """User-added inference-server URLs + tokens.
+
+    Lives at ``<config>/server/inference_server_registry.json``, mode
+    0600. Same shape as the dataset_server registry — see
+    :mod:`forgather_server.inference_server_registry`.
+    """
+    return server_state_dir() / "inference_server_registry.json"
+
+
 def cluster_state_dir() -> Path:
     """Persistent directory for multi-node cluster state.
 
@@ -157,6 +167,8 @@ _SENSITIVE_TOPLEVEL_FILES = (
     "gpu_policy.json",
     "search_roots.json",
     "sessions.json",
+    "dataset_server_registry.json",
+    "inference_server_registry.json",
 )
 
 
