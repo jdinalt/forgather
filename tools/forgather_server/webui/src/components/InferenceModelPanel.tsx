@@ -1,7 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import { api, ClusterInferenceServer, Job } from "../api";
+import {
+  api,
+  ClusterInferenceServer,
+  InferenceServerUser,
+  Job,
+} from "../api";
 import {
   GenerationParams,
   ModelEntry,
@@ -9,6 +14,7 @@ import {
   checkServer,
   listModels,
 } from "../inference-client";
+import { AddInferenceServerModal } from "./AddInferenceServerModal";
 import { DEFAULT_GENERATION_PARAMS, InferenceState } from "./InferencePanel";
 
 interface Props {
@@ -32,6 +38,22 @@ export function InferenceModelPanel({ state, setState }: Props) {
   // fight a hidden field.
   const [showAuthToken, setShowAuthToken] = useState(false);
   const [health, setHealth] = useState<HealthState>({ kind: "unknown" });
+  // User-added inference-server registry. The Add modal opens on
+  // "+ Add server"; rows render in their own section below the
+  // running-servers list and clicking one fills baseUrl + token
+  // exactly like a running-server pick.
+  const [addServerOpen, setAddServerOpen] = useState(false);
+  // Which row was last picked. Disambiguates selection when a
+  // user-registered URL coincides with a spawned/cluster server's URL
+  // (e.g. register your local vLLM, later spawn a forgather inference
+  // job on the same port) — without this, both rows would render
+  // selected because URL string equality matches both. Cleared when
+  // the operator edits the URL field directly.
+  const [pickedRow, setPickedRow] = useState<
+    | { kind: "running"; id: string }
+    | { kind: "user"; id: string }
+    | null
+  >(null);
   const qc = useQueryClient();
   // Name of the last-loaded/saved preset, so Save defaults to overwriting
   // it and Delete has an obvious target. "" = no preset in play (fresh /
@@ -136,6 +158,21 @@ export function InferenceModelPanel({ state, setState }: Props) {
     enabled: clusterGateResolved && clusterActive,
   });
 
+  // User-added external servers (vLLM, remote OpenAI-compatible boxes,
+  // etc.) — surfaced beside the live cluster/local list so the operator
+  // doesn't have to retype URL + token every session.
+  const userServersQ = useQuery({
+    queryKey: ["inference-servers-user"],
+    queryFn: api.listUserInferenceServers,
+  });
+
+  const removeUserServer = useMutation({
+    mutationFn: (id: string) => api.deleteUserInferenceServer(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["inference-servers-user"] });
+    },
+  });
+
   // Unified picker rows. Both shapes (local Job and ClusterInferenceServer)
   // boil down to: a URL to dial, an auth token to attach, a display
   // label, and an optional health badge. The render path doesn't need
@@ -182,6 +219,8 @@ export function InferenceModelPanel({ state, setState }: Props) {
   const setBaseUrl = (baseUrl: string) => {
     setState((prev) => ({ ...prev, baseUrl }));
     setHealth({ kind: "unknown" });
+    // Manual edit detaches from any picked row.
+    setPickedRow(null);
   };
   const setAuthToken = (authToken: string) => {
     setState((prev) => ({ ...prev, authToken }));
@@ -199,9 +238,41 @@ export function InferenceModelPanel({ state, setState }: Props) {
       authToken: row.authToken,
     }));
     setHealth({ kind: "unknown" });
+    setPickedRow({ kind: "running", id: row.id });
     // Re-fetch models against the new URL.
     setTimeout(() => modelsQ.refetch(), 0);
   };
+
+  // User-added entries don't carry the bearer token in the listing
+  // (tokens stay server-side; the listing only exposes ``has_auth_token``).
+  // The proxy resolves the token from the registry by base_url match —
+  // see ``_auth_headers_for`` in routes/inference_proxy.py. We still
+  // set authToken to "" so the local state doesn't carry a stale token
+  // from a previously-picked entry.
+  const pickUserServer = (s: InferenceServerUser) => {
+    setState((prev) => ({
+      ...prev,
+      baseUrl: s.base_url,
+      authToken: "",
+    }));
+    setHealth({ kind: "unknown" });
+    setPickedRow({ kind: "user", id: s.id });
+    setTimeout(() => modelsQ.refetch(), 0);
+  };
+
+  const userServers = userServersQ.data ?? [];
+
+  // When the selected user-server is removed (via "×" or out-of-band),
+  // clear baseUrl + the picked-row pin so action buttons stop firing
+  // against an orphaned URL. Mirrors the parallel effect in
+  // DatasetsPanel's DatasetServersTab.
+  useEffect(() => {
+    if (pickedRow?.kind !== "user") return;
+    if (userServers.some((s) => s.id === pickedRow.id)) return;
+    setPickedRow(null);
+    setState((prev) => ({ ...prev, baseUrl: "", authToken: "" }));
+    setHealth({ kind: "unknown" });
+  }, [pickedRow, userServers, setState]);
 
   return (
     <div className="inference-model-panel">
@@ -233,7 +304,15 @@ export function InferenceModelPanel({ state, setState }: Props) {
         )}
         <ul className="inference-server-list">
           {(pickerRows ?? []).map((row) => {
-            const selected = row.url === state.baseUrl;
+            // When a row was explicitly picked, use its id to disambiguate
+            // — a user-registered URL that coincides with a spawned/cluster
+            // server's URL would otherwise highlight both rows. Fall back
+            // to URL string match only when nothing has been picked (e.g.
+            // baseUrl was restored from localStorage on page load).
+            const selected =
+              pickedRow !== null
+                ? pickedRow.kind === "running" && pickedRow.id === row.id
+                : row.url === state.baseUrl;
             return (
               <li
                 key={row.id}
@@ -259,6 +338,73 @@ export function InferenceModelPanel({ state, setState }: Props) {
                     {row.peerHint.slice(0, 8)}
                   </span>
                 )}
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+
+      {/* User-added servers — persistent across restarts. Lets the
+          operator one-click-pick external OpenAI-compatible servers
+          (vLLM, remote inference, a teammate's box) without
+          retyping URL + token every session. The proxy resolves
+          the token from the registry by URL match, so the browser
+          never holds tokens for user-added entries. */}
+      <section>
+        <h4 className="dyn-heading">
+          User-added servers
+          <span className="muted"> ({userServers.length})</span>
+          <button
+            style={{ marginLeft: 12 }}
+            onClick={() => setAddServerOpen(true)}
+            title="Register an external inference-server URL + token"
+          >
+            + Add server
+          </button>
+        </h4>
+        {userServers.length === 0 && (
+          <div className="muted pane-state-small">
+            No user-added servers. Use “+ Add server” to register a remote URL.
+          </div>
+        )}
+        <ul className="inference-server-list">
+          {userServers.map((s) => {
+            // Same disambiguation as the running-servers list above.
+            const selected =
+              pickedRow !== null
+                ? pickedRow.kind === "user" && pickedRow.id === s.id
+                : s.base_url === state.baseUrl;
+            return (
+              <li
+                key={s.id}
+                className={
+                  "inference-server-row" + (selected ? " selected" : "")
+                }
+                onClick={() => pickUserServer(s)}
+                title={s.base_url}
+              >
+                <span className="inf-server-model">{s.label}</span>
+                <span className="muted">{s.base_url}</span>
+                {s.has_auth_token && (
+                  <span className="muted">auth ✓</span>
+                )}
+                <button
+                  className="tiny"
+                  style={{ marginLeft: "auto" }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (
+                      window.confirm(
+                        `Remove ${s.label} from the registry?`,
+                      )
+                    ) {
+                      removeUserServer.mutate(s.id);
+                    }
+                  }}
+                  title="Remove this entry"
+                >
+                  ×
+                </button>
               </li>
             );
           })}
@@ -661,6 +807,21 @@ export function InferenceModelPanel({ state, setState }: Props) {
           </>
         )}
       </section>
+
+      {addServerOpen && (
+        <AddInferenceServerModal
+          onClose={() => setAddServerOpen(false)}
+          // Pre-fill from the current Server-URL fields so an operator
+          // who typed a URL into the panel and now wants to persist
+          // it doesn't have to retype both halves.
+          initialBaseUrl={state.baseUrl}
+          initialAuthToken={state.authToken}
+          onAdded={() => {
+            qc.invalidateQueries({ queryKey: ["inference-servers-user"] });
+            setAddServerOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }

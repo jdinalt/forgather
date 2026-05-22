@@ -912,6 +912,27 @@ export interface AddDatasetServerRequest {
   verify_tls?: boolean;
 }
 
+/** Inference server registered as a user-added entry. Same shape as
+ *  the dataset-server variant; the two registries live in separate
+ *  files on disk and are surfaced by separate routes. */
+export interface InferenceServerUser {
+  id: string;
+  label: string;
+  base_url: string;
+  has_auth_token: boolean;
+  /** False = TLS chain + hostname validation off for outbound calls
+   *  to this URL. Operator-asserted for SSH-tunneled / out-of-band-
+   *  secured upstreams. Default true (secure-by-default). */
+  verify_tls?: boolean;
+}
+
+export interface AddInferenceServerRequest {
+  label?: string;
+  base_url: string;
+  auth_token?: string;
+  verify_tls?: boolean;
+}
+
 /** One row from ``GET /v1/datasets``. Field set tracks what the
  *  dataset_server's wire model exposes; we mirror only what we render. */
 export interface DatasetHandleEntry {
@@ -1760,6 +1781,37 @@ export const api = {
   deleteUserDatasetServer: async (id: string): Promise<void> => {
     const r = await fetch(
       `/api/dataset-servers/user/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+  },
+
+  // User-added inference servers. Same CRUD shape as the dataset-server
+  // registry — the picker in InferenceModelPanel surfaces these alongside
+  // running local/cluster servers so operators don't have to retype
+  // external URLs (vLLM, remote OpenAI-compatible boxes) every session.
+  listUserInferenceServers: () =>
+    fetchJson<InferenceServerUser[]>("/api/inference-servers/user"),
+  addUserInferenceServer: async (
+    req: AddInferenceServerRequest,
+  ): Promise<InferenceServerUser> => {
+    const r = await fetch("/api/inference-servers/user", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+    return r.json();
+  },
+  deleteUserInferenceServer: async (id: string): Promise<void> => {
+    const r = await fetch(
+      `/api/inference-servers/user/${encodeURIComponent(id)}`,
       { method: "DELETE" },
     );
     if (!r.ok) {

@@ -40,14 +40,15 @@ from __future__ import annotations
 import logging
 import time
 from threading import Lock
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
-from .. import cluster_inference_inventory, job_records
+from .. import cluster_inference_inventory, inference_server_registry, job_records
 
 log = logging.getLogger("forgather_server.inference_proxy")
 
@@ -59,7 +60,7 @@ router = APIRouter(tags=["inference-proxy"])
 _TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
 
 
-def _verify_for(target: str) -> object:
+def _verify_for(target: str, base: Optional[str] = None) -> object:
     """Pick ``verify=`` for an upstream URL.
 
     When the inference server runs with TLS (auto-on from the shared
@@ -68,13 +69,22 @@ def _verify_for(target: str) -> object:
     system trust store and rejects our self-signed certs with
     ``CERTIFICATE_VERIFY_FAILED``. For plain ``http://`` upstreams we
     short-circuit to ``True`` (no-op).
+
+    If ``base`` matches a user-registered entry whose ``verify_tls``
+    is ``False``, returns ``False`` — chain validation is off and
+    the upstream cert is trusted purely on the operator's say-so
+    (used for SSH-tunneled remotes where the upstream cert doesn't
+    match the tunnel's local hostname).
     """
+    if base is not None and not inference_server_registry.find_verify_tls(base):
+        return False
     try:
         from forgather.tls import httpx_verify_for_url
 
         return httpx_verify_for_url(target)
     except ImportError:
         return True
+
 
 # Completion responses can be large. Use a small chunk size so tokens
 # reach the browser promptly rather than sitting in an HTTP buffer.
@@ -267,9 +277,9 @@ def _auth_headers_for(base: str, request: Optional[Request] = None) -> Dict[str,
 
     Precedence: explicit ``X-Inference-Auth-Token`` from the caller
     (used by the webui's Server-URL panel and any CLI client that
-    knows the token), then fall back to JobRecord auto-lookup. Empty
-    when neither path produces a token (no record matches and the
-    caller didn't pass one — typical for a server running --no-auth).
+    knows the token), then JobRecord / cluster auto-lookup, then
+    user-added registry lookup for a saved external server, then
+    empty (server is running --no-auth).
     """
     if request is not None:
         override = request.headers.get(_TOKEN_OVERRIDE_HEADER)
@@ -278,6 +288,9 @@ def _auth_headers_for(base: str, request: Optional[Request] = None) -> Dict[str,
     token = _token_for(base)
     if token:
         return {"authorization": f"Bearer {token}"}
+    saved = inference_server_registry.find_token(base)
+    if saved:
+        return {"authorization": f"Bearer {saved}"}
     return {}
 
 
@@ -296,7 +309,9 @@ async def proxy_health(base: str, request: Request) -> JSONResponse:
     """
     target = _root_of(_validate_base(base)) + "/health"
     headers = _auth_headers_for(base, request)
-    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target)) as client:
+    async with httpx.AsyncClient(
+        timeout=_TIMEOUT, verify=_verify_for(target, base=base)
+    ) as client:
         try:
             r = await client.get(target, headers=headers or None)
         except httpx.RequestError as e:
@@ -313,7 +328,9 @@ async def proxy_models(base: str, request: Request) -> JSONResponse:
     """Forward GET ``<base>/models``."""
     target = _validate_base(base) + "/models"
     headers = _auth_headers_for(base, request)
-    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target)) as client:
+    async with httpx.AsyncClient(
+        timeout=_TIMEOUT, verify=_verify_for(target, base=base)
+    ) as client:
         try:
             r = await client.get(target, headers=headers or None)
         except httpx.RequestError as e:
@@ -342,7 +359,7 @@ async def _proxy_streaming_post(
     target = _validate_base(base) + upstream_path
     body = await request.body()
 
-    client = httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target))
+    client = httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target, base=base))
     # Send our own Content-Type; drop hop-by-hop and origin headers that
     # would confuse the upstream or reflect browser trust scope. We also
     # drop the user's Authorization (if any) and re-add a per-job token
@@ -423,7 +440,9 @@ async def proxy_tokenize(base: str, request: Request) -> JSONResponse:
     body = await request.body()
     upstream_headers = {"content-type": "application/json"}
     upstream_headers.update(_auth_headers_for(base, request))
-    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target)) as client:
+    async with httpx.AsyncClient(
+        timeout=_TIMEOUT, verify=_verify_for(target, base=base)
+    ) as client:
         try:
             r = await client.post(target, content=body, headers=upstream_headers)
         except httpx.RequestError as e:
@@ -433,6 +452,108 @@ async def proxy_tokenize(base: str, request: Request) -> JSONResponse:
         content=_safe_json(r),
         headers=_upstream_auth_headers(r.status_code),
     )
+
+
+# ---------------------------------------------------------------------------
+# User-added inference-server registry
+#
+# The Inference → Model picker lists *spawned* and *cluster* inference jobs,
+# but operators often also dial external OpenAI-compatible servers (vLLM, a
+# teammate's box, an external provider) that aren't in any cluster
+# inventory. This small registry mirrors the dataset_server one: a JSON-
+# persisted list of (label, base_url, auth_token, verify_tls) entries the
+# webui can CRUD via these routes. Token resolution wires into the proxy's
+# existing chain — see ``_auth_headers_for``.
+#
+# Intentionally node-local: entries do NOT aggregate across cluster peers,
+# unlike the dataset_server registry which feeds into the cluster dataset
+# inventory. Hence no ``_wake_cluster_inventory()`` calls on mutation — the
+# inference cluster inventory only tracks spawned jobs, not external URLs
+# any one operator has bookmarked on their own node.
+# ---------------------------------------------------------------------------
+
+
+class UserEntryModel(BaseModel):
+    id: str
+    label: str
+    base_url: str
+    has_auth_token: bool
+    # ``False`` means outbound calls to this URL skip TLS chain +
+    # hostname validation. Default ``True`` (secure-by-default).
+    verify_tls: bool = True
+
+
+class AddUserEntryRequest(BaseModel):
+    label: str = ""
+    base_url: str
+    auth_token: str = ""
+    # Operator-asserted "I trust this channel for other reasons" —
+    # used for SSH-tunneled or otherwise out-of-band-secured
+    # upstreams whose cert won't validate against the local CA.
+    verify_tls: bool = True
+
+
+@router.get("/inference-servers/user", response_model=List[UserEntryModel])
+def list_user_entries():
+    return [
+        UserEntryModel(
+            id=e.id,
+            label=e.label,
+            base_url=e.base_url,
+            has_auth_token=bool(e.auth_token),
+            verify_tls=e.verify_tls,
+        )
+        for e in inference_server_registry.list_entries()
+    ]
+
+
+@router.post("/inference-servers/user", response_model=UserEntryModel)
+def add_user_entry(req: AddUserEntryRequest):
+    """Add an external inference-server URL to this node's user registry.
+
+    **Pure database operation** — this handler validates only the URL
+    format and persists the entry. It does NOT probe the target. The
+    operator validates with the Server-URL panel's "Test" button after
+    the fact.
+    """
+    base_url = (req.base_url or "").strip()
+    if not base_url:
+        raise HTTPException(status_code=400, detail="base_url is required")
+    try:
+        parsed = urlparse(base_url)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"bad base_url: {e}")
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported scheme: {parsed.scheme!r}",
+        )
+    if not parsed.netloc:
+        raise HTTPException(status_code=400, detail="bad base_url: missing host")
+    try:
+        entry = inference_server_registry.add_entry(
+            label=req.label,
+            base_url=base_url,
+            auth_token=(req.auth_token or "").strip(),
+            verify_tls=bool(req.verify_tls),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return UserEntryModel(
+        id=entry.id,
+        label=entry.label,
+        base_url=entry.base_url,
+        has_auth_token=bool(entry.auth_token),
+        verify_tls=entry.verify_tls,
+    )
+
+
+@router.delete("/inference-servers/user/{entry_id}")
+def delete_user_entry(entry_id: str):
+    removed = inference_server_registry.remove_entry(entry_id)
+    if removed is None:
+        raise HTTPException(status_code=404, detail=f"no entry: {entry_id}")
+    return {"removed": removed.id}
 
 
 def _safe_json(r: httpx.Response) -> Dict[str, Any]:
