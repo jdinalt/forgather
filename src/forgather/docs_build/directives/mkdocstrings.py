@@ -138,9 +138,7 @@ def _render_class(obj: Any) -> str:
     init = obj.members.get("__init__") if hasattr(obj, "members") else None
     if init is not None:
         sig = _signature(init, owner_name=obj.name, is_init=True)
-        out.append("```python")
-        out.append(sig)
-        out.append("```")
+        out.extend(_python_fence(sig))
         out.append("")
 
     out.append(_format_docstring(obj))
@@ -170,9 +168,7 @@ def _render_function(obj: Any, *, heading_level: int) -> str:
     heading = "#" * heading_level
     out.append(f"{heading} `{obj.name}` {{#{_anchor(obj)}}}")
     out.append("")
-    out.append("```python")
-    out.append(_signature(obj, owner_name=obj.name, is_init=False))
-    out.append("```")
+    out.extend(_python_fence(_signature(obj, owner_name=obj.name, is_init=False)))
     out.append("")
     out.append(_format_docstring(obj))
     return _strip_trailing_blank(out)
@@ -245,20 +241,30 @@ def _is_public(name: str, member: Any) -> bool:
 def _signature(func: Any, *, owner_name: str, is_init: bool) -> str:
     parts: list[str] = []
     saw_pos_only = False
+    pos_only_closed = False
     saw_kw_only_marker = False
     for p in func.parameters:
         if p.name == "self":
             continue
         kind = str(p.kind).rsplit(".", 1)[-1]
-        if kind == "positional_only" and not saw_pos_only:
+
+        # Close the positional-only run *before* appending the first
+        # non-positional-only param so the slash lands in the right
+        # spot — ``def f(a, b, /, c)`` not ``def f(a, b, c, /)``.
+        if saw_pos_only and not pos_only_closed and kind != "positional_only":
+            parts.append("/")
+            pos_only_closed = True
+
+        if kind == "positional_only":
             saw_pos_only = True
         if kind == "keyword_only" and not saw_kw_only_marker:
             parts.append("*")
             saw_kw_only_marker = True
         parts.append(_render_param(p))
-        if saw_pos_only and kind != "positional_only":
-            parts.append("/")
-            saw_pos_only = False
+
+    # Function ends with a positional-only tail (no later params).
+    if saw_pos_only and not pos_only_closed:
+        parts.append("/")
 
     head = f"class {owner_name}" if is_init else f"def {owner_name}"
     joined = ", ".join(parts)
@@ -371,9 +377,7 @@ def _format_examples(entries: Iterable[Any]) -> str:
             out.append(str(value).strip())
             out.append("")
         elif kind_name == "examples":
-            out.append("```python")
-            out.append(str(value).strip())
-            out.append("```")
+            out.extend(_python_fence(str(value).strip()))
             out.append("")
     return _strip_trailing_blank(out)
 
@@ -401,6 +405,24 @@ def _render_attribute_line(attr: Any) -> str:
 def _anchor(obj: Any) -> str:
     """Stable anchor id from canonical_path so cross-page links resolve."""
     return getattr(obj, "canonical_path", obj.name).replace(".", "-").lower()
+
+
+_BACKTICK_RUN_RE = re.compile(r"`{3,}")
+
+
+def _python_fence(body: str) -> list[str]:
+    """Wrap ``body`` in a `python`-tagged fence safe against inner backticks.
+
+    A function default like ``foo("```bar```")`` would normally close
+    a 3-backtick fence prematurely and break the rendering of every
+    block that follows. We scan ``body`` for the longest run of
+    backticks and emit a fence one tick longer (CommonMark allows
+    nesting that way). Three backticks remain the default — the helper
+    only widens when the body forces it.
+    """
+    longest = max((len(m.group(0)) for m in _BACKTICK_RUN_RE.finditer(body)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return [f"{fence}python", body, fence]
 
 
 def _strip_trailing_blank(lines: list[str]) -> str:

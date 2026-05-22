@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -27,7 +28,15 @@ log = logging.getLogger("forgather.docs_build.builder")
 
 _OUTPUT_DIR_NAME = ".built"
 _DEPS_FILENAME = ".deps.json"
-_FENCE_RE = re.compile(r"^(```|~~~)")
+# A fenced-code-block delimiter is a run of 3+ backticks or 3+ tildes
+# at the start of a line. CommonMark allows nesting by using a longer
+# run than the enclosing fence (e.g. ``````markdown`` ... ``` ... ``````
+# is a 4-backtick block containing a 3-backtick block); we honour that
+# by capturing the full run and requiring the closer to be at least as
+# long as the opener. Without this, a 3-backtick line inside a
+# 4-backtick fence would prematurely toggle ``in_fence`` off and a
+# following ``:::`` line would be wrongly expanded as a directive.
+_FENCE_RE = re.compile(r"^(`{3,}|~{3,})")
 
 
 @dataclass
@@ -99,7 +108,14 @@ def build(
     for src in sources:
         rel = src.relative_to(docs_dir)
         out = out_root / rel
+        # Capture the source mtime *before* reading. We pin the output
+        # mtime to this value below so that an edit landing between our
+        # read and our write doesn't end up with src.mtime < out.mtime
+        # — the next build's staleness check would then incorrectly
+        # mark the page up-to-date and the edit would be invisible
+        # until ``--clean``.
         try:
+            src_mtime_before = src.stat().st_mtime
             text = src.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
             report.errors.append((src, f"read failed: {exc}"))
@@ -128,13 +144,23 @@ def build(
 
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(rendered, encoding="utf-8")
+        # Anchor the output mtime to the source we just read. Any edit
+        # that landed during our read/render window leaves src.mtime
+        # strictly greater than out.mtime, so the next build picks the
+        # change up via the existing staleness check.
+        try:
+            os.utime(out, (src_mtime_before, src_mtime_before))
+        except OSError:
+            pass
 
         deps_map[str(rel)] = [_relpath(p, repo_root) for p in deps]
-        report.built.append(src)
-
-    if not check_only:
-        out_root.mkdir(parents=True, exist_ok=True)
+        # Flush the deps sidecar after each page so a Ctrl-C / OOM /
+        # crash mid-loop doesn't strand the freshly-written page with
+        # an out-of-date or absent deps entry — that combination would
+        # let a later edit to a referenced Python source go undetected
+        # by the staleness check.
         _save_deps(out_root, deps_map)
+        report.built.append(src)
 
     return report
 
@@ -177,13 +203,8 @@ def _has_any_directive(text: str) -> bool:
     fence_marker: Optional[str] = None
     for line in text.splitlines():
         m = _FENCE_RE.match(line)
-        if m:
-            if not in_fence:
-                in_fence = True
-                fence_marker = m.group(1)
-            elif fence_marker and line.startswith(fence_marker):
-                in_fence = False
-                fence_marker = None
+        if m and _is_fence_toggle(m, in_fence, fence_marker):
+            in_fence, fence_marker = _toggle_fence(m, in_fence, fence_marker)
             continue
         if in_fence:
             continue
@@ -200,13 +221,8 @@ def _expand_text(text: str, *, context: DirectiveContext) -> tuple[str, list[Pat
     fence_marker: Optional[str] = None
     for line in text.splitlines():
         m = _FENCE_RE.match(line)
-        if m:
-            if not in_fence:
-                in_fence = True
-                fence_marker = m.group(1)
-            elif fence_marker and line.startswith(fence_marker):
-                in_fence = False
-                fence_marker = None
+        if m and _is_fence_toggle(m, in_fence, fence_marker):
+            in_fence, fence_marker = _toggle_fence(m, in_fence, fence_marker)
             out_lines.append(line)
             continue
         if in_fence:
@@ -221,6 +237,32 @@ def _expand_text(text: str, *, context: DirectiveContext) -> tuple[str, list[Pat
     if not final.endswith("\n"):
         final += "\n"
     return final, sorted(deps)
+
+
+def _is_fence_toggle(
+    match: re.Match[str], in_fence: bool, fence_marker: Optional[str]
+) -> bool:
+    """Decide whether a fence-shaped line actually opens or closes a fence.
+
+    A line is an opener iff we're outside a fence — info strings and
+    fence-char mismatches are fine (mkdocs handles them at render time).
+    A line is a closer iff its fence run is the same character as the
+    opener AND at least as long; a shorter or different-char run inside
+    a longer fence is just content.
+    """
+    if not in_fence:
+        return True
+    assert fence_marker is not None
+    run = match.group(1)
+    return run[0] == fence_marker[0] and len(run) >= len(fence_marker)
+
+
+def _toggle_fence(
+    match: re.Match[str], in_fence: bool, fence_marker: Optional[str]
+) -> tuple[bool, Optional[str]]:
+    if in_fence:
+        return False, None
+    return True, match.group(1)
 
 
 def _try_match(
