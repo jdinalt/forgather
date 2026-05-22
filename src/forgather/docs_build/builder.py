@@ -109,9 +109,7 @@ def build(
             report.skipped_no_directives.append(src)
             continue
 
-        if not check_only and _is_up_to_date(
-            src, out, deps_map.get(str(rel)), repo_root
-        ):
+        if _is_up_to_date(src, out, deps_map.get(str(rel)), repo_root):
             report.skipped_up_to_date.append(src)
             continue
 
