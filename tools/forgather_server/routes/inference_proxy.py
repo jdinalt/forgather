@@ -464,6 +464,12 @@ async def proxy_tokenize(base: str, request: Request) -> JSONResponse:
 # persisted list of (label, base_url, auth_token, verify_tls) entries the
 # webui can CRUD via these routes. Token resolution wires into the proxy's
 # existing chain — see ``_auth_headers_for``.
+#
+# Intentionally node-local: entries do NOT aggregate across cluster peers,
+# unlike the dataset_server registry which feeds into the cluster dataset
+# inventory. Hence no ``_wake_cluster_inventory()`` calls on mutation — the
+# inference cluster inventory only tracks spawned jobs, not external URLs
+# any one operator has bookmarked on their own node.
 # ---------------------------------------------------------------------------
 
 

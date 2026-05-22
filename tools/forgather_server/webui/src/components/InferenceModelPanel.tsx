@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   api,
@@ -43,6 +43,17 @@ export function InferenceModelPanel({ state, setState }: Props) {
   // running-servers list and clicking one fills baseUrl + token
   // exactly like a running-server pick.
   const [addServerOpen, setAddServerOpen] = useState(false);
+  // Which row was last picked. Disambiguates selection when a
+  // user-registered URL coincides with a spawned/cluster server's URL
+  // (e.g. register your local vLLM, later spawn a forgather inference
+  // job on the same port) — without this, both rows would render
+  // selected because URL string equality matches both. Cleared when
+  // the operator edits the URL field directly.
+  const [pickedRow, setPickedRow] = useState<
+    | { kind: "running"; id: string }
+    | { kind: "user"; id: string }
+    | null
+  >(null);
   const qc = useQueryClient();
   // Name of the last-loaded/saved preset, so Save defaults to overwriting
   // it and Delete has an obvious target. "" = no preset in play (fresh /
@@ -208,6 +219,8 @@ export function InferenceModelPanel({ state, setState }: Props) {
   const setBaseUrl = (baseUrl: string) => {
     setState((prev) => ({ ...prev, baseUrl }));
     setHealth({ kind: "unknown" });
+    // Manual edit detaches from any picked row.
+    setPickedRow(null);
   };
   const setAuthToken = (authToken: string) => {
     setState((prev) => ({ ...prev, authToken }));
@@ -225,6 +238,7 @@ export function InferenceModelPanel({ state, setState }: Props) {
       authToken: row.authToken,
     }));
     setHealth({ kind: "unknown" });
+    setPickedRow({ kind: "running", id: row.id });
     // Re-fetch models against the new URL.
     setTimeout(() => modelsQ.refetch(), 0);
   };
@@ -242,10 +256,23 @@ export function InferenceModelPanel({ state, setState }: Props) {
       authToken: "",
     }));
     setHealth({ kind: "unknown" });
+    setPickedRow({ kind: "user", id: s.id });
     setTimeout(() => modelsQ.refetch(), 0);
   };
 
   const userServers = userServersQ.data ?? [];
+
+  // When the selected user-server is removed (via "×" or out-of-band),
+  // clear baseUrl + the picked-row pin so action buttons stop firing
+  // against an orphaned URL. Mirrors the parallel effect in
+  // DatasetsPanel's DatasetServersTab.
+  useEffect(() => {
+    if (pickedRow?.kind !== "user") return;
+    if (userServers.some((s) => s.id === pickedRow.id)) return;
+    setPickedRow(null);
+    setState((prev) => ({ ...prev, baseUrl: "", authToken: "" }));
+    setHealth({ kind: "unknown" });
+  }, [pickedRow, userServers, setState]);
 
   return (
     <div className="inference-model-panel">
@@ -277,7 +304,15 @@ export function InferenceModelPanel({ state, setState }: Props) {
         )}
         <ul className="inference-server-list">
           {(pickerRows ?? []).map((row) => {
-            const selected = row.url === state.baseUrl;
+            // When a row was explicitly picked, use its id to disambiguate
+            // — a user-registered URL that coincides with a spawned/cluster
+            // server's URL would otherwise highlight both rows. Fall back
+            // to URL string match only when nothing has been picked (e.g.
+            // baseUrl was restored from localStorage on page load).
+            const selected =
+              pickedRow !== null
+                ? pickedRow.kind === "running" && pickedRow.id === row.id
+                : row.url === state.baseUrl;
             return (
               <li
                 key={row.id}
@@ -334,7 +369,11 @@ export function InferenceModelPanel({ state, setState }: Props) {
         )}
         <ul className="inference-server-list">
           {userServers.map((s) => {
-            const selected = s.base_url === state.baseUrl;
+            // Same disambiguation as the running-servers list above.
+            const selected =
+              pickedRow !== null
+                ? pickedRow.kind === "user" && pickedRow.id === s.id
+                : s.base_url === state.baseUrl;
             return (
               <li
                 key={s.id}
