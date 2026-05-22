@@ -159,6 +159,18 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     }
   }, [fixedWorkerCount, gpusTouched, maxGpus, overridesQ.data?.requested_gpus]);
 
+  // Clamp requestedGpus into [0, maxGpus] whenever the GPU list
+  // resolves. Independent of the seed-from-cache logic above so it
+  // also catches the "no cached override, no fixed worker count,
+  // initial useState(1) on a 0-GPU host" case -- without this the
+  // form ships requested_gpus=1 to the scheduler on hosts that have
+  // no GPU at all. Idempotent w.r.t. the seed effect; ordering
+  // between the two doesn't matter.
+  useEffect(() => {
+    if (gpusQ.data === undefined) return;
+    setRequestedGpus((cur) => Math.max(0, Math.min(maxGpus, cur)));
+  }, [gpusQ.data, maxGpus]);
+
   // Seed form values from cache once both schema and overrides have loaded.
   // Only seed entries whose dest exists in the current schema; silently
   // drop stale cached keys that are no longer in the schema.
