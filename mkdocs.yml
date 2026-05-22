@@ -28,6 +28,11 @@ exclude_docs: |
   __pycache__/
   .forgather_history
   *.pyc
+  # Pre-rendered cache produced by ``forgather docs build`` for the
+  # webui docs viewer. Excluded from the real mkdocs build because the
+  # mkdocstrings plugin already expands ``:::`` directives at render
+  # time; including these would double-render API pages.
+  .built/
 
 # Files that exist in docs/ as cross-link targets but are reachable
 # only through inline links from primary nav pages. Listing them here
