@@ -340,11 +340,18 @@ def _build_inference(item, gpu_indices, tty_path):
     # ``model_path`` is a string. Exactly one is expected from the
     # enqueue layer (CLI or webui InferenceModal).
     models = p.get("models")
+    # ``device`` from job_params is an explicit override (e.g. "auto"
+    # for HF device_map sharding across multiple GPUs, "cpu" to force
+    # CPU even when GPUs are reserved). When unset / blank, the
+    # launcher derives the right value from gpu_indices.
+    raw_device = p.get("device")
+    device = raw_device.strip() if isinstance(raw_device, str) and raw_device.strip() else None
     return launcher.spawn_inference_process(
         model_path=p.get("model_path") if not models else None,
         models=models,
         port=int(p["port"]),
         host=p.get("host", "127.0.0.1"),
+        device=device,
         dtype=p.get("dtype"),
         attn_implementation=p.get("attn_implementation"),
         checkpoint_path=p.get("checkpoint_path"),

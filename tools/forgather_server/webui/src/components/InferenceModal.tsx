@@ -43,6 +43,14 @@ interface PersistedAdHoc {
   keepOnGpu: boolean;
   chatTemplate: string;
   requestedGpus: number;
+  /** Explicit device override for the spawned server's -d flag. Empty
+   *  string = "let the launcher decide" (cpu when 0 GPUs are
+   *  reserved, else server-side _default_device). Other values pass
+   *  through verbatim: "cpu" forces CPU, "auto" engages HF
+   *  device_map='auto' for multi-GPU sharding (HF loader only —
+   *  incompatible with --from-checkpoint), explicit "cuda:N" /
+   *  "xpu:N" pin to a specific device index. */
+  device: string;
 }
 
 const AD_HOC_STORAGE_KEY = "forgather-adhoc-inference-v1";
@@ -114,6 +122,7 @@ export function InferenceModal({
   const [requestedGpus, setRequestedGpus] = useState<number>(
     persisted.requestedGpus ?? 1,
   );
+  const [device, setDevice] = useState<string>(persisted.device ?? "");
   const [priority, setPriority] = useState<number>(0);
   const [ckptPath, setCkptPath] = useState<string>(
     checkpointPath ?? persisted.ckptPath ?? "",
@@ -176,6 +185,7 @@ export function InferenceModal({
     setKeepOnGpu(false);
     setChatTemplate("");
     setRequestedGpus(1);
+    setDevice("");
     // Priority is per-session (not persisted) but resetting it here too
     // matches the operator's expectation that "Reset to defaults" puts
     // the form into the same shape it had on first open.
@@ -245,6 +255,7 @@ export function InferenceModal({
       compile: compileFlag,
       disable_kv_cache: disableKvCache,
     };
+    if (device.trim()) args.device = device.trim();
     // keep_on_gpu only matters with multiple models; single-model
     // servers already keep the sole model resident.
     if (isMultiModel && keepOnGpu) args.keep_on_gpu = true;
@@ -274,7 +285,12 @@ export function InferenceModal({
   const canSubmit =
     resolvedModels.length >= 1 &&
     dupNames.length === 0 &&
-    !(isMultiModel && ckptPath.trim());
+    !(isMultiModel && ckptPath.trim()) &&
+    // The inference server's native checkpoint loader explicitly
+    // rejects ``device="auto"`` (it isn't a real torch.device string).
+    // Block the submit so the operator sees this in-UI instead of
+    // landing a job that crashes immediately.
+    !(device === "auto" && fromCheckpoint);
 
   const submit = () => {
     if (!canSubmit) return;
@@ -301,6 +317,7 @@ export function InferenceModal({
       keepOnGpu,
       chatTemplate: chatTemplate.trim(),
       requestedGpus,
+      device,
     });
     const job_params = buildArgs();
     // project_dir for the queue row: in project-backed mode use the
@@ -466,6 +483,32 @@ export function InferenceModal({
               {requestedGpus === 0 && maxGpus > 0 && (
                 <span className="muted">
                   0 = run on CPU (no GPU reservation)
+                </span>
+              )}
+            </label>
+            <label>
+              Device
+              <select
+                value={device}
+                onChange={(e) => setDevice(e.target.value)}
+                title={
+                  "Override the spawned server's -d flag. Default = let " +
+                  "the launcher choose (cpu when 0 GPUs reserved, else " +
+                  "cuda:0 / xpu:0 / etc.). 'auto' opts into HF " +
+                  "device_map='auto' multi-GPU sharding -- HF loader only, " +
+                  "incompatible with --from-checkpoint."
+                }
+              >
+                <option value="">default</option>
+                <option value="auto">auto (HF device_map shard)</option>
+                <option value="cpu">cpu</option>
+                <option value="cuda:0">cuda:0</option>
+              </select>
+              {device === "auto" && fromCheckpoint && (
+                <span className="muted" style={{ color: "var(--warn, #b58900)" }}>
+                  --from-checkpoint uses the native loader, which rejects
+                  'auto'. Pick a real device or turn the checkpoint
+                  toggle off.
                 </span>
               )}
             </label>

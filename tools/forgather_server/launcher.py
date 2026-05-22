@@ -284,6 +284,12 @@ def spawn_inference_process(
     model_path: Optional[str] = None,
     models: Optional[List[Dict[str, Any]]] = None,
     host: str = "127.0.0.1",
+    # Explicit device override. None -> derive from gpu_indices ("cpu"
+    # when no GPU is reserved, else let the server's _default_device()
+    # pick within CUDA_VISIBLE_DEVICES). Pass "auto" for HF's
+    # device_map='auto' (multi-GPU sharding, HF loader only); pass an
+    # explicit "cpu" / "cuda:N" / "xpu:N" for direct pinning.
+    device: Optional[str] = None,
     dtype: Optional[str] = None,
     attn_implementation: Optional[str] = None,
     checkpoint_path: Optional[str] = None,
@@ -308,14 +314,16 @@ def spawn_inference_process(
     Pass either ``model_path`` (single-model) or ``models`` (multi-model,
     a list of ``{"name", "path"}`` dicts). Exactly one is required.
     """
-    # Pin the spawned server to a real device. Zero-GPU dispatches
-    # (``requested_gpus=0``) get an explicit ``-d cpu`` so the CPU
-    # path is unambiguous in the argv and TTY log; GPU dispatches let
-    # the server's own _default_device() resolve to ``<accelerator>:0``
-    # against the CUDA_VISIBLE_DEVICES set by _spawn_subprocess
-    # (subprocess sees only the reserved GPU(s), so its index-0 IS
-    # the reserved device).
-    device = "cpu" if not gpu_indices else None
+    # Pin the spawned server to a real device. Caller's explicit value
+    # (e.g. "auto" for HF sharding) wins; otherwise derive:
+    #   - zero-GPU dispatch  -> "-d cpu"  (unambiguous in argv/TTY log)
+    #   - GPU dispatch       -> omit "-d" and let the server's own
+    #     _default_device() resolve to ``<accelerator>:0`` against the
+    #     CUDA_VISIBLE_DEVICES set by _spawn_subprocess (subprocess
+    #     sees only the reserved GPU(s), so index-0 IS the reserved
+    #     device).
+    if device is None:
+        device = "cpu" if not gpu_indices else None
     cmd = inference_ops.build_inference_command(
         model_path=model_path,
         models=models,
