@@ -376,12 +376,17 @@ def _demo_path_allowed(path: str) -> bool:
             continue
         # Reject anything in the variable middle that could carry a
         # smuggled segment under a non-uvicorn ASGI server: forward and
-        # backslashes, NUL, and percent-encoded sequences (which would
-        # decode to slashes under a decoder that didn't run before the
-        # match). Cheap belt-and-suspenders — uvicorn already decodes
-        # %-escapes upstream of the ASGI scope, but the matcher
-        # shouldn't depend on the host ASGI server's normalization.
-        if any(c in middle for c in ("/", "\\", "\x00", "%")):
+        # backslashes, NUL, CR/LF, and percent-encoded sequences
+        # (which would decode to slashes under a decoder that didn't
+        # run before the match). Cheap belt-and-suspenders — uvicorn
+        # already decodes %-escapes and rejects CR/LF upstream of the
+        # ASGI scope, but the matcher shouldn't depend on the host
+        # ASGI server's normalization. NOTE: every future entry in
+        # _DEMO_MUTATION_ALLOWLIST_PATTERNS inherits the "no %, no
+        # slashes, no control chars in the variable middle" constraint
+        # — patterns that need to accept percent-encoded identifiers
+        # must use a separate matcher.
+        if any(c in middle for c in ("/", "\\", "\x00", "\r", "\n", "%")):
             continue
         return True
     return False

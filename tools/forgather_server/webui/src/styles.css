@@ -809,7 +809,13 @@ button.destructive:hover {
   background: var(--err-bg);
 }
 button.destructive:disabled,
-button.secondary:disabled {
+button.secondary:disabled,
+button:disabled {
+  /* Generic ``button:disabled`` so primary-accent buttons (the default,
+     unstyled-class variant used for "+ Add server" and similar
+     constructive affordances) also dim when disabled — previously the
+     rule only fired for explicitly-classed buttons, which left
+     demo-mode-disabled primary buttons looking fully live. */
   opacity: 0.5;
   cursor: not-allowed;
 }

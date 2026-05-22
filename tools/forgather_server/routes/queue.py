@@ -197,6 +197,15 @@ def list_queue():
 
 @router.post("/queue", response_model=QueueItemModel)
 def enqueue(req: EnqueueRequest):
+    # Same fs-root gate the GET /api/config/dynamic-args endpoint gets:
+    # the enqueue path below runs template-preprocess via
+    # load_dynamic_args(req.project_dir, ...), which follows
+    # ``-- include`` chains anywhere project_dir points. Demo mode
+    # already 403s the POST via the mutation gate, but the fs-root
+    # allowlist is meant to apply outside demo too (operator runs the
+    # server with --fs-root for a tighter local sandbox); without this
+    # check that intent is bypassed.
+    _enforce_fs_root(req.project_dir)
     if req.job_type not in _SUPPORTED_JOB_TYPES:
         raise HTTPException(
             status_code=400,
