@@ -775,7 +775,13 @@ class AuthMiddleware:
 
 
 async def _send_demo_blocked(send) -> None:
-    """Send a 403 response for a mutation blocked by demo mode."""
+    """Send a 403 response for a mutation blocked by demo mode.
+
+    The ``X-Forgather-Demo-Blocked`` header lets the webui's fetch
+    wrapper distinguish a policy-403 (don't force re-login) from a
+    real session-expiry 403 (do force re-login). Same pattern as
+    ``X-Upstream-Auth-Failed`` / ``X-Forgather-Proxy-Refused``.
+    """
     body = b'{"detail":"Server is in read-only demo mode"}'
     await send(
         {
@@ -783,6 +789,7 @@ async def _send_demo_blocked(send) -> None:
             "status": 403,
             "headers": [
                 (b"content-type", b"application/json"),
+                (b"x-forgather-demo-blocked", b"1"),
             ],
         }
     )

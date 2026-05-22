@@ -63,10 +63,16 @@ export function installAuthFetch(): void {
       const upstreamAuthFailed =
         r.headers.get("X-Upstream-Auth-Failed") === "1";
       const proxyRefused = r.headers.get("X-Forgather-Proxy-Refused") === "1";
+      // Demo-mode policy 403: the user is authenticated, the server
+      // just refuses mutations. Bouncing them back to /login would be
+      // both confusing and pointless — same tag-pattern as the two
+      // headers above.
+      const demoBlocked = r.headers.get("X-Forgather-Demo-Blocked") === "1";
       if (
         !url.includes("/api/auth/") &&
         !upstreamAuthFailed &&
-        !proxyRefused
+        !proxyRefused &&
+        !demoBlocked
       ) {
         window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT));
       }
