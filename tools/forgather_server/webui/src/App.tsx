@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, CheckpointEntry, ConfigInfo, EvalEntry, ProjectInfo } from "./api";
 import { getAutoWatchTty } from "./autoWatch";
+import { useDemoMode, useServerVersion } from "./demoMode";
 import { ContextMenu } from "./components/ContextMenu";
 import { ProjectTree } from "./components/ProjectTree";
 import { ConfigViewer } from "./components/ConfigViewer";
@@ -207,6 +208,8 @@ export type Selection =
     };
 
 export default function App() {
+  const demoMode = useDemoMode();
+  const serverVersion = useServerVersion();
   const [view, setView] = useState<View>("docs");
   const [selected, setSelected] = useState<Selection>(null);
   // Tab state lives here so opening a project can both pick its default
@@ -875,7 +878,13 @@ export default function App() {
   ];
 
   return (
-    <div className={"app" + (sidebarCollapsed ? " sidebar-collapsed" : "")}>
+    <div
+      className={
+        "app" +
+        (sidebarCollapsed ? " sidebar-collapsed" : "") +
+        (demoMode ? " demo-mode" : "")
+      }
+    >
       {/*
         Both the collapsed strip and the expanded layout stay mounted so
         ProjectTree's local expansion state (which workspaces / projects /
@@ -893,6 +902,16 @@ export default function App() {
           >
             <SidebarIcon />
           </button>
+          {demoMode && (
+            <span
+              className="sidebar-header-demo-chip sidebar-header-demo-chip-collapsed"
+              role="status"
+              aria-label="Read-only demo mode"
+              title="Read-only demo mode — mutating actions are blocked. Expand the sidebar for details."
+            >
+              DEMO
+            </span>
+          )}
           <nav className="sidebar-views icon-only">
             {visibleViews.map((v) => (
               <button
@@ -927,6 +946,32 @@ export default function App() {
             title="Right-click for help"
           >
             <h1>Forgather Server</h1>
+            {serverVersion && (
+              <span
+                className="sidebar-header-version"
+                title={`Forgather ${serverVersion}`}
+              >
+                v{serverVersion}
+              </span>
+            )}
+            {demoMode && (
+              <span
+                className="sidebar-header-demo-chip"
+                role="status"
+                aria-label={
+                  "Read-only demo mode is active. Mutating actions " +
+                  "(file edits, job submission, server admin) are " +
+                  "blocked; read-only browsing still works."
+                }
+                title={
+                  "This server is running with --demo: mutating actions " +
+                  "(file edits, job submission, server admin, etc.) are " +
+                  "blocked. Read-only browsing still works."
+                }
+              >
+                DEMO MODE
+              </span>
+            )}
             <div className="sidebar-header-actions">
               <button
                 className="sidebar-toggle"
@@ -1200,11 +1245,13 @@ export default function App() {
                 (schedEnabled ? "running" : "paused")
               }
               onClick={() => toggleSched.mutate(!schedEnabled)}
-              disabled={toggleSched.isPending || schedQ.isLoading}
+              disabled={demoMode || toggleSched.isPending || schedQ.isLoading}
               title={
-                schedEnabled
-                  ? "Scheduler running — click to pause"
-                  : "Scheduler paused — click to run"
+                demoMode
+                  ? "Read-only demo mode — scheduler controls are disabled"
+                  : schedEnabled
+                    ? "Scheduler running — click to pause"
+                    : "Scheduler paused — click to run"
               }
               aria-label={schedEnabled ? "Pause scheduler" : "Run scheduler"}
             >
@@ -1213,11 +1260,13 @@ export default function App() {
             <button
               className="sidebar-footer-gear"
               onClick={restartServer}
-              disabled={restarting || shuttingDown}
+              disabled={demoMode || restarting || shuttingDown}
               title={
-                restarting
-                  ? "Waiting for the server to come back up…"
-                  : "Restart the forgather server (running jobs survive)"
+                demoMode
+                  ? "Read-only demo mode — server restart is disabled"
+                  : restarting
+                    ? "Waiting for the server to come back up…"
+                    : "Restart the forgather server (running jobs survive)"
               }
               aria-label="Restart server"
             >
@@ -1226,29 +1275,33 @@ export default function App() {
             <button
               className="sidebar-footer-gear"
               onClick={() => setShutdownOpen(true)}
-              disabled={shuttingDown || restarting}
+              disabled={demoMode || shuttingDown || restarting}
               title={
-                shuttingDown
-                  ? "Shutdown in progress…"
-                  : "Shutdown the forgather server"
+                demoMode
+                  ? "Read-only demo mode — server shutdown is disabled"
+                  : shuttingDown
+                    ? "Shutdown in progress…"
+                    : "Shutdown the forgather server"
               }
               aria-label="Shutdown server"
             >
               <PowerIcon />
             </button>
-            <button
-              className="sidebar-footer-gear"
-              onClick={openServerConfig}
-              disabled={!serverConfigQ.data?.path}
-              title={
-                serverConfigQ.data?.path
-                  ? `Open server config: ${serverConfigQ.data.path}`
-                  : "Server config path unavailable"
-              }
-              aria-label="Open server config"
-            >
-              <GearIcon />
-            </button>
+            {!demoMode && (
+              <button
+                className="sidebar-footer-gear"
+                onClick={openServerConfig}
+                disabled={!serverConfigQ.data?.path}
+                title={
+                  serverConfigQ.data?.path
+                    ? `Open server config: ${serverConfigQ.data.path}`
+                    : "Server config path unavailable"
+                }
+                aria-label="Open server config"
+              >
+                <GearIcon />
+              </button>
+            )}
           </div>
         </div>
       </aside>

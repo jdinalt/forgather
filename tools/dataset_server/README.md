@@ -194,6 +194,15 @@ entirely. The startup banner warns prominently. Only use it on
 hosts where you're the only user, or where the bind address is on
 a trusted network (e.g. an internal cluster interface).
 
+**Suppressing the token in the startup banner** — `--quiet-tokens`
+replaces the bearer-value-bearing launch lines with a one-line
+"auth enabled (value suppressed)" message. The token still works
+and is still persisted to its per-port file (peers / the local
+CLI client still discover it normally); only the captured TTY log
+is sanitized. Use this when the dataset server runs under
+`forgather server --demo` and the Jobs panel's TTY pane is
+exposed to untrusted viewers.
+
 **Override env / explicit token on the client side**:
 
 ```bash

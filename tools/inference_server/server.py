@@ -85,10 +85,12 @@ def _default_device() -> str:
     if torch.cuda.is_available():
         return "cuda:0"
     return "cpu"
+
+
 from forgather.tls.runtime import (
     add_server_tls_args,
-    uvicorn_ssl_kwargs as tls_uvicorn_ssl_kwargs,
 )
+from forgather.tls.runtime import uvicorn_ssl_kwargs as tls_uvicorn_ssl_kwargs
 
 
 def json_type(data):
@@ -266,6 +268,17 @@ def main():
         action="store_true",
         help="Disable bearer-token auth. Any local user on the host will be able to use the model — only set this if you understand the threat model.",
     )
+    parser.add_argument(
+        "--quiet-tokens",
+        action="store_true",
+        help=(
+            "Don't print the bearer token (or token-bearing curl example) "
+            "to stderr at launch. Token is still written to its per-port "
+            "file when auto-generated, so the local CLI client can still "
+            "find it. Intended for demo / public-exposure setups where "
+            "the TTY log is visible to untrusted callers."
+        ),
+    )
 
     add_server_tls_args(parser)
     args = parser.parse_args()
@@ -402,24 +415,39 @@ def main():
 
         # Print on stderr so it's visible in TTY logs (the scheduler captures
         # stderr) but not entangled with uvicorn's stdout request log.
-        print(f"inference_server auth token: {auth_token}", file=sys.stderr, flush=True)
-        print(
-            "clients must send 'Authorization: Bearer <token>'",
-            file=sys.stderr,
-            flush=True,
-        )
-        try:
-            from forgather.tls import is_enabled as _tls_enabled
+        # --quiet-tokens suppresses the actual value (and the curl example
+        # that embeds it) for demo / public-exposure setups; the source +
+        # persistence message still goes out so operators know auth is on.
+        if args.quiet_tokens:
+            print(
+                "inference_server auth: bearer-token enabled "
+                "(value suppressed by --quiet-tokens)",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            print(
+                f"inference_server auth token: {auth_token}",
+                file=sys.stderr,
+                flush=True,
+            )
+            print(
+                "clients must send 'Authorization: Bearer <token>'",
+                file=sys.stderr,
+                flush=True,
+            )
+            try:
+                from forgather.tls import is_enabled as _tls_enabled
 
-            _scheme = "https" if _tls_enabled() else "http"
-        except Exception:
-            _scheme = "http"
-        print(
-            f'curl -H "Authorization: Bearer {auth_token}" '
-            f"{_scheme}://{args.host}:{args.port}/v1/models",
-            file=sys.stderr,
-            flush=True,
-        )
+                _scheme = "https" if _tls_enabled() else "http"
+            except Exception:
+                _scheme = "http"
+            print(
+                f'curl -H "Authorization: Bearer {auth_token}" '
+                f"{_scheme}://{args.host}:{args.port}/v1/models",
+                file=sys.stderr,
+                flush=True,
+            )
 
         # When the token was auto-generated, publish it to a per-port file
         # under the per-user config dir so the bundled CLI client (and other local

@@ -31,12 +31,14 @@ from pathlib import Path
 from threading import Lock
 from typing import Dict, List, Optional
 
-from forgather import trainer_control
-
 from dataset_server.auth import (
     standalone_token_file as dataset_server_standalone_token_file,
+)
+from dataset_server.auth import (
     write_standalone_token as dataset_server_write_standalone_token,
 )
+
+from forgather import trainer_control
 
 from . import _atomic, _gc, gpu_monitor, job_records, launcher, queue_store
 from .job_records import RUNNING_STATUSES, TERMINAL_STATUSES, JobRecord
@@ -377,7 +379,11 @@ def _build_inference(item, gpu_indices, tty_path):
     # CPU even when GPUs are reserved). When unset / blank, the
     # launcher derives the right value from gpu_indices.
     raw_device = p.get("device")
-    device = raw_device.strip() if isinstance(raw_device, str) and raw_device.strip() else None
+    device = (
+        raw_device.strip()
+        if isinstance(raw_device, str) and raw_device.strip()
+        else None
+    )
     return launcher.spawn_inference_process(
         model_path=p.get("model_path") if not models else None,
         models=models,
@@ -400,6 +406,7 @@ def _build_inference(item, gpu_indices, tty_path):
         tty_log_path=tty_path,
         auth_token_file=auth_token_file,
         no_auth=no_auth,
+        quiet_tokens=bool(p.get("quiet_tokens", False)),
     )
 
 
@@ -434,6 +441,7 @@ def _build_dataset_server(item, gpu_indices, tty_path):
         tty_log_path=tty_path,
         auth_token_file=auth_token_file,
         no_auth=no_auth,
+        quiet_tokens=bool(p.get("quiet_tokens", False)),
     )
 
 
@@ -727,7 +735,11 @@ def detect_routable_host() -> Optional[str]:
             self_ident = _cluster.self_identity()
             if self_ident:
                 m = next(
-                    (mm for mm in _cluster.members() if mm.node_id == self_ident.node_id),
+                    (
+                        mm
+                        for mm in _cluster.members()
+                        if mm.node_id == self_ident.node_id
+                    ),
                     None,
                 )
                 if m and m.address and not m.address.startswith("127."):
@@ -783,8 +795,8 @@ def _resolve_inference_server_token(*, port: int, regen: bool) -> str:
     # which the runtime image puts on the python path but isn't strictly
     # required to import at module load.
     try:
+        from inference_server.auth_paths import standalone_token_file as _inf_token_path
         from inference_server.auth_paths import (
-            standalone_token_file as _inf_token_path,
             write_standalone_token as _inf_token_write,
         )
     except ImportError:
@@ -919,9 +931,7 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
             from forgather.tls import client_scheme as _client_scheme
 
             host_for_scheme = finalized_params.get("host", "127.0.0.1")
-            finalized_params.setdefault(
-                "scheme", _client_scheme(host_for_scheme)
-            )
+            finalized_params.setdefault("scheme", _client_scheme(host_for_scheme))
         except Exception:
             finalized_params.setdefault("scheme", "http")
 

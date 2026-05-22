@@ -11,7 +11,20 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from .. import config_ops, discovery
+from .. import paths as fs_paths
 from .. import search_roots as sr
+
+
+def _enforce_fs_root(path) -> None:
+    """403 if the path isn't under the configured fs-root allowlist."""
+    if fs_paths.is_path_in_fs_root(path):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=f"path is outside the configured filesystem roots: {path}",
+        headers={"X-Forgather-Fs-Root-Denied": "1"},
+    )
+
 
 log = logging.getLogger("forgather_server.projects")
 router = APIRouter(tags=["projects"])
@@ -76,6 +89,7 @@ def list_projects():
 @router.get("/project", response_model=ProjectInfoModel)
 def get_project(project_dir: str):
     """Detailed info for a single project (full config list + errors)."""
+    _enforce_fs_root(project_dir)
     info = discovery.load_project_info(project_dir)
     if info.parse_error and not info.configs:
         raise HTTPException(status_code=404, detail=info.parse_error)
@@ -89,6 +103,7 @@ def get_project_readme(project_dir: str):
     Returns 404 with a clear detail if README.md does not exist.
     Only the canonical filename ``README.md`` is accepted — no case variants.
     """
+    _enforce_fs_root(project_dir)
     readme = Path(project_dir) / "README.md"
     if not readme.exists() or not readme.is_file():
         raise HTTPException(
@@ -116,6 +131,7 @@ def get_project_asset(project_dir: str, asset: str):
     - Target must be a regular file (not a symlink, not a directory).
     - File size is limited to 50 MiB.
     """
+    _enforce_fs_root(project_dir)
     # Guard: asset must be relative
     if os.path.isabs(asset):
         raise HTTPException(
@@ -264,6 +280,7 @@ def new_workspace(req: NewWorkspaceRequest):
         raise HTTPException(status_code=400, detail="forgather_dir is required")
 
     parent = os.path.abspath(req.parent_dir)
+    _enforce_fs_root(parent)
     if not os.path.isdir(parent):
         raise HTTPException(
             status_code=400, detail=f"parent_dir is not a directory: {parent}"
@@ -385,6 +402,7 @@ def init_workspace_here(req: InitWorkspaceRequest):
         raise HTTPException(status_code=400, detail="forgather_dir is required")
 
     workspace_dir = os.path.abspath(req.workspace_dir)
+    _enforce_fs_root(workspace_dir)
     if not os.path.isdir(workspace_dir):
         raise HTTPException(
             status_code=400,
@@ -485,6 +503,7 @@ def new_project(req: NewProjectRequest):
         )
 
     workspace_dir = os.path.abspath(req.workspace_dir)
+    _enforce_fs_root(workspace_dir)
     target_dir = os.path.abspath(os.path.join(workspace_dir, *parts))
     if os.path.commonpath([workspace_dir, target_dir]) != workspace_dir:
         raise HTTPException(
@@ -495,6 +514,8 @@ def new_project(req: NewProjectRequest):
             status_code=409,
             detail=f"already exists: {target_dir}",
         )
+    if req.copy_from:
+        _enforce_fs_root(req.copy_from)
     if req.copy_from and not os.path.isfile(req.copy_from):
         raise HTTPException(
             status_code=400,
@@ -523,6 +544,7 @@ def new_project(req: NewProjectRequest):
 def get_project_template_paths(project_dir: str):
     """Resolved templates and configs directory for the project — used by
     the New Config / New Template modal to render a live target path."""
+    _enforce_fs_root(project_dir)
     try:
         paths = config_ops.project_template_paths(project_dir)
     except Exception as e:
@@ -541,6 +563,7 @@ def new_project_template(req: NewTemplateRequest):
     ``config_prefix`` subdir; ``kind="template"`` lands at the templates
     root. Returns the absolute path so the caller can open it.
     """
+    _enforce_fs_root(req.project_dir)
     try:
         path = config_ops.new_template_file(req.project_dir, req.kind, req.name)
     except FileExistsError as e:
@@ -561,6 +584,7 @@ def list_project_templates(project_dir: str):
     Templates resolvable through multiple search paths are attributed to
     the first match (Jinja first-match resolution order).
     """
+    _enforce_fs_root(project_dir)
     try:
         groups = config_ops.list_project_templates(project_dir)
     except Exception as e:

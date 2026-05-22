@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
+from .. import paths as fs_paths
 from .. import search_roots as sr
 
 log = logging.getLogger("forgather_server.docs")
@@ -54,6 +55,17 @@ def _is_markdown(path: Path) -> bool:
 
 def _is_ipynb(path: Path) -> bool:
     return path.suffix.lower() == ".ipynb"
+
+
+def _enforce_fs_root(path) -> None:
+    """403 if the path isn't under the configured fs-root allowlist."""
+    if fs_paths.is_path_in_fs_root(path):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=f"path is outside the configured filesystem roots: {path}",
+        headers={"X-Forgather-Fs-Root-Denied": "1"},
+    )
 
 
 def _abs_resolve(path: str) -> Path:
@@ -111,6 +123,7 @@ def docs_file(path: str):
     frontend doesn't have to know the notebook schema.
     """
     target = _abs_resolve(path)
+    _enforce_fs_root(target)
 
     if not target.exists():
         raise HTTPException(status_code=404, detail=f"Not found: {path}")
@@ -247,6 +260,7 @@ def docs_asset(path: str):
     against the current doc's directory before calling this endpoint.
     """
     target = _abs_resolve(path)
+    _enforce_fs_root(target)
 
     if not target.exists():
         raise HTTPException(status_code=404, detail=f"Asset not found: {path}")
