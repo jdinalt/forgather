@@ -633,6 +633,19 @@ def _build_training(item, gpu_indices, tty_path):
     # and the launcher falls back to ``--standalone``.
     rdzv_args = item.job_params.get("rdzv_args") or None
     extra_env = item.job_params.get("extra_env") or None
+    # ``nproc`` from job_params is an explicit single-node override
+    # (typed into the SubmitModal nproc field, or supplied by other
+    # callers that want to bypass the config's nproc_per_node).
+    # Trimmed-empty -> None, which falls back to either the config
+    # value or the CPU "gpu"->1 dispatch fallback inside
+    # build_command. Cluster dispatches ignore this in favor of
+    # rdzv_args's per-peer nproc.
+    raw_nproc = item.job_params.get("nproc")
+    nproc_override = (
+        raw_nproc.strip()
+        if isinstance(raw_nproc, str) and raw_nproc.strip()
+        else (str(raw_nproc) if isinstance(raw_nproc, int) else None)
+    )
     return launcher.spawn_training_process(
         project_dir=item.project_dir,
         config_name=item.config,
@@ -641,6 +654,7 @@ def _build_training(item, gpu_indices, tty_path):
         tty_log_path=tty_path,
         extra_env=extra_env,
         rdzv_args=rdzv_args,
+        nproc_override=nproc_override,
     )
 
 

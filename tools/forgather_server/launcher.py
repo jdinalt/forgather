@@ -56,6 +56,7 @@ def build_command(
     dynamic_args: Dict[str, Any],
     rdzv_args: Optional[Dict[str, Any]] = None,
     gpu_indices: Optional[List[int]] = None,
+    nproc_override: Optional[str] = None,
 ) -> List[str]:
     """Preprocess the config enough to build the ``torchrun`` command.
 
@@ -108,6 +109,12 @@ def build_command(
     forgather_dir = config_meta["forgather_dir"]
     train_script_path = os.path.join(forgather_dir, "scripts", "train_script.py")
 
+    # Caller-supplied override (e.g. from the SubmitModal's nproc
+    # field, or a `forgather train --nproc N` style call) wins over
+    # everything else. Single-node only -- cluster dispatches use
+    # rdzv_args's cluster_nproc.
+    if rdzv_args is None and nproc_override is not None:
+        nproc_per_node = nproc_override
     # CPU dispatch fallback: a zero-GPU reservation paired with
     # nproc_per_node="gpu" would crash torchrun with "invalid literal
     # for int() with base 10: 'gpu'" (the "gpu" sentinel resolves to
@@ -117,7 +124,7 @@ def build_command(
     # fallback in src/forgather/cli/train.py. Only applies in
     # single-node (standalone) mode; cluster dispatches use
     # cluster_nproc from rdzv_args instead.
-    if (
+    elif (
         rdzv_args is None
         and gpu_indices is not None
         and not gpu_indices
@@ -257,6 +264,7 @@ def spawn_training_process(
     tty_log_path: Path,
     extra_env: Optional[Dict[str, str]] = None,
     rdzv_args: Optional[Dict[str, Any]] = None,
+    nproc_override: Optional[str] = None,
 ) -> LaunchResult:
     """Spawn a training run.
 
@@ -267,7 +275,12 @@ def spawn_training_process(
     None so single-node submits are unchanged.
     """
     cmd = build_command(
-        project_dir, config_name, dynamic_args, rdzv_args, gpu_indices=gpu_indices
+        project_dir,
+        config_name,
+        dynamic_args,
+        rdzv_args,
+        gpu_indices=gpu_indices,
+        nproc_override=nproc_override,
     )
     return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
 

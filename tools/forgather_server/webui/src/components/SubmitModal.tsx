@@ -84,6 +84,12 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [requestedGpus, setRequestedGpus] = useState<number>(1);
   const [gpusTouched, setGpusTouched] = useState<boolean>(false);
+  // Optional override for torchrun's --nproc-per-node, sent through
+  // job_params.nproc. Empty string = use the config's nproc_per_node
+  // (with the launcher's "gpu"->1 fallback when 0 GPUs are reserved).
+  // Free-form text so operators can type "4" or "auto" / "cpu" /
+  // "gpu" -- torchrun accepts all three sentinels.
+  const [nprocOverride, setNprocOverride] = useState<string>("");
   const [priority, setPriority] = useState<number>(0);
   // Track whether we've already seeded the form from the cache so we
   // don't overwrite edits the user has already made.
@@ -331,6 +337,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
       setPriority(0);
       setGpusTouched(false);
       setRequestedGpus(fixedWorkerCount !== null ? Math.max(0, Math.min(maxGpus, fixedWorkerCount)) : 1);
+      setNprocOverride("");
       // Also reset cluster panel state — "Reset to defaults" now
       // means "drop everything we cached for this config", including
       // the multi-node selection. Re-seeded by the seeding effect on
@@ -437,6 +444,9 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
         gpus = localNproc;
       }
     }
+    const job_params: Record<string, unknown> = {};
+    const trimmedNproc = nprocOverride.trim();
+    if (trimmedNproc) job_params.nproc = trimmedNproc;
     enqueue.mutate({
       project_dir: project.project_dir,
       config: config.name,
@@ -444,6 +454,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
       requested_gpus: gpus,
       priority,
       dataset_source: datasetSource,
+      ...(Object.keys(job_params).length > 0 ? { job_params } : {}),
     });
   };
 
@@ -512,6 +523,25 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
                       0 = run on CPU (nproc_per_node='gpu' falls back to 1)
                     </span>
                   )}
+                </label>
+                <label>
+                  nproc
+                  <input
+                    type="text"
+                    value={nprocOverride}
+                    onChange={(e) => setNprocOverride(e.target.value)}
+                    placeholder={formatNproc(nproc)}
+                    style={{ width: "6em" }}
+                    title={
+                      "Override torchrun's --nproc-per-node for this " +
+                      "submit. Blank = use the config's nproc_per_node " +
+                      "(shown as placeholder). Accepts an integer or " +
+                      "torchrun's 'gpu' / 'cpu' / 'auto' sentinels. " +
+                      "Useful for CPU debugging when the config declares " +
+                      "'gpu' but you want, e.g., 4 worker processes."
+                    }
+                  />
+                  <span className="muted">override</span>
                 </label>
               </div>
 
