@@ -19,6 +19,7 @@ import {
   type SelectedLeaf,
 } from "./DatasetsExploreTab";
 import { ModalBackdrop } from "./ModalBackdrop";
+import { useDemoMode } from "../demoMode";
 
 type SubTab = "servers" | "explore";
 
@@ -1752,6 +1753,7 @@ function AddServerModal({
   onClose: () => void;
   onAdded: () => void;
 }) {
+  const demoMode = useDemoMode();
   const [label, setLabel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [authToken, setAuthToken] = useState("");
@@ -1965,7 +1967,12 @@ function AddServerModal({
             <button
               type="button"
               onClick={() => void submit()}
-              disabled={pending || !baseUrl.trim()}
+              disabled={demoMode || pending || !baseUrl.trim()}
+              title={
+                demoMode
+                  ? "Read-only demo mode — try the live tool to register a server"
+                  : undefined
+              }
             >
               {pending ? "Adding…" : "Add"}
             </button>

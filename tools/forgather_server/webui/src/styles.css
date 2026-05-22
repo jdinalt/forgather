@@ -5348,3 +5348,37 @@ li.config.selected button.link:hover {
 .ds-bar-swatch.ds-bar-tail {
   background: var(--fg-muted);
 }
+
+/* Read-only demo-mode banner. Always-visible amber strip across the
+   top so the user knows mutating actions are intentionally disabled
+   before they discover it by clicking a greyed-out button. */
+.demo-mode-banner {
+  background: #b45309;
+  color: #fff7ed;
+  padding: 6px 12px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-align: center;
+  border-bottom: 1px solid #7c2d12;
+  flex: 0 0 auto;
+  z-index: 1000;
+}
+.demo-mode-banner strong {
+  margin-right: 6px;
+}
+.app.demo-mode {
+  display: flex;
+  flex-direction: column;
+}
+
+/* In demo mode, neuter every destructive button so they can't fire
+   even if a stale render forgets to disable them in JS. Combined with
+   the per-component `disabled` props this is belt-and-suspenders; the
+   backend 403 is the actual security boundary. */
+.app.demo-mode button.destructive,
+.app.demo-mode button.context-menu-destructive,
+.app.demo-mode .demo-disabled {
+  opacity: 0.45;
+  cursor: not-allowed !important;
+  pointer-events: none !important;
+}

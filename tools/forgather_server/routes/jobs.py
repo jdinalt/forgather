@@ -27,7 +27,9 @@ from pydantic import BaseModel
 
 from forgather import trainer_control
 
-from .. import _gc, job_records, scheduler
+from .. import _gc
+from .. import auth as auth_mod
+from .. import job_records, scheduler
 
 log = logging.getLogger("forgather_server.jobs")
 
@@ -162,6 +164,12 @@ def _record_to_model(
         except Exception:
             pass
 
+    # In demo mode strip bearer tokens — both the dedicated field and
+    # any token-shaped key buried in job_params — so the webui can't
+    # display, and curl /api/jobs can't exfiltrate, credentials minted
+    # for spawned inference / dataset jobs.
+    auth_token_out = None if auth_mod.demo_mode_enabled() else r.auth_token
+    job_params_out = auth_mod.redact_sensitive_in_demo(job_params_out)
     return JobModel(
         id=r.queue_id,
         queue_id=r.queue_id,
@@ -187,7 +195,7 @@ def _record_to_model(
         alive=_pid_alive(r.pid) and r.status in ("starting", "running"),
         tty_log_path=r.tty_log_path,
         path_prefix=r.path_prefix,
-        auth_token=r.auth_token,
+        auth_token=auth_token_out,
         logs_dir=r.logs_dir,
         output_dir=r.output_dir,
         source="merged" if matched_endpoint else "record",

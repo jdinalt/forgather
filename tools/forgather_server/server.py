@@ -39,14 +39,14 @@ import uvicorn
 from forgather.tls import (
     TLSRequiredError,
     enforce_non_loopback_policy,
-    is_enabled as tls_is_enabled,
-    load_config as tls_load_config,
-    uvicorn_ssl_kwargs as tls_uvicorn_ssl_kwargs,
 )
+from forgather.tls import is_enabled as tls_is_enabled
+from forgather.tls import load_config as tls_load_config
+from forgather.tls import uvicorn_ssl_kwargs as tls_uvicorn_ssl_kwargs
 from forgather.tls.runtime import (
     add_server_tls_args,
-    is_tls_active as tls_is_active,
 )
+from forgather.tls.runtime import is_tls_active as tls_is_active
 
 
 def main():
@@ -97,6 +97,17 @@ def main():
         "--no-auth",
         action="store_true",
         help="Disable token/password authentication (any local user can connect)",
+    )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help=(
+            "Read-only demo mode: block every POST/PUT/DELETE that would "
+            "mutate state (file edits, job submission, server admin, etc.), "
+            "and redact bearer tokens from API responses so the webui can "
+            "be safely exposed to the public. Pair with --no-auth for a "
+            "fully anonymous demo, or leave auth on for a curated audience."
+        ),
     )
     parser.add_argument(
         "--regen-token",
@@ -299,14 +310,21 @@ def _configure_auth(args, *, tls_on: bool = False) -> None:
     scheme = "https" if tls_on else "http"
     display_host = _pick_display_host(args)
 
+    if args.demo:
+        auth.enable_demo_mode()
+
     print()
     if args.no_auth:
         auth.disable_auth()
         print("    !! Forgather server is running with --no-auth !!")
         print(f"    !! Any other local user on this host can read/control jobs.")
+        if args.demo:
+            print(f"    !! --demo is on: mutations blocked, tokens redacted.")
         print(f"        {scheme}://{display_host}:{args.port}/")
         print()
         return
+    if args.demo:
+        print("    !! Forgather server is running with --demo (read-only) !!")
 
     print("    Forgather server is running at:")
     print(f"        {scheme}://{display_host}:{args.port}/?token={token}")

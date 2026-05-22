@@ -18,6 +18,11 @@ export interface AuthStatus {
   authenticated: boolean;
   has_password: boolean;
   auth_disabled: boolean;
+  /** Server is in read-only demo mode. Webui hides destructive
+   *  controls and masks bearer-token fields. The backend rejects
+   *  mutating requests with 403 regardless, so this flag is a UX
+   *  signal rather than a security boundary. */
+  demo_mode: boolean;
 }
 
 let _installed = false;

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, CheckpointEntry, ConfigInfo, EvalEntry, ProjectInfo } from "./api";
 import { getAutoWatchTty } from "./autoWatch";
+import { useDemoMode } from "./demoMode";
 import { ContextMenu } from "./components/ContextMenu";
 import { ProjectTree } from "./components/ProjectTree";
 import { ConfigViewer } from "./components/ConfigViewer";
@@ -207,6 +208,7 @@ export type Selection =
     };
 
 export default function App() {
+  const demoMode = useDemoMode();
   const [view, setView] = useState<View>("docs");
   const [selected, setSelected] = useState<Selection>(null);
   // Tab state lives here so opening a project can both pick its default
@@ -875,7 +877,27 @@ export default function App() {
   ];
 
   return (
-    <div className={"app" + (sidebarCollapsed ? " sidebar-collapsed" : "")}>
+    <div
+      className={
+        "app" +
+        (sidebarCollapsed ? " sidebar-collapsed" : "") +
+        (demoMode ? " demo-mode" : "")
+      }
+    >
+      {demoMode && (
+        <div
+          className="demo-mode-banner"
+          role="status"
+          aria-label="Read-only demo mode"
+          title={
+            "This server is running with --demo: every action that would " +
+            "change state (file edits, job submission, server config, etc.) " +
+            "is blocked. Read-only browsing still works."
+          }
+        >
+          <strong>DEMO MODE</strong> — read-only · mutations are blocked
+        </div>
+      )}
       {/*
         Both the collapsed strip and the expanded layout stay mounted so
         ProjectTree's local expansion state (which workspaces / projects /

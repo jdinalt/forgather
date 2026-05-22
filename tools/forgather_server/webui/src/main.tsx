@@ -56,6 +56,7 @@ function Root() {
               authenticated: false,
               has_password: false,
               auth_disabled: false,
+              demo_mode: false,
             },
           });
         }
@@ -79,6 +80,7 @@ function Root() {
               authenticated: false,
               has_password: false,
               auth_disabled: false,
+              demo_mode: false,
             },
           }),
       );

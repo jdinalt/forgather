@@ -235,6 +235,29 @@ _url_tokens: dict[str, float] = {}
 URL_TOKEN_TTL_SECONDS = 60.0
 URL_TOKEN_LENGTH_BYTES = 32
 _auth_disabled: bool = False
+_demo_mode: bool = False
+
+
+# Demo-mode allowlist: POST/PUT/DELETE paths that are still permitted
+# when ``_demo_mode`` is on. Everything else that mutates state is
+# 403'd by the middleware. Keep this list extremely narrow — each
+# entry is a deliberate decision that the action does not change
+# durable server state in a way that would compromise the demo.
+_DEMO_MUTATION_ALLOWLIST = frozenset(
+    {
+        # Login / logout: needed for session UX even when --no-auth is
+        # off. The set-password POST is intentionally NOT here.
+        "/api/auth/login",
+        "/api/auth/logout",
+        # Inference proxy POSTs are read-through requests against an
+        # external upstream; they don't touch local server state.
+        # Allow them so the demo can showcase chat completions against
+        # a small CPU model running somewhere else.
+        "/api/inference/completions",
+        "/api/inference/chat/completions",
+        "/api/inference/tokenize",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +274,74 @@ def disable_auth() -> None:
 
 def auth_disabled() -> bool:
     return _auth_disabled
+
+
+def enable_demo_mode() -> None:
+    """Switch the server into read-only demo mode.
+
+    The ``AuthMiddleware`` rejects every POST/PUT/DELETE not in
+    ``_DEMO_MUTATION_ALLOWLIST`` with a 403. Several response
+    serializers also redact bearer tokens (see ``demo_mode_enabled``
+    callers in routes/jobs.py and routes/services.py) so the webui can
+    be exposed publicly without leaking credentials minted for
+    spawned inference / dataset jobs.
+    """
+    global _demo_mode
+    _demo_mode = True
+    log.warning("demo mode is ENABLED — mutations will be blocked")
+
+
+def demo_mode_enabled() -> bool:
+    return _demo_mode
+
+
+# Argv / arg-dict keys that carry bearer tokens. Any key whose lowercase
+# form contains one of these substrings is replaced with ``None`` (or
+# stripped) in demo-mode response bodies. Substring match catches
+# variants like ``auth_token``, ``--auth-token``, ``bearer_token``,
+# ``token``, etc. without needing to enumerate every spawned-service
+# spelling.
+_SENSITIVE_KEY_FRAGMENTS = ("token", "bearer", "password", "secret")
+
+
+def _is_sensitive_key(key: str) -> bool:
+    lk = key.lower()
+    return any(frag in lk for frag in _SENSITIVE_KEY_FRAGMENTS)
+
+
+def redact_sensitive_in_demo(value):
+    """Recursively scrub bearer-token-shaped fields when demo mode is on.
+
+    Used by response serializers so the webui can't display, and a
+    direct API hit can't exfiltrate, tokens that the server normally
+    surfaces (job auto-population, service-args echo, etc.). No-op when
+    demo mode is off.
+
+    Replaces sensitive *values* with ``None`` rather than deleting the
+    key so the response shape stays stable for clients that introspect
+    fields. Non-dict / non-list values pass through unchanged.
+    """
+    if not _demo_mode:
+        return value
+    if isinstance(value, dict):
+        return {
+            k: (None if _is_sensitive_key(str(k)) else redact_sensitive_in_demo(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_sensitive_in_demo(v) for v in value]
+    return value
+
+
+def _blocked_by_demo_mode(scope_type: str, method: str, path: str) -> bool:
+    """True if demo mode should reject this request."""
+    if not _demo_mode:
+        return False
+    if scope_type != "http":
+        return False
+    if method not in ("POST", "PUT", "DELETE", "PATCH"):
+        return False
+    return path not in _DEMO_MUTATION_ALLOWLIST
 
 
 # ---------------------------------------------------------------------------
@@ -637,7 +728,12 @@ class AuthMiddleware:
 
         cookies = _parse_cookie_header(headers.get("cookie", ""))
 
+        method = scope.get("method", "").upper() if scope_type == "http" else ""
+
         if authenticate(headers, query_flat, cookies):
+            if _blocked_by_demo_mode(scope_type, method, path):
+                await _send_demo_blocked(send)
+                return
             await self.app(scope, receive, send)
             return
 
@@ -648,10 +744,12 @@ class AuthMiddleware:
         # The path allow-lists encode what an inter-node call is
         # allowed to do; cert presence proves who is making it.
         if scope_type == "http" and _request_has_client_cert(scope):
-            method = scope.get("method", "").upper()
             if (method == "GET" and path_allows_peer(path)) or (
                 method == "POST" and path_allows_peer_mutation(path)
             ):
+                if _blocked_by_demo_mode(scope_type, method, path):
+                    await _send_demo_blocked(send)
+                    return
                 await self.app(scope, receive, send)
                 return
 
@@ -674,6 +772,21 @@ class AuthMiddleware:
             }
         )
         await send({"type": "http.response.body", "body": body})
+
+
+async def _send_demo_blocked(send) -> None:
+    """Send a 403 response for a mutation blocked by demo mode."""
+    body = b'{"detail":"Server is in read-only demo mode"}'
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 403,
+            "headers": [
+                (b"content-type", b"application/json"),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
 
 
 def _parse_cookie_header(raw: str) -> dict[str, str]:

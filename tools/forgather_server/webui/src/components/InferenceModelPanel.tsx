@@ -7,6 +7,7 @@ import {
   InferenceServerUser,
   Job,
 } from "../api";
+import { useDemoMode } from "../demoMode";
 import {
   GenerationParams,
   ModelEntry,
@@ -31,12 +32,14 @@ interface HealthState {
 }
 
 export function InferenceModelPanel({ state, setState }: Props) {
+  const demoMode = useDemoMode();
   const [showAdvanced, setShowAdvanced] = useState(false);
   // Token field defaults to masked. Operators frequently want to copy
   // the token out and paste it into a curl / external client, so we
   // expose a Show toggle (and a Copy button) rather than make them
-  // fight a hidden field.
+  // fight a hidden field. Demo mode forces masked + hides the toggle.
   const [showAuthToken, setShowAuthToken] = useState(false);
+  const tokenMaskedInUi = demoMode || !showAuthToken;
   const [health, setHealth] = useState<HealthState>({ kind: "unknown" });
   // User-added inference-server registry. The Add modal opens on
   // "+ Add server"; rows render in their own section below the
@@ -216,16 +219,6 @@ export function InferenceModelPanel({ state, setState }: Props) {
       }),
   });
 
-  const setBaseUrl = (baseUrl: string) => {
-    setState((prev) => ({ ...prev, baseUrl }));
-    setHealth({ kind: "unknown" });
-    // Manual edit detaches from any picked row.
-    setPickedRow(null);
-  };
-  const setAuthToken = (authToken: string) => {
-    setState((prev) => ({ ...prev, authToken }));
-    setHealth({ kind: "unknown" });
-  };
   const setModel = (model: string) =>
     setState((prev) => ({ ...prev, model }));
   const setParams = (patch: Partial<GenerationParams>) =>
@@ -454,10 +447,11 @@ export function InferenceModelPanel({ state, setState }: Props) {
         </ul>
       </section>
 
-      {/* URL — escape hatch for pointing at a server we didn't launch
-          (remote, vLLM, OpenAI, etc.). Picking a server above
-          auto-fills both fields; for an external OpenAI-compatible
-          server, paste the URL and API key here. */}
+      {/* URL — populated by picking a server in the running- or
+          user-registered lists above, or via the Add Server modal.
+          Read-only here so the upstream URL + token are driven by
+          curated selections only; this also keeps demo-mode tokens
+          (which the server redacts) from being typed in by hand. */}
       <section>
         <h4 className="dyn-heading">Server URL</h4>
         <div className="submit-row">
@@ -468,8 +462,9 @@ export function InferenceModelPanel({ state, setState }: Props) {
                 type="text"
                 className="wide"
                 value={state.baseUrl}
-                onChange={(e) => setBaseUrl(e.target.value)}
+                readOnly
                 placeholder="http://localhost:8137/v1"
+                title="Pick a server above or add one to set this URL"
               />
               <button
                 type="button"
@@ -489,39 +484,55 @@ export function InferenceModelPanel({ state, setState }: Props) {
                 input stretches to fit a full bearer token (64 hex
                 chars). Show toggles masking; Copy lifts the token
                 straight to the clipboard for use in an external
-                client (curl / OpenAI SDK / etc.). */}
+                client (curl / OpenAI SDK / etc.). Both controls are
+                hidden in demo mode so the token can't be revealed
+                or exfiltrated; the field stays in the layout as a
+                placeholder so the panel doesn't reflow. */}
             <div className="path-field">
               <input
-                type={showAuthToken ? "text" : "password"}
+                type={tokenMaskedInUi ? "password" : "text"}
                 className="wide"
                 value={state.authToken}
-                onChange={(e) => setAuthToken(e.target.value)}
-                placeholder="Bearer token (auto-filled from local server, or paste API key for external)"
+                readOnly
+                placeholder={
+                  demoMode
+                    ? "Token hidden in demo mode"
+                    : "Bearer token (auto-filled when you pick a server)"
+                }
                 autoComplete="off"
                 spellCheck={false}
+                title={
+                  demoMode
+                    ? "Token hidden in demo mode"
+                    : "Pick a server above to set the token"
+                }
               />
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => setShowAuthToken((v) => !v)}
-                title={showAuthToken ? "Hide token" : "Show token"}
-              >
-                {showAuthToken ? "Hide" : "Show"}
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => {
-                  if (!state.authToken) return;
-                  navigator.clipboard
-                    ?.writeText(state.authToken)
-                    .catch(() => {});
-                }}
-                disabled={!state.authToken}
-                title="Copy token to clipboard"
-              >
-                Copy
-              </button>
+              {!demoMode && (
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setShowAuthToken((v) => !v)}
+                  title={showAuthToken ? "Hide token" : "Show token"}
+                >
+                  {showAuthToken ? "Hide" : "Show"}
+                </button>
+              )}
+              {!demoMode && (
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    if (!state.authToken) return;
+                    navigator.clipboard
+                      ?.writeText(state.authToken)
+                      .catch(() => {});
+                  }}
+                  disabled={!state.authToken}
+                  title="Copy token to clipboard"
+                >
+                  Copy
+                </button>
+              )}
             </div>
           </label>
         </div>

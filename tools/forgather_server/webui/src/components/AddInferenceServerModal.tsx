@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { AddInferenceServerRequest, api } from "../api";
+import { useDemoMode } from "../demoMode";
 import { ModalBackdrop } from "./ModalBackdrop";
 
 /** Modal for registering an external inference-server URL.
@@ -24,6 +25,7 @@ export function AddInferenceServerModal({
   initialBaseUrl?: string;
   initialAuthToken?: string;
 }) {
+  const demoMode = useDemoMode();
   const [label, setLabel] = useState("");
   const [baseUrl, setBaseUrl] = useState(initialBaseUrl ?? "");
   const [authToken, setAuthToken] = useState(initialAuthToken ?? "");
@@ -195,7 +197,12 @@ export function AddInferenceServerModal({
             <button
               type="button"
               onClick={() => void submit()}
-              disabled={pending || !baseUrl.trim()}
+              disabled={demoMode || pending || !baseUrl.trim()}
+              title={
+                demoMode
+                  ? "Read-only demo mode — try the live tool to register a server"
+                  : undefined
+              }
             >
               {pending ? "Adding…" : "Add"}
             </button>
