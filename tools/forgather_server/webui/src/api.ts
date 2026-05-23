@@ -1742,20 +1742,6 @@ export const api = {
     }
     return r.json() as Promise<ServiceStatus>;
   },
-  ensureDatasetServerConfigStub: async (): Promise<{
-    path: string;
-    created: boolean;
-  }> => {
-    const r = await fetch("/api/dataset-server/config/ensure-stub", {
-      method: "POST",
-    });
-    if (!r.ok) {
-      const detail = await r.text();
-      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
-    }
-    return r.json();
-  },
-
   listLocalDatasetServers: () =>
     fetchJson<DatasetServerLocal[]>("/api/dataset-servers/local"),
   localDatasetServerBundle: (queue_id: string) =>

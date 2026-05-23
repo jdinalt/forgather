@@ -637,9 +637,8 @@ export default function App() {
   // (nicer rendering + search). All Tools entries share the same shape;
   // the per-tool variation is just the doc relpath and the mkdocs slug.
   /** A single extra menu item, rendered above "Help…". Tool-specific
-   *  affordances (e.g. "Edit Configuration…" for the dataset server)
-   *  use this to attach lightweight one-shot actions without growing
-   *  the per-tool surface area further. */
+   *  affordances use this slot to attach lightweight one-shot actions
+   *  without growing the per-tool surface area further. */
   interface ToolExtraMenuItem {
     label: string;
     onChoose: () => void | Promise<void>;
@@ -813,27 +812,6 @@ export default function App() {
     serviceType?: "inference" | "dataset" | "tensorboard" | "mkdocs";
   }
 
-  // Build "Edit Configuration…" for the dataset server. Creates the
-  // commented stub if it doesn't exist, then opens it in the editor.
-  // Errors surface via window.alert — same fallback the FilesTree's
-  // file-create path uses.
-  const onEditDatasetServerConfig = useCallback(async () => {
-    try {
-      const { path } = await api.ensureDatasetServerConfigStub();
-      openFileForEdit(path);
-    } catch (e) {
-      window.alert(
-        `Could not create / open dataset_server config: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      );
-    }
-    // openFileForEdit isn't memoized but is stable across renders in
-    // practice; we don't include it in deps to avoid recreating the
-    // callback on every render — and the closure captures the latest
-    // implementation via filesApi/setView regardless.
-  }, []);
-
   // Long-running spawned processes the operator wants to launch and
   // then forget about (inference, datasets, dashboards). Split out from
   // TOOLS so the one-shot model-manipulation utilities aren't visually
@@ -857,12 +835,6 @@ export default function App() {
       onOpen: () => setDatasetServerOpen(true),
       docRelpath: "tools/dataset_server/README.md",
       mkdocsSlug: "tools/dataset_server/",
-      extraItems: [
-        {
-          label: "Edit Configuration…",
-          onChoose: onEditDatasetServerConfig,
-        },
-      ],
       serviceType: "dataset",
     },
     {

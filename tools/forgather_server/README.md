@@ -2536,12 +2536,6 @@ server reboot; pass `--regen-token` to the underlying script (or
 re-spawn from this modal after deleting the per-port `.token` file)
 to rotate.
 
-**Edit Configuration… (right-click on Dataset…)** —
-creates `<forgather_config_dir>/dataset_server/config.yaml` as a
-commented YAML stub if it doesn't exist (0600 in a 0700 dir), then
-opens it in the editor view. The standalone dataset_server loads
-this file when no `--config` is passed.
-
 **Browser → dataset_server proxy** (`routes/dataset_server.py`) —
 same-origin proxy for the `/v1/*` endpoints. Unlike the inference
 proxy (localhost-default), this proxy's SSRF allowlist is the user
@@ -3153,7 +3147,6 @@ allowlist is the registry itself (see `routes/dataset_server.py`).
 | `GET /api/dataset-servers/user`                                                       | List registered user URLs                                            |
 | `POST /api/dataset-servers/user` `{label, base_url, auth_token?}`                     | Register a remote dataset_server. Tokens with CR/LF rejected as 400. |
 | `DELETE /api/dataset-servers/user/{entry_id}`                                         | Remove a registry entry                                              |
-| `POST /api/dataset-server/config/ensure-stub`                                         | Create the standalone-server's default config stub if absent         |
 | `GET /api/dataset-server/proxy/health?base=`                                          | Proxy `<base>/v1/health`                                             |
 | `GET /api/dataset-server/proxy/auth-status?base=`                                     | Proxy `<base>/v1/auth/status`                                        |
 | `GET /api/dataset-server/proxy/datasets?base=`                                        | Proxy `<base>/v1/datasets`                                           |
