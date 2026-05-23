@@ -81,30 +81,14 @@ class FinishReasonDetector:
         """
         if max_tokens is not None and len(generated_token_ids) >= max_tokens:
             return "length"
-        elif stopped_by_sequence:
+        if stopped_by_sequence:
             return "stop"
-        elif not ignore_eos:
-            # Normal EOS handling - only check EOS if not ignoring it
-            if (
-                self.tokenizer.eos_token_id is not None
-                and len(generated_token_ids) > 0
-                and generated_token_ids[-1] == self.tokenizer.eos_token_id
-            ):
-                return "stop"
-            elif (
-                len(generated_token_ids) > 0
-                and generated_token_ids[-1] in self.stop_token_ids
-            ):
-                return "stop"
-        # If we get here, model stopped for unknown reason. The
-        # max_tokens-relative branch only fires when a cap was actually
-        # set; without one we can't tell "stopped early" from "stopped
-        # at the implicit limit." Either way the answer is "stop".
-        elif max_tokens is not None and len(generated_token_ids) < max_tokens:
-            # Stopped early but not due to obvious reasons
-            return "stop"
-        else:
-            return "stop"
+        # Any remaining termination — natural EOS, a registered stop
+        # token, or "model just stopped" with no obvious reason — maps
+        # to "stop". The previous elif/elif chain accidentally left
+        # ``not ignore_eos`` without a fall-through return, so a
+        # non-EOS, non-stop-token finish silently returned ``None``.
+        return "stop"
 
     def determine_finish_reason_streaming(
         self,

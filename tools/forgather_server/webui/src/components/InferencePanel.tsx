@@ -44,11 +44,14 @@ function loadState(): InferenceState {
       parsed.params && typeof parsed.params === "object"
         ? { ...(parsed.params as GenerationParams) }
         : { ...DEFAULT_STATE.params };
-    // Migration: a brief earlier build seeded ``max_tokens: 1024`` as
-    // a client-side default. That contradicted the "server dictates"
-    // design intent, so strip the stale value from returning sessions.
-    // The user's own picks (anything other than 1024) are preserved.
-    if (params.max_tokens === 1024) {
+    // Migration: previously-shipped DEFAULT_GENERATION_PARAMS seeded
+    // ``max_tokens: 256`` (long-standing) and briefly ``max_tokens: 1024``
+    // (a one-build mistake). Both contradicted the "server dictates"
+    // design intent. Strip either stale value from returning sessions
+    // so the UI's "server picks" claim is actually true; users who
+    // explicitly picked 256/1024 will have to re-set, which is a fair
+    // trade against the much larger population who never touched it.
+    if (params.max_tokens === 256 || params.max_tokens === 1024) {
       delete params.max_tokens;
     }
     return {

@@ -252,10 +252,18 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
     if (opts?.extraSystem) {
       payload.push({ role: "system", content: opts.extraSystem });
     }
+    // Conditional spread: an empty per-request override means "don't
+    // override," not "actively clear." Without the conditional, the
+    // spread would write ``max_tokens: undefined`` and stripEmpty
+    // would drop state.params.max_tokens too — a value the user can
+    // still see set in the Model panel.
+    const overrideMax =
+      typeof maxTokens === "number" && maxTokens > 0
+        ? { max_tokens: maxTokens }
+        : {};
     const params: GenerationParams = stripEmpty({
       ...state.params,
-      max_tokens:
-        typeof maxTokens === "number" && maxTokens > 0 ? maxTokens : undefined,
+      ...overrideMax,
     });
     const ac = new AbortController();
     abortRef.current = ac;
@@ -523,6 +531,18 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
 
   const onSendToCompletionClick = async () => {
     if (!canSendToCompletion || !state.baseUrl) return;
+    // Pre-check state.model: the inference-client helpers fall back to
+    // the literal "inference-server" when model is empty, which vLLM
+    // rejects. Without this guard the user sees a /tokenize or
+    // /detokenize error and has to guess that the real cause is the
+    // Model panel not having auto-picked yet.
+    if (!state.model) {
+      setStatus({
+        kind: "error",
+        message: "No model selected — pick one on the Model tab first.",
+      });
+      return;
+    }
     const payload: ChatMessage[] = systemText.trim()
       ? [{ role: "system", content: systemText.trim() }, ...messages]
       : messages;

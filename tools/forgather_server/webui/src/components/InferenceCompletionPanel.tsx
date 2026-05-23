@@ -156,10 +156,16 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
     // Build the params payload: take the user's generation params, layer
     // the per-request max_tokens on top, drop any explicitly-empty keys
     // so the server sees its own defaults rather than null.
+    // Conditional spread: empty per-request override means "don't
+    // override," not "actively clear." Mirrors the chat panel — see
+    // there for full rationale.
+    const overrideMax =
+      typeof maxTokens === "number" && maxTokens > 0
+        ? { max_tokens: maxTokens }
+        : {};
     const params: GenerationParams = stripEmpty({
       ...state.params,
-      max_tokens:
-        typeof maxTokens === "number" && maxTokens > 0 ? maxTokens : undefined,
+      ...overrideMax,
     });
     const ac = new AbortController();
     abortRef.current = ac;

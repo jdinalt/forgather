@@ -402,10 +402,12 @@ def determine_finish_reason_streaming(
 ```
 
 **Logic Flow**:
-1. If `len(tokens) >= max_tokens` → `"length"`
+1. If `max_tokens is not None and len(tokens) >= max_tokens` → `"length"`
 2. If `stopped_by_sequence` → `"stop"`
-3. If `not ignore_eos` and last token is EOS → `"stop"`
-4. Else → `"stop"` (fallback)
+3. Else → `"stop"` (covers natural EOS, registered stop tokens, and
+   "stopped for unknown reason." `max_tokens` is `Optional[int]`; when
+   `None` the length-relative branch is skipped — we can't claim
+   "length" for a cap we didn't impose.)
 
 ### StopSequenceProcessor (core/stop_processor.py)
 
@@ -459,7 +461,21 @@ def log_response(request_id, response_text, tokens_per_sec, peak_memory_mb)
 
 2. **Set core parameters**:
    ```python
-   generation_config.max_new_tokens = request.max_tokens or 16
+   # max_tokens fallback chain (in order of precedence):
+   #   1. request.max_new_tokens (HF-style) — if set
+   #   2. request.max_tokens (OpenAI-style) — if set
+   #   3. self.default_generation_config.max_new_tokens — model's bake
+   #   4. DEFAULT_MAX_NEW_TOKENS — module constant, defaults to 2048,
+   #      overridable via FORGATHER_DEFAULT_MAX_NEW_TOKENS at startup.
+   # The floor exists because HF's own GenerationConfig fallback is
+   # max_length=20, which clips replies to ~16 tokens.
+   max_new = request.max_new_tokens
+   max_tokens = max_new if max_new is not None else request.max_tokens
+   if max_tokens is not None:
+       generation_config.max_new_tokens = max_tokens
+   elif generation_config.max_new_tokens is None:
+       generation_config.max_new_tokens = DEFAULT_MAX_NEW_TOKENS
+
    generation_config.temperature = request.temperature  # if not None
    generation_config.top_p = request.top_p  # if not None
    generation_config.do_sample = (temperature is None or temperature > 0)
@@ -582,7 +598,11 @@ ignore_eos: true
 ```python
 # OpenAI standard
 model: str
-max_tokens: int = 512
+# Optional[int] = None — defers to _build_generation_config's cascade
+# (model's baked-in generation_config, then DEFAULT_MAX_NEW_TOKENS).
+# Previously hard-coded to 16 (completion) / 512 (chat) — both clipped
+# replies in practice. Explicit values still win.
+max_tokens: Optional[int] = None
 temperature: float = None  # None = greedy (do_sample=False)
 top_p: float = None
 stream: bool = False
@@ -1047,13 +1067,18 @@ def completion(
 ```python
 # core/finish_detector.py
 def determine_finish_reason(self, generated_token_ids, max_tokens, stopped_by_sequence, ignore_eos, my_new_criterion):
-    if len(generated_token_ids) >= max_tokens:
+    # max_tokens is Optional[int] — None means "no cap was set" and
+    # the length-relative branch is skipped.
+    if max_tokens is not None and len(generated_token_ids) >= max_tokens:
         return "length"
-    elif my_new_criterion:  # NEW
+    if my_new_criterion:  # NEW
         return "my_reason"  # NEW
-    elif stopped_by_sequence:
+    if stopped_by_sequence:
         return "stop"
-    # ... rest of logic
+    # Default — covers natural EOS, registered stop tokens, and any
+    # "stopped for unknown reason" cases. Always return a string;
+    # never let control fall out of the function.
+    return "stop"
 ```
 
 **2. Update strategy base classes**:

@@ -54,6 +54,40 @@ from .models.completion import CompletionRequest
 _MODULE_LOGGER = logging.getLogger("inference_server")
 
 
+def _resolve_default_max_new_tokens() -> int:
+    """Parse ``FORGATHER_DEFAULT_MAX_NEW_TOKENS`` once at import time.
+
+    The floor used by :meth:`InferenceService._build_generation_config`
+    when neither the request nor the model's baked-in
+    ``generation_config`` sets ``max_new_tokens``. Doing the parse
+    here (rather than per-request) means a bad value (e.g. a typo'd
+    deployment override) surfaces as a single warning at startup and
+    a stable fallback, instead of a ``ValueError`` mid-generation that
+    bubbles out as a 500.
+    """
+    raw = os.environ.get("FORGATHER_DEFAULT_MAX_NEW_TOKENS")
+    if raw is None or raw == "":
+        return 2048
+    try:
+        value = int(raw)
+    except ValueError:
+        _MODULE_LOGGER.warning(
+            "FORGATHER_DEFAULT_MAX_NEW_TOKENS=%r is not an int — using 2048",
+            raw,
+        )
+        return 2048
+    if value <= 0:
+        _MODULE_LOGGER.warning(
+            "FORGATHER_DEFAULT_MAX_NEW_TOKENS=%d is non-positive — using 2048",
+            value,
+        )
+        return 2048
+    return value
+
+
+DEFAULT_MAX_NEW_TOKENS = _resolve_default_max_new_tokens()
+
+
 class ModelNotFoundError(LookupError):
     """Raised by :meth:`InferenceService._resolve_entry` when the OpenAI
     ``model`` field on a request doesn't match any registered entry on
@@ -592,11 +626,17 @@ class InferenceService:
     ) -> GenerationConfig:
         """Build a GenerationConfig from request parameters + active model defaults."""
         # Honor an explicit value from the request — either OpenAI's
-        # ``max_tokens`` or HF's ``max_new_tokens``. When neither is
-        # set, leave the model's default in place (was previously
-        # hard-coded to 16, which clipped most replies mid-sentence).
-        max_tokens = getattr(request, "max_new_tokens", None) or getattr(
-            request, "max_tokens", None
+        # ``max_tokens`` or HF's ``max_new_tokens``. ``or`` would
+        # collapse an explicit 0 to "unset" and silently install the
+        # floor below; ``is not None`` keeps zero meaningful (still
+        # nonsense for generate(), but at least it's the user's
+        # nonsense — they'll see a clear HF error rather than 2048
+        # tokens of output). When neither is set, leave the model's
+        # default in place (was previously hard-coded to 16, which
+        # clipped most replies mid-sentence).
+        max_new = getattr(request, "max_new_tokens", None)
+        max_tokens = (
+            max_new if max_new is not None else getattr(request, "max_tokens", None)
         )
 
         if self.default_generation_config is not None:
@@ -613,12 +653,9 @@ class InferenceService:
             # generation_config doesn't either. HF's hard fallback is
             # ``GenerationConfig.max_length = 20`` — that clips replies
             # to ~16 new tokens, which is the worst-of-all-worlds
-            # default. Install a generous floor (env-overridable for
-            # operators who want a tighter cap by default). The model
-            # config still wins when it provides a value.
-            generation_config.max_new_tokens = int(
-                os.environ.get("FORGATHER_DEFAULT_MAX_NEW_TOKENS", "2048")
-            )
+            # default. Install a generous floor (env-overridable via
+            # FORGATHER_DEFAULT_MAX_NEW_TOKENS, resolved once at import).
+            generation_config.max_new_tokens = DEFAULT_MAX_NEW_TOKENS
         if request.temperature is not None:
             generation_config.temperature = request.temperature
         if request.top_p is not None:
