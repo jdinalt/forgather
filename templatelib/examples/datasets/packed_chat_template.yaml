@@ -8,8 +8,8 @@ tokenization parameter as a keyword argument with a sensible default, so a
 caller only needs to supply the dataset-specific bits: the packed map fn
 reference, the chat-template loader reference, and the chat template path.
 
-See examples/datasets/Open-Orca/templatelib/configs/openorca-packed.yaml
-for an end-to-end usage example (an inlined equivalent of these macros).
+See examples/datasets/open-thoughts/templatelib/configs/openthoughts-packed.yaml
+for an end-to-end usage example.
 #}
 
 -- macro packed_chat_template_map_function(map_fn_ref, chat_template_loader_ref, chat_template_path, max_length=512, stride=0, min_len=32, add_bos=True, add_eos=True, packing_strategy="best_fit", shuffle_output=True, overflow=False, packed=True)

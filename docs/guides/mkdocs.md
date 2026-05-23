@@ -23,38 +23,6 @@ docs via `mkdocstrings`. The cost is that it runs as a separate HTTP server
 on its own port -- launch it when you want the polished view or are
 authoring documentation; the built-in view is fine the rest of the time.
 
-## Pre-rendering API directives for the in-app Docs view
-
-The in-app Docs view serves markdown files as-is, which means `mkdocstrings`
-directives (`::: forgather.project.Project` and friends in `docs/api/*.md`)
-appear unrendered there -- they're only expanded by the full MkDocs build.
-To bridge the gap, the `forgather docs build` step pre-renders directives
-to a parallel tree at `docs/.built/<rel>.md`, and the server's
-`/api/docs/file` endpoint prefers the built copy when it exists and is not
-older than the source.
-
-```bash
-forgather docs build                  # incremental rebuild
-forgather docs build --clean          # wipe docs/.built/ first
-forgather docs build --check          # exit non-zero if anything is stale (CI)
-forgather docs build --path docs/api  # restrict to a subtree
-forgather docs clean                  # remove docs/.built/
-```
-
-The cache is populated automatically by `./build-webui.sh` (which is what
-the Docker post-build runs), so prebuilt runtime images ship with it
-populated. Set `SKIP_DOCS_BUILD=1` to skip the step. The webui falls back
-to the raw markdown source whenever the cache is missing or stale, so the
-Docs view always works whether or not the build step has been run --
-worst case the API pages show `:::` lines instead of expanded class
-documentation.
-
-Behind the scenes, the builder walks `docs/`, expands directives using
-[griffe](https://mkdocstrings.github.io/griffe/), and records the Python
-source files each page resolved against in a `.deps.json` sidecar so
-edits to the underlying source invalidate just the affected pages on the
-next rebuild.
-
 ## Launch from the webui
 
 Sidebar menu: **Services -> MkDocs…** opens a modal that enqueues an

@@ -21,9 +21,6 @@ forgather server                       # default: 127.0.0.1:8765
 forgather server --persist-sessions    # browser stays logged in across restarts
 forgather server --config path/to/server_config.yaml
                                        # override default <config>/server/server_config.yaml
-forgather server --docs-landing docs/guides/forgather-server-walkthrough.md
-                                       # Docs view opens here by default instead of docs/README.md
-                                       # (absolute or repo-relative; missing path falls back silently)
 ```
 
 `server_config.yaml` (auto-created at `<config>/server/` on first
@@ -123,15 +120,6 @@ forgather mkdocs -f docs/mkdocs.yml --enqueue --port 8001 --strict
 
 forgather inf server --enqueue -m output_models/my_model           # default port 8137
 forgather inf server --enqueue -m output_models/my_model -p 8138 --dtype float16
-
-# Multi-model server: -m is repeatable. NAME=PATH gives an explicit
-# routing name; bare PATH derives the name from the basename.
-forgather inf server --enqueue -m a=output_models/a -m b=output_models/b
-
-# Multi-model with all entries pinned to GPU (no CPU swap). Required on
-# unified-memory hardware (DGX Spark, Grace-Hopper).
-forgather inf server --enqueue \
-    -m a=output_models/a -m b=output_models/b --keep-on-gpu
 ```
 
 `forgather inf server`, `convert`, and `finalize` use a different

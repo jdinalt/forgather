@@ -45,8 +45,6 @@ anything absent from both falls back to the defaults shown.
 | `-l` / `--log-level LEVEL`           | `INFO`                                   | `DEBUG`, `INFO`, `WARNING`, `ERROR`.                                                                                  |
 | `--reload`                           | off                                      | Uvicorn auto-reload — development convenience only; spawned jobs do not survive a hot-reload.                         |
 | `--no-auth`                          | off                                      | Disable the bearer-token / password gate. Single-trusted-user host only. See [Threat model](#threat-model).            |
-| `--demo`                             | off                                      | Read-only public-demo mode: blocks every POST/PUT/DELETE outside a narrow allowlist, redacts bearer tokens from API responses, and surfaces a "DEMO MODE" chip in the webui sidebar. See [Demo mode](#demo-mode-public-readonly-exposure). |
-| `--fs-root PATH`                     | unrestricted (or repo+search roots in `--demo`) | Restrict every path-accepting API to descendants of this directory. Repeatable. Default in `--demo` is the Forgather repo plus the registered search roots, so demo visitors can't browse outside curated content. See [Filesystem allowlist](#filesystem-allowlist---fs-root). |
 | `--regen-token`                      | off                                      | Rotate the persisted bearer token at startup. Invalidates every CLI client using the old token.                       |
 | `--persist-sessions`                 | off                                      | Persist browser session cookies to `<config>/server/sessions.json` (0600) so the webui survives restarts. See [Persisted sessions](#persisted-sessions). |
 | `--cluster NAME`                     | unset                                    | Join the named cluster (mDNS-scoped). Standalone otherwise. See [Cluster mode](#cluster-mode-multi-node-prototype).   |
@@ -55,7 +53,6 @@ anything absent from both falls back to the defaults shown.
 | `--tls-cert PATH` / `--tls-key PATH` | resolved from shared config              | Override the certificate / private-key paths for this run.                                                            |
 | `--insecure`                         | off                                      | Allow binding a non-loopback host without TLS. Suppresses the "token in cleartext" abort.                             |
 | `--lock-inference-proxy`             | off                                      | Restrict the inference reverse proxy to localhost upstreams. The unconditional `http`/`https`-only scheme guard still applies. See [Network exposure](#network-exposure). |
-| `--docs-landing PATH`                | unset                                    | Path the Docs view opens by default, overriding the built-in `docs/README.md` preference. Absolute or repo-relative. A missing file falls back to the default — the override is a hint, not a hard requirement. |
 
 The `args:` mapping in `server_config.yaml` accepts the same names with
 dashes turned to underscores (`log_level`, `regen_token`,
@@ -336,111 +333,6 @@ elsewhere, the opt-in is explicit and the auth gate stays in place:
   story; the short version is "only register URLs you'd `pip install`
   from."
 
-## Demo mode (public read-only exposure)
-
-`--demo` turns the server into a public-safe instance: every mutating
-request (`POST` / `PUT` / `DELETE` / `PATCH`) returns
-`403 {"detail":"Server is in read-only demo mode"}` with a
-`X-Forgather-Demo-Blocked: 1` header, and bearer tokens are stripped
-from `/api/jobs`, `/api/queue`, `/api/services` response bodies before
-they reach the browser. The webui surfaces a compact amber **"DEMO
-MODE"** chip in the sidebar header next to the Forgather version
-label.
-
-Pair with `--no-auth` for a fully anonymous public demo, or leave the
-auth gate on for a curated audience:
-
-```bash
-# Anonymous public demo
-forgather server --no-auth --demo --fs-root /path/to/example/projects
-
-# Token-gated demo (token still required to load the webui, but the
-# logged-in user can only read state)
-forgather server --demo --fs-root /path/to/example/projects
-```
-
-**What's allowlisted** (the only POSTs that still work in demo mode):
-- `/api/auth/logout` — session UX.
-- `/api/inference/{completions, chat/completions, tokenize, detokenize}`
-  — proxy reads against an external inference upstream. The
-  `detokenize` route round-trips token ids back to a string and lets
-  the webui recover a byte-accurate chat-template prompt against
-  upstreams (like vLLM) whose `/tokenize` doesn't include it.
-- `/api/dataset-server/proxy/load` and
-  `/api/cluster/dataset_server_proxy/<server_id>/load` — proxy reads
-  against an external dataset server so the Datasets panel can open
-  a dataset for browsing.
-
-**What's still safe in demo mode** (defense in depth):
-- The "Copy bundle" button on local dataset-server rows is hidden in
-  the UI and the backend endpoint refuses with 403 (the bundle URI
-  embeds the real bearer token, which the redactor can't catch by
-  key name).
-- The server-config gear is hidden — the file it would open lives
-  outside any sane `--fs-root`.
-- The scheduler / restart / shutdown gears are disabled with
-  explanatory tooltips.
-
-**Recommended deployment**: container or VM, mount example projects
-read-only, run with `--no-auth --demo --fs-root <examples-dir>`.
-
-## Filesystem allowlist (`--fs-root`)
-
-Jupyter-Lab-style root restriction. Pass `--fs-root <path>`
-(repeatable) and every path-accepting API will refuse paths that don't
-resolve to a descendant of one of the listed roots, returning a 403
-with `X-Forgather-Fs-Root-Denied: 1`.
-
-```bash
-# Limit browsing/editing to a single project tree
-forgather server --fs-root /home/me/research
-
-# Multiple roots (union)
-forgather server --fs-root /home/me/research --fs-root /scratch/datasets
-```
-
-**Defaults**:
-- Without `--demo` and without `--fs-root`: unrestricted (historical
-  behaviour — the operator already trusts the box).
-- With `--demo` and no `--fs-root`: defaults to the Forgather repo
-  plus every directory in `search_roots.json`. That's the curated
-  project content the operator already declared browsable.
-- With `--fs-root` (regardless of `--demo`): exactly the supplied
-  roots, no implicit union with anything else.
-
-**Fail-closed**: if every supplied `--fs-root` is unresolvable or not
-a directory, the server refuses to start rather than silently falling
-back to unrestricted. Typos in the operator's argv aren't a security
-weakening.
-
-**What gets gated**: every `/api/fs/*` endpoint, every `/api/configs/*`
-and `/api/template/source` read/write, every `/api/docs/file` and
-`/api/docs/asset` read, every `/api/project*` endpoint that takes a
-`project_dir`, every `/api/workspace/*` creation flow, and
-`/api/config/dynamic-args`. The file-picker UI hides directory entries
-whose realpath would land outside the allowlist (so a symlink can't
-even be *clicked* to escape).
-
-## Quiet-tokens flag (spawned servers)
-
-Both the inference server (`tools/inference_server/server.py`) and the
-dataset server (`tools/dataset_server/server.py`) accept
-`--quiet-tokens`. When set, the bearer-token-bearing launch banner
-(and the `curl -H "Authorization: Bearer …"` example) is replaced
-with a one-line message that says auth is on but suppresses the
-value. The token is still written to its per-port file as usual, so
-the local CLI client / cluster peers still discover it; only the TTY
-log is sanitized.
-
-Surfaced in the webui:
-- **Inference modal** → "Quiet tokens" checkbox under the chat-template
-  field.
-- **Dataset server modal** → "Quiet tokens" checkbox under the auth
-  block, next to `--regen-token`.
-
-Intended for `--demo` deployments where the Jobs panel's TTY pane is
-visible to untrusted viewers.
-
 ## Authentication overview
 
 The system is composed of several services that each defend their own
@@ -534,11 +426,6 @@ forgather -t train.yaml train --enqueue --priority 5 --requested-gpus 2
 forgather eval test c4 -M output_models/my_model --enqueue
 forgather tb --enqueue --port 6006
 forgather inf server --enqueue -m output_models/my_model
-# Multi-model server (one process hosts several models):
-forgather inf server --enqueue -m a=output_models/a -m b=output_models/b
-# With every loaded model pinned to GPU (no CPU swap; required on
-# unified-memory hardware like DGX Spark / Grace-Hopper):
-forgather inf server --enqueue -m a=output_models/a -m b=output_models/b --keep-on-gpu
 forgather convert --enqueue --src output_models/my_model --dst /tmp/hf_export
 forgather finalize --enqueue --source output_models/my_model --dest /tmp/final
 forgather update --enqueue --src output_models/my_model --dst /tmp/my_model_v2
@@ -1277,13 +1164,11 @@ which picks a healthy server at random across the candidate set
 Three master-only background loops, started from the lifespan and
 self-gated on `cluster.is_self_master`, keep the inventory live:
 
-| loop                                                    | interval               | what it does                                                                 |
-|---------------------------------------------------------|------------------------|------------------------------------------------------------------------------|
-| `cluster_dataset_inventory.master_collect_servers_loop` | 10 s                   | GET each peer's `/api/cluster/dataset_servers_local`, merge into the set     |
-| `cluster_dataset_inventory.master_health_loop`          | 10 s                   | GET `/v1/health` on every dataset server, flip the per-server healthy flag   |
-| `cluster_dataset_inventory.master_dataset_refresh_loop` | 10 s (warm-up) / 60 s  | GET `/v1/datasets` + `/v1/local`, rebuild the `local/<name>` routing index   |
-| `cluster_inference_inventory.master_collect_servers_loop` | 10 s                 | GET each peer's `/api/cluster/inference_servers_local` for the picker        |
-| `cluster_inference_inventory.master_health_loop`        | 10 s                   | GET `/health` on every inference server (root-mounted, not `/v1/health`)     |
+| loop                              | interval               | what it does                                                                 |
+|-----------------------------------|------------------------|------------------------------------------------------------------------------|
+| `master_collect_servers_loop`     | 10 s                   | GET each peer's `/api/cluster/dataset_servers_local`, merge into the set     |
+| `master_health_loop`              | 10 s                   | GET `/v1/health` on every server, flip the per-server healthy flag           |
+| `master_dataset_refresh_loop`     | 10 s (warm-up) / 60 s  | GET `/v1/datasets` + `/v1/local`, rebuild the `local/<name>` routing index   |
 
 On a master transition the new master clears its inventory and the
 router returns `503 Retry-After: 5` until the first dataset-refresh
@@ -2008,26 +1893,7 @@ calling out:
   rather than the repo-root README — the docs index is the curated
   entry point with links to installation / tutorials / config / API,
   whereas the root README is closer to a project elevator pitch.
-  Falls back to the root README if the docs index is missing, or
-  the empty state if neither exists. Operators can override the
-  default with `--docs-landing PATH` (or `args.docs_landing` in
-  `server_config.yaml`); a missing override falls back to the
-  built-in preference rather than failing hard.
-
-**Pre-rendered API directives.** The Docs view serves raw markdown,
-so `:::`-style `mkdocstrings` directives in `docs/api/*.md` would
-otherwise appear unrendered. `forgather docs build` (see
-`src/forgather/docs_build/`) walks `docs/`, expands directives via
-griffe, and writes the result to `docs/.built/<rel>.md`. The
-`/api/docs/file` endpoint prefers the built copy when one exists
-and is not older than the source; otherwise it serves the raw
-source unchanged, so the Docs view always works whether or not
-the build step has been run. The cache is populated automatically
-by `./build-webui.sh` (and therefore by the Docker post-build
-step that runs it), and can be regenerated on demand with
-`forgather docs build` or removed with `forgather docs clean`.
-The reported response path is always the canonical source so
-relative asset references resolve against the right directory.
+  Falls back to the root README if the docs index is missing.
 
 `docs_hooks.py` is a MkDocs `on_page_markdown` hook (wired via
 `mkdocs.yml: hooks:`) that rewrites relative markdown links on
@@ -2277,7 +2143,7 @@ What the algorithm intentionally does **not** do:
 
 An in-browser replacement for `forgather inf client` that talks to
 running inference-server jobs (or any OpenAI-compatible endpoint).
-Four sub-tabs sharing the same `InferenceState` (base URL, model,
+Three sub-tabs sharing the same `InferenceState` (base URL, model,
 generation params — persisted to `localStorage`):
 
 - **Model** — base URL entry with a reachability test, picker for
@@ -2289,16 +2155,6 @@ generation params — persisted to `localStorage`):
   expandable Advanced section. Tri-state selects let the user override
   `do_sample` / `early_stopping` explicitly rather than being stuck with
   temperature-derived defaults.
-
-  In **cluster mode** the picker queries `/api/cluster/inference_servers`
-  (master-aggregated) so jobs running on any reachable cluster peer
-  appear alongside local ones — see the "Cluster inference picker"
-  subsection below. The picker waits for the cluster-mode gate to
-  resolve before showing rows, so it never flickers from local-only
-  to the full cluster set on first paint. Outside cluster mode the
-  picker queries `/api/jobs` directly. Rows that came from the cluster
-  endpoint also show a short peer-id badge and a ⚠ indicator when the
-  master's health-poll reports the server unhealthy.
 - **Completion** — textarea + Send/Stop/Clear. Streams via
   `POST /v1/completions` (SSE) with an async iterator; `stream`
   checkbox falls back to a one-shot `stream: false` POST so beam-search
@@ -2311,43 +2167,6 @@ generation params — persisted to `localStorage`):
   multi-line compose with Ctrl/Cmd+Enter to send. Regenerate-last,
   per-message edit (truncate + re-run), per-message delete. History
   + system text persist under `forgather-inference-chat-v1`.
-- **Analyze** — per-token causal-LM scoring + visualization. Sends
-  `echo=true, logprobs=K, max_tokens=0` to `/v1/completions`, which
-  runs a single forward pass and returns per-token logprobs + top-K
-  alternatives — see the inference server's "Per-Token Scoring"
-  section. Split layout: textarea on the left, color-coded token
-  output on the right, with optional histogram below. Both splits
-  have drag handles (double-click to reset); state persists under
-  `forgather-analyze-prefs`.
-  - **Metric**: `loss` (default) or `entropy`. Entropy is a Forgather
-    extension that needs the full vocab distribution, so the server
-    returns it as a non-standard `token_entropies` field; if a
-    non-Forgather server (vLLM, OpenAI) is in use the panel falls
-    back to loss for coloring and shows a one-line note.
-  - **Colormap**: viridis (default), plasma, magma, inferno, turbo,
-    or a fallback green→red HSL ramp. Implemented via degree-6
-    polynomial fits in `colormaps.ts` — no LUT, no dep. Foreground
-    text color is auto-picked per-token from background luminance.
-  - **Scale**: `auto` (5th/95th percentile of the response's own
-    values, outlier-robust) or `manual` (fixed `min`/`max` so the
-    same color encodes the same value across runs).
-  - **Smooth**: exponential moving average over the color-encoded
-    signal, α in `[0, 1)`. 0 = off; higher = smoother. Tooltip values
-    stay raw — smoothing is purely a coloring aid.
-  - **Histogram**: SVG (resolution-independent, `viewBox` + `width:
-    100%`), 30 bins over the raw metric values. Bars are colored
-    using the same colormap and scale so the histogram doubles as a
-    legend.
-  - **Selection-aware**: if the user has a non-empty selection in
-    the textarea, Analyze scores only the selected substring instead
-    of the whole input. Button label changes to `Analyze selection
-    (N ch)` so the mode is unambiguous. Lets the user probe a single
-    paragraph out of a pasted novel without truncation.
-  - **Tooltip on hover**: shows the actual token, loss, perplexity,
-    entropy (if available), and the ranked top-K alternatives with
-    their probabilities. Rendered as `position: fixed` with
-    flip-above/below + viewport-edge clamping so it escapes the
-    pane's `overflow: auto` clip and never gets cropped.
 
 **Inference… (sidebar Services section)** — opens `InferenceModal`
 in ad-hoc mode: the model path becomes a `PathField` instead of a
@@ -2358,69 +2177,6 @@ persist under `forgather-adhoc-inference-v1` — the next invocation
 defaults to the last-submitted values. Requested GPUs and priority
 stay fresh each invocation since the "right" value depends on current
 queue occupancy.
-
-**Multi-model UX (ad-hoc only).** A "+ Add model" button under the
-model PathField adds another row. Each row carries a path picker and
-an optional name override (auto-derived from the basename when blank);
-the picker remembers the parent of the last-picked path under
-`pathfield.last:inference.model` so each row reopens at the same
-directory the previous one came from. With more than one row the rows
-live in a scrollable container (`max(240px, 30vh)` cap) so a long list
-doesn't overflow the modal. A `Keep all models on GPU (no CPU swap)`
-checkbox surfaces in the same UI; it maps to `--keep-on-gpu` on the
-spawned server. The specific-checkpoint-path field is hidden in
-multi-model mode (the server rejects `-c <PATH>` with more than one
-model — the boolean `from_checkpoint` toggle still applies globally
-and loads each model's latest checkpoint).
-
-The "Create service…" suggested name is the single model's basename
-in one-model mode, or `host-port` in multi-model mode — concatenating
-many model names produces ugly long names quickly.
-
-### Cluster inference picker
-
-Mirror of the dataset-server cluster inventory in
-`cluster_dataset_inventory.py`, sized for inference. Implemented in
-`cluster_inference_inventory.py`:
-
-- `LocalInference` (per-peer enumeration): scans `job_records` for
-  `job_type == "inference"` in the `starting` / `running` state.
-  Single-model jobs derive a one-element `models[]` from
-  `model_path`'s basename; multi-model jobs use the configured `-m`
-  names. `0.0.0.0` binds are rewritten to the cluster identity's
-  hostname; pure-loopback binds stay in the list but are flagged
-  `loopback=true`.
-- Master aggregation: two async loops self-gating on master role:
-  - `master_collect_servers_loop` every 10 s pulls each peer's
-    `/api/cluster/inference_servers_local` and merges into a master
-    snapshot.
-  - `master_health_loop` every 10 s probes each server's `/health`
-    (unauthenticated, root-mounted on the inference server) and
-    updates the `healthy` flag.
-- Endpoints (all under `/api/cluster/`):
-  - `GET /inference_servers_local` — per-peer view, tokens included,
-    peer-mTLS allowed (the master polls this).
-  - `GET /inference_servers` — master-aggregated browser-facing list.
-    On non-master nodes the route proxies to the master so every
-    webui sees the same set. **Includes the bearer token** — see the
-    discussion in the route's docstring; the picker carries the
-    token via `X-Inference-Auth-Token` so the proxy can dial off-host
-    upstreams from any cluster node.
-  - `POST /inference_servers/refresh` — wake hook called by the
-    scheduler on inference-job spawn / reap / abort so the picker
-    reflects the change in ~1s rather than waiting for the 10s
-    collect tick. Also surfaced manually via the webui (not currently
-    wired to a button, but reachable for operator-driven refreshes).
-
-Auth token surface: `auth.py:_PEER_ALLOWED_PATHS` carves out
-`inference_servers_local` and `inference_servers`;
-`auth.py:_PEER_ALLOWED_MUTATIONS` carves out
-`inference_servers/refresh`.
-
-Token-stripping the browser response (so remote-peer tokens never
-leave the master) is tracked as a follow-up; the current behavior
-matches `/api/jobs`, which already ships per-job tokens to the
-authenticated session.
 
 **Generation presets** — save/load named JSON presets of the current
 generation params. Served by `/api/generation-configs/*`, which merges
@@ -2486,26 +2242,9 @@ per-node only:
   truncation cap. The browse pane has a draggable vertical
   divider — drag to resize, double-click to reset, ←/→ to nudge
   (Shift for x4); width persists in localStorage. Pager elides
-  the middle (`‹ Prev 1 … 42 43 44 … 588 Next ›`) with a 🎲 button
-  that jumps to a random page and expands a random row on it
-  (handy for sampling a large corpus); 25 / 50 / 100 rows-per-page
-  selector plus a **Go to** input for jumping directly to a page.
-
-  Row expand-on-click ignores drag-select gestures: if the user
-  moves the cursor more than ~4 px between mousedown and mouseup,
-  or releases with a non-empty selection, the row stays expanded
-  so they can copy text out of it.
-
-  Each cell has a right-click context menu with:
-  - **Copy cell text** — writes the full underlying value (not the
-    truncated displayed form) to the clipboard via `navigator.
-    clipboard.writeText`. Non-string values are JSON-stringified.
-  - **Analyze in Inference…** — jumps to *Inference > Analyze*
-    with this cell's full text already loaded into the textarea and
-    scoring kicked off, one click. Wired through an App-level
-    `pendingAnalyze: {text, key}` slot (mirrors the existing
-    Cluster→Datasets `pendingExplore` pattern); the key nonce
-    dedups so flipping tabs back doesn't re-fire stale requests.
+  the middle (`‹ Prev 1 … 42 43 44 … 588 Next ›`); 25 / 50 / 100
+  rows-per-page selector plus a **Go to** input for jumping
+  directly to a page number.
 
   Cross-view click-through: clicking a row in the *Cluster view →
   datasets* tab opens this Explore tab with the first healthy host's
@@ -3104,29 +2843,14 @@ for the threat model.
 ### Inference proxy
 
 Same-origin forwarder so the browser can talk to inference-server jobs
-without running into CORS / PNA issues. The endpoint set also includes a
-small **user-added-server registry** — the Inference → Model picker
-lists running spawned/cluster servers by default, and this registry adds
-a persistent "User-added servers" section so operators can one-click
-external OpenAI-compatible upstreams (vLLM, remote inference, a
-teammate's box) without retyping URL + token every session. Entries
-live at `<config>/server/inference_server_registry.json` (0600);
-tokens never round-trip back to the browser after the initial save.
+without running into CORS / PNA issues.
 
-| Endpoint                                                                                | Purpose                                                              |
-| --------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `GET /api/inference/health?base=`                                                       | Proxy `<base>/health`                                                |
-| `GET /api/inference/models?base=`                                                       | Proxy `<base>/models`                                                |
-| `POST /api/inference/completions?base=`                                                 | Proxy `<base>/completions` (byte-for-byte SSE passthrough)           |
-| `POST /api/inference/chat/completions?base=`                                            | Proxy `<base>/chat/completions` (byte-for-byte SSE passthrough)      |
-| `GET /api/inference-servers/user`                                                       | List registered user URLs                                            |
-| `POST /api/inference-servers/user` `{label, base_url, auth_token?, verify_tls?}`        | Register an external inference server. Tokens with CR/LF rejected as 400. |
-| `DELETE /api/inference-servers/user/{entry_id}`                                         | Remove a registry entry                                              |
-
-Token resolution order for every inference-proxy call: explicit
-`X-Inference-Auth-Token` header → JobRecord auto-lookup (for spawned
-local servers) → cluster-inventory lookup (for off-host peer servers
-on master nodes) → registry lookup (for user-added entries) → none.
+| Endpoint                                              | Purpose                                                        |
+| ----------------------------------------------------- | -------------------------------------------------------------- |
+| `GET /api/inference/health?base=`                     | Proxy `<base>/health`                                          |
+| `GET /api/inference/models?base=`                     | Proxy `<base>/models`                                          |
+| `POST /api/inference/completions?base=`               | Proxy `<base>/completions` (byte-for-byte SSE passthrough)     |
+| `POST /api/inference/chat/completions?base=`          | Proxy `<base>/chat/completions` (byte-for-byte SSE passthrough) |
 
 ### Dataset_server registry + proxy
 

@@ -23,116 +23,6 @@ from forgather.preprocess import forgather_config_dir
 log = logging.getLogger("forgather_server.paths")
 
 
-# ---------------------------------------------------------------------------
-# Filesystem-root allowlist (jupyter-lab-style chroot for path-accepting APIs)
-# ---------------------------------------------------------------------------
-#
-# Set by ``configure_fs_roots`` at startup (via ``--fs-root``). When the tuple
-# is empty, every path is allowed and ``is_path_in_fs_root`` is a no-op —
-# matching the historical "browse anywhere the server uid can read" behaviour.
-# When populated, every path-accepting API handler that takes a client-supplied
-# path is expected to call ``is_path_in_fs_root`` and 403 on miss.
-#
-# Roots are stored as fully-resolved absolute paths so the containment check
-# is a straightforward ``Path.relative_to`` after resolving the candidate.
-# Symlink-following is intentional here: callers that need to reject symlink
-# *components* (vs. just verify the resolved target is under a root) layer
-# the symlink-chain check on top — see fs.py:_reject_symlink_in_chain.
-_fs_roots: tuple[Path, ...] = ()
-
-
-def configure_fs_roots(roots) -> None:
-    """Install the fs-root allowlist. Pass an empty list to disable.
-
-    Fail-closed: if the operator supplied roots but none resolved
-    (typo, all paths missing, all symlinks broken), raise rather than
-    silently falling back to unrestricted. That's the opposite of what
-    they asked for and the worst-of-both-worlds for a security gate.
-    """
-    global _fs_roots
-    supplied = [r for r in roots]
-    resolved: list[Path] = []
-    for r in supplied:
-        try:
-            p = Path(os.path.expanduser(str(r))).resolve()
-        except (OSError, RuntimeError) as e:
-            log.warning("ignoring unresolvable fs-root %r: %s", r, e)
-            continue
-        if not p.is_dir():
-            log.warning("ignoring fs-root that isn't a directory: %s", p)
-            continue
-        resolved.append(p)
-    if supplied and not resolved:
-        raise ValueError(
-            f"--fs-root: none of the supplied paths resolved to an "
-            f"existing directory: {[str(r) for r in supplied]!r}. Refusing "
-            f"to start with an empty allowlist — that would silently "
-            f"open access to every path the server uid can read."
-        )
-    # De-duplicate while preserving order; drop any root that's a descendant
-    # of another (the ancestor already covers it).
-    deduped: list[Path] = []
-    for p in resolved:
-        if any(_is_descendant(p, anc) for anc in deduped):
-            continue
-        deduped = [d for d in deduped if not _is_descendant(d, p)]
-        deduped.append(p)
-    _fs_roots = tuple(deduped)
-    if _fs_roots:
-        log.info(
-            "fs-root allowlist active (%d root(s)): %s",
-            len(_fs_roots),
-            ", ".join(str(p) for p in _fs_roots),
-        )
-
-
-def fs_roots() -> tuple[Path, ...]:
-    """Return the configured fs-roots tuple (empty = unrestricted)."""
-    return _fs_roots
-
-
-def fs_roots_active() -> bool:
-    """True if a non-empty fs-root allowlist is configured."""
-    return len(_fs_roots) > 0
-
-
-def _is_descendant(candidate: Path, ancestor: Path) -> bool:
-    try:
-        candidate.relative_to(ancestor)
-        return True
-    except ValueError:
-        return False
-
-
-def is_path_in_fs_root(path) -> bool:
-    """True if ``path`` resolves to a descendant of some configured root.
-
-    Always True when no allowlist is configured. Returns False for paths
-    that can't be resolved (broken symlink, permission error during
-    realpath, etc.) — failing closed is the right default once an
-    allowlist is in force.
-
-    The candidate is realpath'd before the check so symlink targets are
-    what's evaluated. Callers that also want to reject symlink *components*
-    (e.g. the delete path) should layer ``_reject_symlink_in_chain`` on
-    top; this function only answers "where does this path actually land."
-    """
-    if not _fs_roots:
-        return True
-    # Fail-closed on empty/whitespace input. ``Path("").resolve()`` lands
-    # on the server's cwd; if cwd happens to sit inside an fs-root
-    # (common — operators launch from the repo root), an empty path
-    # would silently pass the gate and surface CWD contents downstream.
-    s = str(path).strip()
-    if not s:
-        return False
-    try:
-        resolved = Path(os.path.expanduser(s)).resolve()
-    except (OSError, RuntimeError):
-        return False
-    return any(_is_descendant(resolved, root) for root in _fs_roots)
-
-
 def _tighten_dir(path: Path, mode: int = 0o700) -> None:
     """Best-effort chmod; idempotent and safe to call every access."""
     try:
@@ -213,16 +103,6 @@ def dataset_server_registry_file() -> Path:
     return server_state_dir() / "dataset_server_registry.json"
 
 
-def inference_server_registry_file() -> Path:
-    """User-added inference-server URLs + tokens.
-
-    Lives at ``<config>/server/inference_server_registry.json``, mode
-    0600. Same shape as the dataset_server registry — see
-    :mod:`forgather_server.inference_server_registry`.
-    """
-    return server_state_dir() / "inference_server_registry.json"
-
-
 def cluster_state_dir() -> Path:
     """Persistent directory for multi-node cluster state.
 
@@ -277,8 +157,6 @@ _SENSITIVE_TOPLEVEL_FILES = (
     "gpu_policy.json",
     "search_roots.json",
     "sessions.json",
-    "dataset_server_registry.json",
-    "inference_server_registry.json",
 )
 
 

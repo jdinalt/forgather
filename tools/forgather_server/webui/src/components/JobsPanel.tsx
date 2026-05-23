@@ -6,7 +6,6 @@ import {
 } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ControlAction, Job } from "../api";
-import { useDemoMode } from "../demoMode";
 import { persistGet, persistSet } from "../persist";
 import { ContextMenu } from "./ContextMenu";
 import { TtyViewer } from "./TtyViewer";
@@ -78,7 +77,6 @@ interface Props {
  *  queue (source="record" or "merged") or was started outside the server
  *  entirely (source="endpoint"). */
 export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
-  const demoMode = useDemoMode();
   const [includeDead, setIncludeDead] = useState(false);
   const [showTty, setShowTty] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -315,9 +313,7 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
         <div className="jobs-header-controls">
           <button
             className="secondary"
-            disabled={
-              demoMode || completedOursCount === 0 || cleanup.isPending
-            }
+            disabled={completedOursCount === 0 || cleanup.isPending}
             onClick={() => {
               if (completedOursCount === 0) return;
               if (
@@ -331,9 +327,7 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
               }
             }}
             title={
-              demoMode
-                ? "Read-only demo mode — cleanup is disabled"
-                : completedOursCount === 0
+              completedOursCount === 0
                 ? "No completed jobs to clean up"
                 : `Remove ${completedOursCount} completed job record(s)`
             }
@@ -540,7 +534,6 @@ function JobCard({
   onRemove: () => void;
   controlPending: boolean;
 }) {
-  const demoMode = useDemoMode();
   const startedSec = job.started_at ?? job.submitted_at ?? null;
   const started = startedSec ? new Date(startedSec * 1000).toLocaleString() : "—";
   const uptimeSec =
@@ -802,10 +795,6 @@ function JobCard({
             <div>
               <span>token:</span>{" "}
               <code>{job.auth_token}</code>
-            </div>
-          ) : demoMode ? (
-            <div>
-              <span>auth:</span> <em>hidden (demo mode)</em>
             </div>
           ) : (
             <div>

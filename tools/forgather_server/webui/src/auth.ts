@@ -18,14 +18,6 @@ export interface AuthStatus {
   authenticated: boolean;
   has_password: boolean;
   auth_disabled: boolean;
-  /** Server is in read-only demo mode. Webui hides destructive
-   *  controls and masks bearer-token fields. The backend rejects
-   *  mutating requests with 403 regardless, so this flag is a UX
-   *  signal rather than a security boundary. */
-  demo_mode: boolean;
-  /** Forgather package version (e.g. "0.1.0"). "unknown" when the
-   *  server is an editable install without dist-info. */
-  forgather_version: string;
 }
 
 let _installed = false;
@@ -66,22 +58,10 @@ export function installAuthFetch(): void {
       const upstreamAuthFailed =
         r.headers.get("X-Upstream-Auth-Failed") === "1";
       const proxyRefused = r.headers.get("X-Forgather-Proxy-Refused") === "1";
-      // Demo-mode policy 403: the user is authenticated, the server
-      // just refuses mutations. Bouncing them back to /login would be
-      // both confusing and pointless — same tag-pattern as the two
-      // headers above.
-      const demoBlocked = r.headers.get("X-Forgather-Demo-Blocked") === "1";
-      // Same logic for fs-root policy refusals: the user is
-      // authenticated, the server just refuses to read a path outside
-      // the configured root.
-      const fsRootDenied =
-        r.headers.get("X-Forgather-Fs-Root-Denied") === "1";
       if (
         !url.includes("/api/auth/") &&
         !upstreamAuthFailed &&
-        !proxyRefused &&
-        !demoBlocked &&
-        !fsRootDenied
+        !proxyRefused
       ) {
         window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT));
       }

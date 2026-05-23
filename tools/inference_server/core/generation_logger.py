@@ -3,63 +3,33 @@ Unified logging for generation operations.
 """
 
 import logging
-from typing import Any, Callable, List, Optional
+from typing import Any, List, Optional
 
 from transformers import PreTrainedTokenizer
 
 
 class GenerationLogger:
-    """Handles consistent logging across all generation methods.
-
-    Decoded-token log lines use the active model's tokenizer. For
-    multi-model servers the active tokenizer changes on every swap, so
-    the logger accepts a ``tokenizer_factory`` callable that's invoked
-    lazily on each ``.tokenizer`` read. Single-model callers (and the
-    test suite) can still pass a tokenizer directly.
-    """
+    """Handles consistent logging across all generation methods."""
 
     def __init__(
-        self,
-        logger: logging.Logger,
-        tokenizer: Optional[PreTrainedTokenizer] = None,
-        *,
-        tokenizer_factory: Optional[Callable[[], Optional[PreTrainedTokenizer]]] = None,
+        self, logger: logging.Logger, tokenizer: Optional[PreTrainedTokenizer]
     ) -> None:
         """
+        Initialize generation logger.
+
         Args:
             logger: Logger instance to use
-            tokenizer: HuggingFace tokenizer (legacy single-model use)
-            tokenizer_factory: callable returning the current tokenizer; if
-                set, ``self.tokenizer`` reads through it on every access so
-                multi-model swaps stay live. Mutually exclusive with
-                passing ``tokenizer`` directly.
+            tokenizer: HuggingFace tokenizer for decoding tokens (optional, set after initialization)
         """
         self.logger: logging.Logger = logger
-        self._tokenizer: Optional[PreTrainedTokenizer] = tokenizer
-        self._tokenizer_factory: Optional[
-            Callable[[], Optional[PreTrainedTokenizer]]
-        ] = tokenizer_factory
-
-    @property
-    def tokenizer(self) -> Optional[PreTrainedTokenizer]:
-        if self._tokenizer_factory is not None:
-            return self._tokenizer_factory()
-        return self._tokenizer
-
-    @tokenizer.setter
-    def tokenizer(self, value: Optional[PreTrainedTokenizer]) -> None:
-        # Explicit set wins over factory — preserves the legacy pattern
-        # of constructing the logger before the tokenizer is known and
-        # filling it in afterwards.
-        self._tokenizer = value
-        self._tokenizer_factory = None
+        self.tokenizer: Optional[PreTrainedTokenizer] = tokenizer
 
     def log_request(
         self,
         request_id: str,
         request_type: str,
         model: str,
-        max_tokens: Optional[int],
+        max_tokens: int,
         temperature: float,
         top_p: float,
         **kwargs: Any,

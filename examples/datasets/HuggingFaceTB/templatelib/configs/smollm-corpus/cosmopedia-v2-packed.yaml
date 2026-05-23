@@ -1,5 +1,5 @@
 -- extends "configs/smollm-corpus/cosmopedia-v2.yaml"
--- from "packed.yaml" import map_function, map_kwargs
+-- from "packed.yaml" import map_function, map_kwargs, dynamic_args
 
 [config_metadata]
     == super()
@@ -12,3 +12,7 @@
 [map_kwargs]
     == super()
 {{ map_kwargs() }}
+
+[dynamic_args]
+    == super()
+{{ dynamic_args() }}

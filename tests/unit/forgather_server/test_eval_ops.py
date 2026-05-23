@@ -66,22 +66,3 @@ class TestBuildEvalCommand:
         assert "--max-steps" in cmd
         idx = cmd.index("--max-steps")
         assert cmd[idx + 1] == "500"
-
-    def test_fused_loss_flag(self):
-        cmd = self._base_call(fused_loss=True)
-        assert "--fused-loss" in cmd
-
-    def test_fused_loss_omitted_when_false(self):
-        cmd = self._base_call(fused_loss=False)
-        assert "--fused-loss" not in cmd
-
-    def test_unknown_kwarg_ignored(self):
-        """The shared spec drives forwarding; unknown keys are silently dropped.
-
-        Defends against the queue store growing legacy keys that no longer
-        map to a spec entry — they pass through job_params unchanged but must
-        not produce stray argv tokens.
-        """
-        cmd = self._base_call(some_obsolete_flag="nope")
-        assert "--some-obsolete-flag" not in cmd
-        assert "nope" not in cmd

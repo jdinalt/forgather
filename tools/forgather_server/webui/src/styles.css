@@ -809,13 +809,7 @@ button.destructive:hover {
   background: var(--err-bg);
 }
 button.destructive:disabled,
-button.secondary:disabled,
-button:disabled {
-  /* Generic ``button:disabled`` so primary-accent buttons (the default,
-     unstyled-class variant used for "+ Add server" and similar
-     constructive affordances) also dim when disabled — previously the
-     rule only fired for explicitly-classed buttons, which left
-     demo-mode-disabled primary buttons looking fully live. */
+button.secondary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -1332,26 +1326,6 @@ button.jobs-tty-toggle.active {
   gap: 18px;
   margin-bottom: 10px;
   flex-wrap: wrap;
-}
-/* Multi-model row container in InferenceModal. Bare class is a no-op
-   wrapper (single-model UX unchanged). The -scroll variant caps height
-   and scrolls when many models are added so the modal doesn't outgrow
-   the viewport. The inner padding-right reserves space for the
-   scrollbar so rows don't visually shift when one appears. */
-.inference-model-rows-scroll {
-  /* Cap on short viewports (~6 rows visible), but grow up to ~30vh on
-     tall screens so operators with a 1440p monitor see more without
-     having to scroll inside the modal. ``max`` keeps the lower bound
-     as a floor for laptop / devtools-open viewports. */
-  max-height: max(240px, 30vh);
-  overflow-y: auto;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 8px 12px 0 8px;
-  margin-bottom: 10px;
-}
-.inference-model-rows-scroll .submit-row:last-child {
-  margin-bottom: 8px;
 }
 .submit-row label {
   display: flex;
@@ -3559,241 +3533,6 @@ li.config.selected button.link:hover {
   background: var(--bg);
 }
 
-/* Wraps the textarea (and optional Markdown pane when the toggle is
-   on). Row layout so the DragHandle slots between them; flex sizing
-   is driven by the leftWidthPct pref on the textarea — the markdown
-   pane just takes the remainder. */
-.inference-completion-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: row;
-}
-.inference-completion-markdown {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 12px 16px;
-  background: var(--bg);
-  color: var(--fg);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-/* ─── Analyze sub-tab ─── Two-column layout: input textarea on the
-   left, color-coded scored tokens on the right. Action bar mirrors the
-   completion panel's so the row of controls stays familiar. */
-.inference-analyze {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-.inference-analyze-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
-}
-.inference-analyze-bar label {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-.inference-analyze-body {
-  flex: 1;
-  display: flex;
-  min-height: 0;
-}
-.inference-analyze-input {
-  /* width set inline from prefs.leftWidthPct via the DragHandle */
-  min-width: 0;
-  min-height: 0;
-  border: none;
-  background: var(--bg-alt);
-  color: var(--fg);
-  font-family: "SF Mono", Menlo, Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.5;
-  padding: 12px 16px;
-  resize: none;
-  outline: none;
-}
-.inference-analyze-input:focus {
-  background: var(--bg);
-}
-.inference-analyze-output {
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 0;
-  background: var(--bg);
-  display: flex;
-  flex-direction: column;
-}
-.inference-analyze-scored-pane {
-  overflow: auto;
-  padding: 12px 16px;
-}
-.inference-analyze-hist-pane {
-  overflow: hidden;
-  padding: 8px 12px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-}
-.analyze-histogram-wrap {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-.analyze-histogram-meta {
-  font-size: 11px;
-  padding-bottom: 4px;
-}
-.analyze-histogram-svg {
-  flex: 1;
-  width: 100%;
-  min-height: 0;
-  display: block;
-}
-
-/* Drag handles for the analyze panel's two splits. ``analyze-split-x``
-   is a thin vertical strip that resizes the textarea / output split
-   (cursor: col-resize); ``analyze-split-y`` is a thin horizontal strip
-   that resizes the scored-text / histogram split (cursor: row-resize).
-   Both expose an enlarged transparent hit zone via ::before so the
-   user doesn't need pixel-perfect aim. Pattern lifted from the Jobs
-   panel's split handle. */
-.analyze-split-x {
-  flex: 0 0 6px;
-  background: var(--border);
-  cursor: col-resize;
-  position: relative;
-  touch-action: none;
-}
-.analyze-split-x::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: -4px;
-  right: -4px;
-}
-.analyze-split-x:hover {
-  background: var(--accent);
-}
-.analyze-split-x:active {
-  background: var(--accent-hover);
-}
-.analyze-split-y {
-  flex: 0 0 6px;
-  background: var(--border);
-  cursor: row-resize;
-  position: relative;
-  touch-action: none;
-}
-.analyze-split-y::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: -4px;
-  bottom: -4px;
-}
-.analyze-split-y:hover {
-  background: var(--accent);
-}
-.analyze-split-y:active {
-  background: var(--accent-hover);
-}
-.analyze-empty {
-  font-style: italic;
-  padding: 4px 0;
-}
-.analyze-fallback-note {
-  font-size: 11px;
-  padding: 4px 8px;
-  margin-bottom: 8px;
-  background: var(--bg-alt);
-  border-left: 2px solid var(--accent);
-  border-radius: 2px;
-}
-.scored-text {
-  font-family: "SF Mono", Menlo, Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.7;
-  /* Preserve spaces and newlines so token boundaries are visible and
-     the rendered layout mirrors the input. */
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.scored-token {
-  /* Foreground color is set inline per-token based on the colormap's
-     swatch luminance, so light-on-dark and dark-on-light both render
-     readably as the user flips between viridis / plasma / etc. */
-  border-radius: 2px;
-  padding: 1px 0;
-}
-.scored-token:hover {
-  outline: 1px solid var(--accent);
-}
-/* Tooltip is position:fixed and rendered as a sibling of the token
-   list — JS sets ``top``/``left`` relative to the viewport with
-   flip-above/below + horizontal clamp logic, so it escapes the output
-   pane's ``overflow: auto`` clip and never crosses a window edge. */
-.scored-token-tooltip {
-  position: fixed;
-  z-index: 1000;
-  width: 320px;
-  max-width: 92vw;
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 8px 10px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  font-size: 12px;
-  line-height: 1.4;
-  white-space: normal;
-  text-align: left;
-  pointer-events: none;
-}
-.scored-token-tooltip .tt-token {
-  margin-bottom: 4px;
-}
-.scored-token-tooltip .tt-metrics {
-  margin-bottom: 4px;
-  color: var(--muted, #b0b0b0);
-}
-.scored-token-tooltip .tt-divider {
-  margin-top: 6px;
-  margin-bottom: 4px;
-  font-size: 11px;
-  color: var(--muted, #b0b0b0);
-  border-top: 1px solid var(--border);
-  padding-top: 4px;
-}
-.scored-token-tooltip .tt-topk {
-  width: 100%;
-  border-collapse: collapse;
-}
-.scored-token-tooltip .tt-topk td {
-  padding: 1px 4px;
-  vertical-align: top;
-}
-.scored-token-tooltip .tt-prob {
-  text-align: right;
-  white-space: nowrap;
-  color: var(--muted, #b0b0b0);
-  width: 50px;
-}
-.scored-token-tooltip .tt-tok code {
-  font-size: 11px;
-}
-
 /* ─── Chat sub-tab ─── Sibling layout to .inference-completion: a top
    action bar, an optional collapsible system-message panel, a scrolling
    transcript, and a sticky compose row at the bottom. */
@@ -3874,13 +3613,6 @@ li.config.selected button.link:hover {
   font-size: 11px;
   line-height: 1.4;
 }
-.inference-chat-messages-wrap {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-  display: flex;
-  flex-direction: column;
-}
 .inference-chat-messages {
   flex: 1;
   min-height: 0;
@@ -3889,23 +3621,6 @@ li.config.selected button.link:hover {
   display: flex;
   flex-direction: column;
   gap: 12px;
-}
-.inference-chat-jump-bottom {
-  position: absolute;
-  right: 16px;
-  bottom: 12px;
-  z-index: 2;
-  padding: 4px 10px;
-  font-size: 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  cursor: pointer;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
-  opacity: 0.92;
-}
-.inference-chat-jump-bottom:hover {
-  opacity: 1;
 }
 .inference-chat-empty {
   font-size: 12px;
@@ -3983,20 +3698,6 @@ li.config.selected button.link:hover {
 .inference-chat-msg-body pre code {
   background: none;
   padding: 0;
-}
-.inference-chat-msg-reasoning {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--border);
-  padding: 6px 10px;
-  border-radius: 3px;
-  font-family: "SF Mono", Menlo, Consolas, monospace;
-  font-size: 12px;
-  color: var(--text-muted, #888);
-  opacity: 0.75;
-  white-space: pre-wrap;
-  margin: 0 0 8px;
-  font-style: italic;
 }
 /* User text uses a <pre> so newlines and whitespace survive verbatim
    — but it should wrap rather than scroll horizontally. */
@@ -5237,11 +4938,6 @@ li.config.selected button.link:hover {
   padding: 0 4px;
   font-size: 12px;
 }
-.pager-random {
-  margin-left: 8px;
-  font-size: 14px;
-  line-height: 1;
-}
 .pager-goto {
   display: flex;
   align-items: center;
@@ -5398,51 +5094,4 @@ li.config.selected button.link:hover {
 }
 .ds-bar-swatch.ds-bar-tail {
   background: var(--fg-muted);
-}
-
-/* Read-only demo-mode chip in the sidebar header. Compact amber pill
-   next to "Forgather Server" so the user always sees the mode without
-   the loudness of a full-width banner. */
-.sidebar-header-demo-chip {
-  background: #b45309;
-  color: #fff7ed;
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  white-space: nowrap;
-  cursor: help;
-}
-/* Collapsed-sidebar variant: tight vertical strip under the toggle so
-   demo mode is still visible without the full chip. */
-.sidebar-header-demo-chip-collapsed {
-  display: block;
-  margin: 4px 4px 0;
-  padding: 1px 3px;
-  text-align: center;
-  font-size: 9px;
-  letter-spacing: 0.04em;
-}
-.sidebar-header-version {
-  font-size: 11px;
-  color: var(--fg-muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 96px;
-  cursor: default;
-}
-
-/* In demo mode, neuter every destructive button so they can't fire
-   even if a stale render forgets to disable them in JS. Combined with
-   the per-component `disabled` props this is belt-and-suspenders; the
-   backend 403 is the actual security boundary. */
-.app.demo-mode button.destructive,
-.app.demo-mode button.context-menu-destructive,
-.app.demo-mode .demo-disabled {
-  opacity: 0.45;
-  cursor: not-allowed !important;
-  pointer-events: none !important;
 }

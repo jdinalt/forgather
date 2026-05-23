@@ -76,18 +76,13 @@ modified -- only the generation config gets the merged list.
 |--------|-------------|
 | `--generation-config carry` | (Default) Copy source `generation_config.json` if present, else synthesize a minimal `{bos,pad,eos}` config. |
 | `--generation-config none` | Skip writing `generation_config.json` entirely. |
-| `--generation-config PATH` | Load directly from a JSON file in the Forgather inference-preset format (keys: `temperature`, `top_p`, `top_k`, `repetition_penalty`, `num_beams`, ...). |
-| `--generation-config NAME` | Bare name resolved against `~/.config/forgather/generation_config/NAME.json` (or the bundled `generation_config/` directory at the repo root: `balanced`, `beam_search`, `contrastive`, `creative`, `greedy`, `precise`). |
+| `--generation-config PATH` | Load directly from a JSON file in the Forgather inference-preset format (keys: `max_tokens`, `temperature`, `top_p`, `top_k`, `repetition_penalty`, `num_beams`, ...). |
+| `--generation-config NAME` | Bare name resolved against `~/.config/forgather/generation_config/NAME.json`. No presets ship with this branch -- populate that directory yourself, or pass an explicit `PATH`. |
 
-If a preset still includes `max_tokens`, finalize will translate it to
-HuggingFace's `max_new_tokens`. The bundled presets deliberately omit
-`max_tokens` — it's too situation-specific to bake in, and the inference
-server's `_build_generation_config` cascade (request value, then the
-model's `generation_config.max_new_tokens`, then a 2048-token floor) is
-the right place to settle it. The webui's per-request "Max new tokens"
-field on Chat / Completion provides a session-local override. Token IDs
-(`bos`, `pad`, `eos`) are always overlaid from the (possibly-updated)
-tokenizer last.
+Forgather presets use `max_tokens` (matching chat-completion APIs); finalize
+translates this to HuggingFace's `max_new_tokens` and infers `do_sample`
+when not explicit. Token IDs (`bos`, `pad`, `eos`) are always overlaid from
+the (possibly-updated) tokenizer last.
 
 ### Checkpoint contents
 

@@ -14,7 +14,6 @@ import sys
 from dataclasses import dataclass
 from typing import List, Optional
 
-from forgather.cli.eval_args import forward_eval_script_args_from_params
 from forgather.eval_config import iter_eval_configs
 from forgather.user_config import eval_search_paths
 
@@ -69,14 +68,21 @@ def build_eval_command(
     eval_project: str,
     eval_template: str,
     model_path: str,
-    gpu_indices: Optional[List[int]] = None,
-    nproc_override: Optional[str] = None,
-    **passthrough,
+    checkpoint_path: Optional[str] = None,
+    no_checkpoint: bool = False,
+    trainer: str = "ddp",
+    batch_size: Optional[int] = None,
+    max_length: Optional[int] = None,
+    max_steps: int = -1,
+    dtype: str = "bfloat16",
+    attn_implementation: str = "sdpa",
+    compile: bool = False,
+    output_dir: Optional[str] = None,
 ) -> List[str]:
     """Build the subprocess argv for an eval run.
 
-    Mirror of ``forgather.cli.eval.test_cmd``. The caller resolves the eval
-    config's ``project_dir`` / ``template`` first via
+    Mirror of ``forgather.cli.eval.test_cmd`` (lines ~155–201). The caller
+    resolves the eval config's ``project_dir`` / ``template`` first via
     :func:`list_eval_configs` and passes them in, so the server doesn't
     repeat the config walk for every enqueue.
 
@@ -84,40 +90,18 @@ def build_eval_command(
     ``pipeline`` use ``torchrun --standalone --nproc-per-node gpu``. The
     scheduler gates which GPUs are visible via ``CUDA_VISIBLE_DEVICES`` on
     the subprocess env, same as training jobs.
-
-    All other args (``--trainer``, ``--checkpoint``, ``--fused-loss``, etc.)
-    are declared once in ``forgather.cli.eval_args._EVAL_SCRIPT_ARGS`` and
-    forwarded by ``forward_eval_script_args_from_params``. To add a new
-    passthrough flag, append a single entry to that spec — no signature
-    change here.
     """
     forgather_dir = forgather_repo_root()
     eval_script = os.path.join(forgather_dir, "scripts", "eval_script.py")
 
-    trainer = passthrough.get("trainer", "ddp")
     if trainer == "simple":
         cmd: List[str] = [sys.executable, eval_script]
     else:
-        # Explicit caller override (EvalModal nproc field, or another
-        # caller bypassing the default) wins. Otherwise: zero-GPU
-        # dispatch falls back from "gpu" to "1" so torchrun's "gpu"
-        # sentinel doesn't crash with "invalid literal for int() with
-        # base 10: 'gpu'" when CUDA_VISIBLE_DEVICES="" hides all
-        # devices (mirrors src/forgather/cli/eval.py). When
-        # gpu_indices is None the caller didn't tell us, so preserve
-        # the legacy "gpu" default (the scheduler always passes a
-        # list, so this branch is only hit by direct callers).
-        if nproc_override is not None:
-            nproc = nproc_override
-        elif gpu_indices is not None and not gpu_indices:
-            nproc = "1"
-        else:
-            nproc = "gpu"
         cmd = [
             "torchrun",
             "--standalone",
             "--nproc-per-node",
-            nproc,
+            "gpu",
             eval_script,
         ]
 
@@ -129,7 +113,26 @@ def build_eval_command(
             eval_template,
             "--model",
             model_path,
+            "--trainer",
+            trainer,
+            "--dtype",
+            dtype,
+            "--attn-implementation",
+            attn_implementation,
+            "--max-steps",
+            str(max_steps),
         ]
     )
-    cmd.extend(forward_eval_script_args_from_params(passthrough))
+    if batch_size is not None:
+        cmd.extend(["--batch-size", str(batch_size)])
+    if max_length is not None:
+        cmd.extend(["--max-length", str(max_length)])
+    if checkpoint_path:
+        cmd.extend(["--checkpoint", checkpoint_path])
+    if no_checkpoint:
+        cmd.append("--no-checkpoint")
+    if compile:
+        cmd.append("--compile")
+    if output_dir:
+        cmd.extend(["--output-dir", output_dir])
     return cmd

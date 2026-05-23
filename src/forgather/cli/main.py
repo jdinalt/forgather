@@ -84,7 +84,6 @@ def get_subcommand_registry():
     from .dataset_args import create_dataset_parser
     from .dataset_server_args import create_dataset_server_parser
     from .diloco_args import create_diloco_parser
-    from .docs_args import create_docs_parser
     from .eval_args import create_eval_parser
     from .gpu_args import create_gpu_parser
     from .job_args import create_job_parser
@@ -140,7 +139,6 @@ def get_subcommand_registry():
         "gpu": create_gpu_parser,
         "cluster": create_cluster_parser,
         "mkdocs": create_mkdocs_parser,
-        "docs": create_docs_parser,
         "tls": create_tls_parser,
     }
 
@@ -545,12 +543,6 @@ def main():
                 from .mkdocs import mkdocs_cmd
 
                 mkdocs_cmd(args)
-            case "docs":
-                from .docs import docs_cmd
-
-                rc = docs_cmd(args)
-                if rc:
-                    sys.exit(rc)
             case "tls":
                 from .tls import tls_cmd
 

@@ -89,16 +89,12 @@ def causal_mask(
     mask_fn = create_sliding_window_causal_mask if window_size else create_causal_mask
     # Pass embed tensor positionally: kwarg name differs across transformers
     # versions (input_embeds in <=5.1, inputs_embeds in >=5.5 with a deprecation
-    # shim on the old name). cache_position is "deprecated and unused" as of
-    # 5.9 and has been dropped from the signature entirely (the helper derives
-    # it from past_key_values), so we no longer forward it; in 5.9 the 4th
-    # positional slot is past_key_values, and passing cache_position there
-    # collides with the past_key_values= kwarg below ("got multiple values
-    # for argument 'past_key_values'").
+    # shim on the old name). past_key_values is keyword-only in 5.5+.
     attention_mask = mask_fn(
         config,
         input_embeds,
         attention_mask,
+        cache_position,
         past_key_values=past_key_values,
         position_ids=position_ids,
     )

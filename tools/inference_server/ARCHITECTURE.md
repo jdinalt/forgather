@@ -29,11 +29,6 @@ An OpenAI API-compatible inference server for HuggingFace causal language models
 
 - **OpenAI compatibility**: Drop-in replacement for OpenAI API endpoints
 - **Multiple modes**: Chat completion, text completion, streaming/non-streaming
-- **Multi-model hosting**: A registry of `ModelEntry` objects backs a single
-  `InferenceService`; requests dispatch by the OpenAI `model` field, models
-  lazy-load on first use, and one is GPU-resident at a time with CPU↔GPU swap
-  on the per-request `acquire()` path. Single-model setups stay eager-loaded
-  (unchanged behavior).
 - **HuggingFace integration**: Full access to HuggingFace generation parameters
 - **Flexible stopping**: Custom stop sequences, EOS control, max tokens
 - **Performance**: torch.compile support, KV cache options, device placement
@@ -134,39 +129,10 @@ Both streaming and non-streaming follow a **14-step template**:
 
 ### 3. Service Layer Pattern
 
-**InferenceService** (`service.py`) is the **registry + single source of truth**
-for the server. After the multi-model refactor it owns:
-
-- A dict of `ModelEntry` objects keyed by routing name (the OpenAI `model` field).
-  Each entry holds its own model, tokenizer, generation config, chat template,
-  stop tokens, and the three per-model utility objects (`StopSequenceProcessor`,
-  `FinishReasonDetector`, `TokenizerWrapper`).
-- Server-wide defaults: `device`, `from_checkpoint` policy, `ignore_eos`
-  default, `keep_on_gpu` flag, the shared `GenerationLogger`, and the
-  Jinja environment for chat templates.
-- An `asyncio.Lock` (`_swap_lock`) serializing all requests so the
-  CPU↔GPU swap is safe by construction.
-- An `acquire(name)` async context manager that lazy-loads or swaps the
-  named entry into GPU, yields the entry, and holds the lock for the
-  whole request (including streaming SSE — the lock is released when
-  the streamed response generator is closed).
-
-**Property shims**: `service.model`, `service.tokenizer`,
-`service.stop_processor`, `service.finish_detector`,
-`service.tokenizer_wrapper`, `service.default_generation_config`,
-`service.chat_template`, `service.stop_sequences`,
-`service.stop_token_ids`, `service.use_cache`,
-`service.cache_implementation`, and `service.model_path` are all
-`@property` lookups that route to the currently-active entry. Strategy
-code reads them unchanged — the multi-model refactor is invisible
-above the service layer.
-
-**ModelNotFoundError** (also in `service.py`): raised from
-`_resolve_entry` when a multi-model request names an unknown entry.
-The route layer installs a FastAPI exception handler that translates
-this to HTTP 404 — see `routes.py:create_app`. The service module
-deliberately raises a domain exception rather than `HTTPException` so
-unit tests can drive it without FastAPI.
+**InferenceService** (`service.py`) is the **single source of truth** for:
+- Model and tokenizer instances
+- Server-level configuration (device, dtype, stop sequences, **ignore_eos default**)
+- Core utilities (logger, finish_detector, stop_processor, tokenizer_wrapper)
 
 **Important**: Strategies receive a reference to the service and delegate to it for:
 - Tokenization
@@ -174,66 +140,6 @@ unit tests can drive it without FastAPI.
 - Stop sequence processing
 - Finish reason detection
 - Logging
-
-### 4. Multi-Model Registry Pattern
-
-**Why**: One inference server should be able to host several models so a
-multi-model deployment doesn't need one process (and one bound port) per
-model. Memory pressure means we can't keep every model on GPU
-simultaneously; lazy load + per-request swap is the cheapest design that
-makes this work.
-
-**Components**:
-
-- `ModelEntry` (dataclass): per-model state — weights, tokenizer,
-  generation config, chat template, stop tokens, per-model utility
-  objects. Self-contained: `entry.load()` populates everything from disk.
-- `InferenceService.entries`: `Dict[str, ModelEntry]` keyed by the OpenAI
-  routing name. Built once at startup from `-m NAME=PATH` flags (CLI) or
-  the YAML `models:` list.
-- `InferenceService._swap_lock` (`asyncio.Lock`): serializes every
-  request that touches the registry. Held by `acquire()` for the full
-  request lifetime, including streaming responses.
-- `InferenceService.active`: pointer to the entry currently bound to the
-  property shims. `None` before the first `acquire()` in lazy mode.
-
-**Lifecycle states** (`entry.state`):
-- `unloaded`: never loaded since startup
-- `cpu`: weights live in CPU memory, not on GPU
-- `gpu`: weights live on GPU, ready to generate
-
-**Swap protocol** inside `acquire(name)`:
-
-1. Resolve `name` → `entry` (raises `ModelNotFoundError` → 404 if unknown
-   on a multi-model server).
-2. Take `_swap_lock`.
-3. If `entry.state == "unloaded"`:
-   - If not `keep_on_gpu` and `self.active` exists and differs: demote
-     it to CPU.
-   - `entry.load(...)` (disk → device).
-   - `self.active = entry`.
-4. Elif `entry is not self.active`:
-   - If not `keep_on_gpu` and `self.active` exists: demote it to CPU.
-   - `entry.to_device(device)` if not already on it.
-   - `self.active = entry`.
-5. Yield `entry` to the route handler. Lock releases when the `async
-   with` block exits (after the strategy returns or the stream ends).
-
-**Single-model fast path**: with one entry the constructor eagerly
-loads, `self.active` is set before any request arrives, and `acquire()`
-finds the entry on GPU on every call — no swap overhead, behavior
-identical to the pre-refactor server.
-
-**`keep_on_gpu` mode**: every load goes to GPU and nothing is ever
-demoted. Use when total GPU memory > sum(model sizes), or on unified-
-memory hardware (DGX Spark, Grace-Hopper) where `.to("cpu")` triggers
-a tensor copy rather than just retagging the memory region.
-
-**`eager_load` mode**: all entries load at startup rather than lazily.
-Forces broken paths / checkpoints to surface at process start instead
-of waiting for the first request to land on the bad entry. Pairs
-naturally with `keep_on_gpu` for "load everything and don't move
-anything ever."
 
 ---
 
@@ -250,41 +156,25 @@ anything ever."
    ├── ChatCompletionRequest
    └── CompletionRequest
 
-3. Route handler wraps the strategy in service.acquire(request.model):
-   ├── Resolves name → ModelEntry (404 on unknown name)
-   ├── Holds the registry swap_lock for the request's lifetime
-   ├── Lazy-loads or promotes the entry to GPU (demotes the prior
-   │   active to CPU unless keep_on_gpu is set)
-   └── Yields the active entry; property shims now point at it
-
-4. Route handler selects strategy
+3. Route handler selects strategy
    ├── stream=False → ChatGenerationStrategy / CompletionGenerationStrategy
    └── stream=True → StreamingChatStrategy / StreamingCompletionStrategy
 
-5. Strategy.generate(request) executes the 14-step template
+4. Strategy.generate(request) executes 14-step template
    ├── Uses service for tokenization, config building, etc.
    └── Calls model.generate() with GenerationConfig
 
-6. Strategy returns response object; FastAPI serializes JSON.
-   acquire()'s lock releases as the route handler returns.
+5. Strategy returns response object
+   ├── ChatCompletionResponse
+   └── CompletionResponse
+
+6. FastAPI serializes and returns JSON
 ```
 
 ### Streaming Flow Differences
 
 ```
-3. Route handler wraps the streaming generator in a small async
-   wrapper that holds service.acquire() for the whole stream:
-
-   async def _stream_under_lock(...):
-       async with service.acquire(request.model):
-           for chunk in strategy.generate(request):
-               yield chunk
-
-   StreamingResponse iterates the wrapper, so the lock stays held
-   until the stream completes (or the client disconnects and the
-   generator is GC'd). This is what prevents a mid-stream swap.
-
-4. Strategy.generate(request) executes the 14-step template
+4. Strategy.generate(request) executes 14-step template
    ├── Creates TextIteratorStreamer
    ├── Starts generation in background thread
    └── Yields SSE chunks as tokens arrive
@@ -297,89 +187,46 @@ anything ever."
 
 ## Core Components
 
-### ModelEntry (service.py)
-
-A dataclass holding everything that's per-model. Created by the CLI/YAML
-layer (see `server.py` and `config.merge_model_entries`) before the
-service is constructed:
-
-```python
-@dataclass
-class ModelEntry:
-    name: str                  # routing name — the OpenAI ``model`` field
-    model_path: str
-    dtype: torch.dtype
-    attn_implementation: Optional[str]
-    chat_template_path: Optional[str]
-    stop_sequences: List[str]
-    compile_args: Optional[Dict[str, Any]]
-    cache_implementation: Optional[str]
-    use_cache: Optional[bool]
-    # Populated by load():
-    tokenizer, model, default_generation_config, chat_template,
-    stop_token_ids, stop_processor, finish_detector, tokenizer_wrapper
-    state: str  # "unloaded" | "cpu" | "gpu"
-```
-
-`entry.load(device, from_checkpoint, default_chat_template_factory)`
-runs the HF-from-pretrained or native-loader flow, loads the
-generation config, resolves the chat template, builds stop tokens,
-and constructs the three utility objects. `entry.to_device(device)`
-moves an already-loaded entry between CPU and GPU.
-
 ### InferenceService (service.py)
 
 **Responsibilities**:
-- Own the `entries: Dict[str, ModelEntry]` registry and an
-  `active: Optional[ModelEntry]` pointer.
-- Validate startup invariants: at least one entry, no duplicate names,
-  no `-c <path>` with multi-model, no `device="auto"` with multi-model.
-- Serve `acquire(name)` as the single entry point that lazy-loads,
-  swaps, and locks for the duration of a request.
-- Manage server-level defaults (`ignore_eos`, the shared logger, the
-  Jinja env).
-- Build GenerationConfig from request + active entry's defaults.
+- Load model and tokenizer from disk/checkpoint
+- Manage server-level defaults (stop_sequences, ignore_eos, etc.)
+- Build GenerationConfig from request + defaults
+- Provide utilities to strategies
 
 **Key Methods**:
 
 ```python
 def __init__(
-    entries: List[ModelEntry],
-    device: str,
-    from_checkpoint: bool | str = False,
-    ignore_eos: bool = False,
-    keep_on_gpu: bool = False,
-    eager_load: bool = False,
+    model_path, device, dtype, stop_sequences,
+    ignore_eos,  # Server-level default for EOS control
+    compile_args, cache_implementation, use_cache,
+    from_checkpoint, chat_template_path, attn_implementation
 )
-    # Single-model setups load eagerly here (fail-fast at startup).
-    # Multi-model setups stay lazy unless eager_load is True.
-
-@asynccontextmanager
-async def acquire(requested_name: Optional[str]) -> ModelEntry:
-    # Resolves name → ModelEntry, holds _swap_lock for the whole
-    # call site (including streaming SSE), promotes/demotes as needed.
-
-def _resolve_entry(name: Optional[str]) -> ModelEntry:
-    # Empty/None + single-model → the sole entry.
-    # Match by name → that entry.
-    # Otherwise raises ModelNotFoundError (route layer → HTTP 404).
+    # Loads model, tokenizer, sets up utilities
+    # Stores server-level defaults (e.g., self.ignore_eos)
 
 def _build_generation_config(request) -> GenerationConfig:
-    # Merges active entry's defaults + request parameters
+    # Merges model defaults + request parameters
     # Handles ignore_eos logic (see Critical Details)
     # Returns HuggingFace GenerationConfig object
+
+def _setup_stop_tokens():
+    # Builds self.stop_token_ids set
+    # Includes EOS token + custom stop sequences
+
+def apply_chat_template(messages) -> str:
+    # Formats chat messages using Jinja2 template
+    # Falls back to basic format if no template
 ```
 
 **Important Attributes**:
-- `self.entries`: `Dict[str, ModelEntry]` — the registry.
-- `self.active`: currently-targeted entry, or `None` before first
-  `acquire()` (multi-model + lazy load).
-- `self.device`, `self.from_checkpoint`, `self.ignore_eos`,
-  `self.keep_on_gpu`: server-level state.
-- `self.model`, `self.tokenizer`, `self.stop_sequences`, etc.: are
-  `@property` shims returning `self.active.<attr>`. Accessing any of
-  them outside an `acquire()` block raises (the route layer always
-  wraps strategy calls in `acquire()`).
+- `self.model`: HuggingFace model
+- `self.tokenizer`: HuggingFace tokenizer
+- `self.ignore_eos`: Server-level default (from CLI `--ignore-eos`)
+- `self.stop_sequences`: Server-level stop sequences
+- `self.default_generation_config`: Loaded from model's `generation_config.json`
 
 ### FinishReasonDetector (core/finish_detector.py)
 
@@ -402,12 +249,10 @@ def determine_finish_reason_streaming(
 ```
 
 **Logic Flow**:
-1. If `max_tokens is not None and len(tokens) >= max_tokens` → `"length"`
+1. If `len(tokens) >= max_tokens` → `"length"`
 2. If `stopped_by_sequence` → `"stop"`
-3. Else → `"stop"` (covers natural EOS, registered stop tokens, and
-   "stopped for unknown reason." `max_tokens` is `Optional[int]`; when
-   `None` the length-relative branch is skipped — we can't claim
-   "length" for a cap we didn't impose.)
+3. If `not ignore_eos` and last token is EOS → `"stop"`
+4. Else → `"stop"` (fallback)
 
 ### StopSequenceProcessor (core/stop_processor.py)
 
@@ -461,21 +306,7 @@ def log_response(request_id, response_text, tokens_per_sec, peak_memory_mb)
 
 2. **Set core parameters**:
    ```python
-   # max_tokens fallback chain (in order of precedence):
-   #   1. request.max_new_tokens (HF-style) — if set
-   #   2. request.max_tokens (OpenAI-style) — if set
-   #   3. self.default_generation_config.max_new_tokens — model's bake
-   #   4. DEFAULT_MAX_NEW_TOKENS — module constant, defaults to 2048,
-   #      overridable via FORGATHER_DEFAULT_MAX_NEW_TOKENS at startup.
-   # The floor exists because HF's own GenerationConfig fallback is
-   # max_length=20, which clips replies to ~16 tokens.
-   max_new = request.max_new_tokens
-   max_tokens = max_new if max_new is not None else request.max_tokens
-   if max_tokens is not None:
-       generation_config.max_new_tokens = max_tokens
-   elif generation_config.max_new_tokens is None:
-       generation_config.max_new_tokens = DEFAULT_MAX_NEW_TOKENS
-
+   generation_config.max_new_tokens = request.max_tokens or 16
    generation_config.temperature = request.temperature  # if not None
    generation_config.top_p = request.top_p  # if not None
    generation_config.do_sample = (temperature is None or temperature > 0)
@@ -598,11 +429,7 @@ ignore_eos: true
 ```python
 # OpenAI standard
 model: str
-# Optional[int] = None — defers to _build_generation_config's cascade
-# (model's baked-in generation_config, then DEFAULT_MAX_NEW_TOKENS).
-# Previously hard-coded to 16 (completion) / 512 (chat) — both clipped
-# replies in practice. Explicit values still win.
-max_tokens: Optional[int] = None
+max_tokens: int = 512
 temperature: float = None  # None = greedy (do_sample=False)
 top_p: float = None
 stream: bool = False
@@ -1067,18 +894,13 @@ def completion(
 ```python
 # core/finish_detector.py
 def determine_finish_reason(self, generated_token_ids, max_tokens, stopped_by_sequence, ignore_eos, my_new_criterion):
-    # max_tokens is Optional[int] — None means "no cap was set" and
-    # the length-relative branch is skipped.
-    if max_tokens is not None and len(generated_token_ids) >= max_tokens:
+    if len(generated_token_ids) >= max_tokens:
         return "length"
-    if my_new_criterion:  # NEW
+    elif my_new_criterion:  # NEW
         return "my_reason"  # NEW
-    if stopped_by_sequence:
+    elif stopped_by_sequence:
         return "stop"
-    # Default — covers natural EOS, registered stop tokens, and any
-    # "stopped for unknown reason" cases. Always return a string;
-    # never let control fall out of the function.
-    return "stop"
+    # ... rest of logic
 ```
 
 **2. Update strategy base classes**:
@@ -1259,37 +1081,22 @@ forgather inf client --completion "Test" --show-usage
 
 ### Potential Enhancements
 
-1. **Batching**: Support multiple prompts in single request, or continuous
-   batching for concurrent requests to the same model (today's lock
-   serializes them).
-2. **Quantization**: First-class 4-bit / 8-bit quantization
-3. **Advanced stopping**: Custom stopping criteria (e.g., confidence threshold)
-4. **Metrics**: Prometheus metrics endpoint
-5. **Rate limiting**: Per-user rate limits
-6. **Dynamic model management**: Load/unload models via API rather than at
-   startup (today's set is fixed at process start).
-7. **Disk-tier eviction**: CPU memory pressure currently keeps every loaded
-   model resident; a third tier that drops weights and reloads from disk
-   would let a server host more models than CPU memory holds.
+1. **Batching**: Support multiple prompts in single request
+2. **Model caching**: Keep multiple models loaded, switch on demand
+3. **Quantization**: Support 4-bit, 8-bit quantization
+4. **Advanced stopping**: Custom stopping criteria (e.g., confidence threshold)
+5. **Metrics**: Prometheus metrics endpoint
+6. **Authentication**: API key validation
+7. **Rate limiting**: Per-user rate limits
+8. **Model management**: Load/unload models via API
 
 ### Known Limitations
 
-1. **No batching**: Each request runs `model.generate()` end-to-end before
-   the next starts. The registry's `asyncio.Lock` serializes every request,
-   including same-model concurrent calls. Pair with vLLM/TGI/etc. for
-   high-QPS production serving.
-2. **Mid-stream swap is forbidden by design**: the lock is held for the
-   whole streaming response, so a long SSE response on model A blocks
-   requests to model B until the stream completes. Acceptable for
-   single-operator research; would need rework for shared deployments.
-3. **No disk-tier eviction**: every loaded model occupies CPU memory
-   (or GPU with `--keep-on-gpu`). The registry doesn't drop weights.
-4. **`torch.compile` × swap untested**: Compiled artifacts may not survive
-   `.to("cpu")` / `.to("cuda")` round-trips. The server logs a warning
-   when both `--compile` and multi-model are set; benchmark before
-   relying on it in multi-model mode.
-5. **Streaming**: Can't cancel streaming requests cleanly.
-6. **Chat history**: No conversation state management (stateless).
+1. **Single model**: Server can only load one model at a time
+2. **No batching**: Each request processed independently
+3. **Memory**: No automatic model unloading
+4. **Streaming**: Can't cancel streaming requests cleanly
+5. **Chat history**: No conversation state management (stateless)
 
 ---
 

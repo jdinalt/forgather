@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, CheckpointEntry, ConfigInfo, EvalEntry, ProjectInfo } from "./api";
 import { getAutoWatchTty } from "./autoWatch";
-import { useDemoMode, useServerVersion } from "./demoMode";
 import { ContextMenu } from "./components/ContextMenu";
 import { ProjectTree } from "./components/ProjectTree";
 import { ConfigViewer } from "./components/ConfigViewer";
@@ -208,8 +207,6 @@ export type Selection =
     };
 
 export default function App() {
-  const demoMode = useDemoMode();
-  const serverVersion = useServerVersion();
   const [view, setView] = useState<View>("docs");
   const [selected, setSelected] = useState<Selection>(null);
   // Tab state lives here so opening a project can both pick its default
@@ -319,25 +316,6 @@ export default function App() {
   // Stable identity so the Explore tab's preselect-consume effect
   // doesn't see a new callback on every App render.
   const clearPendingExplore = useCallback(() => setPendingExplore(null), []);
-
-  // Cross-section: "Analyze…" item on a Datasets cell context menu
-  // sends the cell's full text to the Inference > Analyze tab and
-  // kicks off scoring. ``key`` is a render-stable nonce that lets the
-  // analyze panel's effect distinguish a fresh request from a stale
-  // re-render — without it, switching tabs and back would re-trigger.
-  const [pendingAnalyze, setPendingAnalyze] = useState<
-    { text: string; key: number } | null
-  >(null);
-  const analyzeText = useCallback((text: string) => {
-    setPendingAnalyze({ text, key: Date.now() });
-    setView("inference");
-  }, []);
-  // Stable identity so the analyze panel's consume-effect doesn't see
-  // a new callback on every App render. Mirrors clearPendingExplore.
-  const clearPendingAnalyze = useCallback(
-    () => setPendingAnalyze(null),
-    [],
-  );
 
   // Wired into every submit modal's onSubmitted prop. Reads the sticky
   // localStorage preference at submit time so a stale toggle from an earlier
@@ -878,13 +856,7 @@ export default function App() {
   ];
 
   return (
-    <div
-      className={
-        "app" +
-        (sidebarCollapsed ? " sidebar-collapsed" : "") +
-        (demoMode ? " demo-mode" : "")
-      }
-    >
+    <div className={"app" + (sidebarCollapsed ? " sidebar-collapsed" : "")}>
       {/*
         Both the collapsed strip and the expanded layout stay mounted so
         ProjectTree's local expansion state (which workspaces / projects /
@@ -902,16 +874,6 @@ export default function App() {
           >
             <SidebarIcon />
           </button>
-          {demoMode && (
-            <span
-              className="sidebar-header-demo-chip sidebar-header-demo-chip-collapsed"
-              role="status"
-              aria-label="Read-only demo mode"
-              title="Read-only demo mode — mutating actions are blocked. Expand the sidebar for details."
-            >
-              DEMO
-            </span>
-          )}
           <nav className="sidebar-views icon-only">
             {visibleViews.map((v) => (
               <button
@@ -946,32 +908,6 @@ export default function App() {
             title="Right-click for help"
           >
             <h1>Forgather Server</h1>
-            {serverVersion && (
-              <span
-                className="sidebar-header-version"
-                title={`Forgather ${serverVersion}`}
-              >
-                v{serverVersion}
-              </span>
-            )}
-            {demoMode && (
-              <span
-                className="sidebar-header-demo-chip"
-                role="status"
-                aria-label={
-                  "Read-only demo mode is active. Mutating actions " +
-                  "(file edits, job submission, server admin) are " +
-                  "blocked; read-only browsing still works."
-                }
-                title={
-                  "This server is running with --demo: mutating actions " +
-                  "(file edits, job submission, server admin, etc.) are " +
-                  "blocked. Read-only browsing still works."
-                }
-              >
-                DEMO MODE
-              </span>
-            )}
             <div className="sidebar-header-actions">
               <button
                 className="sidebar-toggle"
@@ -1245,13 +1181,11 @@ export default function App() {
                 (schedEnabled ? "running" : "paused")
               }
               onClick={() => toggleSched.mutate(!schedEnabled)}
-              disabled={demoMode || toggleSched.isPending || schedQ.isLoading}
+              disabled={toggleSched.isPending || schedQ.isLoading}
               title={
-                demoMode
-                  ? "Read-only demo mode — scheduler controls are disabled"
-                  : schedEnabled
-                    ? "Scheduler running — click to pause"
-                    : "Scheduler paused — click to run"
+                schedEnabled
+                  ? "Scheduler running — click to pause"
+                  : "Scheduler paused — click to run"
               }
               aria-label={schedEnabled ? "Pause scheduler" : "Run scheduler"}
             >
@@ -1260,13 +1194,11 @@ export default function App() {
             <button
               className="sidebar-footer-gear"
               onClick={restartServer}
-              disabled={demoMode || restarting || shuttingDown}
+              disabled={restarting || shuttingDown}
               title={
-                demoMode
-                  ? "Read-only demo mode — server restart is disabled"
-                  : restarting
-                    ? "Waiting for the server to come back up…"
-                    : "Restart the forgather server (running jobs survive)"
+                restarting
+                  ? "Waiting for the server to come back up…"
+                  : "Restart the forgather server (running jobs survive)"
               }
               aria-label="Restart server"
             >
@@ -1275,33 +1207,29 @@ export default function App() {
             <button
               className="sidebar-footer-gear"
               onClick={() => setShutdownOpen(true)}
-              disabled={demoMode || shuttingDown || restarting}
+              disabled={shuttingDown || restarting}
               title={
-                demoMode
-                  ? "Read-only demo mode — server shutdown is disabled"
-                  : shuttingDown
-                    ? "Shutdown in progress…"
-                    : "Shutdown the forgather server"
+                shuttingDown
+                  ? "Shutdown in progress…"
+                  : "Shutdown the forgather server"
               }
               aria-label="Shutdown server"
             >
               <PowerIcon />
             </button>
-            {!demoMode && (
-              <button
-                className="sidebar-footer-gear"
-                onClick={openServerConfig}
-                disabled={!serverConfigQ.data?.path}
-                title={
-                  serverConfigQ.data?.path
-                    ? `Open server config: ${serverConfigQ.data.path}`
-                    : "Server config path unavailable"
-                }
-                aria-label="Open server config"
-              >
-                <GearIcon />
-              </button>
-            )}
+            <button
+              className="sidebar-footer-gear"
+              onClick={openServerConfig}
+              disabled={!serverConfigQ.data?.path}
+              title={
+                serverConfigQ.data?.path
+                  ? `Open server config: ${serverConfigQ.data.path}`
+                  : "Server config path unavailable"
+              }
+              aria-label="Open server config"
+            >
+              <GearIcon />
+            </button>
           </div>
         </div>
       </aside>
@@ -1416,10 +1344,7 @@ export default function App() {
           className="view-panel"
           style={view === "inference" ? undefined : { display: "none" }}
         >
-          <InferencePanel
-            pendingAnalyze={pendingAnalyze}
-            onAnalyzeConsumed={clearPendingAnalyze}
-          />
+          <InferencePanel />
         </div>
         <div
           className="view-panel"
@@ -1429,7 +1354,6 @@ export default function App() {
             pendingExplore={pendingExplore}
             onPreselectConsumed={clearPendingExplore}
             onOpenInExplore={openInExplore}
-            onAnalyzeText={analyzeText}
           />
         </div>
       </div>

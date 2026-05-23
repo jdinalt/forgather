@@ -7,12 +7,6 @@
 #   ./build-webui.sh --install   # force `npm install` even if node_modules exists
 #   ./build-webui.sh --watch     # run `vite` dev server (live reload, no static dist)
 #
-# Environment:
-#   SKIP_DOCS_BUILD=1   skip the `forgather docs build` step that pre-renders
-#                       :::-style API docs into docs/.built/ (the webui falls
-#                       back to raw markdown when this directory is missing,
-#                       so it's safe to skip)
-#
 # --clean is "clean only" so it's a one-shot reset (e.g. before
 # testing the Docker build's webui post-step from a known-empty
 # state). To clean and then rebuild, run --clean and then re-run the
@@ -214,20 +208,6 @@ if $need_install; then
     npm install
 else
     echo "[build-webui] node_modules up-to-date — skipping npm install (use --install to force)"
-fi
-
-# Pre-render the docs cache the webui's Docs panel reads from. The
-# docs viewer falls back to the raw source when the cache is absent or
-# stale, so this step is opt-out (SKIP_DOCS_BUILD=1) and best-effort:
-# a failure here logs a warning and doesn't abort the webui build,
-# since the missing cache is recoverable at runtime.
-if [[ -z "${SKIP_DOCS_BUILD:-}" ]] && command -v forgather >/dev/null 2>&1; then
-    echo "[build-webui] forgather docs build (set SKIP_DOCS_BUILD=1 to skip)"
-    if ! ( cd "$SCRIPT_DIR" && forgather docs build --quiet ); then
-        echo "[build-webui] WARNING: docs build failed — webui will fall back to raw markdown" >&2
-    fi
-elif [[ -z "${SKIP_DOCS_BUILD:-}" ]]; then
-    echo "[build-webui] forgather not on PATH — skipping docs build (webui will fall back to raw markdown)"
 fi
 
 if $watch; then

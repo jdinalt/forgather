@@ -6,7 +6,8 @@ The dataset stores each example as a ShareGPT-style `conversations` list of `{fr
 
 ## Configurations
 
-- **`openthoughts.yaml`** -- Renders conversations through the chat template and applies best-fit sequence packing: multiple conversations are concatenated into fixed-length training samples for higher GPU utilisation. Use `--chat-template` to override the default ChatML template, and `--max-length` / `--stride` to control the packing window.
+- **`openthoughts.yaml`** -- One conversation per example. Renders through the chat template and tokenizes to `input_ids`. Use `--chat-template` to override the default ChatML template.
+- **`openthoughts-packed.yaml`** -- Best-fit sequence packing on top of the rendered conversations. Multiple conversations are concatenated into fixed-length training samples for higher GPU utilisation. Use `--max-length` and `--stride` to control the packing window.
 
 ## Splits
 

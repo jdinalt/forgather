@@ -222,8 +222,7 @@ host-clone dependency, builds the SPA inside the image. The
 ```bash
 git clone https://github.com/jdinalt/forgather.git
 cd forgather
-docker/build               # CUDA build (default; ~3 GB)
-docker/build --cpu         # CPU-only build for GPU-less hosts
+docker/build
 ```
 
 `docker/build` builds a **per-user** dev image: it reads your
@@ -237,52 +236,24 @@ multiple operators on a shared host get separate images. (For the
 build-once-deploy-everywhere, user-agnostic story, see the
 [runtime image](docker.md#runtime-image-specifics).)
 
-**CPU-only builds.** Pass `--cpu` to build with the CPU-only PyTorch
-wheel from `download.pytorch.org/whl/cpu`. The resulting image is
-much smaller (no `nvidia-*` runtime libs) and is appropriate for:
-
-- CI / docs builds where no GPU is available.
-- Laptops, Chromebooks, or other hosts with no NVIDIA driver, where
-  you just want to exercise the CLI / configuration / Forgather
-  server without actually training.
-- Sanity-checking that a project's preprocessing and configuration
-  work end-to-end before moving it to a GPU host.
-
-CPU-only training does technically work for tiny models but is
-orders of magnitude slower than CUDA — budget accordingly (the
-Tiny Llama tutorial takes most of a day on a Chromebook vs.
-~2 minutes on an RTX 4090).
-
-The first build pulls ~3 GB of dependencies (or ~1.5 GB for `--cpu`)
-and takes a few minutes; rebuilds reuse the layer cache. After the
-docker build, `build.sh` runs `./build-webui.sh` in a transient
-container against the host clone so the Forgather server's SPA
-dist/ is ready before `docker/run` is invoked. Skip the post-step
-with `SKIP_WEBUI_BUILD=1 docker/build` (e.g. you'll iterate on the
+The first build pulls ~3 GB of dependencies and takes a few minutes;
+rebuilds reuse the layer cache. After the docker build, `build.sh`
+runs `./build-webui.sh` in a transient container against the host
+clone so the Forgather server's SPA dist/ is ready before
+`docker/run` is invoked. Skip the post-step with
+`SKIP_WEBUI_BUILD=1 docker/build` (e.g. you'll iterate on the
 SPA via `npm run dev`).
 
 ### Run it
 
 ```bash
-docker/run                  # default: --gpus all
-GPUS=none docker/run        # hosts with no NVIDIA driver (must use this)
+docker/run
 ```
-
-> **Heads-up: no NVIDIA driver on the host?** `docker/run` defaults to
-> `--gpus all`, which fails on a GPU-less host with `failed to
-> discover GPU vendor from CDI: no known GPU vendor found`. Use
-> `GPUS=none docker/run` instead — and pair it with `docker/build
-> --cpu` so the image isn't dragging in the CUDA-flavoured PyTorch
-> wheel you can't use anyway. If you accidentally created the
-> container with the default GPU config first, run `docker/run --rm`
-> to clear it before retrying with `GPUS=none` (current `docker/run`
-> versions auto-clean partial creates on failure; older ones
-> don't).
 
 This drops you into an interactive bash shell with:
 
 - The Forgather venv (at `/opt/forgather/venv`) on `PATH`.
-- `--gpus all` by default (override with `GPUS=none` for CPU only or
+- `--gpus all` (override with `GPUS=none` for CPU only or
   `GPUS='"device=0,1"'` for a subset).
 - Your host home directory bind-mounted at the same path inside the
   container, so absolute paths in shell history, configs, and

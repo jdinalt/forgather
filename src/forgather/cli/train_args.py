@@ -21,20 +21,6 @@ def create_train_parser(global_args):
         help='CUDA Visible Devices e.g. "0,1"',
     )
     parser.add_argument(
-        "-n",
-        "--nproc",
-        type=str,
-        default=None,
-        metavar="N",
-        help=(
-            "Override --nproc-per-node passed to torchrun (default: from"
-            " config's nproc_per_node, typically 'gpu'). Use this on"
-            " CPU-only hosts (e.g. '--nproc 1') or to limit the rank count."
-            " Accepts the same values as torchrun: an integer, 'gpu', or"
-            " 'auto'."
-        ),
-    )
-    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Just show the generated commandline, without actually executing it.",

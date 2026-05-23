@@ -258,78 +258,6 @@ def retie_parameters(module, sharing_metadata: List[List[str]]) -> None:
         setattr(sub_module, fqn_atoms[-1], canonical_tensor)
 
 
-def _tied_aliases_in_module(
-    module: nn.Module, checkpoint_keys: Set[str]
-) -> Set[str]:
-    """Return module FQNs whose absence from the checkpoint is explained by weight tying.
-
-    Safetensors cannot represent shared storage, so HF's save deduplicates
-    each tied group down to a single canonical key (e.g. only
-    ``model.embed_tokens.weight`` lands on disk; the tied ``lm_head.weight``
-    is omitted). At load time the in-memory module's ``state_dict`` still
-    lists both names — they alias the same storage — so a strict missing-key
-    check would falsely reject these checkpoints. The returned aliases are
-    safe to ignore for missing-key purposes: ``load_state_dict``'s in-place
-    ``copy_`` of the canonical key updates the shared storage in one shot,
-    and the caller's ``tie_weights()`` step restores sharing if anything
-    (e.g. ``assign=True``) broke it.
-
-    Pipeline-parallel caveat: ``create_sharing_metadata`` groups by
-    ``id()`` within the passed ``module`` only. When the caller iterates
-    pipeline stage sub-modules separately (as ``checkpoint_manager`` does),
-    a tied group whose two sides live on different stages is invisible to
-    each per-stage call — the missing side would still be reported as a
-    genuine missing key. This isn't reachable from current workflows
-    (Forgather-native pipeline saves preserve both names in the
-    checkpoint), but if an HF-deduped checkpoint is ever loaded into a
-    pipeline-split model, consult ``shard_index["metadata"]["param_sharing"]``
-    (already populated by ``make_shard_index``) for the global view.
-    """
-    sharing_metadata = create_sharing_metadata(module)
-    aliases: Set[str] = set()
-    for group in sharing_metadata:
-        if any(k in checkpoint_keys for k in group):
-            aliases.update(k for k in group if k not in checkpoint_keys)
-    return aliases
-
-
-def _synthesize_tied_aliases(
-    module: nn.Module,
-    state_dict: Dict[str, Tensor],
-    sharing_metadata: Optional[List[List[str]]] = None,
-) -> None:
-    """In-place: add missing tied aliases to ``state_dict`` pointing at the canonical tensor.
-
-    Mirrors HF safetensors load semantics: when a tied group has one
-    canonical member present in the checkpoint and other members missing,
-    aliasing the missing names to the same tensor lets a downstream
-    ``module.load_state_dict(strict=True)`` succeed.
-
-    With ``assign=True`` the resulting Parameters wrap the same underlying
-    storage (data_ptr matches) but are no longer ``is``-identical; callers
-    that care about identity (e.g. before re-saving) must invoke
-    ``module.tie_weights()`` afterward. The built-in trainer's
-    ``_load_model_from_checkpoint`` does this; non-trainer callers that
-    use ``assign=True`` (``model_conversion/finalize.py``,
-    ``tools/update_model/update.py``) should also call it before saving.
-
-    ``sharing_metadata`` may be passed in to avoid re-walking the module
-    when the caller has already computed it.
-    """
-    if sharing_metadata is None:
-        sharing_metadata = create_sharing_metadata(module)
-    if not sharing_metadata:
-        return
-    for group in sharing_metadata:
-        present = [k for k in group if k in state_dict]
-        if not present:
-            continue
-        tensor = state_dict[present[0]]
-        for k in group:
-            if k not in state_dict:
-                state_dict[k] = tensor
-
-
 def index_file_name(safetensors: bool) -> str:
     """
     Get the canonical name for the weight index file, which depends on if
@@ -743,12 +671,6 @@ def load_checkpoint(
         if str(target) != str(device):
             state_dict = {k: v.to(target) for k, v in state_dict.items()}
 
-    # HF safetensors deduplicates tied weights on save: only one canonical
-    # name per tied group lands in the file. Without this synthesis,
-    # strict-mode load_state_dict would reject the checkpoint for missing
-    # aliases like lm_head.weight on tied-embedding models (e.g. Gemma3).
-    _synthesize_tied_aliases(module, state_dict)
-
     # TODO: Properly handle strict, in this case?
     # We wish to ensure that all model weights were loaded, but ignore any other weights, like we do in load_sharded_checkpoint()
     module.load_state_dict(state_dict, strict=strict, assign=assign)
@@ -934,14 +856,7 @@ def load_sharded_checkpoint(
         # Module mode: load into module (existing behavior)
         intersection = _intersect_weight_map(weight_map, module.state_dict())
 
-        # HF safetensors deduplicates tied weights on save (e.g. only
-        # model.embed_tokens.weight is stored; lm_head.weight is omitted).
-        # Treat the missing aliases as already-covered: the in-place copy_
-        # of the canonical tensor updates the shared storage they reference,
-        # and the caller's tie_weights() step restores sharing afterward.
-        tied_aliases = _tied_aliases_in_module(module, set(weight_map.keys()))
-
-        all_module_keys = set(module.state_dict().keys()) - tied_aliases
+        all_module_keys = set(module.state_dict().keys())
         missing_keys = all_module_keys - intersection
         if strict and len(missing_keys):
             raise Exception(
