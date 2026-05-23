@@ -34,6 +34,10 @@ export interface MetaField {
   placeholder: string;
   default: string | null;
   required: boolean;
+  /** Optional specialised picker kind. When non-empty the field input
+   *  gets a "Browse…" button that opens the matching popover (currently
+   *  the only supported kind is ``"local_dataset"``). */
+  picker: string;
 }
 
 export interface MetaTemplate {

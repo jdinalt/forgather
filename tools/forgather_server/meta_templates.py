@@ -45,7 +45,13 @@ META_ROOT = os.path.join(_REPO_ROOT, "templatelib", "meta")
 
 @dataclass
 class MetaField:
-    """One form field declared by a meta-template's manifest."""
+    """One form field declared by a meta-template's manifest.
+
+    ``picker`` names a specialised input picker the webui should render
+    alongside the text input — currently the only kind is
+    ``"local_dataset"`` (a popover listing the cluster's ``local/<name>``
+    dataset inventory). Empty string ⇒ plain text input.
+    """
 
     name: str
     label: str = ""
@@ -53,6 +59,7 @@ class MetaField:
     placeholder: str = ""
     default: Optional[str] = None
     required: bool = False
+    picker: str = ""
 
     def __post_init__(self) -> None:
         if not self.label:

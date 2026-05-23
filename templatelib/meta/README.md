@@ -83,7 +83,31 @@ fields:
   - name: VALIDATION_SPLIT
     default: "validation[:1000]"   # Pre-filled in the form; used when
                                    # the user submits the value empty.
+  - name: DATASET_ID
+    picker: "local_dataset"        # See "Field pickers" below.
+    required: true
 ```
+
+### Field pickers
+
+A field can declare `picker: "<kind>"` to opt in to a specialised input
+widget — a "Browse…" button appears next to the text input and opens a
+popover that helps the user choose a value without leaving the
+dialog. The picker writes its result back into the same text field, so
+the user can still edit by hand afterward.
+
+Available kinds:
+
+- `local_dataset` — lists the cluster's `local/<name>` dataset
+  inventory (the same data the **Datasets → Servers** view shows) with
+  type-to-filter, row counts, and column names. Dropping a row into the
+  field inserts the `local/<name>` form directly, ready for
+  `load_dataset` to pick up.
+
+Picker support is opt-in per field: omit `picker:` for any field that
+should stay a plain text input. Unknown picker kinds are ignored (the
+field renders as a plain input) — so adding `picker:` to a manifest
+won't break older webui builds that don't recognise it yet.
 
 **Resolution order** for each field when the new file is rendered:
 

@@ -230,6 +230,7 @@ class MetaFieldModel(BaseModel):
     placeholder: str = ""
     default: Optional[str] = None
     required: bool = False
+    picker: str = ""
 
 
 class MetaTemplateModel(BaseModel):
@@ -658,6 +659,7 @@ def _meta_template_to_model(mt: meta_templates.MetaTemplate) -> MetaTemplateMode
                 placeholder=fd.placeholder,
                 default=fd.default,
                 required=fd.required,
+                picker=fd.picker,
             )
             for fd in mt.fields
         ],

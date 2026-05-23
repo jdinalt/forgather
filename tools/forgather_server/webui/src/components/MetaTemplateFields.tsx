@@ -1,6 +1,7 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { MetaTemplate } from "../api";
+import { LocalDatasetPickerPopover } from "./LocalDatasetPickerPopover";
 
 interface Props {
   scaffold: MetaTemplate;
@@ -53,15 +54,10 @@ export function MetaTemplateFields({
             {f.label || f.name}
             {f.required && <span className="meta-picker-req"> *</span>}
           </label>
-          <input
-            id={`meta-field-${f.name}`}
-            type="text"
+          <FieldInput
+            field={f}
             value={values[f.name] ?? ""}
-            onChange={(e) =>
-              onChange({ ...values, [f.name]: e.target.value })
-            }
-            placeholder={f.placeholder}
-            spellCheck={false}
+            onChange={(v) => onChange({ ...values, [f.name]: v })}
             disabled={disabled}
           />
           {f.description && (
@@ -70,6 +66,73 @@ export function MetaTemplateFields({
         </div>
       ))}
     </div>
+  );
+}
+
+/** Picker registry. Each entry returns a JSX node that opens the
+ *  appropriate popover. Add a new kind by adding an entry here. */
+const PICKER_KINDS = ["local_dataset"] as const;
+
+function isKnownPicker(kind: string): kind is (typeof PICKER_KINDS)[number] {
+  return (PICKER_KINDS as readonly string[]).includes(kind);
+}
+
+/** Render the input for one scaffold field. When ``field.picker`` is
+ *  a known kind, a "Browse…" button appears next to the input and
+ *  opens the matching popover; the picker's chosen value is written
+ *  back via ``onChange``. */
+function FieldInput({
+  field,
+  value,
+  onChange,
+  disabled,
+}: {
+  field: import("../api").MetaField;
+  value: string;
+  onChange: (v: string) => void;
+  disabled?: boolean;
+}) {
+  const [openKind, setOpenKind] = useState<string | null>(null);
+  const hasPicker = field.picker && isKnownPicker(field.picker);
+
+  const input = (
+    <input
+      id={`meta-field-${field.name}`}
+      type="text"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={field.placeholder}
+      spellCheck={false}
+      disabled={disabled}
+    />
+  );
+
+  return (
+    <>
+      {hasPicker ? (
+        <div className="meta-field-with-picker">
+          {input}
+          <button
+            type="button"
+            className="secondary"
+            disabled={disabled}
+            onClick={() => setOpenKind(field.picker)}
+            title={`Browse available ${field.picker.replace(/_/g, " ")}s`}
+          >
+            Browse…
+          </button>
+        </div>
+      ) : (
+        input
+      )}
+
+      {openKind === "local_dataset" && (
+        <LocalDatasetPickerPopover
+          onPick={onChange}
+          onClose={() => setOpenKind(null)}
+        />
+      )}
+    </>
   );
 }
 

@@ -2674,6 +2674,70 @@ li.config.selected button.link:hover {
   margin-bottom: 6px;
 }
 
+/* Meta-template field with a "Browse…" picker button next to the input. */
+.meta-field-with-picker {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.meta-field-with-picker > input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* LocalDatasetPickerPopover */
+.local-dataset-picker {
+  width: min(560px, 92vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+.local-dataset-picker .modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.local-dataset-picker-filter {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  width: 100%;
+}
+.local-dataset-picker-list {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg);
+  min-height: 200px;
+  max-height: 50vh;
+}
+.local-dataset-picker-row {
+  padding: 6px 10px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.local-dataset-picker-row:last-child {
+  border-bottom: none;
+}
+.local-dataset-picker-row:hover {
+  background: var(--bg-elev, rgba(0, 0, 0, 0.04));
+}
+.local-dataset-picker-row.active {
+  background: var(--accent-soft, rgba(0, 100, 200, 0.12));
+}
+.local-dataset-picker-id {
+  font-weight: 600;
+}
+.local-dataset-picker-meta {
+  font-size: 11px;
+}
+.local-dataset-picker-hint {
+  font-size: 11px;
+  flex: 1;
+}
+
 /* ---------- Sidebar Files tree ---------- */
 .sidebar-projects-details,
 .sidebar-files-details {

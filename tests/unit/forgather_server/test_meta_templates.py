@@ -242,6 +242,34 @@ def test_render_unknown_meta_id_raises(tree: Path) -> None:
         mt.render("does/not/exist", {}, meta_root=str(tree))
 
 
+def test_field_picker_roundtrips(tmp_path: Path) -> None:
+    # ``picker:`` is opt-in metadata that drives the webui's picker
+    # selection. Discovery should pass it through verbatim; missing
+    # ``picker:`` should default to the empty string so unknown picker
+    # kinds (or no picker at all) render as plain inputs.
+    _write(
+        tmp_path / "meta" / "datasets" / "tpl.yaml",
+        "id: $ID\nname: $NAME\n",
+    )
+    _write(
+        tmp_path / "meta" / "datasets" / "tpl.meta.yaml",
+        """
+        title: "T"
+        fields:
+          - name: ID
+            picker: "local_dataset"
+            required: true
+          - name: NAME
+            required: true
+        """,
+    )
+    [datasets] = mt.discover(str(tmp_path / "meta"))
+    [tpl] = datasets.templates
+    fields_by_name = {f.name: f for f in tpl.fields}
+    assert fields_by_name["ID"].picker == "local_dataset"
+    assert fields_by_name["NAME"].picker == ""
+
+
 def test_render_undeclared_marker_in_body_raises(tmp_path: Path) -> None:
     # If the meta-template body references $UNDECLARED but the manifest
     # doesn't declare it, that's a bug in the meta-template — render
