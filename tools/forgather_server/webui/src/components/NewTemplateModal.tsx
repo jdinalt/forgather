@@ -333,10 +333,10 @@ function MetaCategoryNode({
     <details className="meta-picker-cat" open={defaultOpen}>
       <summary>
         <span className="meta-picker-cat-title">{category.title}</span>
-        {category.description && (
+        {(category.summary || category.description) && (
           <span className="muted meta-picker-cat-desc">
             {" — "}
-            {category.description}
+            {category.summary || category.description}
           </span>
         )}
       </summary>
@@ -353,9 +353,9 @@ function MetaCategoryNode({
             />
             <div>
               <div className="meta-picker-leaf-title">{t.title}</div>
-              {t.description && (
+              {(t.summary || t.description) && (
                 <div className="muted meta-picker-leaf-desc">
-                  {t.description}
+                  {t.summary || t.description}
                 </div>
               )}
             </div>

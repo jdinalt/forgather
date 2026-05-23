@@ -61,10 +61,18 @@ class MetaField:
 
 @dataclass
 class MetaTemplate:
-    """A single scaffold: body + declared fields + display metadata."""
+    """A single scaffold: body + declared fields + display metadata.
+
+    ``summary`` is the short blurb shown next to the leaf in the picker
+    tree (one line, kept terse). ``description`` is the full text shown
+    in the detail panel when the leaf is selected. When ``summary`` is
+    blank the picker falls back to ``description`` so older manifests
+    that only set one field still render usefully.
+    """
 
     id: str
     title: str
+    summary: str
     description: str
     target_kind: str  # "config" | "template"
     fields: List[MetaField] = field(default_factory=list)
@@ -77,11 +85,14 @@ class MetaCategory:
 
     A category may directly contain templates *and* further sub-categories;
     the webui renders both — common cases at the top, exotic ones nested
-    below.
+    below. ``summary`` / ``description`` follow the same convention as
+    ``MetaTemplate``: summary for the tree row, description for any
+    detail / tooltip surface.
     """
 
     name: str  # last path segment, e.g. "huggingface"
     title: str  # display label, falls back to title-cased name
+    summary: str = ""
     description: str = ""
     templates: List[MetaTemplate] = field(default_factory=list)
     children: List["MetaCategory"] = field(default_factory=list)
@@ -116,18 +127,22 @@ def _scan_dir(abs_dir: str, rel_prefix: str) -> MetaCategory:
     title = _title_case(name) if name else ""
     description = ""
 
+    summary = ""
     cat_file = os.path.join(abs_dir, "_category.yaml")
     if os.path.isfile(cat_file):
         try:
             meta = _load_yaml(cat_file)
             title = str(meta.get("title", title))
+            summary = str(meta.get("summary", ""))
             description = str(meta.get("description", ""))
         except Exception:
             # Malformed _category.yaml shouldn't break discovery — fall back
             # to the title-cased directory name.
             pass
 
-    category = MetaCategory(name=name, title=title, description=description)
+    category = MetaCategory(
+        name=name, title=title, summary=summary, description=description
+    )
 
     try:
         entries = sorted(os.listdir(abs_dir))
@@ -159,6 +174,7 @@ def _scan_dir(abs_dir: str, rel_prefix: str) -> MetaCategory:
                 MetaTemplate(
                     id=mid,
                     title=str(manifest.get("title", stem)),
+                    summary=str(manifest.get("summary", "")),
                     description=str(manifest.get("description", "")),
                     target_kind=str(manifest.get("target_kind", "config")),
                     fields=[MetaField(**fd) for fd in manifest.get("fields", [])],

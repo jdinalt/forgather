@@ -47,8 +47,18 @@ title-cased directory name (`huggingface` → "Huggingface").
 ```yaml
 # _category.yaml
 title: "Hugging Face Hub"
-description: "Datasets loaded via the `datasets` library."
+summary: "Datasets loaded via the `datasets` library."
+description: |
+  Optional long form, shown wherever the picker has room — tooltips,
+  detail panels. Falls back to `summary` when omitted, so most
+  categories can just set `summary:`.
 ```
+
+`summary` is the short one-liner that appears next to the row in the
+tree. `description` is the long form for any detail surface. If only
+one is provided, the picker uses it for both — newer manifests should
+set `summary` (it's what users see most), and add `description` only
+when there's actually more to say.
 
 Templates and sub-categories can coexist at the same level — common
 cases at the top, exotic ones nested below.
@@ -57,9 +67,11 @@ cases at the top, exotic ones nested below.
 
 ```yaml
 title: "HuggingFace dataset (with config name)"
+summary: "One-liner shown in the picker tree next to this row."
 description: |
-  Multi-line description, shown when the user selects this scaffold.
-  Markdown is fine; the picker renders it as plain text.
+  Long form shown in the detail panel when the user selects this
+  scaffold. Multi-line is fine; the picker renders it as plain text.
+  Falls back to `summary` when omitted.
 target_kind: "config"      # "config" → writes under configs_dir
                            # "template" → writes under templates_dir
 fields:

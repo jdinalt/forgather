@@ -39,6 +39,10 @@ export interface MetaField {
 export interface MetaTemplate {
   id: string;
   title: string;
+  /** Short one-liner shown in the picker tree; falls back to `description`
+   *  when blank, so older manifests that only set one field still render. */
+  summary: string;
+  /** Full text shown in the detail panel when the leaf is selected. */
   description: string;
   target_kind: "config" | "template";
   fields: MetaField[];
@@ -47,6 +51,7 @@ export interface MetaTemplate {
 export interface MetaCategory {
   name: string;
   title: string;
+  summary: string;
   description: string;
   templates: MetaTemplate[];
   children: MetaCategory[];

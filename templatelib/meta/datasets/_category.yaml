@@ -1,2 +1,6 @@
 title: "Datasets"
-description: "Configs for loading and preparing training data."
+summary: "Configs for loading and preparing training data."
+description: |
+  Scaffolds that produce a dataset config — the kind of file that goes
+  under a dataset project's `configs/` directory and is referenced by
+  training projects as a data source.

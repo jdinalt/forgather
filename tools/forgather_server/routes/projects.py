@@ -235,6 +235,7 @@ class MetaFieldModel(BaseModel):
 class MetaTemplateModel(BaseModel):
     id: str
     title: str
+    summary: str = ""
     description: str = ""
     target_kind: str = "config"
     fields: List[MetaFieldModel] = []
@@ -243,6 +244,7 @@ class MetaTemplateModel(BaseModel):
 class MetaCategoryModel(BaseModel):
     name: str
     title: str
+    summary: str = ""
     description: str = ""
     templates: List[MetaTemplateModel] = []
     children: List["MetaCategoryModel"] = []
@@ -624,6 +626,7 @@ def _meta_template_to_model(mt: meta_templates.MetaTemplate) -> MetaTemplateMode
     return MetaTemplateModel(
         id=mt.id,
         title=mt.title,
+        summary=mt.summary,
         description=mt.description,
         target_kind=mt.target_kind,
         fields=[
@@ -644,6 +647,7 @@ def _meta_category_to_model(cat: meta_templates.MetaCategory) -> MetaCategoryMod
     return MetaCategoryModel(
         name=cat.name,
         title=cat.title,
+        summary=cat.summary,
         description=cat.description,
         templates=[_meta_template_to_model(t) for t in cat.templates],
         children=[_meta_category_to_model(c) for c in cat.children],
