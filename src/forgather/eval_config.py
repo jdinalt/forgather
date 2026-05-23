@@ -66,16 +66,6 @@ class EvalResult:
     # Outcomes — filled in after ``trainer.evaluate()`` completes.
     eval_loss: Optional[float] = None
     perplexity: Optional[float] = None
-    # Tokenizer-agnostic metrics. ``bpb`` (bits-per-byte) is the right number
-    # to compare across models that use different tokenizers; ``perplexity``
-    # is only comparable within a tokenizer family because the denominator
-    # (tokens) varies with vocabulary.
-    bpb: Optional[float] = None
-    bpc: Optional[float] = None
-    tokens_per_byte: Optional[float] = None
-    total_bytes: Optional[int] = None
-    total_chars: Optional[int] = None
-    total_predicted_tokens: Optional[int] = None
     wall_time_s: Optional[float] = None
     timestamp: Optional[str] = None
 

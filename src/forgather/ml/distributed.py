@@ -741,27 +741,9 @@ class DistributedEnvironment(DistributedEnvInterface):
             self.device_type = acc.type
             self.device = f"{self.device_type}:{idx}"
         else:
-            # CPU fallback. Force the backend to gloo regardless of what
-            # the caller passed in. The default config ships
-            # backend="cuda:nccl,cpu:gloo" (a compound spec meant to
-            # pick the right backend per device), and likewise an
-            # explicit "nccl" caller would also choke here. On a
-            # CPU-only torch build the NCCL backend isn't compiled in
-            # at all, so init_process_group abort with
-            # "Distributed package doesn't have NCCL built in" the
-            # moment NCCL is mentioned -- even if the device is CPU.
-            # Gloo is the right backend for CPU ranks and is always
-            # available.
+            # CPU fallback
             self.device = "cpu"
             self.device_type = "cpu"
-            if self.backend != "gloo":
-                if self.backend is not None:
-                    logger.info(
-                        "no accelerator detected; overriding backend=%r"
-                        " with 'gloo' for CPU-only distributed init",
-                        self.backend,
-                    )
-                self.backend = "gloo"
 
         # Process group initialization
         if dist.is_available() and (self.world_size > 1 or self.always):

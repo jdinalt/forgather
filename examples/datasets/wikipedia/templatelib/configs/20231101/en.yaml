@@ -1,10 +1,15 @@
--- extends "datasets/load_packed_dataset.yaml"
+-- extends "datasets/load_dataset.yaml"
 
 [config_metadata]
     == super()
     -- set ns.config_name = "Wikepedia Dataset"
     -- set ns.config_description = "Wikipedia dataset containing cleaned articles from the English Wikipedia."
     -- set ns.source = "https://huggingface.co/datasets/wikimedia/wikipedia"
+    -- set ns.load_method = "forgather.ml.datasets:fast_load_iterable_dataset"
+
+[map_kwargs]
+    == super()
+    batch_size: 32
 
 [load_dataset_args]
     == super()

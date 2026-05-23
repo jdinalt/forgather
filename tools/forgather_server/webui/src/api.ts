@@ -637,12 +637,6 @@ export interface EvalResultData {
   world_size: number;
   eval_loss: number | null;
   perplexity: number | null;
-  bpb: number | null;
-  bpc: number | null;
-  tokens_per_byte: number | null;
-  total_bytes: number | null;
-  total_chars: number | null;
-  total_predicted_tokens: number | null;
   wall_time_s: number | null;
   timestamp: string | null;
 }
@@ -804,39 +798,6 @@ export interface ClusterDatasetServer {
   loopback?: boolean;
 }
 
-/** Master-aggregated inference-server entry, used by the cluster
- *  picker in InferenceModelPanel.
- *
- *  Includes ``auth_token`` so the panel can attach the upstream
- *  bearer via the ``X-Inference-Auth-Token`` header — the proxy on
- *  non-master peers can't auto-discover off-host tokens, so the
- *  picker carries it. This matches the per-job ``auth_token`` field
- *  that already flows through ``/api/jobs`` for locally-spawned
- *  servers.
- *
- *  Hardening this surface (server-side token attach via a non-master
- *  pull loop, browser never sees tokens) is tracked as follow-up. */
-export interface ClusterInferenceServer {
-  server_id: string;
-  base_url: string;
-  auth_token: string;
-  label: string;
-  peer_node_id: string | null;
-  source_id?: string | null;
-  loopback?: boolean;
-  /** Configured OpenAI routing names this server hosts (one entry
-   *  per ``--model`` flag the inference server was launched with).
-   *  Empty list ⇒ the JobRecord didn't carry a usable hint; the
-   *  picker falls back to the URL as the label. */
-  models: string[];
-  healthy: boolean;
-  last_health_check: number;
-  last_health_error: string;
-  total_health_polls?: number;
-  health_failures?: number;
-  consecutive_health_failures?: number;
-}
-
 /** Aggregate counters across the inventory. */
 export interface ClusterDatasetInventoryMetrics {
   healthy_servers: number;
@@ -909,27 +870,6 @@ export interface AddDatasetServerRequest {
    *  to this URL. Operator-asserted for SSH-tunneled / out-of-band-
    *  secured upstreams. Defaults to true on the server side when
    *  omitted. */
-  verify_tls?: boolean;
-}
-
-/** Inference server registered as a user-added entry. Same shape as
- *  the dataset-server variant; the two registries live in separate
- *  files on disk and are surfaced by separate routes. */
-export interface InferenceServerUser {
-  id: string;
-  label: string;
-  base_url: string;
-  has_auth_token: boolean;
-  /** False = TLS chain + hostname validation off for outbound calls
-   *  to this URL. Operator-asserted for SSH-tunneled / out-of-band-
-   *  secured upstreams. Default true (secure-by-default). */
-  verify_tls?: boolean;
-}
-
-export interface AddInferenceServerRequest {
-  label?: string;
-  base_url: string;
-  auth_token?: string;
   verify_tls?: boolean;
 }
 
@@ -1789,37 +1729,6 @@ export const api = {
     }
   },
 
-  // User-added inference servers. Same CRUD shape as the dataset-server
-  // registry — the picker in InferenceModelPanel surfaces these alongside
-  // running local/cluster servers so operators don't have to retype
-  // external URLs (vLLM, remote OpenAI-compatible boxes) every session.
-  listUserInferenceServers: () =>
-    fetchJson<InferenceServerUser[]>("/api/inference-servers/user"),
-  addUserInferenceServer: async (
-    req: AddInferenceServerRequest,
-  ): Promise<InferenceServerUser> => {
-    const r = await fetch("/api/inference-servers/user", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(req),
-    });
-    if (!r.ok) {
-      const detail = await r.text();
-      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
-    }
-    return r.json();
-  },
-  deleteUserInferenceServer: async (id: string): Promise<void> => {
-    const r = await fetch(
-      `/api/inference-servers/user/${encodeURIComponent(id)}`,
-      { method: "DELETE" },
-    );
-    if (!r.ok) {
-      const detail = await r.text();
-      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
-    }
-  },
-
   // Proxy GETs. ``token`` is the upstream bearer that's forwarded via
   // the X-Dataset-Auth-Token side-channel; empty string means no
   // explicit token (the proxy then falls back to JobRecord auto-lookup
@@ -1909,15 +1818,6 @@ export const api = {
    *  a smaller payload for the Explore + Servers tabs. */
   getClusterDatasetServers: () =>
     fetchJson<ClusterDatasetServer[]>("/api/cluster/dataset_servers"),
-  /** Cluster-aggregated inference servers (master-polled + health-
-   *  tracked). Includes ``auth_token`` per entry so the
-   *  InferenceModelPanel can pin the bearer in the
-   *  ``X-Inference-Auth-Token`` header when dialling a remote-peer
-   *  upstream — same surface the per-job ``auth_token`` on
-   *  :ref:`/api/jobs` already exposes for locally-spawned servers.
-   *  Returns an empty list when cluster mode is inactive. */
-  getClusterInferenceServers: () =>
-    fetchJson<ClusterInferenceServer[]>("/api/cluster/inference_servers"),
   /** Wake the master's collect/health/refresh loops on demand.
    *  Best-effort — fire-and-forget. Used right after a registry
    *  add/delete so the cluster inventory reflects the change within

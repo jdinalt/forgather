@@ -49,9 +49,6 @@ args:
   # cluster: null
   # cluster_address: []
   # lock_inference_proxy: false
-  # docs_landing: null        # Path the Docs view opens by default.
-                              # Absolute or relative to the repo root.
-                              # null = built-in (docs/README.md).
   #
   # TLS options (see ``forgather tls --help``):
   # insecure: false

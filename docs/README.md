@@ -51,8 +51,6 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 - **[Add-Tokens Config](guides/add-tokens-config.md)** - YAML format for `--add-tokens` (ChatML / new EOS / pad)
 - **[EOS Tokens and `generate()` Stopping Criteria](guides/eos-and-generate-stopping.md)** - Theory of operation: how HF's `generate()` resolves stopping across multiple EOS-bearing files
 - **[vLLM Integration](inference/vllm_integration.md)** - Distributed inference with vLLM (currently blocked on Transformers v5)
-- **[Inference Server](tools/inference_server/README.md)** - The bundled OpenAI-compatible inference server. CLI (single-model + multi-model with `-m NAME=PATH`), YAML config (single `model:` or a `models:` list), `--keep-on-gpu` for unified-memory / abundant-VRAM setups, `--eager-load` for fail-fast startup. The webui's Inference panel is documented in [forgather-server.md](forgather-server.md#inference-panel).
-- **[Inference Server Architecture](tools/inference_server/ARCHITECTURE.md)** - Internals: the `ModelEntry` + registry refactor, the `acquire()` swap protocol, lifecycle states, and why the request lock spans the full streaming SSE response.
 
 **Guides:**
 

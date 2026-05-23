@@ -311,12 +311,6 @@
         -- set ns.nproc_per_node = 1
     -- endif
 
-    ## Eval dataset project default to train project
-    -- if ns.eval_dataset_proj is undefined
-        -- set ns.eval_dataset_proj = ns.dataset_proj
-        -- set ns.eval_dataset_config = ns.dataset_config
-    -- endif
-
     ## Convert M-token inputs to raw token counts
     -- set ns.total_tokens = ns.total_tokens * 1000 * 1000
     -- set ns.warmup_tokens = ns.warmup_tokens * 1000 * 1000
@@ -418,23 +412,15 @@
 .define: &dataset_dict !call:forgather:from_project
     project_dir: "{{ ns.dataset_proj }}"
     config_template: "{{ ns.dataset_config }}"
-    targets: [ "train_dataset" ]
-    <<: &common_dataset_args
-        pp_kwargs: *dataset_project_pp_args
-        preprocess_args: *tokenizer_args
-        tokenizer: *tokenizer
-        shard_dataset: {{ ns.dispatch_batches == False }}
-
-    [eval_dataset_project]
-.define: &eval_dataset_dict !call:forgather:from_project
-    project_dir: "{{ ns.eval_dataset_proj }}"
-    config_template: "{{ ns.eval_dataset_config }}"
-    targets: [ "eval_dataset" ]
-    <<: *common_dataset_args
+    targets: [ "train_dataset", "eval_dataset" ]
+    pp_kwargs: *dataset_project_pp_args
+    preprocess_args: *tokenizer_args
+    tokenizer: *tokenizer
+    shard_dataset: {{ ns.dispatch_batches == False }}
 
     [dataset_splits]
 train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]
-eval_dataset: &eval_dataset !call:getitem [ *eval_dataset_dict, 'eval_dataset' ]
+eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
 
 ## ===== Model ================================================================
 ##

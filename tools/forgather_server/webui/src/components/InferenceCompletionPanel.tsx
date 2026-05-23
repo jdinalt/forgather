@@ -1,54 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { useEffect, useRef, useState } from "react";
 
 import {
   GenerationParams,
   runCompletion,
   streamCompletion,
 } from "../inference-client";
-import { persistGet, persistSet } from "../persist";
-import { DragHandle } from "./DragHandle";
 import { InferenceState } from "./InferencePanel";
-
-/** Persisted user prefs for the completion panel layout. Kept narrow:
- *  the markdown toggle + split percentage are the only things worth
- *  surviving a reload. Other state (prevInput, status) is transient. */
-interface CompletionPrefs {
-  markdownView: boolean;
-  /** Percent of the body width allocated to the raw textarea when the
-   *  split view is on. Remainder goes to the rendered markdown pane. */
-  leftWidthPct: number;
-}
-
-const PREFS_KEY = "forgather-completion-prefs";
-const DEFAULT_PREFS: CompletionPrefs = {
-  markdownView: false,
-  leftWidthPct: 50,
-};
-
-function loadPrefs(): CompletionPrefs {
-  const raw = persistGet(PREFS_KEY);
-  if (!raw) return DEFAULT_PREFS;
-  try {
-    const parsed = JSON.parse(raw) as Partial<CompletionPrefs>;
-    return {
-      markdownView:
-        typeof parsed.markdownView === "boolean"
-          ? parsed.markdownView
-          : DEFAULT_PREFS.markdownView,
-      leftWidthPct:
-        typeof parsed.leftWidthPct === "number" &&
-        parsed.leftWidthPct >= 15 &&
-        parsed.leftWidthPct <= 85
-          ? parsed.leftWidthPct
-          : DEFAULT_PREFS.leftWidthPct,
-    };
-  } catch {
-    return DEFAULT_PREFS;
-  }
-}
 
 interface Props {
   state: InferenceState;
@@ -73,11 +30,9 @@ type Status =
 
 export function InferenceCompletionPanel({ state, text, setText }: Props) {
   // Per-request max-new-tokens override — convenient for "give me just
-  // a few more tokens" without editing the main params. Empty means
-  // "leave it to the server / model defaults". Seeded from state.params
-  // if a preset (or the Model panel) set it; otherwise starts empty.
-  const [maxTokens, setMaxTokens] = useState<number | "">(
-    state.params.max_tokens ?? "",
+  // a few more tokens" without editing the main params.
+  const [maxTokens, setMaxTokens] = useState<number>(
+    state.params.max_tokens ?? 256,
   );
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   // Streaming is incompatible with some HF generation modes (notably
@@ -89,44 +44,8 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
   // different generation params without manually deleting the previously
   // appended completion. Null until the first generation has started.
   const [prevInput, setPrevInput] = useState<string | null>(null);
-  const [prefs, setPrefs] = useState<CompletionPrefs>(loadPrefs);
   const abortRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const bodyRef = useRef<HTMLDivElement | null>(null);
-
-  // Drag handler: pixel delta → percentage of the body width. Clamped
-  // to keep either pane from collapsing. State updates fire on every
-  // pointermove; persistence is deferred to pointerup via
-  // ``persistCurrentPrefs`` so a fast drag doesn't emit hundreds of
-  // localStorage writes per second. Mirrors the analyze panel pattern.
-  const onSplitXDelta = useCallback((dx: number) => {
-    const body = bodyRef.current;
-    if (!body) return;
-    const w = body.getBoundingClientRect().width;
-    if (w <= 0) return;
-    setPrefs((prev) => {
-      const next = Math.max(
-        15,
-        Math.min(85, prev.leftWidthPct + (dx / w) * 100),
-      );
-      if (next === prev.leftWidthPct) return prev;
-      return { ...prev, leftWidthPct: next };
-    });
-  }, []);
-
-  const persistPrefsRef = useRef(prefs);
-  persistPrefsRef.current = prefs;
-  const persistCurrentPrefs = useCallback(() => {
-    persistSet(PREFS_KEY, JSON.stringify(persistPrefsRef.current));
-  }, []);
-
-  const updatePrefs = (patch: Partial<CompletionPrefs>) => {
-    setPrefs((prev) => {
-      const next = { ...prev, ...patch };
-      persistSet(PREFS_KEY, JSON.stringify(next));
-      return next;
-    });
-  };
   // Track the previous busy state so we can restore textarea focus
   // exactly on the busy→idle transition. Without this, Ctrl+Enter
   // sends and the textarea's ``disabled`` flip drops focus, forcing
@@ -156,16 +75,9 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
     // Build the params payload: take the user's generation params, layer
     // the per-request max_tokens on top, drop any explicitly-empty keys
     // so the server sees its own defaults rather than null.
-    // Conditional spread: empty per-request override means "don't
-    // override," not "actively clear." Mirrors the chat panel — see
-    // there for full rationale.
-    const overrideMax =
-      typeof maxTokens === "number" && maxTokens > 0
-        ? { max_tokens: maxTokens }
-        : {};
     const params: GenerationParams = stripEmpty({
       ...state.params,
-      ...overrideMax,
+      max_tokens: maxTokens > 0 ? maxTokens : undefined,
     });
     const ac = new AbortController();
     abortRef.current = ac;
@@ -276,24 +188,17 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
   return (
     <div className="inference-completion">
       <div className="inference-completion-bar">
-        <label title="Per-request override for max new tokens. Leave empty to use the client default of 2048 — OpenAI's /v1/completions spec defaults to 16 when the request omits max_tokens, so the client injects 2048 on this code path to keep raw-prompt extension from clipping silently. Set explicitly to override.">
+        <label>
           Max new tokens
           <input
             type="number"
             min={1}
-            value={maxTokens === "" ? "" : maxTokens}
-            onChange={(e) => {
-              const raw = e.target.value;
-              if (raw === "") {
-                setMaxTokens("");
-                return;
-              }
-              const n = Number(raw);
-              setMaxTokens(Number.isFinite(n) && n > 0 ? Math.floor(n) : "");
-            }}
-            placeholder="2048 (client default)"
+            value={maxTokens}
+            onChange={(e) =>
+              setMaxTokens(Math.max(1, Number(e.target.value) || 1))
+            }
             disabled={busy}
-            style={{ width: 130 }}
+            style={{ width: 80 }}
           />
         </label>
         <label className="dyn-checkbox" title="Uncheck for modes incompatible with streaming, e.g. beam search">
@@ -304,17 +209,6 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
             disabled={busy}
           />
           stream
-        </label>
-        <label
-          className="dyn-checkbox"
-          title="Render a side-by-side view with the raw text on the left and Markdown-rendered output on the right"
-        >
-          <input
-            type="checkbox"
-            checked={prefs.markdownView}
-            onChange={(e) => updatePrefs({ markdownView: e.target.checked })}
-          />
-          markdown
         </label>
         <button onClick={onContinue} disabled={busy || !state.baseUrl}>
           {busy ? "Continuing…" : "Continue"}
@@ -347,44 +241,15 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
           <StatusLine status={status} />
         </div>
       </div>
-      <div className="inference-completion-body" ref={bodyRef}>
-        <textarea
-          ref={textareaRef}
-          className="inference-textarea"
-          style={
-            prefs.markdownView
-              ? { flex: `0 0 ${prefs.leftWidthPct}%` }
-              : undefined
-          }
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder="Type a prompt here, then click Continue (or Ctrl+Enter) to let the model extend it."
-          spellCheck={false}
-        />
-        {prefs.markdownView && (
-          <>
-            <DragHandle
-              axis="x"
-              ariaLabel="Resize raw text vs Markdown panes"
-              onDragDelta={onSplitXDelta}
-              onDragEnd={persistCurrentPrefs}
-              onDoubleClick={() => updatePrefs({ leftWidthPct: 50 })}
-            />
-            <div className="inference-completion-markdown">
-              {text ? (
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {text}
-                </ReactMarkdown>
-              ) : (
-                <div className="muted analyze-empty">
-                  Nothing to render yet — type a prompt and Continue.
-                </div>
-              )}
-            </div>
-          </>
-        )}
-      </div>
+      <textarea
+        ref={textareaRef}
+        className="inference-textarea"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={onKeyDown}
+        placeholder="Type a prompt here, then click Continue (or Ctrl+Enter) to let the model extend it."
+        spellCheck={false}
+      />
     </div>
   );
 }
@@ -392,45 +257,25 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
 function StatusLine({ status }: { status: Status }) {
   const tokLabel = (n: number) =>
     n < 0 ? "— tokens" : `${n} token${n === 1 ? "" : "s"}`;
-  // Throughput formatter — only meaningful when we actually have a
-  // positive token count and a non-zero duration. Non-streaming
-  // responses report ``tokens: -1`` (we drop usage from the wire
-  // today), so the rate becomes "— tok/s" there.
-  const rateLabel = (n: number, ms: number) => {
-    if (n <= 0 || ms <= 0) return "— tok/s";
-    const rate = n / (ms / 1000);
-    // <10 → one decimal; ≥10 → integer. Reads better in the status
-    // strip where horizontal real estate is tight.
-    return `${rate < 10 ? rate.toFixed(1) : Math.round(rate)} tok/s`;
-  };
   switch (status.kind) {
     case "idle":
       return <span>ready</span>;
-    case "streaming": {
-      const elapsedMs = Date.now() - status.startedAt;
-      return (
-        <span>
-          streaming · {tokLabel(status.tokens)} ·{" "}
-          {rateLabel(status.tokens, elapsedMs)}
-        </span>
-      );
-    }
+    case "streaming":
+      return <span>streaming · {tokLabel(status.tokens)}</span>;
     case "generating":
       return <span>generating…</span>;
     case "done":
       return (
         <span>
           done · {tokLabel(status.tokens)} ·{" "}
-          {(status.durationMs / 1000).toFixed(1)}s ·{" "}
-          {rateLabel(status.tokens, status.durationMs)}
+          {(status.durationMs / 1000).toFixed(1)}s
         </span>
       );
     case "stopped":
       return (
         <span>
           stopped · {tokLabel(status.tokens)} ·{" "}
-          {(status.durationMs / 1000).toFixed(1)}s ·{" "}
-          {rateLabel(status.tokens, status.durationMs)}
+          {(status.durationMs / 1000).toFixed(1)}s
         </span>
       );
     case "error":

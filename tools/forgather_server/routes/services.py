@@ -22,7 +22,6 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from .. import auth as auth_mod
 from .. import scheduler, services
 
 log = logging.getLogger("forgather_server.services_api")
@@ -60,12 +59,7 @@ def _to_model(svc: services.Service) -> ServiceModel:
         type=svc.type,
         name=svc.name,
         enabled=svc.enabled,
-        # ``args`` is rendered verbatim in ServicesPanel.tsx via
-        # formatArgValue(); a service for an inference / dataset
-        # server can carry an ``auth_token`` (or ``--auth-token``)
-        # value the operator typed in. Redact in demo mode so it
-        # doesn't leak through to the webui.
-        args=auth_mod.redact_sensitive_in_demo(svc.args),
+        args=svc.args,
         signature=svc.signature(),
     )
 
@@ -81,15 +75,15 @@ def _status_to_model(s: services.ServiceStatus) -> ServiceStatusModel:
 
 @router.get("/services", response_model=List[ServiceStatusModel])
 def list_services():
-    return [
-        _status_to_model(s) for s in services.status_for_each(services.list_services())
-    ]
+    return [_status_to_model(s) for s in services.status_for_each(services.list_services())]
 
 
 @router.post("/services", response_model=ServiceStatusModel)
 def upsert_service(req: UpsertRequest):
     try:
-        svc = services.upsert_service(req.type, req.name, req.enabled, req.args)
+        svc = services.upsert_service(
+            req.type, req.name, req.enabled, req.args
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     # If the operator created (or re-enabled) an entry, run the autostart

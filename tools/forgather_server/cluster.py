@@ -57,11 +57,7 @@ log = logging.getLogger("forgather_server.cluster")
 DEFAULT_UNREACHABLE_AFTER_SECONDS = 15.0
 
 
-def forgather_version() -> str:
-    """Installed Forgather package version, or ``"unknown"`` for editable
-    installs without dist-info. Public helper consumed by the cluster
-    identity stamp and the ``/api/auth/status`` response (where the
-    webui surfaces it next to the sidebar header)."""
+def _forgather_version() -> str:
     try:
         return _pkg_version("forgather")
     except PackageNotFoundError:
@@ -70,12 +66,6 @@ def forgather_version() -> str:
         # runtime; an "unknown" string is honest and only affects the
         # version-mismatch UI in Phase 2.
         return "unknown"
-
-
-# Backwards-compat alias. Existing call sites in this module still use
-# the leading-underscore name; keep it pointing at the public helper so
-# nothing breaks while the migration ripples through.
-_forgather_version = forgather_version
 
 
 @dataclass
@@ -322,7 +312,9 @@ class _ClusterState:
             if source == "peer_pull":
                 existing.last_seen = ts
                 if not existing.reachable:
-                    log.info("cluster member back online: %s (%s)", hostname, node_id)
+                    log.info(
+                        "cluster member back online: %s (%s)", hostname, node_id
+                    )
                 existing.reachable = True
             return existing
 

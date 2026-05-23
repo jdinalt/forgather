@@ -19,7 +19,6 @@ import {
   type SelectedLeaf,
 } from "./DatasetsExploreTab";
 import { ModalBackdrop } from "./ModalBackdrop";
-import { useDemoMode } from "../demoMode";
 
 type SubTab = "servers" | "explore";
 
@@ -72,17 +71,12 @@ interface DatasetsPanelProps {
    *  so the same flow works whether the trigger came from inside
    *  this panel or from the Cluster view. */
   onOpenInExplore?: (leaf: SelectedLeaf) => void;
-  /** Hand a chunk of text up to the parent so it can swap to the
-   *  Inference > Analyze tab and kick off scoring. Wired into the
-   *  cell context menu in DatasetsExploreTab. */
-  onAnalyzeText?: (text: string) => void;
 }
 
 export function DatasetsPanel({
   pendingExplore,
   onPreselectConsumed,
   onOpenInExplore,
-  onAnalyzeText,
 }: DatasetsPanelProps = {}) {
   // Detect cluster mode via the same query the App-level gate uses.
   // TanStack dedups by ``queryKey`` so this doesn't cost an extra HTTP
@@ -175,7 +169,6 @@ export function DatasetsPanel({
           clusterActive={clusterActive}
           preselect={pendingExplore ?? null}
           onPreselectConsumed={onPreselectConsumed}
-          onAnalyzeText={onAnalyzeText}
         />
       </div>
     </div>
@@ -632,7 +625,6 @@ interface DatasetServersTabProps {
 }
 
 function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
-  const demoMode = useDemoMode();
   const qc = useQueryClient();
   const localsQ = useQuery({
     queryKey: ["dataset-servers-local"],
@@ -764,7 +756,7 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
                   {s.has_auth_token && (
                     <span className="muted">· auth ✓</span>
                   )}
-                  {s.alive && !demoMode && (
+                  {s.alive && (
                     <button
                       className="secondary"
                       style={{ marginLeft: "auto" }}
@@ -795,12 +787,7 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
           <button
             style={{ marginLeft: 12 }}
             onClick={() => setAddOpen(true)}
-            disabled={demoMode}
-            title={
-              demoMode
-                ? "Read-only demo mode — server registry is locked"
-                : "Register a remote dataset_server URL"
-            }
+            title="Register a remote dataset_server URL"
           >
             + Add server
           </button>
@@ -831,9 +818,7 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
                     <span className="muted">· auth ✓</span>
                   )}
                   <button
-                    // ``destructive`` class so the global demo-mode CSS
-                    // rule disables this row's remove control.
-                    className="tiny destructive"
+                    className="tiny"
                     style={{ marginLeft: "auto" }}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -1761,7 +1746,6 @@ function AddServerModal({
   onClose: () => void;
   onAdded: () => void;
 }) {
-  const demoMode = useDemoMode();
   const [label, setLabel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [authToken, setAuthToken] = useState("");
@@ -1898,47 +1882,35 @@ function AddServerModal({
                   the Inference Model panel uses. */}
               <div className="path-field">
                 <input
-                  // Mirror AddInferenceServerModal: in demo mode force
-                  // masked + read-only and hide Show / Copy so a
-                  // pre-filled token can't be revealed.
-                  type={demoMode || !showAuthToken ? "password" : "text"}
+                  type={showAuthToken ? "text" : "password"}
                   className="wide"
-                  value={demoMode ? "" : authToken}
+                  value={authToken}
                   onChange={(e) => setAuthToken(e.target.value)}
-                  readOnly={demoMode}
-                  placeholder={
-                    demoMode
-                      ? "Token entry disabled in demo mode"
-                      : "optional — leave blank if the server runs --no-auth"
-                  }
+                  placeholder="optional — leave blank if the server runs --no-auth"
                   autoComplete="new-password"
                   spellCheck={false}
                   name="ds-auth-token"
                 />
-                {!demoMode && (
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => setShowAuthToken((v) => !v)}
-                    title={showAuthToken ? "Hide token" : "Show token"}
-                  >
-                    {showAuthToken ? "Hide" : "Show"}
-                  </button>
-                )}
-                {!demoMode && (
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => {
-                      if (!authToken) return;
-                      navigator.clipboard?.writeText(authToken).catch(() => {});
-                    }}
-                    disabled={!authToken}
-                    title="Copy token to clipboard"
-                  >
-                    Copy
-                  </button>
-                )}
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setShowAuthToken((v) => !v)}
+                  title={showAuthToken ? "Hide token" : "Show token"}
+                >
+                  {showAuthToken ? "Hide" : "Show"}
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    if (!authToken) return;
+                    navigator.clipboard?.writeText(authToken).catch(() => {});
+                  }}
+                  disabled={!authToken}
+                  title="Copy token to clipboard"
+                >
+                  Copy
+                </button>
               </div>
             </label>
           </div>
@@ -1987,12 +1959,7 @@ function AddServerModal({
             <button
               type="button"
               onClick={() => void submit()}
-              disabled={demoMode || pending || !baseUrl.trim()}
-              title={
-                demoMode
-                  ? "Read-only demo mode — try the live tool to register a server"
-                  : undefined
-              }
+              disabled={pending || !baseUrl.trim()}
             >
               {pending ? "Adding…" : "Add"}
             </button>

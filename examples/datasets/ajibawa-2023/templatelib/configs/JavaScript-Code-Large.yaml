@@ -1,11 +1,16 @@
--- extends "datasets/load_packed_dataset.yaml"
+-- extends "datasets/load_dataset.yaml"
 
 [config_metadata]
     == super()
     -- set ns.config_name = "JavaScript Code Large"
     -- set ns.config_description = "Large synthetic JavaScript code dataset by Feynman Innovations"
     -- set ns.source = "https://huggingface.co/datasets/ajibawa-2023/JavaScript-Code-Large"
+    -- set ns.load_method = "forgather.ml.datasets:fast_load_iterable_dataset"
     -- set ns.main_feature = "code"
+
+[map_kwargs]
+    == super()
+    batch_size: 32
 
 [load_dataset_args]
     == super()

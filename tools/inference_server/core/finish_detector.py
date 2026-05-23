@@ -59,7 +59,7 @@ class FinishReasonDetector:
     def determine_finish_reason(
         self,
         generated_token_ids: List[int],
-        max_tokens: Optional[int],
+        max_tokens: int,
         stopped_by_sequence: bool,
         ignore_eos: bool = False,
     ) -> str:
@@ -68,32 +68,41 @@ class FinishReasonDetector:
 
         Args:
             generated_token_ids: List of generated token IDs
-            max_tokens: Maximum tokens allowed, or ``None`` if no cap was
-                set (the model's own GenerationConfig governed length).
-                When None, the "length" branch is skipped — we report
-                ``stop`` instead, since we can't say generation stopped
-                because of a cap we didn't impose.
+            max_tokens: Maximum tokens allowed
             stopped_by_sequence: Whether generation stopped due to a stop sequence
             ignore_eos: Whether EOS tokens were ignored during generation
 
         Returns:
             Finish reason string: "length" or "stop"
         """
-        if max_tokens is not None and len(generated_token_ids) >= max_tokens:
+        if len(generated_token_ids) >= max_tokens:
             return "length"
-        if stopped_by_sequence:
+        elif stopped_by_sequence:
             return "stop"
-        # Any remaining termination — natural EOS, a registered stop
-        # token, or "model just stopped" with no obvious reason — maps
-        # to "stop". The previous elif/elif chain accidentally left
-        # ``not ignore_eos`` without a fall-through return, so a
-        # non-EOS, non-stop-token finish silently returned ``None``.
-        return "stop"
+        elif not ignore_eos:
+            # Normal EOS handling - only check EOS if not ignoring it
+            if (
+                self.tokenizer.eos_token_id is not None
+                and len(generated_token_ids) > 0
+                and generated_token_ids[-1] == self.tokenizer.eos_token_id
+            ):
+                return "stop"
+            elif (
+                len(generated_token_ids) > 0
+                and generated_token_ids[-1] in self.stop_token_ids
+            ):
+                return "stop"
+        # If we get here, model stopped for unknown reason
+        elif len(generated_token_ids) < max_tokens:
+            # Stopped early but not due to obvious reasons
+            return "stop"
+        else:
+            return "stop"
 
     def determine_finish_reason_streaming(
         self,
         completion_tokens: int,
-        max_tokens: Optional[int],
+        max_tokens: int,
         stop_sequences: List[str],
         full_response: str,
         ignore_eos: bool = False,
@@ -107,8 +116,7 @@ class FinishReasonDetector:
 
         Args:
             completion_tokens: Number of tokens generated
-            max_tokens: Maximum tokens allowed, or ``None`` if no cap
-                was set. When None, the "length" branch is skipped.
+            max_tokens: Maximum tokens allowed
             stop_sequences: List of stop sequences
             full_response: Full generated response text
             ignore_eos: Whether EOS tokens were ignored during generation
@@ -116,7 +124,7 @@ class FinishReasonDetector:
         Returns:
             Finish reason string: "length" or "stop"
         """
-        if max_tokens is not None and completion_tokens >= max_tokens:
+        if completion_tokens >= max_tokens:
             return "length"
         elif any(stop_seq in full_response for stop_seq in stop_sequences):
             return "stop"

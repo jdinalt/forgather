@@ -57,36 +57,6 @@ def train_cmd(args):
     config_meta = Latent.materialize(config.meta)
     nproc_per_node = config_meta["nproc_per_node"]
 
-    # --nproc wins over the config value. Honor the override even for the
-    # --enqueue path so users can submit jobs at a specific GPU count
-    # without having to teach the config about it.
-    if args.nproc is not None:
-        nproc_per_node = args.nproc
-    elif nproc_per_node == "gpu":
-        # torchrun's "gpu" sentinel asks the launcher to count visible
-        # CUDA devices. On a CPU-only host (no driver, --gpus none under
-        # docker, or torch.cuda unavailable) torchrun aborts immediately
-        # with "invalid literal for int() with base 10: 'gpu'". Detect
-        # that here and fall back to a single rank so the CPU path keeps
-        # working — useful for debugging training on a laptop. Operators
-        # who want a specific count should pass --nproc N explicitly.
-        try:
-            import torch
-
-            cuda_visible = (
-                torch.cuda.is_available() and torch.cuda.device_count() > 0
-            )
-        except (ImportError, RuntimeError):
-            cuda_visible = False
-        if not cuda_visible:
-            print(
-                "warning: config requests --nproc-per-node 'gpu' but no CUDA"
-                " device is visible; falling back to --nproc-per-node 1."
-                " Pass --nproc N to override.",
-                file=sys.stderr,
-            )
-            nproc_per_node = 1
-
     if args.enqueue:
         from .server_client import ServerClient, ServerUnreachable
 

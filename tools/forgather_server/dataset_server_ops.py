@@ -27,7 +27,6 @@ def build_dataset_server_command(
     config_file: Optional[str] = None,
     auth_token_file: Optional[str] = None,
     no_auth: bool = False,
-    quiet_tokens: bool = False,
 ) -> List[str]:
     """Build the argv for ``tools/dataset_server/server.py``.
 
@@ -63,6 +62,4 @@ def build_dataset_server_command(
         cmd.append("--no-auth")
     elif auth_token_file:
         cmd.extend(["--auth-token-file", auth_token_file])
-    if quiet_tokens:
-        cmd.append("--quiet-tokens")
     return cmd

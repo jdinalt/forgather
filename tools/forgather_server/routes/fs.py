@@ -18,7 +18,6 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from .. import paths as fs_paths
 from .. import search_roots
 
 log = logging.getLogger("forgather_server.fs")
@@ -77,13 +76,6 @@ def path_exists(path: str):
         resolved = Path(os.path.expanduser(path))
         if not resolved.exists():
             return PathExistsResponse(exists=False)
-        # Lie about existence for out-of-root paths rather than 403'ing —
-        # the UI uses this to validate persisted localStorage defaults and
-        # falling back to "not found" is the desired UX (it'll just clear
-        # the stale value). A 403 would surface a noisy error toast for
-        # what's essentially a routine probe.
-        if not fs_paths.is_path_in_fs_root(resolved):
-            return PathExistsResponse(exists=False)
         return PathExistsResponse(
             exists=True,
             is_file=resolved.is_file(),
@@ -103,15 +95,8 @@ def browse(path: str = "", show_hidden: bool = False, files_too: bool = False):
     included they're sorted after directories alphabetically.
     """
     if not path:
-        # When an fs-root allowlist is configured, the user's home
-        # directory is almost never inside it — landing the browser there
-        # would 403 the first ``Open`` and leave the user with no obvious
-        # next click. Pick the first configured root instead so the
-        # picker opens on legitimately-browsable content.
-        roots = fs_paths.fs_roots()
-        path = str(roots[0]) if roots else str(Path.home())
+        path = str(Path.home())
     resolved = Path(os.path.expanduser(path)).resolve()
-    _enforce_fs_root(resolved)
 
     if not resolved.exists():
         raise HTTPException(status_code=404, detail=f"Not found: {resolved}")
@@ -126,14 +111,9 @@ def browse(path: str = "", show_hidden: bool = False, files_too: bool = False):
                 continue
             try:
                 is_dir = child.is_dir()
-                child_resolved = child.resolve()
             except OSError:
                 continue
-            # Hide symlink targets that escape the fs-root allowlist so
-            # the picker never offers a click that will 403 anyway.
-            if not fs_paths.is_path_in_fs_root(child_resolved):
-                continue
-            entry = FsEntry(name=child.name, path=str(child_resolved), is_dir=is_dir)
+            entry = FsEntry(name=child.name, path=str(child.resolve()), is_dir=is_dir)
             if is_dir:
                 dirs.append(entry)
             elif files_too:
@@ -141,13 +121,7 @@ def browse(path: str = "", show_hidden: bool = False, files_too: bool = False):
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
-    parent: Optional[str] = None
-    if resolved != resolved.parent:
-        candidate = resolved.parent
-        # Don't expose a parent above the fs-root allowlist — the picker's
-        # up-arrow would otherwise let the user walk out of the sandbox.
-        if fs_paths.is_path_in_fs_root(candidate):
-            parent = str(candidate)
+    parent = str(resolved.parent) if resolved != resolved.parent else None
     return FsListing(path=str(resolved), parent=parent, entries=dirs + files)
 
 
@@ -177,23 +151,6 @@ _FORBIDDEN_PATHS: set[str] = {
     "/media",
     str(Path.home()),
 }
-
-
-def _enforce_fs_root(path) -> None:
-    """403 if the path isn't a descendant of a configured fs-root.
-
-    No-op when no fs-root allowlist is configured. The 403 carries the
-    ``X-Forgather-Fs-Root-Denied`` header so the webui fetch wrapper
-    can distinguish a policy-403 from a session-expiry 403 (same
-    pattern as the demo-mode gate).
-    """
-    if fs_paths.is_path_in_fs_root(path):
-        return
-    raise HTTPException(
-        status_code=403,
-        detail=f"path is outside the configured filesystem roots: {path}",
-        headers={"X-Forgather-Fs-Root-Denied": "1"},
-    )
 
 
 def _reject_symlink_in_chain(raw: str) -> None:
@@ -238,7 +195,6 @@ def _reject_unsafe(target: Path, *, raw: Optional[str] = None) -> None:
         _reject_symlink_in_chain(raw)
     if not target.is_absolute():
         raise HTTPException(status_code=400, detail="path must be absolute")
-    _enforce_fs_root(target)
     if not target.exists():
         raise HTTPException(status_code=404, detail=f"path does not exist: {target}")
     if not target.is_dir():
@@ -290,7 +246,6 @@ def mkdir(req: MkdirRequest):
     parent = Path(os.path.expanduser(req.parent)).resolve()
     if not parent.is_absolute():
         raise HTTPException(status_code=400, detail="parent must be absolute")
-    _enforce_fs_root(parent)
     if not parent.exists() or not parent.is_dir():
         raise HTTPException(
             status_code=400, detail=f"parent is not a directory: {parent}"
@@ -332,7 +287,6 @@ def _check_path_safe(
         _reject_symlink_in_chain(raw)
     if not target.is_absolute():
         raise HTTPException(status_code=400, detail="path must be absolute")
-    _enforce_fs_root(target)
     if must_exist and not target.exists():
         raise HTTPException(status_code=404, detail=f"path does not exist: {target}")
     depth = len([p for p in target.parts if p and p != "/"])
@@ -382,7 +336,6 @@ def new_file(req: NewFileRequest):
     parent = Path(os.path.expanduser(req.parent)).resolve()
     if not parent.is_absolute():
         raise HTTPException(status_code=400, detail="parent must be absolute")
-    _enforce_fs_root(parent)
     if not parent.exists() or not parent.is_dir():
         raise HTTPException(
             status_code=400, detail=f"parent is not a directory: {parent}"
@@ -523,7 +476,9 @@ def _resolve_copy_target(
         target = dest_dir_path / src_path.name
     if target.exists():
         if not auto_rename:
-            raise HTTPException(status_code=409, detail=f"already exists: {target}")
+            raise HTTPException(
+                status_code=409, detail=f"already exists: {target}"
+            )
         target = _next_available_copy_name(target)
     # Ensure the resulting path also clears the depth floor (it should
     # always — dest_dir already passed — but defense in depth).

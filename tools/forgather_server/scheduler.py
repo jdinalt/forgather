@@ -31,14 +31,12 @@ from pathlib import Path
 from threading import Lock
 from typing import Dict, List, Optional
 
+from forgather import trainer_control
+
 from dataset_server.auth import (
     standalone_token_file as dataset_server_standalone_token_file,
-)
-from dataset_server.auth import (
     write_standalone_token as dataset_server_write_standalone_token,
 )
-
-from forgather import trainer_control
 
 from . import _atomic, _gc, gpu_monitor, job_records, launcher, queue_store
 from .job_records import RUNNING_STATUSES, TERMINAL_STATUSES, JobRecord
@@ -204,10 +202,6 @@ def _reap_finished() -> None:
         if updated is not None:
             _gc.relocate_tty_to_logs(updated)
             _cleanup_inference_token(updated)
-            # Same wake hook as the spawn path — remove the entry
-            # from the cluster picker promptly when the server stops.
-            if updated.job_type == "inference":
-                _wake_inference_inventory()
         if rc is not None:
             log.info("reaped %s: rc=%d status=%s", qid, rc, new_status)
         else:
@@ -296,67 +290,25 @@ def _try_dispatch() -> None:
         _launch(it, assigned)
 
 
-def _coerce_nproc_override(raw):
-    """Normalise a job_params['nproc'] value for the launcher.
-
-    The webui sends a free-form string (typed into the modal's nproc
-    input); other callers might pass an integer. Trim whitespace,
-    treat empty as "not set" (return None so the launcher's
-    gpu_indices-derived default kicks in), pass everything else
-    through as a string (torchrun accepts an integer or one of
-    ``gpu`` / ``cpu`` / ``auto``).
-    """
-    if isinstance(raw, str):
-        trimmed = raw.strip()
-        return trimmed if trimmed else None
-    if isinstance(raw, int):
-        return str(raw)
-    return None
-
-
 def _build_eval(item, gpu_indices, tty_path):
-    # The explicit args below are the script-required ones (eval_project,
-    # eval_template, model_path) and the scheduler-owned ones (extra_env).
-    # Every other ``--*`` flag is declared once in
-    # ``forgather.cli.eval_args._EVAL_SCRIPT_ARGS`` and forwarded by
-    # ``forward_eval_script_args_from_params`` deep in ``build_eval_command``;
-    # passing the whole ``job_params`` dict through avoids re-listing each
-    # key here just to call ``p.get(...)`` on it.
-    #
-    # Filter to keys the spec recognizes so future webui/queue fields (added
-    # for routing, accounting, etc.) don't leak through as kwargs to
-    # ``spawn_eval_process``. The forwarder itself already ignores unknown
-    # keys, but rejecting them up-front keeps the kwarg surface honest.
-    from forgather.cli.eval_args import passthrough_enqueue_keys
-
-    p = dict(item.job_params)
-    p.pop("eval_project")
-    p.pop("eval_template")
-    p.pop("model_path")
-    extra_env = p.pop("extra_env", None) or None
-    # ``nproc`` is a server-side knob (torchrun --nproc-per-node
-    # override from the EvalModal), not a flag for eval_script.py
-    # itself -- extract it separately so it doesn't have to live in
-    # the _EVAL_SCRIPT_ARGS spec.
-    nproc_override = _coerce_nproc_override(p.pop("nproc", None))
-    if not gpu_indices:
-        log.info(
-            "eval job %s dispatching with 0 GPUs reserved (CPU mode); "
-            "trainer=%r nproc_override=%r",
-            item.queue_id,
-            p.get("trainer", "ddp"),
-            nproc_override,
-        )
-    passthrough = {k: v for k, v in p.items() if k in passthrough_enqueue_keys()}
+    p = item.job_params
     return launcher.spawn_eval_process(
-        eval_project=item.job_params["eval_project"],
-        eval_template=item.job_params["eval_template"],
-        model_path=item.job_params["model_path"],
+        eval_project=p["eval_project"],
+        eval_template=p["eval_template"],
+        model_path=p["model_path"],
+        checkpoint_path=p.get("checkpoint_path"),
+        no_checkpoint=bool(p.get("no_checkpoint", False)),
+        trainer=p.get("trainer", "ddp"),
+        batch_size=p.get("batch_size"),
+        max_length=p.get("max_length"),
+        max_steps=int(p.get("max_steps", -1)),
+        dtype=p.get("dtype", "bfloat16"),
+        attn_implementation=p.get("attn_implementation", "sdpa"),
+        compile=bool(p.get("compile", False)),
+        output_dir=p.get("output_dir"),
         gpu_indices=gpu_indices,
         tty_log_path=tty_path,
-        extra_env=extra_env,
-        nproc_override=nproc_override,
-        **passthrough,
+        extra_env=p.get("extra_env") or None,
     )
 
 
@@ -370,26 +322,10 @@ def _build_inference(item, gpu_indices, tty_path):
     auth_token_file: Optional[str] = None
     if not no_auth:
         auth_token_file = str(inference_token_file(item.queue_id))
-    # Multi-model: ``models`` is a list of {name, path}; single-model:
-    # ``model_path`` is a string. Exactly one is expected from the
-    # enqueue layer (CLI or webui InferenceModal).
-    models = p.get("models")
-    # ``device`` from job_params is an explicit override (e.g. "auto"
-    # for HF device_map sharding across multiple GPUs, "cpu" to force
-    # CPU even when GPUs are reserved). When unset / blank, the
-    # launcher derives the right value from gpu_indices.
-    raw_device = p.get("device")
-    device = (
-        raw_device.strip()
-        if isinstance(raw_device, str) and raw_device.strip()
-        else None
-    )
     return launcher.spawn_inference_process(
-        model_path=p.get("model_path") if not models else None,
-        models=models,
+        model_path=p["model_path"],
         port=int(p["port"]),
         host=p.get("host", "127.0.0.1"),
-        device=device,
         dtype=p.get("dtype"),
         attn_implementation=p.get("attn_implementation"),
         checkpoint_path=p.get("checkpoint_path"),
@@ -397,7 +333,6 @@ def _build_inference(item, gpu_indices, tty_path):
         compile=bool(p.get("compile", False)),
         disable_kv_cache=bool(p.get("disable_kv_cache", False)),
         ignore_eos=bool(p.get("ignore_eos", False)),
-        keep_on_gpu=bool(p.get("keep_on_gpu", False)),
         chat_template=p.get("chat_template"),
         cache_implementation=p.get("cache_implementation"),
         compile_args=p.get("compile_args"),
@@ -406,7 +341,6 @@ def _build_inference(item, gpu_indices, tty_path):
         tty_log_path=tty_path,
         auth_token_file=auth_token_file,
         no_auth=no_auth,
-        quiet_tokens=bool(p.get("quiet_tokens", False)),
     )
 
 
@@ -441,7 +375,6 @@ def _build_dataset_server(item, gpu_indices, tty_path):
         tty_log_path=tty_path,
         auth_token_file=auth_token_file,
         no_auth=no_auth,
-        quiet_tokens=bool(p.get("quiet_tokens", False)),
     )
 
 
@@ -673,20 +606,6 @@ def _build_training(item, gpu_indices, tty_path):
     # and the launcher falls back to ``--standalone``.
     rdzv_args = item.job_params.get("rdzv_args") or None
     extra_env = item.job_params.get("extra_env") or None
-    # ``nproc`` from job_params is an explicit single-node override
-    # (typed into the SubmitModal nproc field, or supplied by other
-    # callers that want to bypass the config's nproc_per_node).
-    # Falls back to either the config value or the CPU "gpu"->1
-    # dispatch fallback inside build_command when unset. Cluster
-    # dispatches ignore this in favor of rdzv_args's per-peer nproc.
-    nproc_override = _coerce_nproc_override(item.job_params.get("nproc"))
-    if not gpu_indices and rdzv_args is None:
-        log.info(
-            "training job %s dispatching with 0 GPUs reserved (CPU mode); "
-            "nproc_override=%r",
-            item.queue_id,
-            nproc_override,
-        )
     return launcher.spawn_training_process(
         project_dir=item.project_dir,
         config_name=item.config,
@@ -695,7 +614,6 @@ def _build_training(item, gpu_indices, tty_path):
         tty_log_path=tty_path,
         extra_env=extra_env,
         rdzv_args=rdzv_args,
-        nproc_override=nproc_override,
     )
 
 
@@ -735,11 +653,7 @@ def detect_routable_host() -> Optional[str]:
             self_ident = _cluster.self_identity()
             if self_ident:
                 m = next(
-                    (
-                        mm
-                        for mm in _cluster.members()
-                        if mm.node_id == self_ident.node_id
-                    ),
+                    (mm for mm in _cluster.members() if mm.node_id == self_ident.node_id),
                     None,
                 )
                 if m and m.address and not m.address.startswith("127."):
@@ -795,8 +709,8 @@ def _resolve_inference_server_token(*, port: int, regen: bool) -> str:
     # which the runtime image puts on the python path but isn't strictly
     # required to import at module load.
     try:
-        from inference_server.auth_paths import standalone_token_file as _inf_token_path
         from inference_server.auth_paths import (
+            standalone_token_file as _inf_token_path,
             write_standalone_token as _inf_token_write,
         )
     except ImportError:
@@ -931,7 +845,9 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
             from forgather.tls import client_scheme as _client_scheme
 
             host_for_scheme = finalized_params.get("host", "127.0.0.1")
-            finalized_params.setdefault("scheme", _client_scheme(host_for_scheme))
+            finalized_params.setdefault(
+                "scheme", _client_scheme(host_for_scheme)
+            )
         except Exception:
             finalized_params.setdefault("scheme", "http")
 
@@ -996,13 +912,6 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
     with _state._lock:
         _state.running[item.queue_id] = result.proc
     job_records.update_record(item.queue_id, status="running", pid=result.pid)
-    # Inference jobs are tracked in the cluster picker inventory.
-    # Waking the collect loop on spawn drops the picker-convergence
-    # latency from up to ``COLLECT_INTERVAL_SECONDS`` (10s) to ~1s
-    # so an operator who just clicked "Start server" sees the new
-    # entry before they can switch tabs.
-    if item.job_type == "inference":
-        _wake_inference_inventory()
 
 
 def _pid_ancestors(pid: int) -> List[int]:
@@ -1156,8 +1065,6 @@ def _kill_record(queue_id: str, sig: int) -> bool:
     if updated is not None:
         _gc.relocate_tty_to_logs(updated)
         _cleanup_inference_token(updated)
-        if updated.job_type == "inference":
-            _wake_inference_inventory()
     return updated is not None
 
 
@@ -1181,22 +1088,6 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
             return True
         time.sleep(0.05)
     return not _pid_is_alive(pid)
-
-
-def _wake_inference_inventory() -> None:
-    """Signal the cluster inference-server inventory to re-poll.
-
-    Lazy import so the scheduler stays usable in tests + standalone
-    setups that don't load the cluster machinery. Wake is a latency
-    hint, not correctness-critical — silently swallow failures so a
-    missing/broken cluster module never breaks the scheduler.
-    """
-    try:
-        from . import cluster_inference_inventory
-
-        cluster_inference_inventory.wake_loops()
-    except Exception:
-        pass
 
 
 def _cleanup_inference_token(record: JobRecord) -> None:

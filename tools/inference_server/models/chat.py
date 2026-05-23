@@ -15,10 +15,7 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str
     messages: List[ChatMessage]
-    # See completion.py for rationale — None defers to
-    # _build_generation_config, which uses the model's GenerationConfig
-    # plus a 2048-token floor (env-overridable).
-    max_tokens: Optional[int] = None
+    max_tokens: Optional[int] = 512
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     stream: Optional[bool] = False

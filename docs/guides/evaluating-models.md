@@ -57,53 +57,12 @@ Rank 0 writes:
   "world_size": 2,
   "eval_loss": 1.699,
   "perplexity": 5.47,
-  "bpb": 0.612,
-  "bpc": 0.612,
-  "tokens_per_byte": 0.249,
-  "total_bytes": 1599000,
-  "total_chars": 1599000,
-  "total_predicted_tokens": 399300,
   "wall_time_s": 12.3,
   "timestamp": "2026-04-18T05:11:34Z"
 }
 ```
 
 The same information is printed as a summary table at the end of the run.
-
-### Cross-tokenizer comparison: use BPB, not perplexity
-
-`perplexity = exp(eval_loss)` and `eval_loss` is a **per-token** cross-entropy,
-so its denominator (tokens) changes with the tokenizer. A model whose
-tokenizer compresses more bytes into each token gets a lower perplexity
-mechanically, with no actual quality difference. Comparing perplexities
-across models with different vocabularies is therefore misleading — the
-gap can be 20%+ from tokenization alone.
-
-`forgather eval test` reports two tokenizer-agnostic alternatives:
-
-- **`bpb`** — bits-per-byte: `eval_loss × tokens_per_byte / ln(2)`. The
-  denominator is bytes of source UTF-8 text, not tokens, so the metric is
-  comparable across any pair of models regardless of vocabulary or
-  tokenization scheme. Lower is better. This is the de facto standard
-  (used in The Pile, GPT-3, Karpathy's autoresearch, etc.). **Use this for
-  any cross-model comparison.**
-- **`bpc`** — bits-per-character: same idea, denominator is Unicode code
-  points. Equal to `bpb` for ASCII; useful for non-Latin scripts where
-  per-character entropy is the more intuitive unit.
-- **`tokens_per_byte`** — the conversion factor itself. Surfacing it makes
-  the source of any past confusion explicit and lets you convert legacy
-  perplexity numbers on the fly: `bpb ≈ log2(perplexity) × tokens_per_byte`.
-
-Byte and character counts come from decoding `input_ids` of the eval
-dataset prefix that the trainer actually consumed, via
-`tokenizer.decode(..., skip_special_tokens=True)`. Token counts are over
-predicted positions only (`labels[1:] != -100`, accounting for the causal
-shift). The `bpb` formula assumes `eval_loss` equals the true token-mean
-cross-entropy. The trainer reports a mean of per-step-mean losses, which
-matches the token-mean exactly when batches contain equal numbers of
-valid (non-ignored) tokens — the common case for eval with fixed
-`max_length` and full-length sequences. Variable-length batches introduce
-a small (typically <1%) approximation error.
 
 ## Subcommands
 

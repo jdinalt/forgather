@@ -47,11 +47,6 @@ export function EvalDetailPanel({
                 ppl {result.perplexity.toFixed(2)}
               </span>
             )}
-            {result.bpb != null && (
-              <span className="muted">
-                bpb {result.bpb.toFixed(4)}
-              </span>
-            )}
           </div>
         )}
       </header>

@@ -1,4 +1,5 @@
 -- extends "configs/openorca.yaml"
+-- from "packed.yaml" import map_function, map_kwargs, dynamic_args
 
 [config_metadata]
     == super()
@@ -6,19 +7,12 @@
     -- set ns.config_description = "Open Orca with best-fit sequence packing."
 
 [map_function]
-.define: &map_function !partial:{{ ns.orca_src }}:orca_packed_map_fn
-    chat_template: !singleton:{{ ns.orca_src }}:load_chat_template
-        path: "{{ ns.chat_template }}"
-    max_length: {{ max_length | default(512) }}
-    overflow: False
-    packed: True
-    packing_strategy: "best_fit"
-    shuffle_output: True
-    stride: {{ stride | default(0) }}
-    min_len: 32
-    add_bos: True
-    add_eos: True
+{{ map_function(ns.orca_src, ns.chat_template, max_length | default(512), stride | default(0)) }}
 
 [map_kwargs]
     == super()
-    batch_size: 250
+{{ map_kwargs() }}
+
+[dynamic_args]
+    == super()
+{{ dynamic_args() }}
