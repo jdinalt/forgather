@@ -2710,9 +2710,10 @@ The project tree exposes a different menu per node type:
   Project…** entry recursively removes the project directory via
   `POST /api/fs/delete-dir`; it's gated by both a standard
   `confirm()` and a typed-token prompt requiring the user to type
-  the project's directory basename, since the project tree often
-  contains an `output_models/` subtree (runs / checkpoints) that
-  the regular Clean Output flow won't touch. The confirm body
+  `yes`, since the project tree often contains an `output_models/`
+  subtree (runs / checkpoints) that the regular Clean Output flow
+  won't touch. (Workspace delete keeps its stricter basename gate
+  because it cascades to every project under it.) The confirm body
   spells out that outputs configured to live *outside* the project
   tree are not affected. After delete `["projects"]`,
   `["project-templates", dir]`, and `["project-models", dir]` are

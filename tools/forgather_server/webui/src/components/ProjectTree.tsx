@@ -417,11 +417,11 @@ export function ProjectTree({
       return;
     }
     const typed = window.prompt(
-      `Type the project's directory name to confirm:\n\n${basename(dir)}`,
+      `Type "yes" to confirm deletion of:\n\n${basename(dir)}`,
       "",
     );
     if (typed == null) return;
-    if (typed.trim() !== basename(dir)) {
+    if (typed.trim().toLowerCase() !== "yes") {
       alert("Confirmation text did not match. Project not deleted.");
       return;
     }
