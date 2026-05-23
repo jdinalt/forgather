@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import {
   ChatMessage,
   GenerationParams,
+  detokenizeTokens,
   runChatCompletion,
   streamChatCompletion,
   tokenizeChat,
@@ -537,12 +538,45 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
         return;
       }
       // /tokenize succeeded but didn't include the rendered prompt —
-      // the typical vLLM case. Use the JSON fallback so the user still
-      // gets something usable in the completion pane.
+      // the typical vLLM case. Round-trip the token ids through
+      // /detokenize to recover the byte-accurate prompt string.
+      if (Array.isArray(r.tokens) && r.tokens.length > 0) {
+        try {
+          const d = await detokenizeTokens(
+            state.baseUrl,
+            state.model,
+            r.tokens,
+            state.authToken || undefined,
+          );
+          const recovered = (d.prompt ?? "").toString();
+          if (recovered) {
+            onSendToCompletion(recovered);
+            return;
+          }
+        } catch (detokErr) {
+          // Fall through to the JSON dump below; include the reason
+          // so the status line tells the user which path failed.
+          const reason =
+            detokErr instanceof Error ? detokErr.message : String(detokErr);
+          onSendToCompletion(
+            jsonFallback(
+              payload,
+              `/tokenize returned no prompt and /detokenize failed: ${reason}`,
+            ),
+          );
+          setStatus({
+            kind: "error",
+            message: `/detokenize failed (${reason}) — pasted conversation JSON instead.`,
+          });
+          return;
+        }
+      }
+      // Either no tokens to detokenize or /detokenize returned empty —
+      // JSON dump is the only thing left.
       onSendToCompletion(
         jsonFallback(
           payload,
-          "no `prompt` field in /tokenize response — likely a non-Forgather server (e.g. vLLM)",
+          "neither /tokenize nor /detokenize returned a rendered prompt",
         ),
       );
       setStatus({

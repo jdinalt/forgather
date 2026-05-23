@@ -454,6 +454,34 @@ async def proxy_tokenize(base: str, request: Request) -> JSONResponse:
     )
 
 
+@router.post("/inference/detokenize")
+async def proxy_detokenize(base: str, request: Request) -> JSONResponse:
+    """Forward POST ``<base-root>/detokenize`` (vLLM-compatible).
+
+    Used by the chat panel's "To completion" button to recover a
+    byte-accurate rendered prompt against vLLM, whose /tokenize does
+    not include the rendered text. Webui calls /tokenize to get token
+    ids, then /detokenize to turn those back into a string. Same
+    /v1-stripping rule as /tokenize.
+    """
+    target = _root_of(_validate_base(base)) + "/detokenize"
+    body = await request.body()
+    upstream_headers = {"content-type": "application/json"}
+    upstream_headers.update(_auth_headers_for(base, request))
+    async with httpx.AsyncClient(
+        timeout=_TIMEOUT, verify=_verify_for(target, base=base)
+    ) as client:
+        try:
+            r = await client.post(target, content=body, headers=upstream_headers)
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
+    return JSONResponse(
+        status_code=r.status_code,
+        content=_safe_json(r),
+        headers=_upstream_auth_headers(r.status_code),
+    )
+
+
 # ---------------------------------------------------------------------------
 # User-added inference-server registry
 #

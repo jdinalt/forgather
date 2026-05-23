@@ -99,6 +99,7 @@ function proxyUrl(
     | "completions"
     | "chat/completions"
     | "tokenize"
+    | "detokenize"
     | "health",
   baseUrl: string,
 ): string {
@@ -438,6 +439,34 @@ export async function tokenizeChat(
     throw new Error(`${r.status} ${r.statusText}: ${await r.text()}`);
   }
   return (await r.json()) as TokenizeResponse;
+}
+
+/** vLLM-compatible /detokenize: turn a list of token ids back into the
+ *  exact decoded string. We use this as a fallback for vLLM servers
+ *  whose /tokenize doesn't return the rendered prompt — call /tokenize
+ *  first to get ids, then /detokenize to recover the prompt string. */
+export interface DetokenizeResponse {
+  prompt: string;
+}
+
+export async function detokenizeTokens(
+  baseUrl: string,
+  model: string,
+  tokens: number[],
+  authToken?: string,
+): Promise<DetokenizeResponse> {
+  const r = await fetch(proxyUrl("detokenize", baseUrl), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
+    body: JSON.stringify({
+      model: model || "inference-server",
+      tokens,
+    }),
+  });
+  if (!r.ok) {
+    throw new Error(`${r.status} ${r.statusText}: ${await r.text()}`);
+  }
+  return (await r.json()) as DetokenizeResponse;
 }
 
 /** Result of a one-shot chat completion. ``content`` is the assistant's
