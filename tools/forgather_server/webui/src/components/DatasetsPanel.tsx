@@ -647,7 +647,11 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
   const [selected, setSelected] = useState<SelectedServer | null>(null);
   const [addOpen, setAddOpen] = useState(false);
 
-  const localServers = localsQ.data ?? [];
+  // Hide JobRecord entries for servers whose process has exited — they
+  // can't be queried and only confuse the operator. The selection-
+  // cleanup useEffect below transparently clears any selection on a
+  // server that disappears here.
+  const localServers = (localsQ.data ?? []).filter((s) => s.alive);
   const userServers = usersQ.data ?? [];
 
   // When the selected entry disappears (e.g. a spawned server exits,

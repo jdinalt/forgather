@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, CheckpointEntry, ConfigInfo, EvalEntry, ProjectInfo } from "./api";
+import {
+  api,
+  CheckpointEntry,
+  ConfigInfo,
+  EvalEntry,
+  ProjectInfo,
+  ServiceStatus,
+} from "./api";
 import { getAutoWatchTty } from "./autoWatch";
 import { useDemoMode, useServerVersion } from "./demoMode";
 import { ContextMenu } from "./components/ContextMenu";
@@ -285,6 +292,13 @@ export default function App() {
   const [datasetServerOpen, setDatasetServerOpen] = useState(false);
   const [tensorboardOpen, setTensorboardOpen] = useState(false);
   const [mkdocsOpen, setMkdocsOpen] = useState(false);
+  // Edit-service state: when set, the matching modal is rendered in
+  // edit mode pre-populated from this service's args. Single piece of
+  // state — only one edit modal is open at a time. Dispatched from
+  // ServicesPanel's right-click menu / pencil button.
+  const [editingService, setEditingService] = useState<ServiceStatus | null>(
+    null,
+  );
   const [convertOpen, setConvertOpen] = useState(false);
   const [finalizeOpen, setFinalizeOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
@@ -1157,6 +1171,7 @@ export default function App() {
                         <ServicesPanel
                           filterType={t!}
                           onSwitchView={(v) => setView(v)}
+                          onEditService={setEditingService}
                         />
                       </div>
                     )}
@@ -1464,6 +1479,57 @@ export default function App() {
           onClose={() => setMkdocsOpen(false)}
           onSubmitted={onJobSubmitted}
           onServiceCreated={expandServicesCategory}
+        />
+      )}
+      {/* Edit-service modals — same components as the create-mode mounts
+          above, but routed via editingService.type. Only one renders at a
+          time because only one type matches. */}
+      {editingService && editingService.service.type === "inference" && (
+        <InferenceModal
+          checkpointPath={null}
+          editingService={{
+            name: editingService.service.name,
+            enabled: editingService.service.enabled,
+            running: editingService.running,
+            args: editingService.service.args,
+          }}
+          onClose={() => setEditingService(null)}
+        />
+      )}
+      {editingService && editingService.service.type === "dataset" && (
+        <DatasetServerModal
+          editingService={{
+            name: editingService.service.name,
+            enabled: editingService.service.enabled,
+            running: editingService.running,
+            args: editingService.service.args,
+          }}
+          onClose={() => setEditingService(null)}
+        />
+      )}
+      {editingService && editingService.service.type === "tensorboard" && (
+        <TensorBoardModal
+          global
+          initialLogdir=""
+          initialWindowTitle=""
+          editingService={{
+            name: editingService.service.name,
+            enabled: editingService.service.enabled,
+            running: editingService.running,
+            args: editingService.service.args,
+          }}
+          onClose={() => setEditingService(null)}
+        />
+      )}
+      {editingService && editingService.service.type === "mkdocs" && (
+        <MkDocsModal
+          editingService={{
+            name: editingService.service.name,
+            enabled: editingService.service.enabled,
+            running: editingService.running,
+            args: editingService.service.args,
+          }}
+          onClose={() => setEditingService(null)}
         />
       )}
       {shutdownOpen && (
