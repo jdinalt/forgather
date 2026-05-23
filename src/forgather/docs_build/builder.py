@@ -150,8 +150,20 @@ def build(
         # change up via the existing staleness check.
         try:
             os.utime(out, (src_mtime_before, src_mtime_before))
-        except OSError:
-            pass
+        except OSError as exc:
+            # If utime fails (read-only NFS, FUSE quirks, weird perms)
+            # the output keeps its write-time mtime, which is >= the
+            # source mtime — so the staleness check will mark the page
+            # up-to-date next build and silently miss any edit that
+            # landed in the read/render window. Surface that explicitly
+            # rather than letting it pass unnoticed.
+            log.warning(
+                "docs_build: could not anchor mtime on %s (%s); "
+                "concurrent edits to %s may not be detected until --clean",
+                out,
+                exc,
+                src,
+            )
 
         deps_map[str(rel)] = [_relpath(p, repo_root) for p in deps]
         # Flush the deps sidecar after each page so a Ctrl-C / OOM /

@@ -154,28 +154,62 @@ class TestBuilder:
             d.endswith("pkg/mod.py") and not Path(d).is_absolute() for d in page_deps
         ), page_deps
 
-    def test_deps_sidecar_is_flushed_per_page(self, stub_repo):
-        # Add a second directive page so the loop has more than one
-        # iteration; the first page's deps must be visible on disk
-        # before the second iteration begins (so a mid-loop crash
-        # doesn't strand the first page with a stale/absent entry).
+    def test_deps_sidecar_survives_mid_loop_failure(self, stub_repo, monkeypatch):
+        # Simulate a crash partway through the build (writing page N
+        # succeeds, processing page N+1 raises). The first page's deps
+        # entry must already be on disk — otherwise the next build's
+        # staleness check has no record of which Python files the
+        # rendered page resolved against, and edits to those files
+        # would silently fail to invalidate the cache.
         (stub_repo / "docs" / "second.md").write_text("::: pkg.mod.Widget\n")
-        build(_docs(stub_repo), repo_root=stub_repo)
-        deps = json.loads((stub_repo / "docs" / ".built" / ".deps.json").read_text())
-        # Both pages present in the deps map.
-        assert set(deps.keys()) == {"api/page.md", "second.md"}
+
+        from forgather.docs_build import builder
+
+        real_expand = builder._expand_text
+        call_count = {"n": 0}
+
+        def flaky_expand(text, *, context):
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                raise RuntimeError("simulated crash on second page")
+            return real_expand(text, context=context)
+
+        monkeypatch.setattr(builder, "_expand_text", flaky_expand)
+
+        report = builder.build(_docs(stub_repo), repo_root=stub_repo)
+        # The crash on page 2 turns into a recorded error, not a hard
+        # raise (the builder catches expansion exceptions for resilience).
+        assert len(report.errors) == 1
+        assert len(report.built) == 1
+
+        deps_path = stub_repo / "docs" / ".built" / ".deps.json"
+        assert deps_path.is_file()
+        deps = json.loads(deps_path.read_text())
+        # First page's deps must be on disk despite the crash on page 2.
+        assert "api/page.md" in deps
+        # Second page never rendered, so it must not appear with stale data.
+        assert "second.md" not in deps
 
     def test_output_mtime_anchored_to_source_mtime(self, stub_repo):
-        # The output's mtime should match the source mtime captured
-        # before reading — that way an edit landing during the render
-        # window leaves src.mtime > out.mtime and gets picked up next
-        # build. We verify the invariant directly: after a build,
-        # source and output mtimes are equal (modulo filesystem
-        # resolution rounding).
-        build(_docs(stub_repo), repo_root=stub_repo)
+        # The fix anchors out.mtime to src.mtime captured *before*
+        # reading. To detect a regression to the old "out.mtime ==
+        # write-time" behaviour, force a measurable gap by aging the
+        # source ten seconds into the past, then building. If the fix
+        # is intact, out.mtime == src.mtime (still 10s in the past).
+        # If the fix is reverted, out.mtime is now (~10s newer).
         src = stub_repo / "docs" / "api" / "page.md"
+        ten_seconds_ago = time.time() - 10.0
+        os.utime(src, (ten_seconds_ago, ten_seconds_ago))
+        original_src_mtime = src.stat().st_mtime
+
+        build(_docs(stub_repo), repo_root=stub_repo)
+
         out = stub_repo / "docs" / ".built" / "api" / "page.md"
-        assert abs(src.stat().st_mtime - out.stat().st_mtime) < 0.01
+        # Exact equality (modulo filesystem timestamp resolution).
+        assert abs(out.stat().st_mtime - original_src_mtime) < 0.001, (
+            f"expected out.mtime ({out.stat().st_mtime}) "
+            f"to match pre-read src.mtime ({original_src_mtime})"
+        )
 
     def test_signature_handles_positional_only(self, stub_repo, tmp_path):
         # def f(a, b, /, c, d) must render as exactly that, not as
@@ -200,6 +234,18 @@ class TestBuilder:
         build(_docs(stub_repo), repo_root=stub_repo)
         text = (stub_repo / "docs" / ".built" / "api" / "page.md").read_text()
         assert "def tail(a, b, /)" in text
+
+    def test_signature_pos_only_then_kw_only(self, stub_repo):
+        # def f(a, /, *, b) — positional-only directly followed by
+        # keyword-only with no std params between. The slash and the
+        # asterisk must both emit, in the right order.
+        (stub_repo / "src" / "pkg" / "mod.py").write_text(
+            "def both(a, /, *, b):\n" '    """."""\n' "    return None\n"
+        )
+        (stub_repo / "docs" / "api" / "page.md").write_text("::: pkg.mod.both\n")
+        build(_docs(stub_repo), repo_root=stub_repo)
+        text = (stub_repo / "docs" / ".built" / "api" / "page.md").read_text()
+        assert "def both(a, /, *, b)" in text
 
     def test_python_fence_widens_when_body_contains_triple_backticks(self, stub_repo):
         # A default value containing a triple-backtick run would
