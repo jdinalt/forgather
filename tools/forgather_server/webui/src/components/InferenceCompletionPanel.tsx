@@ -386,25 +386,45 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
 function StatusLine({ status }: { status: Status }) {
   const tokLabel = (n: number) =>
     n < 0 ? "— tokens" : `${n} token${n === 1 ? "" : "s"}`;
+  // Throughput formatter — only meaningful when we actually have a
+  // positive token count and a non-zero duration. Non-streaming
+  // responses report ``tokens: -1`` (we drop usage from the wire
+  // today), so the rate becomes "— tok/s" there.
+  const rateLabel = (n: number, ms: number) => {
+    if (n <= 0 || ms <= 0) return "— tok/s";
+    const rate = n / (ms / 1000);
+    // <10 → one decimal; ≥10 → integer. Reads better in the status
+    // strip where horizontal real estate is tight.
+    return `${rate < 10 ? rate.toFixed(1) : Math.round(rate)} tok/s`;
+  };
   switch (status.kind) {
     case "idle":
       return <span>ready</span>;
-    case "streaming":
-      return <span>streaming · {tokLabel(status.tokens)}</span>;
+    case "streaming": {
+      const elapsedMs = Date.now() - status.startedAt;
+      return (
+        <span>
+          streaming · {tokLabel(status.tokens)} ·{" "}
+          {rateLabel(status.tokens, elapsedMs)}
+        </span>
+      );
+    }
     case "generating":
       return <span>generating…</span>;
     case "done":
       return (
         <span>
           done · {tokLabel(status.tokens)} ·{" "}
-          {(status.durationMs / 1000).toFixed(1)}s
+          {(status.durationMs / 1000).toFixed(1)}s ·{" "}
+          {rateLabel(status.tokens, status.durationMs)}
         </span>
       );
     case "stopped":
       return (
         <span>
           stopped · {tokLabel(status.tokens)} ·{" "}
-          {(status.durationMs / 1000).toFixed(1)}s
+          {(status.durationMs / 1000).toFixed(1)}s ·{" "}
+          {rateLabel(status.tokens, status.durationMs)}
         </span>
       );
     case "error":
