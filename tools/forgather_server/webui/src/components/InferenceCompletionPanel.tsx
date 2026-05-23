@@ -1,11 +1,54 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import {
   GenerationParams,
   runCompletion,
   streamCompletion,
 } from "../inference-client";
+import { persistGet, persistSet } from "../persist";
+import { DragHandle } from "./DragHandle";
 import { InferenceState } from "./InferencePanel";
+
+/** Persisted user prefs for the completion panel layout. Kept narrow:
+ *  the markdown toggle + split percentage are the only things worth
+ *  surviving a reload. Other state (prevInput, status) is transient. */
+interface CompletionPrefs {
+  markdownView: boolean;
+  /** Percent of the body width allocated to the raw textarea when the
+   *  split view is on. Remainder goes to the rendered markdown pane. */
+  leftWidthPct: number;
+}
+
+const PREFS_KEY = "forgather-completion-prefs";
+const DEFAULT_PREFS: CompletionPrefs = {
+  markdownView: false,
+  leftWidthPct: 50,
+};
+
+function loadPrefs(): CompletionPrefs {
+  const raw = persistGet(PREFS_KEY);
+  if (!raw) return DEFAULT_PREFS;
+  try {
+    const parsed = JSON.parse(raw) as Partial<CompletionPrefs>;
+    return {
+      markdownView:
+        typeof parsed.markdownView === "boolean"
+          ? parsed.markdownView
+          : DEFAULT_PREFS.markdownView,
+      leftWidthPct:
+        typeof parsed.leftWidthPct === "number" &&
+        parsed.leftWidthPct >= 15 &&
+        parsed.leftWidthPct <= 85
+          ? parsed.leftWidthPct
+          : DEFAULT_PREFS.leftWidthPct,
+    };
+  } catch {
+    return DEFAULT_PREFS;
+  }
+}
 
 interface Props {
   state: InferenceState;
@@ -46,8 +89,44 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
   // different generation params without manually deleting the previously
   // appended completion. Null until the first generation has started.
   const [prevInput, setPrevInput] = useState<string | null>(null);
+  const [prefs, setPrefs] = useState<CompletionPrefs>(loadPrefs);
   const abortRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+
+  // Drag handler: pixel delta → percentage of the body width. Clamped
+  // to keep either pane from collapsing. State updates fire on every
+  // pointermove; persistence is deferred to pointerup via
+  // ``persistCurrentPrefs`` so a fast drag doesn't emit hundreds of
+  // localStorage writes per second. Mirrors the analyze panel pattern.
+  const onSplitXDelta = useCallback((dx: number) => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const w = body.getBoundingClientRect().width;
+    if (w <= 0) return;
+    setPrefs((prev) => {
+      const next = Math.max(
+        15,
+        Math.min(85, prev.leftWidthPct + (dx / w) * 100),
+      );
+      if (next === prev.leftWidthPct) return prev;
+      return { ...prev, leftWidthPct: next };
+    });
+  }, []);
+
+  const persistPrefsRef = useRef(prefs);
+  persistPrefsRef.current = prefs;
+  const persistCurrentPrefs = useCallback(() => {
+    persistSet(PREFS_KEY, JSON.stringify(persistPrefsRef.current));
+  }, []);
+
+  const updatePrefs = (patch: Partial<CompletionPrefs>) => {
+    setPrefs((prev) => {
+      const next = { ...prev, ...patch };
+      persistSet(PREFS_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
   // Track the previous busy state so we can restore textarea focus
   // exactly on the busy→idle transition. Without this, Ctrl+Enter
   // sends and the textarea's ``disabled`` flip drops focus, forcing
@@ -220,6 +299,17 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
           />
           stream
         </label>
+        <label
+          className="dyn-checkbox"
+          title="Render a side-by-side view with the raw text on the left and Markdown-rendered output on the right"
+        >
+          <input
+            type="checkbox"
+            checked={prefs.markdownView}
+            onChange={(e) => updatePrefs({ markdownView: e.target.checked })}
+          />
+          markdown
+        </label>
         <button onClick={onContinue} disabled={busy || !state.baseUrl}>
           {busy ? "Continuing…" : "Continue"}
         </button>
@@ -251,15 +341,44 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
           <StatusLine status={status} />
         </div>
       </div>
-      <textarea
-        ref={textareaRef}
-        className="inference-textarea"
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={onKeyDown}
-        placeholder="Type a prompt here, then click Continue (or Ctrl+Enter) to let the model extend it."
-        spellCheck={false}
-      />
+      <div className="inference-completion-body" ref={bodyRef}>
+        <textarea
+          ref={textareaRef}
+          className="inference-textarea"
+          style={
+            prefs.markdownView
+              ? { flex: `0 0 ${prefs.leftWidthPct}%` }
+              : undefined
+          }
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder="Type a prompt here, then click Continue (or Ctrl+Enter) to let the model extend it."
+          spellCheck={false}
+        />
+        {prefs.markdownView && (
+          <>
+            <DragHandle
+              axis="x"
+              ariaLabel="Resize raw text vs Markdown panes"
+              onDragDelta={onSplitXDelta}
+              onDragEnd={persistCurrentPrefs}
+              onDoubleClick={() => updatePrefs({ leftWidthPct: 50 })}
+            />
+            <div className="inference-completion-markdown">
+              {text ? (
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {text}
+                </ReactMarkdown>
+              ) : (
+                <div className="muted analyze-empty">
+                  Nothing to render yet — type a prompt and Continue.
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

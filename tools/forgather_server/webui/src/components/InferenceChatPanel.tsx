@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { useDemoMode } from "../demoMode";
 import {
   ChatMessage,
   GenerationParams,
@@ -96,6 +97,7 @@ function loadPersisted(): PersistedChat {
 }
 
 export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
+  const demoMode = useDemoMode();
   const initial = loadPersisted();
   const [systemText, setSystemText] = useState(initial.systemText);
   const [systemOpen, setSystemOpen] = useState(initial.systemOpen);
@@ -609,6 +611,199 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
     setStatus({ kind: "idle" });
   };
 
+  // Hidden file input — clicked programmatically by onImport so the
+  // user gets a native file picker without us rendering a stray input
+  // in the toolbar.
+  const importFileRef = useRef<HTMLInputElement | null>(null);
+
+  /** Build the JSON payload that Export downloads / Import accepts.
+   *  Includes the parts of the chat state that round-trip meaningfully
+   *  — system text and the message list. Mirror of PersistedChat minus
+   *  transient UI flags (panel open/close, impersonate mode) so the
+   *  file doesn't surprise-reset preferences on import. ``version`` is
+   *  a small hedge in case the schema changes; current readers accept
+   *  any value but log a hint on mismatch. */
+  const buildExportPayload = (): {
+    version: number;
+    exported_at: string;
+    systemText: string;
+    messages: { role: string; content: string }[];
+  } => ({
+    version: 1,
+    exported_at: new Date().toISOString(),
+    systemText,
+    messages: messages.map((m) => ({ role: m.role, content: m.content })),
+  });
+
+  const onExport = async () => {
+    // Demo mode is a read-only surface; exporting the conversation
+    // gives a public visitor a one-click way to siphon whatever the
+    // operator has been demonstrating. Disable rather than gate on
+    // server state — Export is a purely client-side operation.
+    if (demoMode) {
+      setStatus({
+        kind: "error",
+        message: "Export is disabled in demo mode.",
+      });
+      return;
+    }
+    if (messages.length === 0 && !systemText) {
+      setStatus({
+        kind: "error",
+        message: "Nothing to export — the conversation is empty.",
+      });
+      return;
+    }
+    const payload = buildExportPayload();
+    const json = JSON.stringify(payload, null, 2);
+    // Date-stamp the filename so multiple exports stay sortable. Local
+    // time is more useful than UTC for "which one did I just save."
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const stamp =
+      `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+      `_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+    const suggestedName = `forgather-chat-${stamp}.json`;
+
+    // Prefer the File System Access API when available (Chromium-family,
+    // and gated to secure contexts) — gives the user a native Save-As
+    // dialog instead of dropping into the browser's default Downloads
+    // folder. Fall back to the classic anchor-click download elsewhere
+    // (Firefox, Safari, http:// contexts).
+    type SaveFilePickerWindow = Window &
+      typeof globalThis & {
+        showSaveFilePicker?: (opts: {
+          suggestedName?: string;
+          types?: { description: string; accept: Record<string, string[]> }[];
+        }) => Promise<{
+          createWritable: () => Promise<{
+            write: (data: Blob | string) => Promise<void>;
+            close: () => Promise<void>;
+          }>;
+        }>;
+      };
+    const win = window as SaveFilePickerWindow;
+    if (typeof win.showSaveFilePicker === "function") {
+      try {
+        const handle = await win.showSaveFilePicker({
+          suggestedName,
+          types: [
+            {
+              description: "Forgather chat (JSON)",
+              accept: { "application/json": [".json"] },
+            },
+          ],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(
+          new Blob([json], { type: "application/json" }),
+        );
+        await writable.close();
+        return;
+      } catch (err) {
+        // User cancelled the picker — silently no-op; any other error
+        // falls through to the anchor-click fallback below so the user
+        // still ends up with their file.
+        if (err instanceof DOMException && err.name === "AbortError") return;
+      }
+    }
+
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = suggestedName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Defer the revoke so the browser's download pipeline has a tick
+    // to read from the blob URL. Without this, fast clicks on Firefox
+    // occasionally produce a 0-byte download.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const onImportClick = () => {
+    if (busy) return;
+    if (messages.length > 0 || systemText.trim()) {
+      if (
+        !window.confirm(
+          "Importing replaces the current conversation and system message. Continue?",
+        )
+      ) {
+        return;
+      }
+    }
+    importFileRef.current?.click();
+  };
+
+  const onImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Reset the input so picking the same file twice in a row still
+    // fires onChange.
+    e.target.value = "";
+    if (!file) return;
+    let text: string;
+    try {
+      text = await file.text();
+    } catch (err) {
+      setStatus({
+        kind: "error",
+        message: `Couldn't read file: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (err) {
+      setStatus({
+        kind: "error",
+        message: `Not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      return;
+    }
+    if (!parsed || typeof parsed !== "object") {
+      setStatus({
+        kind: "error",
+        message: "Import file must be a JSON object.",
+      });
+      return;
+    }
+    // Permissive shape check — accept both our own export format and a
+    // bare ``[{role, content}, …]`` array so users can paste in a
+    // hand-edited transcript without ceremony.
+    let importedSystem = "";
+    let importedMessages: { role: string; content: string }[] = [];
+    if (Array.isArray(parsed)) {
+      importedMessages = parsed as { role: string; content: string }[];
+    } else {
+      const obj = parsed as Record<string, unknown>;
+      if (typeof obj.systemText === "string") importedSystem = obj.systemText;
+      if (Array.isArray(obj.messages)) {
+        importedMessages = obj.messages as { role: string; content: string }[];
+      } else {
+        setStatus({
+          kind: "error",
+          message:
+            "Import file is missing a ``messages`` array. Expected the export format or a bare [{role, content}] list.",
+        });
+        return;
+      }
+    }
+    const cleaned: ChatMessage[] = [];
+    for (const m of importedMessages) {
+      if (!m || typeof m.content !== "string") continue;
+      if (m.role !== "user" && m.role !== "assistant") continue;
+      cleaned.push({ role: m.role, content: m.content });
+    }
+    setMessages(cleaned);
+    setSystemText(importedSystem);
+    setEditingIndex(null);
+    setEditDraft("");
+    setDraft("");
+    setStatus({ kind: "idle" });
+  };
+
   const onDeleteMessage = (index: number) => {
     if (busy) return;
     if (!window.confirm("Delete this message?")) return;
@@ -750,12 +945,41 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
         <button
           type="button"
           className="secondary"
+          onClick={onImportClick}
+          disabled={busy}
+          title="Replace the current conversation with one loaded from a JSON file"
+        >
+          Import
+        </button>
+        <button
+          type="button"
+          className="secondary"
+          onClick={onExport}
+          disabled={demoMode || (messages.length === 0 && !systemText)}
+          title={
+            demoMode
+              ? "Export is disabled in demo mode"
+              : "Save the current conversation (system + messages) to a JSON file"
+          }
+        >
+          Export
+        </button>
+        <button
+          type="button"
+          className="secondary"
           onClick={onReset}
           disabled={busy || (messages.length === 0 && !systemText)}
           title="Clear all chat history and the system message"
         >
           Reset
         </button>
+        <input
+          ref={importFileRef}
+          type="file"
+          accept="application/json,.json"
+          style={{ display: "none" }}
+          onChange={onImportFile}
+        />
         <div className="muted inference-status">
           <StatusLine status={status} />
         </div>
