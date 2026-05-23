@@ -124,6 +124,21 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
   const abortRef = useRef<AbortController | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const draftTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // "Stick to bottom" auto-follow. Tracks whether the transcript is at
+  // (or very near) the bottom; when true, every new chunk pins the view
+  // to the latest text. The user scrolling up flips it to false so they
+  // can read history without being yanked back, and scrolling back into
+  // the bottom band flips it on again. A floating "Jump to latest"
+  // button surfaces while we're not stuck so they always have a way
+  // back. Kept in a ref *and* state — the ref feeds the scroll effect
+  // synchronously (state updates lag a frame), the state drives the
+  // button's visibility.
+  const stickToBottomRef = useRef(true);
+  const [stickToBottom, setStickToBottom] = useState(true);
+  // Distance from the bottom (px) at which we still consider the user
+  // "at bottom." Catches sub-pixel/rounding gaps after a programmatic
+  // scrollTop assignment, and forgives small inertial overshoots.
+  const STICK_THRESHOLD_PX = 24;
   // Track the previous busy state so we can restore textarea focus
   // exactly on the busy→idle transition. Without this, Ctrl+Enter sends
   // and the textarea's ``disabled`` flip drops focus, forcing the user
@@ -156,14 +171,49 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
     persistSet(STORAGE_KEY, JSON.stringify(payload));
   }, [systemText, systemOpen, settingsOpen, impersonateMode, messages]);
 
-  // Keep the transcript pinned to the bottom while new tokens arrive,
-  // and after a send/regenerate. Scrolling to the absolute bottom each
-  // tick is fine here — the message list is short and there's no
-  // infinite-scroll behavior to fight.
+  // Keep the transcript pinned to the bottom while new tokens arrive —
+  // but only when the user hasn't scrolled up to read history. The
+  // scroll handler below flips ``stickToBottomRef`` based on how far
+  // from the bottom the viewport sits; this effect honors that. When
+  // the user *sends* a new turn (transition into busy), force-stick
+  // even if they were scrolled up — sending implicitly means "show me
+  // the response."
+  const prevBusyRef = useRef(busy);
   useEffect(() => {
     const el = transcriptRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, status.kind]);
+    if (!el) return;
+    const justStartedBusy = busy && !prevBusyRef.current;
+    prevBusyRef.current = busy;
+    if (justStartedBusy) {
+      stickToBottomRef.current = true;
+      setStickToBottom(true);
+    }
+    if (stickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [messages, status.kind, busy]);
+
+  // Recompute "is at bottom" on every scroll. Programmatic scrolls fire
+  // this too, but they land at the absolute bottom (distance 0) so the
+  // threshold check still reports stuck — no special-casing needed.
+  const onTranscriptScroll = () => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = distanceFromBottom <= STICK_THRESHOLD_PX;
+    if (atBottom !== stickToBottomRef.current) {
+      stickToBottomRef.current = atBottom;
+      setStickToBottom(atBottom);
+    }
+  };
+
+  const jumpToBottom = () => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    stickToBottomRef.current = true;
+    setStickToBottom(true);
+  };
 
   /** Run the model against the supplied conversation. The caller is
    *  responsible for getting ``msgs`` into its desired pre-call shape
@@ -449,6 +499,25 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
   // request is in flight.
   const canSendToCompletion = !busy;
 
+  // Last-resort fallback when /tokenize either fails outright or
+  // returns no rendered prompt (e.g. vLLM, whose /tokenize doesn't
+  // include the ``prompt`` Forgather extension — so the user can't get
+  // the chat template back through it). Dump the conversation as
+  // pretty-printed JSON with a banner so it's obvious this is *not*
+  // the byte-identical chat-template output, and the user can hand-edit
+  // from there.
+  const jsonFallback = (
+    payload: ChatMessage[],
+    reason: string,
+  ): string => {
+    const banner =
+      `# WARNING: server didn't return a rendered chat-template prompt ` +
+      `(${reason}). Falling back to a JSON dump of the conversation — ` +
+      `this is NOT what the model sees during a chat call. Hand-edit ` +
+      `before sending.\n`;
+    return banner + JSON.stringify(payload, null, 2) + "\n";
+  };
+
   const onSendToCompletionClick = async () => {
     if (!canSendToCompletion || !state.baseUrl) return;
     const payload: ChatMessage[] = systemText.trim()
@@ -463,18 +532,33 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
         state.authToken || undefined,
       );
       const rendered = (r.prompt ?? "").toString();
-      if (!rendered) {
-        setStatus({
-          kind: "error",
-          message: "Server returned no prompt text — check inference server logs.",
-        });
+      if (rendered) {
+        onSendToCompletion(rendered);
         return;
       }
-      onSendToCompletion(rendered);
-    } catch (err) {
+      // /tokenize succeeded but didn't include the rendered prompt —
+      // the typical vLLM case. Use the JSON fallback so the user still
+      // gets something usable in the completion pane.
+      onSendToCompletion(
+        jsonFallback(
+          payload,
+          "no `prompt` field in /tokenize response — likely a non-Forgather server (e.g. vLLM)",
+        ),
+      );
       setStatus({
         kind: "error",
-        message: err instanceof Error ? err.message : String(err),
+        message:
+          "Server didn't return a rendered prompt — pasted conversation JSON instead. Edit before sending.",
+      });
+    } catch (err) {
+      // Hard error from /tokenize itself (404, auth, network). Still
+      // give the user the JSON dump so they have a starting point,
+      // and surface the underlying error so they can fix the config.
+      const reason = err instanceof Error ? err.message : String(err);
+      onSendToCompletion(jsonFallback(payload, `/tokenize failed: ${reason}`));
+      setStatus({
+        kind: "error",
+        message: `/tokenize failed (${reason}) — pasted conversation JSON instead.`,
       });
     }
   };
@@ -685,26 +769,42 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
         </div>
       )}
 
-      <div className="inference-chat-messages" ref={transcriptRef}>
-        {messages.length === 0 && (
-          <div className="muted inference-chat-empty">
-            No messages yet — type below and Send (or Ctrl+Enter).
-          </div>
+      <div className="inference-chat-messages-wrap">
+        <div
+          className="inference-chat-messages"
+          ref={transcriptRef}
+          onScroll={onTranscriptScroll}
+        >
+          {messages.length === 0 && (
+            <div className="muted inference-chat-empty">
+              No messages yet — type below and Send (or Ctrl+Enter).
+            </div>
+          )}
+          {messages.map((msg, i) => (
+            <Message
+              key={i}
+              msg={msg}
+              disabled={busy}
+              onDelete={() => onDeleteMessage(i)}
+              onEdit={() => onEditMessage(i)}
+              isEditing={editingIndex === i}
+              editDraft={editDraft}
+              onEditDraftChange={setEditDraft}
+              onSaveEdit={onSaveEdit}
+              onCancelEdit={onCancelEdit}
+            />
+          ))}
+        </div>
+        {!stickToBottom && (
+          <button
+            type="button"
+            className="inference-chat-jump-bottom"
+            onClick={jumpToBottom}
+            title="Jump to latest message — re-engages auto-follow while streaming"
+          >
+            ↓ Jump to latest
+          </button>
         )}
-        {messages.map((msg, i) => (
-          <Message
-            key={i}
-            msg={msg}
-            disabled={busy}
-            onDelete={() => onDeleteMessage(i)}
-            onEdit={() => onEditMessage(i)}
-            isEditing={editingIndex === i}
-            editDraft={editDraft}
-            onEditDraftChange={setEditDraft}
-            onSaveEdit={onSaveEdit}
-            onCancelEdit={onCancelEdit}
-          />
-        ))}
       </div>
 
       <div className="inference-chat-input">
