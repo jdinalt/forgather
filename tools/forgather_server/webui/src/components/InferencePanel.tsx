@@ -22,10 +22,11 @@ export interface InferenceState {
 }
 
 const STORAGE_KEY = "forgather-inference-state";
-// max_tokens default of 256 is deliberate — the server defaults to 16
-// for completion, which produces a surprising "typed one sentence and
-// it stopped" experience in a free-form textbox.
-export const DEFAULT_GENERATION_PARAMS: GenerationParams = { max_tokens: 256 };
+// max_tokens is intentionally absent so it doesn't leak into the wire
+// payload from the shared params (and surprise-clip a chat reply or a
+// completion). The Completion and Chat sub-panels each surface their
+// own per-request "Max new tokens" override.
+export const DEFAULT_GENERATION_PARAMS: GenerationParams = {};
 const DEFAULT_STATE: InferenceState = {
   baseUrl: "http://localhost:8137/v1",
   authToken: "",

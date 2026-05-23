@@ -38,6 +38,10 @@ type Status =
   | { kind: "error"; message: string };
 
 const DEFAULT_TOP_K = 10;
+// Matches the inference server's score_prompt default. Surfaced as a
+// user-editable field so a giant paste can be widened (or capped
+// further) without redeploying the server.
+const DEFAULT_MAX_LENGTH = 2048;
 
 type ScaleMode = "auto" | "manual";
 type Metric = "loss" | "entropy";
@@ -139,6 +143,7 @@ export function InferenceAnalyzePanel({
 }: Props) {
   const [text, setText] = useState<string>("");
   const [topK, setTopK] = useState<number>(DEFAULT_TOP_K);
+  const [maxLength, setMaxLength] = useState<number>(DEFAULT_MAX_LENGTH);
   const [scores, setScores] = useState<TokenScores | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [prefs, setPrefs] = useState<AnalyzePrefs>(loadPrefs);
@@ -259,6 +264,7 @@ export function InferenceAnalyzePanel({
         topK,
         ac.signal,
         state.authToken || undefined,
+        maxLength,
       );
       setScores(result);
       setStatus({
@@ -335,6 +341,19 @@ export function InferenceAnalyzePanel({
             }
             disabled={busy}
             style={{ width: 60 }}
+          />
+        </label>
+        <label title="Maximum number of tokens to score. Longer inputs are truncated to fit. Defaults to 2048.">
+          Maximum length
+          <input
+            type="number"
+            min={1}
+            value={maxLength}
+            onChange={(e) =>
+              setMaxLength(Math.max(1, Number(e.target.value) || 1))
+            }
+            disabled={busy}
+            style={{ width: 90 }}
           />
         </label>
         <button

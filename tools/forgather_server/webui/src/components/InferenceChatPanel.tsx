@@ -105,6 +105,14 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>(initial.messages);
   const [draft, setDraft] = useState("");
   const [stream, setStream] = useState(true);
+  // Per-request max-new-tokens override — mirrors the Completion panel
+  // so the two views stay consistent. Empty means "leave it to the
+  // server / model defaults" so a too-small baked-in generation config
+  // doesn't truncate a reply unnoticed. Seeded from state.params if a
+  // preset or the Model panel set it.
+  const [maxTokens, setMaxTokens] = useState<number | "">(
+    state.params.max_tokens ?? "",
+  );
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   // Index into ``messages`` of the user turn currently being edited (or
   // null when not editing). Editing happens inline in the message bubble
@@ -191,7 +199,11 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
     if (opts?.extraSystem) {
       payload.push({ role: "system", content: opts.extraSystem });
     }
-    const params: GenerationParams = stripEmpty(state.params);
+    const params: GenerationParams = stripEmpty({
+      ...state.params,
+      max_tokens:
+        typeof maxTokens === "number" && maxTokens > 0 ? maxTokens : undefined,
+    });
     const ac = new AbortController();
     abortRef.current = ac;
     const started = Date.now();
@@ -540,6 +552,26 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
           <span className="tri">{settingsOpen ? "▾" : "▸"}</span>
           Settings
         </button>
+        <label title="Per-request override for the model's max new tokens. Leave empty to let the server / baked-in generation config decide.">
+          Max new tokens
+          <input
+            type="number"
+            min={1}
+            value={maxTokens === "" ? "" : maxTokens}
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw === "") {
+                setMaxTokens("");
+                return;
+              }
+              const n = Number(raw);
+              setMaxTokens(Number.isFinite(n) && n > 0 ? Math.floor(n) : "");
+            }}
+            placeholder="server default"
+            disabled={busy}
+            style={{ width: 110 }}
+          />
+        </label>
         <label
           className="dyn-checkbox"
           title="Uncheck for modes incompatible with streaming, e.g. beam search"

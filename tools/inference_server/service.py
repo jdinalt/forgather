@@ -67,9 +67,7 @@ class ModelNotFoundError(LookupError):
     def __init__(self, requested: Optional[str], available: List[str]) -> None:
         self.requested = requested
         self.available = available
-        super().__init__(
-            f"model not found: {requested!r}. Available: {available}"
-        )
+        super().__init__(f"model not found: {requested!r}. Available: {available}")
 
 
 def resolve_dtype(dtype_str: Optional[str]) -> torch.dtype:
@@ -258,7 +256,9 @@ class ModelEntry:
             built_in = getattr(self.model, "generation_config", None)
             if built_in is not None:
                 self.default_generation_config = built_in
-                _MODULE_LOGGER.info("[%s] using model's built-in generation config", self.name)
+                _MODULE_LOGGER.info(
+                    "[%s] using model's built-in generation config", self.name
+                )
             else:
                 self.default_generation_config = GenerationConfig()
                 _MODULE_LOGGER.info("[%s] using default GenerationConfig", self.name)
@@ -285,11 +285,11 @@ class ModelEntry:
                 self.name,
                 self.chat_template_path,
             )
-        elif (
-            hasattr(self.tokenizer, "chat_template") and self.tokenizer.chat_template
-        ):
+        elif hasattr(self.tokenizer, "chat_template") and self.tokenizer.chat_template:
             self.chat_template = self.tokenizer.chat_template
-            _MODULE_LOGGER.info("[%s] using tokenizer's built-in chat template", self.name)
+            _MODULE_LOGGER.info(
+                "[%s] using tokenizer's built-in chat template", self.name
+            )
         else:
             self.chat_template = default_factory()
             _MODULE_LOGGER.info("[%s] using default fallback chat template", self.name)
@@ -431,11 +431,7 @@ class InferenceService:
                 # eager-loaded ends up on GPU and earlier ones get
                 # demoted to CPU — same end-state the swap protocol
                 # would produce after one round of requests.
-                if (
-                    not keep_on_gpu
-                    and self.active is not None
-                    and len(entry_list) > 1
-                ):
+                if not keep_on_gpu and self.active is not None and len(entry_list) > 1:
                     self._move_active_to_cpu()
                 entry.load(
                     self.device,
@@ -754,9 +750,9 @@ class InferenceService:
                 if (
                     with_prompt.startswith(closed)
                     and len(with_prompt) > len(closed)
-                    and "assistant" in with_prompt[len(closed):]
+                    and "assistant" in with_prompt[len(closed) :]
                 ):
-                    opener = with_prompt[len(closed):]
+                    opener = with_prompt[len(closed) :]
                     return closed + opener.replace("assistant", "user")
                 self.logger.logger.warning(
                     "format_messages: cannot synthesize user-role opener from "
@@ -779,16 +775,20 @@ class InferenceService:
             self.logger.logger.error(f"Unexpected error in template rendering: {e}")
             return self._fallback_format_messages(messages)
 
-    def score_prompt(self, text: str, top_k: int = 10) -> dict:
+    def score_prompt(self, text: str, top_k: int = 10, max_length: int = 2048) -> dict:
         """Score an input string with per-token causal-LM logprobs.
 
         Runs a single forward pass (no ``generate()``) and returns the
         OpenAI legacy-completions ``logprobs`` structure plus a Forgather
         extension (``token_entropies``).
+
+        ``max_length`` caps the tokenized prompt; surfaced as the webui's
+        Analyze "Maximum length" field so a giant paste can be scored in
+        bigger chunks without redeploying.
         """
         enc = self.tokenizer_wrapper.tokenize_and_move_to_device(
             text,
-            max_length=2048,
+            max_length=max(1, int(max_length)),
             padding=False,
             truncation=True,
         )

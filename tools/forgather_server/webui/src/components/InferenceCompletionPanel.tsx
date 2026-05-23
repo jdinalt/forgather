@@ -30,9 +30,11 @@ type Status =
 
 export function InferenceCompletionPanel({ state, text, setText }: Props) {
   // Per-request max-new-tokens override — convenient for "give me just
-  // a few more tokens" without editing the main params.
-  const [maxTokens, setMaxTokens] = useState<number>(
-    state.params.max_tokens ?? 256,
+  // a few more tokens" without editing the main params. Empty means
+  // "leave it to the server / model defaults". Seeded from state.params
+  // if a preset (or the Model panel) set it; otherwise starts empty.
+  const [maxTokens, setMaxTokens] = useState<number | "">(
+    state.params.max_tokens ?? "",
   );
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   // Streaming is incompatible with some HF generation modes (notably
@@ -77,7 +79,8 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
     // so the server sees its own defaults rather than null.
     const params: GenerationParams = stripEmpty({
       ...state.params,
-      max_tokens: maxTokens > 0 ? maxTokens : undefined,
+      max_tokens:
+        typeof maxTokens === "number" && maxTokens > 0 ? maxTokens : undefined,
     });
     const ac = new AbortController();
     abortRef.current = ac;
@@ -188,17 +191,24 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
   return (
     <div className="inference-completion">
       <div className="inference-completion-bar">
-        <label>
+        <label title="Per-request override for the model's max new tokens. Leave empty to let the server / baked-in generation config decide.">
           Max new tokens
           <input
             type="number"
             min={1}
-            value={maxTokens}
-            onChange={(e) =>
-              setMaxTokens(Math.max(1, Number(e.target.value) || 1))
-            }
+            value={maxTokens === "" ? "" : maxTokens}
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw === "") {
+                setMaxTokens("");
+                return;
+              }
+              const n = Number(raw);
+              setMaxTokens(Number.isFinite(n) && n > 0 ? Math.floor(n) : "");
+            }}
+            placeholder="server default"
             disabled={busy}
-            style={{ width: 80 }}
+            style={{ width: 110 }}
           />
         </label>
         <label className="dyn-checkbox" title="Uncheck for modes incompatible with streaming, e.g. beam search">

@@ -347,7 +347,12 @@ export interface TokenScores {
 /** Score input text by running a single forward pass on the server and
  *  returning per-token logprobs + top-K alternatives. Uses the standard
  *  ``echo=true, logprobs=K, max_tokens=0`` shape — works against vLLM
- *  and our inference server identically. */
+ *  and our inference server identically.
+ *
+ *  ``maxLength`` is a Forgather extension (``score_max_length``) that
+ *  caps the tokenizer's prompt length so a giant paste doesn't OOM the
+ *  forward pass. Omit to let the server use its default (2048). vLLM
+ *  ignores the field. */
 export async function scorePrompt(
   baseUrl: string,
   model: string,
@@ -355,6 +360,7 @@ export async function scorePrompt(
   topK: number,
   signal: AbortSignal,
   authToken?: string,
+  maxLength?: number,
 ): Promise<TokenScores> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
@@ -364,6 +370,9 @@ export async function scorePrompt(
     max_tokens: 0,
     stream: false,
   };
+  if (typeof maxLength === "number" && maxLength > 0) {
+    body.score_max_length = Math.floor(maxLength);
+  }
   const r = await fetch(proxyUrl("completions", baseUrl), {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders(authToken) },

@@ -52,6 +52,12 @@ class CompletionRequest(BaseModel):
     seed: Optional[int] = None
     ignore_eos: Optional[bool] = None
 
+    # Forgather extension: caps tokenizer max_length on the scoring path
+    # (echo + logprobs + max_tokens=0). Lets a webui client widen / cap
+    # the 2048 default without redeploying the server. Ignored outside
+    # the scoring path and by vLLM.
+    score_max_length: Optional[int] = None
+
 
 class CompletionChoice(BaseModel):
     text: str
