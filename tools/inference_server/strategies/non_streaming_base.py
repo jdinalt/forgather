@@ -122,11 +122,14 @@ class NonStreamingStrategy(GenerationStrategy):
         )
 
         # 12. Determine finish reason
-        # Pass ignore_eos flag to finish detector
+        # Pass ignore_eos flag to finish detector. Read the effective
+        # cap from the built GenerationConfig — request.max_tokens may
+        # be None (user deferred to the model's default), in which case
+        # the cap that actually applied is generation_config.max_new_tokens.
         ignore_eos = getattr(request, "ignore_eos", False)
         finish_reason = self.service.finish_detector.determine_finish_reason(
             generated_token_ids,
-            request.max_tokens,
+            getattr(generation_config, "max_new_tokens", None),
             stopped_by_sequence,
             ignore_eos=ignore_eos,
         )

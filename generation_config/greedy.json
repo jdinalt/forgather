@@ -1,4 +1,3 @@
 {
-  "max_tokens": 256,
   "do_sample": false
 }

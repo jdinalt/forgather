@@ -361,8 +361,11 @@ forgather server --demo --fs-root /path/to/example/projects
 
 **What's allowlisted** (the only POSTs that still work in demo mode):
 - `/api/auth/logout` — session UX.
-- `/api/inference/{completions, chat/completions, tokenize}` — proxy
-  reads against an external inference upstream.
+- `/api/inference/{completions, chat/completions, tokenize, detokenize}`
+  — proxy reads against an external inference upstream. The
+  `detokenize` route round-trips token ids back to a string and lets
+  the webui recover a byte-accurate chat-template prompt against
+  upstreams (like vLLM) whose `/tokenize` doesn't include it.
 - `/api/dataset-server/proxy/load` and
   `/api/cluster/dataset_server_proxy/<server_id>/load` — proxy reads
   against an external dataset server so the Datasets panel can open

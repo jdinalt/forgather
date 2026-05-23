@@ -792,6 +792,21 @@ logprobs, this needs the full distribution and can't be reconstructed by the
 client. OpenAI / vLLM do not return this field; clients should treat it as
 optional and fall back to loss when absent.
 
+**Forgather extension — `score_max_length`:** caps the prompt-tokenization
+length on this scoring path only (default 2048). Lets a client widen / tighten
+the cap without redeploying. Ignored outside the scoring shape and by vLLM.
+
+```json
+{
+  "model": "test-model",
+  "prompt": "...long text...",
+  "echo": true,
+  "logprobs": 10,
+  "max_tokens": 0,
+  "score_max_length": 4096
+}
+```
+
 ### Test with OpenAI Python client
 
 #### Chat Completions

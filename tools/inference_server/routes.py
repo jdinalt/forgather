@@ -160,7 +160,10 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
                     else request.prompt
                 )
                 async with inference_service.acquire(request.model):
-                    scores = inference_service.score_prompt(prompt_text, top_k=top_k)
+                    score_kwargs = {"top_k": top_k}
+                    if request.score_max_length is not None:
+                        score_kwargs["max_length"] = request.score_max_length
+                    scores = inference_service.score_prompt(prompt_text, **score_kwargs)
                 prompt_tokens = len(scores["tokens"])
                 return CompletionResponse(
                     id=f"cmpl-{int(time.time() * 1000):x}",
@@ -184,9 +187,7 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
                 raise
             except Exception as e:
                 traceback.print_exception(e)
-                raise HTTPException(
-                    status_code=500, detail=f"Scoring failed: {str(e)}"
-                )
+                raise HTTPException(status_code=500, detail=f"Scoring failed: {str(e)}")
 
         try:
             if request.stream:

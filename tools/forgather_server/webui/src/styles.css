@@ -3559,6 +3559,27 @@ li.config.selected button.link:hover {
   background: var(--bg);
 }
 
+/* Wraps the textarea (and optional Markdown pane when the toggle is
+   on). Row layout so the DragHandle slots between them; flex sizing
+   is driven by the leftWidthPct pref on the textarea — the markdown
+   pane just takes the remainder. */
+.inference-completion-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+.inference-completion-markdown {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 16px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 /* ─── Analyze sub-tab ─── Two-column layout: input textarea on the
    left, color-coded scored tokens on the right. Action bar mirrors the
    completion panel's so the row of controls stays familiar. */
@@ -3853,6 +3874,13 @@ li.config.selected button.link:hover {
   font-size: 11px;
   line-height: 1.4;
 }
+.inference-chat-messages-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
 .inference-chat-messages {
   flex: 1;
   min-height: 0;
@@ -3861,6 +3889,23 @@ li.config.selected button.link:hover {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+.inference-chat-jump-bottom {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  z-index: 2;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  opacity: 0.92;
+}
+.inference-chat-jump-bottom:hover {
+  opacity: 1;
 }
 .inference-chat-empty {
   font-size: 12px;

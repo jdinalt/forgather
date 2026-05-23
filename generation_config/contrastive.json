@@ -1,5 +1,4 @@
 {
-  "max_tokens": 256,
   "penalty_alpha": 0.6,
   "top_k": 4,
   "do_sample": false

@@ -197,11 +197,29 @@ export function InferenceModelPanel({ state, setState }: Props) {
   const modelsQ = useQuery({
     // Token in the key so a paste/clear of the token retriggers the fetch
     // — reflects what the upstream actually sees rather than caching a
-    // pre-token result.
+    // pre-token result. Auto-enables whenever a base URL is set so the
+    // user doesn't have to click "Fetch models" first; that omission
+    // used to leave ``state.model`` empty and some upstreams (vLLM)
+    // reject requests without an explicit ``model`` field.
     queryKey: ["inference-models", state.baseUrl, state.authToken],
     queryFn: () => listModels(state.baseUrl, state.authToken || undefined),
-    enabled: false, // manual — user hits "Fetch models"
+    enabled: !!state.baseUrl,
   });
+
+  // Auto-pick a default model whenever the fetched list lands and the
+  // current ``state.model`` isn't a valid id on the new server. Keeps
+  // the previously-selected model if it's still in the list (so flipping
+  // between servers that share a model name doesn't re-pick), otherwise
+  // takes the first entry. This is what kept the symptom alive: a fresh
+  // server pick set ``state.model`` to "" (or to a stale id from the
+  // last server) and vLLM 400s on the bare request.
+  useEffect(() => {
+    const models = modelsQ.data;
+    if (!models || models.length === 0) return;
+    const stillValid = !!state.model && models.some((m) => m.id === state.model);
+    if (stillValid) return;
+    setState((prev) => ({ ...prev, model: models[0].id }));
+  }, [modelsQ.data, state.model, setState]);
 
   const healthM = useMutation({
     mutationFn: (): Promise<ServerCheckResult> =>
@@ -232,8 +250,9 @@ export function InferenceModelPanel({ state, setState }: Props) {
     }));
     setHealth({ kind: "unknown" });
     setPickedRow({ kind: "running", id: row.id });
-    // Re-fetch models against the new URL.
-    setTimeout(() => modelsQ.refetch(), 0);
+    // No explicit refetch — the modelsQ key includes baseUrl + token,
+    // so React Query auto-fetches against the new server. The
+    // auto-pick effect below picks a default once the list lands.
   };
 
   // User-added entries don't carry the bearer token in the listing
@@ -250,7 +269,8 @@ export function InferenceModelPanel({ state, setState }: Props) {
     }));
     setHealth({ kind: "unknown" });
     setPickedRow({ kind: "user", id: s.id });
-    setTimeout(() => modelsQ.refetch(), 0);
+    // Same auto-fetch + auto-pick as pickRow — query key picks up the
+    // URL change, the effect picks a default model from the result.
   };
 
   const userServers = userServersQ.data ?? [];
@@ -416,13 +436,17 @@ export function InferenceModelPanel({ state, setState }: Props) {
       <section>
         <h4 className="dyn-heading">
           Models
+          {/* Auto-fetched whenever a server is picked. Manual Refresh
+              stays handy for cases where the upstream's model list
+              changes mid-session (server restart, new model loaded). */}
           <button
             className="secondary"
             style={{ marginLeft: 10, fontSize: 11 }}
             onClick={() => modelsQ.refetch()}
             disabled={modelsQ.isFetching || !state.baseUrl}
+            title="Re-fetch the model list from the selected server"
           >
-            {modelsQ.isFetching ? "Fetching…" : "Fetch models"}
+            {modelsQ.isFetching ? "Refreshing…" : "Refresh"}
           </button>
         </h4>
         {modelsQ.error && (
@@ -611,7 +635,11 @@ export function InferenceModelPanel({ state, setState }: Props) {
             label="max_tokens"
             value={state.params.max_tokens}
             onChange={(v) => setParams({ max_tokens: v })}
-            placeholder="256"
+            // Empty = send no value; the server picks. Forgather uses
+            // the model's generation_config with a 2048 floor; vLLM
+            // and most OpenAI-spec servers default to "rest of the
+            // context window."
+            placeholder="server default"
           />
           <NumField
             label="temperature"

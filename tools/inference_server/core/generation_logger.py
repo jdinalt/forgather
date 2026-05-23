@@ -59,7 +59,7 @@ class GenerationLogger:
         request_id: str,
         request_type: str,
         model: str,
-        max_tokens: int,
+        max_tokens: Optional[int],
         temperature: float,
         top_p: float,
         **kwargs: Any,

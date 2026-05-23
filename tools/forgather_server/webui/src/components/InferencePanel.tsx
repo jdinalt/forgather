@@ -22,10 +22,12 @@ export interface InferenceState {
 }
 
 const STORAGE_KEY = "forgather-inference-state";
-// max_tokens default of 256 is deliberate — the server defaults to 16
-// for completion, which produces a surprising "typed one sentence and
-// it stopped" experience in a free-form textbox.
-export const DEFAULT_GENERATION_PARAMS: GenerationParams = { max_tokens: 256 };
+// max_tokens is intentionally absent — the design intent is "server
+// dictates the default." Forgather's own inference server falls back
+// to the model's baked-in generation_config with a generous floor;
+// vLLM and most other OpenAI-spec servers default to "rest of the
+// context window." Either way the client shouldn't lock a number in.
+export const DEFAULT_GENERATION_PARAMS: GenerationParams = {};
 const DEFAULT_STATE: InferenceState = {
   baseUrl: "http://localhost:8137/v1",
   authToken: "",
@@ -38,6 +40,20 @@ function loadState(): InferenceState {
   if (!raw) return DEFAULT_STATE;
   try {
     const parsed = JSON.parse(raw) as Partial<InferenceState>;
+    const params: GenerationParams =
+      parsed.params && typeof parsed.params === "object"
+        ? { ...(parsed.params as GenerationParams) }
+        : { ...DEFAULT_STATE.params };
+    // Migration: previously-shipped DEFAULT_GENERATION_PARAMS seeded
+    // ``max_tokens: 256`` (long-standing) and briefly ``max_tokens: 1024``
+    // (a one-build mistake). Both contradicted the "server dictates"
+    // design intent. Strip either stale value from returning sessions
+    // so the UI's "server picks" claim is actually true; users who
+    // explicitly picked 256/1024 will have to re-set, which is a fair
+    // trade against the much larger population who never touched it.
+    if (params.max_tokens === 256 || params.max_tokens === 1024) {
+      delete params.max_tokens;
+    }
     return {
       baseUrl:
         typeof parsed.baseUrl === "string"
@@ -46,10 +62,7 @@ function loadState(): InferenceState {
       authToken:
         typeof parsed.authToken === "string" ? parsed.authToken : "",
       model: typeof parsed.model === "string" ? parsed.model : "",
-      params:
-        parsed.params && typeof parsed.params === "object"
-          ? (parsed.params as GenerationParams)
-          : DEFAULT_STATE.params,
+      params,
     };
   } catch {
     return DEFAULT_STATE;

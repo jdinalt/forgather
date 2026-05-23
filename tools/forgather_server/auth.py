@@ -258,6 +258,7 @@ _DEMO_MUTATION_ALLOWLIST = frozenset(
         "/api/inference/completions",
         "/api/inference/chat/completions",
         "/api/inference/tokenize",
+        "/api/inference/detokenize",
         # Dataset-server load proxy: HTTP POST by convention because the
         # body carries a JSON spec, but functionally a read — it asks
         # the upstream dataset_server to materialize a handle so the

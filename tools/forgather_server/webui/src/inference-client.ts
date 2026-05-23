@@ -99,6 +99,7 @@ function proxyUrl(
     | "completions"
     | "chat/completions"
     | "tokenize"
+    | "detokenize"
     | "health",
   baseUrl: string,
 ): string {
@@ -197,6 +198,16 @@ export async function checkServer(
  *    data: [DONE]\n\n
  *  We split on the double-newline boundary to be tolerant of chunks that
  *  contain more than one event. */
+/** OpenAI's documented default for ``/v1/completions`` is
+ *  ``max_tokens: 16``, which vLLM and other spec-compliant servers
+ *  apply. That's almost always wrong for our users — silently clips
+ *  raw-prompt extension at 16 new tokens. Inject a generous default
+ *  on this code path only (the spec default for
+ *  ``/v1/chat/completions`` is "rest of context window," so the chat
+ *  helpers don't need this). Caller-supplied values still win because
+ *  ``...params`` spreads after. */
+const COMPLETION_DEFAULT_MAX_TOKENS = 2048;
+
 /** One-shot completion (``stream: false``). Returns the full text after
  *  the server finishes generating. Needed for generation modes the HF
  *  streamer doesn't support, notably beam search. */
@@ -212,6 +223,7 @@ export async function runCompletion(
     model: model || "inference-server",
     prompt,
     stream: false,
+    max_tokens: COMPLETION_DEFAULT_MAX_TOKENS,
     ...params,
   };
   const r = await fetch(proxyUrl("completions", baseUrl), {
@@ -241,6 +253,7 @@ export async function* streamCompletion(
     model: model || "inference-server",
     prompt,
     stream: true,
+    max_tokens: COMPLETION_DEFAULT_MAX_TOKENS,
     ...params,
   };
   yield* streamSse<string>(
@@ -347,7 +360,12 @@ export interface TokenScores {
 /** Score input text by running a single forward pass on the server and
  *  returning per-token logprobs + top-K alternatives. Uses the standard
  *  ``echo=true, logprobs=K, max_tokens=0`` shape — works against vLLM
- *  and our inference server identically. */
+ *  and our inference server identically.
+ *
+ *  ``maxLength`` is a Forgather extension (``score_max_length``) that
+ *  caps the tokenizer's prompt length so a giant paste doesn't OOM the
+ *  forward pass. Omit to let the server use its default (2048). vLLM
+ *  ignores the field. */
 export async function scorePrompt(
   baseUrl: string,
   model: string,
@@ -355,6 +373,7 @@ export async function scorePrompt(
   topK: number,
   signal: AbortSignal,
   authToken?: string,
+  maxLength?: number,
 ): Promise<TokenScores> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
@@ -364,6 +383,9 @@ export async function scorePrompt(
     max_tokens: 0,
     stream: false,
   };
+  if (typeof maxLength === "number" && maxLength > 0) {
+    body.score_max_length = Math.floor(maxLength);
+  }
   const r = await fetch(proxyUrl("completions", baseUrl), {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
@@ -429,6 +451,34 @@ export async function tokenizeChat(
     throw new Error(`${r.status} ${r.statusText}: ${await r.text()}`);
   }
   return (await r.json()) as TokenizeResponse;
+}
+
+/** vLLM-compatible /detokenize: turn a list of token ids back into the
+ *  exact decoded string. We use this as a fallback for vLLM servers
+ *  whose /tokenize doesn't return the rendered prompt — call /tokenize
+ *  first to get ids, then /detokenize to recover the prompt string. */
+export interface DetokenizeResponse {
+  prompt: string;
+}
+
+export async function detokenizeTokens(
+  baseUrl: string,
+  model: string,
+  tokens: number[],
+  authToken?: string,
+): Promise<DetokenizeResponse> {
+  const r = await fetch(proxyUrl("detokenize", baseUrl), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
+    body: JSON.stringify({
+      model: model || "inference-server",
+      tokens,
+    }),
+  });
+  if (!r.ok) {
+    throw new Error(`${r.status} ${r.statusText}: ${await r.text()}`);
+  }
+  return (await r.json()) as DetokenizeResponse;
 }
 
 /** Result of a one-shot chat completion. ``content`` is the assistant's

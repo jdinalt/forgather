@@ -15,6 +15,7 @@ import {
 } from "../colormaps";
 import { scorePrompt, TokenScores } from "../inference-client";
 import { persistGet, persistSet } from "../persist";
+import { DragHandle } from "./DragHandle";
 import { InferenceState } from "./InferencePanel";
 
 interface Props {
@@ -38,6 +39,10 @@ type Status =
   | { kind: "error"; message: string };
 
 const DEFAULT_TOP_K = 10;
+// Matches the inference server's score_prompt default. Surfaced as a
+// user-editable field so a giant paste can be widened (or capped
+// further) without redeploying the server.
+const DEFAULT_MAX_LENGTH = 2048;
 
 type ScaleMode = "auto" | "manual";
 type Metric = "loss" | "entropy";
@@ -139,6 +144,7 @@ export function InferenceAnalyzePanel({
 }: Props) {
   const [text, setText] = useState<string>("");
   const [topK, setTopK] = useState<number>(DEFAULT_TOP_K);
+  const [maxLength, setMaxLength] = useState<number>(DEFAULT_MAX_LENGTH);
   const [scores, setScores] = useState<TokenScores | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [prefs, setPrefs] = useState<AnalyzePrefs>(loadPrefs);
@@ -259,6 +265,7 @@ export function InferenceAnalyzePanel({
         topK,
         ac.signal,
         state.authToken || undefined,
+        maxLength,
       );
       setScores(result);
       setStatus({
@@ -335,6 +342,19 @@ export function InferenceAnalyzePanel({
             }
             disabled={busy}
             style={{ width: 60 }}
+          />
+        </label>
+        <label title="Maximum number of tokens to score. Longer inputs are truncated to fit. Defaults to 2048.">
+          Maximum length
+          <input
+            type="number"
+            min={1}
+            value={maxLength}
+            onChange={(e) =>
+              setMaxLength(Math.max(1, Number(e.target.value) || 1))
+            }
+            disabled={busy}
+            style={{ width: 90 }}
           />
         </label>
         <button
@@ -909,107 +929,6 @@ function applyEma(values: number[], alpha: number): number[] {
     out[i] = prev;
   }
   return out;
-}
-
-/** Pointer-capture drag handle. ``axis="x"`` is a thin vertical strip
- *  that drags horizontally (col-resize); ``axis="y"`` is a horizontal
- *  strip that drags vertically (row-resize). Emits per-move pixel
- *  deltas — parent does the geometry math. Double-click invokes
- *  ``onDoubleClick`` (used to reset to default split). Pattern lifted
- *  from JobsPanel's split handle. */
-function DragHandle({
-  axis,
-  ariaLabel,
-  onDragDelta,
-  onDragEnd,
-  onDoubleClick,
-}: {
-  axis: "x" | "y";
-  ariaLabel: string;
-  onDragDelta: (delta: number) => void;
-  /** Called on pointerup / pointercancel / Home key, and after each
-   *  arrow-key nudge. Parent uses this to persist layout once a
-   *  gesture has settled — avoids hundreds of localStorage writes
-   *  per second during a fast drag. */
-  onDragEnd?: () => void;
-  /** Tied to the handle's double-click as well as the Home key for
-   *  keyboard users — both gestures mean "reset to default." */
-  onDoubleClick?: () => void;
-}) {
-  const lastRef = useRef<{ x: number; y: number; pointerId: number } | null>(
-    null,
-  );
-  return (
-    <div
-      className={axis === "x" ? "analyze-split-x" : "analyze-split-y"}
-      role="separator"
-      aria-orientation={axis === "x" ? "vertical" : "horizontal"}
-      aria-label={ariaLabel}
-      tabIndex={0}
-      title="Drag to resize · double-click or Home to reset · arrow keys to nudge (Shift for x4)"
-      onPointerDown={(e) => {
-        e.preventDefault();
-        (e.currentTarget as Element).setPointerCapture(e.pointerId);
-        lastRef.current = {
-          x: e.clientX,
-          y: e.clientY,
-          pointerId: e.pointerId,
-        };
-        document.body.style.cursor =
-          axis === "x" ? "col-resize" : "row-resize";
-        document.body.style.userSelect = "none";
-      }}
-      onPointerMove={(e) => {
-        const last = lastRef.current;
-        if (!last) return;
-        const delta =
-          axis === "x" ? e.clientX - last.x : e.clientY - last.y;
-        if (delta !== 0) onDragDelta(delta);
-        lastRef.current = { ...last, x: e.clientX, y: e.clientY };
-      }}
-      onPointerUp={(e) => {
-        if (!lastRef.current) return;
-        lastRef.current = null;
-        try {
-          (e.currentTarget as Element).releasePointerCapture(e.pointerId);
-        } catch {
-          /* already released */
-        }
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-        onDragEnd?.();
-      }}
-      onPointerCancel={(e) => {
-        lastRef.current = null;
-        try {
-          (e.currentTarget as Element).releasePointerCapture(e.pointerId);
-        } catch {
-          /* already released */
-        }
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-        onDragEnd?.();
-      }}
-      onDoubleClick={onDoubleClick}
-      onKeyDown={(e) => {
-        const step = e.shiftKey ? 32 : 8;
-        const decrease = axis === "x" ? "ArrowLeft" : "ArrowUp";
-        const increase = axis === "x" ? "ArrowRight" : "ArrowDown";
-        if (e.key === decrease) {
-          e.preventDefault();
-          onDragDelta(-step);
-          onDragEnd?.();
-        } else if (e.key === increase) {
-          e.preventDefault();
-          onDragDelta(step);
-          onDragEnd?.();
-        } else if (e.key === "Home") {
-          e.preventDefault();
-          onDoubleClick?.();
-        }
-      }}
-    />
-  );
 }
 
 const HIST_BINS = 30;

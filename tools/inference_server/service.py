@@ -54,6 +54,40 @@ from .models.completion import CompletionRequest
 _MODULE_LOGGER = logging.getLogger("inference_server")
 
 
+def _resolve_default_max_new_tokens() -> int:
+    """Parse ``FORGATHER_DEFAULT_MAX_NEW_TOKENS`` once at import time.
+
+    The floor used by :meth:`InferenceService._build_generation_config`
+    when neither the request nor the model's baked-in
+    ``generation_config`` sets ``max_new_tokens``. Doing the parse
+    here (rather than per-request) means a bad value (e.g. a typo'd
+    deployment override) surfaces as a single warning at startup and
+    a stable fallback, instead of a ``ValueError`` mid-generation that
+    bubbles out as a 500.
+    """
+    raw = os.environ.get("FORGATHER_DEFAULT_MAX_NEW_TOKENS")
+    if raw is None or raw == "":
+        return 2048
+    try:
+        value = int(raw)
+    except ValueError:
+        _MODULE_LOGGER.warning(
+            "FORGATHER_DEFAULT_MAX_NEW_TOKENS=%r is not an int — using 2048",
+            raw,
+        )
+        return 2048
+    if value <= 0:
+        _MODULE_LOGGER.warning(
+            "FORGATHER_DEFAULT_MAX_NEW_TOKENS=%d is non-positive — using 2048",
+            value,
+        )
+        return 2048
+    return value
+
+
+DEFAULT_MAX_NEW_TOKENS = _resolve_default_max_new_tokens()
+
+
 class ModelNotFoundError(LookupError):
     """Raised by :meth:`InferenceService._resolve_entry` when the OpenAI
     ``model`` field on a request doesn't match any registered entry on
@@ -67,9 +101,7 @@ class ModelNotFoundError(LookupError):
     def __init__(self, requested: Optional[str], available: List[str]) -> None:
         self.requested = requested
         self.available = available
-        super().__init__(
-            f"model not found: {requested!r}. Available: {available}"
-        )
+        super().__init__(f"model not found: {requested!r}. Available: {available}")
 
 
 def resolve_dtype(dtype_str: Optional[str]) -> torch.dtype:
@@ -258,7 +290,9 @@ class ModelEntry:
             built_in = getattr(self.model, "generation_config", None)
             if built_in is not None:
                 self.default_generation_config = built_in
-                _MODULE_LOGGER.info("[%s] using model's built-in generation config", self.name)
+                _MODULE_LOGGER.info(
+                    "[%s] using model's built-in generation config", self.name
+                )
             else:
                 self.default_generation_config = GenerationConfig()
                 _MODULE_LOGGER.info("[%s] using default GenerationConfig", self.name)
@@ -285,11 +319,11 @@ class ModelEntry:
                 self.name,
                 self.chat_template_path,
             )
-        elif (
-            hasattr(self.tokenizer, "chat_template") and self.tokenizer.chat_template
-        ):
+        elif hasattr(self.tokenizer, "chat_template") and self.tokenizer.chat_template:
             self.chat_template = self.tokenizer.chat_template
-            _MODULE_LOGGER.info("[%s] using tokenizer's built-in chat template", self.name)
+            _MODULE_LOGGER.info(
+                "[%s] using tokenizer's built-in chat template", self.name
+            )
         else:
             self.chat_template = default_factory()
             _MODULE_LOGGER.info("[%s] using default fallback chat template", self.name)
@@ -431,11 +465,7 @@ class InferenceService:
                 # eager-loaded ends up on GPU and earlier ones get
                 # demoted to CPU — same end-state the swap protocol
                 # would produce after one round of requests.
-                if (
-                    not keep_on_gpu
-                    and self.active is not None
-                    and len(entry_list) > 1
-                ):
+                if not keep_on_gpu and self.active is not None and len(entry_list) > 1:
                     self._move_active_to_cpu()
                 entry.load(
                     self.device,
@@ -595,8 +625,18 @@ class InferenceService:
         self, request: Union[ChatCompletionRequest, CompletionRequest]
     ) -> GenerationConfig:
         """Build a GenerationConfig from request parameters + active model defaults."""
-        max_tokens = getattr(request, "max_new_tokens", None) or getattr(
-            request, "max_tokens", 16
+        # Honor an explicit value from the request — either OpenAI's
+        # ``max_tokens`` or HF's ``max_new_tokens``. ``or`` would
+        # collapse an explicit 0 to "unset" and silently install the
+        # floor below; ``is not None`` keeps zero meaningful (still
+        # nonsense for generate(), but at least it's the user's
+        # nonsense — they'll see a clear HF error rather than 2048
+        # tokens of output). When neither is set, leave the model's
+        # default in place (was previously hard-coded to 16, which
+        # clipped most replies mid-sentence).
+        max_new = getattr(request, "max_new_tokens", None)
+        max_tokens = (
+            max_new if max_new is not None else getattr(request, "max_tokens", None)
         )
 
         if self.default_generation_config is not None:
@@ -606,7 +646,16 @@ class InferenceService:
         else:
             generation_config = GenerationConfig()
 
-        generation_config.max_new_tokens = max_tokens
+        if max_tokens is not None:
+            generation_config.max_new_tokens = max_tokens
+        elif generation_config.max_new_tokens is None:
+            # The request didn't specify, and the model's baked-in
+            # generation_config doesn't either. HF's hard fallback is
+            # ``GenerationConfig.max_length = 20`` — that clips replies
+            # to ~16 new tokens, which is the worst-of-all-worlds
+            # default. Install a generous floor (env-overridable via
+            # FORGATHER_DEFAULT_MAX_NEW_TOKENS, resolved once at import).
+            generation_config.max_new_tokens = DEFAULT_MAX_NEW_TOKENS
         if request.temperature is not None:
             generation_config.temperature = request.temperature
         if request.top_p is not None:
@@ -754,9 +803,9 @@ class InferenceService:
                 if (
                     with_prompt.startswith(closed)
                     and len(with_prompt) > len(closed)
-                    and "assistant" in with_prompt[len(closed):]
+                    and "assistant" in with_prompt[len(closed) :]
                 ):
-                    opener = with_prompt[len(closed):]
+                    opener = with_prompt[len(closed) :]
                     return closed + opener.replace("assistant", "user")
                 self.logger.logger.warning(
                     "format_messages: cannot synthesize user-role opener from "
@@ -779,16 +828,20 @@ class InferenceService:
             self.logger.logger.error(f"Unexpected error in template rendering: {e}")
             return self._fallback_format_messages(messages)
 
-    def score_prompt(self, text: str, top_k: int = 10) -> dict:
+    def score_prompt(self, text: str, top_k: int = 10, max_length: int = 2048) -> dict:
         """Score an input string with per-token causal-LM logprobs.
 
         Runs a single forward pass (no ``generate()``) and returns the
         OpenAI legacy-completions ``logprobs`` structure plus a Forgather
         extension (``token_entropies``).
+
+        ``max_length`` caps the tokenized prompt; surfaced as the webui's
+        Analyze "Maximum length" field so a giant paste can be scored in
+        bigger chunks without redeploying.
         """
         enc = self.tokenizer_wrapper.tokenize_and_move_to_device(
             text,
-            max_length=2048,
+            max_length=max(1, int(max_length)),
             padding=False,
             truncation=True,
         )
