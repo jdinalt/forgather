@@ -55,6 +55,10 @@ export function InferenceModelPanel({
   // fight a hidden field. Demo mode forces masked + hides the toggle.
   const [showAuthToken, setShowAuthToken] = useState(false);
   const tokenMaskedInUi = demoMode || !showAuthToken;
+  // Latched while a user-server token reveal is in flight so the
+  // Show/Copy buttons can render a spinner glyph and disable
+  // themselves against a double-click.
+  const [revealingToken, setRevealingToken] = useState(false);
   const [health, setHealth] = useState<HealthState>({ kind: "unknown" });
   // User-added inference-server registry. The Add modal opens on
   // "+ Add server"; rows render in their own section below the
@@ -305,11 +309,67 @@ export function InferenceModelPanel({
     }));
     setHealth({ kind: "unknown" });
     setPickedRow({ kind: "user", id: s.id });
+    // Reset the Show toggle so a new pick doesn't inherit the
+    // previous row's unmasked state — important for the user-added
+    // case where the token is only present in browser memory while
+    // the operator explicitly asked for it.
+    setShowAuthToken(false);
     // Same auto-fetch + auto-pick as pickRow — query key picks up the
     // URL change, the effect picks a default model from the result.
   };
 
+  // Fetch the bearer token for the currently-picked user-server
+  // entry. Only invoked from the Show / Copy click handlers so the
+  // secret crosses the wire only when the operator explicitly asks
+  // (lets them export it to curl / opencode / SDKs, and lets them
+  // diagnose "this server is rejecting auth, did I paste the wrong
+  // token?" against the stored value). Returns the token string on
+  // success, "" on failure or no-op. Populates state.authToken so
+  // subsequent toggles + outgoing requests can use it directly.
+  const revealUserToken = async (): Promise<string> => {
+    if (pickedRow?.kind !== "user") return "";
+    setRevealingToken(true);
+    try {
+      const token = await api.getUserInferenceServerToken(pickedRow.id);
+      // Race guard: the operator may have picked a different row
+      // while the fetch was in flight. Drop the result if so.
+      if (pickedRow?.kind !== "user" || !token) return token || "";
+      setState((prev) => ({ ...prev, authToken: token }));
+      return token;
+    } catch (e) {
+      window.alert(
+        `Could not reveal token: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      return "";
+    } finally {
+      setRevealingToken(false);
+    }
+  };
+
   const userServers = userServersQ.data ?? [];
+
+  // Where does the currently-picked server's token actually live?
+  //   - "client": in state.authToken (local spawned servers; their
+  //     bearer token comes from JobRecord.auth_token and the client
+  //     attaches it on every upstream call).
+  //   - "server": in the user-server registry on disk; the proxy
+  //     looks it up by base_url and attaches it on the way out
+  //     (see _auth_headers_for in routes/inference_proxy.py). The
+  //     client side intentionally never holds the token text.
+  //   - "none": no auth — the server doesn't require a bearer.
+  //   - "unknown": no row picked yet, or a stale picked-row.
+  const pickedUserServer =
+    pickedRow?.kind === "user"
+      ? userServers.find((s) => s.id === pickedRow.id) ?? null
+      : null;
+  const tokenLocation: "client" | "server" | "none" | "unknown" =
+    state.authToken
+      ? "client"
+      : pickedUserServer
+        ? pickedUserServer.has_auth_token
+          ? "server"
+          : "none"
+        : "unknown";
 
   // When the selected user-server is removed (via "×" or out-of-band),
   // clear baseUrl + the picked-row pin so action buttons stop firing
@@ -552,53 +612,105 @@ export function InferenceModelPanel({
                 input stretches to fit a full bearer token (64 hex
                 chars). Show toggles masking; Copy lifts the token
                 straight to the clipboard for use in an external
-                client (curl / OpenAI SDK / etc.). Both controls are
-                hidden in demo mode so the token can't be revealed
-                or exfiltrated; the field stays in the layout as a
-                placeholder so the panel doesn't reflow. */}
+                client (curl / opencode / OpenAI SDK / etc.). Both
+                controls are hidden in demo mode so the token can't
+                be revealed or exfiltrated; the field stays in the
+                layout as a placeholder so the panel doesn't reflow.
+
+                User-added entries store the bearer in the on-disk
+                registry so the listing endpoint never carries the
+                secret. The first Show / Copy click for one of these
+                rows triggers a one-shot fetch (revealUserToken)
+                that populates state.authToken; subsequent toggles
+                are cheap. Picking a different row clears the held
+                token. This keeps the token's lifetime in browser
+                memory bounded by explicit operator action. */}
             <div className="path-field">
+              {/* When the picked row is a user-added server with auth
+                  configured (tokenLocation === "server") but the
+                  operator hasn't yet clicked Show / Copy, the real
+                  token isn't in client state. Render a placeholder
+                  string of bullet characters so the field looks
+                  identical to the eventual masked-value state. This
+                  matches the user's mental model of "password field"
+                  — they recognize "click Show to reveal" without
+                  needing a sentence of explanation, and the visual
+                  doesn't change from before-reveal to after-hide.
+                  When ``state.authToken`` is set (after reveal, or
+                  on a local-server pick), it wins. */}
               <input
                 type={tokenMaskedInUi ? "password" : "text"}
                 className="wide"
-                value={state.authToken}
+                value={
+                  state.authToken
+                    ? state.authToken
+                    : tokenLocation === "server"
+                      ? "••••••••••••••••"
+                      : ""
+                }
                 readOnly
                 placeholder={
                   demoMode
                     ? "Token hidden in demo mode"
-                    : "Bearer token (auto-filled when you pick a server)"
+                    : tokenLocation === "none"
+                      ? "No auth — this server doesn't require a bearer token"
+                      : "Bearer token (auto-filled when you pick a server)"
                 }
                 autoComplete="off"
                 spellCheck={false}
                 title={
                   demoMode
                     ? "Token hidden in demo mode"
-                    : "Pick a server above to set the token"
+                    : tokenLocation === "server"
+                      ? "Stored server-side and forwarded by the proxy automatically. Click Show / Copy to fetch the value for use in an external client (or to verify what's stored when diagnosing an auth failure). The fetched value is cleared when you pick another server."
+                      : tokenLocation === "none"
+                        ? "Picked server has no bearer-token auth configured."
+                        : "Pick a server above to set the token"
                 }
               />
-              {!demoMode && (
+              {!demoMode && (tokenLocation === "client" || tokenLocation === "server") && (
                 <button
                   type="button"
                   className="secondary"
-                  onClick={() => setShowAuthToken((v) => !v)}
+                  onClick={async () => {
+                    if (!state.authToken && tokenLocation === "server") {
+                      const ok = await revealUserToken();
+                      if (!ok) return;
+                    }
+                    setShowAuthToken((v) => !v);
+                  }}
+                  disabled={revealingToken}
                   title={showAuthToken ? "Hide token" : "Show token"}
                 >
-                  {showAuthToken ? "Hide" : "Show"}
+                  {revealingToken
+                    ? "…"
+                    : showAuthToken
+                      ? "Hide"
+                      : "Show"}
                 </button>
               )}
-              {!demoMode && (
+              {!demoMode && (tokenLocation === "client" || tokenLocation === "server") && (
                 <button
                   type="button"
                   className="secondary"
-                  onClick={() => {
-                    if (!state.authToken) return;
-                    navigator.clipboard
-                      ?.writeText(state.authToken)
-                      .catch(() => {});
+                  onClick={async () => {
+                    let tok = state.authToken;
+                    if (!tok && tokenLocation === "server") {
+                      const ok = await revealUserToken();
+                      if (!ok) return;
+                      // revealUserToken populated state.authToken via
+                      // setState; React's batching means the local
+                      // ``state.authToken`` we closed over above is
+                      // stale, so re-derive from the return value.
+                      tok = ok;
+                    }
+                    if (!tok) return;
+                    navigator.clipboard?.writeText(tok).catch(() => {});
                   }}
-                  disabled={!state.authToken}
+                  disabled={revealingToken}
                   title="Copy token to clipboard"
                 >
-                  Copy
+                  {revealingToken ? "…" : "Copy"}
                 </button>
               )}
             </div>

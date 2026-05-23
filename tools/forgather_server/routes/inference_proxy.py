@@ -48,6 +48,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from .. import auth as auth_mod
 from .. import cluster_inference_inventory, inference_server_registry, job_records
 
 log = logging.getLogger("forgather_server.inference_proxy")
@@ -582,6 +583,45 @@ def delete_user_entry(entry_id: str):
     if removed is None:
         raise HTTPException(status_code=404, detail=f"no entry: {entry_id}")
     return {"removed": removed.id}
+
+
+class UserEntryTokenResponse(BaseModel):
+    """Raw bearer token for a user-added inference-server registry entry.
+
+    The point of this endpoint is to let the operator lift the token
+    out for use by external clients (curl, opencode, OpenAI SDKs, etc.)
+    without dropping into the on-disk registry file by hand. The
+    listing endpoint deliberately reports ``has_auth_token`` only;
+    callers that actually need the secret must hit this dedicated
+    route, which mirrors the dataset-server's ``/bundle`` shape and
+    its demo-mode gate.
+    """
+
+    auth_token: str
+
+
+@router.get(
+    "/inference-servers/user/{entry_id}/token",
+    response_model=UserEntryTokenResponse,
+)
+def get_user_entry_token(entry_id: str):
+    """Reveal the stored bearer token for a user-added entry.
+
+    Refused in demo mode: the response body is the bare token, which
+    ``redact_sensitive_in_demo`` doesn't catch (the key is
+    ``auth_token`` but the field carries the raw secret), so the
+    only correct demo behaviour is to refuse the endpoint entirely.
+    """
+    if auth_mod.demo_mode_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="token reveal is disabled in read-only demo mode",
+            headers={"X-Forgather-Demo-Blocked": "1"},
+        )
+    for e in inference_server_registry.list_entries():
+        if e.id == entry_id:
+            return UserEntryTokenResponse(auth_token=e.auth_token or "")
+    raise HTTPException(status_code=404, detail=f"no entry: {entry_id}")
 
 
 def _safe_json(r: httpx.Response) -> Dict[str, Any]:

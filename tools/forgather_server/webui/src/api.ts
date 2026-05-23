@@ -1819,6 +1819,22 @@ export const api = {
       throw new Error(`${r.status} ${r.statusText}: ${detail}`);
     }
   },
+  /** Reveal the stored bearer token for a user-added entry — only
+   *  called when the operator explicitly asks (Show / Copy on the
+   *  Auth-token field), so the secret crosses the wire on demand
+   *  rather than every time a server is picked. Refused server-side
+   *  in demo mode (403). */
+  getUserInferenceServerToken: async (id: string): Promise<string> => {
+    const r = await fetch(
+      `/api/inference-servers/user/${encodeURIComponent(id)}/token`,
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+    const body = (await r.json()) as { auth_token: string };
+    return body.auth_token ?? "";
+  },
 
   // Proxy GETs. ``token`` is the upstream bearer that's forwarded via
   // the X-Dataset-Auth-Token side-channel; empty string means no
