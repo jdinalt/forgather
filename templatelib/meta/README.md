@@ -111,11 +111,20 @@ file.
 
 - Use `UPPER_SNAKE_CASE` for variable names so they're visually
   distinct from Jinja's `{{ lower_case_args }}`.
-- Keep each meta-template **narrow**. Several focused scaffolds
-  (`hf_with_config`, `hf_single`, `local_jsonl`) are better than one
-  universal scaffold full of optional fields — narrow scaffolds stay
-  Jinja-conditional-free and the picker's descriptions can name the
-  exact case each one handles.
+- **Make `$VAR` markers only for fields that are universal to every
+  instance of this scaffold's category.** For a packed-dataset scaffold,
+  the universals are `CONFIG_NAME`, `DESCRIPTION`, and the dataset
+  `path:` — every config of that shape has all three. Things like
+  `source:`, `name:` (HF variant), or `main_feature:` are *common* but
+  not universal, so they belong in the body as commented examples, not
+  as form fields. Form fields aren't free: each one is a question the
+  user has to answer up front, and a wrong-shape question is friction.
+- **Prefer one verbose scaffold over many narrow ones.** The model is:
+  show every knob someone might want, with reasonable defaults inherited
+  from `== super()`, and put the *optional* knobs in as commented
+  examples the user uncomments and edits. The user reads the file,
+  keeps what they need, and deletes the rest. This scales better than
+  trying to enumerate every permutation in the picker.
 - The body must remain valid after substitution. If a field is
   optional and the resulting empty value would break the config,
   either give it a sensible `default` or make it `required`.

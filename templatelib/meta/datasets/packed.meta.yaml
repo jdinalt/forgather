@@ -1,0 +1,30 @@
+title: "Packed dataset"
+description: |
+  Generic tokenized + packed-sequence dataset config. A verbose starting
+  point that shows every knob you might want to set, with the universal
+  three fields pre-filled and everything else commented for you to enable
+  or delete as needed.
+
+  Works for any HuggingFace dataset (and local "json"/"csv"/"parquet"
+  loaders); the comments cover the train-only, train+validation-only, and
+  full-three-split cases. Skip this scaffold for datasets that need
+  custom map functions (OpenOrca / Samantha / OpenThoughts style) —
+  those need a different starting point.
+target_kind: "config"
+fields:
+  - name: CONFIG_NAME
+    label: "Config name"
+    description: "Short label shown in `forgather ls` listings."
+    placeholder: "C4"
+    required: true
+  - name: DESCRIPTION
+    label: "Description"
+    description: "One-line description, shown in `forgather ls`."
+    required: true
+  - name: DATASET_ID
+    label: "Dataset path"
+    description: |
+      HuggingFace dataset id (e.g. `allenai/c4`, `roneneldan/TinyStories`)
+      or a local path for `json`/`csv`/`parquet` loaders.
+    placeholder: "allenai/c4"
+    required: true
