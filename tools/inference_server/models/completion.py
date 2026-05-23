@@ -13,7 +13,13 @@ class CompletionRequest(BaseModel):
     # OpenAI API parameters
     model: str
     prompt: Union[str, List[str]]
-    max_tokens: Optional[int] = 16
+    # Default None — defers to ``_build_generation_config``, which
+    # uses the model's baked-in GenerationConfig when present, and
+    # falls back to a 2048-token floor (env-overridable) when the
+    # model didn't bake one in. The previous hard ``=16`` default
+    # silently clipped generations mid-sentence regardless of model.
+    # Explicit values from the request still win.
+    max_tokens: Optional[int] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     n: Optional[int] = 1

@@ -865,7 +865,7 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
           <span className="tri">{settingsOpen ? "▾" : "▸"}</span>
           Settings
         </button>
-        <label title="Per-request override for the model's max new tokens. Leave empty to let the server / baked-in generation config decide.">
+        <label title="Per-request override for max new tokens. Leave empty to let the server pick: Forgather uses the model's generation_config with a 2048 floor; vLLM (and other OpenAI-spec chat endpoints) default to the remaining context window. The chat endpoint has no painful 16-token spec default — that's only /v1/completions.">
           Max new tokens
           <input
             type="number"

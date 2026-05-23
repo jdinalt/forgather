@@ -22,10 +22,11 @@ export interface InferenceState {
 }
 
 const STORAGE_KEY = "forgather-inference-state";
-// max_tokens is intentionally absent so it doesn't leak into the wire
-// payload from the shared params (and surprise-clip a chat reply or a
-// completion). The Completion and Chat sub-panels each surface their
-// own per-request "Max new tokens" override.
+// max_tokens is intentionally absent — the design intent is "server
+// dictates the default." Forgather's own inference server falls back
+// to the model's baked-in generation_config with a generous floor;
+// vLLM and most other OpenAI-spec servers default to "rest of the
+// context window." Either way the client shouldn't lock a number in.
 export const DEFAULT_GENERATION_PARAMS: GenerationParams = {};
 const DEFAULT_STATE: InferenceState = {
   baseUrl: "http://localhost:8137/v1",
@@ -39,6 +40,17 @@ function loadState(): InferenceState {
   if (!raw) return DEFAULT_STATE;
   try {
     const parsed = JSON.parse(raw) as Partial<InferenceState>;
+    const params: GenerationParams =
+      parsed.params && typeof parsed.params === "object"
+        ? { ...(parsed.params as GenerationParams) }
+        : { ...DEFAULT_STATE.params };
+    // Migration: a brief earlier build seeded ``max_tokens: 1024`` as
+    // a client-side default. That contradicted the "server dictates"
+    // design intent, so strip the stale value from returning sessions.
+    // The user's own picks (anything other than 1024) are preserved.
+    if (params.max_tokens === 1024) {
+      delete params.max_tokens;
+    }
     return {
       baseUrl:
         typeof parsed.baseUrl === "string"
@@ -47,10 +59,7 @@ function loadState(): InferenceState {
       authToken:
         typeof parsed.authToken === "string" ? parsed.authToken : "",
       model: typeof parsed.model === "string" ? parsed.model : "",
-      params:
-        parsed.params && typeof parsed.params === "object"
-          ? (parsed.params as GenerationParams)
-          : DEFAULT_STATE.params,
+      params,
     };
   } catch {
     return DEFAULT_STATE;

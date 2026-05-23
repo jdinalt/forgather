@@ -198,6 +198,16 @@ export async function checkServer(
  *    data: [DONE]\n\n
  *  We split on the double-newline boundary to be tolerant of chunks that
  *  contain more than one event. */
+/** OpenAI's documented default for ``/v1/completions`` is
+ *  ``max_tokens: 16``, which vLLM and other spec-compliant servers
+ *  apply. That's almost always wrong for our users — silently clips
+ *  raw-prompt extension at 16 new tokens. Inject a generous default
+ *  on this code path only (the spec default for
+ *  ``/v1/chat/completions`` is "rest of context window," so the chat
+ *  helpers don't need this). Caller-supplied values still win because
+ *  ``...params`` spreads after. */
+const COMPLETION_DEFAULT_MAX_TOKENS = 2048;
+
 /** One-shot completion (``stream: false``). Returns the full text after
  *  the server finishes generating. Needed for generation modes the HF
  *  streamer doesn't support, notably beam search. */
@@ -213,6 +223,7 @@ export async function runCompletion(
     model: model || "inference-server",
     prompt,
     stream: false,
+    max_tokens: COMPLETION_DEFAULT_MAX_TOKENS,
     ...params,
   };
   const r = await fetch(proxyUrl("completions", baseUrl), {
@@ -242,6 +253,7 @@ export async function* streamCompletion(
     model: model || "inference-server",
     prompt,
     stream: true,
+    max_tokens: COMPLETION_DEFAULT_MAX_TOKENS,
     ...params,
   };
   yield* streamSse<string>(

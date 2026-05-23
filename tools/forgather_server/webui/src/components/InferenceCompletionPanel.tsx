@@ -270,7 +270,7 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
   return (
     <div className="inference-completion">
       <div className="inference-completion-bar">
-        <label title="Per-request override for the model's max new tokens. Leave empty to let the server / baked-in generation config decide.">
+        <label title="Per-request override for max new tokens. Leave empty to use the client default of 2048 — OpenAI's /v1/completions spec defaults to 16 when the request omits max_tokens, so the client injects 2048 on this code path to keep raw-prompt extension from clipping silently. Set explicitly to override.">
           Max new tokens
           <input
             type="number"
@@ -285,9 +285,9 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
               const n = Number(raw);
               setMaxTokens(Number.isFinite(n) && n > 0 ? Math.floor(n) : "");
             }}
-            placeholder="server default"
+            placeholder="2048 (client default)"
             disabled={busy}
-            style={{ width: 110 }}
+            style={{ width: 130 }}
           />
         </label>
         <label className="dyn-checkbox" title="Uncheck for modes incompatible with streaming, e.g. beam search">

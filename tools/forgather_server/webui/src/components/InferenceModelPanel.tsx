@@ -611,7 +611,11 @@ export function InferenceModelPanel({ state, setState }: Props) {
             label="max_tokens"
             value={state.params.max_tokens}
             onChange={(v) => setParams({ max_tokens: v })}
-            placeholder="256"
+            // Empty = send no value; the server picks. Forgather uses
+            // the model's generation_config with a 2048 floor; vLLM
+            // and most OpenAI-spec servers default to "rest of the
+            // context window."
+            placeholder="server default"
           />
           <NumField
             label="temperature"

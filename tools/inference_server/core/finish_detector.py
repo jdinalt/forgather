@@ -59,7 +59,7 @@ class FinishReasonDetector:
     def determine_finish_reason(
         self,
         generated_token_ids: List[int],
-        max_tokens: int,
+        max_tokens: Optional[int],
         stopped_by_sequence: bool,
         ignore_eos: bool = False,
     ) -> str:
@@ -68,14 +68,18 @@ class FinishReasonDetector:
 
         Args:
             generated_token_ids: List of generated token IDs
-            max_tokens: Maximum tokens allowed
+            max_tokens: Maximum tokens allowed, or ``None`` if no cap was
+                set (the model's own GenerationConfig governed length).
+                When None, the "length" branch is skipped — we report
+                ``stop`` instead, since we can't say generation stopped
+                because of a cap we didn't impose.
             stopped_by_sequence: Whether generation stopped due to a stop sequence
             ignore_eos: Whether EOS tokens were ignored during generation
 
         Returns:
             Finish reason string: "length" or "stop"
         """
-        if len(generated_token_ids) >= max_tokens:
+        if max_tokens is not None and len(generated_token_ids) >= max_tokens:
             return "length"
         elif stopped_by_sequence:
             return "stop"
@@ -92,8 +96,11 @@ class FinishReasonDetector:
                 and generated_token_ids[-1] in self.stop_token_ids
             ):
                 return "stop"
-        # If we get here, model stopped for unknown reason
-        elif len(generated_token_ids) < max_tokens:
+        # If we get here, model stopped for unknown reason. The
+        # max_tokens-relative branch only fires when a cap was actually
+        # set; without one we can't tell "stopped early" from "stopped
+        # at the implicit limit." Either way the answer is "stop".
+        elif max_tokens is not None and len(generated_token_ids) < max_tokens:
             # Stopped early but not due to obvious reasons
             return "stop"
         else:
@@ -102,7 +109,7 @@ class FinishReasonDetector:
     def determine_finish_reason_streaming(
         self,
         completion_tokens: int,
-        max_tokens: int,
+        max_tokens: Optional[int],
         stop_sequences: List[str],
         full_response: str,
         ignore_eos: bool = False,
@@ -116,7 +123,8 @@ class FinishReasonDetector:
 
         Args:
             completion_tokens: Number of tokens generated
-            max_tokens: Maximum tokens allowed
+            max_tokens: Maximum tokens allowed, or ``None`` if no cap
+                was set. When None, the "length" branch is skipped.
             stop_sequences: List of stop sequences
             full_response: Full generated response text
             ignore_eos: Whether EOS tokens were ignored during generation
@@ -124,7 +132,7 @@ class FinishReasonDetector:
         Returns:
             Finish reason string: "length" or "stop"
         """
-        if completion_tokens >= max_tokens:
+        if max_tokens is not None and completion_tokens >= max_tokens:
             return "length"
         elif any(stop_seq in full_response for stop_seq in stop_sequences):
             return "stop"

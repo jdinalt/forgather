@@ -591,8 +591,12 @@ class InferenceService:
         self, request: Union[ChatCompletionRequest, CompletionRequest]
     ) -> GenerationConfig:
         """Build a GenerationConfig from request parameters + active model defaults."""
+        # Honor an explicit value from the request — either OpenAI's
+        # ``max_tokens`` or HF's ``max_new_tokens``. When neither is
+        # set, leave the model's default in place (was previously
+        # hard-coded to 16, which clipped most replies mid-sentence).
         max_tokens = getattr(request, "max_new_tokens", None) or getattr(
-            request, "max_tokens", 16
+            request, "max_tokens", None
         )
 
         if self.default_generation_config is not None:
@@ -602,7 +606,19 @@ class InferenceService:
         else:
             generation_config = GenerationConfig()
 
-        generation_config.max_new_tokens = max_tokens
+        if max_tokens is not None:
+            generation_config.max_new_tokens = max_tokens
+        elif generation_config.max_new_tokens is None:
+            # The request didn't specify, and the model's baked-in
+            # generation_config doesn't either. HF's hard fallback is
+            # ``GenerationConfig.max_length = 20`` — that clips replies
+            # to ~16 new tokens, which is the worst-of-all-worlds
+            # default. Install a generous floor (env-overridable for
+            # operators who want a tighter cap by default). The model
+            # config still wins when it provides a value.
+            generation_config.max_new_tokens = int(
+                os.environ.get("FORGATHER_DEFAULT_MAX_NEW_TOKENS", "2048")
+            )
         if request.temperature is not None:
             generation_config.temperature = request.temperature
         if request.top_p is not None:
