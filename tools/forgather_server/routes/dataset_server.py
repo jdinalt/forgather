@@ -74,6 +74,7 @@ from pydantic import BaseModel
 
 from forgather.preprocess import forgather_config_dir
 
+from .. import auth as auth_mod
 from .. import dataset_server_registry, job_records
 
 log = logging.getLogger("forgather_server.routes.dataset_server")
@@ -290,7 +291,19 @@ def local_server_bundle(queue_id: str):
     Only available for forgather_server-launched instances (token comes
     from the JobRecord). User-added entries already know their own
     token on the source machine — no server round-trip needed.
+
+    Refused in demo mode: the bundle embeds the real bearer token in
+    the URI. ``redact_sensitive_in_demo`` won't catch it (the redactor
+    matches by key name and the bundle string travels under the key
+    ``bundle``), so the only correct demo behaviour is to refuse the
+    endpoint entirely.
     """
+    if auth_mod.demo_mode_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="bundle-export is disabled in read-only demo mode",
+            headers={"X-Forgather-Demo-Blocked": "1"},
+        )
     for r in job_records.list_records():
         if r.job_type != "dataset_server" or r.queue_id != queue_id:
             continue
@@ -620,7 +633,9 @@ async def proxy_load(base: str, request: Request):
         raise HTTPException(status_code=400, detail=f"could not read body: {e}")
     headers = _auth_headers_for(base, request)
     headers["content-type"] = request.headers.get("content-type", "application/json")
-    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target, base=base)) as client:
+    async with httpx.AsyncClient(
+        timeout=_TIMEOUT, verify=_verify_for(target, base=base)
+    ) as client:
         try:
             r = await client.post(target, content=body, headers=headers)
         except httpx.RequestError as e:
@@ -675,7 +690,9 @@ async def proxy_iter(
 
     headers = _auth_headers_for(base, request)
     rows: List[Any] = []
-    async with httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target, base=base)) as client:
+    async with httpx.AsyncClient(
+        timeout=_TIMEOUT, verify=_verify_for(target, base=base)
+    ) as client:
         try:
             async with client.stream("GET", target, headers=headers or None) as r:
                 if r.status_code >= 400:

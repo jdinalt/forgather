@@ -224,6 +224,22 @@ do_create_container() {
     # of a tracked process — solving the problem at the layer that
     # can actually see those orphans (the Forgather server itself
     # cannot, because the orphans are no longer its children).
+    #
+    # On failure we always ``docker rm -f`` the (possibly partially-
+    # created) container. ``docker run -d`` can fail AFTER docker has
+    # registered the container in its catalogue — e.g. when
+    # ``--gpus all`` hits "failed to discover GPU vendor from CDI" on
+    # a host with no NVIDIA driver. Without the cleanup, a follow-up
+    # ``GPUS=none docker/run`` would see the half-created container,
+    # try ``docker start`` against it, and re-apply the bad GPU
+    # config (start-time can't change create-time options) — the
+    # GPUS env var would be silently ignored and the operator would
+    # have to know to run ``docker/run --rm`` first.
+    #
+    # ``set +e`` around the docker run so we capture its real exit
+    # code without the script-wide ``set -euo pipefail`` aborting
+    # before our cleanup block runs.
+    set +e
     docker run -d \
         --init \
         --name "${NAME}" \
@@ -241,6 +257,17 @@ do_create_container() {
         ${EXTRA_MOUNTS} \
         "${IMAGE}" \
         sleep infinity > /dev/null
+    local rc=$?
+    set -e
+    if [[ "${rc}" -ne 0 ]]; then
+        echo "[run] docker run failed (exit ${rc}); removing partially-created container" >&2
+        docker rm -f "${NAME}" > /dev/null 2>&1 || true
+        if [[ "${GPUS}" != "none" ]]; then
+            echo "[run] hint: if this host has no NVIDIA driver, retry with:" >&2
+            echo "[run]   GPUS=none docker/run" >&2
+        fi
+        exit "${rc}"
+    fi
 }
 
 attach_shell() {

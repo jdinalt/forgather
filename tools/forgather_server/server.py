@@ -28,10 +28,10 @@ if __name__ == "__main__" and __package__ is None:
     parent_dir = script_dir.parent
     if str(parent_dir) not in sys.path:
         sys.path.insert(0, str(parent_dir))
-    from forgather_server import auth, cluster, paths, server_config
+    from forgather_server import auth, cluster, paths, search_roots, server_config
     from forgather_server.app import create_app
 else:
-    from . import auth, cluster, paths, server_config
+    from . import auth, cluster, paths, search_roots, server_config
     from .app import create_app
 
 import uvicorn
@@ -39,14 +39,14 @@ import uvicorn
 from forgather.tls import (
     TLSRequiredError,
     enforce_non_loopback_policy,
-    is_enabled as tls_is_enabled,
-    load_config as tls_load_config,
-    uvicorn_ssl_kwargs as tls_uvicorn_ssl_kwargs,
 )
+from forgather.tls import is_enabled as tls_is_enabled
+from forgather.tls import load_config as tls_load_config
+from forgather.tls import uvicorn_ssl_kwargs as tls_uvicorn_ssl_kwargs
 from forgather.tls.runtime import (
     add_server_tls_args,
-    is_tls_active as tls_is_active,
 )
+from forgather.tls.runtime import is_tls_active as tls_is_active
 
 
 def main():
@@ -99,6 +99,31 @@ def main():
         help="Disable token/password authentication (any local user can connect)",
     )
     parser.add_argument(
+        "--demo",
+        action="store_true",
+        help=(
+            "Read-only demo mode: block every POST/PUT/DELETE that would "
+            "mutate state (file edits, job submission, server admin, etc.), "
+            "and redact bearer tokens from API responses so the webui can "
+            "be safely exposed to the public. Pair with --no-auth for a "
+            "fully anonymous demo, or leave auth on for a curated audience."
+        ),
+    )
+    parser.add_argument(
+        "--fs-root",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "Restrict every path-accepting API to descendants of this "
+            "directory (jupyter-lab-style root). Repeatable. When "
+            "--demo is on and --fs-root is not given, defaults to the "
+            "Forgather repo + every registered search root, so the demo "
+            "can't browse outside curated project content. When --demo "
+            "is off, the default is unrestricted (historical behaviour)."
+        ),
+    )
+    parser.add_argument(
         "--regen-token",
         action="store_true",
         help="Generate a fresh auth token at startup (invalidates existing CLIs)",
@@ -128,6 +153,17 @@ def main():
         ),
     )
     add_server_tls_args(parser)
+    parser.add_argument(
+        "--docs-landing",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path the Docs view opens by default (overrides the "
+            "built-in docs/README.md preference). Absolute, or relative "
+            "to the Forgather repo root. Falls back to the built-in "
+            "preference when the named file does not exist."
+        ),
+    )
     parser.add_argument(
         "--lock-inference-proxy",
         action="store_true",
@@ -203,9 +239,19 @@ def main():
         sys.exit(2)
 
     _configure_auth(args, tls_on=tls_on)
+    _configure_fs_roots(args)
 
     if args.cluster:
         _activate_cluster(args, tls_on=tls_on)
+
+    # The docs view reads this at request time to decide the default
+    # landing page. Set via module attribute so a hypothetical runtime
+    # toggle (config reload, etc.) can swap it without restarting.
+    if args.docs_landing:
+        from .routes import docs as _docs_routes
+
+        _docs_routes.DOCS_LANDING_OVERRIDE = args.docs_landing
+        logging.info("docs landing override: %s", args.docs_landing)
 
     # The inference proxy reads this flag at request time. Set it via
     # module attribute (rather than env var) so a future `forgather server
@@ -299,14 +345,21 @@ def _configure_auth(args, *, tls_on: bool = False) -> None:
     scheme = "https" if tls_on else "http"
     display_host = _pick_display_host(args)
 
+    if args.demo:
+        auth.enable_demo_mode()
+
     print()
     if args.no_auth:
         auth.disable_auth()
         print("    !! Forgather server is running with --no-auth !!")
         print(f"    !! Any other local user on this host can read/control jobs.")
+        if args.demo:
+            print(f"    !! --demo is on: mutations blocked, tokens redacted.")
         print(f"        {scheme}://{display_host}:{args.port}/")
         print()
         return
+    if args.demo:
+        print("    !! Forgather server is running with --demo (read-only) !!")
 
     print("    Forgather server is running at:")
     print(f"        {scheme}://{display_host}:{args.port}/?token={token}")
@@ -333,6 +386,33 @@ def _configure_auth(args, *, tls_on: bool = False) -> None:
         print()
         print(f"    TLS: serving HTTPS from {tls_load_config().server_cert}")
     print()
+
+
+def _configure_fs_roots(args) -> None:
+    """Install the path-accepting-API allowlist.
+
+    When --fs-root is given, use the operator's list verbatim. When
+    --demo is on but --fs-root isn't, default to the forgather repo
+    plus every registered search root — that's the project tree the
+    operator has already curated, so it's a safe browsable scope for
+    public access. Without --demo and without --fs-root, the
+    allowlist stays empty (unrestricted) to preserve historical
+    behaviour for local installs.
+    """
+    explicit = list(args.fs_root or [])
+    if explicit:
+        paths.configure_fs_roots(explicit)
+        return
+    if not args.demo:
+        return
+    defaults: list[str] = [search_roots.forgather_repo_root()]
+    try:
+        defaults.extend(r.path for r in search_roots.list_roots())
+    except Exception as e:
+        logging.getLogger("forgather_server").warning(
+            "could not load search roots for fs-root default: %s", e
+        )
+    paths.configure_fs_roots(defaults)
 
 
 def _activate_cluster(args, *, tls_on: bool = False) -> None:

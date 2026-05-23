@@ -1,0 +1,7 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Float8"
+    -- set ns.config_description = "Train using float8"
+    -- set ns.model_name = model_name | default("float8")

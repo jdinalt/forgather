@@ -1,12 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { GenerationParams } from "../inference-client";
 import { persistGet, persistSet } from "../persist";
+import { InferenceAnalyzePanel } from "./InferenceAnalyzePanel";
 import { InferenceChatPanel } from "./InferenceChatPanel";
 import { InferenceCompletionPanel } from "./InferenceCompletionPanel";
 import { InferenceModelPanel } from "./InferenceModelPanel";
 
-type SubTab = "model" | "completion" | "chat";
+type SubTab = "model" | "completion" | "chat" | "analyze";
 
 export interface InferenceState {
   baseUrl: string;
@@ -21,10 +22,12 @@ export interface InferenceState {
 }
 
 const STORAGE_KEY = "forgather-inference-state";
-// max_tokens default of 256 is deliberate — the server defaults to 16
-// for completion, which produces a surprising "typed one sentence and
-// it stopped" experience in a free-form textbox.
-export const DEFAULT_GENERATION_PARAMS: GenerationParams = { max_tokens: 256 };
+// max_tokens is intentionally absent — the design intent is "server
+// dictates the default." Forgather's own inference server falls back
+// to the model's baked-in generation_config with a generous floor;
+// vLLM and most other OpenAI-spec servers default to "rest of the
+// context window." Either way the client shouldn't lock a number in.
+export const DEFAULT_GENERATION_PARAMS: GenerationParams = {};
 const DEFAULT_STATE: InferenceState = {
   baseUrl: "http://localhost:8137/v1",
   authToken: "",
@@ -37,6 +40,20 @@ function loadState(): InferenceState {
   if (!raw) return DEFAULT_STATE;
   try {
     const parsed = JSON.parse(raw) as Partial<InferenceState>;
+    const params: GenerationParams =
+      parsed.params && typeof parsed.params === "object"
+        ? { ...(parsed.params as GenerationParams) }
+        : { ...DEFAULT_STATE.params };
+    // Migration: previously-shipped DEFAULT_GENERATION_PARAMS seeded
+    // ``max_tokens: 256`` (long-standing) and briefly ``max_tokens: 1024``
+    // (a one-build mistake). Both contradicted the "server dictates"
+    // design intent. Strip either stale value from returning sessions
+    // so the UI's "server picks" claim is actually true; users who
+    // explicitly picked 256/1024 will have to re-set, which is a fair
+    // trade against the much larger population who never touched it.
+    if (params.max_tokens === 256 || params.max_tokens === 1024) {
+      delete params.max_tokens;
+    }
     return {
       baseUrl:
         typeof parsed.baseUrl === "string"
@@ -45,22 +62,46 @@ function loadState(): InferenceState {
       authToken:
         typeof parsed.authToken === "string" ? parsed.authToken : "",
       model: typeof parsed.model === "string" ? parsed.model : "",
-      params:
-        parsed.params && typeof parsed.params === "object"
-          ? (parsed.params as GenerationParams)
-          : DEFAULT_STATE.params,
+      params,
     };
   } catch {
     return DEFAULT_STATE;
   }
 }
 
+interface InferencePanelProps {
+  /** Cross-section trigger from the Datasets cell context menu:
+   *  ``{text, key}`` where ``key`` is a Date.now() nonce. When this
+   *  changes (key flips), the panel switches to the Analyze sub-tab
+   *  and the AnalyzePanel picks up the text and runs scoring. Cleared
+   *  by AnalyzePanel via ``onAnalyzeConsumed`` once it has handled
+   *  the request so unmount/remount can't re-fire the same payload. */
+  pendingAnalyze?: { text: string; key: number } | null;
+  /** Called by AnalyzePanel after consuming pendingAnalyze so the
+   *  parent can reset App state. Mirrors the existing
+   *  pendingExplore / onPreselectConsumed pattern. */
+  onAnalyzeConsumed?: () => void;
+}
+
 /** Top-level Inference view. Holds the shared state (base URL, chosen
  *  model, generation params) so the Model sub-panel can configure it and
  *  the Completion sub-panel can consume it. Persists via localStorage so
  *  settings survive page reloads. */
-export function InferencePanel() {
+export function InferencePanel({
+  pendingAnalyze,
+  onAnalyzeConsumed,
+}: InferencePanelProps = {}) {
   const [tab, setTab] = useState<SubTab>("model");
+  // Flip to the Analyze tab whenever a fresh pendingAnalyze arrives.
+  // Per-key dedup so flipping back to Inference later doesn't bounce
+  // the user out of whatever tab they navigated to.
+  const lastAnalyzeKeyRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (pendingAnalyze && pendingAnalyze.key !== lastAnalyzeKeyRef.current) {
+      lastAnalyzeKeyRef.current = pendingAnalyze.key;
+      setTab("analyze");
+    }
+  }, [pendingAnalyze]);
   const [state, setState] = useState<InferenceState>(loadState);
   // Lifted up so the chat panel can hand a rendered prompt to the
   // completion textarea ("Send to completion") and switch tabs.
@@ -105,6 +146,13 @@ export function InferencePanel() {
             >
               chat
             </button>
+            <button
+              className={tab === "analyze" ? "active" : ""}
+              onClick={() => setTab("analyze")}
+              title="Score input text per-token (loss + top-K predictions)"
+            >
+              analyze
+            </button>
           </nav>
         </div>
       </header>
@@ -140,6 +188,20 @@ export function InferencePanel() {
         <InferenceChatPanel
           state={state}
           onSendToCompletion={onSendToCompletion}
+        />
+      </div>
+      <div
+        style={{
+          display: tab === "analyze" ? "flex" : "none",
+          flex: 1,
+          minHeight: 0,
+          flexDirection: "column",
+        }}
+      >
+        <InferenceAnalyzePanel
+          state={state}
+          pendingAnalyze={pendingAnalyze}
+          onPendingAnalyzeConsumed={onAnalyzeConsumed}
         />
       </div>
     </div>

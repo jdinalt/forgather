@@ -15,6 +15,35 @@ except ImportError:
     print("Error: OpenAI Python client not installed. Run: pip install openai")
     sys.exit(1)
 
+
+# ANSI escape sequences for displaying a model's reasoning trace dimmer
+# than its actual content. Resolved per-call (not at import time) so
+# test harnesses that capture stdout after import still get plain text,
+# and so callers running the same module under a TTY and a pipe in
+# different invocations see the right behavior each time.
+def _dim_codes() -> tuple[str, str]:
+    if sys.stdout.isatty():
+        return "\033[2m", "\033[0m"
+    return "", ""
+
+
+def _delta_field(delta: Any, name: str) -> Optional[str]:
+    """Read an optional field from a streaming-chunk delta.
+
+    vLLM's reasoning-parser surface (``delta.reasoning`` /
+    ``message.reasoning``) is not in the OpenAI SDK's typed schema,
+    so we go through ``getattr`` to avoid an AttributeError on
+    SDK versions that haven't caught up. Returns None when the
+    field is missing or null.
+    """
+    val = getattr(delta, name, None)
+    if val is None:
+        # Some SDK versions surface unknown fields via ``model_extra``
+        # rather than as real attributes.
+        extra = getattr(delta, "model_extra", None) or {}
+        val = extra.get(name)
+    return val if isinstance(val, str) and val else None
+
 try:
     import yaml
 except ImportError:
@@ -73,6 +102,59 @@ class InferenceClient:
         """Clear conversation history."""
         self.conversation_history.clear()
 
+    def _consume_chat_stream(self, response, add_to_history: bool) -> str:
+        """Print a streaming chat response, separating reasoning from content.
+
+        Returns the accumulated content string (never the reasoning).
+        Conversation history is updated only when ``add_to_history`` is
+        true and at least one content token arrived — a thinking model
+        that exhausts its budget mid-``<think>`` produces no content,
+        and pushing an empty assistant turn into history would corrupt
+        the next request.
+        """
+        dim, reset = _dim_codes()
+        assistant_message = ""
+        in_reasoning = False
+        for chunk in response:
+            delta = chunk.choices[0].delta
+            r = _delta_field(delta, "reasoning")
+            if r is not None:
+                if not in_reasoning:
+                    print(dim, end="", flush=True)
+                    in_reasoning = True
+                print(r, end="", flush=True)
+            # Don't `continue` after reasoning: a single chunk can carry
+            # both fields, and the content branch needs to run too.
+            if delta.content is not None:
+                if in_reasoning:
+                    print(reset + "\n", end="", flush=True)
+                    in_reasoning = False
+                print(delta.content, end="", flush=True)
+                assistant_message += delta.content
+        if in_reasoning:
+            print(reset, end="", flush=True)
+        if add_to_history and assistant_message:
+            self.add_assistant_message(assistant_message)
+        return assistant_message
+
+    def _consume_chat_response(self, msg, add_to_history: bool) -> str:
+        """Print a non-streaming chat response, separating reasoning from content.
+
+        Returns the content string (never the reasoning). Same
+        empty-content history policy as ``_consume_chat_stream``.
+        """
+        dim, reset = _dim_codes()
+        reasoning = _delta_field(msg, "reasoning")
+        if reasoning:
+            # ``rstrip("\\n")`` so the dim block doesn't add a blank line
+            # before the content when the parser already terminates the
+            # reasoning text with a newline (common with qwen3 parser).
+            print(f"{dim}{reasoning.rstrip(chr(10))}{reset}\n", end="", flush=True)
+        assistant_message = msg.content or ""
+        if add_to_history and assistant_message:
+            self.add_assistant_message(assistant_message)
+        return assistant_message
+
     def get_completion(
         self,
         model: str = "inference-server",
@@ -93,18 +175,11 @@ class InferenceClient:
             )
 
             if stream:
-                assistant_message = ""
-                for chunk in response:
-                    if chunk.choices[0].delta.content is not None:
-                        content = chunk.choices[0].delta.content
-                        print(content, end="", flush=True)
-                        assistant_message += content
-                self.add_assistant_message(assistant_message)
-                return assistant_message
+                return self._consume_chat_stream(response, add_to_history=True)
             else:
-                assistant_message = response.choices[0].message.content
-                self.add_assistant_message(assistant_message)
-                return assistant_message
+                return self._consume_chat_response(
+                    response.choices[0].message, add_to_history=True
+                )
 
         except Exception as e:
             return f"Error: {str(e)}"
@@ -139,12 +214,9 @@ class InferenceClient:
                     stream=True,
                 )
 
-                assistant_message = ""
-                for chunk in response:
-                    if chunk.choices[0].delta.content is not None:
-                        content = chunk.choices[0].delta.content
-                        print(content, end="", flush=True)
-                        assistant_message += content
+                assistant_message = self._consume_chat_stream(
+                    response, add_to_history=False
+                )
                 print()  # Add newline at end
 
                 # Note: Usage is not available with streaming
@@ -161,7 +233,9 @@ class InferenceClient:
                     top_p=top_p,
                 )
 
-                assistant_message = response.choices[0].message.content
+                assistant_message = self._consume_chat_response(
+                    response.choices[0].message, add_to_history=False
+                )
 
                 if show_usage:
                     usage = response.usage

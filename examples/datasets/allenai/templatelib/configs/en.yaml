@@ -1,20 +1,15 @@
--- extends "datasets/load_dataset.yaml"
+-- extends "datasets/load_packed_dataset.yaml"
 
 [config_metadata]
     == super()
     -- set ns.config_name = "C4"
     -- set ns.config_description = "A colossal, cleaned version of Common Crawl's web crawl corpus. Based on Common Crawl dataset https://commoncrawl.org"
     -- set ns.source = "https://huggingface.co/datasets/allenai/c4"
-    -- set ns.load_method = "forgather.ml.datasets:fast_load_iterable_dataset"
 
 [load_dataset_args]
     == super()
     path: "allenai/c4"
     name: "en"
-
-[map_kwargs]
-    == super()
-    batch_size: 32
 
 [validation_dataset_split]
     == super()

@@ -54,8 +54,8 @@ from forgather.tls import (
 )
 from forgather.tls.runtime import (
     add_server_tls_args,
-    uvicorn_ssl_kwargs as tls_uvicorn_ssl_kwargs,
 )
+from forgather.tls.runtime import uvicorn_ssl_kwargs as tls_uvicorn_ssl_kwargs
 
 _SERVICE_NAME = "dataset_server"
 
@@ -174,6 +174,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "running training jobs against this server) will start "
             "getting 401 until they pick up the new token. Mirrors "
             "'forgather server --regen-token'."
+        ),
+    )
+    parser.add_argument(
+        "--quiet-tokens",
+        action="store_true",
+        help=(
+            "Don't print the bearer token (or token-bearing curl example) "
+            "to stderr at launch. Token is still written to its per-port "
+            "file when auto-generated, so peers can still discover it. "
+            "Intended for demo / public-exposure setups where the TTY "
+            "log is visible to untrusted callers."
         ),
     )
 
@@ -413,9 +424,7 @@ def _log_effective_config(
         cfg_line = "<none>"
 
     locals_lines = (
-        [f"{name}={path}" for name, path in args.local]
-        if args.local
-        else ["<none>"]
+        [f"{name}={path}" for name, path in args.local] if args.local else ["<none>"]
     )
 
     logger.info("effective configuration:")
@@ -516,32 +525,43 @@ def main(argv: Optional[list[str]] = None) -> int:
                 file=sys.stderr,
                 flush=True,
             )
-        print(
-            f"dataset_server auth token: {auth_token}",
-            file=sys.stderr,
-            flush=True,
-        )
-        print(
-            "clients must send 'Authorization: Bearer <token>'",
-            file=sys.stderr,
-            flush=True,
-        )
-        # Scheme is decided below once TLS state is known; emit a
-        # placeholder here and let the launch sequence print the final
-        # URL line. Keep this curl snippet under the bearer-token
-        # banner so operators see auth + URL together.
-        try:
-            from forgather.tls import is_enabled as _tls_enabled
+        # --quiet-tokens suppresses the actual value (and the curl example
+        # that embeds it) for demo / public-exposure setups; the source +
+        # persistence message still goes out so operators know auth is on.
+        if args.quiet_tokens:
+            print(
+                "dataset_server auth: bearer-token enabled "
+                "(value suppressed by --quiet-tokens)",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            print(
+                f"dataset_server auth token: {auth_token}",
+                file=sys.stderr,
+                flush=True,
+            )
+            print(
+                "clients must send 'Authorization: Bearer <token>'",
+                file=sys.stderr,
+                flush=True,
+            )
+            # Scheme is decided below once TLS state is known; emit a
+            # placeholder here and let the launch sequence print the final
+            # URL line. Keep this curl snippet under the bearer-token
+            # banner so operators see auth + URL together.
+            try:
+                from forgather.tls import is_enabled as _tls_enabled
 
-            _scheme = "https" if _tls_enabled() else "http"
-        except Exception:
-            _scheme = "http"
-        print(
-            f'curl -H "Authorization: Bearer {auth_token}" '
-            f"{_scheme}://{args.host}:{args.port}/v1/datasets",
-            file=sys.stderr,
-            flush=True,
-        )
+                _scheme = "https" if _tls_enabled() else "http"
+            except Exception:
+                _scheme = "http"
+            print(
+                f'curl -H "Authorization: Bearer {auth_token}" '
+                f"{_scheme}://{args.host}:{args.port}/v1/datasets",
+                file=sys.stderr,
+                flush=True,
+            )
 
         # Persist the per-port token file for any auto-discovered token.
         # Explicit --auth-token / --auth-token-file paths intentionally
@@ -609,7 +629,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.info("TLS: serving HTTPS from %s", ssl_kwargs["ssl_certfile"])
     else:
         scheme = "http"
-    print(f"dataset_server URL: {scheme}://{args.host}:{args.port}/", file=sys.stderr, flush=True)
+    print(
+        f"dataset_server URL: {scheme}://{args.host}:{args.port}/",
+        file=sys.stderr,
+        flush=True,
+    )
 
     uvicorn.run(
         app,

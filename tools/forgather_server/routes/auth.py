@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from .. import auth as auth_mod
+from ..cluster import forgather_version
 
 router = APIRouter(tags=["auth"], prefix="/auth")
 
@@ -33,6 +34,8 @@ class StatusResponse(BaseModel):
     authenticated: bool
     has_password: bool
     auth_disabled: bool
+    demo_mode: bool = False
+    forgather_version: str = "unknown"
 
 
 class SetPasswordRequest(BaseModel):
@@ -50,6 +53,8 @@ def auth_status(request: Request):
         ),
         has_password=auth_mod.has_password(),
         auth_disabled=auth_mod.auth_disabled(),
+        demo_mode=auth_mod.demo_mode_enabled(),
+        forgather_version=forgather_version(),
     )
 
 
@@ -68,9 +73,7 @@ def auth_login(body: LoginRequest, request: Request, response: Response):
         # single-use URL token minted by ``/api/cluster/issue_url_token``
         # for cross-node SSO. ``verify_url_token`` consumes on
         # success, so a leaked URL is only valid once.
-        ok = auth_mod.verify_token(body.token) or auth_mod.verify_url_token(
-            body.token
-        )
+        ok = auth_mod.verify_token(body.token) or auth_mod.verify_url_token(body.token)
     elif body.password:
         ok = auth_mod.verify_password(body.password)
 

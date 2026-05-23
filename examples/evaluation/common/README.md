@@ -17,7 +17,7 @@ for full usage.
 | Name | Dataset project | Dataset config |
 |------|-----------------|----------------|
 | `tinystories` | `examples/datasets/roneneldan` | `tinystories-packed.yaml` |
-| `c4` | `examples/datasets/allenai` | `en-packed.yaml` |
+| `c4` | `examples/datasets/allenai` | `en.yaml` |
 | `openorca` | `examples/datasets/Open-Orca` | `openorca-packed.yaml` |
 | `openassistant` | `examples/datasets/OpenAssistant` | `openassistant_packed.yaml` |
 | `fineweb-edu-dedup` | `examples/datasets/HuggingFaceTB` | `smollm-corpus/fineweb-edu-packed.yaml` |

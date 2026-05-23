@@ -17,6 +17,7 @@ import {
   api,
 } from "../api";
 import { persistGet, persistSet } from "../persist";
+import { ContextMenu } from "./ContextMenu";
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
 const DEFAULT_PAGE_SIZE = 25;
@@ -133,6 +134,10 @@ interface Props {
    *  re-trigger the seed). */
   preselect?: SelectedLeaf | null;
   onPreselectConsumed?: () => void;
+  /** Cross-section: "Analyze…" item in the cell context menu hands
+   *  the full text up to App, which switches to Inference > Analyze
+   *  and triggers scoring. Omitted = item is hidden. */
+  onAnalyzeText?: (text: string) => void;
 }
 
 export function DatasetsExploreTab({
@@ -142,6 +147,7 @@ export function DatasetsExploreTab({
   clusterActive,
   preselect,
   onPreselectConsumed,
+  onAnalyzeText,
 }: Props) {
   const servers: ServerOption[] = useMemo(() => {
     if (clusterActive) {
@@ -592,6 +598,7 @@ export function DatasetsExploreTab({
               setPage={setPage}
               pageSize={pageSize}
               totalPages={totalPages}
+              onAnalyzeText={onAnalyzeText}
             />
           ) : resolveHint ? (
             <div className="pane-state warn">{resolveHint}</div>
@@ -1062,6 +1069,7 @@ interface PreviewPaneProps {
   setPage: (p: number) => void;
   pageSize: number;
   totalPages: number;
+  onAnalyzeText?: (text: string) => void;
 }
 
 function PreviewPane({
@@ -1073,9 +1081,39 @@ function PreviewPane({
   setPage,
   pageSize,
   totalPages,
+  onAnalyzeText,
 }: PreviewPaneProps) {
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const handle = loadQ.data?.handle;
+
+  // "Random" navigation: pick a random page, then expand a random row
+  // on it once the new page's data arrives. ``pendingRandomExpand``
+  // gates the expand-row step until iterQ has settled on the target
+  // page — without it, we'd briefly flash an expansion on stale data
+  // before the new page's rows arrive. Clears itself when consumed or
+  // when the page has no rows.
+  const [pendingRandomExpand, setPendingRandomExpand] = useState(false);
+  const onRandomize = useCallback(() => {
+    if (totalPages <= 0) return;
+    const p = Math.floor(Math.random() * totalPages);
+    setPage(p);
+    setPendingRandomExpand(true);
+  }, [totalPages, setPage]);
+
+  useEffect(() => {
+    if (!pendingRandomExpand) return;
+    if (iterQ.isFetching) return; // wait for the target page's data
+    const rows = iterQ.data?.rows;
+    if (!rows || rows.length === 0) {
+      // Empty page — drop the flag so the user can try again rather
+      // than getting stuck waiting for data that won't come.
+      setPendingRandomExpand(false);
+      return;
+    }
+    setExpandedRow(Math.floor(Math.random() * rows.length));
+    setPendingRandomExpand(false);
+  }, [pendingRandomExpand, iterQ.isFetching, iterQ.data]);
+
   return (
     <div className="preview-pane">
       {loadQ.isLoading && (
@@ -1100,6 +1138,7 @@ function PreviewPane({
               expandedRow={expandedRow}
               setExpandedRow={setExpandedRow}
               pageOffset={page * pageSize}
+              onAnalyzeText={onAnalyzeText}
             />
           )}
         </>
@@ -1109,7 +1148,12 @@ function PreviewPane({
       {loadQ.data?.length != null ||
         (selected.hint_rows != null && totalPages > 0) ? (
         <footer className="preview-pager">
-          <Pager page={page} totalPages={totalPages} setPage={setPage} />
+          <Pager
+            page={page}
+            totalPages={totalPages}
+            setPage={setPage}
+            onRandomize={onRandomize}
+          />
         </footer>
       ) : null}
     </div>
@@ -1122,6 +1166,7 @@ interface RowsTableProps {
   expandedRow: number | null;
   setExpandedRow: (n: number | null) => void;
   pageOffset: number;
+  onAnalyzeText?: (text: string) => void;
 }
 
 function RowsTable({
@@ -1130,6 +1175,7 @@ function RowsTable({
   expandedRow,
   setExpandedRow,
   pageOffset,
+  onAnalyzeText,
 }: RowsTableProps) {
   // If the server didn't report column_names (vocab streams, unusual
   // sources), derive the union of keys across the visible window so the
@@ -1142,6 +1188,21 @@ function RowsTable({
     }
     return Array.from(seen);
   }, [columns, rows]);
+
+  // Mousedown position per row, used to distinguish a click (toggle
+  // expand) from a drag-select (don't toggle, let the user copy the
+  // text they just selected). Without this, any text selection inside
+  // the row collapses it on mouseup, which makes copy/paste from a
+  // collapsed example impossible. Threshold: 4px of movement or any
+  // active non-empty selection at click time suppresses the toggle.
+  const dragRef = useRef<{ x: number; y: number } | null>(null);
+
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    column: string;
+    value: unknown;
+  } | null>(null);
 
   if (rows.length === 0) {
     return <div className="pane-state muted">No rows in this page.</div>;
@@ -1165,11 +1226,50 @@ function RowsTable({
               <tr
                 key={idx}
                 className={isExpanded ? "expanded" : ""}
-                onClick={() => setExpandedRow(isExpanded ? null : idx)}
+                onMouseDown={(e) => {
+                  // Only left-button starts a candidate-click. Middle
+                  // and right buttons must not arm the drag check, or
+                  // a right-click drag would suppress the next real
+                  // click.
+                  if (e.button !== 0) return;
+                  dragRef.current = { x: e.clientX, y: e.clientY };
+                }}
+                onClick={(e) => {
+                  const start = dragRef.current;
+                  dragRef.current = null;
+                  // Suppress toggle if the user dragged > 4px (likely
+                  // a drag-select gesture) or if mouseup landed with
+                  // text selected (the user is mid-selection — they
+                  // want to copy, not collapse). The browser clears
+                  // any prior selection on mousedown of a fresh click,
+                  // so a non-empty selection at click time always
+                  // means "selected during this gesture."
+                  if (start) {
+                    const dx = e.clientX - start.x;
+                    const dy = e.clientY - start.y;
+                    if (dx * dx + dy * dy > 16) return;
+                  }
+                  const sel = window.getSelection();
+                  if (sel && !sel.isCollapsed && sel.toString().length > 0) {
+                    return;
+                  }
+                  setExpandedRow(isExpanded ? null : idx);
+                }}
               >
                 <td className="row-index">{absIdx.toLocaleString()}</td>
                 {cols.map((c) => (
-                  <td key={c}>
+                  <td
+                    key={c}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        column: c,
+                        value: row[c],
+                      });
+                    }}
+                  >
                     <Cell
                       value={row[c]}
                       expanded={isExpanded}
@@ -1181,8 +1281,100 @@ function RowsTable({
           })}
         </tbody>
       </table>
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
+          <div className="context-menu-header muted">{menu.column}</div>
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              void copyCellValue(menu.value);
+              setMenu(null);
+            }}
+          >
+            Copy cell text
+          </button>
+          {onAnalyzeText && (
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                const text = cellValueToString(menu.value);
+                setMenu(null);
+                if (text) onAnalyzeText(text);
+              }}
+              title="Open Inference > Analyze with this cell's full text and run scoring"
+            >
+              Analyze in Inference…
+            </button>
+          )}
+        </ContextMenu>
+      )}
     </div>
   );
+}
+
+/** Serialize a cell value the same way the Cell component does for
+ *  display, but without truncation — used by both the copy and
+ *  analyze actions in the context menu. Strings pass through; numbers
+ *  and booleans stringify; objects JSON-encode (pretty, two-space). */
+function cellValueToString(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+/** Copy the cell's full text to the clipboard, with a graceful
+ *  fallback for non-secure contexts. The forgather webui is often
+ *  served over plain HTTP on a LAN, where ``navigator.clipboard`` is
+ *  undefined — without the fallback every right-click → Copy would
+ *  alert "Copy failed: undefined" instead of working. The
+ *  ``execCommand("copy")`` path uses a hidden textarea + a synchronous
+ *  copy, which works in HTTP contexts that the modern API rejects. */
+async function copyCellValue(value: unknown): Promise<void> {
+  const text = cellValueToString(value);
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // fall through to the legacy path
+    }
+  }
+  if (legacyCopyToClipboard(text)) return;
+  alert(
+    "Copy failed: clipboard unavailable. Serve the webui over HTTPS or " +
+      "from localhost, or copy by selecting the cell text directly.",
+  );
+}
+
+/** Synchronous copy via a hidden textarea + ``document.execCommand``.
+ *  Deprecated, but it's the only API that works in non-secure browser
+ *  contexts and we still ship to those. Returns whether the copy was
+ *  reported successful. */
+function legacyCopyToClipboard(text: string): boolean {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "-9999px";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {
+    ok = false;
+  }
+  document.body.removeChild(ta);
+  return ok;
 }
 
 function Cell({
@@ -1222,12 +1414,15 @@ interface PagerProps {
   page: number;
   totalPages: number;
   setPage: (p: number) => void;
+  /** Optional "shuffle" action: jump to a random page and expand a
+   *  random row on it. Surfaced as the dice button when present. */
+  onRandomize?: () => void;
 }
 
 /** Compact pager with first/last + neighbors + ellipsis. Pages are
  *  zero-indexed internally; the UI displays 1-based numbers because
  *  that's what users expect for "page 1 of N". */
-function Pager({ page, totalPages, setPage }: PagerProps) {
+function Pager({ page, totalPages, setPage, onRandomize }: PagerProps) {
   const tokens = useMemo<Array<number | "...">>(() => {
     const out: Array<number | "..."> = [];
     if (totalPages <= 7) {
@@ -1301,6 +1496,16 @@ function Pager({ page, totalPages, setPage }: PagerProps) {
       >
         Next ›
       </button>
+      {onRandomize && totalPages > 0 && (
+        <button
+          className="secondary pager-random"
+          onClick={onRandomize}
+          title="Jump to a random page and expand a random example on it"
+          aria-label="Random page and example"
+        >
+          <span aria-hidden="true">🎲</span>
+        </button>
+      )}
       {totalPages > 1 && (
         <form
           className="pager-goto"

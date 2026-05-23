@@ -28,14 +28,22 @@ if __name__ == "__main__" and __package__ is None:
         standalone_token_file,
         write_standalone_token,
     )
-    from inference_server.config import load_config_from_yaml, merge_config_with_args
+    from inference_server.config import (
+        load_config_from_yaml,
+        merge_config_with_args,
+        merge_model_entries,
+    )
     from inference_server.routes import create_app, set_inference_service
-    from inference_server.service import InferenceService
+    from inference_server.service import InferenceService, ModelEntry, resolve_dtype
 else:
     # Running as module - use relative imports
     from .auth_paths import standalone_token_file, write_standalone_token
-    from .config import load_config_from_yaml, merge_config_with_args
-    from .service import InferenceService
+    from .config import (
+        load_config_from_yaml,
+        merge_config_with_args,
+        merge_model_entries,
+    )
+    from .service import InferenceService, ModelEntry, resolve_dtype
     from .routes import create_app, set_inference_service
 
 import uvicorn
@@ -44,10 +52,45 @@ from forgather.tls import (
     TLSRequiredError,
     enforce_non_loopback_policy,
 )
+
+
+def _default_device() -> str:
+    """Pick a safe default device for the ``-d/--device`` CLI arg.
+
+    Rules:
+      * If torch sees any accelerator (CUDA, XPU, MPS, ROCm, ...), return
+        ``"<accelerator>:0"`` -- a single, real torch.device. NEVER
+        ``"auto"`` (commandeers every visible GPU via HF's
+        device_map='auto' and isn't a torch.device string, so the
+        native checkpoint loader rejects it) and never a hard-coded
+        ``"cuda:0"`` (breaks on Intel XPU / Apple MPS / ROCm hosts).
+      * Otherwise return ``"cpu"`` so the server boots out of the box
+        on a CPU-only torch build / --gpus none docker container.
+
+    Computed at module import time -- the ``-d`` help text shows the
+    detected value, which is what operators expect from ``--help``.
+    """
+    import torch
+
+    try:
+        if torch.accelerator.is_available():
+            acc = torch.accelerator.current_accelerator()
+            if acc is not None:
+                return f"{acc.type}:0"
+    except (AttributeError, RuntimeError):
+        # AttributeError: torch < 2.6 (no torch.accelerator).
+        # RuntimeError: torch.accelerator API present but probing raised.
+        # Fall through to the legacy cuda check.
+        pass
+    if torch.cuda.is_available():
+        return "cuda:0"
+    return "cpu"
+
+
 from forgather.tls.runtime import (
     add_server_tls_args,
-    uvicorn_ssl_kwargs as tls_uvicorn_ssl_kwargs,
 )
+from forgather.tls.runtime import uvicorn_ssl_kwargs as tls_uvicorn_ssl_kwargs
 
 
 def json_type(data):
@@ -90,7 +133,17 @@ def main():
         help="YAML configuration file (optional)",
     )
     parser.add_argument(
-        "-m", "--model", type=os.path.expanduser, help="HuggingFace model path or name"
+        "-m",
+        "--model",
+        action="append",
+        default=None,
+        help=(
+            "HuggingFace model path or name. Either 'PATH' (name derived from "
+            "basename) or 'NAME=PATH' (explicit routing name). Pass multiple "
+            "times to host multiple models in one server: requests dispatch by "
+            "the OpenAI 'model' field. Models lazy-load on first request and "
+            "swap between CPU and GPU; one model is GPU-resident at a time."
+        ),
     )
     parser.add_argument(
         "-a",
@@ -102,7 +155,18 @@ def main():
     parser.add_argument("-H", "--host", default="127.0.0.1", help="Host to bind to")
     parser.add_argument("-p", "--port", type=int, default=8137, help="Port to bind to")
     parser.add_argument(
-        "-d", "--device", default="cuda:0", help="Device to use (cuda, cpu, auto)"
+        "-d",
+        "--device",
+        default=_default_device(),
+        help=(
+            "Device to use (cuda:0, xpu:0, cpu, auto, ...). Default is the"
+            " current accelerator's index-0 device (e.g. cuda:0 / xpu:0)"
+            " when any accelerator is visible, else cpu. The default"
+            " deliberately avoids 'auto': HF's device_map='auto' shards a"
+            " model across every visible GPU, and 'auto' is not a real"
+            " torch.device string -- it doesn't round-trip through the"
+            " native checkpoint loader."
+        ),
     )
     parser.add_argument(
         "-t", "--chat-template", help="Path to custom Jinja2 chat template file"
@@ -158,6 +222,30 @@ def main():
         action="store_true",
         help="Ignore EOS tokens during generation (continue past EOS until max_tokens or stop_sequence)",
     )
+    parser.add_argument(
+        "--keep-on-gpu",
+        action="store_true",
+        help=(
+            "Multi-model only: when set, do not demote inactive models to "
+            "CPU after a swap. Each model loads to GPU on first request "
+            "and stays there. Use when total GPU memory > sum(model sizes) "
+            "and swap latency matters. Default: swap inactive models to "
+            "CPU memory."
+        ),
+    )
+    parser.add_argument(
+        "--eager-load",
+        action="store_true",
+        help=(
+            "Multi-model only: load every configured model at startup "
+            "rather than lazily on first request. Matches the fail-fast "
+            "behavior of single-model setups (a broken checkpoint surfaces "
+            "as a startup error instead of waiting for a request to land "
+            "on it). Cost: startup time grows linearly with model count "
+            "and each model briefly occupies the GPU; pair with --keep-on-"
+            "gpu only when total GPU memory fits all of them."
+        ),
+    )
 
     # Bearer-token auth (default-on). Either supply a token, point at a file
     # holding one, or generate one at startup. ``--no-auth`` disables auth
@@ -180,17 +268,35 @@ def main():
         action="store_true",
         help="Disable bearer-token auth. Any local user on the host will be able to use the model — only set this if you understand the threat model.",
     )
+    parser.add_argument(
+        "--quiet-tokens",
+        action="store_true",
+        help=(
+            "Don't print the bearer token (or token-bearing curl example) "
+            "to stderr at launch. Token is still written to its per-port "
+            "file when auto-generated, so the local CLI client can still "
+            "find it. Intended for demo / public-exposure setups where "
+            "the TTY log is visible to untrusted callers."
+        ),
+    )
 
     add_server_tls_args(parser)
     args = parser.parse_args()
 
     # Load config file if provided
+    config: dict = {}
     if args.config:
         config = load_config_from_yaml(args.config, use_logging=True)
         args = merge_config_with_args(config, args, parser)
 
-    # Validate required arguments
-    if not args.model:
+    # Reconcile model entries: CLI -m flags + config 'models:' list +
+    # legacy single 'model:' field. Result is a list of (name, path) pairs.
+    try:
+        model_specs = merge_model_entries(args.model, config)
+    except ValueError as e:
+        parser.error(str(e))
+
+    if not model_specs:
         parser.error("--model is required (can be specified in config file)")
 
     # Setup logging - configure the root logger and our dedicated application logger
@@ -227,19 +333,58 @@ def main():
     else:
         use_cache = None
 
+    # Validate -c with explicit checkpoint path against multi-model.
+    if len(model_specs) > 1 and isinstance(args.from_checkpoint, str):
+        parser.error(
+            "specific-checkpoint path (-c <PATH>) is not supported with multiple "
+            "--model; use -c with no path to load each model's latest checkpoint."
+        )
+    if len(model_specs) > 1 and args.device == "auto":
+        parser.error("--device auto is not supported with multiple --model")
+    if len(model_specs) > 1 and args.compile:
+        logging.warning(
+            "--compile with multiple models: torch.compile artifacts may not "
+            "survive CPU<->GPU swaps; expect recompilation on each swap."
+        )
+
+    # Build ModelEntry objects. CLI per-model overrides aren't supported;
+    # per-model overrides come from the YAML config's models[] entries.
+    # Top-level CLI args apply uniformly.
+    cli_dtype = resolve_dtype(args.dtype)
+    entries: list[ModelEntry] = []
+    for spec in model_specs:
+        # spec may include per-model overrides loaded from YAML.
+        per_model_dtype = (
+            resolve_dtype(spec["dtype"]) if spec.get("dtype") else cli_dtype
+        )
+        entries.append(
+            ModelEntry(
+                name=spec["name"],
+                model_path=spec["path"],
+                dtype=per_model_dtype,
+                attn_implementation=spec.get(
+                    "attn_implementation", args.attn_implementation
+                ),
+                chat_template_path=spec.get(
+                    "chat_template", getattr(args, "chat_template", None)
+                ),
+                stop_sequences=spec.get("stop_sequences", args.stop_sequences or []),
+                compile_args=spec.get("compile_args", compile_args),
+                cache_implementation=spec.get(
+                    "cache_implementation", args.cache_implementation
+                ),
+                use_cache=spec.get("use_cache", use_cache),
+            )
+        )
+
     # Create inference service
     service = InferenceService(
-        model_path=args.model,
+        entries=entries,
         device=args.device,
-        attn_implementation=args.attn_implementation,
         from_checkpoint=args.from_checkpoint,
-        chat_template_path=getattr(args, "chat_template", None),
-        dtype=args.dtype,
-        stop_sequences=args.stop_sequences,
-        compile_args=compile_args,
-        cache_implementation=args.cache_implementation,
-        use_cache=use_cache,
         ignore_eos=args.ignore_eos,
+        keep_on_gpu=args.keep_on_gpu,
+        eager_load=args.eager_load,
     )
 
     # Resolve auth token. --no-auth wins; otherwise prefer an explicit token,
@@ -270,24 +415,39 @@ def main():
 
         # Print on stderr so it's visible in TTY logs (the scheduler captures
         # stderr) but not entangled with uvicorn's stdout request log.
-        print(f"inference_server auth token: {auth_token}", file=sys.stderr, flush=True)
-        print(
-            "clients must send 'Authorization: Bearer <token>'",
-            file=sys.stderr,
-            flush=True,
-        )
-        try:
-            from forgather.tls import is_enabled as _tls_enabled
+        # --quiet-tokens suppresses the actual value (and the curl example
+        # that embeds it) for demo / public-exposure setups; the source +
+        # persistence message still goes out so operators know auth is on.
+        if args.quiet_tokens:
+            print(
+                "inference_server auth: bearer-token enabled "
+                "(value suppressed by --quiet-tokens)",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            print(
+                f"inference_server auth token: {auth_token}",
+                file=sys.stderr,
+                flush=True,
+            )
+            print(
+                "clients must send 'Authorization: Bearer <token>'",
+                file=sys.stderr,
+                flush=True,
+            )
+            try:
+                from forgather.tls import is_enabled as _tls_enabled
 
-            _scheme = "https" if _tls_enabled() else "http"
-        except Exception:
-            _scheme = "http"
-        print(
-            f'curl -H "Authorization: Bearer {auth_token}" '
-            f"{_scheme}://{args.host}:{args.port}/v1/models",
-            file=sys.stderr,
-            flush=True,
-        )
+                _scheme = "https" if _tls_enabled() else "http"
+            except Exception:
+                _scheme = "http"
+            print(
+                f'curl -H "Authorization: Bearer {auth_token}" '
+                f"{_scheme}://{args.host}:{args.port}/v1/models",
+                file=sys.stderr,
+                flush=True,
+            )
 
         # When the token was auto-generated, publish it to a per-port file
         # under the per-user config dir so the bundled CLI client (and other local

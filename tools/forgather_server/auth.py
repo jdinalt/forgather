@@ -111,6 +111,17 @@ _PEER_ALLOWED_PATHS = frozenset(
         "/api/cluster/dataset_inventory",
         "/api/cluster/dataset_servers",
         "/api/cluster/dataset_router/resolve",
+        # Inference-server inventory: each peer's local list of
+        # inference servers (JobRecord-spawned), including bearer
+        # tokens. Master aggregator polls every ~10s. Same cluster-
+        # bearer trust boundary as the dataset side — see
+        # cluster_inference_inventory.py.
+        "/api/cluster/inference_servers_local",
+        # Master-aggregated inference inventory. Non-master nodes
+        # proxy here so every webui sees the same picker contents.
+        # Token-stripped: the proxy attaches tokens server-side from
+        # the master's snapshot, never via the browser.
+        "/api/cluster/inference_servers",
         # Cross-node webui SSO. The local node calls this on the target
         # peer over mTLS to obtain the peer's bearer token, which is
         # then folded into a ``?token=...`` URL the browser opens in a
@@ -151,6 +162,10 @@ _PEER_ALLOWED_MUTATIONS = frozenset(
         # within ~1 s instead of one collect tick. Read-only-ish:
         # the handler just sets an asyncio.Event.
         "/api/cluster/dataset_servers/refresh",
+        # Same wake hook for the inference-server collect loop.
+        # Triggered when an inference job starts or stops so the
+        # picker converges within ~1s of a state change.
+        "/api/cluster/inference_servers/refresh",
         # Bandwidth-test control plane. Opens a one-shot ephemeral
         # TCP listener and returns its (port, token) so the caller
         # can transfer over plain TCP instead of through the
@@ -220,6 +235,41 @@ _url_tokens: dict[str, float] = {}
 URL_TOKEN_TTL_SECONDS = 60.0
 URL_TOKEN_LENGTH_BYTES = 32
 _auth_disabled: bool = False
+_demo_mode: bool = False
+
+
+# Demo-mode allowlist: POST/PUT/DELETE paths that are still permitted
+# when ``_demo_mode`` is on. Everything else that mutates state is
+# 403'd by the middleware. Keep this list extremely narrow — each
+# entry is a deliberate decision that the action does not change
+# durable server state in a way that would compromise the demo.
+_DEMO_MUTATION_ALLOWLIST = frozenset(
+    {
+        # Logout: needed for session UX even when --no-auth is off.
+        # Login is reached via the ``_OPEN_PATHS`` short-circuit (the
+        # middleware skips path_requires_auth=False entirely), so it
+        # doesn't need to be listed here. The set-password POST is
+        # intentionally NOT allowlisted.
+        "/api/auth/logout",
+        # Inference proxy POSTs are read-through requests against an
+        # external upstream; they don't touch local server state.
+        # Allow them so the demo can showcase chat completions against
+        # a small CPU model running somewhere else.
+        "/api/inference/completions",
+        "/api/inference/chat/completions",
+        "/api/inference/tokenize",
+        "/api/inference/detokenize",
+        # Dataset-server load proxy: HTTP POST by convention because the
+        # body carries a JSON spec, but functionally a read — it asks
+        # the upstream dataset_server to materialize a handle so the
+        # webui can browse rows. No local state changes. The cluster
+        # variant lives under /api/cluster/dataset_server_proxy/<id>/load
+        # — not allowlisted here because cluster + demo is an unusual
+        # combo and the templated path doesn't fit exact-match; revisit
+        # if we ship a clustered demo.
+        "/api/dataset-server/proxy/load",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +286,136 @@ def disable_auth() -> None:
 
 def auth_disabled() -> bool:
     return _auth_disabled
+
+
+def enable_demo_mode() -> None:
+    """Switch the server into read-only demo mode.
+
+    The ``AuthMiddleware`` rejects every POST/PUT/DELETE not in
+    ``_DEMO_MUTATION_ALLOWLIST`` with a 403. Several response
+    serializers also redact bearer tokens (see ``demo_mode_enabled``
+    callers in routes/jobs.py and routes/services.py) so the webui can
+    be exposed publicly without leaking credentials minted for
+    spawned inference / dataset jobs.
+    """
+    global _demo_mode
+    _demo_mode = True
+    log.warning("demo mode is ENABLED — mutations will be blocked")
+
+
+def demo_mode_enabled() -> bool:
+    return _demo_mode
+
+
+# Argv / arg-dict keys that carry bearer tokens. Any key whose lowercase
+# form contains one of these substrings is replaced with ``None`` (or
+# stripped) in demo-mode response bodies. Substring match catches
+# variants like ``auth_token``, ``--auth-token``, ``bearer_token``,
+# ``token``, etc. without needing to enumerate every spawned-service
+# spelling.
+_SENSITIVE_KEY_FRAGMENTS = ("token", "bearer", "password", "secret")
+
+
+def _is_sensitive_key(key: str) -> bool:
+    lk = key.lower()
+    return any(frag in lk for frag in _SENSITIVE_KEY_FRAGMENTS)
+
+
+def redact_sensitive_in_demo(value):
+    """Recursively scrub bearer-token-shaped fields when demo mode is on.
+
+    Used by response serializers so the webui can't display, and a
+    direct API hit can't exfiltrate, tokens that the server normally
+    surfaces (job auto-population, service-args echo, etc.). No-op when
+    demo mode is off.
+
+    Replaces sensitive *values* with ``None`` rather than deleting the
+    key so the response shape stays stable for clients that introspect
+    fields.
+
+    **Container coverage**: dict and list only. Tuples, sets, and any
+    custom container pass through unchanged — today's call sites
+    (``r.job_params``, ``svc.args``, ``item.dynamic_args``) are plain
+    dicts so this is fine. Callers introducing new containers that
+    might hold token-shaped fields should normalize to dict/list before
+    passing in, or this helper needs to grow a new branch. Note the
+    redaction is also keyed on *field name*, not value heuristics: a
+    bearer token tucked into a non-token-named field (e.g.
+    ``r.job_params["bundle"]``) slips through; gate such fields at the
+    endpoint instead of relying on this helper.
+    """
+    if not _demo_mode:
+        return value
+    if isinstance(value, dict):
+        return {
+            k: (None if _is_sensitive_key(str(k)) else redact_sensitive_in_demo(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_sensitive_in_demo(v) for v in value]
+    return value
+
+
+def _demo_path_allowed(path: str) -> bool:
+    """True if ``path`` is on the demo-mode mutation allowlist.
+
+    Handles the static exact-match set plus a small set of templated
+    patterns (cluster proxies whose middle segment is a server_id /
+    queue_id / etc. that varies per request). Each pattern is a
+    ``(prefix, suffix)`` tuple matched as
+    ``path.startswith(prefix) and path.endswith(suffix)`` with the
+    extra constraint that the variable middle is a *single* segment
+    (no slashes) — so a crafted path can't tunnel through.
+    """
+    if path in _DEMO_MUTATION_ALLOWLIST:
+        return True
+    for prefix, suffix in _DEMO_MUTATION_ALLOWLIST_PATTERNS:
+        if not (path.startswith(prefix) and path.endswith(suffix)):
+            continue
+        middle = path[len(prefix) : len(path) - len(suffix)]
+        if not middle:
+            continue
+        # Reject anything in the variable middle that could carry a
+        # smuggled segment under a non-uvicorn ASGI server: forward and
+        # backslashes, NUL, CR/LF, and percent-encoded sequences
+        # (which would decode to slashes under a decoder that didn't
+        # run before the match). Cheap belt-and-suspenders — uvicorn
+        # already decodes %-escapes and rejects CR/LF upstream of the
+        # ASGI scope, but the matcher shouldn't depend on the host
+        # ASGI server's normalization. NOTE: every future entry in
+        # _DEMO_MUTATION_ALLOWLIST_PATTERNS inherits the "no %, no
+        # slashes, no control chars in the variable middle" constraint
+        # — patterns that need to accept percent-encoded identifiers
+        # must use a separate matcher.
+        if any(c in middle for c in ("/", "\\", "\x00", "\r", "\n", "%")):
+            continue
+        return True
+    return False
+
+
+# Templated allowlist entries — (prefix, suffix). Used only for paths
+# whose middle segment varies per request; the matcher requires the
+# variable part to be a single segment so e.g.
+# /api/cluster/dataset_server_proxy/<id>/load doesn't accidentally
+# allowlist /api/cluster/dataset_server_proxy/<id>/../delete .
+_DEMO_MUTATION_ALLOWLIST_PATTERNS = (
+    # Cluster-routed dataset-server load: same shape as
+    # /api/dataset-server/proxy/load above, just dispatched to a
+    # specific node via server_id. Body carries a JSON dataset spec,
+    # response is the materialized handle the webui pages through.
+    ("/api/cluster/dataset_server_proxy/", "/load"),
+)
+
+
+def _blocked_by_demo_mode(scope_type: str, method: str, path: str) -> bool:
+    """True if demo mode should reject this request."""
+    if not _demo_mode:
+        return False
+    if scope_type != "http":
+        return False
+    if method not in ("POST", "PUT", "DELETE", "PATCH"):
+        return False
+    return not _demo_path_allowed(path)
 
 
 # ---------------------------------------------------------------------------
@@ -622,7 +802,12 @@ class AuthMiddleware:
 
         cookies = _parse_cookie_header(headers.get("cookie", ""))
 
+        method = scope.get("method", "").upper() if scope_type == "http" else ""
+
         if authenticate(headers, query_flat, cookies):
+            if _blocked_by_demo_mode(scope_type, method, path):
+                await _send_demo_blocked(send)
+                return
             await self.app(scope, receive, send)
             return
 
@@ -633,10 +818,12 @@ class AuthMiddleware:
         # The path allow-lists encode what an inter-node call is
         # allowed to do; cert presence proves who is making it.
         if scope_type == "http" and _request_has_client_cert(scope):
-            method = scope.get("method", "").upper()
             if (method == "GET" and path_allows_peer(path)) or (
                 method == "POST" and path_allows_peer_mutation(path)
             ):
+                if _blocked_by_demo_mode(scope_type, method, path):
+                    await _send_demo_blocked(send)
+                    return
                 await self.app(scope, receive, send)
                 return
 
@@ -659,6 +846,28 @@ class AuthMiddleware:
             }
         )
         await send({"type": "http.response.body", "body": body})
+
+
+async def _send_demo_blocked(send) -> None:
+    """Send a 403 response for a mutation blocked by demo mode.
+
+    The ``X-Forgather-Demo-Blocked`` header lets the webui's fetch
+    wrapper distinguish a policy-403 (don't force re-login) from a
+    real session-expiry 403 (do force re-login). Same pattern as
+    ``X-Upstream-Auth-Failed`` / ``X-Forgather-Proxy-Refused``.
+    """
+    body = b'{"detail":"Server is in read-only demo mode"}'
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 403,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"x-forgather-demo-blocked", b"1"),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
 
 
 def _parse_cookie_header(raw: str) -> dict[str, str]:

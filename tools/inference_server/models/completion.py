@@ -13,7 +13,13 @@ class CompletionRequest(BaseModel):
     # OpenAI API parameters
     model: str
     prompt: Union[str, List[str]]
-    max_tokens: Optional[int] = 16
+    # Default None — defers to ``_build_generation_config``, which
+    # uses the model's baked-in GenerationConfig when present, and
+    # falls back to a 2048-token floor (env-overridable) when the
+    # model didn't bake one in. The previous hard ``=16`` default
+    # silently clipped generations mid-sentence regardless of model.
+    # Explicit values from the request still win.
+    max_tokens: Optional[int] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     n: Optional[int] = 1
@@ -51,6 +57,12 @@ class CompletionRequest(BaseModel):
     do_sample: Optional[bool] = None
     seed: Optional[int] = None
     ignore_eos: Optional[bool] = None
+
+    # Forgather extension: caps tokenizer max_length on the scoring path
+    # (echo + logprobs + max_tokens=0). Lets a webui client widen / cap
+    # the 2048 default without redeploying the server. Ignored outside
+    # the scoring path and by vLLM.
+    score_max_length: Optional[int] = None
 
 
 class CompletionChoice(BaseModel):

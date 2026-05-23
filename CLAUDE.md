@@ -193,6 +193,8 @@ forgather dataset-server status | list | cache | local            # diagnostic C
 forgather convert --enqueue --src <src> --dst <dst> [--priority N]
 forgather finalize --enqueue --source <src> --dest <dst> [--priority N]
 forgather mkdocs -f mkdocs.yml [--enqueue] [--priority N]
+forgather docs build [--clean] [--check] [--path SUBDIR]                    # pre-render `:::` API directives so the webui Docs panel
+forgather docs clean                                                        # shows expanded content; cache lives at docs/.built/.
 forgather sched status | list | pause | resume | cancel <id> | cleanup [<id>]
 forgather job status | save | stop | save-stop | abort | kill | force-kill | tail | dump <id>
 forgather gpu status | disable | enable | priority | kill <idx>
@@ -822,6 +824,15 @@ Refer to these when creating new projects.
 - `ModuleNotFoundError` when extending model projects with `modelsrc/`: The `project_dir` variable in `[model_submodule_searchpath]` resolves to the current project, not the base model project. Override the search path in the models sub-project's baseline config to point to the base model's modelsrc directory. See "Creating an Experiment Project That Extends a Model Project" above.
 - **Template name shadowing / RecursionError**: When multiple model projects are in the search path, their config files may shadow each other (e.g., both `llama/` and `llama_canon/` have `configs/4M.yaml`). A child config named `4M.yaml` that extends `configs/4M.yaml` will resolve to itself, causing infinite recursion. Fix: use a distinct config name (e.g., `nope_4M.yaml`) or use a separate models sub-project with its own search path.
 - **Extending multiple model projects**: When experiments need model variants from different base models (e.g., Canon + plain Llama), create a separate model project for each base rather than adding all templates to one search path. This avoids name shadowing and keeps template resolution predictable. Example: `examples/tiny_experiments/canon/llama_nope/` is a sub-project for the plain Llama NoPE variant, referenced from canon training configs via `ns.model_project_dir`.
+
+**Documentation updates ship with the feature**
+
+A feature that isn't documented effectively doesn't exist for anyone but the person who wrote it. When adding or substantially changing a component, update both layers in the same PR:
+
+- **Technical docs** (the source of truth for future maintainers): the relevant `tools/<component>/ARCHITECTURE.md` and `tools/<component>/README.md`. These exist precisely to make further work on that component cheap; out-of-date technical docs are worse than absent ones because they confidently mislead.
+- **User-facing docs** under `docs/` (anything operator- or developer-using-the-tool–facing): grep for the affected feature/CLI/endpoint and update each hit. A new flag or endpoint with no `docs/` mention will be invisible to anyone not reading the diff.
+
+Default to updating docs in the same commit (or the next commit of the same PR) as the code change. If the docs change is large enough to justify its own PR, open it immediately after — don't leave it for "later."
 
 **Style**
 

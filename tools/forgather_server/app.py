@@ -53,7 +53,12 @@ async def lifespan(app: FastAPI):
     if cluster.is_active():
         # Lazy import: zeroconf and the membership module pull in net
         # subsystems we don't want loading on standalone servers.
-        from . import cluster_dataset_inventory, cluster_discovery, cluster_membership
+        from . import (
+            cluster_dataset_inventory,
+            cluster_discovery,
+            cluster_inference_inventory,
+            cluster_membership,
+        )
 
         cluster_journal.init()
         discovery_handle = cluster_discovery.ClusterDiscovery()
@@ -78,6 +83,12 @@ async def lifespan(app: FastAPI):
         cluster_membership.register_role_change_listener(
             lambda _prev, _new: cluster_dataset_inventory.wake_loops()
         )
+        # Same wake hook for the inference inventory — a newly-elected
+        # master populates its picker contents on the first tick rather
+        # than waiting one full ``COLLECT_INTERVAL_SECONDS``.
+        cluster_membership.register_role_change_listener(
+            lambda _prev, _new: cluster_inference_inventory.wake_loops()
+        )
         tasks.append(asyncio.create_task(cluster_membership.membership_loop()))
         # Dataset-server cluster-routing inventory. All three loops
         # run on every node but self-gate on master status — failover
@@ -93,6 +104,20 @@ async def lifespan(app: FastAPI):
         tasks.append(
             asyncio.create_task(
                 cluster_dataset_inventory.master_dataset_refresh_loop()
+            )
+        )
+        # Inference-server cluster picker inventory. Two loops (collect
+        # + health) — no dataset-refresh analog because inference
+        # servers don't have a dataset listing to mirror. Same self-
+        # gate on master status as the dataset loops.
+        tasks.append(
+            asyncio.create_task(
+                cluster_inference_inventory.master_collect_servers_loop()
+            )
+        )
+        tasks.append(
+            asyncio.create_task(
+                cluster_inference_inventory.master_health_loop()
             )
         )
 

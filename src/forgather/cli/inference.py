@@ -119,7 +119,16 @@ def _enqueue_inference(args):
 
     p = argparse.ArgumentParser(prog="forgather inf server --enqueue", add_help=True)
     p.add_argument("--enqueue", action="store_true", required=True)
-    p.add_argument("-m", "--model", required=True)
+    p.add_argument(
+        "-m",
+        "--model",
+        action="append",
+        required=True,
+        help=(
+            "Model PATH or NAME=PATH; pass multiple times for multi-model "
+            "inference. Requests dispatch by OpenAI 'model' field."
+        ),
+    )
     p.add_argument("-p", "--port", type=int, default=8137)
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--dtype", default="bfloat16")
@@ -130,6 +139,11 @@ def _enqueue_inference(args):
     )
     p.add_argument("--compile", action="store_true")
     p.add_argument("--disable-kv-cache", action="store_true")
+    p.add_argument(
+        "--keep-on-gpu",
+        action="store_true",
+        help="Multi-model: keep all models GPU-resident (no CPU swap).",
+    )
     p.add_argument("--attn-implementation", default=None)
     p.add_argument("--cache-implementation", default=None)
     p.add_argument("--checkpoint-path", default=None)
@@ -139,15 +153,44 @@ def _enqueue_inference(args):
     p.add_argument("--server", default=None)
     sub = p.parse_args(args.remainder)
 
+    # Parse -m args into name/path specs. ``NAME=PATH`` or bare ``PATH``.
+    models_list = []
+    for raw in sub.model:
+        if "=" in raw:
+            name, _, path = raw.partition("=")
+            name = name.strip()
+            path = path.strip()
+            if not name or not path:
+                print(f"error: --model {raw!r}: empty name or path", file=sys.stderr)
+                raise SystemExit(2)
+        else:
+            path = raw.strip()
+            name = os.path.basename(os.path.normpath(path))
+        models_list.append({"name": name, "path": os.path.abspath(path)})
+
+    if len(models_list) > 1 and sub.checkpoint_path:
+        print(
+            "error: --checkpoint-path is not supported with multiple --model "
+            "(use --from-checkpoint without an explicit path)",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
     job_params = {
-        "model_path": os.path.abspath(sub.model),
         "port": sub.port,
         "host": sub.host,
         "dtype": sub.dtype,
         "from_checkpoint": bool(sub.from_checkpoint),
         "compile": bool(sub.compile),
         "disable_kv_cache": bool(sub.disable_kv_cache),
+        "keep_on_gpu": bool(sub.keep_on_gpu),
     }
+    if len(models_list) == 1:
+        # Single-model: keep the existing job_params shape so older
+        # scheduler/inference_ops code paths continue to work unchanged.
+        job_params["model_path"] = models_list[0]["path"]
+    else:
+        job_params["models"] = models_list
     if sub.attn_implementation:
         job_params["attn_implementation"] = sub.attn_implementation
     if sub.cache_implementation:

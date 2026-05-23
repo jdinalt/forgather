@@ -68,10 +68,24 @@ export interface GenerationParams {
 
 /** OpenAI-style chat message. The server is stateless: clients must
  *  send the full conversation history (optionally led by a single
- *  ``system`` message) on every request. */
+ *  ``system`` message) on every request.
+ *
+ *  ``reasoning`` is a Forgather UI-only field: when a vLLM reasoning
+ *  parser is active, the model's pre-answer thinking trace lands here
+ *  during streaming so the panel can render it distinctly. It is
+ *  stripped before any request is sent to the server (reasoning of a
+ *  prior turn is per-turn scratch and should not be replayed). */
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
+  reasoning?: string;
+}
+
+/** Strip UI-only fields before sending the conversation to the server.
+ *  Currently just ``reasoning``; centralised so future UI-only fields
+ *  can't accidentally leak through a forgotten request body. */
+function stripUiFields(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((m) => ({ role: m.role, content: m.content }));
 }
 
 /** Base URL of the same-origin proxy. Empty string intentional: it
@@ -85,6 +99,7 @@ function proxyUrl(
     | "completions"
     | "chat/completions"
     | "tokenize"
+    | "detokenize"
     | "health",
   baseUrl: string,
 ): string {
@@ -183,6 +198,16 @@ export async function checkServer(
  *    data: [DONE]\n\n
  *  We split on the double-newline boundary to be tolerant of chunks that
  *  contain more than one event. */
+/** OpenAI's documented default for ``/v1/completions`` is
+ *  ``max_tokens: 16``, which vLLM and other spec-compliant servers
+ *  apply. That's almost always wrong for our users — silently clips
+ *  raw-prompt extension at 16 new tokens. Inject a generous default
+ *  on this code path only (the spec default for
+ *  ``/v1/chat/completions`` is "rest of context window," so the chat
+ *  helpers don't need this). Caller-supplied values still win because
+ *  ``...params`` spreads after. */
+const COMPLETION_DEFAULT_MAX_TOKENS = 2048;
+
 /** One-shot completion (``stream: false``). Returns the full text after
  *  the server finishes generating. Needed for generation modes the HF
  *  streamer doesn't support, notably beam search. */
@@ -198,6 +223,7 @@ export async function runCompletion(
     model: model || "inference-server",
     prompt,
     stream: false,
+    max_tokens: COMPLETION_DEFAULT_MAX_TOKENS,
     ...params,
   };
   const r = await fetch(proxyUrl("completions", baseUrl), {
@@ -227,22 +253,21 @@ export async function* streamCompletion(
     model: model || "inference-server",
     prompt,
     stream: true,
+    max_tokens: COMPLETION_DEFAULT_MAX_TOKENS,
     ...params,
   };
-  yield* streamSse(
+  yield* streamSse<string>(
     proxyUrl("completions", baseUrl),
     body,
     signal,
-    (frame) => frame?.choices?.[0]?.text,
+    (frame) => {
+      const t = frame?.choices?.[0]?.text;
+      return typeof t === "string" && t.length > 0 ? t : undefined;
+    },
     authToken,
   );
 }
 
-/** Stream a chat completion. Same SSE framing as ``streamCompletion``,
- *  but the per-frame text lives at ``choices[0].delta.content`` and the
- *  body uses ``messages`` instead of ``prompt``. The first frame
- *  typically carries ``delta.role: "assistant"`` with no content; we
- *  ignore role-only frames and only yield content deltas. */
 /** Options that ride alongside generation params on chat-completion
  *  requests but aren't part of the HF GenerationConfig surface.
  *  ``nextRole`` is a Forgather-specific extension on the inference
@@ -254,6 +279,24 @@ export interface ChatRequestOptions {
   nextRole?: "assistant" | "user";
 }
 
+/** Tagged streaming delta. ``content`` is the final assistant reply;
+ *  ``reasoning`` is the model's pre-answer thinking trace (emitted by
+ *  vLLM when a reasoning parser is active, e.g. ``--reasoning-parser
+ *  qwen3``). Consumers should render the two differently and only
+ *  persist ``content`` in conversation history — replaying the
+ *  thinking trace on subsequent turns is wasteful and the model
+ *  typically discards it anyway. */
+export type ChatDelta =
+  | { kind: "content"; text: string }
+  | { kind: "reasoning"; text: string };
+
+/** Stream a chat completion. Same SSE framing as ``streamCompletion``,
+ *  but the per-frame text lives at ``choices[0].delta.content`` (or
+ *  ``delta.reasoning`` when a vLLM reasoning parser is active) and the
+ *  body uses ``messages`` instead of ``prompt``. The first frame
+ *  typically carries ``delta.role: "assistant"`` with no content; we
+ *  ignore role-only frames and only yield non-empty content/reasoning
+ *  deltas. */
 export async function* streamChatCompletion(
   baseUrl: string,
   model: string,
@@ -262,21 +305,104 @@ export async function* streamChatCompletion(
   signal: AbortSignal,
   options?: ChatRequestOptions,
   authToken?: string,
-): AsyncIterable<string> {
+): AsyncIterable<ChatDelta> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
-    messages,
+    messages: stripUiFields(messages),
     stream: true,
     ...params,
   };
   if (options?.nextRole) body.next_role = options.nextRole;
-  yield* streamSse(
+  yield* streamSse<ChatDelta>(
     proxyUrl("chat/completions", baseUrl),
     body,
     signal,
-    (frame) => frame?.choices?.[0]?.delta?.content,
+    (frame) => {
+      const delta = frame?.choices?.[0]?.delta;
+      if (!delta) return undefined;
+      const r = delta.reasoning;
+      if (typeof r === "string" && r.length > 0) {
+        return { kind: "reasoning", text: r };
+      }
+      const c = delta.content;
+      if (typeof c === "string" && c.length > 0) {
+        return { kind: "content", text: c };
+      }
+      return undefined;
+    },
     authToken,
   );
+}
+
+/** Per-token scoring result returned by ``scorePrompt``. Shape matches
+ *  OpenAI legacy-completions ``choices[0].logprobs`` so the same client
+ *  works against vLLM (or any compatible server) using
+ *  ``echo=true, logprobs=K, max_tokens=0``.
+ *
+ *  ``tokens[i]`` is the decoded string for the i-th token. The first
+ *  entry of ``token_logprobs`` / ``top_logprobs`` is ``null`` because a
+ *  causal LM has no prediction for the first token. Per-token loss is
+ *  ``-token_logprobs[i]``; perplexity is ``Math.exp(loss)``. */
+export interface TokenScores {
+  tokens: string[];
+  token_logprobs: (number | null)[];
+  top_logprobs: (Record<string, number> | null)[];
+  text_offset: number[];
+  /** Forgather extension: Shannon entropy (nats) of the full
+   *  vocabulary distribution at each prediction position. Aligned
+   *  with ``token_logprobs`` — index 0 is ``null``. Absent on OpenAI
+   *  / vLLM responses (which only expose top-K logprobs, from which
+   *  full-vocab entropy can't be reconstructed). Clients should
+   *  treat as optional and fall back when missing. */
+  token_entropies?: (number | null)[];
+}
+
+/** Score input text by running a single forward pass on the server and
+ *  returning per-token logprobs + top-K alternatives. Uses the standard
+ *  ``echo=true, logprobs=K, max_tokens=0`` shape — works against vLLM
+ *  and our inference server identically.
+ *
+ *  ``maxLength`` is a Forgather extension (``score_max_length``) that
+ *  caps the tokenizer's prompt length so a giant paste doesn't OOM the
+ *  forward pass. Omit to let the server use its default (2048). vLLM
+ *  ignores the field. */
+export async function scorePrompt(
+  baseUrl: string,
+  model: string,
+  prompt: string,
+  topK: number,
+  signal: AbortSignal,
+  authToken?: string,
+  maxLength?: number,
+): Promise<TokenScores> {
+  const body: Record<string, unknown> = {
+    model: model || "inference-server",
+    prompt,
+    echo: true,
+    logprobs: topK,
+    max_tokens: 0,
+    stream: false,
+  };
+  if (typeof maxLength === "number" && maxLength > 0) {
+    body.score_max_length = Math.floor(maxLength);
+  }
+  const r = await fetch(proxyUrl("completions", baseUrl), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!r.ok) {
+    throw new Error(`${r.status} ${r.statusText}: ${await r.text()}`);
+  }
+  const data = (await r.json()) as {
+    choices?: Array<{ logprobs?: TokenScores | null }>;
+  };
+  const lp = data.choices?.[0]?.logprobs;
+  if (!lp || !Array.isArray(lp.tokens)) {
+    throw new Error("Server did not return logprobs in response");
+  }
+  return lp;
 }
 
 /** vLLM-compatible /tokenize response. ``prompt`` is a Forgather
@@ -307,7 +433,7 @@ export async function tokenizeChat(
 ): Promise<TokenizeResponse> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
-    messages,
+    messages: stripUiFields(messages),
   };
   if (options?.nextRole) body.next_role = options.nextRole;
   if (typeof options?.addGenerationPrompt === "boolean") {
@@ -327,7 +453,46 @@ export async function tokenizeChat(
   return (await r.json()) as TokenizeResponse;
 }
 
-/** One-shot chat completion. Returns the assistant message text. */
+/** vLLM-compatible /detokenize: turn a list of token ids back into the
+ *  exact decoded string. We use this as a fallback for vLLM servers
+ *  whose /tokenize doesn't return the rendered prompt — call /tokenize
+ *  first to get ids, then /detokenize to recover the prompt string. */
+export interface DetokenizeResponse {
+  prompt: string;
+}
+
+export async function detokenizeTokens(
+  baseUrl: string,
+  model: string,
+  tokens: number[],
+  authToken?: string,
+): Promise<DetokenizeResponse> {
+  const r = await fetch(proxyUrl("detokenize", baseUrl), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
+    body: JSON.stringify({
+      model: model || "inference-server",
+      tokens,
+    }),
+  });
+  if (!r.ok) {
+    throw new Error(`${r.status} ${r.statusText}: ${await r.text()}`);
+  }
+  return (await r.json()) as DetokenizeResponse;
+}
+
+/** Result of a one-shot chat completion. ``content`` is the assistant's
+ *  final reply (empty string if the model exhausted its token budget
+ *  inside the reasoning trace). ``reasoning`` is the pre-answer
+ *  thinking text when a vLLM reasoning parser is active, undefined
+ *  otherwise. */
+export interface ChatResult {
+  content: string;
+  reasoning?: string;
+}
+
+/** One-shot chat completion. Returns the assistant message text plus
+ *  an optional reasoning trace. */
 export async function runChatCompletion(
   baseUrl: string,
   model: string,
@@ -336,10 +501,10 @@ export async function runChatCompletion(
   signal: AbortSignal,
   options?: ChatRequestOptions,
   authToken?: string,
-): Promise<string> {
+): Promise<ChatResult> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
-    messages,
+    messages: stripUiFields(messages),
     stream: false,
     ...params,
   };
@@ -354,22 +519,33 @@ export async function runChatCompletion(
     throw new Error(`${r.status} ${r.statusText}: ${await r.text()}`);
   }
   const data = (await r.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
+    choices?: Array<{
+      message?: { content?: string | null; reasoning?: string | null };
+    }>;
   };
-  return data.choices?.[0]?.message?.content ?? "";
+  const msg = data.choices?.[0]?.message;
+  return {
+    content: msg?.content ?? "",
+    reasoning: msg?.reasoning ?? undefined,
+  };
 }
 
 /** Shared SSE-stream consumer. Posts the JSON body, parses ``data: …``
  *  events terminated by a blank line, and yields whatever the supplied
  *  ``extract`` callback returns from each frame's parsed JSON. Stops on
- *  ``data: [DONE]`` or stream EOF. */
-async function* streamSse(
+ *  ``data: [DONE]`` or stream EOF.
+ *
+ *  Contract: ``extract`` returning ``undefined`` skips the frame; any
+ *  other return value is yielded verbatim. Callers that want to drop
+ *  empty strings (or other "no-op" values) must filter inside their
+ *  own ``extract`` — this consumer does not enforce non-empty yields. */
+async function* streamSse<T>(
   url: string,
   body: Record<string, unknown>,
   signal: AbortSignal,
-  extract: (frame: any) => string | undefined,
+  extract: (frame: any) => T | undefined,
   authToken?: string,
-): AsyncIterable<string> {
+): AsyncIterable<T> {
   const r = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
@@ -401,9 +577,9 @@ async function* streamSse(
         if (payload === "[DONE]") return;
         try {
           const parsed = JSON.parse(payload);
-          const text = extract(parsed);
-          if (typeof text === "string" && text.length > 0) {
-            yield text;
+          const item = extract(parsed);
+          if (item !== undefined) {
+            yield item;
           }
         } catch {
           // Ignore unparseable frames — the server never sends malformed

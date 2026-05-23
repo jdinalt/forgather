@@ -9,4 +9,4 @@
 [main_body]
     == super()
     dataset_proj: "{{ abspath(joinpath(ns.forgather_dir, "examples", "datasets", "allenai")) }}"
-    dataset_config: "en-packed.yaml"
+    dataset_config: "en.yaml"

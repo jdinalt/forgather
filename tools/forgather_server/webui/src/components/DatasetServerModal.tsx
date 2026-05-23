@@ -18,6 +18,7 @@ interface PersistedDatasetServer {
   port: number;
   logLevel: string;
   noAuth: boolean;
+  quietTokens: boolean;
   noHf: boolean;
   allowPaths: boolean;
   allowDownloads: boolean;
@@ -72,6 +73,13 @@ export function DatasetServerModal({
   const [priority, setPriority] = useState<number>(0);
 
   const [noAuth, setNoAuth] = useState<boolean>(persisted.noAuth ?? false);
+  // Suppress bearer-token printing to the TTY log on launch — for
+  // public-demo deployments where the TTY pane is visible to untrusted
+  // viewers. The token still works; clients/peers discover it through
+  // the persisted per-port file as usual.
+  const [quietTokens, setQuietTokens] = useState<boolean>(
+    persisted.quietTokens ?? false,
+  );
   // Not persisted: this is a one-shot "rotate on this start" knob,
   // not a default to carry between modal opens.
   const [regenToken, setRegenToken] = useState<boolean>(false);
@@ -101,6 +109,7 @@ export function DatasetServerModal({
     setPort(8766);
     setLogLevel("INFO");
     setNoAuth(false);
+    setQuietTokens(false);
     setRegenToken(false);
     setNoHf(false);
     setAllowPaths(false);
@@ -155,6 +164,7 @@ export function DatasetServerModal({
       port,
       log_level: logLevel,
       no_auth: noAuth,
+      quiet_tokens: quietTokens,
       // ``regen_token`` only meaningful when auth is on; the scheduler
       // ignores it under ``--no-auth`` but no need to ship a stale flag.
       regen_token: regenToken && !noAuth,
@@ -177,6 +187,7 @@ export function DatasetServerModal({
       port,
       logLevel,
       noAuth,
+      quietTokens,
       noHf,
       allowPaths,
       allowDownloads,
@@ -272,6 +283,20 @@ export function DatasetServerModal({
               <span className="muted">
                 rotate the persisted per-port token; existing clients
                 will need to re-pull
+              </span>
+            </label>
+            <label className="dyn-checkbox">
+              <input
+                type="checkbox"
+                checked={quietTokens}
+                disabled={noAuth}
+                onChange={(e) => setQuietTokens(e.target.checked)}
+              />
+              <code>--quiet-tokens</code>
+              <span className="muted">
+                suppress the bearer token in the launch banner (TTY log
+                stays public-safe — clients/peers still get the token
+                from the persisted per-port file)
               </span>
             </label>
           </div>
