@@ -49,8 +49,13 @@
 
 [load_dataset_args]
     == super()
-    ## The HuggingFace dataset id, or a local path for "json" / "csv" /
-    ## "parquet" loaders.
+    ## What goes here:
+    ##   * A HuggingFace Hub id           e.g. "allenai/c4"
+    ##   * A dataset-server local mapping e.g. "local/stories"
+    ##                                    (registered with `dataset_server
+    ##                                    --local NAME PATH`; works
+    ##                                    identically to a Hub id)
+    ##   * A local file for the json/csv/parquet loaders
     path: "$DATASET_ID"
 
     ## Optional. Dataset variant (the `name=` argument to load_dataset).

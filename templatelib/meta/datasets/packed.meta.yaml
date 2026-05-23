@@ -24,7 +24,9 @@ fields:
   - name: DATASET_ID
     label: "Dataset path"
     description: |
-      HuggingFace dataset id (e.g. `allenai/c4`, `roneneldan/TinyStories`)
-      or a local path for `json`/`csv`/`parquet` loaders.
+      HuggingFace Hub id (e.g. `allenai/c4`, `roneneldan/TinyStories`),
+      a dataset-server local mapping (e.g. `local/stories` — registered
+      via `dataset_server --local NAME PATH`, works identically to a Hub
+      id), or a local file for the `json`/`csv`/`parquet` loaders.
     placeholder: "allenai/c4"
     required: true
