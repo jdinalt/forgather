@@ -257,7 +257,7 @@ def test_field_picker_roundtrips(tmp_path: Path) -> None:
         title: "T"
         fields:
           - name: ID
-            picker: "local_dataset"
+            picker: "dataset"
             required: true
           - name: NAME
             required: true
@@ -266,7 +266,7 @@ def test_field_picker_roundtrips(tmp_path: Path) -> None:
     [datasets] = mt.discover(str(tmp_path / "meta"))
     [tpl] = datasets.templates
     fields_by_name = {f.name: f for f in tpl.fields}
-    assert fields_by_name["ID"].picker == "local_dataset"
+    assert fields_by_name["ID"].picker == "dataset"
     assert fields_by_name["NAME"].picker == ""
 
 

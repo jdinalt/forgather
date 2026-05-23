@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { MetaTemplate } from "../api";
-import { LocalDatasetPickerPopover } from "./LocalDatasetPickerPopover";
+import { DatasetPickerPopover } from "./DatasetPickerPopover";
 
 interface Props {
   scaffold: MetaTemplate;
@@ -71,7 +71,7 @@ export function MetaTemplateFields({
 
 /** Picker registry. Each entry returns a JSX node that opens the
  *  appropriate popover. Add a new kind by adding an entry here. */
-const PICKER_KINDS = ["local_dataset"] as const;
+const PICKER_KINDS = ["dataset"] as const;
 
 function isKnownPicker(kind: string): kind is (typeof PICKER_KINDS)[number] {
   return (PICKER_KINDS as readonly string[]).includes(kind);
@@ -126,8 +126,8 @@ function FieldInput({
         input
       )}
 
-      {openKind === "local_dataset" && (
-        <LocalDatasetPickerPopover
+      {openKind === "dataset" && (
+        <DatasetPickerPopover
           onPick={onChange}
           onClose={() => setOpenKind(null)}
         />

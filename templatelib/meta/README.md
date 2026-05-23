@@ -84,7 +84,7 @@ fields:
     default: "validation[:1000]"   # Pre-filled in the form; used when
                                    # the user submits the value empty.
   - name: DATASET_ID
-    picker: "local_dataset"        # See "Field pickers" below.
+    picker: "dataset"              # See "Field pickers" below.
     required: true
 ```
 
@@ -98,11 +98,16 @@ the user can still edit by hand afterward.
 
 Available kinds:
 
-- `local_dataset` — lists the cluster's `local/<name>` dataset
-  inventory (the same data the **Datasets → Servers** view shows) with
-  type-to-filter, row counts, and column names. Dropping a row into the
-  field inserts the `local/<name>` form directly, ready for
-  `load_dataset` to pick up.
+- `dataset` — lists every dataset known to the cluster's aggregated
+  inventory: HuggingFace cache entries (`source: "hf"`) *and*
+  dataset_server-registered local mappings (`source: "local"`). Each
+  row shows a source badge, row count, and column names. A segmented
+  filter (All / Local / HF cache) lets the user narrow the list.
+  Selecting drops the canonical id into the field — `allenai/c4` for
+  Hub entries, `local/<name>` for local registrations — exactly what
+  `load_dataset(path=...)` accepts. Same inventory the **Datasets**
+  view shows; in cluster mode it's already deduped across peers, so
+  the picker has no per-mode branching.
 
 Picker support is opt-in per field: omit `picker:` for any field that
 should stay a plain text input. Unknown picker kinds are ignored (the

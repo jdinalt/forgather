@@ -39,5 +39,5 @@ fields:
       via `dataset_server --local NAME PATH`, works identically to a Hub
       id), or a local file for the `json`/`csv`/`parquet` loaders.
     placeholder: "allenai/c4"
-    picker: "local_dataset"
+    picker: "dataset"
     required: true

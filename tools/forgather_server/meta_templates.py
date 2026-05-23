@@ -48,9 +48,10 @@ class MetaField:
     """One form field declared by a meta-template's manifest.
 
     ``picker`` names a specialised input picker the webui should render
-    alongside the text input — currently the only kind is
-    ``"local_dataset"`` (a popover listing the cluster's ``local/<name>``
-    dataset inventory). Empty string ⇒ plain text input.
+    alongside the text input — currently the only kind is ``"dataset"``
+    (a popover listing the cluster's aggregated dataset inventory:
+    HuggingFace cache entries and ``local/<name>`` registrations).
+    Empty string ⇒ plain text input.
     """
 
     name: str
