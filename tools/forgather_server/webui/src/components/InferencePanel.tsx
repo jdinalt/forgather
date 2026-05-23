@@ -59,8 +59,17 @@ function loadState(): InferenceState {
         typeof parsed.baseUrl === "string"
           ? parsed.baseUrl
           : DEFAULT_STATE.baseUrl,
-      authToken:
-        typeof parsed.authToken === "string" ? parsed.authToken : "",
+      // ``authToken`` is intentionally NOT restored. The token comes
+      // from authoritative sources on demand each session: the job
+      // listing for locally-spawned servers (auto-filled by pickRow),
+      // or the explicit reveal endpoint for user-added entries
+      // (fetched on Show / Copy click). Restoring a persisted token
+      // would (a) survive reloads even when the source server is
+      // unreachable / has rotated its token, and (b) silently extend
+      // user-added bearers' lifetime beyond the explicit-operator-
+      // action window the reveal design intends. Returning sessions
+      // pay one re-pick or one Show click — cheap in exchange.
+      authToken: "",
       model: typeof parsed.model === "string" ? parsed.model : "",
       params,
     };
@@ -133,7 +142,15 @@ export function InferencePanel({
   const [completionText, setCompletionText] = useState("");
 
   useEffect(() => {
-    persistSet(STORAGE_KEY, JSON.stringify(state));
+    // Strip ``authToken`` before persisting — see loadState's
+    // matching comment. Bearer tokens come from authoritative
+    // sources on demand each session and must not leak into
+    // localStorage (which would survive reloads, browser
+    // restarts, and "user picked a different server but didn't
+    // refresh" gaps).
+    const { authToken: _drop, ...persistable } = state;
+    void _drop;
+    persistSet(STORAGE_KEY, JSON.stringify(persistable));
   }, [state]);
 
   const onSendToCompletion = (rendered: string) => {
