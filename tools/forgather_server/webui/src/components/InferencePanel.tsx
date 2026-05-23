@@ -91,10 +91,17 @@ interface InferencePanelProps {
    *  pendingExplore / onPreselectConsumed pattern. */
   onAnalyzeConsumed?: () => void;
   /** Cross-section trigger from the Jobs view's "Open in Inference"
-   *  button: pre-select the running server with this job id. Switches
-   *  to the Model sub-tab so the picker is visible. Same key-nonce
-   *  pattern as pendingAnalyze. */
-  pendingServerPick?: { jobId: string; key: number } | null;
+   *  button: pre-select the running server identified by this job
+   *  id + base URL. Switches to the Model sub-tab so the picker is
+   *  visible. ``baseUrl`` is needed because cluster-mode picker
+   *  rows key on a base_url hash, not the job id — see
+   *  InferenceModelPanel for the dual-matching logic. Same key-
+   *  nonce pattern as pendingAnalyze. */
+  pendingServerPick?: {
+    jobId: string;
+    baseUrl: string;
+    key: number;
+  } | null;
   /** Called by InferenceModelPanel after the picker row was found and
    *  selected, so App can reset the pending state. */
   onServerPickConsumed?: () => void;

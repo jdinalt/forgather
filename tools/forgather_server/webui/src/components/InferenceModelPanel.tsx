@@ -22,12 +22,21 @@ interface Props {
   state: InferenceState;
   setState: (fn: (prev: InferenceState) => InferenceState) => void;
   /** Cross-section pre-select from the Jobs view: when the key flips
-   *  the panel finds the matching picker row by jobId and selects it
-   *  (same path as a manual click). If the row isn't available yet —
-   *  cluster gate resolving, jobs query not yet refreshed — the
-   *  effect retries each time pickerRows updates until it finds one
-   *  or the pending entry is cleared upstream. */
-  pendingServerPick?: { jobId: string; key: number } | null;
+   *  the panel finds the matching picker row and selects it (same
+   *  path as a manual click). Carries both ``jobId`` and ``baseUrl``
+   *  because the picker row's id differs by mode: single-node picker
+   *  rows key on the local JobRecord ``j.id``, while cluster mode
+   *  uses ``server_id_for(base_url)``. Matching by URL works in
+   *  both modes; jobId is checked first as a fast path for the
+   *  single-node case. If the row isn't available yet (cluster gate
+   *  resolving, jobs poll not yet refreshed) the effect retries
+   *  each time pickerRows updates until it finds one or the pending
+   *  entry is cleared upstream. */
+  pendingServerPick?: {
+    jobId: string;
+    baseUrl: string;
+    key: number;
+  } | null;
   /** Called once the matching row was found + selected, so App can
    *  clear pending state. */
   onServerPickConsumed?: () => void;
@@ -285,7 +294,12 @@ export function InferenceModelPanel({
     if (!pendingServerPick) return;
     if (pendingServerPick.key === lastServerPickKeyRef.current) return;
     if (!pickerRows) return;
-    const row = pickerRows.find((r) => r.id === pendingServerPick.jobId);
+    // Try jobId first (single-node fast path), then URL (works in
+    // both modes — single-node picker rows include /v1; cluster
+    // picker rows are built the same way in _clusterEntryToRow).
+    const row =
+      pickerRows.find((r) => r.id === pendingServerPick.jobId) ??
+      pickerRows.find((r) => r.url === pendingServerPick.baseUrl);
     if (!row) return;
     lastServerPickKeyRef.current = pendingServerPick.key;
     pickRow(row);
@@ -318,6 +332,15 @@ export function InferenceModelPanel({
     // URL change, the effect picks a default model from the result.
   };
 
+  // Ref that always points at the latest pickedRow so the
+  // post-await race guard in revealUserToken can compare against
+  // the *current* selection rather than the value captured in its
+  // closure at invocation time.
+  const pickedRowRef = useRef(pickedRow);
+  useEffect(() => {
+    pickedRowRef.current = pickedRow;
+  }, [pickedRow]);
+
   // Fetch the bearer token for the currently-picked user-server
   // entry. Only invoked from the Show / Copy click handlers so the
   // secret crosses the wire only when the operator explicitly asks
@@ -328,12 +351,17 @@ export function InferenceModelPanel({
   // subsequent toggles + outgoing requests can use it directly.
   const revealUserToken = async (): Promise<string> => {
     if (pickedRow?.kind !== "user") return "";
+    // Capture the target id at invocation; compare against the
+    // ref (not the closure-captured pickedRow) after the await so
+    // a row-switch mid-fetch correctly drops the fetched token
+    // instead of associating it with the new selection.
+    const targetId = pickedRow.id;
     setRevealingToken(true);
     try {
-      const token = await api.getUserInferenceServerToken(pickedRow.id);
-      // Race guard: the operator may have picked a different row
-      // while the fetch was in flight. Drop the result if so.
-      if (pickedRow?.kind !== "user" || !token) return token || "";
+      const token = await api.getUserInferenceServerToken(targetId);
+      const cur = pickedRowRef.current;
+      if (cur?.kind !== "user" || cur.id !== targetId) return "";
+      if (!token) return "";
       setState((prev) => ({ ...prev, authToken: token }));
       return token;
     } catch (e) {

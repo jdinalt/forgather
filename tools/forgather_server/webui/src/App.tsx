@@ -363,12 +363,15 @@ export default function App() {
   // is what InferenceModelPanel keys its picker rows on and what
   // DatasetServersTab keys ``selected`` on via ``queue_id``.
   const [pendingInferenceServer, setPendingInferenceServer] = useState<
-    { jobId: string; key: number } | null
+    { jobId: string; baseUrl: string; key: number } | null
   >(null);
-  const openInferenceServer = useCallback((jobId: string) => {
-    setPendingInferenceServer({ jobId, key: Date.now() });
-    setView("inference");
-  }, []);
+  const openInferenceServer = useCallback(
+    (jobId: string, baseUrl: string) => {
+      setPendingInferenceServer({ jobId, baseUrl, key: Date.now() });
+      setView("inference");
+    },
+    [],
+  );
   const clearPendingInferenceServer = useCallback(
     () => setPendingInferenceServer(null),
     [],

@@ -74,8 +74,10 @@ interface Props {
   /** Inference / dataset job cards surface "Open in …" buttons that
    *  navigate to the matching operational panel with the row pre-
    *  selected. Wired up through App.tsx, where the pending-pick state
-   *  lives. */
-  onOpenInferenceServer?: (jobId: string) => void;
+   *  lives. Inference takes ``(jobId, baseUrl)`` because cluster-mode
+   *  picker rows key on a base_url hash, not the job id; matching
+   *  by URL covers both modes. */
+  onOpenInferenceServer?: (jobId: string, baseUrl: string) => void;
   onOpenDatasetServer?: (queueId: string) => void;
 }
 
@@ -554,7 +556,7 @@ function JobCard({
   onControl: (action: ControlAction) => void;
   onRemove: () => void;
   controlPending: boolean;
-  onOpenInferenceServer?: (jobId: string) => void;
+  onOpenInferenceServer?: (jobId: string, baseUrl: string) => void;
   onOpenDatasetServer?: (queueId: string) => void;
 }) {
   const demoMode = useDemoMode();
@@ -938,10 +940,14 @@ function JobCard({
             selected. Live-only — both panels' picker lists filter out
             dead jobs, so the pre-select would be a no-op for a dead
             record. Inspect dead records via the Jobs view itself. */}
-        {isInference && job.alive && onOpenInferenceServer && (
+        {isInference && job.alive && onOpenInferenceServer && inferenceUrl && (
           <button
             className="secondary"
-            onClick={() => onOpenInferenceServer(job.id)}
+            onClick={() =>
+              // /v1 suffix matches the picker-row URL shape used by
+              // both the local-job and cluster-server builders.
+              onOpenInferenceServer(job.id, inferenceUrl + "/v1")
+            }
             title="Open the Inference view with this server selected"
           >
             Open in Inference

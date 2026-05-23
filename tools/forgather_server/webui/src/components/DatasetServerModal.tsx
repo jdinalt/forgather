@@ -228,10 +228,13 @@ export function DatasetServerModal({
       (name.trim() && !path.trim()) || (!name.trim() && path.trim()),
   );
 
-  // Single source of truth for the job_params shape — used by both
-  // ``Start server`` (one-shot enqueue) and ``Create service…``
-  // (persist into the services config and let the autostart pass kick
-  // it off).
+  // Single source of truth for the job_params shape — used by
+  // ``Start server`` (one-shot enqueue). ``regen_token`` is included
+  // because it's meaningful for a single spawn; the service-bound
+  // variant strips it (see ``serviceArgs`` below) so it never
+  // persists into the config — otherwise every autostart would
+  // rotate the token, surprising both the operator and any client
+  // that cached the previous value.
   const buildArgs = (): Record<string, unknown> => {
     const args: Record<string, unknown> = {
       host: host.trim() || "127.0.0.1",
@@ -253,6 +256,20 @@ export function DatasetServerModal({
       args.locals = cleanLocals.map(({ name, path }) => [name, path]);
     }
     return args;
+  };
+
+  // Args shape persisted into the services config (Create service /
+  // Save edit). ``regen_token`` is a one-shot intent — leaving it
+  // ``true`` here would make every autostart pass spawn with
+  // ``--regen-token``, rotating the bearer on each restart. Rotation
+  // should be an explicit per-action choice, not a config-baked
+  // default. If the operator wants to rotate, they can do so at the
+  // running process level (re-spawn after deleting the per-port
+  // .token file).
+  const serviceArgs = (): Record<string, unknown> => {
+    const a = buildArgs();
+    delete a.regen_token;
+    return a;
   };
 
   const submit = () => {
@@ -540,7 +557,7 @@ export function DatasetServerModal({
                     editingService!.name,
                     editingService!.running,
                     editingService!.enabled,
-                    buildArgs(),
+                    serviceArgs(),
                   );
                   setSaving(false);
                   if (ok) onClose();
@@ -573,7 +590,7 @@ export function DatasetServerModal({
                     const ok = await promptAndCreateService(
                       qc,
                       "dataset",
-                      buildArgs(),
+                      serviceArgs(),
                       suggested,
                     );
                     if (ok) {

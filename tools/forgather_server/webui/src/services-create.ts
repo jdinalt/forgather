@@ -97,7 +97,24 @@ export async function saveServiceArgsAndMaybeRestart(
         await new Promise((r) => setTimeout(r, 400));
       }
     }
-    await api.upsertService(type, name, enabled, args);
+    // Re-query live status to honour any out-of-band ⏹ toggle the
+    // operator hit in the sidebar after opening the edit modal.
+    // Without this, Save would re-apply the modal's captured
+    // ``enabled`` flag and silently undo their intent. (The
+    // listing is cheap; we already poll it from many surfaces.)
+    let effectiveEnabled = enabled;
+    try {
+      const statuses = await api.listServices();
+      const cur = statuses.find(
+        (s) => s.service.type === type && s.service.name === name,
+      );
+      if (cur) effectiveEnabled = cur.service.enabled;
+    } catch {
+      // Fall back to the modal's captured flag if the re-check
+      // itself fails — at worst we re-apply what the operator
+      // saw at open time.
+    }
+    await api.upsertService(type, name, effectiveEnabled, args);
   } catch (e) {
     window.alert(
       `Could not save service ${type}:${name}: ${
