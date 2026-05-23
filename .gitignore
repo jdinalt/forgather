@@ -159,6 +159,10 @@ venv.bak/
 # mkdocs documentation
 /site
 
+# Pre-rendered docs cache produced by `forgather docs build`.
+# Generated on demand; webui falls back to the source markdown if absent.
+docs/.built/
+
 # mypy
 .mypy_cache/
 .dmypy.json

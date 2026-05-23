@@ -21,6 +21,9 @@ forgather server                       # default: 127.0.0.1:8765
 forgather server --persist-sessions    # browser stays logged in across restarts
 forgather server --config path/to/server_config.yaml
                                        # override default <config>/server/server_config.yaml
+forgather server --docs-landing docs/guides/forgather-server-walkthrough.md
+                                       # Docs view opens here by default instead of docs/README.md
+                                       # (absolute or repo-relative; missing path falls back silently)
 ```
 
 `server_config.yaml` (auto-created at `<config>/server/` on first

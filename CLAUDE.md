@@ -193,6 +193,8 @@ forgather dataset-server status | list | cache | local            # diagnostic C
 forgather convert --enqueue --src <src> --dst <dst> [--priority N]
 forgather finalize --enqueue --source <src> --dest <dst> [--priority N]
 forgather mkdocs -f mkdocs.yml [--enqueue] [--priority N]
+forgather docs build [--clean] [--check] [--path SUBDIR]                    # pre-render `:::` API directives so the webui Docs panel
+forgather docs clean                                                        # shows expanded content; cache lives at docs/.built/.
 forgather sched status | list | pause | resume | cancel <id> | cleanup [<id>]
 forgather job status | save | stop | save-stop | abort | kill | force-kill | tail | dump <id>
 forgather gpu status | disable | enable | priority | kill <idx>

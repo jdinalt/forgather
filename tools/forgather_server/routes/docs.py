@@ -26,6 +26,23 @@ router = APIRouter(tags=["docs"])
 _MAX_DOC_BYTES = 25 * 1024 * 1024  # 25 MiB
 _MAX_ASSET_BYTES = 50 * 1024 * 1024  # 50 MiB
 
+# Subdirectory of ``<repo>/docs`` that holds pre-rendered copies of any
+# markdown that uses build-time directives (``:::`` mkdocstrings, etc.).
+# Produced by ``forgather docs build``; see
+# ``src/forgather/docs_build/`` for the builder. Missing or stale
+# built files fall through to serving the raw source, so the docs view
+# always works whether or not the build step has been run.
+_BUILT_SUBDIR = ".built"
+
+# Operator-supplied override for the default Docs landing page, set by
+# ``server.py`` from ``--docs-landing`` (or ``args.docs_landing`` in
+# ``server_config.yaml``). Absolute or repo-relative; ``None`` keeps
+# the built-in preference (docs/README.md → root README → empty state).
+# A module-level mutable name keeps this consistent with how the
+# inference-proxy lock-flag is wired — no extra config plumbing, swap
+# in place when a hypothetical runtime toggle is added.
+DOCS_LANDING_OVERRIDE: Optional[str] = None
+
 
 class DocsRootResponse(BaseModel):
     path: Optional[str] = None
@@ -68,6 +85,46 @@ def _enforce_fs_root(path) -> None:
     )
 
 
+def _maybe_built_variant(source: Path) -> Optional[Path]:
+    """Return the pre-rendered variant of ``source`` when one is usable.
+
+    Looks for ``<repo>/docs/.built/<rel>`` matching the source's
+    location under ``<repo>/docs/``. The built copy is used only when:
+      * it exists,
+      * its mtime is >= the source's (otherwise the source was edited
+        after the last build and we don't want to show stale content).
+
+    Returns ``None`` for any path outside ``docs/``, including the
+    symlinked-in cross-tree docs (e.g.
+    ``docs/forgather-server.md`` -> ``tools/forgather_server/README.md``):
+    those resolve to a real path outside ``docs/`` and aren't covered
+    by the build step. Callers must serve the source in that case.
+    """
+    try:
+        docs_root = Path(sr.forgather_repo_root()).resolve() / "docs"
+    except Exception:  # noqa: BLE001 — repo-root lookup must not break the docs view
+        return None
+    try:
+        rel = source.resolve().relative_to(docs_root)
+    except ValueError:
+        return None
+    if rel.parts and rel.parts[0] == _BUILT_SUBDIR:
+        # Already a built path — don't recurse.
+        return None
+    built = docs_root / _BUILT_SUBDIR / rel
+    if not built.is_file():
+        return None
+    try:
+        if built.stat().st_mtime < source.stat().st_mtime:
+            # Source changed after the last build; prefer the source so
+            # the user always sees current content. They can run
+            # ``forgather docs build`` to refresh the cache.
+            return None
+    except OSError:
+        return None
+    return built
+
+
 def _abs_resolve(path: str) -> Path:
     """Resolve ``path`` to an absolute filesystem path.
 
@@ -87,14 +144,31 @@ def _abs_resolve(path: str) -> Path:
 def docs_root():
     """Default Docs landing page.
 
-    Prefers the documentation index at ``docs/README.md`` over the
-    repo-root README — the docs index is the curated entry point with
-    links to installation / tutorials / configuration / API, whereas
-    the root README is closer to a project elevator pitch. Falls back
-    to the root README if the docs index is missing, and finally to
-    ``null`` so the frontend can surface an empty state.
+    Resolution order:
+
+      1. ``DOCS_LANDING_OVERRIDE`` (from ``--docs-landing`` /
+         ``args.docs_landing`` in the server config). Absolute paths
+         are used as-is; relative paths resolve against the Forgather
+         repo root. A missing file falls through to the built-in
+         preference rather than being treated as a hard error — the
+         override is a hint, not a contract, so a misconfigured path
+         doesn't leave the panel empty.
+      2. ``docs/README.md`` — the curated docs index, with links to
+         installation / tutorials / configuration / API.
+      3. ``README.md`` at the repo root — closer to a project elevator
+         pitch but better than nothing if the docs index is missing.
+      4. ``null`` — the frontend surfaces an empty state.
     """
     repo = Path(sr.forgather_repo_root())
+
+    if DOCS_LANDING_OVERRIDE:
+        override = Path(DOCS_LANDING_OVERRIDE)
+        if not override.is_absolute():
+            override = repo / override
+        if override.is_file():
+            return DocsRootResponse(path=str(override.resolve()))
+        log.warning("docs landing override does not exist; falling back: %s", override)
+
     for candidate in (repo / "docs" / "README.md", repo / "README.md"):
         if candidate.is_file():
             return DocsRootResponse(path=str(candidate))
@@ -156,8 +230,12 @@ def docs_file(path: str):
         )
 
     if _is_markdown(target):
+        # If a pre-rendered copy exists and isn't older than the source,
+        # serve it instead — that's where ``:::`` directives are expanded.
+        # Otherwise fall through to the raw source.
+        read_target = _maybe_built_variant(target) or target
         try:
-            text = target.read_text(encoding="utf-8")
+            text = read_target.read_text(encoding="utf-8")
         except UnicodeDecodeError as e:
             raise HTTPException(
                 status_code=415,
@@ -165,6 +243,8 @@ def docs_file(path: str):
             )
         except OSError as e:
             raise HTTPException(status_code=500, detail=str(e))
+        # Report the canonical source path so the frontend resolves
+        # relative asset references against the right directory.
         return DocsFileResponse(path=str(target), kind="markdown", content=text)
 
     if _is_ipynb(target):
