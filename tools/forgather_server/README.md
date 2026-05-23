@@ -2665,20 +2665,30 @@ The project tree exposes a different menu per node type:
   in-tree output_models within it.
 - **Project row** — **📄 New Config…** / **📄 New Template…**.
   Both open a `NewTemplateModal` (shares the chrome with
-  `CleanOutputModal` et al.) with project / kind / base-dir summary
-  rows, an auto-focused name input, an inline hint about the
-  `.yaml` default suffix and subdirectory support, and a live
-  preview of the absolute target path. Subdirectory creation under
-  the configs / templates root is handled by typing a nested name
-  (e.g. `experiments/foo.yaml`) — `mkdir -p` semantics on the
-  server. The base path comes from
-  `GET /api/project/template-paths` (`MetaConfig.searchpath[0]` for
-  templates, plus `config_prefix` for configs). Submit calls
-  `POST /api/project/new-template`, invalidates the project tree
-  and `project-templates` queries so the new file shows up in
-  `tlist`, then hands the returned path to the Edit panel via
+  `CleanOutputModal` et al.). The modal is a two-step flow:
+  1. **Pick a starting point.** A two-pane picker shows
+     **Blank file** plus the meta-template tree (scaffolds shipped
+     under `templatelib/meta/`, fetched via
+     `GET /api/project/meta-templates`). Selecting a leaf reveals
+     its title, description, and the list of fields it will ask
+     for in step 2.
+  2. **Configure.** The familiar name input + base-dir preview,
+     and — when a scaffold was picked — one form field per variable
+     declared in the scaffold's manifest (label, helper text,
+     default pre-filled, required fields starred). Subdirectory
+     creation under the configs / templates root is handled by
+     typing a nested name (e.g. `experiments/foo.yaml`) — `mkdir
+     -p` semantics on the server.
+  
+  The base path comes from `GET /api/project/template-paths`
+  (`MetaConfig.searchpath[0]` for templates, plus `config_prefix`
+  for configs). Submit calls `POST /api/project/new-template` —
+  with `meta_template` + `values` when a scaffold was picked, or
+  bare when "Blank file" was selected — invalidates the project
+  tree and `project-templates` queries so the new file shows up
+  in `tlist`, then hands the returned path to the Edit panel via
   the App-level `onEditTemplate` hook — the user lands directly
-  on a blank editor for the new file. A trailing **🗑 Delete
+  on the editor for the new file (scaffold pre-filled, or blank). A trailing **🗑 Delete
   Project…** entry recursively removes the project directory via
   `POST /api/fs/delete-dir`; it's gated by both a standard
   `confirm()` and a typed-token prompt requiring the user to type
@@ -2980,7 +2990,8 @@ are WebSockets.
 | `POST /api/workspace/new-project` `{workspace_dir, name, description, config_prefix?, default_config?, project_dir_name?, copy_from?}` | Create a project under a workspace — wraps the CLI's `project_create_cmd`; nested `project_dir_name` (`a/b/c`) supported; refuses overwrite, returns absolute project_dir |
 | `POST /api/workspace/new` `{parent_dir, name, description, workspace_dir_name?, forgather_dir, libs?, search_paths?}` | Create a workspace under a search root — wraps `ws_create_cmd`; parent must be a configured search root; nested `workspace_dir_name` supported; returns absolute workspace_dir |
 | `POST /api/workspace/init-here` `{workspace_dir, name, description, forgather_dir, libs?, search_paths?}` | Initialize a workspace in an *existing* directory — used by the Files-tree right-click flow. Refuses if `forgather_workspace/` already exists; requires `workspace_dir` to live at-or-under a configured search root. |
-| `POST /api/project/new-template` `{project_dir, kind: "config"\|"template", name}` | Create an empty file under the templates dir; refuses overwrite, `.yaml` auto-appended, returns absolute path |
+| `POST /api/project/new-template` `{project_dir, kind: "config"\|"template", name, meta_template?, values?}` | Create a file under the templates dir; refuses overwrite, `.yaml` auto-appended, returns absolute path. With `meta_template` + `values` the file is seeded from a scaffold under `templatelib/meta/`; without them it is created empty |
+| `GET /api/project/meta-templates`              | Tree of available scaffolds discovered under `templatelib/meta/`. Each leaf is a `MetaTemplate` (`id`, `title`, `description`, `target_kind`, `fields[]`); each branch is a `MetaCategory` with `templates[]` + `children[]`. Feeds the New Config / New Template modal's "pick a starting point" step |
 
 ### Config inspection
 

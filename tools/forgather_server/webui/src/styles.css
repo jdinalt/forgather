@@ -2508,6 +2508,125 @@ li.config.selected button.link:hover {
   word-break: break-all;
 }
 
+/* Meta-template picker (step 1 of New Config / New Template) */
+.new-template-modal {
+  width: min(820px, 95vw);
+}
+.meta-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  min-height: 320px;
+  max-height: 50vh;
+}
+.meta-picker-tree {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 6px;
+  background: var(--bg);
+}
+.meta-picker-detail {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 10px;
+  background: var(--bg);
+}
+.meta-picker-detail h4 {
+  margin: 0 0 6px 0;
+}
+.meta-picker-detail p {
+  margin: 0 0 8px 0;
+}
+.meta-picker-fields-label {
+  margin-top: 8px;
+  font-size: 11px;
+}
+.meta-picker-fields {
+  margin: 4px 0 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+.meta-picker-fields code {
+  background: var(--bg-elev, transparent);
+  padding: 0 3px;
+  border-radius: 2px;
+}
+.meta-picker-req {
+  color: var(--err, #b94);
+  font-size: 11px;
+}
+.meta-picker-blank {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 6px 8px;
+  border-radius: 2px;
+  cursor: pointer;
+  margin-bottom: 6px;
+}
+.meta-picker-blank:hover {
+  background: var(--bg-elev, rgba(0, 0, 0, 0.04));
+}
+.meta-picker-blank-title {
+  font-weight: 600;
+}
+.meta-picker-blank-desc {
+  font-size: 11px;
+}
+.meta-picker-cat > summary {
+  cursor: pointer;
+  padding: 4px 4px;
+  list-style: revert;
+}
+.meta-picker-cat-title {
+  font-weight: 600;
+}
+.meta-picker-cat-desc {
+  font-size: 11px;
+}
+.meta-picker-cat-body {
+  padding-left: 14px;
+  margin-top: 2px;
+}
+.meta-picker-leaf {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 4px 6px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.meta-picker-leaf:hover {
+  background: var(--bg-elev, rgba(0, 0, 0, 0.04));
+}
+.meta-picker-leaf.selected {
+  background: var(--accent-soft, rgba(0, 100, 200, 0.12));
+}
+.meta-picker-leaf-title {
+  font-weight: 500;
+}
+.meta-picker-leaf-desc {
+  font-size: 11px;
+}
+
+/* Step 2 — meta-template field form */
+.meta-fill-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.meta-fill-form-label {
+  font-size: 11px;
+}
+.meta-fill-field-help {
+  font-size: 11px;
+}
+
 /* ---------- Sidebar Files tree ---------- */
 .sidebar-projects-details,
 .sidebar-files-details {

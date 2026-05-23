@@ -1,0 +1,19 @@
+-- extends "datasets/load_packed_dataset.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "$CONFIG_NAME"
+    -- set ns.config_description = "$DESCRIPTION"
+    -- set ns.source = "$SOURCE"
+
+[load_dataset_args]
+    == super()
+    path: "$DATASET_ID"
+
+[validation_dataset_split]
+    == super()
+    split: "$VALIDATION_SPLIT"
+
+[test_dataset_split]
+    == super()
+    split: "$TEST_SPLIT"
