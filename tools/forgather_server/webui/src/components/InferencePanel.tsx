@@ -81,6 +81,14 @@ interface InferencePanelProps {
    *  parent can reset App state. Mirrors the existing
    *  pendingExplore / onPreselectConsumed pattern. */
   onAnalyzeConsumed?: () => void;
+  /** Cross-section trigger from the Jobs view's "Open in Inference"
+   *  button: pre-select the running server with this job id. Switches
+   *  to the Model sub-tab so the picker is visible. Same key-nonce
+   *  pattern as pendingAnalyze. */
+  pendingServerPick?: { jobId: string; key: number } | null;
+  /** Called by InferenceModelPanel after the picker row was found and
+   *  selected, so App can reset the pending state. */
+  onServerPickConsumed?: () => void;
 }
 
 /** Top-level Inference view. Holds the shared state (base URL, chosen
@@ -90,6 +98,8 @@ interface InferencePanelProps {
 export function InferencePanel({
   pendingAnalyze,
   onAnalyzeConsumed,
+  pendingServerPick,
+  onServerPickConsumed,
 }: InferencePanelProps = {}) {
   const [tab, setTab] = useState<SubTab>("model");
   // Flip to the Analyze tab whenever a fresh pendingAnalyze arrives.
@@ -102,6 +112,19 @@ export function InferencePanel({
       setTab("analyze");
     }
   }, [pendingAnalyze]);
+  // Flip to the Model tab whenever a fresh server pick arrives — the
+  // picker rows live on that subtab. The actual row selection happens
+  // inside InferenceModelPanel via the pendingServerPick prop.
+  const lastServerPickKeyRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (
+      pendingServerPick &&
+      pendingServerPick.key !== lastServerPickKeyRef.current
+    ) {
+      lastServerPickKeyRef.current = pendingServerPick.key;
+      setTab("model");
+    }
+  }, [pendingServerPick]);
   const [state, setState] = useState<InferenceState>(loadState);
   // Lifted up so the chat panel can hand a rendered prompt to the
   // completion textarea ("Send to completion") and switch tabs.
@@ -161,7 +184,12 @@ export function InferencePanel({
           keep its textarea state (and any in-flight stream) across a
           tab flip to "model". */}
       <div style={{ display: tab === "model" ? "block" : "none", flex: 1, minHeight: 0, overflow: "auto" }}>
-        <InferenceModelPanel state={state} setState={setState} />
+        <InferenceModelPanel
+          state={state}
+          setState={setState}
+          pendingServerPick={pendingServerPick}
+          onServerPickConsumed={onServerPickConsumed}
+        />
       </div>
       <div
         style={{

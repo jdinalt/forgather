@@ -71,13 +71,24 @@ interface Props {
    *  fired so the trigger is one-shot. */
   autoWatchJobId?: string | null;
   onAutoWatchConsumed?: () => void;
+  /** Inference / dataset job cards surface "Open in …" buttons that
+   *  navigate to the matching operational panel with the row pre-
+   *  selected. Wired up through App.tsx, where the pending-pick state
+   *  lives. */
+  onOpenInferenceServer?: (jobId: string) => void;
+  onOpenDatasetServer?: (queueId: string) => void;
 }
 
 /** Unified jobs view: JobRecords we launched + TrainerControlClient endpoints
  *  discovered elsewhere. Everything converges here once it's out of the
  *  queue (source="record" or "merged") or was started outside the server
  *  entirely (source="endpoint"). */
-export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
+export function JobsPanel({
+  autoWatchJobId,
+  onAutoWatchConsumed,
+  onOpenInferenceServer,
+  onOpenDatasetServer,
+}: Props = {}) {
   const demoMode = useDemoMode();
   const [includeDead, setIncludeDead] = useState(false);
   const [showTty, setShowTty] = useState(false);
@@ -387,6 +398,8 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
               controlPending={
                 control.isPending && control.variables?.id === j.id
               }
+              onOpenInferenceServer={onOpenInferenceServer}
+              onOpenDatasetServer={onOpenDatasetServer}
             />
           ))}
         </div>
@@ -530,6 +543,8 @@ function JobCard({
   onControl,
   onRemove,
   controlPending,
+  onOpenInferenceServer,
+  onOpenDatasetServer,
 }: {
   job: Job;
   status: Record<string, unknown> | null;
@@ -539,6 +554,8 @@ function JobCard({
   onControl: (action: ControlAction) => void;
   onRemove: () => void;
   controlPending: boolean;
+  onOpenInferenceServer?: (jobId: string) => void;
+  onOpenDatasetServer?: (queueId: string) => void;
 }) {
   const demoMode = useDemoMode();
   const startedSec = job.started_at ?? job.submitted_at ?? null;
@@ -757,21 +774,30 @@ function JobCard({
       )}
       {isInference && job.job_params && (
         <div className="queue-dirs muted">
+          {/* URL rendered as non-clickable code, matching the dataset
+              server card. The inference server speaks OpenAI-compatible
+              JSON on its root, not browser-friendly HTML — clicking it
+              just produced a "method not allowed" page and confused
+              operators. Copy-paste into a client (curl / SDK / the
+              Inference view) instead. */}
           <div>
             <span>url:</span>{" "}
-            {job.alive && inferenceUrl ? (
-              <a
-                href={inferenceUrl}
-                target="_blank"
-                rel="noreferrer"
-                onClick={(e) => e.stopPropagation()}
-              >
-                {inferenceUrl}
-              </a>
-            ) : (
-              <code>{inferenceUrl ?? "—"}</code>
-            )}
+            <code>{inferenceUrl ?? "—"}</code>
           </div>
+          {job.auth_token ? (
+            <div>
+              <span>token:</span>{" "}
+              <code>{job.auth_token}</code>
+            </div>
+          ) : demoMode ? (
+            <div>
+              <span>auth:</span> <em>hidden (demo mode)</em>
+            </div>
+          ) : (
+            <div>
+              <span>auth:</span> <em>--no-auth</em>
+            </div>
+          )}
           <div>
             <span>model:</span>{" "}
             <code>{String(job.job_params.model_path ?? "")}</code>
@@ -908,6 +934,30 @@ function JobCard({
         className="job-actions"
         onClick={(e) => e.stopPropagation()}
       >
+        {/* Jump to the matching operational panel with this row pre-
+            selected. Live-only — both panels' picker lists filter out
+            dead jobs, so the pre-select would be a no-op for a dead
+            record. Inspect dead records via the Jobs view itself. */}
+        {isInference && job.alive && onOpenInferenceServer && (
+          <button
+            className="secondary"
+            onClick={() => onOpenInferenceServer(job.id)}
+            title="Open the Inference view with this server selected"
+          >
+            Open in Inference
+          </button>
+        )}
+        {isDatasetServer && job.alive && onOpenDatasetServer && (
+          <button
+            className="secondary"
+            onClick={() =>
+              onOpenDatasetServer(job.queue_id ?? job.id)
+            }
+            title="Open the Datasets → Servers view with this server selected"
+          >
+            Open in Datasets
+          </button>
+        )}
         {canControl && (
           <>
             <button

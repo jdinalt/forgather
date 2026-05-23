@@ -353,6 +353,39 @@ export default function App() {
     [],
   );
 
+  // Cross-section: "Open in Inference / Datasets" buttons on the Jobs
+  // view's inference / dataset-server cards. Drop the user into the
+  // matching panel with the row pre-selected — saves the
+  // navigate-then-click-the-same-server dance. ``key`` is a fresh
+  // nonce so the consume-effect can dedup against stale renders, same
+  // pattern as pendingExplore / pendingAnalyze. The id is the Job's
+  // stable ``id`` (also the queue_id for server-launched jobs), which
+  // is what InferenceModelPanel keys its picker rows on and what
+  // DatasetServersTab keys ``selected`` on via ``queue_id``.
+  const [pendingInferenceServer, setPendingInferenceServer] = useState<
+    { jobId: string; key: number } | null
+  >(null);
+  const openInferenceServer = useCallback((jobId: string) => {
+    setPendingInferenceServer({ jobId, key: Date.now() });
+    setView("inference");
+  }, []);
+  const clearPendingInferenceServer = useCallback(
+    () => setPendingInferenceServer(null),
+    [],
+  );
+
+  const [pendingDatasetServer, setPendingDatasetServer] = useState<
+    { queueId: string; key: number } | null
+  >(null);
+  const openDatasetServer = useCallback((queueId: string) => {
+    setPendingDatasetServer({ queueId, key: Date.now() });
+    setView("datasets");
+  }, []);
+  const clearPendingDatasetServer = useCallback(
+    () => setPendingDatasetServer(null),
+    [],
+  );
+
   // Wired into every submit modal's onSubmitted prop. Reads the sticky
   // localStorage preference at submit time so a stale toggle from an earlier
   // modal can't trigger an unintended view switch.
@@ -1419,6 +1452,8 @@ export default function App() {
           <JobsPanel
             autoWatchJobId={autoWatchJobId}
             onAutoWatchConsumed={() => setAutoWatchJobId(null)}
+            onOpenInferenceServer={openInferenceServer}
+            onOpenDatasetServer={openDatasetServer}
           />
         </div>
         <div
@@ -1434,6 +1469,8 @@ export default function App() {
           <InferencePanel
             pendingAnalyze={pendingAnalyze}
             onAnalyzeConsumed={clearPendingAnalyze}
+            pendingServerPick={pendingInferenceServer}
+            onServerPickConsumed={clearPendingInferenceServer}
           />
         </div>
         <div
@@ -1445,6 +1482,8 @@ export default function App() {
             onPreselectConsumed={clearPendingExplore}
             onOpenInExplore={openInExplore}
             onAnalyzeText={analyzeText}
+            pendingServerPick={pendingDatasetServer}
+            onServerPickConsumed={clearPendingDatasetServer}
           />
         </div>
       </div>

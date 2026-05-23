@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   api,
@@ -21,6 +21,16 @@ import { DEFAULT_GENERATION_PARAMS, InferenceState } from "./InferencePanel";
 interface Props {
   state: InferenceState;
   setState: (fn: (prev: InferenceState) => InferenceState) => void;
+  /** Cross-section pre-select from the Jobs view: when the key flips
+   *  the panel finds the matching picker row by jobId and selects it
+   *  (same path as a manual click). If the row isn't available yet —
+   *  cluster gate resolving, jobs query not yet refreshed — the
+   *  effect retries each time pickerRows updates until it finds one
+   *  or the pending entry is cleared upstream. */
+  pendingServerPick?: { jobId: string; key: number } | null;
+  /** Called once the matching row was found + selected, so App can
+   *  clear pending state. */
+  onServerPickConsumed?: () => void;
 }
 
 interface HealthState {
@@ -31,7 +41,12 @@ interface HealthState {
   message?: string;
 }
 
-export function InferenceModelPanel({ state, setState }: Props) {
+export function InferenceModelPanel({
+  state,
+  setState,
+  pendingServerPick,
+  onServerPickConsumed,
+}: Props) {
   const demoMode = useDemoMode();
   const [showAdvanced, setShowAdvanced] = useState(false);
   // Token field defaults to masked. Operators frequently want to copy
@@ -254,6 +269,27 @@ export function InferenceModelPanel({ state, setState }: Props) {
     // so React Query auto-fetches against the new server. The
     // auto-pick effect below picks a default once the list lands.
   };
+
+  // Cross-section pre-select from the Jobs view. Retries on each
+  // pickerRows update until the matching row is available — the
+  // refetch interval is 5s but the user just clicked "Open in
+  // Inference", so the row should already be in the most recent
+  // poll. Per-key dedup so flipping back into Inference later
+  // doesn't re-fire against a stale request.
+  const lastServerPickKeyRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!pendingServerPick) return;
+    if (pendingServerPick.key === lastServerPickKeyRef.current) return;
+    if (!pickerRows) return;
+    const row = pickerRows.find((r) => r.id === pendingServerPick.jobId);
+    if (!row) return;
+    lastServerPickKeyRef.current = pendingServerPick.key;
+    pickRow(row);
+    onServerPickConsumed?.();
+    // pickRow / onServerPickConsumed are stable enough for this
+    // effect — pickerRows is the trigger that actually matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingServerPick, pickerRows]);
 
   // User-added entries don't carry the bearer token in the listing
   // (tokens stay server-side; the listing only exposes ``has_auth_token``).
