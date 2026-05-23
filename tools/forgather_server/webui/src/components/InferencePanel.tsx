@@ -59,8 +59,17 @@ function loadState(): InferenceState {
         typeof parsed.baseUrl === "string"
           ? parsed.baseUrl
           : DEFAULT_STATE.baseUrl,
-      authToken:
-        typeof parsed.authToken === "string" ? parsed.authToken : "",
+      // ``authToken`` is intentionally NOT restored. The token comes
+      // from authoritative sources on demand each session: the job
+      // listing for locally-spawned servers (auto-filled by pickRow),
+      // or the explicit reveal endpoint for user-added entries
+      // (fetched on Show / Copy click). Restoring a persisted token
+      // would (a) survive reloads even when the source server is
+      // unreachable / has rotated its token, and (b) silently extend
+      // user-added bearers' lifetime beyond the explicit-operator-
+      // action window the reveal design intends. Returning sessions
+      // pay one re-pick or one Show click — cheap in exchange.
+      authToken: "",
       model: typeof parsed.model === "string" ? parsed.model : "",
       params,
     };
@@ -81,6 +90,21 @@ interface InferencePanelProps {
    *  parent can reset App state. Mirrors the existing
    *  pendingExplore / onPreselectConsumed pattern. */
   onAnalyzeConsumed?: () => void;
+  /** Cross-section trigger from the Jobs view's "Open in Inference"
+   *  button: pre-select the running server identified by this job
+   *  id + base URL. Switches to the Model sub-tab so the picker is
+   *  visible. ``baseUrl`` is needed because cluster-mode picker
+   *  rows key on a base_url hash, not the job id — see
+   *  InferenceModelPanel for the dual-matching logic. Same key-
+   *  nonce pattern as pendingAnalyze. */
+  pendingServerPick?: {
+    jobId: string;
+    baseUrl: string;
+    key: number;
+  } | null;
+  /** Called by InferenceModelPanel after the picker row was found and
+   *  selected, so App can reset the pending state. */
+  onServerPickConsumed?: () => void;
 }
 
 /** Top-level Inference view. Holds the shared state (base URL, chosen
@@ -90,6 +114,8 @@ interface InferencePanelProps {
 export function InferencePanel({
   pendingAnalyze,
   onAnalyzeConsumed,
+  pendingServerPick,
+  onServerPickConsumed,
 }: InferencePanelProps = {}) {
   const [tab, setTab] = useState<SubTab>("model");
   // Flip to the Analyze tab whenever a fresh pendingAnalyze arrives.
@@ -102,6 +128,19 @@ export function InferencePanel({
       setTab("analyze");
     }
   }, [pendingAnalyze]);
+  // Flip to the Model tab whenever a fresh server pick arrives — the
+  // picker rows live on that subtab. The actual row selection happens
+  // inside InferenceModelPanel via the pendingServerPick prop.
+  const lastServerPickKeyRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (
+      pendingServerPick &&
+      pendingServerPick.key !== lastServerPickKeyRef.current
+    ) {
+      lastServerPickKeyRef.current = pendingServerPick.key;
+      setTab("model");
+    }
+  }, [pendingServerPick]);
   const [state, setState] = useState<InferenceState>(loadState);
   // Lifted up so the chat panel can hand a rendered prompt to the
   // completion textarea ("Send to completion") and switch tabs.
@@ -110,7 +149,15 @@ export function InferencePanel({
   const [completionText, setCompletionText] = useState("");
 
   useEffect(() => {
-    persistSet(STORAGE_KEY, JSON.stringify(state));
+    // Strip ``authToken`` before persisting — see loadState's
+    // matching comment. Bearer tokens come from authoritative
+    // sources on demand each session and must not leak into
+    // localStorage (which would survive reloads, browser
+    // restarts, and "user picked a different server but didn't
+    // refresh" gaps).
+    const { authToken: _drop, ...persistable } = state;
+    void _drop;
+    persistSet(STORAGE_KEY, JSON.stringify(persistable));
   }, [state]);
 
   const onSendToCompletion = (rendered: string) => {
@@ -161,7 +208,12 @@ export function InferencePanel({
           keep its textarea state (and any in-flight stream) across a
           tab flip to "model". */}
       <div style={{ display: tab === "model" ? "block" : "none", flex: 1, minHeight: 0, overflow: "auto" }}>
-        <InferenceModelPanel state={state} setState={setState} />
+        <InferenceModelPanel
+          state={state}
+          setState={setState}
+          pendingServerPick={pendingServerPick}
+          onServerPickConsumed={onServerPickConsumed}
+        />
       </div>
       <div
         style={{

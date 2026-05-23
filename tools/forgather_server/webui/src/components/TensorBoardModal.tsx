@@ -3,10 +3,27 @@ import { useState } from "react";
 
 import { api, ConfigInfo, ProjectInfo } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
-import { promptAndCreateService, sanitizeServiceName } from "../services-create";
+import {
+  promptAndCreateService,
+  sanitizeServiceName,
+  saveServiceArgsAndMaybeRestart,
+} from "../services-create";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { ModalBackdrop } from "./ModalBackdrop";
 import { PathField } from "./PathField";
+
+function argStr(args: Record<string, unknown>, key: string, def: string): string {
+  const v = args[key];
+  return typeof v === "string" ? v : def;
+}
+function argNum(args: Record<string, unknown>, key: string, def: number): number {
+  const v = args[key];
+  return typeof v === "number" ? v : def;
+}
+function argBool(args: Record<string, unknown>, key: string, def: boolean): boolean {
+  const v = args[key];
+  return typeof v === "boolean" ? v : def;
+}
 
 /** Settings persisted across sidebar-Tools "TensorBoard…" invocations.
  *  Config-backed flows (ConfigTensorBoardModal) don't read/write this —
@@ -55,6 +72,16 @@ interface Props {
   onClose: () => void;
   onSubmitted?: (queueId: string) => void;
   onServiceCreated?: (type: "tensorboard") => void;
+  /** When set, the modal switches into "Edit service" mode: state is
+   *  hydrated from ``editingService.args`` (instead of localStorage /
+   *  props), title + footer change, Save calls
+   *  ``saveServiceArgsAndMaybeRestart`` with the fixed name. */
+  editingService?: {
+    name: string;
+    enabled: boolean;
+    running: boolean;
+    args: Record<string, unknown>;
+  };
 }
 
 export function TensorBoardModal({
@@ -65,40 +92,73 @@ export function TensorBoardModal({
   onClose,
   onSubmitted,
   onServiceCreated,
+  editingService,
 }: Props) {
   const qc = useQueryClient();
+  const isEdit = !!editingService;
   const schedQ = useQuery({
     queryKey: ["scheduler-status"],
     queryFn: api.schedulerStatus,
   });
 
-  const persisted = global ? loadGlobalTb() : {};
+  // In edit mode the existing service's args win; localStorage is
+  // ignored so we don't overlay stale fields onto a service the user
+  // created with different settings.
+  const persisted = isEdit ? {} : global ? loadGlobalTb() : {};
+  const editArgs = editingService?.args ?? {};
 
   const [logdir, setLogdir] = useState<string>(
-    initialLogdir || persisted.logdir || "",
+    isEdit
+      ? argStr(editArgs, "logdir", "")
+      : initialLogdir || persisted.logdir || "",
   );
   // TensorBoard's own default. Many users have SSH port-forwards keyed
   // to 6006, so don't pick a different port just to avoid first-submit
   // collisions — collisions are easy to fix per-submit.
-  const [port, setPort] = useState<number>(persisted.port ?? 6006);
-  const [bindAll, setBindAll] = useState<boolean>(persisted.bindAll ?? false);
+  const [port, setPort] = useState<number>(
+    isEdit ? argNum(editArgs, "port", 6006) : persisted.port ?? 6006,
+  );
+  const [bindAll, setBindAll] = useState<boolean>(
+    isEdit ? argBool(editArgs, "bind_all", false) : persisted.bindAll ?? false,
+  );
   const [windowTitle, setWindowTitle] = useState<string>(
-    initialWindowTitle || persisted.windowTitle || "",
+    isEdit
+      ? argStr(editArgs, "window_title", "")
+      : initialWindowTitle || persisted.windowTitle || "",
   );
   const [priority, setPriority] = useState<number>(0);
 
-  // Advanced options — collapsed by default.
-  const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
+  // Advanced options — collapsed by default, but auto-expanded in edit
+  // mode when the service has any of them set so the operator can see /
+  // tweak everything that's persisted.
+  const editHasAdvanced =
+    isEdit &&
+    (editArgs.reload_interval !== undefined ||
+      argBool(editArgs, "reload_multifile", false) ||
+      argStr(editArgs, "samples_per_plugin", "") !== "" ||
+      argStr(editArgs, "host", "") !== "");
+  const [showAdvanced, setShowAdvanced] = useState<boolean>(!!editHasAdvanced);
   const [reloadInterval, setReloadInterval] = useState<string>(
-    persisted.reloadInterval ?? "",
+    isEdit
+      ? typeof editArgs.reload_interval === "number"
+        ? String(editArgs.reload_interval)
+        : ""
+      : persisted.reloadInterval ?? "",
   );
   const [reloadMultifile, setReloadMultifile] = useState<boolean>(
-    persisted.reloadMultifile ?? false,
+    isEdit
+      ? argBool(editArgs, "reload_multifile", false)
+      : persisted.reloadMultifile ?? false,
   );
   const [samplesPerPlugin, setSamplesPerPlugin] = useState<string>(
-    persisted.samplesPerPlugin ?? "",
+    isEdit
+      ? argStr(editArgs, "samples_per_plugin", "")
+      : persisted.samplesPerPlugin ?? "",
   );
-  const [host, setHost] = useState<string>(persisted.host ?? "");
+  const [host, setHost] = useState<string>(
+    isEdit ? argStr(editArgs, "host", "") : persisted.host ?? "",
+  );
+  const [saving, setSaving] = useState<boolean>(false);
 
   const resetDefaults = () => {
     persistRemove(GLOBAL_STORAGE_KEY);
@@ -185,10 +245,18 @@ export function TensorBoardModal({
       >
         <header className="modal-header">
           <h3>
-            Open TensorBoard
-            {initialWindowTitle && (
+            {isEdit ? (
               <>
-                : <code>{initialWindowTitle}</code>
+                Edit TensorBoard service: <code>{editingService!.name}</code>
+              </>
+            ) : (
+              <>
+                Open TensorBoard
+                {initialWindowTitle && (
+                  <>
+                    : <code>{initialWindowTitle}</code>
+                  </>
+                )}
               </>
             )}
           </h3>
@@ -324,8 +392,8 @@ export function TensorBoardModal({
             {enqueue.error ? String(enqueue.error) : ""}
           </div>
           <div className="btn-row">
-            <AutoWatchTtyToggle />
-            {global && (
+            {!isEdit && <AutoWatchTtyToggle />}
+            {!isEdit && global && (
               <button
                 className="secondary"
                 onClick={resetDefaults}
@@ -337,38 +405,73 @@ export function TensorBoardModal({
             <button className="secondary" onClick={onClose}>
               Cancel
             </button>
-            <button
-              className="secondary"
-              onClick={async () => {
-                if (!logdir.trim()) return;
-                // Default name: basename of the logdir — usually the
-                // run / experiment directory, which is the natural
-                // human label for "this TB instance".
-                const suggested = sanitizeServiceName(
-                  logdir.trim().split("/").filter(Boolean).pop() ?? "",
-                );
-                const ok = await promptAndCreateService(
-                  qc,
-                  "tensorboard",
-                  buildArgs(),
-                  suggested,
-                );
-                if (ok) {
-                  onServiceCreated?.("tensorboard");
-                  onClose();
+            {isEdit ? (
+              <button
+                onClick={async () => {
+                  if (!logdir.trim()) return;
+                  setSaving(true);
+                  const ok = await saveServiceArgsAndMaybeRestart(
+                    qc,
+                    "tensorboard",
+                    editingService!.name,
+                    editingService!.running,
+                    editingService!.enabled,
+                    buildArgs(),
+                  );
+                  setSaving(false);
+                  if (ok) onClose();
+                }}
+                disabled={saving || !logdir.trim()}
+                title={
+                  editingService!.running
+                    ? "Save changes; the running instance will be restarted to apply them"
+                    : "Save changes to the service config"
                 }
-              }}
-              disabled={!logdir.trim()}
-              title="Persist these settings to the server config as an auto-start service"
-            >
-              Create service…
-            </button>
-            <button
-              onClick={submit}
-              disabled={enqueue.isPending || !logdir.trim()}
-            >
-              {enqueue.isPending ? "Submitting…" : "Start TensorBoard"}
-            </button>
+              >
+                {saving
+                  ? editingService!.running
+                    ? "Restarting…"
+                    : "Saving…"
+                  : editingService!.running
+                    ? "Save & restart"
+                    : "Save"}
+              </button>
+            ) : (
+              <>
+                <button
+                  className="secondary"
+                  onClick={async () => {
+                    if (!logdir.trim()) return;
+                    // Default name: basename of the logdir — usually the
+                    // run / experiment directory, which is the natural
+                    // human label for "this TB instance".
+                    const suggested = sanitizeServiceName(
+                      logdir.trim().split("/").filter(Boolean).pop() ?? "",
+                    );
+                    const ok = await promptAndCreateService(
+                      qc,
+                      "tensorboard",
+                      buildArgs(),
+                      suggested,
+                    );
+                    if (ok) {
+                      onServiceCreated?.("tensorboard");
+                      onClose();
+                    }
+                  }}
+                  disabled={!logdir.trim()}
+                  title="Persist these settings to the server config as an auto-start service"
+                >
+                  Create service…
+                </button>
+                <button
+                  onClick={submit}
+                  disabled={enqueue.isPending || !logdir.trim()}
+                >
+                  {enqueue.isPending ? "Submitting…" : "Start TensorBoard"}
+                </button>
+              </>
+            )}
           </div>
         </footer>
       </div>

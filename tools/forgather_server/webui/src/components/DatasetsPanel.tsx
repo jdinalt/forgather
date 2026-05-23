@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   AddDatasetServerRequest,
@@ -76,6 +76,14 @@ interface DatasetsPanelProps {
    *  Inference > Analyze tab and kick off scoring. Wired into the
    *  cell context menu in DatasetsExploreTab. */
   onAnalyzeText?: (text: string) => void;
+  /** Cross-section pre-select from the Jobs view's "Open in Datasets"
+   *  button: switch to the Servers sub-tab and select the local
+   *  server with this queue_id. Same key-nonce pattern as
+   *  pendingExplore / pendingAnalyze. */
+  pendingServerPick?: { queueId: string; key: number } | null;
+  /** Called by DatasetServersTab once the matching row was selected,
+   *  so App can clear pending state. */
+  onServerPickConsumed?: () => void;
 }
 
 export function DatasetsPanel({
@@ -83,6 +91,8 @@ export function DatasetsPanel({
   onPreselectConsumed,
   onOpenInExplore,
   onAnalyzeText,
+  pendingServerPick,
+  onServerPickConsumed,
 }: DatasetsPanelProps = {}) {
   // Detect cluster mode via the same query the App-level gate uses.
   // TanStack dedups by ``queryKey`` so this doesn't cost an extra HTTP
@@ -102,6 +112,12 @@ export function DatasetsPanel({
   useEffect(() => {
     if (pendingExplore) setTab("explore");
   }, [pendingExplore]);
+  // Symmetric handler for a "Open in Datasets" click from the Jobs
+  // view's dataset-server card: flip to the Servers sub-tab so the
+  // row pre-select inside DatasetServersTab is visible.
+  useEffect(() => {
+    if (pendingServerPick) setTab("servers");
+  }, [pendingServerPick]);
   const openInExplore = (leaf: SelectedLeaf) => {
     setTab("explore");
     onOpenInExplore?.(leaf);
@@ -159,7 +175,11 @@ export function DatasetsPanel({
           overflow: "auto",
         }}
       >
-        <DatasetServersTab onOpenInExplore={openInExplore} />
+        <DatasetServersTab
+          onOpenInExplore={openInExplore}
+          pendingServerPick={pendingServerPick}
+          onServerPickConsumed={onServerPickConsumed}
+        />
       </div>
       <div
         style={{
@@ -629,9 +649,18 @@ interface DatasetServersTabProps {
   /** Click-through for table rows / split links. Builds a SelectedLeaf
    *  in the right shape for the Explore tab to seed its own state. */
   onOpenInExplore: (leaf: SelectedLeaf) => void;
+  /** Cross-section pre-select from the Jobs view's "Open in Datasets"
+   *  button. Same retry-on-list-update pattern as the inference
+   *  panel's pendingServerPick. */
+  pendingServerPick?: { queueId: string; key: number } | null;
+  onServerPickConsumed?: () => void;
 }
 
-function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
+function DatasetServersTab({
+  onOpenInExplore,
+  pendingServerPick,
+  onServerPickConsumed,
+}: DatasetServersTabProps) {
   const demoMode = useDemoMode();
   const qc = useQueryClient();
   const localsQ = useQuery({
@@ -647,7 +676,11 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
   const [selected, setSelected] = useState<SelectedServer | null>(null);
   const [addOpen, setAddOpen] = useState(false);
 
-  const localServers = localsQ.data ?? [];
+  // Hide JobRecord entries for servers whose process has exited — they
+  // can't be queried and only confuse the operator. The selection-
+  // cleanup useEffect below transparently clears any selection on a
+  // server that disappears here.
+  const localServers = (localsQ.data ?? []).filter((s) => s.alive);
   const userServers = usersQ.data ?? [];
 
   // When the selected entry disappears (e.g. a spawned server exits,
@@ -689,6 +722,27 @@ function DatasetServersTab({ onOpenInExplore }: DatasetServersTabProps) {
       alive: s.alive,
     });
   };
+
+  // Cross-section pre-select from the Jobs view. Retries on each
+  // localServers update until the matching row is in the alive-
+  // filtered list — the user just clicked "Open in Datasets" so the
+  // row should already be in the most recent poll. Per-key dedup so
+  // flipping back into Datasets later doesn't re-fire stale picks.
+  const lastServerPickKeyRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!pendingServerPick) return;
+    if (pendingServerPick.key === lastServerPickKeyRef.current) return;
+    const found = localServers.find(
+      (s) => s.queue_id === pendingServerPick.queueId,
+    );
+    if (!found) return;
+    lastServerPickKeyRef.current = pendingServerPick.key;
+    onPickLocal(found);
+    onServerPickConsumed?.();
+    // onPickLocal / onServerPickConsumed are stable enough — the
+    // localServers change is the trigger that actually matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingServerPick, localServers]);
   const onPickUser = (s: DatasetServerUser) => {
     setSelected({
       key: { kind: "user", id: s.id },

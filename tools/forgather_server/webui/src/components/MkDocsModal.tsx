@@ -3,7 +3,11 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
-import { promptAndCreateService, sanitizeServiceName } from "../services-create";
+import {
+  promptAndCreateService,
+  sanitizeServiceName,
+  saveServiceArgsAndMaybeRestart,
+} from "../services-create";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
 import { ModalBackdrop } from "./ModalBackdrop";
@@ -42,6 +46,33 @@ interface Props {
   onClose: () => void;
   onSubmitted?: (queueId: string) => void;
   onServiceCreated?: (type: "mkdocs") => void;
+  /** When set, the modal switches into "Edit service" mode: state is
+   *  hydrated from ``editingService.args`` (instead of localStorage),
+   *  the title and footer change, and Save calls
+   *  ``saveServiceArgsAndMaybeRestart`` with the fixed name. */
+  editingService?: {
+    name: string;
+    enabled: boolean;
+    running: boolean;
+    args: Record<string, unknown>;
+  };
+}
+
+/** Pull the right type out of an unknown-keyed args bag without dragging
+ *  in a schema library. ``def`` is returned when the key is missing or
+ *  the wrong shape — exactly what the existing ``persisted.x ??
+ *  default`` pattern produces. */
+function argStr(args: Record<string, unknown>, key: string, def: string): string {
+  const v = args[key];
+  return typeof v === "string" ? v : def;
+}
+function argNum(args: Record<string, unknown>, key: string, def: number): number {
+  const v = args[key];
+  return typeof v === "number" ? v : def;
+}
+function argBool(args: Record<string, unknown>, key: string, def: boolean): boolean {
+  const v = args[key];
+  return typeof v === "boolean" ? v : def;
 }
 
 /** Global "MkDocs…" tool — queues an ``mkdocs serve`` job. The user
@@ -52,28 +83,36 @@ export function MkDocsModal({
   onClose,
   onSubmitted,
   onServiceCreated,
+  editingService,
 }: Props) {
   const qc = useQueryClient();
+  const isEdit = !!editingService;
   const schedQ = useQuery({
     queryKey: ["scheduler-status"],
     queryFn: api.schedulerStatus,
   });
   // Used to derive the default mkdocs.yml when the user has no
   // persisted choice yet — the Forgather repo always has one at root.
+  // In edit mode we skip the discovery (the existing service already
+  // names its config file).
   const quickQ = useQuery({
     queryKey: ["fs-quick-paths"],
     queryFn: api.fsQuickPaths,
     staleTime: 5 * 60 * 1000,
+    enabled: !isEdit,
   });
 
-  const persisted = loadPersisted();
+  // In edit mode the existing service's args are the source of truth;
+  // localStorage defaults are ignored so we don't overlay stale fields.
+  const persisted = isEdit ? {} : loadPersisted();
+  const editArgs = editingService?.args ?? {};
   const repoMkdocs = useMemo(() => {
     const repo = quickQ.data?.find((q) => q.label === "Forgather repo")?.path;
     return repo ? `${repo.replace(/\/+$/, "")}/mkdocs.yml` : "";
   }, [quickQ.data]);
 
   const [configFile, setConfigFile] = useState<string>(
-    persisted.configFile ?? "",
+    isEdit ? argStr(editArgs, "config_file", "") : persisted.configFile ?? "",
   );
   // Backfill the default once the quick-paths fetch resolves, but
   // only if the user hasn't typed / picked anything (and didn't
@@ -81,29 +120,49 @@ export function MkDocsModal({
   // contamination is no longer possible — persisted state is
   // namespaced by server identity (see persist.ts).
   useEffect(() => {
+    if (isEdit) return;
     if (!persisted.configFile && repoMkdocs) {
       setConfigFile((cur) => cur || repoMkdocs);
     }
     // persisted.configFile is captured from the initial localStorage
     // read; no need to depend on it (it doesn't change at runtime).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repoMkdocs]);
+  }, [repoMkdocs, isEdit]);
   // Default to "localhost" rather than "127.0.0.1" — both bind to the
   // same loopback addresses, but some browsers (notably ChromeOS over
   // SSH port-forwards) only follow clickable links to "localhost".
-  const [host, setHost] = useState<string>(persisted.host ?? "localhost");
+  const [host, setHost] = useState<string>(
+    isEdit ? argStr(editArgs, "host", "localhost") : persisted.host ?? "localhost",
+  );
   // Default port: mkdocs' own default. Common SSH port-forward target;
   // don't shift it just to dodge first-submit collisions.
-  const [port, setPort] = useState<number>(persisted.port ?? 8000);
-  const [strict, setStrict] = useState<boolean>(persisted.strict ?? false);
-  const [livereload, setLivereload] = useState<boolean>(
-    persisted.livereload ?? true,
+  const [port, setPort] = useState<number>(
+    isEdit ? argNum(editArgs, "port", 8000) : persisted.port ?? 8000,
   );
-  const [dirty, setDirty] = useState<boolean>(persisted.dirty ?? false);
+  const [strict, setStrict] = useState<boolean>(
+    isEdit ? argBool(editArgs, "strict", false) : persisted.strict ?? false,
+  );
+  const [livereload, setLivereload] = useState<boolean>(
+    isEdit ? argBool(editArgs, "livereload", true) : persisted.livereload ?? true,
+  );
+  const [dirty, setDirty] = useState<boolean>(
+    isEdit ? argBool(editArgs, "dirty", false) : persisted.dirty ?? false,
+  );
   // Free-text comma-separated list of extra --watch dirs. Empty by
   // default — mkdocs already watches the docs/ tree from mkdocs.yml.
-  const [watchDirs, setWatchDirs] = useState<string>(persisted.watchDirs ?? "");
+  // The wire shape is an array; collapse it back into the comma form
+  // the UI uses.
+  const [watchDirs, setWatchDirs] = useState<string>(
+    isEdit
+      ? Array.isArray(editArgs.watch)
+        ? (editArgs.watch as unknown[])
+            .filter((v) => typeof v === "string")
+            .join(", ")
+        : ""
+      : persisted.watchDirs ?? "",
+  );
   const [priority, setPriority] = useState<number>(0);
+  const [saving, setSaving] = useState<boolean>(false);
 
   const resetDefaults = () => {
     persistRemove(STORAGE_KEY);
@@ -180,7 +239,15 @@ export function MkDocsModal({
         aria-label="Start MkDocs"
       >
         <header className="modal-header">
-          <h3>Start MkDocs serve</h3>
+          <h3>
+            {isEdit ? (
+              <>
+                Edit MkDocs service: <code>{editingService!.name}</code>
+              </>
+            ) : (
+              "Start MkDocs serve"
+            )}
+          </h3>
           <button className="tiny" onClick={onClose} aria-label="Close">
             ×
           </button>
@@ -288,50 +355,89 @@ export function MkDocsModal({
             {enqueue.error ? String(enqueue.error) : ""}
           </div>
           <div className="btn-row">
-            <AutoWatchTtyToggle />
-            <button
-              className="secondary"
-              onClick={resetDefaults}
-              title="Clear persisted settings and restore defaults"
-            >
-              Reset to defaults
-            </button>
+            {!isEdit && <AutoWatchTtyToggle />}
+            {!isEdit && (
+              <button
+                className="secondary"
+                onClick={resetDefaults}
+                title="Clear persisted settings and restore defaults"
+              >
+                Reset to defaults
+              </button>
+            )}
             <button className="secondary" onClick={onClose}>
               Cancel
             </button>
-            <button
-              className="secondary"
-              onClick={async () => {
-                const finalConfig = configFile.trim();
-                if (!finalConfig) return;
-                // Default name: basename of the dir containing the
-                // mkdocs.yml — the project / repo name, which is
-                // more informative than the literal "mkdocs.yml".
-                const parts = finalConfig.split("/").filter(Boolean);
-                const parentDir = parts.length >= 2 ? parts[parts.length - 2] : "";
-                const suggested = sanitizeServiceName(parentDir || "docs");
-                const ok = await promptAndCreateService(
-                  qc,
-                  "mkdocs",
-                  buildArgs(finalConfig),
-                  suggested,
-                );
-                if (ok) {
-                  onServiceCreated?.("mkdocs");
-                  onClose();
+            {isEdit ? (
+              <button
+                onClick={async () => {
+                  const finalConfig = configFile.trim();
+                  if (!finalConfig) return;
+                  setSaving(true);
+                  const ok = await saveServiceArgsAndMaybeRestart(
+                    qc,
+                    "mkdocs",
+                    editingService!.name,
+                    editingService!.running,
+                    editingService!.enabled,
+                    buildArgs(finalConfig),
+                  );
+                  setSaving(false);
+                  if (ok) onClose();
+                }}
+                disabled={saving || !configFile.trim()}
+                title={
+                  editingService!.running
+                    ? "Save changes; the running instance will be restarted to apply them"
+                    : "Save changes to the service config"
                 }
-              }}
-              disabled={!configFile.trim()}
-              title="Persist these settings to the server config as an auto-start service"
-            >
-              Create service…
-            </button>
-            <button
-              onClick={submit}
-              disabled={enqueue.isPending || !configFile.trim()}
-            >
-              {enqueue.isPending ? "Submitting…" : "Start MkDocs"}
-            </button>
+              >
+                {saving
+                  ? editingService!.running
+                    ? "Restarting…"
+                    : "Saving…"
+                  : editingService!.running
+                    ? "Save & restart"
+                    : "Save"}
+              </button>
+            ) : (
+              <>
+                <button
+                  className="secondary"
+                  onClick={async () => {
+                    const finalConfig = configFile.trim();
+                    if (!finalConfig) return;
+                    // Default name: basename of the dir containing the
+                    // mkdocs.yml — the project / repo name, which is
+                    // more informative than the literal "mkdocs.yml".
+                    const parts = finalConfig.split("/").filter(Boolean);
+                    const parentDir =
+                      parts.length >= 2 ? parts[parts.length - 2] : "";
+                    const suggested = sanitizeServiceName(parentDir || "docs");
+                    const ok = await promptAndCreateService(
+                      qc,
+                      "mkdocs",
+                      buildArgs(finalConfig),
+                      suggested,
+                    );
+                    if (ok) {
+                      onServiceCreated?.("mkdocs");
+                      onClose();
+                    }
+                  }}
+                  disabled={!configFile.trim()}
+                  title="Persist these settings to the server config as an auto-start service"
+                >
+                  Create service…
+                </button>
+                <button
+                  onClick={submit}
+                  disabled={enqueue.isPending || !configFile.trim()}
+                >
+                  {enqueue.isPending ? "Submitting…" : "Start MkDocs"}
+                </button>
+              </>
+            )}
           </div>
         </footer>
       </div>

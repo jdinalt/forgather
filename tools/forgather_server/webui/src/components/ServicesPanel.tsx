@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { api, ServiceStatus } from "../api";
+import { ContextMenu } from "./ContextMenu";
 
 /** Compact label shown above each entry — "<type>:<name>". Matches the
  *  service id used everywhere on the backend so operators see the same
@@ -29,9 +30,14 @@ function serviceId(s: ServiceStatus): string {
 export function ServicesPanel({
   filterType,
   onSwitchView,
+  onEditService,
 }: {
   filterType?: string;
   onSwitchView?: (view: "inference" | "datasets") => void;
+  /** Open the matching modal in edit mode, pre-populated from this
+   *  service's persisted args. Called from the row's right-click menu
+   *  ("Edit…") and from the inline pencil button. */
+  onEditService?: (s: ServiceStatus) => void;
 }) {
   const qc = useQueryClient();
   const q = useQuery({
@@ -63,6 +69,12 @@ export function ServicesPanel({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const toggleOpen = (key: string) =>
     setExpanded((s) => ({ ...s, [key]: !s[key] }));
+
+  // Right-click menu state. Keyed off the cursor position so the
+  // ContextMenu component can clamp it to the viewport.
+  const [menu, setMenu] = useState<
+    { x: number; y: number; svc: ServiceStatus } | null
+  >(null);
 
   /** Action triggered by clicking a running service's label. Returns
    *  the human-readable description of what we'll do, or ``null`` when
@@ -149,6 +161,27 @@ export function ServicesPanel({
 
   return (
     <div className="services-panel">
+      {menu && onEditService && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+        >
+          <div className="context-menu-header muted">
+            {serviceId(menu.svc)}
+          </div>
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              const svc = menu.svc;
+              setMenu(null);
+              onEditService(svc);
+            }}
+          >
+            Edit…
+          </button>
+        </ContextMenu>
+      )}
       <ul className="services-list">
         {items.map((s) => {
           const key = serviceId(s);
@@ -160,6 +193,11 @@ export function ServicesPanel({
               className={
                 "service-row" + (s.service.enabled ? " enabled" : " disabled")
               }
+              onContextMenu={(e) => {
+                if (!onEditService) return;
+                e.preventDefault();
+                setMenu({ x: e.clientX, y: e.clientY, svc: s });
+              }}
             >
               <div className="service-row-head">
                 <button
@@ -218,6 +256,16 @@ export function ServicesPanel({
                 >
                   {s.service.enabled ? "⏹" : "▶"}
                 </button>
+                {onEditService && (
+                  <button
+                    className="service-action"
+                    onClick={() => onEditService(s)}
+                    title="Edit args (opens the matching modal pre-filled; if running, stops + restarts to apply)"
+                    aria-label="Edit"
+                  >
+                    ✎
+                  </button>
+                )}
                 <button
                   className="service-action service-delete"
                   onClick={() => {

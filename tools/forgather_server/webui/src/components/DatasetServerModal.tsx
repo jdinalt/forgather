@@ -3,10 +3,47 @@ import { useEffect, useState } from "react";
 
 import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
-import { promptAndCreateService, sanitizeServiceName } from "../services-create";
+import {
+  promptAndCreateService,
+  sanitizeServiceName,
+  saveServiceArgsAndMaybeRestart,
+} from "../services-create";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { ModalBackdrop } from "./ModalBackdrop";
 import { PathField } from "./PathField";
+
+function argStr(args: Record<string, unknown>, key: string, def: string): string {
+  const v = args[key];
+  return typeof v === "string" ? v : def;
+}
+function argNum(args: Record<string, unknown>, key: string, def: number): number {
+  const v = args[key];
+  return typeof v === "number" ? v : def;
+}
+function argBool(args: Record<string, unknown>, key: string, def: boolean): boolean {
+  const v = args[key];
+  return typeof v === "boolean" ? v : def;
+}
+
+/** Decode ``locals`` from the wire shape (list of [name, path] pairs)
+ *  back into the row objects the UI uses. */
+function decodeLocals(
+  raw: unknown,
+): Array<{ name: string; path: string }> {
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ name: string; path: string }> = [];
+  for (const entry of raw) {
+    if (
+      Array.isArray(entry) &&
+      entry.length >= 2 &&
+      typeof entry[0] === "string" &&
+      typeof entry[1] === "string"
+    ) {
+      out.push({ name: entry[0], path: entry[1] });
+    }
+  }
+  return out;
+}
 
 /** Settings persisted across "Start Dataset Server…" invocations. Matches
  *  the InferenceModal pattern: ``priority`` resets each time because the
@@ -47,61 +84,98 @@ interface Props {
   onClose: () => void;
   onSubmitted?: (queueId: string) => void;
   onServiceCreated?: (type: "dataset") => void;
+  /** When set, the modal switches into "Edit service" mode: state is
+   *  hydrated from ``editingService.args`` (instead of localStorage),
+   *  title + footer change, Save calls
+   *  ``saveServiceArgsAndMaybeRestart`` with the fixed name. */
+  editingService?: {
+    name: string;
+    enabled: boolean;
+    running: boolean;
+    args: Record<string, unknown>;
+  };
 }
 
 export function DatasetServerModal({
   onClose,
   onSubmitted,
   onServiceCreated,
+  editingService,
 }: Props) {
   const qc = useQueryClient();
+  const isEdit = !!editingService;
   const schedQ = useQuery({
     queryKey: ["scheduler-status"],
     queryFn: api.schedulerStatus,
   });
 
-  const persisted = loadPersisted();
+  // In edit mode the existing service's args win; localStorage is
+  // ignored so we don't overlay stale fields onto a service the user
+  // created with different settings.
+  const persisted = isEdit ? {} : loadPersisted();
+  const editArgs = editingService?.args ?? {};
 
   // Default to "localhost" (loopback) — matches the dataset_server's own
   // default. Users who want LAN-reachable bind explicitly enter 0.0.0.0.
-  const [host, setHost] = useState<string>(persisted.host ?? "127.0.0.1");
+  const [host, setHost] = useState<string>(
+    isEdit ? argStr(editArgs, "host", "127.0.0.1") : persisted.host ?? "127.0.0.1",
+  );
   // Default port matches tools/dataset_server/server.py.
-  const [port, setPort] = useState<number>(persisted.port ?? 8766);
+  const [port, setPort] = useState<number>(
+    isEdit ? argNum(editArgs, "port", 8766) : persisted.port ?? 8766,
+  );
   const [logLevel, setLogLevel] = useState<string>(
-    persisted.logLevel ?? "INFO",
+    isEdit ? argStr(editArgs, "log_level", "INFO") : persisted.logLevel ?? "INFO",
   );
   const [priority, setPriority] = useState<number>(0);
 
-  const [noAuth, setNoAuth] = useState<boolean>(persisted.noAuth ?? false);
+  const [noAuth, setNoAuth] = useState<boolean>(
+    isEdit ? argBool(editArgs, "no_auth", false) : persisted.noAuth ?? false,
+  );
   // Suppress bearer-token printing to the TTY log on launch — for
   // public-demo deployments where the TTY pane is visible to untrusted
   // viewers. The token still works; clients/peers discover it through
   // the persisted per-port file as usual.
   const [quietTokens, setQuietTokens] = useState<boolean>(
-    persisted.quietTokens ?? false,
+    isEdit
+      ? argBool(editArgs, "quiet_tokens", false)
+      : persisted.quietTokens ?? false,
   );
   // Not persisted: this is a one-shot "rotate on this start" knob,
-  // not a default to carry between modal opens.
-  const [regenToken, setRegenToken] = useState<boolean>(false);
+  // not a default to carry between modal opens. In edit mode we hydrate
+  // from the args (the wire field is ``regen_token``) but it's still
+  // applied as a one-shot when the service restarts.
+  const [regenToken, setRegenToken] = useState<boolean>(
+    isEdit ? argBool(editArgs, "regen_token", false) : false,
+  );
   // Toggling --no-auth makes regenToken meaningless; clear it so the
   // visible checked state always matches the disabled state. Without
   // this the box can look "checked but greyed", which confuses users.
   useEffect(() => {
     if (noAuth && regenToken) setRegenToken(false);
   }, [noAuth, regenToken]);
-  const [noHf, setNoHf] = useState<boolean>(persisted.noHf ?? false);
+  const [noHf, setNoHf] = useState<boolean>(
+    isEdit ? argBool(editArgs, "no_hf", false) : persisted.noHf ?? false,
+  );
   const [allowPaths, setAllowPaths] = useState<boolean>(
-    persisted.allowPaths ?? false,
+    isEdit
+      ? argBool(editArgs, "allow_paths", false)
+      : persisted.allowPaths ?? false,
   );
   const [allowDownloads, setAllowDownloads] = useState<boolean>(
-    persisted.allowDownloads ?? false,
+    isEdit
+      ? argBool(editArgs, "allow_downloads", false)
+      : persisted.allowDownloads ?? false,
   );
   const [configFile, setConfigFile] = useState<string>(
-    persisted.configFile ?? "",
+    isEdit
+      ? argStr(editArgs, "config_file", "")
+      : persisted.configFile ?? "",
   );
   const [locals, setLocals] = useState<Array<{ name: string; path: string }>>(
-    persisted.locals ?? [],
+    isEdit ? decodeLocals(editArgs.locals) : persisted.locals ?? [],
   );
+  const [saving, setSaving] = useState<boolean>(false);
 
   const resetDefaults = () => {
     persistRemove(STORAGE_KEY);
@@ -154,10 +228,13 @@ export function DatasetServerModal({
       (name.trim() && !path.trim()) || (!name.trim() && path.trim()),
   );
 
-  // Single source of truth for the job_params shape — used by both
-  // ``Start server`` (one-shot enqueue) and ``Create service…``
-  // (persist into the services config and let the autostart pass kick
-  // it off).
+  // Single source of truth for the job_params shape — used by
+  // ``Start server`` (one-shot enqueue). ``regen_token`` is included
+  // because it's meaningful for a single spawn; the service-bound
+  // variant strips it (see ``serviceArgs`` below) so it never
+  // persists into the config — otherwise every autostart would
+  // rotate the token, surprising both the operator and any client
+  // that cached the previous value.
   const buildArgs = (): Record<string, unknown> => {
     const args: Record<string, unknown> = {
       host: host.trim() || "127.0.0.1",
@@ -179,6 +256,20 @@ export function DatasetServerModal({
       args.locals = cleanLocals.map(({ name, path }) => [name, path]);
     }
     return args;
+  };
+
+  // Args shape persisted into the services config (Create service /
+  // Save edit). ``regen_token`` is a one-shot intent — leaving it
+  // ``true`` here would make every autostart pass spawn with
+  // ``--regen-token``, rotating the bearer on each restart. Rotation
+  // should be an explicit per-action choice, not a config-baked
+  // default. If the operator wants to rotate, they can do so at the
+  // running process level (re-spawn after deleting the per-port
+  // .token file).
+  const serviceArgs = (): Record<string, unknown> => {
+    const a = buildArgs();
+    delete a.regen_token;
+    return a;
   };
 
   const submit = () => {
@@ -220,7 +311,15 @@ export function DatasetServerModal({
         aria-label="Start dataset server"
       >
         <header className="modal-header">
-          <h3>Start dataset server</h3>
+          <h3>
+            {isEdit ? (
+              <>
+                Edit dataset service: <code>{editingService!.name}</code>
+              </>
+            ) : (
+              "Start dataset server"
+            )}
+          </h3>
           <button className="tiny" onClick={onClose} aria-label="Close">
             ×
           </button>
@@ -364,6 +463,10 @@ export function DatasetServerModal({
                   mode="dirs-only"
                   title="Pick local dataset directory"
                   wide
+                  // Adding the next local is almost always picking a
+                  // sibling under the same data root — open the
+                  // browser at the parent of the last pick.
+                  rememberKey="dataset.local"
                 />
               </label>
               <button
@@ -430,47 +533,84 @@ export function DatasetServerModal({
               : ""}
           </div>
           <div className="btn-row">
-            <AutoWatchTtyToggle />
-            <button
-              className="secondary"
-              onClick={resetDefaults}
-              title="Clear persisted settings and restore defaults"
-            >
-              Reset to defaults
-            </button>
+            {!isEdit && <AutoWatchTtyToggle />}
+            {!isEdit && (
+              <button
+                className="secondary"
+                onClick={resetDefaults}
+                title="Clear persisted settings and restore defaults"
+              >
+                Reset to defaults
+              </button>
+            )}
             <button className="secondary" onClick={onClose}>
               Cancel
             </button>
-            <button
-              className="secondary"
-              onClick={async () => {
-                // Default name: ``dataset-<port>`` — the port is what
-                // makes multiple instances on the same host distinct
-                // and is always present (defaulted to 8766 in the
-                // form).
-                const suggested = sanitizeServiceName(`dataset-${port}`);
-                const ok = await promptAndCreateService(
-                  qc,
-                  "dataset",
-                  buildArgs(),
-                  suggested,
-                );
-                if (ok) {
-                  onServiceCreated?.("dataset");
-                  onClose();
+            {isEdit ? (
+              <button
+                onClick={async () => {
+                  if (partialLocals) return;
+                  setSaving(true);
+                  const ok = await saveServiceArgsAndMaybeRestart(
+                    qc,
+                    "dataset",
+                    editingService!.name,
+                    editingService!.running,
+                    editingService!.enabled,
+                    serviceArgs(),
+                  );
+                  setSaving(false);
+                  if (ok) onClose();
+                }}
+                disabled={saving || partialLocals}
+                title={
+                  editingService!.running
+                    ? "Save changes; the running instance will be restarted to apply them"
+                    : "Save changes to the service config"
                 }
-              }}
-              disabled={partialLocals}
-              title="Persist these settings to the server config as an auto-start service"
-            >
-              Create service…
-            </button>
-            <button
-              onClick={submit}
-              disabled={enqueue.isPending || partialLocals}
-            >
-              {enqueue.isPending ? "Submitting…" : "Start server"}
-            </button>
+              >
+                {saving
+                  ? editingService!.running
+                    ? "Restarting…"
+                    : "Saving…"
+                  : editingService!.running
+                    ? "Save & restart"
+                    : "Save"}
+              </button>
+            ) : (
+              <>
+                <button
+                  className="secondary"
+                  onClick={async () => {
+                    // Default name: ``dataset-<port>`` — the port is what
+                    // makes multiple instances on the same host distinct
+                    // and is always present (defaulted to 8766 in the
+                    // form).
+                    const suggested = sanitizeServiceName(`dataset-${port}`);
+                    const ok = await promptAndCreateService(
+                      qc,
+                      "dataset",
+                      serviceArgs(),
+                      suggested,
+                    );
+                    if (ok) {
+                      onServiceCreated?.("dataset");
+                      onClose();
+                    }
+                  }}
+                  disabled={partialLocals}
+                  title="Persist these settings to the server config as an auto-start service"
+                >
+                  Create service…
+                </button>
+                <button
+                  onClick={submit}
+                  disabled={enqueue.isPending || partialLocals}
+                >
+                  {enqueue.isPending ? "Submitting…" : "Start server"}
+                </button>
+              </>
+            )}
           </div>
         </footer>
       </div>

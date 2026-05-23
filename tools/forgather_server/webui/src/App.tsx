@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, CheckpointEntry, ConfigInfo, EvalEntry, ProjectInfo } from "./api";
+import {
+  api,
+  CheckpointEntry,
+  ConfigInfo,
+  EvalEntry,
+  ProjectInfo,
+  ServiceStatus,
+} from "./api";
 import { getAutoWatchTty } from "./autoWatch";
 import { useDemoMode, useServerVersion } from "./demoMode";
 import { ContextMenu } from "./components/ContextMenu";
@@ -285,6 +292,13 @@ export default function App() {
   const [datasetServerOpen, setDatasetServerOpen] = useState(false);
   const [tensorboardOpen, setTensorboardOpen] = useState(false);
   const [mkdocsOpen, setMkdocsOpen] = useState(false);
+  // Edit-service state: when set, the matching modal is rendered in
+  // edit mode pre-populated from this service's args. Single piece of
+  // state — only one edit modal is open at a time. Dispatched from
+  // ServicesPanel's right-click menu / pencil button.
+  const [editingService, setEditingService] = useState<ServiceStatus | null>(
+    null,
+  );
   const [convertOpen, setConvertOpen] = useState(false);
   const [finalizeOpen, setFinalizeOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
@@ -336,6 +350,42 @@ export default function App() {
   // a new callback on every App render. Mirrors clearPendingExplore.
   const clearPendingAnalyze = useCallback(
     () => setPendingAnalyze(null),
+    [],
+  );
+
+  // Cross-section: "Open in Inference / Datasets" buttons on the Jobs
+  // view's inference / dataset-server cards. Drop the user into the
+  // matching panel with the row pre-selected — saves the
+  // navigate-then-click-the-same-server dance. ``key`` is a fresh
+  // nonce so the consume-effect can dedup against stale renders, same
+  // pattern as pendingExplore / pendingAnalyze. The id is the Job's
+  // stable ``id`` (also the queue_id for server-launched jobs), which
+  // is what InferenceModelPanel keys its picker rows on and what
+  // DatasetServersTab keys ``selected`` on via ``queue_id``.
+  const [pendingInferenceServer, setPendingInferenceServer] = useState<
+    { jobId: string; baseUrl: string; key: number } | null
+  >(null);
+  const openInferenceServer = useCallback(
+    (jobId: string, baseUrl: string) => {
+      setPendingInferenceServer({ jobId, baseUrl, key: Date.now() });
+      setView("inference");
+    },
+    [],
+  );
+  const clearPendingInferenceServer = useCallback(
+    () => setPendingInferenceServer(null),
+    [],
+  );
+
+  const [pendingDatasetServer, setPendingDatasetServer] = useState<
+    { queueId: string; key: number } | null
+  >(null);
+  const openDatasetServer = useCallback((queueId: string) => {
+    setPendingDatasetServer({ queueId, key: Date.now() });
+    setView("datasets");
+  }, []);
+  const clearPendingDatasetServer = useCallback(
+    () => setPendingDatasetServer(null),
     [],
   );
 
@@ -590,9 +640,8 @@ export default function App() {
   // (nicer rendering + search). All Tools entries share the same shape;
   // the per-tool variation is just the doc relpath and the mkdocs slug.
   /** A single extra menu item, rendered above "Help…". Tool-specific
-   *  affordances (e.g. "Edit Configuration…" for the dataset server)
-   *  use this to attach lightweight one-shot actions without growing
-   *  the per-tool surface area further. */
+   *  affordances use this slot to attach lightweight one-shot actions
+   *  without growing the per-tool surface area further. */
   interface ToolExtraMenuItem {
     label: string;
     onChoose: () => void | Promise<void>;
@@ -766,27 +815,6 @@ export default function App() {
     serviceType?: "inference" | "dataset" | "tensorboard" | "mkdocs";
   }
 
-  // Build "Edit Configuration…" for the dataset server. Creates the
-  // commented stub if it doesn't exist, then opens it in the editor.
-  // Errors surface via window.alert — same fallback the FilesTree's
-  // file-create path uses.
-  const onEditDatasetServerConfig = useCallback(async () => {
-    try {
-      const { path } = await api.ensureDatasetServerConfigStub();
-      openFileForEdit(path);
-    } catch (e) {
-      window.alert(
-        `Could not create / open dataset_server config: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      );
-    }
-    // openFileForEdit isn't memoized but is stable across renders in
-    // practice; we don't include it in deps to avoid recreating the
-    // callback on every render — and the closure captures the latest
-    // implementation via filesApi/setView regardless.
-  }, []);
-
   // Long-running spawned processes the operator wants to launch and
   // then forget about (inference, datasets, dashboards). Split out from
   // TOOLS so the one-shot model-manipulation utilities aren't visually
@@ -810,12 +838,6 @@ export default function App() {
       onOpen: () => setDatasetServerOpen(true),
       docRelpath: "tools/dataset_server/README.md",
       mkdocsSlug: "tools/dataset_server/",
-      extraItems: [
-        {
-          label: "Edit Configuration…",
-          onChoose: onEditDatasetServerConfig,
-        },
-      ],
       serviceType: "dataset",
     },
     {
@@ -1157,6 +1179,7 @@ export default function App() {
                         <ServicesPanel
                           filterType={t!}
                           onSwitchView={(v) => setView(v)}
+                          onEditService={setEditingService}
                         />
                       </div>
                     )}
@@ -1404,6 +1427,8 @@ export default function App() {
           <JobsPanel
             autoWatchJobId={autoWatchJobId}
             onAutoWatchConsumed={() => setAutoWatchJobId(null)}
+            onOpenInferenceServer={openInferenceServer}
+            onOpenDatasetServer={openDatasetServer}
           />
         </div>
         <div
@@ -1419,6 +1444,8 @@ export default function App() {
           <InferencePanel
             pendingAnalyze={pendingAnalyze}
             onAnalyzeConsumed={clearPendingAnalyze}
+            pendingServerPick={pendingInferenceServer}
+            onServerPickConsumed={clearPendingInferenceServer}
           />
         </div>
         <div
@@ -1430,6 +1457,8 @@ export default function App() {
             onPreselectConsumed={clearPendingExplore}
             onOpenInExplore={openInExplore}
             onAnalyzeText={analyzeText}
+            pendingServerPick={pendingDatasetServer}
+            onServerPickConsumed={clearPendingDatasetServer}
           />
         </div>
       </div>
@@ -1464,6 +1493,57 @@ export default function App() {
           onClose={() => setMkdocsOpen(false)}
           onSubmitted={onJobSubmitted}
           onServiceCreated={expandServicesCategory}
+        />
+      )}
+      {/* Edit-service modals — same components as the create-mode mounts
+          above, but routed via editingService.type. Only one renders at a
+          time because only one type matches. */}
+      {editingService && editingService.service.type === "inference" && (
+        <InferenceModal
+          checkpointPath={null}
+          editingService={{
+            name: editingService.service.name,
+            enabled: editingService.service.enabled,
+            running: editingService.running,
+            args: editingService.service.args,
+          }}
+          onClose={() => setEditingService(null)}
+        />
+      )}
+      {editingService && editingService.service.type === "dataset" && (
+        <DatasetServerModal
+          editingService={{
+            name: editingService.service.name,
+            enabled: editingService.service.enabled,
+            running: editingService.running,
+            args: editingService.service.args,
+          }}
+          onClose={() => setEditingService(null)}
+        />
+      )}
+      {editingService && editingService.service.type === "tensorboard" && (
+        <TensorBoardModal
+          global
+          initialLogdir=""
+          initialWindowTitle=""
+          editingService={{
+            name: editingService.service.name,
+            enabled: editingService.service.enabled,
+            running: editingService.running,
+            args: editingService.service.args,
+          }}
+          onClose={() => setEditingService(null)}
+        />
+      )}
+      {editingService && editingService.service.type === "mkdocs" && (
+        <MkDocsModal
+          editingService={{
+            name: editingService.service.name,
+            enabled: editingService.service.enabled,
+            running: editingService.running,
+            args: editingService.service.args,
+          }}
+          onClose={() => setEditingService(null)}
         />
       )}
       {shutdownOpen && (

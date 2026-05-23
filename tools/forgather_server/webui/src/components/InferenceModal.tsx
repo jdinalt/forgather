@@ -3,10 +3,49 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
-import { promptAndCreateService, sanitizeServiceName } from "../services-create";
+import {
+  promptAndCreateService,
+  sanitizeServiceName,
+  saveServiceArgsAndMaybeRestart,
+} from "../services-create";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
 import { ModalBackdrop } from "./ModalBackdrop";
+
+function argStr(args: Record<string, unknown>, key: string, def: string): string {
+  const v = args[key];
+  return typeof v === "string" ? v : def;
+}
+function argNum(args: Record<string, unknown>, key: string, def: number): number {
+  const v = args[key];
+  return typeof v === "number" ? v : def;
+}
+function argBool(args: Record<string, unknown>, key: string, def: boolean): boolean {
+  const v = args[key];
+  return typeof v === "boolean" ? v : def;
+}
+
+/** Decode the model rows from a persisted service's args back into the
+ *  UI rows. Single-model services use ``model_path: PATH``; multi-model
+ *  services use ``models: [{name, path}]``. */
+function decodeInferenceModels(args: Record<string, unknown>): ModelRow[] {
+  if (Array.isArray(args.models)) {
+    const out: ModelRow[] = [];
+    for (const entry of args.models) {
+      if (entry && typeof entry === "object") {
+        const e = entry as Record<string, unknown>;
+        const path = typeof e.path === "string" ? e.path : "";
+        const name = typeof e.name === "string" ? e.name : "";
+        if (path) out.push({ path, name });
+      }
+    }
+    if (out.length > 0) return out;
+  }
+  if (typeof args.model_path === "string" && args.model_path) {
+    return [{ path: args.model_path, name: "" }];
+  }
+  return [{ path: "", name: "" }];
+}
 
 interface ModelRow {
   /** Filesystem path to the model directory. */
@@ -91,8 +130,10 @@ export function InferenceModal({
   onClose,
   onSubmitted,
   onServiceCreated,
+  editingService,
 }: Props) {
   const qc = useQueryClient();
+  const isEdit = !!editingService;
   const gpusQ = useQuery({ queryKey: ["gpus-once"], queryFn: api.listGpus });
   const schedQ = useQuery({
     queryKey: ["scheduler-status"],
@@ -101,63 +142,99 @@ export function InferenceModal({
 
   // Ad-hoc mode: caller didn't pin a specific model path, so the user
   // picks one here. The PathField is shown instead of the read-only
-  // summary. Relevant defaults shift: from_checkpoint starts off (a bare
-  // HuggingFace directory typically loads via ``from_pretrained``).
-  const adHoc = !modelOutputDir;
-  const persisted = loadAdHoc();
+  // summary. Edit mode is always ad-hoc (no caller-pinned model) — the
+  // user might want to add / remove rows on a multi-model service.
+  const adHoc = !modelOutputDir || isEdit;
+  // In edit mode the service args are the source of truth; localStorage
+  // is ignored so we don't overlay stale fields onto the persisted
+  // service the user is editing.
+  const persisted = isEdit ? {} : loadAdHoc();
+  const editArgs = editingService?.args ?? {};
 
   // Model rows. Project-backed flows always have exactly one (from props
-  // — no add/remove UI). Ad-hoc flows can have many.
-  const initialModels: ModelRow[] = modelOutputDir
-    ? [{ path: modelOutputDir, name: "" }]
-    : persisted.models && persisted.models.length > 0
-      ? persisted.models
-      : [{ path: persisted.modelPath ?? "", name: "" }];
+  // — no add/remove UI). Ad-hoc flows can have many. Edit mode hydrates
+  // from the service's persisted ``model_path`` / ``models`` field.
+  const initialModels: ModelRow[] = isEdit
+    ? decodeInferenceModels(editArgs)
+    : modelOutputDir
+      ? [{ path: modelOutputDir, name: "" }]
+      : persisted.models && persisted.models.length > 0
+        ? persisted.models
+        : [{ path: persisted.modelPath ?? "", name: "" }];
   const [models, setModels] = useState<ModelRow[]>(initialModels);
 
   // Default port: the inference server's own default. Many users have
   // SSH port-forwards keyed to this port, so keep the canonical default
   // rather than shifting to dodge first-submit collisions — collisions
   // are easy to fix per-submit.
-  const [port, setPort] = useState<number>(persisted.port ?? 8137);
+  const [port, setPort] = useState<number>(
+    isEdit ? argNum(editArgs, "port", 8137) : persisted.port ?? 8137,
+  );
   // Default to "localhost" rather than "127.0.0.1" — both bind to the
   // same loopback addresses, but some browsers (notably ChromeOS over
   // SSH port-forwards) only follow clickable links to "localhost".
-  const [host, setHost] = useState<string>(persisted.host ?? "localhost");
-  const [requestedGpus, setRequestedGpus] = useState<number>(
-    persisted.requestedGpus ?? 1,
+  const [host, setHost] = useState<string>(
+    isEdit ? argStr(editArgs, "host", "localhost") : persisted.host ?? "localhost",
   );
-  const [device, setDevice] = useState<string>(persisted.device ?? "");
+  const [requestedGpus, setRequestedGpus] = useState<number>(
+    isEdit
+      ? argNum(editArgs, "requested_gpus", 1)
+      : persisted.requestedGpus ?? 1,
+  );
+  const [device, setDevice] = useState<string>(
+    isEdit ? argStr(editArgs, "device", "") : persisted.device ?? "",
+  );
   const [priority, setPriority] = useState<number>(0);
   const [ckptPath, setCkptPath] = useState<string>(
-    checkpointPath ?? persisted.ckptPath ?? "",
+    isEdit
+      ? argStr(editArgs, "checkpoint_path", "")
+      : checkpointPath ?? persisted.ckptPath ?? "",
   );
   const [fromCheckpoint, setFromCheckpoint] = useState<boolean>(
-    persisted.fromCheckpoint ?? !adHoc,
+    isEdit
+      ? argBool(editArgs, "from_checkpoint", false)
+      : persisted.fromCheckpoint ?? !adHoc,
   );
-  const [dtype, setDtype] = useState<string>(persisted.dtype ?? "bfloat16");
-  const [attn, setAttn] = useState<string>(persisted.attn ?? "sdpa");
+  const [dtype, setDtype] = useState<string>(
+    isEdit ? argStr(editArgs, "dtype", "bfloat16") : persisted.dtype ?? "bfloat16",
+  );
+  const [attn, setAttn] = useState<string>(
+    isEdit
+      ? argStr(editArgs, "attn_implementation", "default")
+      : persisted.attn ?? "sdpa",
+  );
   const [cacheImpl, setCacheImpl] = useState<string>(
-    persisted.cacheImpl ?? "default",
+    isEdit
+      ? argStr(editArgs, "cache_implementation", "default")
+      : persisted.cacheImpl ?? "default",
   );
   const [compileFlag, setCompileFlag] = useState<boolean>(
-    persisted.compileFlag ?? false,
+    isEdit ? argBool(editArgs, "compile", false) : persisted.compileFlag ?? false,
   );
   const [compileArgs, setCompileArgs] = useState<string>(
-    persisted.compileArgs ?? "",
+    isEdit
+      ? argStr(editArgs, "compile_args", "")
+      : persisted.compileArgs ?? "",
   );
   const [disableKvCache, setDisableKvCache] = useState<boolean>(
-    persisted.disableKvCache ?? false,
+    isEdit
+      ? argBool(editArgs, "disable_kv_cache", false)
+      : persisted.disableKvCache ?? false,
   );
   const [keepOnGpu, setKeepOnGpu] = useState<boolean>(
-    persisted.keepOnGpu ?? false,
+    isEdit ? argBool(editArgs, "keep_on_gpu", false) : persisted.keepOnGpu ?? false,
   );
   const [chatTemplate, setChatTemplate] = useState<string>(
-    persisted.chatTemplate ?? "",
+    isEdit
+      ? argStr(editArgs, "chat_template", "")
+      : persisted.chatTemplate ?? "",
   );
   const [quietTokens, setQuietTokens] = useState<boolean>(
-    persisted.quietTokens ?? false,
+    isEdit
+      ? argBool(editArgs, "quiet_tokens", false)
+      : persisted.quietTokens ?? false,
   );
+  const [saving, setSaving] = useState<boolean>(false);
 
   // Project-backed flows force exactly one model row; the add/remove UI
   // never appears. Multi-model is an ad-hoc-only concern (a project is a
@@ -357,7 +434,11 @@ export function InferenceModal({
       >
         <header className="modal-header">
           <h3>
-            {adHoc ? (
+            {isEdit ? (
+              <>
+                Edit inference service: <code>{editingService!.name}</code>
+              </>
+            ) : adHoc ? (
               "Start inference server"
             ) : (
               <>
@@ -726,57 +807,98 @@ export function InferenceModal({
             {enqueue.error ? String(enqueue.error) : ""}
           </div>
           <div className="btn-row">
-            <AutoWatchTtyToggle />
-            <button
-              className="secondary"
-              onClick={resetDefaults}
-              title="Clear persisted settings and restore defaults"
-            >
-              Reset to defaults
-            </button>
+            {!isEdit && <AutoWatchTtyToggle />}
+            {!isEdit && (
+              <button
+                className="secondary"
+                onClick={resetDefaults}
+                title="Clear persisted settings and restore defaults"
+              >
+                Reset to defaults
+              </button>
+            )}
             <button className="secondary" onClick={onClose}>
               Cancel
             </button>
-            <button
-              className="secondary"
-              onClick={async () => {
-                if (!canSubmit) return;
-                const args = {
-                  ...buildArgs(),
-                  // Inference services need at least one GPU; persist
-                  // the operator's choice so autostart respects it.
-                  requested_gpus: requestedGpus,
-                };
-                // Suggested name:
-                //   - single model: that model's basename
-                //   - multi-model: ``host-port`` (concatenating all
-                //     model names doesn't scale past two or three)
-                const suggested =
-                  resolvedModels.length === 1
-                    ? sanitizeServiceName(deriveName(resolvedModels[0].path))
-                    : sanitizeServiceName(`${host}-${port}`);
-                const ok = await promptAndCreateService(
-                  qc,
-                  "inference",
-                  args,
-                  suggested,
-                );
-                if (ok) {
-                  onServiceCreated?.("inference");
-                  onClose();
+            {isEdit ? (
+              <button
+                onClick={async () => {
+                  if (!canSubmit) return;
+                  const args = {
+                    ...buildArgs(),
+                    requested_gpus: requestedGpus,
+                  };
+                  setSaving(true);
+                  const ok = await saveServiceArgsAndMaybeRestart(
+                    qc,
+                    "inference",
+                    editingService!.name,
+                    editingService!.running,
+                    editingService!.enabled,
+                    args,
+                  );
+                  setSaving(false);
+                  if (ok) onClose();
+                }}
+                disabled={saving || !canSubmit}
+                title={
+                  editingService!.running
+                    ? "Save changes; the running instance will be restarted to apply them"
+                    : "Save changes to the service config"
                 }
-              }}
-              disabled={!canSubmit}
-              title="Persist these settings to the server config as an auto-start service"
-            >
-              Create service…
-            </button>
-            <button
-              onClick={submit}
-              disabled={enqueue.isPending || !canSubmit}
-            >
-              {enqueue.isPending ? "Submitting…" : "Start server"}
-            </button>
+              >
+                {saving
+                  ? editingService!.running
+                    ? "Restarting…"
+                    : "Saving…"
+                  : editingService!.running
+                    ? "Save & restart"
+                    : "Save"}
+              </button>
+            ) : (
+              <>
+                <button
+                  className="secondary"
+                  onClick={async () => {
+                    if (!canSubmit) return;
+                    const args = {
+                      ...buildArgs(),
+                      // Inference services need at least one GPU; persist
+                      // the operator's choice so autostart respects it.
+                      requested_gpus: requestedGpus,
+                    };
+                    // Suggested name:
+                    //   - single model: that model's basename
+                    //   - multi-model: ``host-port`` (concatenating all
+                    //     model names doesn't scale past two or three)
+                    const suggested =
+                      resolvedModels.length === 1
+                        ? sanitizeServiceName(deriveName(resolvedModels[0].path))
+                        : sanitizeServiceName(`${host}-${port}`);
+                    const ok = await promptAndCreateService(
+                      qc,
+                      "inference",
+                      args,
+                      suggested,
+                    );
+                    if (ok) {
+                      onServiceCreated?.("inference");
+                      onClose();
+                    }
+                  }}
+                  disabled={!canSubmit}
+                  title="Persist these settings to the server config as an auto-start service"
+                >
+                  Create service…
+                </button>
+                <button
+                  onClick={submit}
+                  disabled={enqueue.isPending || !canSubmit}
+                >
+                  {enqueue.isPending ? "Submitting…" : "Start server"}
+                </button>
+              </>
+            )}
           </div>
         </footer>
       </div>
@@ -807,6 +929,16 @@ interface Props {
    *  matching launcher row in the sidebar so the new instance is
    *  immediately visible. */
   onServiceCreated?: (type: "inference") => void;
+  /** When set, the modal switches into "Edit service" mode: state is
+   *  hydrated from ``editingService.args`` (instead of localStorage /
+   *  props), title + footer change, Save calls
+   *  ``saveServiceArgsAndMaybeRestart`` with the fixed name. */
+  editingService?: {
+    name: string;
+    enabled: boolean;
+    running: boolean;
+    args: Record<string, unknown>;
+  };
 }
 
 function basename(p: string): string {
