@@ -2627,6 +2627,53 @@ li.config.selected button.link:hover {
   font-size: 11px;
 }
 
+/* Disabled state for the picker tree (NewProjectModal greys it out
+   when a non-scaffold starting point is selected). */
+.meta-picker.disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* New Project modal — tri-state Starting point fieldset. */
+.new-project-starting-point {
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 8px 12px;
+  margin-top: 10px;
+  background: var(--bg);
+}
+.new-project-starting-point legend {
+  font-size: 11px;
+  padding: 0 4px;
+  color: var(--muted, #888);
+}
+.starting-point-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 6px 4px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.starting-point-row:hover {
+  background: var(--bg-elev, rgba(0, 0, 0, 0.04));
+}
+.starting-point-row > input[type="radio"] {
+  margin-top: 4px;
+}
+.starting-point-body {
+  flex: 1;
+  min-width: 0;
+}
+.starting-point-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.starting-point-desc {
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+
 /* ---------- Sidebar Files tree ---------- */
 .sidebar-projects-details,
 .sidebar-files-details {

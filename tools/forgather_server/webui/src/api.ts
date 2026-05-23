@@ -1210,6 +1210,8 @@ export const api = {
     default_config?: string;
     project_dir_name?: string | null;
     copy_from?: string | null;
+    meta_template?: string | null;
+    values?: Record<string, string> | null;
   }): Promise<{ project_dir: string }> => {
     const r = await fetch("/api/workspace/new-project", {
       method: "POST",

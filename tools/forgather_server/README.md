@@ -2645,17 +2645,35 @@ The project tree exposes a different menu per node type:
   **🗑 Delete Workspace…**. Create-Project opens
   `NewProjectModal`, the in-app equivalent of
   `forgather project create`: required Name + Description, plus
-  Config prefix (default `configs`), Default config (default
+  Config prefix (default `configs`), Default config (placeholder
+  derived from the picked scaffold when applicable, otherwise
   `default.yaml`), Project dir (relative to workspace; may be
   nested with `mkdir -p` semantics; Browse… button anchored to
   `workspace_root` lets the user pick an existing subdirectory and
   drops the relative path back into the field with a trailing `/`
-  for the leaf name), and an optional Copy-from `PathField` for
-  seeding the default config from an existing file. Submit calls
-  `POST /api/workspace/new-project`, which dispatches into
-  `forgather.cli.project.project_create_cmd` via a
-  `SimpleNamespace` so we don't duplicate the CLI's project-skeleton
-  logic. Tree refresh is via `["projects"]` invalidation. The
+  for the leaf name), and a **Starting point** fieldset that
+  controls how the project's first config gets seeded — tri-state:
+  - **Blank** (default): server writes the built-in empty stub.
+  - **Copy from existing file**: a `PathField` for a source config.
+  - **Use a scaffold**: renders `MetaTemplatePicker` filtered to
+    `target_kind: "config"` plus `MetaTemplateFields` for the
+    selected scaffold; the user enters values and submission
+    sends `meta_template` + `values` to the server, which renders
+    the scaffold and uses the result as the seed.
+
+  The Default-config filename placeholder is auto-derived from the
+  scaffold's `CONFIG_NAME` value when one is picked, so the new
+  project's first config is named meaningfully (e.g. `c4.yaml`)
+  instead of always landing as `default.yaml`. Typing into the
+  field overrides the auto-derivation. Submit calls `POST
+  /api/workspace/new-project`, which dispatches into
+  `forgather.cli.project.project_create_cmd` via a `SimpleNamespace`
+  so we don't duplicate the CLI's project-skeleton logic — for the
+  scaffold path the server renders the meta-template up front and
+  passes the result as `seed_text` instead of going through the
+  CLI's `--copy-from` file read. `copy_from` and `meta_template`
+  are mutually exclusive (server enforces with 400). Tree refresh
+  is via `["projects"]` invalidation. The
   synthetic "Unaffiliated" cluster (no `workspace_root`) doesn't
   receive the menu. Delete-Workspace recursively removes the
   workspace directory via `POST /api/fs/delete-dir`, with the same
@@ -2987,7 +3005,7 @@ are WebSockets.
 | `GET /api/project/asset?project_dir=&asset=`   | Image / file embedded in the README (path-guarded)  |
 | `GET /api/project/templates?project_dir=`      | Every template on the project's search path, grouped by search-root category (with synthetic Meta group for `meta.yaml`) — backs the `tlist` view |
 | `GET /api/project/template-paths?project_dir=` | Resolved `templates_dir` + `configs_dir` + `config_prefix` (for the New Config / New Template modal's path preview) |
-| `POST /api/workspace/new-project` `{workspace_dir, name, description, config_prefix?, default_config?, project_dir_name?, copy_from?}` | Create a project under a workspace — wraps the CLI's `project_create_cmd`; nested `project_dir_name` (`a/b/c`) supported; refuses overwrite, returns absolute project_dir |
+| `POST /api/workspace/new-project` `{workspace_dir, name, description, config_prefix?, default_config?, project_dir_name?, copy_from?, meta_template?, values?}` | Create a project under a workspace — wraps the CLI's `project_create_cmd`; nested `project_dir_name` (`a/b/c`) supported; refuses overwrite, returns absolute project_dir. `copy_from` and `meta_template` are mutually exclusive (400 otherwise); when `meta_template` is set the server renders the scaffold against `values` and seeds the default config with the result |
 | `POST /api/workspace/new` `{parent_dir, name, description, workspace_dir_name?, forgather_dir, libs?, search_paths?}` | Create a workspace under a search root — wraps `ws_create_cmd`; parent must be a configured search root; nested `workspace_dir_name` supported; returns absolute workspace_dir |
 | `POST /api/workspace/init-here` `{workspace_dir, name, description, forgather_dir, libs?, search_paths?}` | Initialize a workspace in an *existing* directory — used by the Files-tree right-click flow. Refuses if `forgather_workspace/` already exists; requires `workspace_dir` to live at-or-under a configured search root. |
 | `POST /api/project/new-template` `{project_dir, kind: "config"\|"template", name, meta_template?, values?}` | Create a file under the templates dir; refuses overwrite, `.yaml` auto-appended, returns absolute path. With `meta_template` + `values` the file is seeded from a scaffold under `templatelib/meta/`; without them it is created empty |

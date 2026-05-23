@@ -266,7 +266,13 @@ class NewProjectRequest(BaseModel):
     config_prefix: str = "configs"
     default_config: str = "default.yaml"
     project_dir_name: Optional[str] = None
+    # The new project's default config is seeded from one of three sources,
+    # picked by the New Project modal's "Starting point" tri-state. At most
+    # one of ``copy_from`` and ``meta_template`` may be set; both unset
+    # falls through to the CLI's built-in empty stub.
     copy_from: Optional[str] = None
+    meta_template: Optional[str] = None
+    values: Optional[Dict[str, Any]] = None
 
 
 class NewProjectResponse(BaseModel):
@@ -551,6 +557,11 @@ def new_project(req: NewProjectRequest):
             status_code=409,
             detail=f"already exists: {target_dir}",
         )
+    if req.copy_from and req.meta_template:
+        raise HTTPException(
+            status_code=400,
+            detail="copy_from and meta_template are mutually exclusive",
+        )
     if req.copy_from:
         _enforce_fs_root(req.copy_from)
     if req.copy_from and not os.path.isfile(req.copy_from):
@@ -558,6 +569,15 @@ def new_project(req: NewProjectRequest):
             status_code=400,
             detail=f"copy_from is not a file: {req.copy_from}",
         )
+
+    seed_text: Optional[str] = None
+    if req.meta_template:
+        try:
+            seed_text = meta_templates.render(req.meta_template, req.values or {})
+        except meta_templates.MissingFieldsError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except KeyError as e:
+            raise HTTPException(status_code=404, detail=f"meta-template not found: {e}")
 
     args = SimpleNamespace(
         project_dir=req.workspace_dir,
@@ -567,6 +587,7 @@ def new_project(req: NewProjectRequest):
         config_prefix=req.config_prefix or "configs",
         default_config=req.default_config or "default.yaml",
         copy_from=req.copy_from,
+        seed_text=seed_text,
     )
     try:
         rc = project_create_cmd(args)
