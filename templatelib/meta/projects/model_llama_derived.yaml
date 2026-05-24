@@ -55,7 +55,15 @@
 ## Tokenizer.
 ##
 ## The default below uses the Llama-2 7B tokenizer from HuggingFace
-## (vocab_size 32k, model_max_length 4096). Common swaps:
+## (vocab_size 32k, model_max_length 4096). Note: this tokenizer is on
+## a *gated* HF repo — running `forgather model construct` will fail
+## with a confusing "tiktoken / vocab" error unless you have
+## `huggingface-cli login` set up with an account that's been granted
+## access. For a from-scratch project that doesn't need to share weights
+## with the released Llama-2 weights, prefer the local Forgather
+## tokenizer project pattern further down.
+##
+## Common swaps:
 ##
 ##   Llama-3.x: meta-llama/Llama-3.2-1B (vocab_size 128k, ctx 128k)
 ##   Mistral:   mistralai/Mistral-7B-v0.1 (vocab_size 32k, ctx 32k)
