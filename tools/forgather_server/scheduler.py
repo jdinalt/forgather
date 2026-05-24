@@ -1243,13 +1243,12 @@ def _reattach_or_cleanup_on_startup() -> None:
 
     PID reuse is guarded by comparing the live process's ``create_time``
     against the record's ``started_at``; a mismatch means the kernel has
-    recycled the pid and we treat it as gone.
+    recycled the pid and we treat it as gone. Delegated to
+    :func:`trainer_control.is_endpoint_pid_alive` so the guard and its
+    slack constant (:data:`trainer_control.PID_REUSE_SLACK_SECONDS`)
+    stay aligned with the Jobs API and the ``forgather control``
+    cleanup/list paths.
     """
-    try:
-        import psutil
-    except ImportError:
-        psutil = None  # type: ignore[assignment]
-
     reattached = 0
     cleaned = 0
     for r in job_records.list_records():
@@ -1260,23 +1259,7 @@ def _reattach_or_cleanup_on_startup() -> None:
             cleaned += 1
             continue
 
-        alive = False
-        if psutil is not None:
-            try:
-                p = psutil.Process(r.pid)
-                alive = p.is_running() and p.status() != psutil.STATUS_ZOMBIE
-                # PID-reuse guard: if the process was created after we
-                # launched it, the kernel has recycled the pid.
-                if alive and r.started_at is not None:
-                    # Allow a few seconds of slack — create_time() is rounded
-                    # and started_at is recorded slightly earlier than the
-                    # actual fork.
-                    if p.create_time() > r.started_at + 10:
-                        alive = False
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                alive = False
-        else:
-            alive = _pid_is_alive(r.pid)
+        alive = trainer_control.is_endpoint_pid_alive(r.pid, r.started_at)
 
         if alive:
             with _state._lock:
