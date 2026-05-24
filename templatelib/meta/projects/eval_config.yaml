@@ -58,4 +58,4 @@
     ## models / runs.
     ## default_batch_size: 8
     ## default_max_length: 2048
-    ## stride: 0
+    ## default_stride: 0

@@ -200,9 +200,16 @@ export function FilesTree({
   // the deepest matching search root and force every step open, then
   // mark the target as selected. The scroll-into-view useEffect below
   // picks the row up once the listings (re-)render.
+  //
+  // Wait for ``rootsQ.data`` to land before deciding the target isn't
+  // under any search root — otherwise an early reveal-request firing
+  // before the query resolves will see ``roots = []`` and pop a
+  // misleading "not under any search root" alert. The effect re-runs
+  // when rootsQ.data flips from undefined to the loaded array.
   useEffect(() => {
     if (!revealRequest) return;
-    const roots = rootsQ.data ?? [];
+    if (rootsQ.data === undefined) return;
+    const roots = rootsQ.data;
     const norm = revealRequest.path.replace(/\/+$/, "");
     let root: SearchRoot | null = null;
     let bestLen = -1;
@@ -252,10 +259,16 @@ export function FilesTree({
   // we retry a few times before giving up — typical first try succeeds
   // when ancestors were already open, otherwise the second after the
   // listing query lands picks it up.
+  //
+  // The cleanup cancels any pending retry so unmounted / re-selected
+  // components don't keep firing noop callbacks. ``cancelled`` is the
+  // belt; ``clearTimeout`` is the suspenders — together they ensure
+  // the loop stops both inside the callback and at the scheduler.
   useEffect(() => {
     if (!selectedPath || !containerRef.current) return;
     const container = containerRef.current;
     let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     let attempts = 0;
     const tryScroll = () => {
       if (cancelled) return;
@@ -274,13 +287,14 @@ export function FilesTree({
       // cold listing fetch, short enough that a vanished path doesn't
       // hang a callback forever.
       if (attempts >= 20) return;
-      setTimeout(tryScroll, 150);
+      timeoutId = setTimeout(tryScroll, 150);
     };
     // requestAnimationFrame so the first attempt runs after the
     // ancestor expansions have had a chance to mount.
     requestAnimationFrame(tryScroll);
     return () => {
       cancelled = true;
+      if (timeoutId !== null) clearTimeout(timeoutId);
     };
   }, [selectedPath, revealRequest]);
   // Workspaces drive New-Project enablement: we need the enclosing
