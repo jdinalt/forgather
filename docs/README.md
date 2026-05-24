@@ -16,7 +16,7 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 - **[Forgather Server Walkthrough](guides/forgather-server-walkthrough.md)** - End-to-end tour of the web UI from a fresh install to chatting with a freshly-trained model
 - **[Forgather Server Reference](forgather-server.md)** - CLI flags, config-file syntax, persistent state, full API and panel reference
 - **[Core Concepts](core-concepts/README.md)** - Configuration pipeline, projects, templates, trainers
-- **[Release Notes](release-notes/README.md)** - Per-release change summaries; current release is [1.2.0](release-notes/v1.2.0.md)
+- **[Release Notes](release-notes/README.md)** - Per-release change summaries; current release is [1.2.1](release-notes/v1.2.1.md)
 
 **Configuration:**
 
