@@ -2,6 +2,9 @@
 
 Per-release notes for Forgather. The most recent release is at the top.
 
+- **[1.2.1](v1.2.1.md)** — May 2026. Docs-only patch: top-level
+  `README.md` retargeted at the local-LLM / hobbyist / limited-hardware
+  audience; News history moved into this release-notes tree.
 - **[1.2.0](v1.2.0.md)** — May 2026. Headline is multi-node training:
   forgather server in cluster mode, a `forgather cluster` fan-out CLI,
   and TLS / mTLS across all three servers. Also includes:
