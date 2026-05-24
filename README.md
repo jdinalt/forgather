@@ -45,25 +45,26 @@ on the parent.
 - **HF-compatible distributed checkpoints.** Weights are written as standard Safetensors shards readable by `transformers`, vLLM, llama.cpp conversion, etc. The coordination layer above that uses **explicit state-sharing patterns** (GLOBAL / PER_RANK / REPLICATED / PER_GROUP / PER_NODE) so PP / FSDP-2 runs checkpoint correctly without per-trainer custom code. Resume restores optimizer, scheduler, dataset position, RNG, and Tensorboard logs.
 - **Reproducibility built in.** Every run snapshots its config *and* the generated model source. Stateful dataset resume on huge corpora (C4-scale): index Arrow files once, ready in seconds thereafter.
 
-## News
+## What's new
 
-- **May 2026 (1.2.0)** -- The 1.2.0 release. Headline is **multi-node**: `forgather server --cluster <name>` puts a node into cluster mode, peers discover each other on the LAN, a new `forgather cluster` CLI (`nodes` / `jobs` / `submit` / `cancel`) and a Cluster panel in the web UI coordinate multi-node jobs, and inter-node latency / bandwidth diagnostics surface in the Nodes panel. A new **dataset server** gives the cluster one unified view of every registered dataset with load balancing, remote streaming, and a stateful protocol that resumes from a checkpoint in O(1) instead of stream-and-discard to the saved position; the web UI grows a paged dataset browser so you can inspect any dataset on any peer. Native **TLS / mTLS** comes along for multi-node operation -- the 1.1.0 localhost-only model doesn't cover a server bound to all interfaces. Also: **quantization-aware training** plus `forgather finalize --quantize` for post-training quantization, in-place server restart, auto-start services from `server_config.yaml`, a distributable runtime Docker image, and DGX Spark (GB10, aarch64) as a first-class cluster member. Full notes: [`docs/release-notes/v1.2.0.md`](./docs/release-notes/v1.2.0.md). Multi-node guide: [`docs/guides/multi-node-training.md`](./docs/guides/multi-node-training.md).
-- **Apr 2026** -- **Forgather server**: new web frontend over the CLI's APIs. Project browsing, a GPU-aware job queue, live job cards with TTY + training pills, an in-browser editor for templates and arbitrary text files (Forgather YAML+Jinja2 syntax highlighting), and a chat client against served inference jobs. End-to-end tour: [walkthrough](./docs/guides/forgather-server-walkthrough.md). Reference: [README](./tools/forgather_server/README.md).
-- **Apr 2026** -- New recommended base template **[`projects/lm_training_project.yaml`](templatelib/examples/projects/lm_training_project.yaml)** (pretraining and finetuning) and **[`projects/finetune_v2.yaml`](templatelib/examples/projects/finetune_v2.yaml)** (finetune-specific layer). Token-budget-driven step computation, automatic batch-size-aware LR scaling, WSD scheduler, fully-documented parameter surface. Replaces several drifting older base templates.
-- **Apr 2026** -- **[Tiny Llama](./examples/tutorials/tiny_llama/README.md)** and **[H.P. Lovecraft](./examples/tutorials/hp_lovecraft_project/README.md)** tutorials rewritten around the v2 templates as README-first (no Jupyter required). Tiny Llama covers the full train → monitor → control → eval → inference → export flow.
-- **Mar 2026** -- **YaRN** and **Llama-3 style RoPE scaling** in the rotary-embeddings module. Configure via `rope_parameters` with `rope_type: yarn` or `rope_type: llama3`.
-- **Mar 2026** -- **`forgather eval test`** -- run any named eval config against a trained model and write markdown + JSON results to `{model}/evals/`.
-- **Feb 2026** -- **Trainer job control** (`forgather control list / status / save / stop / save-stop / abort`). Distributed-safe; works across DDP and pipeline-parallel runs.
-- **Feb 2026** -- **Sharded-checkpoint abstraction** with explicit state-sharing patterns (GLOBAL / PER_RANK / REPLICATED / PER_GROUP / PER_NODE) and per-checkpoint manifests. See [`docs/checkpointing/`](./docs/checkpointing/).
-- **Dec 2025** -- **Fused linear-cross-entropy loss** ([paper](https://arxiv.org/abs/2411.09009)) -- Liger / Apple CCE / PyTorch-compiled implementations. Large peak-memory reduction for training with big vocabularies. Example: [`examples/finetune/samantha/templates/configs/llama3_1b/1gpu_default.yaml`](./examples/finetune/samantha/templates/configs/llama3_1b/1gpu_default.yaml).
-- **Dec 2025** -- **Triton Adafactor** -- [`src/forgather/ml/optim/adafactor_triton.py`](./src/forgather/ml/optim/adafactor_triton.py) -- lower peak memory and faster training than the reference Adafactor.
-- **Dec 2025** -- Inference server supports `device_map="auto"`, so models too large for one GPU can be sharded across all visible GPUs for serving.
-- **Nov 2025** -- Overhauled [model-conversion tool](./tools/convert_model/README.md) with support for Llama (incl. RoPE scaling, tied embeddings), Mistral, Qwen3, Gemma-3.
-- **Nov 2025** -- **[OpenAssistant dataset](./examples/datasets/OpenAssistant/README.md)** -- high-quality example of a custom dataset that generates examples on the fly (quality-weighted sampling from conversation trees, sequence packing, multi-language, deterministic). [Demo finetune project](./examples/finetune/openassistant/README.md).
-- **Nov 2025** -- Support for [packed sequences](./docs/datasets/sequence-packing.md) and [Flex Attention](https://pytorch.org/blog/flexattention/); KV cache in models.
-- **[Torch Titan integration](./examples/torchtitan/README.md)** -- Use Forgather to configure Torch Titan.
+**Latest release: [1.2.0](./docs/release-notes/v1.2.0.md) (May 2026).**
+Headline is **multi-node training**: `forgather server --cluster <name>`
+puts a node into cluster mode, peers discover each other over mDNS,
+and a new `forgather cluster` CLI plus a Cluster panel in the web UI
+fan training bundles across selected hosts/GPUs. Native TLS / mTLS,
+a cluster-shared **dataset server** with O(1) resume, in-place server
+restart, a distributable runtime Docker image, and DGX Spark (GB10,
+aarch64) as a first-class cluster member. Multi-node guide:
+[`docs/guides/multi-node-training.md`](./docs/guides/multi-node-training.md).
 
-*vLLM integration is currently broken due to Forgather's move to Transformers v5, which vLLM does not yet support. Upstream is working on v5 compatibility; we'll re-enable the integration once that lands.*
+For the full timeline (pre-1.2.0 highlights: web UI, sharded-checkpoint
+abstraction, Triton Adafactor, fused linear-CE, model conversion,
+packed sequences + Flex Attention, …) see
+[`docs/release-notes/`](./docs/release-notes/README.md).
+
+*vLLM integration is currently broken due to Forgather's move to
+Transformers v5, which vLLM does not yet support. Upstream is working
+on v5 compatibility; we'll re-enable the integration once that lands.*
 
 ## Table of Contents
 
