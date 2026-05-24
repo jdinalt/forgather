@@ -7,7 +7,7 @@
 ##   - Loads the model with `from_pretrained_config.yaml` instead of
 ##     constructing a new one. The model is identified by --model-id-or-path
 ##     (alias -M) at run time, e.g.
-##         forgather run -M meta-llama/Llama-3.2-1B
+##         forgather train -M meta-llama/Llama-3.2-1B
 ##     or any local path to a saved Forgather / HF model directory.
 ##     The model id is *required* at run time — don't bake it into the
 ##     config here.
@@ -22,7 +22,7 @@
 ##     + bf16 AMP, dataloader prefetching, eval-on-save, best-model
 ##     preservation.
 ##   - Output: the trained model is written *back to model_id_or_path* by
-##     default (so a path-based -M and successive `forgather run` calls
+##     default (so a path-based -M and successive `forgather train` calls
 ##     keep iterating on the same directory). Override ns.output_dir if
 ##     you want it written elsewhere.
 ##
