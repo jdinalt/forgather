@@ -16,11 +16,13 @@ GPUs.
 > or [docs/README.md](docs/README.md). New users should head straight
 > to **[Getting Started](./docs/getting-started/README.md)**.
 
-> 🖥️ **Web UI included.** Forgather ships with a single-user web
-> frontend over the same APIs the CLI uses — project browsing,
-> a GPU-aware job queue, live training monitoring with TTY, an in-browser editor with
-> Forgather-aware syntax highlighting, and an inference/chat client wired to
-> served models. The
+> 🖥️ **Web UI: an IDE for model-training workflows.** Forgather ships
+> with a single-user web frontend over the same APIs the CLI uses.
+> Browse projects, edit templates with Forgather-aware syntax
+> highlighting, queue runs into a GPU-aware scheduler, watch jobs
+> through a live TTY with per-card training-stat cards, then chat
+> with the trained model in-browser without leaving the page. Less
+> tmux-and-glue, more time on the experiment. The
 > **[Forgather server walkthrough](./docs/guides/forgather-server-walkthrough.md)**
 > tours the whole thing end-to-end, from a fresh install through
 > training a small model and chatting with it.
@@ -51,11 +53,16 @@ knob, not a buried fork waiting to bite three months later.
   than DDP or FSDP — Forgather has trained a 7B model across two
   desktops linked only by 1 Gbit Ethernet, and the same design avoids
   the PCIe stalls FSDP hits on consumer hardware.
-- **Multi-node without a cluster admin.** `forgather server --cluster
-  <name>` puts a node into cluster mode; peers find each other over
-  mDNS on the LAN, and `forgather cluster submit` fans a training
-  bundle across selected hosts/GPUs. mTLS between peers; a
-  cluster-shared dataset server keeps every node fed.
+- **Multi-node training, without the multi-node tax.** Spinning up a
+  pipeline-parallel finetune across machines normally means
+  hand-rolled rendezvous, dataset distribution, port forwarding, mTLS,
+  and coordinated job control — a different chore per job. With
+  Forgather, you install on each peer, start
+  `forgather server --cluster <name>`, and mDNS handles discovery;
+  `forgather cluster submit` fans a training bundle across the
+  hosts/GPUs you pick. A workstation with two 3090s, a couple of
+  borrowed gaming PCs on Ethernet, and a DGX Spark show up in the
+  same Nodes panel — heterogeneous boxes are fine.
 - **No config duplication.** Inherit from a base template and
   override only what changes — types are hyperparameters too, swap
   optimizers, models, or trainers in YAML via `!partial` / `!factory`
