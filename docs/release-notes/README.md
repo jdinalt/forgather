@@ -36,11 +36,9 @@ restructured since.
   several drifting older base templates.
 - **Apr 2026** — **Tiny Llama** and **H.P. Lovecraft** tutorials
   rewritten around the v2 templates as README-first (no Jupyter
-  required). Tiny Llama
-  ([docs](../tutorials/tiny_llama/README.md)) covers the full
+  required). Tiny Llama covers the full
   train → monitor → control → eval → inference → export flow;
-  Lovecraft ([docs](../tutorials/hp_lovecraft_project/README.md))
-  covers long-context fine-tuning with RoPE scaling.
+  Lovecraft covers long-context fine-tuning with RoPE scaling.
 - **Mar 2026** — **YaRN** and **Llama-3 style RoPE scaling** in the
   rotary-embeddings module. Configure via `rope_parameters` with
   `rope_type: yarn` or `rope_type: llama3`.
