@@ -14,10 +14,14 @@
 ##   - Optimizer: forgather Adafactor (low memory, fits big models on
 ##     consumer GPUs). Override the [optimizer] block below for AdamW /
 ##     AdamW4bit / Muon.
-##   - LR scheduler: WSDScheduler (warmup → stable → decay). Trigger the
-##     decay phase by setting decay_start_step (see the auto-trigger block
-##     below) or at run time via `forgather control save-stop` /
-##     `--start-annealing`.
+##   - LR scheduler: WSDScheduler (warmup → stable → decay). The normal
+##     workflow: set ns.annealing_tokens (millions), then have the
+##     template compute decay_start_step from total_tokens and pin the
+##     scheduler to that step — see the [globals] + [lr_scheduler] block
+##     below. Pass `--start-annealing` at run time to manually trigger
+##     the decay phase instead: useful when you want to save a
+##     pre-annealing checkpoint and resume into annealing later, or to
+##     stop a long run, checkpoint, and resume with an immediate decay.
 ##   - Defaults: flex_attention, torch_compile + max-autotune, bf16 weights
 ##     + bf16 AMP, dataloader prefetching, eval-on-save, best-model
 ##     preservation.
@@ -82,7 +86,10 @@
     ## -----------------------------------------------------------------------
     ## -- set ns.total_tokens = 1000
     ## -- set ns.warmup_tokens = 20
-    ## -- set ns.annealing_tokens = 200      ## final WSD decay window
+    ## -- set ns.annealing_tokens = 200      ## final WSD decay window (millions)
+    ##                                        ## paired with the [globals] +
+    ##                                        ## [lr_scheduler] block below to
+    ##                                        ## auto-pin decay_start_step
 
     ## -----------------------------------------------------------------------
     ## Batching
@@ -169,15 +176,27 @@
 
 
 ## ---------------------------------------------------------------------------
-## Auto-trigger WSD decay at the end of the run.
+## WSD decay scheduling — the normal workflow.
 ##
-## When total_tokens is set, you can derive the decay-start step and tell
-## the LR scheduler exactly when to transition from the stable phase into
-## the cosine decay — no need to fire `--start-annealing` or send a
-## `forgather control` RPC. Uncomment as a block when you're running with
-## a known token budget. Pair with the `max_steps: ...` line in the
-## trainer-overrides block below so total_tokens actually bounds the run
-## (the base defaults to max_steps=-1 + num_train_epochs=1).
+## With a fixed total_tokens budget set above, the template derives
+## ns.decay_start_step from (total_steps - annealing_steps) so the
+## WSDScheduler transitions from the stable phase into the cosine
+## decay automatically at the right step — no need to babysit the
+## run. Uncomment this block whenever you've set total_tokens; pair
+## with the `max_steps: ...` line inside the trainer-overrides block
+## below so the run actually stops at the budget (the base defaults
+## to max_steps=-1 + num_train_epochs=1).
+##
+## `--start-annealing` is the manual escape hatch — pass it at run
+## time to trigger the decay phase immediately, regardless of step
+## number. Use cases:
+##   - Save a pre-annealing checkpoint, then later resume *into* the
+##     decay phase with `forgather train --start-annealing ...`.
+##   - Stop a long run, checkpoint, then resume with an immediate
+##     decay rather than waiting for the budgeted step.
+##   - Configs that don't pre-compute decay_start_step at all — the
+##     scheduler stays in the stable phase forever until you trigger
+##     it.
 ##
 ## Same pattern as examples/finetune/open-orca/templates/open_orca.yaml.
 ## ---------------------------------------------------------------------------
