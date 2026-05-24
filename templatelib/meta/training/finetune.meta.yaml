@@ -1,4 +1,4 @@
-title: "Fine-tune LM project"
+title: "Fine-tune LM"
 summary: "Fine-tune scaffold built on finetune_v2.yaml."
 description: |
   Generates the entry-point config for fine-tuning a pre-trained

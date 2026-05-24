@@ -1,4 +1,4 @@
-title: "Model project — Llama-derived"
+title: "Llama-derived"
 summary: "Dynamic model inheriting the Llama topology (RMSNorm + GLU + RoPE)."
 description: |
   Generates the default config for a model project whose architecture

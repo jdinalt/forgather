@@ -1,4 +1,4 @@
-title: "Model project — HF class"
+title: "HuggingFace class"
 summary: "Instantiate a HuggingFace PretrainedConfig class with a chosen tokenizer."
 description: |
   Generates the default config for a model project that just wraps a

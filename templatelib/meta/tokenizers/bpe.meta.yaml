@@ -1,4 +1,4 @@
-title: "Tokenizer (BPE)"
+title: "Byte-level BPE"
 summary: "Train a byte-level BPE tokenizer on a HuggingFace dataset."
 description: |
   Generates the default config for a tokenizer project that trains a

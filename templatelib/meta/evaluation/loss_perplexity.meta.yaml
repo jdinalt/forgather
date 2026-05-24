@@ -1,4 +1,4 @@
-title: "Evaluation config"
+title: "Loss / perplexity"
 summary: "Named loss/perplexity evaluation pointing at a dataset project."
 description: |
   Generates an evaluation-config leaf — the kind of file consumed by

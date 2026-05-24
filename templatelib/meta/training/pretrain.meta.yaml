@@ -1,5 +1,5 @@
-title: "Pretrain LM project"
-summary: "Pre-training scaffold built on lm_training_project.yaml."
+title: "Pretrain LM"
+summary: "From-scratch pretrain scaffold built on lm_training_project.yaml."
 description: |
   Generates the entry-point config for a from-scratch language-model
   pretraining project. Inherits from `projects/lm_training_project.yaml`,

@@ -1,0 +1,8 @@
+title: "Evaluation"
+summary: "Loss / perplexity eval-config projects."
+description: |
+  Scaffolds for evaluation-config leaves — the kind of file consumed
+  by `forgather eval list` / `show` / `test` and the webui's Evaluate
+  modal. Each leaf names a dataset to evaluate on plus optional
+  per-eval defaults; the actual model + tokenizer + collator are
+  materialised by `scripts/eval_script.py` at run time.

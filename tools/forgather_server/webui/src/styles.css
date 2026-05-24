@@ -2450,7 +2450,8 @@ li.config.selected button.link:hover {
 
 /* ---------- New Project modal ---------- */
 .new-project-modal {
-  min-width: 480px;
+  min-width: 720px;
+  width: min(960px, 95vw);
 }
 .new-project-grid {
   display: grid;

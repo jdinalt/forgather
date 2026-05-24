@@ -1,0 +1,7 @@
+title: "Training"
+summary: "From-scratch and continued-training projects."
+description: |
+  Scaffolds for training-script projects — pretrain a model from
+  scratch, or fine-tune a pretrained one. The rendered config becomes
+  the project's default config; running it with `forgather train`
+  spins up the trainer.
