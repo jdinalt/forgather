@@ -2,18 +2,14 @@
 
 **Forgather is a training framework for language-model experiments on
 hardware you actually own** — a single 24 GB GPU, two consumer cards
-sharing a desktop's PCIe bus, or a few boxes linked by 1 Gbit Ethernet.
-Full-parameter fine-tune a 7B model at **53 K context on one RTX
-3090/4090**, pretrain across two machines that DDP and FSDP would
-choke on, or sweep ten optimizers on a 30M model overnight. Under the
-hood it's configuration-driven (template inheritance, no
+sharing a desktop's PCIe bus, or a few boxes linked by 1 Gbit
+Ethernet, no InfiniBand. Full-parameter fine-tune a 7B model at
+**53 K context on one RTX 3090 / 4090 / 5090**, pretrain Llama /
+Mistral / Qwen3 / Gemma-3 across two machines that DDP and FSDP would
+choke on, or run optimizer and scaling-law ablations overnight. Under
+the hood it's configuration-driven (template inheritance, no
 fork-the-training-script sprawl); the headline is what fits on your
 GPUs.
-
-Common tasks: pretrain Llama / Mistral / Qwen3 / Gemma-3 from scratch,
-fine-tune the same on consumer hardware, run scaling-law and optimizer
-ablations, develop custom model architectures, train across LAN-linked
-machines without InfiniBand.
 
 > 📚 **Documentation:**
 > [forgather.readthedocs.io](https://forgather.readthedocs.io/en/latest/)
@@ -40,17 +36,16 @@ a CLI flag that didn't actually reach the tokenizer — hide across the
 forks. Every variation gets expensive to try.
 
 A Forgather project config extends a parent; both are plain YAML
-with Jinja2 preprocessing. Every override is named and explicit, so a
+with Jinja2 preprocessing. Every override is named and explicit — a
 silently-reset scheduler shows up as a one-line diff on a documented
-knob — not as a buried fork waiting to bite three months later.
+knob, not a buried fork waiting to bite three months later.
 
 ## Key Benefits
 
 - **Full fine-tunes on a single 24 GB GPU.** Full-parameter (not LoRA)
   fine-tuning of 7B models at ~53 K context on one RTX 3090 / 4090 /
-  5090 via gradient checkpointing, CPU activation offload, fused
-  optimizer step, fused linear+cross-entropy loss, and packed
-  sequences + Flex Attention.
+  5090, via gradient checkpointing, activation offload, and fused
+  kernels (full list under [Key Features](#key-features)).
 - **Train across the boxes you have.** Pipeline-parallel and DiLoCo
   trainers need [dramatically less cross-device communication](./docs/guides/multi-node-training.md)
   than DDP or FSDP — Forgather has trained a 7B model across two
@@ -58,10 +53,9 @@ knob — not as a buried fork waiting to bite three months later.
   the PCIe stalls FSDP hits on consumer hardware.
 - **Multi-node without a cluster admin.** `forgather server --cluster
   <name>` puts a node into cluster mode; peers find each other over
-  mDNS on the LAN, `forgather cluster submit` fans a training bundle
-  across selected hosts/GPUs, and a cluster-shared dataset server
-  gives every peer a unified view of registered datasets with O(1)
-  stateful resume. mTLS between peers.
+  mDNS on the LAN, and `forgather cluster submit` fans a training
+  bundle across selected hosts/GPUs. mTLS between peers; a
+  cluster-shared dataset server keeps every node fed.
 - **No config duplication.** Inherit from a base template and
   override only what changes — types are hyperparameters too, swap
   optimizers, models, or trainers in YAML via `!partial` / `!factory`
@@ -89,17 +83,18 @@ If LoRA / QLoRA is what you need, [axolotl](https://github.com/axolotl-ai-cloud/
 and [unsloth](https://github.com/unslothai/unsloth) are great starting
 points — Forgather doesn't ship a LoRA path today. Forgather's bet is
 that full-parameter training of 7B-class models is now feasible on a
-single consumer GPU and gives better-quality results, and that the
-hard problems are *training-side* — multi-GPU coordination, pipeline
-schedules, multi-node over Ethernet, optimizer / precision research,
-custom architectures, reproducible experiments — rather than
-inference-side fine-tuning UX. If those are your problems, Forgather
-is closer to what you want than the LoRA-first tools.
+single consumer GPU, and that for many workloads it's the right tool.
+The hard problems Forgather targets are *training-side* — multi-GPU
+coordination, pipeline schedules, multi-node over Ethernet, optimizer
+and precision research, custom architectures, reproducible experiments
+— rather than inference-side fine-tuning UX. If those are your
+problems, Forgather is closer to what you want than the LoRA-first
+tools.
 
 ### Hardware
 
-- **Tested on** NVIDIA consumer cards (RTX 3090 / 4090 / 5090), 4× /
-  6× 4090 boxes, data-center cards, and DGX Spark (GB10, aarch64).
+- **Tested on** NVIDIA consumer cards (RTX 3090 / 4090 / 5090) up to
+  4× and 6× 4090 boxes, and DGX Spark (GB10, aarch64).
 - **Minimum useful config** for LM work: one 24 GB GPU. The 7B-at-53K
   finetune fits a single 3090.
 - **Multi-node:** any LAN ≥ 1 Gbit works for pipeline-parallel or
@@ -108,17 +103,6 @@ is closer to what you want than the LoRA-first tools.
   (Forgather avoids hard CUDA dependencies where possible) but are
   not tested, so treat them as experimental. ROCm contributions
   welcome.
-
-## Table of Contents
-
-- [Why Forgather?](#why-forgather)
-- [Key Benefits](#key-benefits)
-- [Quick Start](#quick-start)
-- [What's new](#whats-new)
-- [Key Features](#key-features)
-- [Core Concepts](#core-concepts)
-- [Learning Forgather](#learning-forgather)
-- [Featured Examples](#featured-examples)
 
 ## Quick Start
 
@@ -154,22 +138,14 @@ forgather -t v2.yaml train
 ```
 
 Requires Docker Engine 24+ and (for GPU training) the
-[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
-See [`docs/getting-started/docker.md`](./docs/getting-started/docker.md)
-for the full breakdown — every CLI flag and env var, the runtime
-(distributable) image, multi-node setup, and the release-testing
-workflow.
-
-See [`examples/tutorials/tiny_llama/README.md`](./examples/tutorials/tiny_llama/README.md)
-for the full "train → monitor → control → eval → inference → export"
-walkthrough, or [`docs/getting-started/installation.md`](./docs/getting-started/installation.md)
-for the install details.
-
-**Or skip the CLI** — if you'd rather start in a browser, the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html);
+host-venv install is also supported. See
+[`docs/getting-started/`](./docs/getting-started/README.md) for install
+details, the [Tiny Llama tutorial](./examples/tutorials/tiny_llama/README.md)
+for the full train → monitor → control → eval → inference → export
+walkthrough, or the
 [Forgather server walkthrough](./docs/guides/forgather-server-walkthrough.md)
-covers the same Tiny Llama flow end-to-end through the web UI: install,
-build the SPA, queue the training job, watch it run, then chat with the
-trained model from the in-browser inference panel.
+for the same flow through the web UI.
 
 ## What's new
 
