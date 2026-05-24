@@ -1,0 +1,36 @@
+title: "Fine-tune LM project"
+summary: "Fine-tune scaffold built on finetune_v2.yaml."
+description: |
+  Generates the entry-point config for fine-tuning a pre-trained
+  language model. Inherits from `projects/finetune_v2.yaml`, which
+  layers fine-tune defaults onto the LM training base: Adafactor
+  optimizer, WSDScheduler, flex_attention, bf16 weights + bf16 AMP,
+  `from_pretrained` model loading, and writes the trained model back
+  to its source directory by default.
+
+  The model itself is supplied at run time via `--model-id-or-path` (or
+  `-M`) — pass any HuggingFace Hub id or a local path. The scaffold
+  does *not* hard-code the model; that's left as a CLI argument so a
+  single config can be retrained against different bases.
+
+  Two fields are pre-filled from this form; everything else lives in
+  the rendered body as commented examples grouped by axis — dataset,
+  budget, batching, LR, trainer, pipeline schedule, step cadence,
+  attention/compile, eval prompts, an "auto-trigger WSD decay" block
+  for fixed-budget runs, plus optimizer swap recipes (AdamW / 4-bit
+  AdamW / Muon).
+
+  Verified shape against `examples/finetune/samantha`. Same scaffold
+  covers the `samantha` / `open-orca` patterns — they differ in
+  defaults (dataset, budget, eval prompts) but not in structure.
+target_kind: "config"
+fields:
+  - name: CONFIG_NAME
+    label: "Config name"
+    description: "Short label shown in `forgather ls` listings."
+    placeholder: "Fine-tune Llama 1B"
+    required: true
+  - name: DESCRIPTION
+    label: "Description"
+    description: "One-line description, shown in `forgather ls`."
+    required: true

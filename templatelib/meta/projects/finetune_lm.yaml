@@ -1,0 +1,259 @@
+## ===========================================================================
+## Fine-tune LM project — entry-point config.
+##
+## Inherits from projects/finetune_v2.yaml, which builds on
+## lm_training_project.yaml and swaps in fine-tuning defaults:
+##
+##   - Loads the model with `from_pretrained_config.yaml` instead of
+##     constructing a new one. The model is identified by --model-id-or-path
+##     (alias -M) at run time, e.g.
+##         forgather run -M meta-llama/Llama-3.2-1B
+##     or any local path to a saved Forgather / HF model directory.
+##     The model id is *required* at run time — don't bake it into the
+##     config here.
+##   - Optimizer: forgather Adafactor (low memory, fits big models on
+##     consumer GPUs). Override the [optimizer] block below for AdamW /
+##     AdamW4bit / Muon.
+##   - LR scheduler: WSDScheduler (warmup → stable → decay). Trigger the
+##     decay phase by setting decay_start_step (see the auto-trigger block
+##     below) or at run time via `forgather control save-stop` /
+##     `--start-annealing`.
+##   - Defaults: flex_attention, torch_compile + max-autotune, bf16 weights
+##     + bf16 AMP, dataloader prefetching, eval-on-save, best-model
+##     preservation.
+##   - Output: the trained model is written *back to model_id_or_path* by
+##     default (so a path-based -M and successive `forgather run` calls
+##     keep iterating on the same directory). Override ns.output_dir if
+##     you want it written elsewhere.
+##
+## Run as-is for a sane default fine-tune (Samantha-packed dataset,
+## flex_attention, AMP bf16, single-GPU basic trainer). Uncomment the
+## blocks below to tune.
+##
+## References:
+##   docs/project-templates/lm-training-projects.md   (full knob reference)
+##   docs/trainers/trainer_options.md                  (trainer-arg reference)
+##   examples/finetune/samantha                        (small, well-tested)
+##   examples/finetune/open-orca                       (long-running 1B / 7B)
+## ===========================================================================
+
+-- extends "projects/finetune_v2.yaml"
+
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "$CONFIG_NAME"
+    -- set ns.config_description = "$DESCRIPTION"
+
+    ## Subdirectory under <model>/runs/ for this run's logs. Useful when
+    ## a single model directory hosts multiple experiments — without it
+    ## all runs land in the same series. Default = config-name slug.
+    ## -- set ns.log_name = "1gpu_default"
+
+    ## -----------------------------------------------------------------------
+    ## Dataset
+    ##
+    ## Defaults from finetune_v2.yaml:
+    ##   dataset_proj   = examples/datasets/QuixiAI
+    ##   dataset_config = samantha-packed.yaml   (small, fast iteration)
+    ##
+    ## Other ready-to-go fine-tune datasets in this repo:
+    ##   examples/datasets/Open-Orca       openorca-packed.yaml
+    ##                                     (reasoning / instruction)
+    ##   examples/datasets/OpenAssistant   openassistant_packed.yaml
+    ##                                     (conversational; may need
+    ##                                     refresh — see project README)
+    ## -----------------------------------------------------------------------
+    ## -- set ns.dataset_proj = abspath(joinpath(ns.forgather_dir, 'examples', 'datasets', 'Open-Orca'))
+    ## -- set ns.dataset_config = "openorca-packed.yaml"
+
+    ## -----------------------------------------------------------------------
+    ## Training budget (all in MILLIONS of tokens)
+    ##
+    ## Defaults from the base: num_train_epochs=1, max_steps=-1 (run for a
+    ## full epoch of the dataset). For finite-budget runs that don't track
+    ## epochs, set total_tokens here and uncomment the auto-decay block
+    ## further down so the LR anneals as the run ends.
+    ##
+    ## Sample budgets from the reference projects:
+    ##   Open-Orca 4-GPU DDP 1B:   1000M (~11h @ 26 K tok/s)
+    ##   Open-Orca 4-GPU PP  7B:    500M (~15.5h @  8.9 K tok/s)
+    ##   Open-Orca smoke-test 1B:    50M (iteration)
+    ## -----------------------------------------------------------------------
+    ## -- set ns.total_tokens = 1000
+    ## -- set ns.warmup_tokens = 20
+    ## -- set ns.annealing_tokens = 200      ## final WSD decay window
+
+    ## -----------------------------------------------------------------------
+    ## Batching
+    ##
+    ## Defaults from finetune_v2.yaml:
+    ##   seq_len                     = 4096
+    ##   per_device_train_batch_size = 4
+    ##   gradient_accumulation_steps = 1
+    ##
+    ## Memory-tight reference points:
+    ##   1B on 24 GB single GPU:   seq_len 2048-4096, bs 2-4
+    ##   7B on 24 GB single GPU:   seq_len 1280,      bs 1
+    ##                             + gradient_checkpointing + activation
+    ##                             offloading (see trainer overrides)
+    ##   7B 4-GPU PP:              seq_len 2048,      bs 2
+    ## -----------------------------------------------------------------------
+    ## -- set ns.seq_len = 2048
+    ## -- set ns.per_device_train_batch_size = 2
+    ## -- set ns.gradient_accumulation_steps = 1
+
+    ## -----------------------------------------------------------------------
+    ## Learning rate / scaling
+    ##
+    ## Defaults from finetune_v2.yaml:
+    ##   base_lr         = 1e-4
+    ##   base_batch_size = 16384   (LR-scaling reference, in tokens)
+    ##   lr_alpha        = 0.5     (sqrt scaling)
+    ## -----------------------------------------------------------------------
+    ## -- set ns.base_lr = 1.5e-4
+
+    ## -----------------------------------------------------------------------
+    ## Trainer
+    ##
+    ## Choices: basic (single-GPU) | ddp | fsdp2 | pipeline. Default: basic.
+    ## Match nproc_per_node to the GPU count for the distributed trainers
+    ## (or leave it at "gpu" to use all visible GPUs).
+    ## -----------------------------------------------------------------------
+    ## -- set ns.trainer_type = "ddp"
+    ## -- set ns.nproc_per_node = 4
+
+    ## -----------------------------------------------------------------------
+    ## Pipeline parallel — only used when trainer_type == "pipeline"
+    ##
+    ## ScheduleZBVZeroBubble has shown the best throughput in the reference
+    ## projects, but is incompatible with torch.compile. Use Schedule1F1B
+    ## or ScheduleInterleaved1F1B if you need to keep compile on.
+    ## -----------------------------------------------------------------------
+    ## -- set ns.pipe_schedule_factory = "ScheduleZBVZeroBubble"
+
+    ## -----------------------------------------------------------------------
+    ## Step cadence
+    ##
+    ## Multiplier on the base log / eval / save token intervals
+    ## (1M / 25M / 500M). Default 1.0 is right for medium-to-large
+    ## datasets; drop to 0.02 for small datasets (Samantha-packed,
+    ## ~10M tokens) so you get sub-epoch logs.
+    ## -----------------------------------------------------------------------
+    ## -- set ns.step_cadence = 0.02
+
+    ## -----------------------------------------------------------------------
+    ## Attention / compile
+    ##
+    ## Defaults from finetune_v2.yaml: flex_attention + torch_compile=True
+    ## + max-autotune. Disable compile for:
+    ##   - memory-tight runs (max-autotune adds cudagraph scratch)
+    ##   - ZBV pipeline schedules (incompatible with compile)
+    ##   - short iteration runs (max-autotune first-step compile takes
+    ##     minutes; not worth it for 50M-token smoke tests)
+    ## -----------------------------------------------------------------------
+    ## -- set ns.attn_implementation = "sdpa"     ## fallback for old GPUs
+    ## -- set ns.torch_compile = False
+    ## -- set ns.torch_compile_mode = "max-autotune-no-cudagraphs"
+
+    ## -----------------------------------------------------------------------
+    ## Text-generation eval prompts
+    ##
+    ## The lm_callbacks textgen callback generates from a fixed prompt
+    ## set every eval step. The default (prompts/short_stories.yaml) is
+    ## raw causal-LM continuation — fine for pretrain but useless for a
+    ## chat-style fine-tune. Point at a ChatML-formatted prompt set
+    ## matching your training distribution.
+    ## -- set ns.eval_prompts_file = "prompts/open_orca_eval.yaml"
+    ## -- set ns.eval_max_new_tokens = 160
+
+
+## ---------------------------------------------------------------------------
+## Auto-trigger WSD decay at the end of the run.
+##
+## When total_tokens is set, you can derive the decay-start step and tell
+## the LR scheduler exactly when to transition from the stable phase into
+## the cosine decay — no need to fire `--start-annealing` or send a
+## `forgather control` RPC. Uncomment as a block when you're running with
+## a known token budget. Pair with the `max_steps: ...` line in the
+## trainer-overrides block below so total_tokens actually bounds the run
+## (the base defaults to max_steps=-1 + num_train_epochs=1).
+##
+## Same pattern as examples/finetune/open-orca/templates/open_orca.yaml.
+## ---------------------------------------------------------------------------
+## [globals]
+##     == super()
+##     -- set ns.decay_start_step = [ns.warmup_steps, (ns.total_steps - ns.annealing_steps)] | max | int
+##
+## [lr_scheduler]
+##     == super()
+##     decay_start_step: {{ ns.decay_start_step }}
+
+
+## ---------------------------------------------------------------------------
+## Trainer overrides — uncomment the [trainer_args] header plus any keys
+## you want to set. ``== super()`` keeps the base block intact; only the
+## keys you list are overridden.
+## ---------------------------------------------------------------------------
+
+## [trainer_args]
+##     == super()
+##     ## --- Token-budget bound ---
+##     ## Pin max_steps to ns.total_steps so a token budget actually bounds
+##     ## the run. Without this the base defaults to max_steps=-1 +
+##     ## num_train_epochs=1 (one full epoch over the dataset). Uncomment
+##     ## together with the auto-WSD-decay block above for a fully-bounded
+##     ## finite-budget run.
+##     max_steps: {{ max_steps | toyaml(ns.total_steps) }}
+##
+##     ## --- Precision ---
+##     max_grad_norm: 1.0
+##     ## default_dtype: "float32"          ## fp32 weights + bf16 AMP (vs bf16+bf16)
+##
+##     ## --- Memory savings (combine for big models on tight VRAM) ---
+##     gradient_checkpointing: True
+##     enable_activation_offloading: True
+##     ## activation_memory_budget: 0.5     ## requires torch_compile=True
+##
+##     ## --- Throughput ---
+##     ## fuse_optim_with_backward: True    ## basic + pipeline trainers only
+##                                          ## (incompatible with DDP, fp16,
+##                                          ## grad-accum > 1, max_grad_norm
+##                                          ## clipping)
+
+
+## ---------------------------------------------------------------------------
+## Optimizer override.
+##
+## Default (from finetune_v2): forgather Adafactor — low memory; ~4 bytes/param
+## of optimizer state vs ~16 for AdamW. Great for big models on consumer GPUs.
+##
+## Common swaps below — uncomment ONE block to use it.
+## ---------------------------------------------------------------------------
+
+## [optimizer]
+## ## AdamW (torch) — momentum + per-param second moment. Higher memory
+## ## but often the best convergence on small-to-medium models.
+## optimizer: &optimizer !partial:torch:optim.AdamW
+##     lr: {{ ns.global_lr | toyaml }}
+##     foreach: True
+
+## [optimizer]
+## ## torchao 4-bit AdamW — buys back AdamW momentum at ~1 byte/param of
+## ## optimizer state. Needs stochastic rounding for pure-bf16 training
+## ## stability. Throughput is close to Adafactor; convergence usually a
+## ## bit better.
+## optimizer: &optimizer !partial:torchao.optim:AdamW4bit
+##     lr: {{ ns.global_lr | toyaml }}
+##     bf16_stochastic_round: True
+
+## [optimizer]
+## ## Muon — second-moment-free for hidden weights; pair with no_decay
+## ## AdamW for norms/biases/embeddings (set via the no_decay_optim block).
+## optimizer: &optimizer !partial:torch.optim:Muon
+##     lr: {{ ns.global_lr | toyaml }}
+##     adjust_lr_fn: "match_rms_adamw"
+##
+## [no_decay_optim]
+## .define: &no_decay_optim !partial:torch:optim.AdamW
+##     lr: !!float 0.02
