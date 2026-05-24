@@ -210,3 +210,8 @@ nav:
     - Integration Testing: development/integration-testing.md
     - Git Hooks: development/git-hooks.md
     - Known Bugs: development/bugs.md
+  - Release Notes:
+    - Overview: release-notes/README.md
+    # Version labels must be quoted — bare 1.2.0 is parsed by YAML as
+    # the float 1.2 (trailing .0 dropped) and renders as "1.2" in nav.
+    - "1.2.0": release-notes/v1.2.0.md
