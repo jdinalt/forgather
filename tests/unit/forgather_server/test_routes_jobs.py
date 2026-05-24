@@ -1,11 +1,19 @@
-"""Tests for helpers in routes/jobs.py — notably _pid_alive."""
+"""Tests for helpers in routes/jobs.py — notably _pid_alive and the
+``_endpoint_is_live`` wrapper that delegates to
+``trainer_control.is_endpoint_pid_alive``. Deep coverage of the
+PID-reuse-aware liveness check lives in
+``tests/unit/forgather/test_trainer_control.py``; this file only
+verifies the wrapper plumbs ``JobInfo`` fields through correctly.
+"""
 
 import os
 import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
-from forgather_server.routes.jobs import _pid_alive
+from forgather_server.routes.jobs import _endpoint_is_live, _pid_alive
+
+from forgather import trainer_control
 
 
 class TestPidAlive:
@@ -58,3 +66,40 @@ class TestPidAlive:
         with patch.dict(sys.modules, {"psutil": mock_psutil}):
             result = _pid_alive(9999)
         assert result is False
+
+
+def _ep(pid, started_at):
+    return trainer_control.JobInfo(
+        job_id="job_test",
+        host="127.0.0.1",
+        port=8900,
+        pid=pid,
+        started_at=started_at,
+    )
+
+
+class TestEndpointIsLiveWrapper:
+    """The wrapper just passes ``(ep.pid, ep.started_at)`` to the
+    canonical helper. Smoke-test that plumbing here; behaviour tests
+    for the helper itself live in test_trainer_control.py.
+    """
+
+    def test_delegates_to_canonical_helper(self):
+        with patch.object(
+            trainer_control, "is_endpoint_pid_alive", return_value=True
+        ) as mock_fn:
+            ep = _ep(pid=457, started_at=1000.0)
+            assert _endpoint_is_live(ep) is True
+        mock_fn.assert_called_once_with(457, 1000.0)
+
+    def test_passes_through_false(self):
+        with patch.object(trainer_control, "is_endpoint_pid_alive", return_value=False):
+            assert _endpoint_is_live(_ep(pid=457, started_at=1000.0)) is False
+
+    def test_none_pid_passes_through(self):
+        # Wrapper must forward None pid; canonical helper handles it.
+        with patch.object(
+            trainer_control, "is_endpoint_pid_alive", return_value=False
+        ) as mock_fn:
+            _endpoint_is_live(_ep(pid=None, started_at=1000.0))
+        mock_fn.assert_called_once_with(None, 1000.0)

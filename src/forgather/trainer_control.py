@@ -7,6 +7,7 @@ via HTTP API or other communication mechanisms.
 
 import json
 import logging
+import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -24,6 +25,70 @@ except ImportError:
 from forgather.preprocess import forgather_config_dir
 
 logger = logging.getLogger(__name__)
+
+
+# Slack window for the PID-reuse guard in :func:`is_endpoint_pid_alive`.
+# ``psutil.Process.create_time()`` is rounded to whole seconds on some
+# platforms and the trainer writes ``started_at`` to its endpoint.json
+# slightly after the actual fork — so a tiny positive delta between the
+# two is normal. Anything beyond this window means the kernel has
+# recycled the pid and the new owner is *not* the original trainer.
+PID_REUSE_SLACK_SECONDS = 10.0
+
+
+def is_endpoint_pid_alive(
+    pid: Optional[int],
+    started_at: Optional[float],
+) -> bool:
+    """True iff ``pid`` refers to a live process plausibly the same one
+    that wrote ``started_at`` to its endpoint.json.
+
+    Standard live check (process exists, non-zombie), plus a PID-reuse
+    guard: if ``psutil.Process(pid).create_time()`` is more than
+    :data:`PID_REUSE_SLACK_SECONDS` after ``started_at``, the kernel has
+    recycled the pid and the original owner is gone — return False.
+
+    Without this guard, a leftover ``endpoint.json`` from before a host
+    reboot can perpetually masquerade as "running" once an unrelated
+    daemon lands on the recycled pid in the new boot — phantom Jobs
+    entries in the webui, ``forgather control list`` rows marked "alive",
+    and ``DELETE /api/jobs/<id>`` refusing to evict the stale endpoint
+    dir.
+
+    Without psutil installed, falls back to a bare ``os.kill(pid, 0)``
+    existence probe — dead pids are still detected as dead, but the
+    PID-reuse guard is unavailable. Same fallback semantics as the
+    scheduler's own liveness check; operators who care about the reuse
+    guard need psutil installed.
+
+    ``started_at=None`` skips the reuse guard entirely (just the bare
+    live check). Useful for records that pre-date the field.
+    """
+    if pid is None:
+        return False
+    try:
+        import psutil
+    except ImportError:
+        try:
+            os.kill(pid, 0)
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
+    try:
+        p = psutil.Process(pid)
+        if not p.is_running() or p.status() == psutil.STATUS_ZOMBIE:
+            return False
+        if started_at is None:
+            return True
+        try:
+            create_time = p.create_time()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return False
+        if create_time > started_at + PID_REUSE_SLACK_SECONDS:
+            return False
+        return True
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
 
 
 @dataclass

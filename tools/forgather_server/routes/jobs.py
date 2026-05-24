@@ -119,10 +119,26 @@ def _pid_alive(pid: Optional[int]) -> bool:
     ``os.kill(pid, 0)``); operators who hit the no-psutil path saw
     inconsistent live-ness reporting between the Jobs view and the
     scheduler's reap loop.
+
+    Note: this is *not* PID-reuse aware. Callers that have a known
+    process-start timestamp (e.g. an endpoint's ``started_at``) should
+    use :func:`_endpoint_is_live` so a recycled pid from a prior boot
+    doesn't masquerade as the original owner.
     """
     if pid is None:
         return False
     return scheduler._pid_is_alive(pid)
+
+
+def _endpoint_is_live(ep: trainer_control.JobInfo) -> bool:
+    """PID-reuse-aware liveness for an externally-discovered endpoint.
+
+    Thin wrapper over :func:`trainer_control.is_endpoint_pid_alive` —
+    see that function for the rationale. The wrapper exists so call
+    sites here read as "is the endpoint live" rather than two attribute
+    accesses on every line.
+    """
+    return trainer_control.is_endpoint_pid_alive(ep.pid, ep.started_at)
 
 
 def _record_to_model(
@@ -203,7 +219,7 @@ def _record_to_model(
 
 
 def _endpoint_to_model(ep: trainer_control.JobInfo) -> JobModel:
-    alive = _pid_alive(ep.pid)
+    alive = _endpoint_is_live(ep)
     return JobModel(
         id=ep.job_id,
         job_id=ep.job_id,
@@ -524,7 +540,7 @@ def remove_job(job_id: str):
     ep = _find_endpoint_by_id(job_id)
     if ep is None:
         raise HTTPException(status_code=404, detail=f"no record for {job_id}")
-    if _pid_alive(ep.pid):
+    if _endpoint_is_live(ep):
         raise HTTPException(
             status_code=409,
             detail=(

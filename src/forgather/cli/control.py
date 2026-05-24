@@ -1,5 +1,5 @@
 def control_cmd(args):
-    from forgather.trainer_control import get_default_client
+    from forgather.trainer_control import get_default_client, is_endpoint_pid_alive
 
     """Handle trainer control commands."""
     try:
@@ -30,24 +30,16 @@ def control_cmd(args):
                 print("No discoverable training jobs found.")
                 return 0
 
-            # Check which jobs are still alive and mark dead ones
-            import psutil
-
+            # Mark each job alive/dead via the PID-reuse-aware check —
+            # a recycled pid from before a host reboot must NOT render
+            # as "✓" (see is_endpoint_pid_alive for the rationale).
             alive_jobs = []
             dead_jobs = []
 
             for job in jobs:
-                try:
-                    # Check if process is still running
-                    if psutil.pid_exists(job.pid):
-                        proc = psutil.Process(job.pid)
-                        if proc.is_running():
-                            alive_jobs.append((job, "✓"))
-                        else:
-                            dead_jobs.append((job, "✗"))
-                    else:
-                        dead_jobs.append((job, "✗"))
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                if is_endpoint_pid_alive(job.pid, job.started_at):
+                    alive_jobs.append((job, "✓"))
+                else:
                     dead_jobs.append((job, "✗"))
 
             # Display results
@@ -115,8 +107,6 @@ def control_cmd(args):
             import time
             from pathlib import Path
 
-            import psutil
-
             from forgather.preprocess import forgather_config_dir
 
             # TTL for orphan directories (those without endpoint.json).
@@ -129,34 +119,13 @@ def control_cmd(args):
             jobs_dir = Path(forgather_config_dir()) / "jobs"
             jobs = client.list_jobs()
 
-            # --- Dead jobs: endpoint.json present, PID gone or recycled --------
-            # PID-reuse guard: a recycled PID can shield a stale endpoint
-            # forever. Compare the live process's create_time against the
-            # endpoint's started_at (with a few seconds of slack — same
-            # pattern as scheduler._reattach_or_cleanup_on_startup).
-            dead_jobs = []
-            for job in jobs:
-                try:
-                    if not psutil.pid_exists(job.pid):
-                        dead_jobs.append(job)
-                        continue
-                    proc = psutil.Process(job.pid)
-                    if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
-                        dead_jobs.append(job)
-                        continue
-                    if job.started_at is not None:
-                        try:
-                            create_time = proc.create_time()
-                        except (psutil.NoSuchProcess, psutil.AccessDenied):
-                            dead_jobs.append(job)
-                            continue
-                        # If the live PID was created well after the
-                        # endpoint was written, kernel has recycled it.
-                        if create_time - job.started_at > 5.0:
-                            dead_jobs.append(job)
-                            continue
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    dead_jobs.append(job)
+            # Dead jobs: endpoint.json present, but PID is gone, zombie,
+            # or has been recycled by the kernel (see is_endpoint_pid_alive).
+            dead_jobs = [
+                job
+                for job in jobs
+                if not is_endpoint_pid_alive(job.pid, job.started_at)
+            ]
 
             # --- Orphan dirs: no endpoint.json and older than TTL --------------
             orphan_dirs = []
