@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { api, MetaTemplate, ProjectInfo } from "../api";
 import { MetaTemplatePicker } from "./MetaTemplatePicker";
@@ -12,6 +12,13 @@ import { ModalBackdrop } from "./ModalBackdrop";
 interface Props {
   project: ProjectInfo;
   kind: "config" | "template";
+  /** Optional absolute directory hint — typically the directory the
+   *  user right-clicked in the Files tree. When supplied and the
+   *  directory lives under the resolved baseDir, the file-name input
+   *  is pre-filled with the relative path (with a trailing ``/``) so
+   *  the user only has to type the leaf. Outside-baseDir hints are
+   *  ignored — the modal opens with an empty name as usual. */
+  initialDirHint?: string;
   onCreated: (path: string) => void;
   onClose: () => void;
 }
@@ -27,7 +34,13 @@ interface Props {
  *  `kind="template"` writes under `<templates>/<name>` directly. The
  *  base path is resolved from the project's MetaConfig (server-side) and
  *  shown in the preview so the user knows exactly where the file lands. */
-export function NewTemplateModal({ project, kind, onCreated, onClose }: Props) {
+export function NewTemplateModal({
+  project,
+  kind,
+  initialDirHint,
+  onCreated,
+  onClose,
+}: Props) {
   const qc = useQueryClient();
   const [step, setStep] = useState<"pick" | "fill">("pick");
   // null = "Blank file" (no scaffold). Otherwise the selected MetaTemplate.
@@ -43,6 +56,23 @@ export function NewTemplateModal({ project, kind, onCreated, onClose }: Props) {
 
   const baseDir =
     kind === "config" ? pathsQ.data?.configs_dir : pathsQ.data?.templates_dir;
+
+  // Apply ``initialDirHint`` once the base dir is known. We only set
+  // ``name`` if the user hasn't already typed something — otherwise a
+  // late-arriving query would clobber their input. Setting it once at
+  // resolution time matches how NewProjectModal handles its dir-name
+  // hint and feels right: opening the modal from a deep Files-tree
+  // click lands you with the subdir already filled in.
+  useEffect(() => {
+    if (!initialDirHint || !baseDir || name) return;
+    const baseNorm = baseDir.replace(/\/+$/, "");
+    const hintNorm = initialDirHint.replace(/\/+$/, "");
+    if (hintNorm === baseNorm) return; // exactly at the root → no prefix
+    if (!hintNorm.startsWith(baseNorm + "/")) return; // outside baseDir
+    const rel = hintNorm.slice(baseNorm.length + 1);
+    setName(`${rel}/`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseDir, initialDirHint]);
 
   const trimmed = name.trim();
   const withSuffix =
