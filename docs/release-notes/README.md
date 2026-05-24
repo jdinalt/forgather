@@ -67,4 +67,5 @@ restructured since.
   [packed sequences](../datasets/sequence-packing.md) and
   [Flex Attention](https://pytorch.org/blog/flexattention/); KV cache
   in models.
-- **Torch Titan integration** — use Forgather to configure Torch Titan.
+- **Sep 2025** — **Torch Titan integration** — use Forgather to
+  configure Torch Titan.

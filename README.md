@@ -6,8 +6,10 @@ and enable systematic experimentation. Instead of copying and modifying
 entire training scripts, you inherit from base templates and specify
 only what changes.
 
-> 📚 **Documentation:** [forgather.readthedocs.io](https://forgather.readthedocs.io/en/latest/) or [docs/README.md](docs/README.md). New users should head straight to
-> **[Getting Started](./docs/getting-started/README.md)**.
+> 📚 **Documentation:**
+> [forgather.readthedocs.io](https://forgather.readthedocs.io/en/latest/)
+> or [docs/README.md](docs/README.md). New users should head straight
+> to **[Getting Started](./docs/getting-started/README.md)**.
 
 > 🖥️ **Web UI included.** Forgather ships with a single-user web
 > frontend over the same APIs the CLI uses — project browsing,
@@ -24,9 +26,9 @@ only what changes.
 
 Most research ML codebases accrete: one training script becomes ten
 training scripts, each a near-copy of the others with subtle
-differences. Every variation is expensive to try. Small bugs -- a loss
+differences. Every variation is expensive to try. Small bugs — a loss
 function wired wrong, a scheduler silently reset on resume, a CLI flag
-that didn't actually reach the tokenizer -- hide across forks.
+that didn't actually reach the tokenizer — hide across forks.
 
 A Forgather project config extends a parent; both are plain YAML with 
 Jinja2 preprocessing. Overrides are explicit, and every knob is documented 
@@ -34,15 +36,39 @@ on the parent.
 
 ## Key Benefits
 
-- **No config duplication.** Inherit from base templates and override only what changes -- every knob is an explicit overridable block. Types are hyperparameters too: swap optimizers, models, datasets, trainers, or samplers in YAML via `!partial` / `!factory` / `!singleton`, with no Python edits. Every run snapshots its config *and* the generated model source for reproducibility.
-- **Standalone, framework-portable models.** Each run writes the equivalent PyTorch source into `output_models/`. Load it with plain `AutoModelForCausalLM.from_pretrained(..., trust_remote_code=True)` -- no Forgather dependency at inference time. Or run `forgather convert --reverse` to emit a canonical HF Llama / Mistral / Qwen3 / Gemma-3 checkpoint.
-- **Pipeline parallelism for bandwidth-limited setups.** The pipeline trainer needs *dramatically* less cross-device communication than DDP or FSDP -- Forgather has trained a 7B model across two machines linked only by 1 Gbit Ethernet, and the same design avoids the PCIe stalls FSDP hits on consumer hardware. DDP, FSDP-2, and DiLoCo (low-bandwidth distributed local SGD) are also first-class.
-- **Low-memory training suite.** Gradient checkpointing, CPU activation offload, fused optimizer step, fused linear+cross-entropy loss (Liger / Apple CCE / `torch.compile`), packed sequences + Flex Attention. Full-parameter (not LoRA) finetuning of 7B models at ~53 K context on a single 24 GB GPU.
-- **Live job control + GPU-aware web UI.** Save, stop, or abort running training jobs from another shell, coordinated across DDP / FSDP-2 / pipeline workers. The web frontend drops `▶ Run` jobs into a priority + GPU-policy queue, with live TTY, training-stat cards, per-card process attribution, and a chat client wired to served inference jobs.
-- **Multi-node out of the box.** `forgather server --cluster <name>` puts a node into cluster mode; peers discover each other over mDNS, a `forgather cluster submit` CLI fans a training bundle across selected hosts/GPUs, and the web UI grows a Nodes panel with one-click peer SSO. A cluster-shared **dataset server** gives every peer a unified view of every registered dataset with transparent load balancing, remote streaming, and O(1) stateful resume. mTLS between peers. See [`docs/guides/multi-node-training.md`](./docs/guides/multi-node-training.md).
-- **HF-compatible distributed checkpoints.** Weights are written as standard Safetensors shards readable by `transformers`, vLLM, llama.cpp conversion, etc. The coordination layer above that uses **explicit state-sharing patterns** (GLOBAL / PER_RANK / REPLICATED / PER_GROUP / PER_NODE) so PP / FSDP-2 runs checkpoint correctly without per-trainer custom code. Resume restores optimizer, scheduler, dataset position, RNG, and Tensorboard logs.
+- **No config duplication.** Inherit from a base template and
+  override only what changes — types are hyperparameters too, swap
+  optimizers, models, or trainers in YAML via `!partial` / `!factory`
+  / `!singleton` with no Python edits.
+- **Standalone, framework-portable models.** Each run writes the
+  equivalent PyTorch source into `output_models/`, loadable by plain
+  `AutoModelForCausalLM` (or convertible to a canonical HF Llama /
+  Mistral / Qwen3 / Gemma-3 checkpoint).
+- **Pipeline parallelism for bandwidth-limited setups.** Dramatically
+  less cross-device communication than DDP or FSDP — Forgather has
+  trained a 7B model across two machines linked only by 1 Gbit
+  Ethernet.
+- **Low-memory training suite.** Full-parameter (not LoRA) finetuning
+  of 7B models at ~53 K context on a single 24 GB GPU.
+- **Live job control + GPU-aware web UI.** Save, stop, or abort
+  running training jobs from another shell, coordinated across DDP /
+  FSDP-2 / pipeline workers; the web frontend drops `▶ Run` jobs into
+  a priority + GPU-policy queue with live TTY and an in-browser chat
+  client.
+- **Multi-node out of the box.** `forgather server --cluster <name>`,
+  mDNS peer discovery, a `forgather cluster submit` fan-out CLI, and
+  a cluster-shared dataset server with O(1) stateful resume.
+- **HF-compatible distributed checkpoints.** Standard Safetensors
+  shards readable by `transformers`, vLLM, and llama.cpp; explicit
+  state-sharing patterns above the on-disk format so PP / FSDP-2 runs
+  checkpoint correctly without per-trainer custom code.
 
 ## What's new
+
+> ⚠️ **Heads up.** vLLM integration is currently broken — Forgather
+> has moved to Transformers v5, which vLLM does not yet support.
+> Upstream is working on v5 compatibility; the integration will be
+> re-enabled once that lands.
 
 **Latest release: [1.2.0](./docs/release-notes/v1.2.0.md) (May 2026).**
 Headline is **multi-node training**: `forgather server --cluster <name>`
@@ -58,10 +84,6 @@ For the full timeline (pre-1.2.0 highlights: web UI, sharded-checkpoint
 abstraction, Triton Adafactor, fused linear-CE, model conversion,
 packed sequences + Flex Attention, …) see
 [`docs/release-notes/`](./docs/release-notes/README.md).
-
-*vLLM integration is currently broken due to Forgather's move to
-Transformers v5, which vLLM does not yet support. Upstream is working
-on v5 compatibility; we'll re-enable the integration once that lands.*
 
 ## Table of Contents
 
@@ -119,7 +141,7 @@ for the full "train → monitor → control → eval → inference → export"
 walkthrough, or [`docs/getting-started/installation.md`](./docs/getting-started/installation.md)
 for the install details.
 
-**Or skip the CLI** -- if you'd rather start in a browser, the
+**Or skip the CLI** — if you'd rather start in a browser, the
 [Forgather server walkthrough](./docs/guides/forgather-server-walkthrough.md)
 covers the same Tiny Llama flow end-to-end through the web UI: install,
 build the SPA, queue the training job, watch it run, then chat with the
@@ -171,7 +193,7 @@ the full list of line statements and YAML tags.
 ### Code generation (export, not an interpreter step)
 
 **At runtime Forgather materialises the parsed node graph directly
-into Python objects -- no intermediate code-generation phase is
+into Python objects — no intermediate code-generation phase is
 involved.** Python-source export is a separate function with two
 uses:
 
@@ -195,10 +217,10 @@ uses:
    The converter supports Llama, Mistral, Qwen3, and Gemma-3.
 
 2. **Config debugging / pedagogy.** `forgather code --target X`
-   prints the Python equivalent of any node in your config graph --
-   useful when you want to understand what a complex `!partial` / 
+   prints the Python equivalent of any node in your config graph —
+   useful when you want to understand what a complex `!partial` /
    `!factory` chain actually constructs, or to see how template
-   overrides materialise.  Not used by training itself.
+   overrides materialise. Not used by training itself.
 
 ### Trainers, optimizers, precision
 
@@ -271,14 +293,14 @@ search paths. Use `forgather ws create` to scaffold one and
 
 Forgather uses **Jinja2 + YAML** with custom syntax:
 
-- `-- extends 'template.yaml'` -- template inheritance (single parent)
-- `[block_name]` -- named override-able sections
-- `== super()` -- include parent's version of the current block
-- `-- set ns.var = value` -- set a variable in the namespace
-- `-- include 'template.yaml'` -- include template content inline
-- `#---- inline.template.name ----` -- split a document into multiple templates
-- `!partial:module:Class` / `!factory:...` / `!singleton:...` -- construct Python objects
-- `!var "name"` -- variable references
+- `-- extends 'template.yaml'` — template inheritance (single parent)
+- `[block_name]` — named override-able sections
+- `== super()` — include parent's version of the current block
+- `-- set ns.var = value` — set a variable in the namespace
+- `-- include 'template.yaml'` — include template content inline
+- `#---- inline.template.name ----` — split a document into multiple templates
+- `!partial:module:Class` / `!factory:...` / `!singleton:...` — construct Python objects
+- `!var "name"` — variable references
 
 ### Config pipeline
 
@@ -321,16 +343,16 @@ every template in the chain).
 ### Recommended path
 
 1. **[examples/tutorials/tiny_llama](./examples/tutorials/tiny_llama)**
-   -- trains a 5M-param Llama in ~10 minutes; covers config anatomy,
+   — trains a 5M-param Llama in ~10 minutes; covers config anatomy,
    dynamic CLI args, monitoring, control, eval, inference, and
    exporting to plain HF format. Start here.
 2. **[examples/tutorials/projects_overview](./examples/tutorials/projects_overview)**
-   -- how Forgather's multi-project layout is organised.
+   — how Forgather's multi-project layout is organised.
 3. **[examples/tutorials/project_composition](./examples/tutorials/project_composition)**
-   -- cross-project composition (datasets / models / evals as
+   — cross-project composition (datasets / models / evals as
    independent projects that reference each other).
 4. **[examples/tutorials/hp_lovecraft_project](./examples/tutorials/hp_lovecraft_project)**
-   -- fine-tune Mistral-7B / Llama-2-7B on the complete works of
+   — fine-tune Mistral-7B / Llama-2-7B on the complete works of
    H.P. Lovecraft on a single 24 GB GPU. Long-context (up to 53K
    tokens), YaRN, gradient checkpointing, activation offloading.
 
@@ -365,7 +387,7 @@ where relevant, a headline result. For the full directory map, see
 
 ### Highlights
 
-**[`pretrain/small-llm`](./examples/pretrain/small-llm/README.md)** -- a
+**[`pretrain/small-llm`](./examples/pretrain/small-llm/README.md)** — a
 162M-parameter Llama trained from scratch on the SmolLM corpus
 (FineWeb-Edu + Cosmopedia) with packed sequences and flex-attention.
 Ten production-ready configs covering 1× and 10× Chinchilla budgets,
@@ -374,28 +396,28 @@ architecture variant. Reproducible Chinchilla scaling-law plots via
 `forgather logs plot`. Runs on the `lm_training_project.yaml` base
 template.
 
-**[`finetune/samantha`](./examples/finetune/samantha/README.md)** -- fine-tune
+**[`finetune/samantha`](./examples/finetune/samantha/README.md)** — fine-tune
 Mistral-7B or Llama-3.2-1B on the Samantha conversational dataset
 across every trainer backend in the library. Configs cover single-GPU,
 2/4-GPU pipeline parallel, FSDP-2, and DDP. Documented throughput
 (~8.9K tok/s on 4× RTX 4090 pipeline) and multi-node training notes.
-The most-referenced finetune project -- most other recipes cross-link
+The most-referenced finetune project — most other recipes cross-link
 to it rather than duplicating the setup.
 
-**[`finetune/open-orca`](./examples/finetune/open-orca/README.md)** --
+**[`finetune/open-orca`](./examples/finetune/open-orca/README.md)** —
 instruction + reasoning fine-tune on Open-Orca, complementing the
 Samantha chat-persona work. The companion to Samantha for learners:
 ChatML-formatted evaluation prompts covering chain-of-thought math,
 logic puzzles, reading comprehension, summarisation, and
 format-constrained instruction following (wired into the textgen
-callback). Uses Forgather's fast iterable-dataset loader -- 1 B Llama
+callback). Uses Forgather's fast iterable-dataset loader — 1 B Llama
 3.2 on a 1 B-token budget completes in ~11 hours on 4× RTX 4090,
 with initialisation in seconds rather than the ~10 min a naive load
 would take. Headline run includes a full inference-server eval
 script as an appendix.
 
 **[`tutorials/hp_lovecraft_project`](./examples/tutorials/hp_lovecraft_project/README.md)**
--- fine-tune Mistral-7B / Llama-2-7B on the complete works of H.P.
+— fine-tune Mistral-7B / Llama-2-7B on the complete works of H.P.
 Lovecraft on a single 24 GB GPU. Fits up to **53 K tokens** of
 context at 7B. Its companion
 [`long_context_experiments.md`](./examples/tutorials/hp_lovecraft_project/long_context_experiments.md)
@@ -408,7 +430,7 @@ cover the deployment window is catastrophic. The doc ends with a
 follow-up proposal for pretraining recipes.
 
 **[`tiny_experiments/peak_memory`](./examples/tiny_experiments/peak_memory/README.md)**
--- a systematic 9-way ablation of memory-optimisation techniques
+— a systematic 9-way ablation of memory-optimisation techniques
 (BF16, activation checkpointing, `torch.compile`, fused optimizer
 step, activation-memory budget) on a 1.6 B model. Headline:
 **81% peak-memory reduction** (BF16 + fused checkpointing + optimizer
@@ -416,7 +438,7 @@ fusion) at ~2.7× throughput over the unoptimised baseline.
 Pareto-frontier plots included.
 
 **[`tiny_experiments/optimizers`](./examples/tiny_experiments/optimizers/README.md)**
--- empirical comparison of ten optimisers (Muon, Apollo, AdamW,
+— empirical comparison of ten optimisers (Muon, Apollo, AdamW,
 Adafactor, SinkGD, SGD, etc.) on a 30M Llama trained on the SmolLM
 corpus. Headline: **Muon wins** at small batch (eval loss 2.6778 vs
 AdamW 2.7392), and `beta2` scaling becomes critical at large batch.
@@ -425,15 +447,15 @@ Apollo, SinkGD. Includes per-optimiser memory / throughput tiers and
 implementation-maturity notes.
 
 **[`tiny_experiments/pipeline_parallel`](./examples/tiny_experiments/pipeline_parallel/README.md)**
--- test harness and reference configs for PyTorch's pipeline-parallel
+— test harness and reference configs for PyTorch's pipeline-parallel
 schedules (GPipe, 1F1B, ZBV, interleaved), with checkpoint save/resume
 coverage across 2/4-GPU setups.
 
 **[`tiny_experiments/diloco`](./examples/tiny_experiments/diloco/README.md)**
--- DiLoCo (distributed local SGD) on a 4M-parameter model. Pseudo-
+— DiLoCo (distributed local SGD) on a 4M-parameter model. Pseudo-
 gradient compression, streaming-fragment overlap with backward pass,
 sync and async modes. The lowest-communication-bandwidth trainer in
-the library -- pair with the pipeline-parallel recipes above when
+the library — pair with the pipeline-parallel recipes above when
 nodes aren't co-located.
 
 ### Building your own
@@ -443,7 +465,7 @@ nodes aren't co-located.
   workspace). These commands generate a minimum-working `meta.yaml`
   + `templates/` tree that extends the recommended base templates.
   Full walk-through: the [Tiny Llama tutorial](./examples/tutorials/tiny_llama/README.md).
-- **[`examples/base_lm_project`](./examples/base_lm_project)** --
+- **[`examples/base_lm_project`](./examples/base_lm_project)** —
   a bare harness that drives the raw `projects/lm_training_project.yaml`
   template with no project-specific overrides. Useful for inspecting
   what the base template does on its own, and for debugging changes
