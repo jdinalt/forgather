@@ -9,7 +9,7 @@ only what changes.
 > 📚 **Documentation:** [forgather.readthedocs.io](https://forgather.readthedocs.io/en/latest/) or [docs/README.md](docs/README.md). New users should head straight to
 > **[Getting Started](./docs/getting-started/README.md)**.
 
-> 🖥️ **New: web UI.** Forgather now ships with a single-user web
+> 🖥️ **Web UI included.** Forgather ships with a single-user web
 > frontend over the same APIs the CLI uses — project browsing,
 > a GPU-aware job queue, live training monitoring with TTY, an in-browser editor with
 > Forgather-aware syntax highlighting, and an inference/chat client wired to
@@ -67,15 +67,12 @@ on v5 compatibility; we'll re-enable the integration once that lands.*
 
 - [Why Forgather?](#why-forgather)
 - [Key Benefits](#key-benefits)
+- [What's new](#whats-new)
 - [Quick Start](#quick-start)
 - [Key Features](#key-features)
 - [Core Concepts](#core-concepts)
 - [Learning Forgather](#learning-forgather)
 - [Featured Examples](#featured-examples)
-- [Command Overview](#command-overview)
-- [Project Structure](#project-structure)
-- [Development Setup](#development-setup)
-- [Contributing](#contributing)
 
 ## Quick Start
 
@@ -203,102 +200,47 @@ uses:
    `!factory` chain actually constructs, or to see how template
    overrides materialise.  Not used by training itself.
 
-### Built-in training infrastructure
+### Trainers, optimizers, precision
 
-- **`basic` trainer** -- single-GPU, the fast path for small-model experiments.
-- **`ddp` trainer** -- multi-GPU DistributedDataParallel, with optional
-  **PostLocalSGD** for reduced communication frequency.
-- **`fsdp2` trainer** -- FSDP-2 sharded data parallel, with configurable
-  parameter/reduce/buffer dtypes and CPU offload.
-- **`pipeline` trainer** -- pipeline parallelism. GPipe, 1F1B,
-  Interleaved-1F1B, and zero-bubble schedules, multi-stage support,
-  per-stage `torch.compile`. Designed for bandwidth-limited setups
-  (multi-node over Ethernet or consumer GPUs over PCIe).
-- **DiLoCo** -- distributed local SGD for very-low-bandwidth
-  multi-machine training. Sync and async modes, Delayed Nesterov
-  momentum, dynamic local-update adaptation. See
-  [`docs/trainers/diloco.md`](./docs/trainers/diloco.md).
-- **`AccelTrainer`** -- legacy Hugging Face Accelerate wrapper, kept
-  for a few older examples. Maintenance is low priority; prefer
-  `ddp` / `fsdp2` / `pipeline` for new work.
-- A small **Transformers-Trainer compatibility shim** also exists for
-  pre-Forgather-trainer scripts. Legacy; low priority.
+All first-class trainers — `basic` (single-GPU), `ddp` (with optional
+PostLocalSGD), `fsdp2` (FSDP-2 with configurable dtypes and CPU
+offload), `pipeline` (GPipe / 1F1B / Interleaved-1F1B / zero-bubble),
+and **DiLoCo** ([docs](./docs/trainers/diloco.md)) for very-low-
+bandwidth multi-machine training — share the same config surface, so
+swapping between them is a YAML override, not a rewrite. An
+`AccelTrainer` wrapper and a Transformers-Trainer compatibility shim
+also exist for legacy code.
 
-### Optimizers and precision
-
-- **Adafactor with bf16 stochastic rounding** *(the distinctive one)*
-  -- Forgather's Triton Adafactor combines factored second-moment
-  estimation with per-parameter SR applied to bf16 weight updates, in
-  a single fused kernel. Stochastic rounding is critical for
-  *pure-bf16* training (no fp32 master weights) -- without it,
-  small updates below the bf16 precision step are systematically
-  rounded to zero and the model's weight norms slowly drift.
-  To our knowledge this is the only Adafactor+SR implementation
-  available, and it runs faster in our tests than any other Adafactor
-  we've benchmarked.  File:
-  [`src/forgather/ml/optim/adafactor_triton.py`](./src/forgather/ml/optim/adafactor_triton.py).
-- **AdamW with SR** -- Forgather ships a stochastic-rounding AdamW
-  ([`src/forgather/ml/optim/adamw.py`](./src/forgather/ml/optim/adamw.py))
-  that makes a real difference in pure-bf16 runs, but if you want
-  quantized state on top of SR, prefer **`torchao.optim.AdamW4bit`**
-  (4-bit optimizer state, SR-enabled via `stochastic_rounding=True`).
-  Example config:
-  [`examples/finetune/samantha/templates/configs/llama3_1b/ddp_adam4bit.yaml`](./examples/finetune/samantha/templates/configs/llama3_1b/ddp_adam4bit.yaml).
-- **Apollo / Apollo-mini** ([arXiv:2412.05270](https://arxiv.org/abs/2412.05270))
-  -- low-rank gradient projection for SGD-level memory with
-  AdamW-level performance.  **Experimental** -- interesting for small
-  ablations and memory-constrained single-GPU runs, not
-  production-hardened.
-- **Other optimizers** -- SinkGD
-  ([arXiv:2502.06742](https://arxiv.org/abs/2502.06742), stateless
-  matrix normalization), SGD, Muon (see the optimizer-comparison
-  experiment), plus a regex-based `multiopt` helper for
-  per-parameter-group optimizer assignment.
-- **FP8 via torchao** -- adapters for `tensorwise` / `rowwise` /
-  `rowwise_with_gw_hp` recipes, orthogonal to bf16 mixed precision.
-- **Mixed precision** -- bf16 (default) and fp16 (with GradScaler);
-  TF32 matmul controls; SDPA backend selection (flash / mem-efficient
-  / math); FP8 via torchao (`tensorwise`, `rowwise`,
-  `rowwise_with_gw_hp` recipes).
-- **Learning-rate schedulers** -- Warmup-Stable-Decay, Cosine,
-  Infinite-LR, all with configurable warmup / decay budgets in tokens
-  or steps.
+On the optimizer side, the distinctive one is a fused **Triton
+Adafactor with per-parameter bf16 stochastic rounding** — to our
+knowledge the only Adafactor+SR implementation available, and faster
+than every other Adafactor we've benchmarked. SR matters for
+*pure-bf16* training (no fp32 master weights): without it, updates
+below the bf16 precision step round to zero and weight norms drift.
+A stochastic-rounding AdamW ships alongside; if you also want
+quantized state, `torchao.optim.AdamW4bit` works (see the
+[`adam4bit` config](./examples/finetune/samantha/templates/configs/llama3_1b/ddp_adam4bit.yaml)).
+Apollo / Apollo-mini (low-rank gradient projection, experimental),
+SinkGD, SGD, and Muon are also configurable, plus a regex-based
+`multiopt` helper for per-parameter-group assignment. Mixed precision
+covers bf16, fp16, and FP8-via-torchao (`tensorwise` / `rowwise` /
+`rowwise_with_gw_hp`); schedulers cover Warmup-Stable-Decay, Cosine,
+and Infinite-LR with token- or step-budgeted warmup/decay.
 
 ### Distributed checkpointing
 
-**Model parameters are HF-compatible.** The weight shards are written
-as a standard Hugging Face Safetensors layout (a `*.safetensors` shard
-set plus a `pytorch_model.bin.index.json` / `model.safetensors.index.json`
-manifest), not a bespoke Forgather format. That's the critical part:
-any tool that reads an HF checkpoint -- `transformers`, vLLM,
-llama.cpp conversion, remote eval harnesses -- can read the trained
-model. Combined with `forgather checkpoint link` (which symlinks the
-latest checkpoint's shards up into the model directory), a plain
-`AutoModelForCausalLM.from_pretrained("output_models/my_run")` works
-without `trust_remote_code` once the model has been converted to a
-canonical HF architecture via `forgather convert --reverse`.
-
-The *rest* of the checkpoint (optimizer state, LR-scheduler state,
-dataset iterator state, per-rank RNG state, trainer step counter,
-manifest) is Forgather-specific -- it has to be, since it encodes
-Forgather-specific trainer internals -- and is used only by Forgather
-itself for resume. So "zip and ship" to another framework is
-supported for the *model*; full-state resume is Forgather-only.
-
-The Forgather coordination layer sits *above* the on-disk format:
-**explicit state-sharing patterns**. Every checkpoint component
-declares whether it's `GLOBAL` (rank-0 only), `PER_RANK`,
-`REPLICATED` (across DDP replicas), `PER_GROUP` (within a PP / TP
-group), or `PER_NODE`. Coordination barriers and load paths are
-derived from those declarations, so pipeline-parallel and FSDP-2 runs
-checkpoint correctly without per-trainer custom code.
-
-Each checkpoint also writes a JSON manifest recording every
-component's size, sharing pattern, and origin ranks. Resume is
-partial by default (a missing optional component warns instead of
-failing). Optional **replication validation** (NONE / QUICK / TENSOR
-/ FULL) catches DDP-synchronisation bugs by hashing parameters across
-replicas post-save.
+Weight shards are written as a standard Hugging Face Safetensors
+layout, so `transformers`, vLLM, llama.cpp conversion, and remote
+eval harnesses all read the trained model directly. Sitting above
+the on-disk format, Forgather's coordination layer uses **explicit
+state-sharing patterns** (`GLOBAL` / `PER_RANK` / `REPLICATED` /
+`PER_GROUP` / `PER_NODE`) — every checkpoint component declares its
+sharing pattern and the trainer derives barriers and load paths from
+that, so pipeline-parallel and FSDP-2 runs checkpoint correctly
+without per-trainer custom code. Resume restores optimizer,
+scheduler, dataset iterator, RNG, and step counter; optional
+replication validation (`NONE` / `QUICK` / `TENSOR` / `FULL`) hashes
+parameters across replicas to catch DDP-sync bugs.
 
 See [`docs/checkpointing/`](./docs/checkpointing/) for the full
 abstraction.
