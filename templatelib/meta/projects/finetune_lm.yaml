@@ -31,8 +31,11 @@
 ##     you want it written elsewhere.
 ##
 ## Run as-is for a sane default fine-tune (Samantha-packed dataset,
-## flex_attention, AMP bf16, single-GPU basic trainer). Uncomment the
-## blocks below to tune.
+## flex_attention, AMP bf16, ``trainer_type = "basic"`` — single-process
+## training; the upstream's ``nproc_per_node = "gpu"`` default is forced
+## back to 1 by the basic-trainer branch in lm_training_project.yaml).
+## Set ns.trainer_type = "ddp" / "fsdp2" / "pipeline" below for the
+## multi-GPU paths.
 ##
 ## References:
 ##   docs/project-templates/lm-training-projects.md   (full knob reference)

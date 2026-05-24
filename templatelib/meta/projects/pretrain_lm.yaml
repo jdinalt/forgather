@@ -37,6 +37,12 @@
     ## Defaults from the base:
     ##   dataset_proj   = examples/datasets/HuggingFaceTB
     ##   dataset_config = smollm-corpus/fineweb-edu-packed.yaml
+    ##
+    ## The override below switches to the SmolLM-corpus *interleaved*
+    ## packed variant (FineWeb-Edu + Cosmopedia + Python-Edu interleaved
+    ## by source). Uncomment if you want a more diverse training
+    ## distribution; leave commented to keep the FineWeb-Edu-only
+    ## default.
     ## -----------------------------------------------------------------------
     ## -- set ns.dataset_proj = abspath(joinpath(ns.forgather_dir, "examples", "datasets", "HuggingFaceTB"))
     ## -- set ns.dataset_config = "smollm-corpus/interleaved-packed.yaml"
