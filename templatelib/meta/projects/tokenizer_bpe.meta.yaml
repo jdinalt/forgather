@@ -1,0 +1,56 @@
+title: "Tokenizer (BPE)"
+summary: "Train a byte-level BPE tokenizer on a HuggingFace dataset."
+description: |
+  Generates the default config for a tokenizer project that trains a
+  byte-level BPE tokenizer (the framework's default tokenizer type) on
+  a HuggingFace dataset and saves it as a `PreTrainedTokenizerFast`.
+
+  Inherits from `tokenizers/bpe/bpe.yaml`, which wires the full
+  tokenizers-library pipeline — BPE model with byte_fallback, NFC
+  normalizer, ByteLevel pre-tokenizer/decoder, BpeTrainer, and a
+  TemplateProcessing post-processor that prepends BOS to every encoded
+  sequence. You override the dataset; everything else has sensible
+  defaults. Vocab size, max sequence length, additional special tokens
+  (ChatML / instruction markers), and the dataset feature column all
+  live as commented examples in the body.
+
+  In-repo references: `examples/tokenizers/wikitext` and
+  `examples/tokenizers/tiny_stories_bpe`.
+
+  Other tokenizer types (WordPiece / Unigram / etc.) follow the same
+  shape — swap the `[tokenizer_trainer]` block's `model:`, `trainer:`,
+  `decoder:`, and `pre_tokenizer:` for the corresponding
+  `tokenizers`-library classes. The body's closing note shows the BPE
+  shape so a non-BPE author has the reference template to fork from.
+target_kind: "config"
+fields:
+  - name: CONFIG_NAME
+    label: "Config name"
+    description: "Short label shown in `forgather ls` listings."
+    placeholder: "Wikitext BPE"
+    required: true
+  - name: DESCRIPTION
+    label: "Description"
+    description: "One-line description, shown in `forgather ls`."
+    required: true
+  - name: TOKENIZER_SHORT_NAME
+    label: "Tokenizer short name"
+    description: |
+      Output-directory name (under `tokenizers/`) and the saved
+      tokenizer's identity. Lowercase letters / digits / underscores;
+      typically reflects the dataset + size, e.g. `wikitext_32k`,
+      `tiny_stories_8k`. The leaf-size-config pattern overrides this
+      per size.
+    placeholder: "wikitext"
+    required: true
+  - name: DATASET_ID
+    label: "Training dataset id"
+    description: |
+      HuggingFace dataset id (e.g. `roneneldan/TinyStories`,
+      `EleutherAI/wikitext_document_level`), a dataset-server local
+      mapping (`local/<name>`), or anything `datasets.load_dataset(arg0)`
+      accepts. For datasets with multiple configs (HF `name=`) or
+      non-default split / streaming, edit the rendered body's
+      `[tokenizer_dataset]` block directly.
+    placeholder: "roneneldan/TinyStories"
+    required: true
