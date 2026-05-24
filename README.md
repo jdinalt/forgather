@@ -1,10 +1,19 @@
 # Forgather ML
 
-Forgather is a configuration-driven ML framework that uses template
-inheritance and code generation to eliminate configuration duplication
-and enable systematic experimentation. Instead of copying and modifying
-entire training scripts, you inherit from base templates and specify
-only what changes.
+**Forgather is a training framework for language-model experiments on
+hardware you actually own** — a single 24 GB GPU, two consumer cards
+sharing a desktop's PCIe bus, or a few boxes linked by 1 Gbit Ethernet.
+Full-parameter fine-tune a 7B model at **53 K context on one RTX
+3090/4090**, pretrain across two machines that DDP and FSDP would
+choke on, or sweep ten optimizers on a 30M model overnight. Under the
+hood it's configuration-driven (template inheritance, no
+fork-the-training-script sprawl); the headline is what fits on your
+GPUs.
+
+Common tasks: pretrain Llama / Mistral / Qwen3 / Gemma-3 from scratch,
+fine-tune the same on consumer hardware, run scaling-law and optimizer
+ablations, develop custom model architectures, train across LAN-linked
+machines without InfiniBand.
 
 > 📚 **Documentation:**
 > [forgather.readthedocs.io](https://forgather.readthedocs.io/en/latest/)
@@ -24,11 +33,11 @@ only what changes.
 
 ## Why Forgather?
 
-Most research ML codebases accrete: one training script becomes ten
-training scripts, each a near-copy of the others with subtle
-differences. Every variation is expensive to try. Small bugs — a loss
-function wired wrong, a scheduler silently reset on resume, a CLI flag
-that didn't actually reach the tokenizer — hide across forks.
+Most training scripts fork. You copy `train.py` to try a thing; six
+months later you have ten near-identical scripts, and the small bugs
+— a loss function wired wrong, a scheduler silently reset on resume,
+a CLI flag that didn't actually reach the tokenizer — hide across the
+forks. Every variation gets expensive to try.
 
 A Forgather project config extends a parent; both are plain YAML
 with Jinja2 preprocessing. Every override is named and explicit, so a
@@ -37,61 +46,75 @@ knob — not as a buried fork waiting to bite three months later.
 
 ## Key Benefits
 
+- **Full fine-tunes on a single 24 GB GPU.** Full-parameter (not LoRA)
+  fine-tuning of 7B models at ~53 K context on one RTX 3090 / 4090 /
+  5090 via gradient checkpointing, CPU activation offload, fused
+  optimizer step, fused linear+cross-entropy loss, and packed
+  sequences + Flex Attention.
+- **Train across the boxes you have.** Pipeline-parallel and DiLoCo
+  trainers need [dramatically less cross-device communication](./docs/guides/multi-node-training.md)
+  than DDP or FSDP — Forgather has trained a 7B model across two
+  desktops linked only by 1 Gbit Ethernet, and the same design avoids
+  the PCIe stalls FSDP hits on consumer hardware.
+- **Multi-node without a cluster admin.** `forgather server --cluster
+  <name>` puts a node into cluster mode; peers find each other over
+  mDNS on the LAN, `forgather cluster submit` fans a training bundle
+  across selected hosts/GPUs, and a cluster-shared dataset server
+  gives every peer a unified view of registered datasets with O(1)
+  stateful resume. mTLS between peers.
 - **No config duplication.** Inherit from a base template and
   override only what changes — types are hyperparameters too, swap
   optimizers, models, or trainers in YAML via `!partial` / `!factory`
   / `!singleton` with no Python edits.
 - **Standalone, framework-portable models.** Each run writes the
   equivalent PyTorch source into `output_models/`, loadable by plain
-  `AutoModelForCausalLM` (or convertible to a canonical HF Llama /
-  Mistral / Qwen3 / Gemma-3 checkpoint).
-- **Pipeline parallelism for bandwidth-limited setups.** Dramatically
-  less cross-device communication than DDP or FSDP — Forgather has
-  trained a 7B model across two machines linked only by 1 Gbit
-  Ethernet.
-- **Low-memory training suite.** Full-parameter (not LoRA) finetuning
-  of 7B models at ~53 K context on a single 24 GB GPU.
+  `AutoModelForCausalLM`. Or run `forgather convert --reverse` to
+  emit a canonical HF Llama / Mistral / Qwen3 / Gemma-3 checkpoint,
+  from which llama.cpp's `convert_hf_to_gguf.py` produces a GGUF for
+  llama.cpp / ollama / LM Studio.
 - **Live job control + GPU-aware web UI.** Save, stop, or abort
   running training jobs from another shell, coordinated across DDP /
   FSDP-2 / pipeline workers; the web frontend drops `▶ Run` jobs into
   a priority + GPU-policy queue with live TTY and an in-browser chat
   client.
-- **Multi-node out of the box.** `forgather server --cluster <name>`,
-  mDNS peer discovery, a `forgather cluster submit` fan-out CLI, and
-  a cluster-shared dataset server with O(1) stateful resume.
 - **HF-compatible distributed checkpoints.** Standard Safetensors
-  shards readable by `transformers`, vLLM, and llama.cpp; explicit
-  state-sharing patterns above the on-disk format so PP / FSDP-2 runs
-  checkpoint correctly without per-trainer custom code.
+  shards readable by `transformers`, vLLM, and the llama.cpp
+  converter; explicit state-sharing patterns above the on-disk format
+  so PP / FSDP-2 runs checkpoint correctly without per-trainer custom
+  code.
 
-## What's new
+### Where does Forgather fit?
 
-> ⚠️ **Heads up.** vLLM integration is currently broken — Forgather
-> has moved to Transformers v5, which vLLM does not yet support.
-> Upstream is working on v5 compatibility; the integration will be
-> re-enabled once that lands.
+If LoRA / QLoRA is what you need, [axolotl](https://github.com/axolotl-ai-cloud/axolotl)
+and [unsloth](https://github.com/unslothai/unsloth) are great starting
+points — Forgather doesn't ship a LoRA path today. Forgather's bet is
+that full-parameter training of 7B-class models is now feasible on a
+single consumer GPU and gives better-quality results, and that the
+hard problems are *training-side* — multi-GPU coordination, pipeline
+schedules, multi-node over Ethernet, optimizer / precision research,
+custom architectures, reproducible experiments — rather than
+inference-side fine-tuning UX. If those are your problems, Forgather
+is closer to what you want than the LoRA-first tools.
 
-**Latest release: [1.2.0](./docs/release-notes/v1.2.0.md) (May 2026).**
-Headline is **multi-node training**: `forgather server --cluster <name>`
-puts a node into cluster mode, peers discover each other over mDNS,
-and a new `forgather cluster` CLI plus a Cluster panel in the web UI
-fan training bundles across selected hosts/GPUs. Native TLS / mTLS,
-a cluster-shared **dataset server** with O(1) resume, in-place server
-restart, a distributable runtime Docker image, and DGX Spark (GB10,
-aarch64) as a first-class cluster member. Multi-node guide:
-[`docs/guides/multi-node-training.md`](./docs/guides/multi-node-training.md).
+### Hardware
 
-For the full timeline (pre-1.2.0 highlights: web UI, sharded-checkpoint
-abstraction, Triton Adafactor, fused linear-CE, model conversion,
-packed sequences + Flex Attention, …) see
-[`docs/release-notes/`](./docs/release-notes/README.md).
+- **Tested on** NVIDIA consumer cards (RTX 3090 / 4090 / 5090), 4× /
+  6× 4090 boxes, data-center cards, and DGX Spark (GB10, aarch64).
+- **Minimum useful config** for LM work: one 24 GB GPU. The 7B-at-53K
+  finetune fits a single 3090.
+- **Multi-node:** any LAN ≥ 1 Gbit works for pipeline-parallel or
+  DiLoCo. NVLink / InfiniBand are *not* required.
+- **CUDA-only today.** AMD / ROCm and Apple Silicon may work
+  (Forgather avoids hard CUDA dependencies where possible) but are
+  not tested, so treat them as experimental. ROCm contributions
+  welcome.
 
 ## Table of Contents
 
 - [Why Forgather?](#why-forgather)
 - [Key Benefits](#key-benefits)
-- [What's new](#whats-new)
 - [Quick Start](#quick-start)
+- [What's new](#whats-new)
 - [Key Features](#key-features)
 - [Core Concepts](#core-concepts)
 - [Learning Forgather](#learning-forgather)
@@ -148,6 +171,28 @@ covers the same Tiny Llama flow end-to-end through the web UI: install,
 build the SPA, queue the training job, watch it run, then chat with the
 trained model from the in-browser inference panel.
 
+## What's new
+
+> ⚠️ **Heads up.** vLLM integration is currently broken — Forgather
+> has moved to Transformers v5, which vLLM does not yet support.
+> Upstream is working on v5 compatibility; the integration will be
+> re-enabled once that lands.
+
+**Latest release: [1.2.0](./docs/release-notes/v1.2.0.md) (May 2026).**
+Headline is **multi-node training**: `forgather server --cluster <name>`
+puts a node into cluster mode, peers discover each other over mDNS,
+and a new `forgather cluster` CLI plus a Cluster panel in the web UI
+fan training bundles across selected hosts/GPUs. Native TLS / mTLS,
+a cluster-shared **dataset server** with O(1) resume, in-place server
+restart, a distributable runtime Docker image, and DGX Spark (GB10,
+aarch64) as a first-class cluster member. Multi-node guide:
+[`docs/guides/multi-node-training.md`](./docs/guides/multi-node-training.md).
+
+For the full timeline (pre-1.2.0 highlights: web UI, sharded-checkpoint
+abstraction, Triton Adafactor, fused linear-CE, model conversion,
+packed sequences + Flex Attention, …) see
+[`docs/release-notes/`](./docs/release-notes/README.md).
+
 ## Key Features
 
 ### Template inheritance
@@ -191,37 +236,19 @@ layer_factory: &layer_factory !partial:.post_ln_layer:PostLNLayer@layer_factory
 See [Syntax Reference](./docs/configuration/syntax-reference.md) for
 the full list of line statements and YAML tags.
 
-### Code generation (export, not an interpreter step)
+### Model source export
 
-**At runtime Forgather materialises the parsed node graph directly
-into Python objects — no intermediate code-generation phase is
-involved.** Python-source export is a separate function with two
-uses:
+When you construct a model for the first time, Forgather writes the
+equivalent standalone PyTorch source into the run's output directory.
+The generated code has no Forgather dependency: any HF-compatible
+consumer (`transformers`, vLLM, llama.cpp via `convert_hf_to_gguf.py`,
+etc.) can load the model with `trust_remote_code=True`. If you want
+plain-HF weights without `trust_remote_code`, run `forgather convert
+--reverse --model-type {llama,mistral,qwen3,gemma3_text} <src> <dst>`.
 
-1. **Custom model source.** When you construct a model for the first
-   time, Forgather writes the equivalent Python source into the
-   training run's output directory. The generated code has no
-   Forgather dependency: any HF-compatible consumer (`transformers`,
-   vLLM, etc.) can load the model without Forgather installed. This
-   is what `trust_remote_code=True` resolves.
-
-   ```python
-   from transformers import AutoModelForCausalLM
-   model = AutoModelForCausalLM.from_pretrained(
-       "output_models/v2",
-       trust_remote_code=True,
-   )
-   ```
-
-   If you want plain-HF weights without `trust_remote_code`, convert
-   via `forgather convert --reverse --model-type llama <src> <dst>`.
-   The converter supports Llama, Mistral, Qwen3, and Gemma-3.
-
-2. **Config debugging / pedagogy.** `forgather code --target X`
-   prints the Python equivalent of any node in your config graph —
-   useful when you want to understand what a complex `!partial` /
-   `!factory` chain actually constructs, or to see how template
-   overrides materialise. Not used by training itself.
+`forgather code --target X` prints the Python equivalent of any node
+in the config graph — useful when you want to see what a `!partial` /
+`!factory` chain actually constructs.
 
 ### Trainers, optimizers, precision
 
