@@ -119,10 +119,68 @@ def _pid_alive(pid: Optional[int]) -> bool:
     ``os.kill(pid, 0)``); operators who hit the no-psutil path saw
     inconsistent live-ness reporting between the Jobs view and the
     scheduler's reap loop.
+
+    Note: this is *not* PID-reuse aware. Callers that have a known
+    process-start timestamp (e.g. an endpoint's ``started_at``) should
+    use :func:`_endpoint_is_live` so a recycled pid from a prior boot
+    doesn't masquerade as the original owner.
     """
     if pid is None:
         return False
     return scheduler._pid_is_alive(pid)
+
+
+# A few seconds of slack: ``psutil.Process.create_time()`` is rounded
+# and the trainer writes ``started_at`` to its endpoint.json a moment
+# after fork. Same value used by ``scheduler._reattach_or_cleanup_on_startup``.
+_ENDPOINT_PID_REUSE_SLACK_SECONDS = 10.0
+
+
+def _endpoint_is_live(ep: trainer_control.JobInfo) -> bool:
+    """True iff ``ep``'s PID still refers to the trainer that wrote it.
+
+    A bare ``_pid_alive`` check is wrong for externally-discovered
+    endpoint files: after a host reboot the kernel resets the pid
+    space, and the pid recorded in a leftover ``endpoint.json`` may
+    well be in use by an unrelated daemon in the new boot. Treating
+    that ghost as "running" makes it surface in the Jobs view as a
+    phantom job the operator cannot evict — :func:`remove_job`
+    refuses to rmtree endpoint dirs for "live" trainers, so the
+    stale entry is locked in until someone cleans the dir by hand.
+
+    Guard against that by comparing the live process's ``create_time``
+    against the endpoint's ``started_at``. If the live process is
+    younger than the endpoint, the pid has been recycled; the old
+    trainer is gone. Same pattern as
+    :func:`scheduler._reattach_or_cleanup_on_startup` and the CLI's
+    ``forgather control cleanup``.
+    """
+    if ep.pid is None:
+        return False
+    try:
+        import psutil
+    except ImportError:
+        # No psutil: we can detect "pid is gone" via os.kill(pid, 0),
+        # but we cannot detect pid reuse. Be optimistic — matches the
+        # behaviour of the bare _pid_alive fallback. Operators who hit
+        # the no-psutil path also miss the same guard in the scheduler.
+        return scheduler._pid_is_alive(ep.pid)
+    try:
+        p = psutil.Process(ep.pid)
+        if not p.is_running() or p.status() == psutil.STATUS_ZOMBIE:
+            return False
+        started_at = getattr(ep, "started_at", None)
+        if started_at is None:
+            return True
+        try:
+            create_time = p.create_time()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return False
+        if create_time > started_at + _ENDPOINT_PID_REUSE_SLACK_SECONDS:
+            return False
+        return True
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
 
 
 def _record_to_model(
@@ -203,7 +261,7 @@ def _record_to_model(
 
 
 def _endpoint_to_model(ep: trainer_control.JobInfo) -> JobModel:
-    alive = _pid_alive(ep.pid)
+    alive = _endpoint_is_live(ep)
     return JobModel(
         id=ep.job_id,
         job_id=ep.job_id,
@@ -524,7 +582,7 @@ def remove_job(job_id: str):
     ep = _find_endpoint_by_id(job_id)
     if ep is None:
         raise HTTPException(status_code=404, detail=f"no record for {job_id}")
-    if _pid_alive(ep.pid):
+    if _endpoint_is_live(ep):
         raise HTTPException(
             status_code=409,
             detail=(
