@@ -210,3 +210,6 @@ nav:
     - Integration Testing: development/integration-testing.md
     - Git Hooks: development/git-hooks.md
     - Known Bugs: development/bugs.md
+  - Release Notes:
+    - Overview: release-notes/README.md
+    - "1.2.0": release-notes/v1.2.0.md
