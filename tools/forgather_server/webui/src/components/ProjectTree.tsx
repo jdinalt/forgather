@@ -26,7 +26,20 @@ type ConfigAction =
   | "tensorboard"
   | "edit"
   | "duplicate"
+  | "cut"
+  | "copy"
+  | "paste"
+  | "reveal"
   | "delete";
+
+interface ConfigClipboard {
+  /** Absolute file path of the source config. */
+  path: string;
+  /** Display name to show in menu items ("Paste 'foo.yaml'"). */
+  name: string;
+  /** Cut clears the clipboard after the paste; Copy keeps it. */
+  mode: "cut" | "copy";
+}
 
 interface ContextTarget {
   project: ProjectInfo;
@@ -106,6 +119,9 @@ interface Props {
   /** Bubble the submitted job's queue id to App so it can decide whether
    *  to switch to the Jobs view + auto-open the TTY. */
   onJobSubmitted?: (queueId: string) => void;
+  /** Expand the sidebar Files tree to the given path and highlight the
+   *  row. Wired by App.tsx to the corresponding ``FilesTree`` prop. */
+  onRevealInFiles?: (path: string) => void;
 }
 
 export function ProjectTree({
@@ -115,6 +131,7 @@ export function ProjectTree({
   setSelection,
   onEditTemplate,
   onJobSubmitted,
+  onRevealInFiles,
 }: Props) {
   const qc = useQueryClient();
   const projectsQ = useQuery({
@@ -125,6 +142,9 @@ export function ProjectTree({
   const [contextTarget, setContextTarget] = useState<ContextTarget | null>(null);
   const [ckptMenuTarget, setCkptMenuTarget] = useState<CheckpointMenuTarget | null>(null);
   const [leafMenuTarget, setLeafMenuTarget] = useState<LeafMenuTarget | null>(null);
+  // Config-level clipboard for Cut/Copy/Paste of config files. Lives at
+  // the panel level so a Cut from one project can paste into another.
+  const [configClipboard, setConfigClipboard] = useState<ConfigClipboard | null>(null);
   const [groupMenuTarget, setGroupMenuTarget] = useState<GroupMenuTarget | null>(null);
   const [projectMenuTarget, setProjectMenuTarget] =
     useState<ProjectMenuTarget | null>(null);
@@ -303,11 +323,70 @@ export function ProjectTree({
       void duplicateConfig(target.project, target.config);
       return;
     }
+    if (action === "cut") {
+      setConfigClipboard({
+        path: target.config.path,
+        name: target.config.name,
+        mode: "cut",
+      });
+      return;
+    }
+    if (action === "copy") {
+      setConfigClipboard({
+        path: target.config.path,
+        name: target.config.name,
+        mode: "copy",
+      });
+      return;
+    }
+    if (action === "paste") {
+      const parent =
+        target.config.path.split("/").slice(0, -1).join("/") || "/";
+      void pasteConfig(target.project, parent);
+      return;
+    }
+    if (action === "reveal") {
+      onRevealInFiles?.(target.config.path);
+      return;
+    }
     setActiveModal({
       action,
       project: target.project,
       config: target.config,
     });
+  };
+
+  /** Common paste handler. ``destParent`` is the absolute directory the
+   *  config should land in — the parent of the right-clicked config (or
+   *  the project's configs dir when pasted onto the project header).
+   *  Cut moves the file and clears the clipboard; Copy auto-renames on
+   *  collision (same as the Files-tree clipboard semantics). */
+  const pasteConfig = async (project: ProjectInfo, destParent: string) => {
+    if (!configClipboard) return;
+    const src = configClipboard.path;
+    try {
+      if (configClipboard.mode === "cut") {
+        await api.fsMove(src, destParent);
+        setConfigClipboard(null);
+      } else {
+        await api.fsCopy(src, destParent, { autoRename: true });
+      }
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({
+        queryKey: ["project-templates", project.project_dir],
+      });
+      const srcParent = src.split("/").slice(0, -1).join("/") || "/";
+      qc.invalidateQueries({
+        queryKey: ["fs-browse", srcParent],
+        exact: false,
+      });
+      qc.invalidateQueries({
+        queryKey: ["fs-browse", destParent],
+        exact: false,
+      });
+    } catch (e) {
+      alert(`Paste failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   };
 
   /** Right-click "Duplicate Config…" — prompts for a new filename
@@ -536,6 +615,8 @@ export function ProjectTree({
           <ConfigContextMenuItems
             project={contextTarget.project}
             config={contextTarget.config}
+            clipboard={configClipboard}
+            showReveal={!!onRevealInFiles}
             onChoose={choose}
             onChooseServeEval={chooseServeEval}
           />
@@ -670,6 +751,18 @@ export function ProjectTree({
               onEditTemplate(path);
             }}
           />
+          {onRevealInFiles && (
+            <button
+              onClick={() => {
+                const root = workspaceMenuTarget.workspace.workspace_root;
+                setWorkspaceMenuTarget(null);
+                onRevealInFiles(root);
+              }}
+              title={workspaceMenuTarget.workspace.workspace_root}
+            >
+              🔍 Reveal in Files
+            </button>
+          )}
           <button
             className="context-menu-destructive"
             onClick={() => {
@@ -708,6 +801,29 @@ export function ProjectTree({
           >
             📄 New Template…
           </button>
+          {configClipboard &&
+            projectMenuTarget.project.configs.length > 0 && (
+              <button
+                onClick={() => {
+                  // Derive the configs_dir from any existing config's
+                  // path. A project without configs doesn't get the
+                  // option — we'd need an async fetch of
+                  // projectTemplatePaths to know where to paste, and
+                  // skipping this case keeps the menu sync.
+                  const project = projectMenuTarget.project;
+                  const cfgsDir =
+                    project.configs[0].path
+                      .split("/")
+                      .slice(0, -1)
+                      .join("/") || "/";
+                  setProjectMenuTarget(null);
+                  void pasteConfig(project, cfgsDir);
+                }}
+                title={`Paste ${configClipboard.name} into this project's configs directory`}
+              >
+                📋 Paste ({configClipboard.name})
+              </button>
+            )}
           <EditFileMenuItem
             path={
               projectMenuTarget.project.project_dir.replace(/\/+$/, "") +
@@ -730,6 +846,18 @@ export function ProjectTree({
               onEditTemplate(path);
             }}
           />
+          {onRevealInFiles && (
+            <button
+              onClick={() => {
+                const dir = projectMenuTarget.project.project_dir;
+                setProjectMenuTarget(null);
+                onRevealInFiles(dir);
+              }}
+              title={projectMenuTarget.project.project_dir}
+            >
+              🔍 Reveal in Files
+            </button>
+          )}
           <button
             className="context-menu-destructive"
             onClick={() => {
@@ -926,11 +1054,15 @@ function SubmitModalRouter({
 function ConfigContextMenuItems({
   project,
   config,
+  clipboard,
+  showReveal,
   onChoose,
   onChooseServeEval,
 }: {
   project: ProjectInfo;
   config: ConfigInfo;
+  clipboard: ConfigClipboard | null;
+  showReveal: boolean;
   onChoose: (action: ConfigAction) => void;
   onChooseServeEval: (
     action: "serve" | "eval" | "convert" | "finalize" | "update",
@@ -1031,6 +1163,25 @@ function ConfigContextMenuItems({
       >
         ⎘ Duplicate Config…
       </button>
+      <button onClick={() => onChoose("cut")} title={config.path}>
+        ✂ Cut
+      </button>
+      <button onClick={() => onChoose("copy")} title={config.path}>
+        ❏ Copy
+      </button>
+      {clipboard && (
+        <button
+          onClick={() => onChoose("paste")}
+          title={`Paste ${clipboard.name} into this config's directory`}
+        >
+          📋 Paste ({clipboard.name})
+        </button>
+      )}
+      {showReveal && (
+        <button onClick={() => onChoose("reveal")} title={config.path}>
+          🔍 Reveal in Files
+        </button>
+      )}
       <button
         className="context-menu-destructive"
         onClick={() => onChoose("delete")}

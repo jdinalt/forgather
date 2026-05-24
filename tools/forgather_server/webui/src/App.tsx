@@ -284,6 +284,18 @@ export default function App() {
   const [searchRootsOpen, setSearchRootsOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
+  // Reveal-in-Files plumbing. ProjectTree's "Reveal in Files" menu
+  // item calls revealInFiles(path); we forward a {path, nonce} to
+  // FilesTree, which expands ancestors and selects the row. The nonce
+  // lets the same path be revealed twice in a row — equality on path
+  // alone wouldn't fire useEffect a second time.
+  const [revealRequest, setRevealRequest] = useState<
+    { path: string; nonce: number } | null
+  >(null);
+  const revealInFiles = useCallback((path: string) => {
+    setFilesOpen(true);
+    setRevealRequest({ path, nonce: Date.now() });
+  }, []);
   const [viewsOpen, setViewsOpen] = useState(true);
   // Cluster sidebar group — collapsed by default to keep the sidebar
   // tidy on first paint; hidden entirely when standalone.
@@ -1228,6 +1240,7 @@ export default function App() {
                 setSelection={setSelectionAndGoToProjects}
                 onEditTemplate={openFileForEdit}
                 onJobSubmitted={onJobSubmitted}
+                onRevealInFiles={revealInFiles}
               />
             </div>
           </details>
@@ -1246,6 +1259,7 @@ export default function App() {
                 onOpenFile={openFileForEdit}
                 onDropPath={filesApi.dropPath}
                 onOpenDoc={openDocs}
+                revealRequest={revealRequest}
               />
             </div>
           </details>

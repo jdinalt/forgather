@@ -2995,6 +2995,14 @@ li.config.selected button.link:hover {
 .files-tree-file-btn:hover {
   background: var(--bg-alt);
 }
+/* Reveal-in-Files selection highlight — applied to leaf file buttons,
+   directory <summary> rows, and the search-root <summary>. */
+.files-tree-file-btn.selected,
+.files-tree-dir > details > summary.selected,
+.files-tree-root > summary.selected {
+  background: var(--accent-soft, rgba(0, 100, 200, 0.18));
+  outline: 1px solid var(--accent, rgba(0, 100, 200, 0.6));
+}
 .files-tree-status {
   padding: 2px 4px 2px 16px;
   font-size: 11px;
