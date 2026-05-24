@@ -27,6 +27,40 @@ export interface WorkspaceCluster {
   projects: ProjectInfo[];
 }
 
+export interface MetaField {
+  name: string;
+  label: string;
+  description: string;
+  placeholder: string;
+  default: string | null;
+  required: boolean;
+  /** Optional specialised picker kind. When non-empty the field input
+   *  gets a "Browse…" button that opens the matching popover (currently
+   *  the only supported kind is ``"local_dataset"``). */
+  picker: string;
+}
+
+export interface MetaTemplate {
+  id: string;
+  title: string;
+  /** Short one-liner shown in the picker tree; falls back to `description`
+   *  when blank, so older manifests that only set one field still render. */
+  summary: string;
+  /** Full text shown in the detail panel when the leaf is selected. */
+  description: string;
+  target_kind: "config" | "template";
+  fields: MetaField[];
+}
+
+export interface MetaCategory {
+  name: string;
+  title: string;
+  summary: string;
+  description: string;
+  templates: MetaTemplate[];
+  children: MetaCategory[];
+}
+
 export interface ConfigMeta {
   name: string | null;
   description: string | null;
@@ -1180,6 +1214,8 @@ export const api = {
     default_config?: string;
     project_dir_name?: string | null;
     copy_from?: string | null;
+    meta_template?: string | null;
+    values?: Record<string, string> | null;
   }): Promise<{ project_dir: string }> => {
     const r = await fetch("/api/workspace/new-project", {
       method: "POST",
@@ -1201,11 +1237,20 @@ export const api = {
     project_dir: string,
     kind: "config" | "template",
     name: string,
+    opts?: {
+      meta_template?: string;
+      values?: Record<string, string>;
+    },
   ): Promise<{ path: string }> => {
+    const body: Record<string, unknown> = { project_dir, kind, name };
+    if (opts?.meta_template) {
+      body.meta_template = opts.meta_template;
+      body.values = opts.values ?? {};
+    }
     const r = await fetch("/api/project/new-template", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_dir, kind, name }),
+      body: JSON.stringify(body),
     });
     if (!r.ok) {
       let detail = await r.text();
@@ -1218,6 +1263,8 @@ export const api = {
     }
     return r.json();
   },
+  listMetaTemplates: () =>
+    fetchJson<MetaCategory[]>(`/api/project/meta-templates`),
   putTemplateSource: async (
     path: string,
     content: string,

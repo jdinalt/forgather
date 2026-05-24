@@ -1,0 +1,61 @@
+## ===========================================================================
+## Evaluation config — entry-point file.
+##
+## Names a dataset (project + config) to evaluate on, plus defaults for
+## batch size / max length / stride. Pure metadata — no tokenizer / model
+## / dataset / collator / trainer is constructed here. The actual loading
+## and evaluation happens at `forgather eval test` time:
+##
+##   scripts/eval_script.py loads the tokenizer from --model, materialises
+##   the named dataset project, builds the data collator, and hands
+##   everything to the chosen trainer (ddp / simple / pipeline).
+##
+## Inherits from test/test_type.yaml. The `config_class` is set to
+## `type.evaluation`, which is how `forgather eval list` / `show`
+## discovers these configs.
+##
+## A single eval *project* can host many of these configs as sibling
+## leaves under templates/configs/ (one per dataset / split / setting);
+## see examples/evaluation/common/templates/configs/ for the reference
+## shape — c4.yaml, openorca.yaml, openassistant.yaml,
+## fineweb-edu-dedup.yaml, tinystories.yaml are all near-identical
+## ~10-line files. New leaves can be created via the **New Config**
+## menu inside the project, then edited to point at a different dataset.
+##
+## References:
+##   docs/guides/evaluating-models.md           (forgather eval CLI)
+##   templatelib/base/test/test_type.yaml       (base — TestConfig fields)
+##   examples/evaluation/common                 (reference eval project)
+## ===========================================================================
+
+-- extends "test/test_type.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "$CONFIG_NAME"
+    -- set ns.config_description = "$DESCRIPTION"
+    ## Short id surfaced in `forgather eval list` / `show` and in the
+    ## webui's eval picker. Lowercase, no spaces — typically the dataset
+    ## name (`c4`, `openorca`, `fineweb-edu-dedup`).
+    -- set ns.eval_name = "$EVAL_NAME"
+
+[main_body]
+    == super()
+    ## ---- Required: which dataset to evaluate on ----
+    ##
+    ## ``dataset_proj`` is the absolute path to a dataset project (the
+    ## directory containing meta.yaml). The defaults below match the
+    ## reference eval project; swap in your own dataset by changing the
+    ## last path segment.
+    dataset_proj: "$DATASET_PROJECT"
+    dataset_config: "$DATASET_CONFIG"
+
+    ## ---- Optional: per-eval defaults ----
+    ##
+    ## These provide defaults the webui's Evaluate modal pre-fills (the
+    ## user can still override at runtime). Useful for evals that need
+    ## a specific batch size or sequence length to be comparable across
+    ## models / runs.
+    ## default_batch_size: 8
+    ## default_max_length: 2048
+    ## default_stride: 0

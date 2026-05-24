@@ -1,0 +1,5 @@
+title: "Tokenizers"
+summary: "Tokenizer-training projects."
+description: |
+  Scaffolds for tokenizer projects — train a tokenizer on a dataset
+  and save it as a HuggingFace `PreTrainedTokenizerFast`.

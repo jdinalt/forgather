@@ -1,0 +1,46 @@
+title: "From scratch"
+summary: "Dynamic model assembled from the Forgather bits library."
+description: |
+  Generates the default config for a model project that defines its own
+  architecture by wiring up each "bit" (feedforward, attention, layer,
+  layer_stack, embedding, positional encoding, init, loss, mask)
+  explicitly — without inheriting from the Llama topology. Inherits
+  from `models/causal_lm/custom_dynamic.yaml`, the bare bits-driven
+  base.
+
+  The rendered file is the *recommended* shape for a new architecture
+  in the framework. The Llama-derived scaffold inherits the Llama topology
+  (pre-LN + RMSNorm + GLU + RoPE + GQA) which is fine when you want a
+  Llama variant; this scaffold gives you the same explicit-bits layout
+  with vanilla post-LN / sinusoidal-PE / standard MHA defaults instead.
+  Swap individual bits as your architecture evolves; drop custom Python
+  into the project's `modelsrc/` directory and point at it from the
+  matching block.
+
+  Closest in-repo reference project: `examples/models/singlehead/`,
+  which adds a custom single-head ALiBi attention module under
+  `modelsrc/` and overrides the corresponding factory block.
+
+  Each factory block in the rendered body has a comment explaining what
+  it does and the most common swaps; the header lists every bit available
+  in `modelsrc/transformer/` so you don't have to grep the source to
+  discover them.
+target_kind: "config"
+fields:
+  - name: CONFIG_NAME
+    label: "Config name"
+    description: "Short label shown in `forgather ls` listings."
+    placeholder: "Default"
+    required: true
+  - name: DESCRIPTION
+    label: "Description"
+    description: "One-line description, shown in `forgather ls`."
+    required: true
+  - name: MODEL_SHORT_NAME
+    label: "Model short name"
+    description: |
+      Used in code-generation filenames, the HF `model_type` for saved
+      models, and the project's saved-model directory naming. Lowercase
+      letters / digits / underscores.
+    placeholder: "my_arch"
+    required: true

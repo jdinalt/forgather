@@ -1,0 +1,157 @@
+## ============================================================================
+## Packed dataset config.
+##
+## This template gives you a tour of every knob you might want for a
+## tokenized + packed-sequence training dataset. The three values at the
+## top — config name, description, and dataset path — are pre-filled from
+## the New Config dialog. Everything else is shown as commented examples;
+## uncomment and adjust the bits you need, leave the rest as comments.
+##
+## Defaults inherited from datasets/load_packed_dataset.yaml:
+##
+##   max_length          512                tokens per packed example
+##   stride              0                  tokens repeated from previous example
+##   packed              True               combine multiple examples per row
+##   overflow            True               keep tokens past max_length
+##                                          (False = truncate)
+##   shuffle_output      True               shuffle the packed examples
+##   packing_strategy    "best_fit"         best_fit | first_fit | greedy
+##   min_len             32                 drop examples shorter than this
+##   add_bos / add_eos   True               wrap each example with BOS/EOS
+##   main_feature        "text"             which dataset column to tokenize
+##   load_method         fast_load_iterable_dataset
+##   splits              "train" / "validation" / "test"
+##
+## Each section below opens with `== super()`, which keeps the parent's
+## defaults and lets you add or override individual keys. Delete a whole
+## section to fall back fully to the parent defaults.
+## ============================================================================
+
+-- extends "datasets/load_packed_dataset.yaml"
+
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "$CONFIG_NAME"
+    -- set ns.config_description = "$DESCRIPTION"
+
+    ## Optional. Source URL for the dataset (Hub page, paper, homepage).
+    ## Documentation only — not loaded by anything.
+    ## -- set ns.source = "https://huggingface.co/datasets/..."
+
+    ## Optional. Which dataset column holds the text to tokenize.
+    ## Default is "text"; common alternatives below.
+    ## -- set ns.main_feature = "text"
+    ## -- set ns.main_feature = "code"
+    ## -- set ns.main_feature = "content"
+    ## -- set ns.main_feature = "page"
+
+
+[load_dataset_args]
+    == super()
+    ## What goes here:
+    ##   * A HuggingFace Hub id           e.g. "allenai/c4"
+    ##   * A dataset-server local mapping e.g. "local/stories"
+    ##                                    (registered with `dataset_server
+    ##                                    --local NAME PATH`; works
+    ##                                    identically to a Hub id)
+    ##   * A local file for the json/csv/parquet loaders
+    path: "$DATASET_ID"
+
+    ## Optional. Dataset variant (the `name=` argument to load_dataset).
+    ## Required for datasets like allenai/c4 ("en") or
+    ## EleutherAI/wikitext_document_level ("wikitext-103-raw-v1").
+    ## name: "en"
+
+    ## Optional. Pin to a specific commit on the Hub for reproducibility.
+    ## revision: "6472347"
+
+    ## Optional. Set if the dataset ships a custom loader script and you
+    ## trust it.
+    ## trust_remote_code: True
+
+
+## ---------------------------------------------------------------------------
+## Splits.
+##
+## Pick whichever pattern matches the dataset:
+##
+## (A) The dataset already has train / validation / test splits.
+##     → Delete all three sections below. The parent defaults will pick
+##       up the standard split names.
+##
+## (B) The dataset has only a `train` split.
+##     → Carve validation and test out of train via HF's slice syntax:
+##           [train_dataset_split]
+##               == super()
+##               split: "train[10000:]"
+##           [validation_dataset_split]
+##               == super()
+##               split: "train[0:1000]"
+##           [test_dataset_split]
+##               == super()
+##               split: "train[1000:10000]"
+##
+## (C) The dataset has `train` + `validation` only (no `test`).
+##     → Take train as-is; split the validation into two halves
+##       (the C4 / Wikipedia pattern):
+##           [validation_dataset_split]
+##               == super()
+##               split: "validation[:1000]"
+##           [test_dataset_split]
+##               == super()
+##               split: "validation[1000:100000]"
+##
+## (D) You don't need a particular split at all.
+##     → Set it to null so the trainer skips it entirely:
+##           [test_dataset_split]
+##           test_dataset_split: null
+## ---------------------------------------------------------------------------
+
+## [train_dataset_split]
+##     == super()
+##     split: "train"
+
+## [validation_dataset_split]
+##     == super()
+##     split: "validation"
+
+## [test_dataset_split]
+##     == super()
+##     split: "test"
+
+
+## ---------------------------------------------------------------------------
+## Tokenization / packing overrides.
+##
+## The defaults from load_packed_dataset.yaml work for most cases. Uncomment
+## and edit only the keys you need to change — `== super()` keeps the rest.
+##
+## If you need *all* of these overridden (e.g. chat-style data with
+## `add_eos: False` because the chat template emits its own EOS), copy the
+## full block instead of using `== super()`.
+## ---------------------------------------------------------------------------
+
+## [map_function]
+## .define: &map_function !partial:forgather.ml.datasets:block_tokenize_fn
+##     max_length: {{ max_length | default(512) }}
+##     overflow: True
+##     packed: True
+##     shuffle_output: True
+##     stride: {{ stride | default(0) }}
+##     packing_strategy: "best_fit"
+##     min_len: 32
+##     add_bos: True
+##     add_eos: True
+
+
+## ---------------------------------------------------------------------------
+## map_kwargs — batch size for the HuggingFace .map() call. Larger values
+## give the packer more room to find good fits. Default: 250. Bump to 1000
+## for very short examples; lower if memory pressure during preprocessing
+## becomes an issue.
+## ---------------------------------------------------------------------------
+
+## [map_kwargs]
+##     == super()
+##     batch_size: 1000

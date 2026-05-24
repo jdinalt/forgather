@@ -1,0 +1,43 @@
+title: "Llama-derived"
+summary: "Dynamic model inheriting the Llama topology (RMSNorm + GLU + RoPE)."
+description: |
+  Generates the default config for a model project whose architecture
+  follows the Llama family: pre-LN transformer, RMSNorm, GLU feedforward
+  with SiLU, causal multi-head attention with GQA + rotary position
+  encoding. Inherits every model "bit" from
+  `models/transformers/dynamic_llama.yaml`; you customise the tokenizer
+  and the size parameters.
+
+  The most common in-repo shape — used by the `llama`, `mistral`,
+  `qwen3`, `gemma3`, and (with a small modelsrc extension) `llama_canon`
+  example projects. The framework's owner has noted dynamic_llama is
+  "more of a historical artifact" than the *recommended* starting point
+  for new architectures, but Llama-derived models are common enough that
+  this scaffold pays off.
+
+  For a fresh architecture (different attention, custom layer shape,
+  non-causal mask, etc.) use the "Model project — from scratch" scaffold
+  instead, which gives you the full bits skeleton. For an HF-class model
+  without Forgather code generation, use the "Model project — HF class"
+  scaffold.
+target_kind: "config"
+fields:
+  - name: CONFIG_NAME
+    label: "Config name"
+    description: "Short label shown in `forgather ls` listings."
+    placeholder: "Default Llama"
+    required: true
+  - name: DESCRIPTION
+    label: "Description"
+    description: "One-line description, shown in `forgather ls`."
+    required: true
+  - name: MODEL_SHORT_NAME
+    label: "Model short name"
+    description: |
+      Used in code-generation filenames, the HF `model_type` for saved
+      models, and the project's saved-model directory naming. Lowercase
+      letters / digits / underscores; should be unique enough to be
+      identifiable across saved checkpoints, e.g. `llama`, `qwen3`,
+      `mistral`, `gemma3`, `llama_canon`.
+    placeholder: "llama"
+    required: true

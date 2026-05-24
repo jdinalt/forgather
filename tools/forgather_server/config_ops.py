@@ -17,7 +17,7 @@ from forgather.config import ConfigEnvironment
 from forgather.latent import Latent
 from forgather.meta_config import MetaConfig
 
-from . import overrides_store
+from . import meta_templates, overrides_store
 
 
 @dataclass
@@ -707,9 +707,16 @@ def project_template_paths(project_dir: str) -> TemplatePaths:
     )
 
 
-def new_template_file(project_dir: str, kind: str, name: str) -> str:
-    """Create an empty template / config file in ``project_dir``'s
-    templates directory and return its absolute path.
+def new_template_file(
+    project_dir: str,
+    kind: str,
+    name: str,
+    *,
+    meta_template: Optional[str] = None,
+    values: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Create a template / config file in ``project_dir``'s templates
+    directory and return its absolute path.
 
     ``kind`` mirrors the CLI ``project new_config --type`` switch:
     - ``"config"``: under ``searchpath[0]/<config_prefix>/`` (the
@@ -719,11 +726,13 @@ def new_template_file(project_dir: str, kind: str, name: str) -> str:
 
     A ``.yaml`` suffix is appended when ``name`` has none. Existing
     files are refused (no overwrite). Parent directories are created
-    as needed. The file is written empty so the editor opens onto a
+    as needed.
+
+    If ``meta_template`` is given, the file is seeded with that
+    scaffold rendered against ``values`` (see ``meta_templates.render``).
+    Otherwise the file is written empty so the editor opens onto a
     blank canvas — same behavior as ``forgather project new_config``
-    when no ``--copy-from`` is supplied (minus that command's default
-    boilerplate, which would only get in the way for a from-scratch
-    template the user is about to fill in).
+    when no ``--copy-from`` is supplied.
     """
     if kind not in ("config", "template"):
         raise ValueError(f"unknown kind: {kind!r}")
@@ -759,9 +768,14 @@ def new_template_file(project_dir: str, kind: str, name: str) -> str:
     if os.path.exists(target):
         raise FileExistsError(target)
 
+    if meta_template:
+        content = meta_templates.render(meta_template, values or {})
+    else:
+        content = ""
+
     os.makedirs(os.path.dirname(target), exist_ok=True)
     with open(target, "w") as f:
-        f.write("")
+        f.write(content)
     return target
 
 

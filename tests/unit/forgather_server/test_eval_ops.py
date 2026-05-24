@@ -1,6 +1,9 @@
 """Tests for tools/forgather_server/eval_ops.py — build_eval_command."""
 
+import os
+
 import pytest
+from forgather_server import eval_ops
 from forgather_server.eval_ops import build_eval_command
 
 
@@ -85,3 +88,70 @@ class TestBuildEvalCommand:
         cmd = self._base_call(some_obsolete_flag="nope")
         assert "--some-obsolete-flag" not in cmd
         assert "nope" not in cmd
+
+
+class TestConfigureEvalSearchPaths:
+    """Behavior of ``configure_eval_search_paths`` + ``_resolve_search_paths``.
+
+    Mutates module-level state, so each test resets to defaults afterwards
+    to avoid leaking into the rest of the suite. Tests use ``tmp_path``
+    for the extras so the resolver's "exists" check passes.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self):
+        yield
+        eval_ops.configure_eval_search_paths([])  # reset
+
+    def _bundled(self) -> str:
+        from forgather_server.search_roots import forgather_repo_root
+
+        return os.path.abspath(
+            os.path.join(forgather_repo_root(), "examples", "evaluation")
+        )
+
+    def test_no_args_returns_library_default(self):
+        # Without configure_*, _resolve_search_paths reproduces the
+        # library's default discovery (bundled examples/evaluation +
+        # user config extras, deduped).
+        paths = eval_ops._resolve_search_paths()
+        assert self._bundled() in paths
+
+    def test_extra_dir_prepended(self, tmp_path):
+        extra = tmp_path / "my_evals"
+        extra.mkdir()
+        eval_ops.configure_eval_search_paths([str(extra)])
+        paths = eval_ops._resolve_search_paths()
+        assert paths[0] == str(extra)
+        # Bundled default still present after the extras.
+        assert self._bundled() in paths
+
+    def test_disable_default_removes_bundled(self, tmp_path):
+        extra = tmp_path / "my_evals"
+        extra.mkdir()
+        eval_ops.configure_eval_search_paths([str(extra)], disable_default=True)
+        paths = eval_ops._resolve_search_paths()
+        assert paths == [str(extra)]
+        assert self._bundled() not in paths
+
+    def test_nonexistent_extra_silently_dropped(self, tmp_path):
+        # A typo'd --eval-dir shouldn't kill discovery — bundled default
+        # is still surfaced.
+        eval_ops.configure_eval_search_paths([str(tmp_path / "does/not/exist")])
+        paths = eval_ops._resolve_search_paths()
+        assert self._bundled() in paths
+        # The non-existent path is not in the resolved list.
+        assert str(tmp_path / "does/not/exist") not in paths
+
+    def test_dedup_preserves_priority_order(self, tmp_path):
+        # If an extra duplicates a path already in the library default,
+        # the extras-first ordering wins (the dup at the library-default
+        # position is dropped, not the extra).
+        d = tmp_path / "shared"
+        d.mkdir()
+        eval_ops.configure_eval_search_paths([str(d), str(d)])
+        paths = eval_ops._resolve_search_paths()
+        # str(d) appears exactly once.
+        assert paths.count(str(d)) == 1
+        # And it's first.
+        assert paths[0] == str(d)

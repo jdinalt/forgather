@@ -1,10 +1,18 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { api, FsEntry, FsListing, SearchRoot, WorkspaceCluster } from "../api";
+import {
+  api,
+  FsEntry,
+  FsListing,
+  ProjectInfo,
+  SearchRoot,
+  WorkspaceCluster,
+} from "../api";
 import { ContextMenu } from "./ContextMenu";
 import { InitWorkspaceModal } from "./InitWorkspaceModal";
 import { NewProjectModal } from "./NewProjectModal";
+import { NewTemplateModal } from "./NewTemplateModal";
 
 interface Props {
   /** Open the file in the App-level editor view (which switches the
@@ -16,6 +24,24 @@ interface Props {
   /** Open the file in the Docs view. Surfaced as a context-menu item
    *  for ``.md`` / ``.markdown`` / ``.ipynb`` files. */
   onOpenDoc?: (path: string) => void;
+  /** External "reveal this path" request from elsewhere in the app
+   *  (typically the ProjectTree's right-click → "Reveal in Files"
+   *  entry). The ``nonce`` lets the same path re-reveal — equality
+   *  on the path alone wouldn't fire useEffect a second time. */
+  revealRequest?: { path: string; nonce: number } | null;
+}
+
+/** Centralised tree state shared with every node. Selection drives the
+ *  highlight; force-opened paths are the ancestor chain a reveal
+ *  request expands so the target row is mounted and can be scrolled
+ *  into view. */
+export interface RevealState {
+  selectedPath: string | null;
+  forceOpen: Set<string>;
+  /** Called when the user manually collapses a directory — clears the
+   *  path from ``forceOpen`` so a subsequent reveal up-tree doesn't
+   *  silently snap it back open. */
+  onUnforce: (path: string) => void;
 }
 
 function isDocLike(path: string): boolean {
@@ -84,6 +110,32 @@ function enclosingWorkspace(
   return matches[0] ?? null;
 }
 
+/** Find the deepest enclosing project (or the project itself) for a
+ *  clicked directory. Used by the New Config / New Template flow so a
+ *  right-click inside a project's templates subtree opens the modal
+ *  pre-targeted at the right project. */
+function enclosingProject(
+  path: string,
+  clusters: WorkspaceCluster[] | undefined,
+): ProjectInfo | null {
+  if (!clusters) return null;
+  const norm = path.replace(/\/+$/, "");
+  let best: ProjectInfo | null = null;
+  let bestLen = -1;
+  for (const c of clusters) {
+    for (const p of c.projects) {
+      const pp = p.project_dir.replace(/\/+$/, "");
+      if (norm === pp || norm.startsWith(pp + "/")) {
+        if (pp.length > bestLen) {
+          best = p;
+          bestLen = pp.length;
+        }
+      }
+    }
+  }
+  return best;
+}
+
 /** Compute relative path from ``base`` to ``path`` (assumes path is at
  *  or under base). Returns empty string when they're equal. */
 function relPath(base: string, path: string): string {
@@ -93,10 +145,21 @@ function relPath(base: string, path: string): string {
   return p.slice(b.length + 1);
 }
 
-export function FilesTree({ onOpenFile, onDropPath, onOpenDoc }: Props) {
+export function FilesTree({
+  onOpenFile,
+  onDropPath,
+  onOpenDoc,
+  revealRequest,
+}: Props) {
   const [showHidden, setShowHidden] = useState(false);
   const [menu, setMenu] = useState<MenuTarget | null>(null);
   const [clipboard, setClipboard] = useState<Clipboard | null>(null);
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  // Force-open set — paths whose ``<details>`` should be open regardless
+  // of the local toggle state, populated by reveal-request expansion of
+  // the target's ancestor chain.
+  const [forceOpen, setForceOpen] = useState<Set<string>>(() => new Set());
+  const containerRef = useRef<HTMLDivElement>(null);
   // Modal state for New Workspace / New Project pop-ups initiated from
   // the directory context menu.
   // The clicked directory becomes the workspace dir directly; there's
@@ -108,11 +171,132 @@ export function FilesTree({ onOpenFile, onDropPath, onOpenDoc }: Props) {
     workspace: WorkspaceCluster;
     initialDirName: string;
   } | null>(null);
+  const [newTemplateFor, setNewTemplateFor] = useState<{
+    project: ProjectInfo;
+    kind: "config" | "template";
+    initialDirHint: string;
+  } | null>(null);
 
   const rootsQ = useQuery({
     queryKey: ["search-roots"],
     queryFn: api.listSearchRoots,
   });
+
+  const unforce = (p: string) => {
+    setForceOpen((prev) => {
+      if (!prev.has(p)) return prev;
+      const next = new Set(prev);
+      next.delete(p);
+      return next;
+    });
+  };
+
+  const reveal: RevealState = useMemo(
+    () => ({ selectedPath, forceOpen, onUnforce: unforce }),
+    [selectedPath, forceOpen],
+  );
+
+  // Apply incoming reveal requests: compute the ancestor chain up to
+  // the deepest matching search root and force every step open, then
+  // mark the target as selected. The scroll-into-view useEffect below
+  // picks the row up once the listings (re-)render.
+  //
+  // Wait for ``rootsQ.data`` to land before deciding the target isn't
+  // under any search root — otherwise an early reveal-request firing
+  // before the query resolves will see ``roots = []`` and pop a
+  // misleading "not under any search root" alert. The effect re-runs
+  // when rootsQ.data flips from undefined to the loaded array.
+  useEffect(() => {
+    if (!revealRequest) return;
+    if (rootsQ.data === undefined) return;
+    const roots = rootsQ.data;
+    const norm = revealRequest.path.replace(/\/+$/, "");
+    let root: SearchRoot | null = null;
+    let bestLen = -1;
+    for (const r of roots) {
+      if (!r.exists) continue;
+      const rp = r.path.replace(/\/+$/, "");
+      if ((norm === rp || norm.startsWith(rp + "/")) && rp.length > bestLen) {
+        root = r;
+        bestLen = rp.length;
+      }
+    }
+    if (!root) {
+      // Target isn't under any registered search root. Don't try to be
+      // clever — surface the failure so the user knows why nothing
+      // visibly happened.
+      alert(
+        `Cannot reveal:\n${revealRequest.path}\n\n` +
+          `The path isn't under any configured search root.`,
+      );
+      return;
+    }
+    const rootPath = root.path.replace(/\/+$/, "");
+    // Walk from the root toward the target, collecting every ancestor
+    // directory that needs to be expanded. The target itself is the
+    // selection — we don't force it open (a file has nothing to open;
+    // a directory revealed at its own row stays as the user left it).
+    const ancestors = new Set<string>([rootPath]);
+    if (norm !== rootPath) {
+      const rel = norm.slice(rootPath.length + 1).split("/");
+      let cur = rootPath;
+      // Skip the last segment — that's the target itself.
+      for (let i = 0; i < rel.length - 1; i++) {
+        cur = `${cur}/${rel[i]}`;
+        ancestors.add(cur);
+      }
+    }
+    setForceOpen((prev) => {
+      const next = new Set(prev);
+      for (const a of ancestors) next.add(a);
+      return next;
+    });
+    setSelectedPath(norm);
+  }, [revealRequest, rootsQ.data]);
+
+  // Scroll the selected row into view once it (and any newly-expanded
+  // ancestors) finish rendering. Listings load async per directory, so
+  // we retry a few times before giving up — typical first try succeeds
+  // when ancestors were already open, otherwise the second after the
+  // listing query lands picks it up.
+  //
+  // The cleanup cancels any pending retry so unmounted / re-selected
+  // components don't keep firing noop callbacks. ``cancelled`` is the
+  // belt; ``clearTimeout`` is the suspenders — together they ensure
+  // the loop stops both inside the callback and at the scheduler.
+  useEffect(() => {
+    if (!selectedPath || !containerRef.current) return;
+    const container = containerRef.current;
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let attempts = 0;
+    const tryScroll = () => {
+      if (cancelled) return;
+      const el = container.querySelector(
+        `[data-tree-path="${CSS.escape(selectedPath)}"]`,
+      );
+      if (el) {
+        (el as HTMLElement).scrollIntoView({
+          block: "nearest",
+          behavior: "smooth",
+        });
+        return;
+      }
+      attempts += 1;
+      // ~3 seconds total at 150ms cadence — long enough to cover a
+      // cold listing fetch, short enough that a vanished path doesn't
+      // hang a callback forever.
+      if (attempts >= 20) return;
+      timeoutId = setTimeout(tryScroll, 150);
+    };
+    // requestAnimationFrame so the first attempt runs after the
+    // ancestor expansions have had a chance to mount.
+    requestAnimationFrame(tryScroll);
+    return () => {
+      cancelled = true;
+      if (timeoutId !== null) clearTimeout(timeoutId);
+    };
+  }, [selectedPath, revealRequest]);
   // Workspaces drive New-Project enablement: we need the enclosing
   // workspace for the clicked directory to call POST /workspace/new-project.
   const projectsQ = useQuery({
@@ -133,7 +317,7 @@ export function FilesTree({ onOpenFile, onDropPath, onOpenDoc }: Props) {
   const roots = rootsQ.data ?? [];
 
   return (
-    <div className="files-tree">
+    <div className="files-tree" ref={containerRef}>
       <label className="files-tree-show-hidden">
         <input
           type="checkbox"
@@ -157,6 +341,7 @@ export function FilesTree({ onOpenFile, onDropPath, onOpenDoc }: Props) {
           setClipboard={setClipboard}
           openMenu={(t) => setMenu(t)}
           onOpenFile={onOpenFile}
+          reveal={reveal}
         />
       ))}
       {menu && (
@@ -165,6 +350,10 @@ export function FilesTree({ onOpenFile, onDropPath, onOpenDoc }: Props) {
           clipboard={clipboard}
           enclosingRoot={enclosingSearchRoot(menu.path, rootsQ.data)}
           enclosingWs={enclosingWorkspace(menu.path, projectsQ.data)}
+          enclosingProj={enclosingProject(
+            menu.path,
+            projectsQ.data,
+          )}
           onClose={() => setMenu(null)}
           onOpenFile={onOpenFile}
           onOpenDoc={onOpenDoc}
@@ -172,6 +361,7 @@ export function FilesTree({ onOpenFile, onDropPath, onOpenDoc }: Props) {
           setClipboard={setClipboard}
           openInitWorkspace={(path) => setInitWorkspaceFor(path)}
           openNewProject={(p) => setNewProjectFor(p)}
+          openNewTemplate={(p) => setNewTemplateFor(p)}
         />
       )}
       {initWorkspaceFor && (
@@ -195,6 +385,15 @@ export function FilesTree({ onOpenFile, onDropPath, onOpenDoc }: Props) {
           onClose={() => setNewProjectFor(null)}
         />
       )}
+      {newTemplateFor && (
+        <NewTemplateModal
+          project={newTemplateFor.project}
+          kind={newTemplateFor.kind}
+          initialDirHint={newTemplateFor.initialDirHint}
+          onCreated={(path) => onOpenFile(path)}
+          onClose={() => setNewTemplateFor(null)}
+        />
+      )}
     </div>
   );
 }
@@ -207,6 +406,7 @@ interface RootNodeProps {
   setClipboard: (c: Clipboard | null) => void;
   openMenu: (t: MenuTarget) => void;
   onOpenFile: (path: string) => void;
+  reveal: RevealState;
 }
 
 function RootNode({
@@ -217,6 +417,7 @@ function RootNode({
   setClipboard,
   openMenu,
   onOpenFile,
+  reveal,
 }: RootNodeProps) {
   const label = basename(path) || path;
   // Default-closed so we don't fetch every search root's top-level
@@ -224,17 +425,26 @@ function RootNode({
   // mount is also gated below so the listing fetch only fires when
   // the node is actually visible.
   const [open, setOpen] = useState(false);
+  const norm = path.replace(/\/+$/, "");
+  const effectiveOpen = open || reveal.forceOpen.has(norm);
+  const isSelected = reveal.selectedPath === norm;
   return (
     <details
       className="files-tree-root"
-      open={open}
+      open={effectiveOpen}
       onToggle={(e) => {
         if (e.target !== e.currentTarget) return;
-        setOpen((e.currentTarget as HTMLDetailsElement).open);
+        const nextOpen = (e.currentTarget as HTMLDetailsElement).open;
+        setOpen(nextOpen);
+        // If the user collapsed a force-opened root, drop it from the
+        // force set so a future reveal upstream doesn't snap it open
+        // again without explicit ancestor expansion.
+        if (!nextOpen) reveal.onUnforce(norm);
       }}
     >
       <summary
-        className={exists ? "" : "missing"}
+        className={`${exists ? "" : "missing"}${isSelected ? " selected" : ""}`}
+        data-tree-path={norm}
         title={path}
         onContextMenu={(e) => {
           if (!exists) return;
@@ -253,7 +463,7 @@ function RootNode({
         <span className="files-tree-root-label">{label}</span>
         {!exists && <span className="err-badge">missing</span>}
       </summary>
-      {exists && open && (
+      {exists && effectiveOpen && (
         <DirChildren
           path={path}
           showHidden={showHidden}
@@ -262,6 +472,7 @@ function RootNode({
           openMenu={openMenu}
           onOpenFile={onOpenFile}
           depth={0}
+          reveal={reveal}
         />
       )}
     </details>
@@ -276,6 +487,7 @@ interface DirChildrenProps {
   openMenu: (t: MenuTarget) => void;
   onOpenFile: (path: string) => void;
   depth: number;
+  reveal: RevealState;
 }
 
 function DirChildren({
@@ -286,6 +498,7 @@ function DirChildren({
   openMenu,
   onOpenFile,
   depth,
+  reveal,
 }: DirChildrenProps) {
   const listingQ = useQuery({
     queryKey: ["fs-browse", path, showHidden, true],
@@ -321,6 +534,7 @@ function DirChildren({
           openMenu={openMenu}
           onOpenFile={onOpenFile}
           depth={depth + 1}
+          reveal={reveal}
         />
       ))}
     </ul>
@@ -336,6 +550,7 @@ interface FsNodeProps {
   openMenu: (t: MenuTarget) => void;
   onOpenFile: (path: string) => void;
   depth: number;
+  reveal: RevealState;
 }
 
 function FsNode({
@@ -347,6 +562,7 @@ function FsNode({
   openMenu,
   onOpenFile,
   depth,
+  reveal,
 }: FsNodeProps) {
   const indent = { paddingLeft: `${Math.min(depth, 8) * 8 + 4}px` };
   if (entry.is_dir) {
@@ -361,9 +577,12 @@ function FsNode({
         onOpenFile={onOpenFile}
         depth={depth}
         indent={indent}
+        reveal={reveal}
       />
     );
   }
+  const norm = entry.path.replace(/\/+$/, "");
+  const isSelected = reveal.selectedPath === norm;
   // Every file is click-to-open; the backend's text/binary check
   // refuses truly binary files with 415 and the editor surfaces the
   // error in-tab. Known extensions get language-specific highlighting
@@ -372,7 +591,8 @@ function FsNode({
     <li className="files-tree-file">
       <button
         type="button"
-        className="files-tree-file-btn"
+        className={`files-tree-file-btn${isSelected ? " selected" : ""}`}
+        data-tree-path={norm}
         style={indent}
         onClick={() => onOpenFile(entry.path)}
         onContextMenu={(e) => {
@@ -410,18 +630,26 @@ function DirNode({
   onOpenFile,
   depth,
   indent,
+  reveal,
 }: FsNodeProps & { indent: React.CSSProperties }) {
   const [open, setOpen] = useState(false);
+  const norm = entry.path.replace(/\/+$/, "");
+  const effectiveOpen = open || reveal.forceOpen.has(norm);
+  const isSelected = reveal.selectedPath === norm;
   return (
     <li className="files-tree-dir">
       <details
-        open={open}
+        open={effectiveOpen}
         onToggle={(e) => {
           if (e.target !== e.currentTarget) return;
-          setOpen((e.currentTarget as HTMLDetailsElement).open);
+          const nextOpen = (e.currentTarget as HTMLDetailsElement).open;
+          setOpen(nextOpen);
+          if (!nextOpen) reveal.onUnforce(norm);
         }}
       >
         <summary
+          className={isSelected ? "selected" : undefined}
+          data-tree-path={norm}
           style={indent}
           onContextMenu={(e) => {
             e.preventDefault();
@@ -438,7 +666,7 @@ function DirNode({
         >
           <span className="files-tree-name">{entry.name}/</span>
         </summary>
-        {open && (
+        {effectiveOpen && (
           <DirChildren
             path={entry.path}
             showHidden={showHidden}
@@ -447,6 +675,7 @@ function DirNode({
             openMenu={openMenu}
             onOpenFile={onOpenFile}
             depth={depth}
+            reveal={reveal}
           />
         )}
       </details>
@@ -464,6 +693,10 @@ interface MenuProps {
   /** Workspace cluster that contains ``target.path`` (or matches it).
    *  When non-null, the menu offers "New Project…". */
   enclosingWs: WorkspaceCluster | null;
+  /** Project that contains ``target.path`` (or matches it). When
+   *  non-null, the menu offers "New Config…" / "New Template…",
+   *  with the clicked directory passed through as a placement hint. */
+  enclosingProj: ProjectInfo | null;
   onClose: () => void;
   onOpenFile: (path: string) => void;
   onOpenDoc?: (path: string) => void;
@@ -476,6 +709,11 @@ interface MenuProps {
     workspace: WorkspaceCluster;
     initialDirName: string;
   }) => void;
+  openNewTemplate: (p: {
+    project: ProjectInfo;
+    kind: "config" | "template";
+    initialDirHint: string;
+  }) => void;
 }
 
 function FilesContextMenu({
@@ -483,6 +721,7 @@ function FilesContextMenu({
   clipboard,
   enclosingRoot,
   enclosingWs,
+  enclosingProj,
   onClose,
   onOpenFile,
   onOpenDoc,
@@ -490,6 +729,7 @@ function FilesContextMenu({
   setClipboard,
   openInitWorkspace,
   openNewProject,
+  openNewTemplate,
 }: MenuProps) {
   const qc = useQueryClient();
 
@@ -640,6 +880,26 @@ function FilesContextMenu({
     });
   };
 
+  const doNewConfig = () => {
+    onClose();
+    if (!enclosingProj) return;
+    openNewTemplate({
+      project: enclosingProj,
+      kind: "config",
+      initialDirHint: target.path,
+    });
+  };
+
+  const doNewTemplate = () => {
+    onClose();
+    if (!enclosingProj) return;
+    openNewTemplate({
+      project: enclosingProj,
+      kind: "template",
+      initialDirHint: target.path,
+    });
+  };
+
   const canPaste = target.isDir && clipboard != null;
 
   /** Right-click "Duplicate" — copies the clicked file or directory
@@ -712,6 +972,24 @@ function FilesContextMenu({
           title={`Project will land under workspace ${enclosingWs.workspace_root}`}
         >
           📁 New Project…
+        </button>
+      )}
+      {target.isDir && enclosingProj && (
+        <button
+          className="context-menu-item"
+          onClick={doNewConfig}
+          title={`New config inside project ${enclosingProj.name || enclosingProj.project_dir}`}
+        >
+          📄 New Config…
+        </button>
+      )}
+      {target.isDir && enclosingProj && (
+        <button
+          className="context-menu-item"
+          onClick={doNewTemplate}
+          title={`New template inside project ${enclosingProj.name || enclosingProj.project_dir}`}
+        >
+          📄 New Template…
         </button>
       )}
       {!target.isRoot && (

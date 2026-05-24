@@ -20,6 +20,65 @@ from forgather.user_config import eval_search_paths
 
 from .search_roots import forgather_repo_root
 
+# ---------------------------------------------------------------------------
+# Server-side override for the eval search path.
+#
+# Populated by ``configure_eval_search_paths`` (called from server.py once
+# CLI args are parsed). Mirrors the ``meta_templates.configure_roots`` shape:
+# user-provided dirs come first in scan order so leaves there can shadow the
+# bundled defaults on name collision; ``disable_default`` drops the bundled
+# ``examples/evaluation`` directory entirely. Both pieces also remain
+# configurable via ``~/.config/forgather/config.yaml``'s ``eval.*`` keys,
+# which the library reads for plain ``forgather eval`` CLI invocations
+# without the server in the loop.
+
+_extra_eval_dirs: List[str] = []
+_disable_default_eval: bool = False
+
+
+def configure_eval_search_paths(
+    extra_dirs: List[str], *, disable_default: bool = False
+) -> None:
+    """Set the active eval-project search path additions.
+
+    ``extra_dirs`` come first in scan order. Non-existent paths are
+    quietly dropped (a typo shouldn't disable discovery; the operator
+    sees the empty contribution but the loop keeps going).
+    """
+    global _extra_eval_dirs, _disable_default_eval
+    cleaned: List[str] = []
+    for d in extra_dirs:
+        ap = os.path.abspath(d)
+        if os.path.isdir(ap) and ap not in cleaned:
+            cleaned.append(ap)
+    _extra_eval_dirs = cleaned
+    _disable_default_eval = bool(disable_default)
+
+
+def _resolve_search_paths() -> List[str]:
+    """Combine the CLI overrides with the user-config-driven defaults.
+
+    Order: server CLI extras first, then library's ``eval_search_paths``
+    (which itself sources the bundled default + user-config extras).
+    Drop the bundled default when ``--no-default-eval`` was passed.
+    """
+    base = eval_search_paths(forgather_repo_root())
+    if _disable_default_eval:
+        bundled = os.path.abspath(
+            os.path.join(forgather_repo_root(), "examples", "evaluation")
+        )
+        base = [p for p in base if os.path.abspath(p) != bundled]
+    # De-dup while preserving order.
+    seen: set = set()
+    out: List[str] = []
+    for p in [*_extra_eval_dirs, *base]:
+        ap = os.path.abspath(p)
+        if ap in seen:
+            continue
+        seen.add(ap)
+        out.append(ap)
+    return out
+
 
 @dataclass
 class EvalConfigEntry:
@@ -42,11 +101,13 @@ class EvalConfigEntry:
 def list_eval_configs() -> List[EvalConfigEntry]:
     """Return every discoverable eval config.
 
-    Search paths are resolved the same way the CLI resolves them — the
-    repo's ``examples/evaluation`` directory by default, extensible via
-    ``~/.config/forgather/config.yaml`` ``eval.search_paths``.
+    Search paths combine three sources, in this order: any directories
+    passed via the server's ``--eval-dir`` flag, then the library's
+    default discovery (bundled ``examples/evaluation`` plus the user's
+    ``~/.config/forgather/config.yaml`` ``eval.search_paths``). The
+    bundled default is dropped when ``--no-default-eval`` is set.
     """
-    paths = eval_search_paths(forgather_repo_root())
+    paths = _resolve_search_paths()
     out: List[EvalConfigEntry] = []
     for name, project_dir, template, data in iter_eval_configs(paths):
         out.append(

@@ -1,0 +1,32 @@
+title: "Pretrain LM"
+summary: "From-scratch pretrain scaffold built on lm_training_project.yaml."
+description: |
+  Generates the entry-point config for a from-scratch language-model
+  pretraining project. Inherits from `projects/lm_training_project.yaml`,
+  which provides token-budget → step-count conversion, learning-rate
+  scaling against a reference batch size, cosine-decay schedule with
+  warmup, trainer dispatch (basic / ddp / fsdp2 / pipeline), cross-project
+  dataset and model loading, and the full set of CLI dynamic_args.
+
+  Two fields are pre-filled from this form; everything else lives in the
+  rendered body as commented examples grouped by axis — dataset, model,
+  budget, batching, LR, trainer, precision, compile, optimizer swap, LR
+  scheduler swap, loss, callbacks. Uncomment what you want to tune; leave
+  the rest as comments and the base's defaults take over.
+
+  Verified shape: the renders parse cleanly via `forgather ls` against
+  `examples/base_lm_project`. The same scaffold covers the
+  `examples/pretrain/small-llm` and `examples/tiny_experiments/optimizers`
+  patterns — they differ only in which knobs each project chose to
+  override, not in structure.
+target_kind: "config"
+fields:
+  - name: CONFIG_NAME
+    label: "Config name"
+    description: "Short label shown in `forgather ls` listings."
+    placeholder: "Pretrain Small-LLM"
+    required: true
+  - name: DESCRIPTION
+    label: "Description"
+    description: "One-line description, shown in `forgather ls`."
+    required: true

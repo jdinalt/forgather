@@ -1,0 +1,43 @@
+title: "Packed dataset"
+summary: "Tokenized + packed-sequence dataset. Annotated, fill in path."
+description: |
+  A generic starting point for any tokenized + packed-sequence training
+  dataset. Three fields are pre-filled from this form (config name,
+  description, dataset path); everything else lives in the body as
+  commented examples — uncomment what you need, delete the rest.
+
+  The body inherits defaults from `datasets/load_packed_dataset.yaml`
+  (max_length 512, packing_strategy "best_fit", min_len 32, add_bos /
+  add_eos, splits "train"/"validation"/"test", and so on). Comments
+  cover the common variations: HF config variants (`name:`),
+  reproducibility pinning (`revision:`), the train-only carve / halve-
+  the-validation / null-skip split patterns, and tokenization /
+  packing overrides.
+
+  Accepts a Hub id (`allenai/c4`), a dataset-server local mapping
+  (`local/stories`), or a local file for the json/csv/parquet loaders.
+
+  Skip this scaffold for datasets that need a custom map function —
+  OpenOrca, Samantha, OpenThoughts-style configs use their own
+  per-dataset `map_function` and need a different starting point.
+target_kind: "config"
+fields:
+  - name: CONFIG_NAME
+    label: "Config name"
+    description: "Short label shown in `forgather ls` listings."
+    placeholder: "C4"
+    required: true
+  - name: DESCRIPTION
+    label: "Description"
+    description: "One-line description, shown in `forgather ls`."
+    required: true
+  - name: DATASET_ID
+    label: "Dataset path"
+    description: |
+      HuggingFace Hub id (e.g. `allenai/c4`, `roneneldan/TinyStories`),
+      a dataset-server local mapping (e.g. `local/stories` — registered
+      via `dataset_server --local NAME PATH`, works identically to a Hub
+      id), or a local file for the `json`/`csv`/`parquet` loaders.
+    placeholder: "allenai/c4"
+    picker: "dataset"
+    required: true

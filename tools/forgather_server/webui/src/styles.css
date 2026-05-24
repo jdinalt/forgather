@@ -2450,7 +2450,8 @@ li.config.selected button.link:hover {
 
 /* ---------- New Project modal ---------- */
 .new-project-modal {
-  min-width: 480px;
+  min-width: 720px;
+  width: min(960px, 95vw);
 }
 .new-project-grid {
   display: grid;
@@ -2506,6 +2507,285 @@ li.config.selected button.link:hover {
 }
 .new-template-preview code {
   word-break: break-all;
+}
+
+/* Meta-template picker (step 1 of New Config / New Template) */
+.new-template-modal {
+  width: min(820px, 95vw);
+}
+.meta-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  min-height: 320px;
+  max-height: 50vh;
+}
+.meta-picker-tree {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 6px;
+  background: var(--bg);
+}
+.meta-picker-detail {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 10px;
+  background: var(--bg);
+}
+.meta-picker-detail h4 {
+  margin: 0 0 6px 0;
+}
+.meta-picker-detail p {
+  margin: 0 0 8px 0;
+}
+.meta-picker-fields-label {
+  margin-top: 8px;
+  font-size: 11px;
+}
+.meta-picker-fields {
+  margin: 4px 0 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+.meta-picker-fields code {
+  background: var(--bg-elev, transparent);
+  padding: 0 3px;
+  border-radius: 2px;
+}
+.meta-picker-req {
+  color: var(--err, #b94);
+  font-size: 11px;
+}
+.meta-picker-blank {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 6px 8px;
+  border-radius: 2px;
+  cursor: pointer;
+  margin-bottom: 6px;
+}
+.meta-picker-blank:hover {
+  background: var(--bg-elev, rgba(0, 0, 0, 0.04));
+}
+.meta-picker-blank-title {
+  font-weight: 600;
+}
+.meta-picker-blank-desc {
+  font-size: 11px;
+}
+.meta-picker-cat > summary {
+  cursor: pointer;
+  padding: 4px 4px;
+  list-style: revert;
+}
+.meta-picker-cat-title {
+  font-weight: 600;
+}
+.meta-picker-cat-desc {
+  font-size: 11px;
+}
+.meta-picker-cat-body {
+  padding-left: 14px;
+  margin-top: 2px;
+}
+.meta-picker-leaf {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 4px 6px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.meta-picker-leaf:hover {
+  background: var(--bg-elev, rgba(0, 0, 0, 0.04));
+}
+.meta-picker-leaf.selected {
+  background: var(--accent-soft, rgba(0, 100, 200, 0.12));
+}
+.meta-picker-leaf-title {
+  font-weight: 500;
+}
+.meta-picker-leaf-desc {
+  font-size: 11px;
+}
+
+/* Step 2 — meta-template field form */
+.meta-fill-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.meta-fill-form-label {
+  font-size: 11px;
+}
+.meta-fill-field-help {
+  font-size: 11px;
+}
+
+/* Disabled state for the picker tree (NewProjectModal greys it out
+   when a non-scaffold starting point is selected). */
+.meta-picker.disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* New Project modal — tri-state Starting point fieldset. */
+.new-project-starting-point {
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 8px 12px;
+  margin-top: 10px;
+  background: var(--bg);
+}
+.new-project-starting-point legend {
+  font-size: 11px;
+  padding: 0 4px;
+  color: var(--muted, #888);
+}
+.starting-point-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 6px 4px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.starting-point-row:hover {
+  background: var(--bg-elev, rgba(0, 0, 0, 0.04));
+}
+.starting-point-row > input[type="radio"] {
+  margin-top: 4px;
+}
+.starting-point-body {
+  flex: 1;
+  min-width: 0;
+}
+.starting-point-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.starting-point-desc {
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+
+/* Meta-template field with a "Browse…" picker button next to the input. */
+.meta-field-with-picker {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.meta-field-with-picker > input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* DatasetPickerPopover */
+.dataset-picker {
+  width: min(620px, 92vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+.dataset-picker .modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.dataset-picker-filter {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  width: 100%;
+}
+.dataset-picker-source-tabs {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.dataset-picker-source-tab {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 2px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.dataset-picker-source-tab:hover {
+  background: var(--bg-elev, rgba(0, 0, 0, 0.04));
+}
+.dataset-picker-source-tab.active {
+  background: var(--accent-soft, rgba(0, 100, 200, 0.12));
+  border-color: var(--accent, rgba(0, 100, 200, 0.5));
+  font-weight: 600;
+}
+.dataset-picker-cluster-note {
+  margin-left: auto;
+  font-size: 11px;
+  font-style: italic;
+}
+.dataset-picker-list {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg);
+  min-height: 200px;
+  max-height: 50vh;
+}
+.dataset-picker-row {
+  padding: 6px 10px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dataset-picker-row:last-child {
+  border-bottom: none;
+}
+.dataset-picker-row:hover {
+  background: var(--bg-elev, rgba(0, 0, 0, 0.04));
+}
+.dataset-picker-row.active {
+  background: var(--accent-soft, rgba(0, 100, 200, 0.12));
+}
+.dataset-picker-row-head {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.dataset-picker-source-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 6px;
+  border-radius: 2px;
+  font-weight: 600;
+  flex: none;
+}
+.dataset-picker-source-badge.src-local {
+  background: rgba(0, 140, 220, 0.18);
+  color: var(--accent, #07a);
+}
+.dataset-picker-source-badge.src-hf {
+  background: rgba(220, 140, 0, 0.18);
+  color: #b86;
+}
+.dataset-picker-id {
+  font-weight: 600;
+}
+.dataset-picker-meta {
+  font-size: 11px;
+}
+.dataset-picker-hint {
+  font-size: 11px;
+  flex: 1;
 }
 
 /* ---------- Sidebar Files tree ---------- */
@@ -2715,6 +2995,14 @@ li.config.selected button.link:hover {
 }
 .files-tree-file-btn:hover {
   background: var(--bg-alt);
+}
+/* Reveal-in-Files selection highlight — applied to leaf file buttons,
+   directory <summary> rows, and the search-root <summary>. */
+.files-tree-file-btn.selected,
+.files-tree-dir > details > summary.selected,
+.files-tree-root > summary.selected {
+  background: var(--accent-soft, rgba(0, 100, 200, 0.18));
+  outline: 1px solid var(--accent, rgba(0, 100, 200, 0.6));
 }
 .files-tree-status {
   padding: 2px 4px 2px 16px;

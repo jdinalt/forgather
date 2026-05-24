@@ -4,13 +4,13 @@ import logging
 import mimetypes
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from .. import config_ops, discovery
+from .. import config_ops, discovery, meta_templates
 from .. import paths as fs_paths
 from .. import search_roots as sr
 
@@ -210,10 +210,48 @@ class NewTemplateRequest(BaseModel):
     project_dir: str
     kind: str  # "config" | "template"
     name: str
+    # Optional scaffold to seed the new file from. ``meta_template`` is the
+    # id returned by ``GET /project/meta-templates`` (e.g.
+    # ``datasets/huggingface/with_config``). ``values`` supplies the form
+    # fields declared by that meta-template's manifest. When both are
+    # absent the new file is created empty, matching legacy behavior.
+    meta_template: Optional[str] = None
+    values: Optional[Dict[str, Any]] = None
 
 
 class NewTemplateResponse(BaseModel):
     path: str
+
+
+class MetaFieldModel(BaseModel):
+    name: str
+    label: str = ""
+    description: str = ""
+    placeholder: str = ""
+    default: Optional[str] = None
+    required: bool = False
+    picker: str = ""
+
+
+class MetaTemplateModel(BaseModel):
+    id: str
+    title: str
+    summary: str = ""
+    description: str = ""
+    target_kind: str = "config"
+    fields: List[MetaFieldModel] = []
+
+
+class MetaCategoryModel(BaseModel):
+    name: str
+    title: str
+    summary: str = ""
+    description: str = ""
+    templates: List[MetaTemplateModel] = []
+    children: List["MetaCategoryModel"] = []
+
+
+MetaCategoryModel.model_rebuild()
 
 
 class TemplatePathsModel(BaseModel):
@@ -229,7 +267,13 @@ class NewProjectRequest(BaseModel):
     config_prefix: str = "configs"
     default_config: str = "default.yaml"
     project_dir_name: Optional[str] = None
+    # The new project's default config is seeded from one of three sources,
+    # picked by the New Project modal's "Starting point" tri-state. At most
+    # one of ``copy_from`` and ``meta_template`` may be set; both unset
+    # falls through to the CLI's built-in empty stub.
     copy_from: Optional[str] = None
+    meta_template: Optional[str] = None
+    values: Optional[Dict[str, Any]] = None
 
 
 class NewProjectResponse(BaseModel):
@@ -514,6 +558,11 @@ def new_project(req: NewProjectRequest):
             status_code=409,
             detail=f"already exists: {target_dir}",
         )
+    if req.copy_from and req.meta_template:
+        raise HTTPException(
+            status_code=400,
+            detail="copy_from and meta_template are mutually exclusive",
+        )
     if req.copy_from:
         _enforce_fs_root(req.copy_from)
     if req.copy_from and not os.path.isfile(req.copy_from):
@@ -521,6 +570,15 @@ def new_project(req: NewProjectRequest):
             status_code=400,
             detail=f"copy_from is not a file: {req.copy_from}",
         )
+
+    seed_text: Optional[str] = None
+    if req.meta_template:
+        try:
+            seed_text = meta_templates.render(req.meta_template, req.values or {})
+        except meta_templates.MissingFieldsError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except KeyError as e:
+            raise HTTPException(status_code=404, detail=f"meta-template not found: {e}")
 
     args = SimpleNamespace(
         project_dir=req.workspace_dir,
@@ -530,6 +588,7 @@ def new_project(req: NewProjectRequest):
         config_prefix=req.config_prefix or "configs",
         default_config=req.default_config or "default.yaml",
         copy_from=req.copy_from,
+        seed_text=seed_text,
     )
     try:
         rc = project_create_cmd(args)
@@ -558,21 +617,82 @@ def get_project_template_paths(project_dir: str):
 
 @router.post("/project/new-template", response_model=NewTemplateResponse)
 def new_project_template(req: NewTemplateRequest):
-    """Create an empty template (or config) file in the project's
-    templates directory. ``kind="config"`` lands under the configured
+    """Create a template (or config) file in the project's templates
+    directory. ``kind="config"`` lands under the configured
     ``config_prefix`` subdir; ``kind="template"`` lands at the templates
-    root. Returns the absolute path so the caller can open it.
+    root. When ``meta_template`` is supplied, the file is seeded from
+    that scaffold rendered against ``values``; otherwise it is created
+    empty. Returns the absolute path so the caller can open it.
     """
     _enforce_fs_root(req.project_dir)
     try:
-        path = config_ops.new_template_file(req.project_dir, req.kind, req.name)
+        path = config_ops.new_template_file(
+            req.project_dir,
+            req.kind,
+            req.name,
+            meta_template=req.meta_template,
+            values=req.values,
+        )
     except FileExistsError as e:
         raise HTTPException(status_code=409, detail=f"already exists: {e}")
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=f"meta-template not found: {e}")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return NewTemplateResponse(path=path)
+
+
+def _meta_template_to_model(mt: meta_templates.MetaTemplate) -> MetaTemplateModel:
+    return MetaTemplateModel(
+        id=mt.id,
+        title=mt.title,
+        summary=mt.summary,
+        description=mt.description,
+        target_kind=mt.target_kind,
+        fields=[
+            MetaFieldModel(
+                name=fd.name,
+                label=fd.label,
+                description=fd.description,
+                placeholder=fd.placeholder,
+                default=fd.default,
+                required=fd.required,
+                picker=fd.picker,
+            )
+            for fd in mt.fields
+        ],
+    )
+
+
+def _meta_category_to_model(cat: meta_templates.MetaCategory) -> MetaCategoryModel:
+    return MetaCategoryModel(
+        name=cat.name,
+        title=cat.title,
+        summary=cat.summary,
+        description=cat.description,
+        templates=[_meta_template_to_model(t) for t in cat.templates],
+        children=[_meta_category_to_model(c) for c in cat.children],
+    )
+
+
+@router.get("/project/meta-templates", response_model=List[MetaCategoryModel])
+def list_meta_templates():
+    """Enumerate scaffolds from ``templatelib/meta/`` as a tree.
+
+    Top-level entries are the children of ``templatelib/meta/`` — typically
+    Datasets, Models, Trainers, etc. Each node may contain both
+    ``templates`` (leaves the user can pick) and ``children`` (sub-groups);
+    the webui renders them as a collapsible tree, common cases at the
+    top of a category, exotic ones nested below.
+
+    Independent of any project — meta-templates ship with the framework
+    and don't depend on the project's search path. The endpoint takes no
+    arguments today; the project parameter would only be needed if we
+    later let projects contribute their own meta-templates.
+    """
+    return [_meta_category_to_model(c) for c in meta_templates.discover()]
 
 
 @router.get("/project/templates", response_model=List[TemplateGroupModel])

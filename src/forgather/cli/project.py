@@ -1,5 +1,4 @@
 import os
-import shutil
 
 from forgather.meta_config import MetaConfig
 
@@ -110,7 +109,7 @@ default_config: "{{ default_config }}"
     )
 
     os.makedirs(os.path.dirname(config_path))
-    create_config(config_path, args.copy_from)
+    create_config(config_path, _resolve_seed(args))
 
     print(f"\nForgather project '{args.name}' created successfully!")
     print(f"Project directory: {target_dir}")
@@ -123,14 +122,37 @@ def project_show_cmd(args):
     print(meta)
 
 
-def create_config(config_path, copy_from):
-    if copy_from:
-        shutil.copyfile(copy_from, config_path)
-        print(f"Copied config {copy_from} to {config_path}")
-    else:
+def _resolve_seed(args):
+    """Pick the seed text for the project's default config.
+
+    Callers (the webui server) may pre-resolve the seed and pass it as
+    ``args.seed_text`` — that wins. Otherwise fall back to the CLI's
+    ``--copy-from`` path, which reads the file here. ``None`` means
+    "use the built-in empty stub" (``default_config_template``).
+    """
+    seed_text = getattr(args, "seed_text", None)
+    if seed_text is not None:
+        return seed_text
+    if getattr(args, "copy_from", None):
+        with open(args.copy_from) as f:
+            return f.read()
+    return None
+
+
+def create_config(config_path, seed_text=None):
+    """Write the default config for a new project / new-config call.
+
+    ``seed_text=None`` writes the built-in empty stub; any other value
+    (including the empty string) is written verbatim.
+    """
+    if seed_text is None:
         with open(config_path, "w") as f:
             f.write(default_config_template)
         print(f"Created new config at {config_path}")
+    else:
+        with open(config_path, "w") as f:
+            f.write(seed_text)
+        print(f"Created config at {config_path}")
 
 
 def project_new_config_cmd(args):
@@ -153,4 +175,4 @@ def project_new_config_cmd(args):
     if os.path.exists(config_path):
         raise FileExistsError(f"{config_path} already exists")
 
-    create_config(config_path, args.copy_from)
+    create_config(config_path, _resolve_seed(args))

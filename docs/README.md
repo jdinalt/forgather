@@ -24,6 +24,7 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 - **[Syntax Reference](configuration/syntax-reference.md)** - Complete syntax reference for tags and directives
 - **[Model Initialization](configuration/model-initialization.md)** - Regex-based parameter initialization
 - **[Project Templates](project-templates/lm-training-projects.md)** - LM Training and Auto LR project templates
+- **[Meta-templates](../templatelib/meta/README.md)** - Scaffolds for creating new config files via the webui's New Config / New Template modal, and how to author your own
 - **[High-level API](api/project.md)** - The "Project" abstraction
 - **[Low-level API](configuration/low-level-api.md)** - The API upon which the Project abstraction is built
 

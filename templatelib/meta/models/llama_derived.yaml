@@ -1,0 +1,143 @@
+## ===========================================================================
+## Llama-derived dynamic model project — entry-point config.
+##
+## Use this scaffold when you want a model that shares the Llama topology:
+##   - Pre-LN transformer with RMSNorm
+##   - GLU feedforward (SiLU activation)
+##   - Causal multi-head attention with GQA + rotary position encoding
+##
+## Inherits from models/transformers/dynamic_llama.yaml, which provides
+## every model "bit" (factories for feedforward / attention / layer /
+## layer_stack / embedding / etc.). For a typical Llama-family project
+## you only override the tokenizer + sizes; the bits stay as-is.
+##
+## When this is NOT the right scaffold:
+##   - Building a genuinely new architecture (different layer shape,
+##     custom attention, non-causal mask, etc.) — use model_from_scratch,
+##     which exposes the full bits skeleton for you to fill in.
+##   - Want a HuggingFace-class model (transformers.LlamaForCausalLM
+##     etc.) without any Forgather code generation — use model_hf_class.
+##
+## Example projects shaped like this: llama, mistral, qwen3, gemma3,
+## llama_canon (extends this then adds Canon layers in modelsrc/).
+##
+## References:
+##   docs/guides/creating-a-model-project.md           (concepts)
+##   docs/guides/model-cli.md                          (forgather model CLI)
+##   templatelib/examples/models/transformers/dynamic_llama.yaml
+##                                                      (the base — read
+##                                                      it to see what's
+##                                                      already defined)
+## ===========================================================================
+
+-- extends "projects/causal_lm_def.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "$CONFIG_NAME"
+    -- set ns.config_description = "$DESCRIPTION"
+    -- set ns.model_name = model_name | default("$MODEL_SHORT_NAME")
+
+[model_definition]
+    -- include "config.default.model"
+
+
+#------------- config.default.model --------------
+-- extends "models/transformers/dynamic_llama.yaml"
+
+[model_meta_config]
+    == super()
+    -- set ns.model_name = ns.config_name
+    -- set ns.model_description = ns.config_description
+    -- set ns.model_short_name = "$MODEL_SHORT_NAME"
+
+## ---------------------------------------------------------------------------
+## Tokenizer.
+##
+## The default below uses the Llama-2 7B tokenizer from HuggingFace
+## (vocab_size 32k, model_max_length 4096). Note: this tokenizer is on
+## a *gated* HF repo — running `forgather model construct` will fail
+## with a confusing "tiktoken / vocab" error unless you have
+## `huggingface-cli login` set up with an account that's been granted
+## access. For a from-scratch project that doesn't need to share weights
+## with the released Llama-2 weights, prefer the local Forgather
+## tokenizer project pattern further down.
+##
+## Common swaps:
+##
+##   Llama-3.x: meta-llama/Llama-3.2-1B (vocab_size 128k, ctx 128k)
+##   Mistral:   mistralai/Mistral-7B-v0.1 (vocab_size 32k, ctx 32k)
+##   Qwen3:     Qwen/Qwen3-8B (vocab_size 152k, ctx 32k)
+##   Gemma3:    google/gemma-3-270m (vocab_size 262k, ctx 32k)
+##
+## For a from-scratch model that doesn't need to share weights with an
+## existing HF release, point at a local tokenizer project instead, e.g.
+##
+##   tokenizer: &tokenizer !call:forgather:from_project
+##       project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
+##       config_template: "32k.yaml"
+## ---------------------------------------------------------------------------
+
+[model_tokenizer]
+tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
+    arg0: {{ tokenizer_id_or_path | toyaml('meta-llama/Llama-2-7b') }}
+    legacy: False
+    model_max_length: {{ max_model_length | toyaml(4096) }}
+    trust_remote_code: True
+
+
+## ---------------------------------------------------------------------------
+## Model size.
+##
+## Defaults from dynamic_llama.yaml (full Llama-2 7B):
+##   hidden_size              = 4096
+##   num_attention_heads      = 32
+##   num_key_value_heads      = null (= num_attention_heads, i.e. MHA)
+##   num_hidden_layers        = 32
+##   intermediate_size        = 11008
+##   rope_parameters          = {rope_theta: 10000.0}
+##   rms_norm_eps             = 1.0e-05
+##   tie_word_embeddings      = False
+##   sliding_window           = null
+##
+## Pick a starting point from the reference sizes below and tune. The
+## leaf-config approach (extend this config and override sizes in a
+## small <size>.yaml file) is how the in-repo projects ship multiple
+## sizes — see examples/models/llama/templates/configs/{4M,small,medium,
+## llama3.2_1b,llama2_7b}.yaml.
+##
+## Reference sizes (all measured on the wikitext tokenizer unless noted):
+##
+##   4M:         hidden 256,  ff 768,   heads 4,  layers 4
+##   30M (small):hidden 512,  ff 1280,  heads 8,  layers 10, kv 2
+##   160M (med): hidden 768,  ff 2048,  heads 8,  layers 16
+##   1B:         hidden 2048, ff 8192,  heads 32, kv 8, layers 16
+##                  + tie_word_embeddings: True
+##                  + rope_parameters: llama3 with NTK-by-parts scaling
+##                  (see examples/models/llama/templates/configs/llama3.2_1b.yaml)
+##   7B:         hidden 4096, ff 11008, heads 32, layers 32
+##                  (the dynamic_llama.yaml default)
+## ---------------------------------------------------------------------------
+
+[model_config]
+    == super()
+    ## ---- Common overrides ----
+    ## hidden_size: 768
+    ## intermediate_size: 2048
+    ## num_attention_heads: 8
+    ## num_hidden_layers: 16
+    ## num_key_value_heads: 2          ## GQA; null/unset = MHA
+    ## tie_word_embeddings: True       ## smaller models, saves embedding params
+
+    ## ---- RoPE — match the tokenizer's ctx ----
+    ## rope_parameters: {rope_theta: 500000.0}   ## Llama-3.x style
+    ## rope_parameters:                          ## Llama-3.x with NTK-by-parts
+    ##     rope_theta: 500000.0
+    ##     rope_type: llama3
+    ##     factor: 32.0
+    ##     high_freq_factor: 4.0
+    ##     low_freq_factor: 1.0
+    ##     original_max_position_embeddings: 8192
+
+    ## ---- Mistral-style sliding-window attention ----
+    ## sliding_window: 4096

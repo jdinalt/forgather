@@ -1,0 +1,300 @@
+## ===========================================================================
+## From-scratch dynamic model project — entry-point config.
+##
+## Use this scaffold when you're building a new model architecture from the
+## Forgather "bits" library — not borrowing from the Llama family. The
+## rendered config wires every model component (feedforward, attention,
+## layer, layer_stack, embedding, init, etc.) explicitly so you can swap
+## any piece for an alternative bit (from `modelsrc/transformer/`) or for
+## a custom Python module you drop into the project's `modelsrc/`
+## subdirectory.
+##
+## The defaults below mirror dynamic_causal_transformer.yaml (vanilla
+## post-LN transformer with sinusoidal absolute PE, Attention-is-All-You-
+## Need style). They produce a working model out of the box; you swap
+## bits as your architecture evolves.
+##
+## When this is NOT the right scaffold:
+##   - Sharing the Llama topology (just changing sizes / tokenizer) —
+##     use model_llama_derived, which inherits all the Llama bits
+##     pre-wired.
+##   - Just wrapping a HuggingFace `PretrainedConfig` subclass — use
+##     model_hf_class.
+##
+## Example project shaped like this: examples/models/singlehead/
+## (custom single-head ALiBi attention dropped into modelsrc/, all
+## other bits inherited from the bits library).
+##
+## Available bits in modelsrc/transformer/ (the typical search path):
+##
+##   Attention:
+##     causal_multihead_attn.py    Standard MHA / GQA with rotary or absolute PE
+##     causal_alibi_attn.py        ALiBi (no rotary) — relative biases
+##
+##   Feedforward:
+##     feedforward_layer.py        Vanilla two-linear feedforward
+##     glu_feedforward.py          GLU (gated linear unit) — gate * up
+##
+##   Layer:
+##     pre_ln_layer.py             LayerNorm before sub-block (modern / Llama)
+##     post_ln_layer.py            LayerNorm after sub-block (Attention-is-All-You-Need)
+##     gemma_layer.py              Pre/post LN with QK norm
+##     deepnet.py                  Deep-norm scaling for very deep stacks
+##
+##   Layer stack:
+##     checkpoint_layer_stack.py   Standard stack with optional grad-checkpointing
+##     explicit_layer_stack.py     For per-layer overrides
+##
+##   Positional encoding:
+##     rotary_embeddings.py        Rotary (RoPE)
+##     sinusoidal_pe.py            Absolute sinusoidal
+##     null_pe.py                  No PE (e.g. for ALiBi)
+##     gemma_dual_rope.py          Dual RoPE for sliding-window layers
+##
+##   Other:
+##     init_weights.py             simple_weight_init etc.
+##     llama_init.py               trunc_normal_magic for Llama-style init
+##     causal_loss.py              Standard cross-entropy on shifted logits
+##     causal_mask.py              Standard upper-triangular mask
+##     input_encoder.py            Embedding wrapper (+ optional positional + scaling)
+##
+## References:
+##   docs/guides/creating-a-model-project.md     (concepts)
+##   docs/guides/model-cli.md                     (forgather model CLI)
+##   examples/models/singlehead/                  (closest reference project)
+## ===========================================================================
+
+-- extends "projects/causal_lm_def.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "$CONFIG_NAME"
+    -- set ns.config_description = "$DESCRIPTION"
+    -- set ns.model_name = model_name | default("$MODEL_SHORT_NAME")
+
+[model_definition]
+    -- include "config.default.model"
+
+
+#------------- config.default.model --------------
+-- extends "models/causal_lm/custom_dynamic.yaml"
+
+[model_meta_config]
+    == super()
+    -- set ns.model_name = ns.config_name
+    -- set ns.model_description = ns.config_description
+    -- set ns.model_short_name = "$MODEL_SHORT_NAME"
+
+## ---------------------------------------------------------------------------
+## Search path for custom Python modules.
+##
+## Uncomment when this project ships its own `modelsrc/` directory (per
+## examples/models/singlehead/modelsrc/single_head_alibi_attn.py). The
+## entry MUST come before super() so your custom modules take precedence
+## over same-named bits in the framework's modelsrc/transformer/ library.
+## ---------------------------------------------------------------------------
+
+## [model_submodule_searchpath]
+##     - "{{ joinpath(project_dir, 'modelsrc') }}"
+##     == super()
+
+
+## ---------------------------------------------------------------------------
+## Tokenizer.
+##
+## Default below: a local Forgather tokenizer project (no HF auth needed
+## and the vocab is well-defined for from-scratch training). Swap to an
+## HF AutoTokenizer if you want a published vocabulary — see the
+## model_llama_derived scaffold for the AutoTokenizer pattern.
+## ---------------------------------------------------------------------------
+
+[model_tokenizer]
+tokenizer: &tokenizer !call:forgather:from_project@tokenizer
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
+    config_template: "32k.yaml"
+
+
+## ===========================================================================
+## Model bits — each ``[<name>_factory]`` block defines one piece of the
+## architecture as a ``!partial:<module>:<Class>`` reference into the
+## bits library. Swap to a different bit by changing the reference (and
+## the args it expects); add a new bit by dropping a Python class into
+## modelsrc/ and pointing here at it.
+## ===========================================================================
+
+[model_bits]
+    [causal_bits]
+
+    [loss_fn]
+.define: &loss_fn !call:.causal_loss:CausalLoss@loss_fn
+
+    [layer_norm_factory]
+## Vanilla LayerNorm. Swap for RMSNorm (Llama / Mistral / Qwen3 style):
+##   .define: &layer_norm_factory !partial:torch.nn:RMSNorm@layer_norm_factory
+##       normalized_shape: !var "hidden_size"
+##       eps: !var "rms_norm_eps"
+.define: &layer_norm_factory !partial:torch.nn:LayerNorm@layer_norm_factory
+    normalized_shape: !var "hidden_size"
+
+    [feedforward_factory]
+## Default: vanilla two-linear feedforward (Attention-is-All-You-Need).
+## Swap to GLU for the Llama-family gate-up-down pattern:
+##   .define: &feedforward_factory !partial:.glu_feedforward:GLUFeedforwardLayer@feedforward_factory
+##       d_model: !var "hidden_size"
+##       d_feedforward: !var "intermediate_size"
+##       activation_factory: !partial:torch.nn.SiLU
+##       dropout: !var "activation_dropout"
+.define: &feedforward_factory !partial:.feedforward_layer:FeedforwardLayer@feedforward_factory
+    d_model: !var "hidden_size"
+    d_feedforward: !var "intermediate_size"
+    dropout: !var "activation_dropout"
+
+    [rel_positional_encoder]
+## Stateless rotation function injected into attention. Set to null for
+## attention bits that don't use rotary (e.g. ALiBi or absolute PE in
+## the input encoder).
+.define: &relative_pe null
+
+    [flex_attn_kernel_options]
+    -- include "flex_kernel_options/default.yaml"
+
+    [attn_functions]
+.define: &attn_functions !dict
+    eager: !partial:.attention_interface:eager_attention_forward
+    flex_attention: !partial:.attention_interface:flex_attention_forward
+        kernel_options: !var "flex_attn_kernel_options"
+
+    [attention_factory]
+## Default: standard causal MHA. With pos_encoder=null, position info has
+## to come from the input encoder (sinusoidal PE) or from ALiBi-style
+## biases inside a different attention bit. Swap for:
+##   single_head_alibi_attn  — minimal ALiBi single-head (see singlehead/)
+##   causal_alibi_attn       — multi-head ALiBi
+##   GQA: add num_kv_heads when reusing causal_multihead_attn (see
+##                            dynamic_llama.yaml for the rotary pattern)
+.define: &attention_factory !partial:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
+    d_model: !var "hidden_size"
+    num_heads: !var "num_attention_heads"
+    dropout: !var "attention_dropout"
+    pos_encoder: *relative_pe
+    attn_implementation: !var "attn_implementation"
+    attn_functions: *attn_functions
+    config: !var "config"
+
+    [layer_factory]
+## Default: post-LN (Attention-is-All-You-Need). Modern (Llama / Mistral
+## / Qwen3) uses pre_ln_layer.py — swap to that for better training
+## stability at depth:
+##   .define: &layer_factory !partial:.pre_ln_layer:PreLNLayer@layer_factory
+##       ...
+.define: &layer_factory !partial:.post_ln_layer:PostLNLayer@layer_factory
+    feedforward_factory: *feedforward_factory
+    attention_factory: *attention_factory
+    norm_factory: *layer_norm_factory
+    dropout: !var "layer_dropout"
+    residual_dropout: !var "residual_dropout"
+
+    [layer_stack]
+.define: &layer_stack !call:.checkpoint_layer_stack:LayerStack@layer_stack
+    layer_factory: *layer_factory
+    num_hidden_layers: !var "num_hidden_layers"
+    enable_checkpoint: !var "enable_activation_checkpoint"
+    checkpoint_stride: !var "checkpoint_stride"
+    ## For pre-LN models, add the final post-stack norm here:
+    ## post_norm_factory: *layer_norm_factory
+
+    [output_decoder]
+.define: &output_decoder !partial:torch.nn:Linear@output_decoder
+    in_features: !var "hidden_size"
+    out_features: !var "vocab_size"
+    bias: False
+
+    [positional_encoder]
+## Default: sinusoidal absolute PE (paired with post-LN). For rotary,
+## remove this block and set [rel_positional_encoder] above to the
+## rotary_embeddings.RotaryEmbedding factory (see dynamic_llama.yaml).
+## For ALiBi, set both to null.
+.define: &positional_encoder !call:.sinusoidal_pe:SinusoidalPE@positional_encoder
+    d_model: !var "hidden_size"
+    max_sequence_length: !var "max_position_embeddings"
+
+    [embedding]
+.define: &embedding !call:torch.nn.Embedding
+    num_embeddings: !var "vocab_size"
+    embedding_dim: !var "hidden_size"
+    padding_idx: !var "pad_token_id"
+
+    [input_encoder]
+.define: &input_encoder !call:.input_encoder:InputEncoder@input_encoder
+    d_model: !var "hidden_size"
+    embedding: *embedding
+    dropout: !var "embedding_dropout"
+    positional_encoder: *positional_encoder
+    ## Scale embeddings by sqrt(d_model) at the input — paired with
+    ## init_weights.simple_weight_init below for the Attention-is-All-
+    ## You-Need convention. Comment out for the Llama init pattern.
+    scale_sqrt_d_model: True
+
+    [init_weights]
+## simple_weight_init: scaled-by-1/sqrt(d_model) trunc normal across all
+## linear weights. For Llama-style init (per-layer-depth scaling +
+## special init for output linear), swap to llama_init:
+##   See dynamic_llama.yaml's init_weights block for the regex_list shape.
+.define: &init_weights !partial:.init_weights:simple_weight_init@init_weights
+    scale_rsqrt_d_model: True
+
+    [attn_mask_fn]
+.define: &attn_mask_fn !partial:.causal_mask:causal_mask@attn_mask_fn
+
+    [model_factory]
+model_factory: &model_factory !dict@model_factory
+    causal_model: !partial:.causal_lm:CasualLM
+        config: !var "config"
+        input_encoder: *input_encoder
+        layer_stack: *layer_stack
+        init_weights: *init_weights
+        attn_mask_fn: *attn_mask_fn
+        ## Pass rotary_emb here when using rotary PE (see dynamic_llama.yaml).
+        ## rotary_emb: *rotary_emb
+    lm_head: *output_decoder
+    loss_fn: *loss_fn
+
+
+## ---------------------------------------------------------------------------
+## Model config — concrete sizes and dropout rates.
+##
+## These become attributes on the saved HF-style config and are also
+## interpolated into the !var references above via the model_config alias.
+## ---------------------------------------------------------------------------
+
+[model_config]
+    == super()
+    hidden_size: {{ hidden_size | toyaml(512) }}
+    num_attention_heads: {{ num_attention_heads | toyaml(8) }}
+    num_hidden_layers: {{ num_hidden_layers | toyaml(6) }}
+    max_position_embeddings: !call:getattr
+        - *tokenizer
+        - "model_max_length"
+    intermediate_size: {{ intermediate_size | toyaml(2048) }}
+    embedding_dropout: {{ embedding_dropout | toyaml(0.10) }}
+    layer_dropout: {{ layer_dropout | toyaml(0.10) }}
+    residual_dropout: {{ residual_dropout | toyaml(0.0) }}
+    attention_dropout: {{ attention_dropout | toyaml(0.0) }}
+    activation_dropout: {{ activation_dropout | toyaml(0.0) }}
+    enable_activation_checkpoint: False
+    checkpoint_stride: {{ checkpoint_stride | toyaml(1) }}
+    tie_word_embeddings: {{ tie_word_embeddings | toyaml(False) }}
+    flex_attn_kernel_options: *flex_attn_kernel_options
+
+
+[model_code_generator]
+    == super()
+    supports_gradient_checkpointing: True
+    supports_sdpa: True
+    supports_flex_attn: True
+    supports_flash_attn: True
+    supports_attention_backend: True
+    tied_weights_keys: {causal_lm.input_encoder.embedding.weight: "lm_head.weight"}
+    ## When you swap the layer factory, update this to match the class name
+    ## (FSDP / pipeline parallel split modules along this boundary).
+    no_split_modules: ["PostLNLayer"]

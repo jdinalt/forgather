@@ -1,0 +1,128 @@
+## ===========================================================================
+## BPE tokenizer project — entry-point config.
+##
+## Trains a byte-level BPE tokenizer (the framework's default tokenizer
+## type) on a HuggingFace dataset and saves it as a HuggingFace
+## PreTrainedTokenizerFast in tokenizers/<tokenizer_name>/.
+##
+## Inherits from tokenizers/bpe/bpe.yaml, which fully wires up the
+## tokenizers-library pipeline:
+##   - model:           tokenizers.models.BPE (with byte_fallback)
+##   - normalizer:      NFC
+##   - pre_tokenizer:   ByteLevel
+##   - decoder:         ByteLevel
+##   - post_processor:  TemplateProcessing — prepends the BOS token to
+##                      every encoded sequence
+##   - trainer:         BpeTrainer with the ByteLevel initial alphabet
+##                      and the special-tokens map as protected tokens
+##
+## You override the dataset to train on (and optionally tweak vocab_size,
+## model_max_length, the special-tokens map, or the feature column to
+## tokenize from). For other tokenizer types (WordPiece / Unigram) the
+## pattern is the same shape: replace the [tokenizer_trainer] block's
+## `model:`, `trainer:`, `decoder:`, and `pre_tokenizer:` fields with the
+## corresponding tokenizers-library classes. See
+## templatelib/base/tokenizers/bpe/bpe.yaml for the full BPE definition
+## as a reference for what a non-BPE block would need to define.
+##
+## References:
+##   docs/guides/working-with-tokenizer-projects.md   (CLI commands)
+##   templatelib/base/tokenizers/tokenizer_type.yaml  (base — special
+##                                                    tokens, args)
+##   templatelib/base/tokenizers/bpe/bpe.yaml         (BPE wiring)
+##   https://huggingface.co/docs/tokenizers/          (library docs)
+## ===========================================================================
+
+-- extends 'tokenizers/bpe/bpe.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "$CONFIG_NAME"
+    -- set ns.config_description = "$DESCRIPTION"
+    -- set ns.tokenizer_name = tokenizer_name | default("$TOKENIZER_SHORT_NAME")
+
+    ## ---- Vocab + sequence length ----
+    ##
+    ## Defaults from the base: vocab_size=32000, model_max_length=2048.
+    ## Pick a vocab size that matches the dataset and the target model
+    ## scale (smaller datasets / small models do better with smaller
+    ## vocabs). Reference points: TinyStories 2k–8k, Wikitext 4k–32k,
+    ## SmolLM-style web corpora 32k–128k.
+    ## -- set ns.vocab_size = vocab_size | default(8000)
+    ## -- set ns.model_max_length = model_max_length | default(4096)
+
+
+## ---------------------------------------------------------------------------
+## Training dataset.
+##
+## Default below trains on $DATASET_ID's "train" split, reading the
+## "text" column (the framework's default feature). Common dataset
+## variants:
+##
+##   - Multi-config HF dataset (uses an extra ``name=`` arg):
+##         args: [ "EleutherAI/wikitext_document_level", "wikitext-103-raw-v1" ]
+##
+##   - Non-default feature column (e.g. wikitext_document_level uses
+##     "page" as its text-per-row column instead of "text"). See the
+##     [tokenizer_trainer] override below.
+##
+##   - Local dataset_server mapping:
+##         args: [ "local/stories" ]
+##
+##   - Streaming for very large datasets:
+##         kwargs: { split: "train", streaming: True }
+##
+## See the wikitext / tiny_stories_bpe example projects for the two
+## most common shapes.
+## ---------------------------------------------------------------------------
+
+[tokenizer_dataset]
+tokenizer_dataset: &tokenizer_dataset !partial:datasets:load_dataset@tokenizer_dataset
+    args: [ "$DATASET_ID" ]
+    kwargs: { split: "train" }
+
+
+## ---------------------------------------------------------------------------
+## Tokenizer-trainer overrides — uncomment if the dataset's text column
+## isn't named "text" (the framework default). The default for
+## ``feature:`` is documented in tokenizers/bpe/bpe.yaml.
+## ---------------------------------------------------------------------------
+
+## [tokenizer_trainer]
+##     == super()
+##     feature: "page"         ## or "code", "content", "story", ...
+
+
+## ---------------------------------------------------------------------------
+## Special-tokens map overrides — extend with ChatML tokens, instruction-
+## following markers, etc. The base ships with bos/pad/eos/unk; anything
+## added here gets registered as a protected (never-split) token.
+## ---------------------------------------------------------------------------
+
+## [tokenizer_special_tokens_map]
+##     == super()
+##     ## ChatML — for instruction / chat fine-tuning
+##     im_start: "<|im_start|>"
+##     im_end: "<|im_end|>"
+##
+##     ## Forgather instruction tokens
+##     ## inst_start: "<|inst_start|>"
+##     ## inst_end:   "<|inst_end|>"
+
+
+## ---------------------------------------------------------------------------
+## Non-BPE tokenizer types (WordPiece / Unigram) — the BPE trainer block
+## inherited from tokenizers/bpe/bpe.yaml looks like this:
+##
+##   [tokenizer_trainer]
+##       == super()
+##       model:     !call:tokenizers:models.BPE { ... }
+##       normalizer: !call:tokenizers:normalizers.NFC []
+##       pre_tokenizer: !call:tokenizers:pre_tokenizers.ByteLevel []
+##       decoder:   !call:tokenizers:decoders.ByteLevel []
+##       trainer:   !call:tokenizers.trainers:BpeTrainer { ... }
+##
+## To use WordPiece / Unigram / etc., replace this whole block with the
+## corresponding tokenizers-library classes — same shape, different
+## class names. Read tokenizers/bpe/bpe.yaml for the BPE reference.
+## ---------------------------------------------------------------------------

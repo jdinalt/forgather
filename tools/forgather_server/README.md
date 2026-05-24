@@ -56,6 +56,10 @@ anything absent from both falls back to the defaults shown.
 | `--insecure`                         | off                                      | Allow binding a non-loopback host without TLS. Suppresses the "token in cleartext" abort.                             |
 | `--lock-inference-proxy`             | off                                      | Restrict the inference reverse proxy to localhost upstreams. The unconditional `http`/`https`-only scheme guard still applies. See [Network exposure](#network-exposure). |
 | `--docs-landing PATH`                | unset                                    | Path the Docs view opens by default, overriding the built-in `docs/README.md` preference. Absolute or repo-relative. A missing file falls back to the default — the override is a hint, not a hard requirement. |
+| `--meta-template-dir PATH`           | unset (repeatable)                       | Additional directory to scan for meta-templates (the scaffold catalog used by New Config / New Template / New Project). Earliest entry has highest priority, so a user scaffold whose id matches a bundled default overrides it. See [Meta-template search path](#meta-template-search-path). |
+| `--no-default-meta-templates`        | off                                      | Drop the bundled `templatelib/meta/` scaffolds from the catalog. Pair with `--meta-template-dir` to expose only a curated user catalog. |
+| `--eval-dir PATH`                    | unset (repeatable)                       | Additional directory to scan for evaluation projects (the ones surfaced by `forgather eval list` and the webui's Evaluate modal). Repeatable; earliest entry wins on name collision. Composes with `eval.search_paths` in `~/.config/forgather/config.yaml`. See [Evaluation search path](#evaluation-search-path). |
+| `--no-default-eval`                  | off                                      | Drop the bundled `examples/evaluation/` directory from the eval-config search path. Pair with `--eval-dir` for a curated user-only catalog. |
 
 The `args:` mapping in `server_config.yaml` accepts the same names with
 dashes turned to underscores (`log_level`, `regen_token`,
@@ -383,6 +387,87 @@ forgather server --demo --fs-root /path/to/example/projects
 
 **Recommended deployment**: container or VM, mount example projects
 read-only, run with `--no-auth --demo --fs-root <examples-dir>`.
+
+## Meta-template search path
+
+The New Config / New Template / New Project modals show a tree of
+*scaffolds* discovered under `templatelib/meta/`. By default the catalog
+ships with the framework. Two CLI flags let the operator extend or
+replace it:
+
+```bash
+# Add a user catalog alongside the bundled defaults
+forgather server --meta-template-dir /home/me/forgather-scaffolds
+
+# Multiple user roots, in priority order (first wins)
+forgather server \
+  --meta-template-dir /home/me/site \
+  --meta-template-dir /home/me/personal
+
+# Replace defaults entirely with a curated catalog
+forgather server \
+  --meta-template-dir /opt/myorg/scaffolds \
+  --no-default-meta-templates
+```
+
+**Merge semantics** are first-wins, matching Jinja's search path:
+
+- A leaf scaffold with the same id (e.g. `datasets/packed`) in two roots
+  uses the one from the **earlier** root. So a user customisation of a
+  bundled scaffold lives at the same relative path under their root and
+  overrides the default.
+- A category present in multiple roots merges children + templates from
+  every root; the **first** root's `_category.yaml` provides the display
+  label and description.
+- Non-existent `--meta-template-dir` paths are logged as a warning at
+  startup but don't crash discovery — typos give an empty contribution,
+  not a startup failure.
+
+The authoring guide at
+[`templatelib/meta/README.md`](../../templatelib/meta/README.md)
+covers the body / manifest pair, field types, `picker:` kinds, and the
+verbose-with-commented-defaults pattern.
+
+## Evaluation search path
+
+The Evaluate modal and `GET /api/eval/configs` discover evaluation
+projects (the ones described by `forgather eval list`) by walking a
+search path. By default this is the bundled `examples/evaluation/`
+directory plus any extras the user configured in
+`~/.config/forgather/config.yaml`'s `eval.search_paths`. Two server
+CLI flags let an operator extend or replace this without touching the
+user config:
+
+```bash
+# Add a user catalog of eval projects alongside the bundled defaults
+forgather server --eval-dir /home/me/my-evals
+
+# Multiple user roots, priority-ordered (earliest wins on collision)
+forgather server \
+  --eval-dir /home/me/site-evals \
+  --eval-dir /home/me/personal-evals
+
+# Replace the defaults entirely with a curated catalog
+forgather server \
+  --eval-dir /opt/myorg/eval-projects \
+  --no-default-eval
+```
+
+**Resolution order**: `--eval-dir` extras come first in scan order,
+then the library's default discovery (bundled `examples/evaluation/` +
+the user's `eval.search_paths` from config.yaml). `--no-default-eval`
+drops the bundled directory from the resolved list. Duplicate paths
+across these sources are de-duplicated while preserving the
+priority-first ordering. Non-existent `--eval-dir` paths are logged
+as a warning at startup but don't crash discovery — same shape as
+`--meta-template-dir`.
+
+Use `--eval-dir` for evaluation projects authored outside the
+forgather directory tree (a per-user / per-org catalog kept under
+version control elsewhere). The CLI's `forgather eval` commands keep
+using the library's default discovery (they don't see the server's
+extras); for CLI users the same effect is available via the
+`eval.search_paths` user-config key.
 
 ## Filesystem allowlist (`--fs-root`)
 
@@ -2645,17 +2730,35 @@ The project tree exposes a different menu per node type:
   **🗑 Delete Workspace…**. Create-Project opens
   `NewProjectModal`, the in-app equivalent of
   `forgather project create`: required Name + Description, plus
-  Config prefix (default `configs`), Default config (default
+  Config prefix (default `configs`), Default config (placeholder
+  derived from the picked scaffold when applicable, otherwise
   `default.yaml`), Project dir (relative to workspace; may be
   nested with `mkdir -p` semantics; Browse… button anchored to
   `workspace_root` lets the user pick an existing subdirectory and
   drops the relative path back into the field with a trailing `/`
-  for the leaf name), and an optional Copy-from `PathField` for
-  seeding the default config from an existing file. Submit calls
-  `POST /api/workspace/new-project`, which dispatches into
-  `forgather.cli.project.project_create_cmd` via a
-  `SimpleNamespace` so we don't duplicate the CLI's project-skeleton
-  logic. Tree refresh is via `["projects"]` invalidation. The
+  for the leaf name), and a **Starting point** fieldset that
+  controls how the project's first config gets seeded — tri-state:
+  - **Blank** (default): server writes the built-in empty stub.
+  - **Copy from existing file**: a `PathField` for a source config.
+  - **Use a scaffold**: renders `MetaTemplatePicker` filtered to
+    `target_kind: "config"` plus `MetaTemplateFields` for the
+    selected scaffold; the user enters values and submission
+    sends `meta_template` + `values` to the server, which renders
+    the scaffold and uses the result as the seed.
+
+  The Default-config filename placeholder is auto-derived from the
+  scaffold's `CONFIG_NAME` value when one is picked, so the new
+  project's first config is named meaningfully (e.g. `c4.yaml`)
+  instead of always landing as `default.yaml`. Typing into the
+  field overrides the auto-derivation. Submit calls `POST
+  /api/workspace/new-project`, which dispatches into
+  `forgather.cli.project.project_create_cmd` via a `SimpleNamespace`
+  so we don't duplicate the CLI's project-skeleton logic — for the
+  scaffold path the server renders the meta-template up front and
+  passes the result as `seed_text` instead of going through the
+  CLI's `--copy-from` file read. `copy_from` and `meta_template`
+  are mutually exclusive (server enforces with 400). Tree refresh
+  is via `["projects"]` invalidation. The
   synthetic "Unaffiliated" cluster (no `workspace_root`) doesn't
   receive the menu. Delete-Workspace recursively removes the
   workspace directory via `POST /api/fs/delete-dir`, with the same
@@ -2665,26 +2768,37 @@ The project tree exposes a different menu per node type:
   in-tree output_models within it.
 - **Project row** — **📄 New Config…** / **📄 New Template…**.
   Both open a `NewTemplateModal` (shares the chrome with
-  `CleanOutputModal` et al.) with project / kind / base-dir summary
-  rows, an auto-focused name input, an inline hint about the
-  `.yaml` default suffix and subdirectory support, and a live
-  preview of the absolute target path. Subdirectory creation under
-  the configs / templates root is handled by typing a nested name
-  (e.g. `experiments/foo.yaml`) — `mkdir -p` semantics on the
-  server. The base path comes from
-  `GET /api/project/template-paths` (`MetaConfig.searchpath[0]` for
-  templates, plus `config_prefix` for configs). Submit calls
-  `POST /api/project/new-template`, invalidates the project tree
-  and `project-templates` queries so the new file shows up in
-  `tlist`, then hands the returned path to the Edit panel via
+  `CleanOutputModal` et al.). The modal is a two-step flow:
+  1. **Pick a starting point.** A two-pane picker shows
+     **Blank file** plus the meta-template tree (scaffolds shipped
+     under `templatelib/meta/`, fetched via
+     `GET /api/project/meta-templates`). Selecting a leaf reveals
+     its title, description, and the list of fields it will ask
+     for in step 2.
+  2. **Configure.** The familiar name input + base-dir preview,
+     and — when a scaffold was picked — one form field per variable
+     declared in the scaffold's manifest (label, helper text,
+     default pre-filled, required fields starred). Subdirectory
+     creation under the configs / templates root is handled by
+     typing a nested name (e.g. `experiments/foo.yaml`) — `mkdir
+     -p` semantics on the server.
+  
+  The base path comes from `GET /api/project/template-paths`
+  (`MetaConfig.searchpath[0]` for templates, plus `config_prefix`
+  for configs). Submit calls `POST /api/project/new-template` —
+  with `meta_template` + `values` when a scaffold was picked, or
+  bare when "Blank file" was selected — invalidates the project
+  tree and `project-templates` queries so the new file shows up
+  in `tlist`, then hands the returned path to the Edit panel via
   the App-level `onEditTemplate` hook — the user lands directly
-  on a blank editor for the new file. A trailing **🗑 Delete
+  on the editor for the new file (scaffold pre-filled, or blank). A trailing **🗑 Delete
   Project…** entry recursively removes the project directory via
   `POST /api/fs/delete-dir`; it's gated by both a standard
   `confirm()` and a typed-token prompt requiring the user to type
-  the project's directory basename, since the project tree often
-  contains an `output_models/` subtree (runs / checkpoints) that
-  the regular Clean Output flow won't touch. The confirm body
+  `yes`, since the project tree often contains an `output_models/`
+  subtree (runs / checkpoints) that the regular Clean Output flow
+  won't touch. (Workspace delete keeps its stricter basename gate
+  because it cascades to every project under it.) The confirm body
   spells out that outputs configured to live *outside* the project
   tree are not affected. After delete `["projects"]`,
   `["project-templates", dir]`, and `["project-models", dir]` are
@@ -2977,10 +3091,11 @@ are WebSockets.
 | `GET /api/project/asset?project_dir=&asset=`   | Image / file embedded in the README (path-guarded)  |
 | `GET /api/project/templates?project_dir=`      | Every template on the project's search path, grouped by search-root category (with synthetic Meta group for `meta.yaml`) — backs the `tlist` view |
 | `GET /api/project/template-paths?project_dir=` | Resolved `templates_dir` + `configs_dir` + `config_prefix` (for the New Config / New Template modal's path preview) |
-| `POST /api/workspace/new-project` `{workspace_dir, name, description, config_prefix?, default_config?, project_dir_name?, copy_from?}` | Create a project under a workspace — wraps the CLI's `project_create_cmd`; nested `project_dir_name` (`a/b/c`) supported; refuses overwrite, returns absolute project_dir |
+| `POST /api/workspace/new-project` `{workspace_dir, name, description, config_prefix?, default_config?, project_dir_name?, copy_from?, meta_template?, values?}` | Create a project under a workspace — wraps the CLI's `project_create_cmd`; nested `project_dir_name` (`a/b/c`) supported; refuses overwrite, returns absolute project_dir. `copy_from` and `meta_template` are mutually exclusive (400 otherwise); when `meta_template` is set the server renders the scaffold against `values` and seeds the default config with the result |
 | `POST /api/workspace/new` `{parent_dir, name, description, workspace_dir_name?, forgather_dir, libs?, search_paths?}` | Create a workspace under a search root — wraps `ws_create_cmd`; parent must be a configured search root; nested `workspace_dir_name` supported; returns absolute workspace_dir |
 | `POST /api/workspace/init-here` `{workspace_dir, name, description, forgather_dir, libs?, search_paths?}` | Initialize a workspace in an *existing* directory — used by the Files-tree right-click flow. Refuses if `forgather_workspace/` already exists; requires `workspace_dir` to live at-or-under a configured search root. |
-| `POST /api/project/new-template` `{project_dir, kind: "config"\|"template", name}` | Create an empty file under the templates dir; refuses overwrite, `.yaml` auto-appended, returns absolute path |
+| `POST /api/project/new-template` `{project_dir, kind: "config"\|"template", name, meta_template?, values?}` | Create a file under the templates dir; refuses overwrite, `.yaml` auto-appended, returns absolute path. With `meta_template` + `values` the file is seeded from a scaffold under `templatelib/meta/`; without them it is created empty |
+| `GET /api/project/meta-templates`              | Tree of available scaffolds discovered under `templatelib/meta/`. Each leaf is a `MetaTemplate` (`id`, `title`, `description`, `target_kind`, `fields[]`); each branch is a `MetaCategory` with `templates[]` + `children[]`. Feeds the New Config / New Template modal's "pick a starting point" step |
 
 ### Config inspection
 

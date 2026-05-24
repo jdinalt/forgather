@@ -1,0 +1,42 @@
+title: "HuggingFace class"
+summary: "Instantiate a HuggingFace PretrainedConfig class with a chosen tokenizer."
+description: |
+  Generates the default config for a model project that just wraps a
+  HuggingFace `PretrainedConfig` subclass (e.g. `GPT2Config`,
+  `LlamaConfig`, `MistralConfig`, `Qwen3Config`, `Gemma3TextConfig`)
+  with a chosen tokenizer and size overrides. No Forgather model bits,
+  no generated Python file under output_dir — the model class itself
+  comes straight from `transformers`.
+
+  This is a "special sub-category" of model project: the rendered config
+  is what you write when you want, say, a GPT-2-architecture model
+  trained from scratch with a different size or tokenizer, without
+  needing the Forgather modular-bits machinery. Example shape lives at
+  `templatelib/examples/models/transformers/gpt2.yaml` (and `llama.yaml`
+  — the HF-class sibling of `dynamic_llama.yaml`).
+
+  For the more common case where you want Forgather code generation
+  with swappable bits (Llama-family or otherwise), use the
+  "Llama-derived" or "from scratch" model scaffolds instead.
+target_kind: "config"
+fields:
+  - name: CONFIG_NAME
+    label: "Config name"
+    description: "Short label shown in `forgather ls` listings."
+    placeholder: "GPT-2 Small"
+    required: true
+  - name: DESCRIPTION
+    label: "Description"
+    description: "One-line description, shown in `forgather ls`."
+    required: true
+  - name: HF_CONFIG_CLASS
+    label: "HF config class"
+    description: |
+      Fully-qualified path to a `transformers.PretrainedConfig` subclass.
+      The model is instantiated via
+      `AutoModelForCausalLM.from_config(<this class>)`. Examples:
+      `transformers:GPT2Config`, `transformers:LlamaConfig`,
+      `transformers:MistralConfig`, `transformers:Qwen3Config`,
+      `transformers:Gemma3TextConfig`.
+    placeholder: "transformers:GPT2Config"
+    required: true

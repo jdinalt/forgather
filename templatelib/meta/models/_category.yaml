@@ -1,0 +1,8 @@
+title: "Models"
+summary: "Model-definition projects (architecture + tokenizer + sizes)."
+description: |
+  Scaffolds for defining model architectures: inherit the Llama
+  topology and override sizes, write a from-scratch architecture by
+  wiring up bits from `modelsrc/transformer/`, or wrap a
+  `transformers.PretrainedConfig` subclass directly without Forgather
+  codegen.
