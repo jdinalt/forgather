@@ -14,7 +14,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from forgather import trainer_control
 from forgather.trainer_control import (
     PID_REUSE_SLACK_SECONDS,
     is_endpoint_pid_alive,
