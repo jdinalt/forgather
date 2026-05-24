@@ -191,6 +191,30 @@ def main():
         ),
     )
     parser.add_argument(
+        "--eval-dir",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "Additional directory to scan for evaluation projects (the "
+            "ones surfaced by `forgather eval list` and the webui's "
+            "Evaluate modal). Repeatable; earliest entry has highest "
+            "priority on name collision. Composes with any "
+            "`eval.search_paths` set in ~/.config/forgather/config.yaml. "
+            "Use to expose evaluations authored outside the forgather "
+            "directory."
+        ),
+    )
+    parser.add_argument(
+        "--no-default-eval",
+        action="store_true",
+        help=(
+            "Don't include the bundled `examples/evaluation/` directory "
+            "in the eval-config search path. Pair with --eval-dir to "
+            "expose only a curated user catalog."
+        ),
+    )
+    parser.add_argument(
         "--lock-inference-proxy",
         action="store_true",
         help=(
@@ -267,6 +291,7 @@ def main():
     _configure_auth(args, tls_on=tls_on)
     _configure_fs_roots(args)
     _configure_meta_templates(args)
+    _configure_eval_search_paths(args)
 
     if args.cluster:
         _activate_cluster(args, tls_on=tls_on)
@@ -466,6 +491,33 @@ def _configure_meta_templates(args) -> None:
             "meta-template search path: %s%s",
             [d for d in extras if os.path.isdir(d)],
             "" if not args.no_default_meta_templates else " (defaults disabled)",
+        )
+
+
+def _configure_eval_search_paths(args) -> None:
+    """Register the eval-project search path additions declared on the CLI.
+
+    Same pattern as ``_configure_meta_templates``: log a warning for
+    non-existent paths (typos shouldn't kill discovery) and forward to
+    the eval_ops module.
+    """
+    try:
+        from . import eval_ops
+    except Exception:
+        from forgather_server import eval_ops  # type: ignore
+    extras = list(args.eval_dir or [])
+    log = logging.getLogger("forgather_server")
+    for d in extras:
+        if not os.path.isdir(d):
+            log.warning("--eval-dir path does not exist: %s", d)
+    eval_ops.configure_eval_search_paths(
+        extras, disable_default=bool(args.no_default_eval)
+    )
+    if extras or args.no_default_eval:
+        log.info(
+            "eval search path: %s%s",
+            [d for d in extras if os.path.isdir(d)],
+            "" if not args.no_default_eval else " (bundled default disabled)",
         )
 
 

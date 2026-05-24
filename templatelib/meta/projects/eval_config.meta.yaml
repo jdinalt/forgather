@@ -1,0 +1,63 @@
+title: "Evaluation config"
+summary: "Named loss/perplexity evaluation pointing at a dataset project."
+description: |
+  Generates an evaluation-config leaf — the kind of file consumed by
+  `forgather eval list` / `show` / `test` and by the webui's Evaluate
+  modal. The leaf is pure metadata: it names a dataset project + config
+  to evaluate on plus optional per-eval defaults (batch size, max
+  length, stride). The actual tokenizer / model / collator / trainer
+  are materialised by `scripts/eval_script.py` at run time.
+
+  Inherits from `test/test_type.yaml`, which sets `config_class:
+  type.evaluation` so the discovery walk picks the leaf up.
+
+  Most eval projects host many of these as siblings under
+  `templates/configs/`, one per dataset or split. See
+  `examples/evaluation/common/templates/configs/` for the reference
+  shape — each file ~10 lines, varying only in name + dataset pointer.
+  After scaffolding a project from this template, the next leaves are
+  typically faster to add via **New Config** (the in-repo Duplicate /
+  Cut / Copy flow).
+
+  The eval search path is configurable: the server scans
+  `examples/evaluation/` by default plus any directories given via
+  `--eval-dir` (and `eval.search_paths` in
+  `~/.config/forgather/config.yaml`). New eval projects you author
+  outside the framework's directory tree are picked up automatically
+  once one of those mechanisms points at them.
+target_kind: "config"
+fields:
+  - name: CONFIG_NAME
+    label: "Config name"
+    description: "Display label shown in `forgather eval list` / `show`."
+    placeholder: "Eval: C4"
+    required: true
+  - name: DESCRIPTION
+    label: "Description"
+    description: "One-line description of what this eval measures."
+    required: true
+  - name: EVAL_NAME
+    label: "Eval id"
+    description: |
+      Short id surfaced as `forgather eval show <id>` and in the
+      webui's eval picker. Lowercase, no spaces; typically the dataset
+      name (e.g. `c4`, `openorca`, `fineweb-edu-dedup`).
+    placeholder: "c4"
+    required: true
+  - name: DATASET_PROJECT
+    label: "Dataset project path"
+    description: |
+      Absolute path to the dataset project to evaluate on (the
+      directory containing `meta.yaml`). For in-repo datasets, the
+      pattern is `<forgather>/examples/datasets/<owner>` — e.g.
+      `/path/to/forgather/examples/datasets/allenai`.
+    placeholder: "/path/to/forgather/examples/datasets/allenai"
+    required: true
+  - name: DATASET_CONFIG
+    label: "Dataset config"
+    description: |
+      Config template name inside the dataset project, e.g.
+      `en.yaml` for `examples/datasets/allenai`, `openorca-packed.yaml`
+      for `examples/datasets/Open-Orca`.
+    placeholder: "en.yaml"
+    required: true

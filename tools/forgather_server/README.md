@@ -58,6 +58,8 @@ anything absent from both falls back to the defaults shown.
 | `--docs-landing PATH`                | unset                                    | Path the Docs view opens by default, overriding the built-in `docs/README.md` preference. Absolute or repo-relative. A missing file falls back to the default — the override is a hint, not a hard requirement. |
 | `--meta-template-dir PATH`           | unset (repeatable)                       | Additional directory to scan for meta-templates (the scaffold catalog used by New Config / New Template / New Project). Earliest entry has highest priority, so a user scaffold whose id matches a bundled default overrides it. See [Meta-template search path](#meta-template-search-path). |
 | `--no-default-meta-templates`        | off                                      | Drop the bundled `templatelib/meta/` scaffolds from the catalog. Pair with `--meta-template-dir` to expose only a curated user catalog. |
+| `--eval-dir PATH`                    | unset (repeatable)                       | Additional directory to scan for evaluation projects (the ones surfaced by `forgather eval list` and the webui's Evaluate modal). Repeatable; earliest entry wins on name collision. Composes with `eval.search_paths` in `~/.config/forgather/config.yaml`. See [Evaluation search path](#evaluation-search-path). |
+| `--no-default-eval`                  | off                                      | Drop the bundled `examples/evaluation/` directory from the eval-config search path. Pair with `--eval-dir` for a curated user-only catalog. |
 
 The `args:` mapping in `server_config.yaml` accepts the same names with
 dashes turned to underscores (`log_level`, `regen_token`,
@@ -425,6 +427,47 @@ The authoring guide at
 [`templatelib/meta/README.md`](../../templatelib/meta/README.md)
 covers the body / manifest pair, field types, `picker:` kinds, and the
 verbose-with-commented-defaults pattern.
+
+## Evaluation search path
+
+The Evaluate modal and `GET /api/eval/configs` discover evaluation
+projects (the ones described by `forgather eval list`) by walking a
+search path. By default this is the bundled `examples/evaluation/`
+directory plus any extras the user configured in
+`~/.config/forgather/config.yaml`'s `eval.search_paths`. Two server
+CLI flags let an operator extend or replace this without touching the
+user config:
+
+```bash
+# Add a user catalog of eval projects alongside the bundled defaults
+forgather server --eval-dir /home/me/my-evals
+
+# Multiple user roots, priority-ordered (earliest wins on collision)
+forgather server \
+  --eval-dir /home/me/site-evals \
+  --eval-dir /home/me/personal-evals
+
+# Replace the defaults entirely with a curated catalog
+forgather server \
+  --eval-dir /opt/myorg/eval-projects \
+  --no-default-eval
+```
+
+**Resolution order**: `--eval-dir` extras come first in scan order,
+then the library's default discovery (bundled `examples/evaluation/` +
+the user's `eval.search_paths` from config.yaml). `--no-default-eval`
+drops the bundled directory from the resolved list. Duplicate paths
+across these sources are de-duplicated while preserving the
+priority-first ordering. Non-existent `--eval-dir` paths are logged
+as a warning at startup but don't crash discovery — same shape as
+`--meta-template-dir`.
+
+Use `--eval-dir` for evaluation projects authored outside the
+forgather directory tree (a per-user / per-org catalog kept under
+version control elsewhere). The CLI's `forgather eval` commands keep
+using the library's default discovery (they don't see the server's
+extras); for CLI users the same effect is available via the
+`eval.search_paths` user-config key.
 
 ## Filesystem allowlist (`--fs-root`)
 
