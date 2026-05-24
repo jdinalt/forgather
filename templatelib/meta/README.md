@@ -132,7 +132,18 @@ file.
 
 ## Adding a new meta-template
 
-1. Pick (or create) a directory under `templatelib/meta/`.
+Meta-templates can live in this directory (bundled with the framework)
+or in a user-owned directory the operator points the server at. Pass
+`--meta-template-dir PATH` to `forgather server` to add a root; repeat
+for multiple roots, and pair with `--no-default-meta-templates` to hide
+the bundled catalog entirely. User roots scan **first**, so a scaffold
+at `datasets/packed.yaml` in your root will override the bundled one of
+the same id — same shape as Jinja's search path.
+
+Steps:
+
+1. Pick (or create) a directory under `templatelib/meta/` *or* under
+   one of the configured `--meta-template-dir` roots.
 2. Write the body file with `$VAR` markers. The body should
    `-- extends "..."` a normal templatelib config so the generated
    file slots into Forgather's inheritance graph correctly.

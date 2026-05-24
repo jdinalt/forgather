@@ -34,13 +34,70 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from string import Template
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 import yaml
 
 # Resolved relative to this file: forgather/tools/forgather_server/ -> repo root.
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 META_ROOT = os.path.join(_REPO_ROOT, "templatelib", "meta")
+
+
+# ---------------------------------------------------------------------------
+# Configurable search roots
+#
+# Discovery walks a list of root directories; each is scanned independently
+# and the results are merged with **first-wins** semantics — same shape as
+# Jinja's search path. The server CLI populates this at startup via
+# ``configure_roots`` (``--meta-template-dir PATH`` is repeatable, and
+# ``--no-default-meta-templates`` drops the bundled defaults). User-provided
+# roots come first, so a scaffold whose id matches a bundled one overrides
+# the default — exactly what you want when shipping a customised version
+# of a built-in scaffold.
+#
+# Tests bypass all of this by passing ``meta_root=<tmp_path>`` directly to
+# ``discover`` / ``get`` / ``render`` — that path is treated as the only
+# root, ignoring whatever ``configure_roots`` has registered.
+
+_extra_roots: List[str] = []
+_use_default_root: bool = True
+
+
+def configure_roots(
+    extra_dirs: Iterable[str] = (),
+    *,
+    disable_default: bool = False,
+) -> None:
+    """Set the active meta-template search path.
+
+    ``extra_dirs`` come first in scan order, so user-provided scaffolds
+    take precedence over bundled defaults of the same id. The default
+    ``templatelib/meta/`` directory is appended unless ``disable_default``
+    is true. Paths must be absolute and existing; non-existent paths are
+    quietly skipped (a typo in the CLI shouldn't kill the server, but the
+    operator gets nothing from a missing directory either).
+
+    Idempotent: calling again replaces the configuration. Pass no
+    arguments to reset to "defaults only" (used by tests that monkeypatch
+    individual call paths).
+    """
+    global _extra_roots, _use_default_root
+    cleaned: List[str] = []
+    for d in extra_dirs:
+        ap = os.path.abspath(d)
+        if os.path.isdir(ap) and ap not in cleaned:
+            cleaned.append(ap)
+    _extra_roots = cleaned
+    _use_default_root = not disable_default
+
+
+def _active_roots() -> List[str]:
+    """Resolve the ordered list of roots to scan, dropping the default
+    when disabled and skipping any non-existent extras."""
+    roots: List[str] = list(_extra_roots)
+    if _use_default_root and os.path.isdir(META_ROOT):
+        roots.append(META_ROOT)
+    return roots
 
 
 @dataclass
@@ -194,18 +251,58 @@ def _scan_dir(abs_dir: str, rel_prefix: str) -> MetaCategory:
 
 
 def discover(meta_root: Optional[str] = None) -> List[MetaCategory]:
-    """Top-level scan: return the children of ``META_ROOT`` as a tree.
+    """Top-level scan: return the merged tree of meta-templates.
 
-    The root directory itself is not surfaced as a category — its children
-    are the top-level groups (Datasets, Models, Trainers, …). If a
-    ``_category.yaml`` exists at the root, it is ignored for now; we can
-    surface it later as a header if there's a need.
+    Without ``meta_root``, every configured search root is scanned in
+    order (user-provided first, bundled default last) and the results
+    are merged with **first-wins** semantics: a leaf id present in an
+    earlier root shadows the same id in a later root; a category present
+    in multiple roots has its children merged recursively, with the
+    *first* root's ``_category.yaml`` providing the display label.
+
+    The root directory itself is not surfaced as a category — its
+    children are the top-level groups (Datasets, Models, Trainers, …).
+    If a ``_category.yaml`` exists at the root it is ignored for now.
+
+    When ``meta_root`` is given the configured search path is bypassed
+    entirely and that directory is the sole root scanned. Used by tests
+    to point at a fixture tree without disturbing global state.
     """
-    root = meta_root or META_ROOT
-    if not os.path.isdir(root):
-        return []
-    root_cat = _scan_dir(root, rel_prefix="")
-    return root_cat.children
+    if meta_root is not None:
+        if not os.path.isdir(meta_root):
+            return []
+        return _scan_dir(meta_root, rel_prefix="").children
+    merged: List[MetaCategory] = []
+    for root in _active_roots():
+        merged = _merge_categories(merged, _scan_dir(root, rel_prefix="").children)
+    return merged
+
+
+def _merge_categories(
+    base: List[MetaCategory], incoming: List[MetaCategory]
+) -> List[MetaCategory]:
+    """Merge ``incoming`` into ``base`` with first-wins semantics.
+
+    ``base`` represents the higher-priority root (or the accumulated
+    union so far). ``incoming`` is appended underneath: new categories
+    are added at the end; categories that already exist in ``base``
+    receive any new sub-categories and any non-conflicting templates.
+    """
+    by_name = {c.name: c for c in base}
+    for c in incoming:
+        existing = by_name.get(c.name)
+        if existing is None:
+            base.append(c)
+            by_name[c.name] = c
+            continue
+        # Category exists in base — merge children + templates first-wins.
+        existing_template_ids = {t.id for t in existing.templates}
+        for t in c.templates:
+            if t.id not in existing_template_ids:
+                existing.templates.append(t)
+                existing_template_ids.add(t.id)
+        existing.children = _merge_categories(existing.children, c.children)
+    return base
 
 
 def _walk_templates(categories: List[MetaCategory]) -> List[MetaTemplate]:
@@ -217,10 +314,23 @@ def _walk_templates(categories: List[MetaCategory]) -> List[MetaTemplate]:
 
 
 def get(meta_id: str, meta_root: Optional[str] = None) -> MetaTemplate:
-    """Look up a single meta-template by id, or raise KeyError."""
-    for mt in _walk_templates(discover(meta_root)):
-        if mt.id == meta_id:
-            return mt
+    """Look up a single meta-template by id, or raise KeyError.
+
+    Honours the same first-wins semantics as ``discover``: when no
+    explicit ``meta_root`` is given, scans each configured root in order
+    and returns the first match. Walking each root individually (rather
+    than calling ``discover`` and then linearly searching the merged
+    tree) keeps render-time lookup independent of the merge cost.
+    """
+    if meta_root is not None:
+        for mt in _walk_templates(_scan_dir(meta_root, rel_prefix="").children):
+            if mt.id == meta_id:
+                return mt
+        raise KeyError(meta_id)
+    for root in _active_roots():
+        for mt in _walk_templates(_scan_dir(root, rel_prefix="").children):
+            if mt.id == meta_id:
+                return mt
     raise KeyError(meta_id)
 
 

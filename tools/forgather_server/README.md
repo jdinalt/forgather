@@ -56,6 +56,8 @@ anything absent from both falls back to the defaults shown.
 | `--insecure`                         | off                                      | Allow binding a non-loopback host without TLS. Suppresses the "token in cleartext" abort.                             |
 | `--lock-inference-proxy`             | off                                      | Restrict the inference reverse proxy to localhost upstreams. The unconditional `http`/`https`-only scheme guard still applies. See [Network exposure](#network-exposure). |
 | `--docs-landing PATH`                | unset                                    | Path the Docs view opens by default, overriding the built-in `docs/README.md` preference. Absolute or repo-relative. A missing file falls back to the default — the override is a hint, not a hard requirement. |
+| `--meta-template-dir PATH`           | unset (repeatable)                       | Additional directory to scan for meta-templates (the scaffold catalog used by New Config / New Template / New Project). Earliest entry has highest priority, so a user scaffold whose id matches a bundled default overrides it. See [Meta-template search path](#meta-template-search-path). |
+| `--no-default-meta-templates`        | off                                      | Drop the bundled `templatelib/meta/` scaffolds from the catalog. Pair with `--meta-template-dir` to expose only a curated user catalog. |
 
 The `args:` mapping in `server_config.yaml` accepts the same names with
 dashes turned to underscores (`log_level`, `regen_token`,
@@ -383,6 +385,46 @@ forgather server --demo --fs-root /path/to/example/projects
 
 **Recommended deployment**: container or VM, mount example projects
 read-only, run with `--no-auth --demo --fs-root <examples-dir>`.
+
+## Meta-template search path
+
+The New Config / New Template / New Project modals show a tree of
+*scaffolds* discovered under `templatelib/meta/`. By default the catalog
+ships with the framework. Two CLI flags let the operator extend or
+replace it:
+
+```bash
+# Add a user catalog alongside the bundled defaults
+forgather server --meta-template-dir /home/me/forgather-scaffolds
+
+# Multiple user roots, in priority order (first wins)
+forgather server \
+  --meta-template-dir /home/me/site \
+  --meta-template-dir /home/me/personal
+
+# Replace defaults entirely with a curated catalog
+forgather server \
+  --meta-template-dir /opt/myorg/scaffolds \
+  --no-default-meta-templates
+```
+
+**Merge semantics** are first-wins, matching Jinja's search path:
+
+- A leaf scaffold with the same id (e.g. `datasets/packed`) in two roots
+  uses the one from the **earlier** root. So a user customisation of a
+  bundled scaffold lives at the same relative path under their root and
+  overrides the default.
+- A category present in multiple roots merges children + templates from
+  every root; the **first** root's `_category.yaml` provides the display
+  label and description.
+- Non-existent `--meta-template-dir` paths are logged as a warning at
+  startup but don't crash discovery — typos give an empty contribution,
+  not a startup failure.
+
+The authoring guide at
+[`templatelib/meta/README.md`](../../templatelib/meta/README.md)
+covers the body / manifest pair, field types, `picker:` kinds, and the
+verbose-with-commented-defaults pattern.
 
 ## Filesystem allowlist (`--fs-root`)
 
