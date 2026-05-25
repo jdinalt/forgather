@@ -712,9 +712,26 @@ def download_file(path: str):
     Used by the webui context menu's "Download..." command. Works for
     any file type — text and binary — and delegates Content-Type to
     mimetypes.guess_type.
+
+    Unlike the directory-listing endpoints, this one streams raw bytes
+    of arbitrary files, so it refuses to operate at all when no
+    fs-root allowlist is configured. Without an allowlist, a request
+    for ``/home/$USER/.ssh/id_rsa`` would otherwise succeed; the
+    explicit fail-closed here keeps the prototype's default config
+    (no allowlist) from quietly turning into an arbitrary-file-read
+    endpoint.
     """
-    target = Path(os.path.expanduser(path)).resolve()
+    if not fs_paths.fs_roots_active():
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "/fs/download is disabled when no fs-root allowlist is "
+                "configured (would otherwise expose arbitrary files)"
+            ),
+            headers={"X-Forgather-Fs-Root-Denied": "1"},
+        )
     _reject_symlink_in_chain(path)
+    target = Path(os.path.expanduser(path)).resolve()
     _enforce_fs_root(target)
 
     if not target.exists():

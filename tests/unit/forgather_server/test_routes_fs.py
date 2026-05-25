@@ -56,10 +56,16 @@ class TestDownloadFile:
 
     @pytest.fixture
     def client(self, tmp_path, monkeypatch):
-        """A TestClient with no fs-root restrictions."""
+        """A TestClient with the fs-root gate satisfied.
+
+        Stubs ``fs_roots_active`` True (so the endpoint isn't refused
+        outright) and ``is_path_in_fs_root`` True (so any tmp_path
+        passes the per-request allowlist check).
+        """
         import forgather_server.paths as fp
         from fastapi import FastAPI
 
+        monkeypatch.setattr(fp, "fs_roots_active", lambda: True)
         monkeypatch.setattr(fp, "is_path_in_fs_root", lambda p: True)
         app = FastAPI()
         app.include_router(router, prefix="/api")
@@ -96,6 +102,27 @@ class TestDownloadFile:
         r = client.get(f"/api/fs/download?path={link}")
         assert r.status_code == 400
 
+    def test_download_disabled_when_no_fs_root_configured(self, tmp_path, monkeypatch):
+        """With no fs-root allowlist, /fs/download must refuse outright.
+
+        Otherwise the default (no-allowlist) prototype config silently
+        becomes an arbitrary-file-read endpoint.
+        """
+        import forgather_server.paths as fp
+        from fastapi import FastAPI
+
+        f = tmp_path / "readable.txt"
+        f.write_text("anything")
+
+        monkeypatch.setattr(fp, "fs_roots_active", lambda: False)
+        app = FastAPI()
+        app.include_router(router, prefix="/api")
+        client = TestClient(app)
+
+        r = client.get(f"/api/fs/download?path={f}")
+        assert r.status_code == 403
+        assert r.headers.get("X-Forgather-Fs-Root-Denied") == "1"
+
     def test_download_outside_fs_root_raises_403(self, tmp_path, monkeypatch):
         """Path-allowlist gate must reject reads outside the configured roots."""
         import forgather_server.paths as fp
@@ -106,6 +133,10 @@ class TestDownloadFile:
         outside = tmp_path / "outside.txt"
         outside.write_text("secret")
 
+        # Allowlist IS active (so the no-allowlist gate doesn't fire
+        # first), but ``outside`` is not under ``allowed`` so the
+        # per-request check must reject it.
+        monkeypatch.setattr(fp, "fs_roots_active", lambda: True)
         monkeypatch.setattr(
             fp,
             "is_path_in_fs_root",
