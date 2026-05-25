@@ -146,6 +146,30 @@ class TestServersList:
         assert body[0]["base_url"] == "http://127.0.0.1:8512"
         assert body[0]["alive"] is True
 
+    def test_terminal_status_records_are_filtered(self, client, monkeypatch):
+        """Dead servers (done / failed / aborted) shouldn't appear in the
+        unified list — they can't be inspected or selected for training,
+        and the Jobs view already shows them for diagnostics."""
+
+        def fake(status):
+            return type(
+                "FakeRec",
+                (),
+                {
+                    "queue_id": f"q-{status}",
+                    "job_type": "diloco_server",
+                    "config": "diloco:8512",
+                    "status": status,
+                    "job_params": {"host": "127.0.0.1", "port": 8512},
+                },
+            )()
+
+        records = [fake("running"), fake("done"), fake("failed"), fake("aborted")]
+        monkeypatch.setattr(diloco_routes.job_records, "list_records", lambda: records)
+        body = client.get("/api/diloco/servers").json()
+        assert len(body) == 1
+        assert body[0]["queue_id"] == "q-running"
+
     def test_host_0000_is_remapped(self, client, monkeypatch):
         class FakeRec:
             queue_id = "q1"

@@ -38,6 +38,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .. import diloco_server_registry, job_records
+from ..job_records import RUNNING_STATUSES
 
 log = logging.getLogger("forgather_server.routes.diloco")
 router = APIRouter(tags=["diloco"])
@@ -92,10 +93,18 @@ def _browser_host(host: Optional[str]) -> str:
 
 
 def _local_servers() -> List[DiLoCoServerModel]:
-    """JobRecord-derived DiLoCo servers spawned by this forgather_server."""
+    """JobRecord-derived DiLoCo servers spawned by this forgather_server.
+
+    Terminal-status records (done / failed / aborted) are filtered out:
+    a dead server can't be selected for training and can't be inspected
+    from the DiLoCo view, so listing it here is pure clutter. The Jobs
+    view still shows them for diagnostics.
+    """
     out: List[DiLoCoServerModel] = []
     for r in job_records.list_records():
         if r.job_type != _DILOCO_JOB_TYPE:
+            continue
+        if r.status not in RUNNING_STATUSES:
             continue
         params = r.job_params or {}
         try:
@@ -106,7 +115,6 @@ def _local_servers() -> List[DiLoCoServerModel]:
             continue
         host = params.get("host") or "127.0.0.1"
         base_url = f"http://{_browser_host(host)}:{port}"
-        alive = r.status in {"starting", "running"}
         out.append(
             DiLoCoServerModel(
                 id=f"local:{r.queue_id}",
@@ -116,7 +124,7 @@ def _local_servers() -> List[DiLoCoServerModel]:
                 host=str(host),
                 port=port,
                 queue_id=r.queue_id,
-                alive=alive,
+                alive=True,
             )
         )
     # Newest first — matches the Jobs view's implicit ordering.
