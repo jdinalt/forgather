@@ -10,6 +10,7 @@ import {
   ProjectInfo,
 } from "../api";
 import { useDatasetSource } from "../dataset-source";
+import { persistGet, persistSet } from "../persist";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import {
   coerceArgs,
@@ -107,6 +108,15 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   // group, this worker joins it. ``selectedDiLoCoBase`` is the chosen
   // server's base_url ("" means "None — don't join"). The dependent
   // fields are only consulted when a non-empty base is selected.
+  //
+  // Persisted to localStorage per (project, config) so a second worker
+  // submitted from the same modal slot retains the prior DiLoCo
+  // selection — multi-worker setups otherwise required the operator
+  // to re-check the box for every worker, which was easy to forget.
+  // ``worker_id`` is intentionally NOT persisted (would cause server-
+  // side duplicate-id collisions on the second submit); the rest are.
+  const dilocoStorageKey =
+    `forgather-submit-diloco/${project.project_dir}/${config.name}`;
   const dilocoServersQ = useQuery({
     queryKey: ["diloco", "servers"],
     queryFn: api.listDiLoCoServers,
@@ -114,15 +124,68 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     // without forcing the operator to reopen the modal.
     refetchInterval: 10_000,
   });
-  const [selectedDiLoCoBase, setSelectedDiLoCoBase] = useState<string>("");
+  const persistedDiLoCo = useMemo<DiLoCoPersisted>(() => {
+    const raw = persistGet(dilocoStorageKey);
+    if (!raw) return DEFAULT_DILOCO_PERSISTED;
+    try {
+      return {
+        ...DEFAULT_DILOCO_PERSISTED,
+        ...(JSON.parse(raw) as Partial<DiLoCoPersisted>),
+      };
+    } catch {
+      return DEFAULT_DILOCO_PERSISTED;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dilocoStorageKey]);
+  const [selectedDiLoCoBase, setSelectedDiLoCoBase] = useState<string>(
+    persistedDiLoCo.base,
+  );
   // Per-knob form state for the dependent fields. Strings (free form)
   // so empty == "use config / env default"; coerced on submit.
-  const [diSyncEvery, setDiSyncEvery] = useState<string>("");
-  const [diNumFragments, setDiNumFragments] = useState<string>("");
-  const [diDylu, setDiDylu] = useState<boolean>(false);
-  const [diBf16, setDiBf16] = useState<boolean>(true);
-  const [diHeartbeat, setDiHeartbeat] = useState<string>("");
+  const [diSyncEvery, setDiSyncEvery] = useState<string>(persistedDiLoCo.syncEvery);
+  const [diNumFragments, setDiNumFragments] = useState<string>(
+    persistedDiLoCo.numFragments,
+  );
+  const [diDylu, setDiDylu] = useState<boolean>(persistedDiLoCo.dylu);
+  const [diBf16, setDiBf16] = useState<boolean>(persistedDiLoCo.bf16Comm);
+  const [diHeartbeat, setDiHeartbeat] = useState<string>(
+    persistedDiLoCo.heartbeatInterval,
+  );
+  // worker_id stays per-submit only — auto-generation is the desired
+  // default and a stale value would collide with the prior worker's
+  // registration.
   const [diWorkerId, setDiWorkerId] = useState<string>("");
+  useEffect(() => {
+    const cur: DiLoCoPersisted = {
+      base: selectedDiLoCoBase,
+      syncEvery: diSyncEvery,
+      numFragments: diNumFragments,
+      dylu: diDylu,
+      bf16Comm: diBf16,
+      heartbeatInterval: diHeartbeat,
+    };
+    persistSet(dilocoStorageKey, JSON.stringify(cur));
+  }, [
+    dilocoStorageKey,
+    selectedDiLoCoBase,
+    diSyncEvery,
+    diNumFragments,
+    diDylu,
+    diBf16,
+    diHeartbeat,
+  ]);
+  // If the persisted base isn't currently in the server list (server
+  // went offline, was renamed, etc.) fall back to "None". Avoids a
+  // ghost state where the dependent fields render even though no
+  // radio button is checked.
+  useEffect(() => {
+    if (!selectedDiLoCoBase) return;
+    const servers = dilocoServersQ.data;
+    if (!servers) return; // still loading; don't clobber
+    if (!servers.some((s) => s.base_url === selectedDiLoCoBase)) {
+      setSelectedDiLoCoBase("");
+    }
+  }, [dilocoServersQ.data, selectedDiLoCoBase]);
   // /info for the selected server — used to seed sensible defaults
   // (sync_every from dylu_base_sync_every, dylu requirement, etc.)
   // and to flag obvious mismatches. Disabled when no server picked.
@@ -812,6 +875,24 @@ function formatNproc(v: number | string | null): string {
 // ---------------------------------------------------------------------------
 // DiLoCo
 // ---------------------------------------------------------------------------
+
+interface DiLoCoPersisted {
+  base: string;
+  syncEvery: string;
+  numFragments: string;
+  dylu: boolean;
+  bf16Comm: boolean;
+  heartbeatInterval: string;
+}
+
+const DEFAULT_DILOCO_PERSISTED: DiLoCoPersisted = {
+  base: "",
+  syncEvery: "",
+  numFragments: "",
+  dylu: false,
+  bf16Comm: true,
+  heartbeatInterval: "",
+};
 
 interface DiLoCoPickerProps {
   servers: DiLoCoServer[];
