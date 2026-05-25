@@ -1,4 +1,4 @@
--- extends "projects/finetune_v2.yaml"
+-- extends "projects/lm_training_project.yaml"
 
 ## DiLoCo bringup target.
 ##
@@ -24,31 +24,40 @@
     -- set ns.config_name = "Finetune + DiLoCo"
     -- set ns.config_description = "Finetune that joins a DiLoCo server when DILOCO_SERVER env is set"
 
+[globals]
+    == super()
+    ## If not specified, default to model-dir and model-name
+	-- set ns.model_id_or_path = model_id_or_path | default(joinpath(ns.models_dir, ns.model_name))
+
+    ## If explicity specified, use 'output_dir,' otherwise assume that 'ns.model_id_or_path'
+    -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
+
+[variable_listing]
+    == super()
+# ns.model_id_or_path: {{ ns.model_id_or_path }}
+
+[construct_new_model]
+    -- include 'models/causal_lm/from_pretrained_config.yaml'
+
 [trainer_callbacks]
     -- include 'diloco_lm_callbacks'
 
-#-------------------- diloco_lm_callbacks --------------------
--- extends 'callbacks/lm_callbacks.yaml'
-
-[callback_list]
-    => super()
-    diloco_callback: !singleton:forgather.ml.trainer.callbacks:DiLoCoCallback
-        ## All DILOCO_* env vars are read by the callback constructor
-        ## when these are None; the webui sets them based on the
-        ## operator's selections. Surfaced explicitly so the YAML
-        ## documents which knobs exist.
-        server_addr: {{ diloco_server | toyaml(None) }}
-        sync_every: {{ diloco_sync_every | toyaml(None) }}
-        worker_id: {{ diloco_worker_id | toyaml(None) }}
-        bf16_comm: {{ diloco_bf16_comm | toyaml(None) }}
-        dylu: {{ diloco_dylu | toyaml(None) }}
-        heartbeat_interval: {{ diloco_heartbeat_interval | toyaml(None) }}
-        num_fragments: {{ diloco_num_fragments | toyaml(None) }}
-        timeout: {{ diloco_timeout | toyaml(600) }}
-        max_sync_retries: {{ diloco_max_sync_retries | toyaml(3) }}
-
 [dynamic_args]
     == super()
+    model_id_or_path:
+        names: [ "--model-id-or-path", "-M" ]
+        type: "path"
+        group: "Model"
+        required: true
+        help: "HF model ID or local path to model"
+    model_name:
+        names: "--model-name"
+        group: "Output"
+        required: true
+        help: "Set model name for DiLoCo worker instance. Each worker should be unique."
+    # Delete menu items which we don't use
+    model_project: ~
+    model_config: ~
     ## DiLoCo override knobs surfaced on the train submit modal. The
     ## webui's DiLoCo radio group writes to these when the operator
     ## picks a server. They're optional from the CLI side; unset means
@@ -91,3 +100,24 @@
         type: str
         group: "DiLoCo"
         help: "Stable worker identity; auto-generated if unset."
+    
+#-------------------- diloco_lm_callbacks --------------------
+-- extends 'callbacks/lm_callbacks.yaml'
+
+[callback_list]
+    => super()
+    diloco_callback: !singleton:forgather.ml.trainer.callbacks:DiLoCoCallback
+        ## All DILOCO_* env vars are read by the callback constructor
+        ## when these are None; the webui sets them based on the
+        ## operator's selections. Surfaced explicitly so the YAML
+        ## documents which knobs exist.
+        server_addr: {{ diloco_server | toyaml(None) }}
+        sync_every: {{ diloco_sync_every | toyaml(None) }}
+        worker_id: {{ diloco_worker_id | toyaml(None) }}
+        bf16_comm: {{ diloco_bf16_comm | toyaml(None) }}
+        dylu: {{ diloco_dylu | toyaml(None) }}
+        heartbeat_interval: {{ diloco_heartbeat_interval | toyaml(None) }}
+        num_fragments: {{ diloco_num_fragments | toyaml(None) }}
+        timeout: {{ diloco_timeout | toyaml(600) }}
+        max_sync_retries: {{ diloco_max_sync_retries | toyaml(3) }}
+
