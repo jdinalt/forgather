@@ -95,3 +95,26 @@ class TestDownloadFile:
         link.symlink_to(real)
         r = client.get(f"/api/fs/download?path={link}")
         assert r.status_code == 400
+
+    def test_download_outside_fs_root_raises_403(self, tmp_path, monkeypatch):
+        """Path-allowlist gate must reject reads outside the configured roots."""
+        import forgather_server.paths as fp
+        from fastapi import FastAPI
+
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret")
+
+        monkeypatch.setattr(
+            fp,
+            "is_path_in_fs_root",
+            lambda p: str(Path(p).resolve()).startswith(str(allowed.resolve())),
+        )
+        app = FastAPI()
+        app.include_router(router, prefix="/api")
+        client = TestClient(app)
+
+        r = client.get(f"/api/fs/download?path={outside}")
+        assert r.status_code == 403
+        assert r.headers.get("X-Forgather-Fs-Root-Denied") == "1"

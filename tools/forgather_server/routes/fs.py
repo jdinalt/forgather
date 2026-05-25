@@ -727,9 +727,11 @@ def download_file(path: str):
         content_type = "application/octet-stream"
 
     basename = os.path.basename(str(target))
+    # FileResponse(filename=...) emits an RFC-5987 Content-Disposition
+    # (attachment; filename=...; filename*=UTF-8''...) which handles
+    # non-ASCII and quote-bearing names correctly — don't override it.
     return FileResponse(
         path=str(target),
         media_type=content_type,
         filename=basename,
-        headers={"Content-Disposition": f'attachment; filename="{basename}"'},
     )
