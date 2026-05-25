@@ -17,6 +17,7 @@ from .routes import auth as auth_routes
 from .routes import cluster as cluster_routes
 from .routes import configs as configs_routes
 from .routes import dataset_server as dataset_server_routes
+from .routes import diloco as diloco_routes
 from .routes import docs as docs_routes
 from .routes import fs as fs_routes
 from .routes import generation_configs as generation_configs_routes
@@ -94,17 +95,13 @@ async def lifespan(app: FastAPI):
         # run on every node but self-gate on master status — failover
         # to a new master is automatic.
         tasks.append(
-            asyncio.create_task(
-                cluster_dataset_inventory.master_collect_servers_loop()
-            )
+            asyncio.create_task(cluster_dataset_inventory.master_collect_servers_loop())
         )
         tasks.append(
             asyncio.create_task(cluster_dataset_inventory.master_health_loop())
         )
         tasks.append(
-            asyncio.create_task(
-                cluster_dataset_inventory.master_dataset_refresh_loop()
-            )
+            asyncio.create_task(cluster_dataset_inventory.master_dataset_refresh_loop())
         )
         # Inference-server cluster picker inventory. Two loops (collect
         # + health) — no dataset-refresh analog because inference
@@ -116,9 +113,7 @@ async def lifespan(app: FastAPI):
             )
         )
         tasks.append(
-            asyncio.create_task(
-                cluster_inference_inventory.master_health_loop()
-            )
+            asyncio.create_task(cluster_inference_inventory.master_health_loop())
         )
 
     # Enqueue auto-start services declared in the server config before
@@ -248,6 +243,7 @@ def create_app() -> FastAPI:
     app.include_router(projects_routes.router, prefix="/api")
     app.include_router(configs_routes.router, prefix="/api")
     app.include_router(dataset_server_routes.router, prefix="/api")
+    app.include_router(diloco_routes.router, prefix="/api")
     app.include_router(docs_routes.router, prefix="/api")
     app.include_router(fs_routes.router, prefix="/api")
     app.include_router(generation_configs_routes.router, prefix="/api")
