@@ -21,20 +21,32 @@
 
 [config_metadata]
     == super()
-    -- set ns.config_name = "Finetune + DiLoCo"
-    -- set ns.config_description = "Finetune that joins a DiLoCo server when DILOCO_SERVER env is set"
+    -- set ns.config_name = "DiLoCo"
+    -- set ns.config_description = "DiLoCo webui bringup prototype"
+    -- set ns.model_name = model_name | default("diloco")
 
 [globals]
     == super()
     ## If not specified, default to model-dir and model-name
 	-- set ns.model_id_or_path = model_id_or_path | default(joinpath(ns.models_dir, ns.model_name))
-
-    ## If explicity specified, use 'output_dir,' otherwise assume that 'ns.model_id_or_path'
+    ## When dataset sharding is configured, append the shard index to the model
+    ## name so each worker gets a unique output directory. This prevents checkpoint
+    ## race conditions when multiple workers run concurrently.
+-- if shard_index is defined and shard_index is not none
+    -- set ns.model_name = ns.model_name + "_shard" + shard_index | string
+    -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
     -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
+-- endif
 
 [variable_listing]
     == super()
 # ns.model_id_or_path: {{ ns.model_id_or_path }}
+
+[dataset_project]
+    == super()
+    shard_dataset:
+        num_shards: {{ num_shards | toyaml(1) }}
+        index: {{ shard_index | toyaml(0) }}
 
 [construct_new_model]
     -- include 'models/causal_lm/from_pretrained_config.yaml'
@@ -50,11 +62,18 @@
         group: "Model"
         required: true
         help: "HF model ID or local path to model"
-    model_name:
-        names: "--model-name"
-        group: "Output"
+    num_shards:
+        names: "--num-shards"
+        type: int
+        group: "DiLoCo"
         required: true
-        help: "Set model name for DiLoCo worker instance. Each worker should be unique."
+        help: "Number of dataset shards (for DiLoCo workers)"
+    shard_index:
+        names: "--shard-index"
+        type: int
+        group: "DiLoCo"
+        required: true
+        help: "Dataset shard index for this worker"
     # Delete menu items which we don't use
     model_project: ~
     model_config: ~
@@ -120,4 +139,3 @@
         num_fragments: {{ diloco_num_fragments | toyaml(None) }}
         timeout: {{ diloco_timeout | toyaml(600) }}
         max_sync_retries: {{ diloco_max_sync_retries | toyaml(3) }}
-
