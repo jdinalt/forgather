@@ -700,6 +700,7 @@ def _build_construct(item, gpu_indices, tty_path):
 
 def _diloco_env_from_job_params(
     diloco: Dict[str, Any],
+    queue_id: str,
 ) -> Dict[str, str]:
     """Translate a ``job_params.diloco`` dict into ``DILOCO_*`` env vars.
 
@@ -707,6 +708,15 @@ def _diloco_env_from_job_params(
     template args are None. Only keys the operator actually set get
     forwarded so the rest fall back to whatever the callback's
     constructor default / project template specifies.
+
+    Special case for ``worker_id``: the env var is **always set** when
+    DiLoCo is enabled, even if the operator didn't supply one — config
+    preprocessing reads ``DILOCO_WORKER_ID`` to derive a unique output
+    directory per worker, so a missing value at preprocessing time
+    would cause two workers to share an output dir and clobber each
+    other's checkpoints. When the operator leaves ``worker_id`` blank,
+    we fall back to the queue_id (stable, unique per job submission,
+    and already surfaced in the Jobs view so the operator can correlate).
 
     Expected input shape (all keys optional except ``server_addr``):
         {
@@ -734,9 +744,10 @@ def _diloco_env_from_job_params(
         env["DILOCO_BF16_COMM"] = "1" if bool(diloco["bf16_comm"]) else "0"
     if diloco.get("heartbeat_interval") is not None:
         env["DILOCO_HEARTBEAT_INTERVAL"] = str(float(diloco["heartbeat_interval"]))
-    wid = diloco.get("worker_id")
-    if wid:
-        env["DILOCO_WORKER_ID"] = str(wid)
+    # Always-set: operator-supplied value if present, otherwise the
+    # queue_id as a stable per-submission fallback.
+    wid = (diloco.get("worker_id") or "").strip()
+    env["DILOCO_WORKER_ID"] = wid or queue_id
     return env
 
 
@@ -755,7 +766,7 @@ def _build_training(item, gpu_indices, tty_path):
     # args is needed.
     diloco = item.job_params.get("diloco") or {}
     if isinstance(diloco, dict):
-        extra_env.update(_diloco_env_from_job_params(diloco))
+        extra_env.update(_diloco_env_from_job_params(diloco, item.queue_id))
     extra_env = extra_env or None
     # ``nproc`` from job_params is an explicit single-node override
     # (typed into the SubmitModal nproc field, or supplied by other
