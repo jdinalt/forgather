@@ -946,6 +946,17 @@ function FilesContextMenu({
           📖 Open in Docs…
         </button>
       )}
+      {!target.isDir && (
+        <button
+          className="context-menu-item"
+          onClick={() => {
+            api.downloadFile(target.path);
+            onClose();
+          }}
+        >
+          ⬇ Download…
+        </button>
+      )}
       {target.isDir && (
         <button className="context-menu-item" onClick={doNewFile}>
           ➕ New File…

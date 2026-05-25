@@ -8,6 +8,7 @@ network.
 """
 
 import logging
+import mimetypes
 import os
 import re
 import shutil
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from .. import paths as fs_paths
@@ -701,3 +703,52 @@ def delete_dir(req: DeleteDirRequest):
         log.debug("post-rmtree parent utime failed (non-fatal): %s", e)
 
     return DeleteDirResponse(deleted=str(target), removed_bytes=removed_bytes)
+
+
+@router.get("/fs/download")
+def download_file(path: str):
+    """Serve a file as a download (Content-Disposition: attachment).
+
+    Used by the webui context menu's "Download..." command. Works for
+    any file type — text and binary — and delegates Content-Type to
+    mimetypes.guess_type.
+
+    Unlike the directory-listing endpoints, this one streams raw bytes
+    of arbitrary files, so it refuses to operate at all when no
+    fs-root allowlist is configured. Without an allowlist, a request
+    for ``/home/$USER/.ssh/id_rsa`` would otherwise succeed; the
+    explicit fail-closed here keeps the prototype's default config
+    (no allowlist) from quietly turning into an arbitrary-file-read
+    endpoint.
+    """
+    if not fs_paths.fs_roots_active():
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "/fs/download is disabled when no fs-root allowlist is "
+                "configured (would otherwise expose arbitrary files)"
+            ),
+            headers={"X-Forgather-Fs-Root-Denied": "1"},
+        )
+    _reject_symlink_in_chain(path)
+    target = Path(os.path.expanduser(path)).resolve()
+    _enforce_fs_root(target)
+
+    if not target.exists():
+        raise HTTPException(status_code=404, detail=f"Not found: {path}")
+    if not target.is_file():
+        raise HTTPException(status_code=400, detail=f"Not a file: {path}")
+
+    content_type, _ = mimetypes.guess_type(str(target))
+    if not content_type:
+        content_type = "application/octet-stream"
+
+    basename = os.path.basename(str(target))
+    # FileResponse(filename=...) emits an RFC-5987 Content-Disposition
+    # (attachment; filename=...; filename*=UTF-8''...) which handles
+    # non-ASCII and quote-bearing names correctly — don't override it.
+    return FileResponse(
+        path=str(target),
+        media_type=content_type,
+        filename=basename,
+    )
