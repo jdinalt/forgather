@@ -223,6 +223,16 @@ def inference_server_registry_file() -> Path:
     return server_state_dir() / "inference_server_registry.json"
 
 
+def diloco_server_registry_file() -> Path:
+    """User-added DiLoCo-server URLs + (TLS-follow-up) tokens.
+
+    Lives at ``<config>/server/diloco_server_registry.json``, mode 0600.
+    Same shape as the inference / dataset_server registries — see
+    :mod:`forgather_server.diloco_server_registry`.
+    """
+    return server_state_dir() / "diloco_server_registry.json"
+
+
 def cluster_state_dir() -> Path:
     """Persistent directory for multi-node cluster state.
 
