@@ -66,6 +66,7 @@ SERVICE_TYPES: Dict[str, str] = {
     "inference": "inference",
     "tensorboard": "tensorboard",
     "mkdocs": "mkdocs",
+    "diloco": "diloco_server",
 }
 
 # Reverse map for signature computation when we observe a queue item /
@@ -310,7 +311,8 @@ _PROGRAMMATIC_HEADER = """\
 # services: long-running spawned processes auto-started at boot. Each
 #           entry under <type>.<name> is enabled=true|false plus the
 #           same args its modal would have submitted as ``job_params``.
-#           Supported types: dataset, inference, tensorboard, mkdocs.
+#           Supported types: dataset, inference, tensorboard, mkdocs,
+#           diloco.
 
 """
 
@@ -375,9 +377,7 @@ def status_for_each(services: Iterable[Service]) -> List[ServiceStatus]:
             qid, st = active
             running = st == "running"
             out.append(
-                ServiceStatus(
-                    service=svc, running=running, queue_id=qid, status=st
-                )
+                ServiceStatus(service=svc, running=running, queue_id=qid, status=st)
             )
         else:
             out.append(ServiceStatus(service=svc, running=False))
@@ -417,6 +417,15 @@ def build_queue_item(svc: Service) -> queue_store.QueueItem:
         port = job_params.get("port", 9999)
         project_dir = str(job_params.get("config_file") or "/")
         config = f"mkdocs:{port}"
+    elif svc.type == "diloco":
+        port = job_params.get("port", 8512)
+        # ``output_dir`` is the model checkpoint dir the server holds
+        # global params for — same shape as inference's ``model_path``.
+        # Falls back to "/" so the JobRecord shows *something* even when
+        # the operator didn't fill it in (the spawn will then fail loud
+        # with a clear error from the diloco CLI).
+        project_dir = str(job_params.get("output_dir") or "/")
+        config = f"diloco:{port}"
     else:  # unreachable — validated upstream
         raise ValueError(svc.type)
     return queue_store.QueueItem.new(

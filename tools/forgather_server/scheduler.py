@@ -557,6 +557,38 @@ def _build_update(item, gpu_indices, tty_path):
     )
 
 
+def _build_diloco_server(item, gpu_indices, tty_path):
+    p = item.job_params
+    return launcher.spawn_diloco_server_process(
+        output_dir=p["output_dir"],
+        num_workers=int(p["num_workers"]),
+        port=int(p.get("port", 8512)),
+        host=p.get("host", "127.0.0.1"),
+        async_mode=bool(p.get("async_mode", False)),
+        dn_buffer_size=int(p.get("dn_buffer_size", 0) or 0),
+        dylu=bool(p.get("dylu", False)),
+        dylu_base_sync_every=int(p.get("dylu_base_sync_every", 500) or 500),
+        from_checkpoint=p.get("from_checkpoint") or None,
+        save_every=int(p.get("save_every", 10) or 0),
+        save_total_limit=int(p.get("save_total_limit", 3) or 0),
+        outer_lr=(float(p["outer_lr"]) if p.get("outer_lr") is not None else None),
+        outer_momentum=(
+            float(p["outer_momentum"]) if p.get("outer_momentum") is not None else None
+        ),
+        no_nesterov=bool(p.get("no_nesterov", False)),
+        heartbeat_timeout=(
+            float(p["heartbeat_timeout"])
+            if p.get("heartbeat_timeout") is not None
+            else None
+        ),
+        min_workers=(
+            int(p["min_workers"]) if p.get("min_workers") is not None else None
+        ),
+        no_dashboard=bool(p.get("no_dashboard", False)),
+        tty_log_path=tty_path,
+    )
+
+
 def _build_mkdocs(item, gpu_indices, tty_path):
     p = item.job_params
     watch = p.get("watch")
@@ -710,6 +742,7 @@ _LAUNCHERS = {
     "finalize": _build_finalize,
     "update": _build_update,
     "mkdocs": _build_mkdocs,
+    "diloco_server": _build_diloco_server,
     "model": _build_model,
     "dataset": _build_dataset,
     "construct": _build_construct,
