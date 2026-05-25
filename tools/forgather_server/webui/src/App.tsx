@@ -22,6 +22,7 @@ import { DatasetServerModal } from "./components/DatasetServerModal";
 import { InferencePanel } from "./components/InferencePanel";
 import { DatasetsPanel } from "./components/DatasetsPanel";
 import { DiLoCoPanel } from "./components/DiLoCoPanel";
+import { DiLoCoServerModal } from "./components/DiLoCoServerModal";
 import type { SelectedLeaf } from "./components/DatasetsExploreTab";
 import { JobsPanel } from "./components/JobsPanel";
 import { ServicesPanel } from "./components/ServicesPanel";
@@ -307,6 +308,7 @@ export default function App() {
   const [datasetServerOpen, setDatasetServerOpen] = useState(false);
   const [tensorboardOpen, setTensorboardOpen] = useState(false);
   const [mkdocsOpen, setMkdocsOpen] = useState(false);
+  const [dilocoServerOpen, setDilocoServerOpen] = useState(false);
   // Edit-service state: when set, the matching modal is rendered in
   // edit mode pre-populated from this service's args. Single piece of
   // state — only one edit modal is open at a time. Dispatched from
@@ -827,7 +829,7 @@ export default function App() {
     // Filled in for entries under "Services" — the backend service
     // type each launcher creates instances of. Used to fan out the
     // configured-service list under the matching launcher row.
-    serviceType?: "inference" | "dataset" | "tensorboard" | "mkdocs";
+    serviceType?: "inference" | "dataset" | "tensorboard" | "mkdocs" | "diloco";
   }
 
   // Long-running spawned processes the operator wants to launch and
@@ -873,6 +875,16 @@ export default function App() {
       docRelpath: "docs/guides/mkdocs.md",
       mkdocsSlug: "guides/mkdocs/",
       serviceType: "mkdocs",
+    },
+    {
+      icon: "⚡",
+      label: "DiLoCo…",
+      title:
+        "Start a DiLoCo parameter server. CPU-only, long-lived; holds global model parameters and accepts pseudo-gradient submissions from workers over HTTP.",
+      onOpen: () => setDilocoServerOpen(true),
+      docRelpath: "docs/trainers/diloco.md",
+      mkdocsSlug: "trainers/diloco/",
+      serviceType: "diloco",
     },
   ];
 
@@ -1518,6 +1530,13 @@ export default function App() {
           onServiceCreated={expandServicesCategory}
         />
       )}
+      {dilocoServerOpen && (
+        <DiLoCoServerModal
+          onClose={() => setDilocoServerOpen(false)}
+          onSubmitted={onJobSubmitted}
+          onServiceCreated={expandServicesCategory}
+        />
+      )}
       {/* Edit-service modals — same components as the create-mode mounts
           above, but routed via editingService.type. Only one renders at a
           time because only one type matches. */}
@@ -1560,6 +1579,17 @@ export default function App() {
       )}
       {editingService && editingService.service.type === "mkdocs" && (
         <MkDocsModal
+          editingService={{
+            name: editingService.service.name,
+            enabled: editingService.service.enabled,
+            running: editingService.running,
+            args: editingService.service.args,
+          }}
+          onClose={() => setEditingService(null)}
+        />
+      )}
+      {editingService && editingService.service.type === "diloco" && (
+        <DiLoCoServerModal
           editingService={{
             name: editingService.service.name,
             enabled: editingService.service.enabled,

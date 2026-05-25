@@ -614,6 +614,7 @@ export interface EnqueueRequest {
     | "eval"
     | "inference"
     | "dataset_server"
+    | "diloco_server"
     | "tensorboard"
     | "mkdocs"
     | "convert"

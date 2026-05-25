@@ -3,7 +3,12 @@ import type { QueryClient } from "@tanstack/react-query";
 import { api } from "./api";
 
 /** Service type names accepted by the backend ``services:`` config. */
-export type ServiceTypeName = "dataset" | "inference" | "tensorboard" | "mkdocs";
+export type ServiceTypeName =
+  | "dataset"
+  | "inference"
+  | "tensorboard"
+  | "mkdocs"
+  | "diloco";
 
 /** Coerce an arbitrary string into something the backend's name
  *  validator (``[A-Za-z0-9_-]+``) accepts. Anything that isn't a
