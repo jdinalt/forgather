@@ -1033,6 +1033,38 @@ class DiLoCoServer:
 
         send_dashboard_response(handler)
 
+    def _handle_info(self, handler: BaseHTTPRequestHandler):
+        """Handle info request.
+
+        Returns the static-ish facts a client needs to negotiate compatible
+        settings before submitting pseudo-gradients: which checkpoint the
+        server was started from, the parameter count, and recommended
+        client-side defaults (``expected_client_settings``). Distinct from
+        ``/status`` which is the live, rapidly-changing snapshot.
+        """
+        response = {
+            "output_dir": self.output_dir,
+            "mode": "async" if self.async_mode else "sync",
+            "async_mode": self.async_mode,
+            "num_workers": self.num_workers,
+            "num_parameters": self._model_params,
+            "model_size_mb": round(self._model_size_mb, 2),
+            "dylu_enabled": self.dylu_enabled,
+            "dylu_base_sync_every": self.dylu_base_sync_every,
+            "expected_client_settings": {
+                # DyLU servers want all workers ramped to the base rate so
+                # the per-worker scaling has a known anchor. Non-DyLU
+                # servers leave sync_every up to the worker.
+                "sync_every": (
+                    self.dylu_base_sync_every if self.dylu_enabled else None
+                ),
+                "dylu": self.dylu_enabled,
+                "bf16_comm": True,
+                "num_fragments_min": 1,
+            },
+        }
+        _send_json_response(handler, response)
+
     def _handle_control(self, handler: BaseHTTPRequestHandler, action: str):
         """Dispatch control actions."""
         try:
@@ -1171,6 +1203,8 @@ class DiLoCoServer:
                         server_ref._handle_get_global_params(self)
                     elif path == "/status":
                         server_ref._handle_status(self)
+                    elif path == "/info":
+                        server_ref._handle_info(self)
                     elif path == "/dashboard" or path == "":
                         server_ref._handle_dashboard(self)
                     else:

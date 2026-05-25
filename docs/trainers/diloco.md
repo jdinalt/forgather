@@ -601,6 +601,7 @@ The server exposes these HTTP endpoints:
 | POST | `/heartbeat` | Worker heartbeat with training speed; returns DyLU recommendation if enabled |
 | POST | `/deregister` | Worker departure |
 | GET | `/status` | Server status (mode, workers, sync round, fragment/async fields) |
+| GET | `/info` | Static facts a client needs to negotiate settings (output_dir, num_parameters, expected_client_settings) |
 | GET | `/dashboard` | Web dashboard UI (HTML page) |
 | POST | `/control/{action}` | Control endpoints: `save_state`, `kick_worker`, `update_optimizer`, `update_num_workers`, `shutdown` |
 
