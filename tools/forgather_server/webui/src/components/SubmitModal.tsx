@@ -5,6 +5,8 @@ import {
   ClusterJobSubmitRequest,
   ClusterMembersResponse,
   ConfigInfo,
+  DiLoCoInfo,
+  DiLoCoServer,
   ProjectInfo,
 } from "../api";
 import { useDatasetSource } from "../dataset-source";
@@ -100,6 +102,55 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   // submit takes the regular single-node path.
   const [mnState, setMnState] = useState<MultiNodePanelState>(emptyMultiNodeState);
   const [mnSeeded, setMnSeeded] = useState<boolean>(false);
+
+  // DiLoCo opt-in: when the operator picks a server from the radio
+  // group, this worker joins it. ``selectedDiLoCoBase`` is the chosen
+  // server's base_url ("" means "None — don't join"). The dependent
+  // fields are only consulted when a non-empty base is selected.
+  const dilocoServersQ = useQuery({
+    queryKey: ["diloco", "servers"],
+    queryFn: api.listDiLoCoServers,
+    // Refresh every 10s so a server that just came up shows up here
+    // without forcing the operator to reopen the modal.
+    refetchInterval: 10_000,
+  });
+  const [selectedDiLoCoBase, setSelectedDiLoCoBase] = useState<string>("");
+  // Per-knob form state for the dependent fields. Strings (free form)
+  // so empty == "use config / env default"; coerced on submit.
+  const [diSyncEvery, setDiSyncEvery] = useState<string>("");
+  const [diNumFragments, setDiNumFragments] = useState<string>("");
+  const [diDylu, setDiDylu] = useState<boolean>(false);
+  const [diBf16, setDiBf16] = useState<boolean>(true);
+  const [diHeartbeat, setDiHeartbeat] = useState<string>("");
+  const [diWorkerId, setDiWorkerId] = useState<string>("");
+  // /info for the selected server — used to seed sensible defaults
+  // (sync_every from dylu_base_sync_every, dylu requirement, etc.)
+  // and to flag obvious mismatches. Disabled when no server picked.
+  const dilocoInfoQ = useQuery({
+    queryKey: ["diloco", "info", selectedDiLoCoBase],
+    queryFn: () => api.diLoCoServerInfo(selectedDiLoCoBase),
+    enabled: !!selectedDiLoCoBase,
+    staleTime: 60_000,
+  });
+  // Seed defaults whenever /info loads for a fresh selection. Operator
+  // edits aren't overwritten — we only seed empty fields.
+  useEffect(() => {
+    const info: DiLoCoInfo | undefined = dilocoInfoQ.data;
+    if (!selectedDiLoCoBase || !info) return;
+    const exp = info.expected_client_settings ?? {};
+    if (exp.sync_every != null && diSyncEvery === "") {
+      setDiSyncEvery(String(exp.sync_every));
+    }
+    if (typeof exp.dylu === "boolean") {
+      // A DyLU server requires the worker to opt in; otherwise the
+      // server's per-worker recommendations are ignored.
+      setDiDylu(exp.dylu);
+    }
+    if (typeof exp.bf16_comm === "boolean") {
+      setDiBf16(exp.bf16_comm);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dilocoInfoQ.data, selectedDiLoCoBase]);
 
   // Dataset-source selector — state + queries + seeding live in the
   // shared hook. ``null`` = local (in-process loader). The hook waits
@@ -447,6 +498,20 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     const job_params: Record<string, unknown> = {};
     const trimmedNproc = nprocOverride.trim();
     if (trimmedNproc) job_params.nproc = trimmedNproc;
+    // DiLoCo opt-in: hand the chosen server + dependent settings to
+    // the scheduler, which translates them into DILOCO_* env vars on
+    // the spawned process. Only attached when the operator actually
+    // picked a server in the radio group ("" = None).
+    const diloco = buildDiLoCoPayload({
+      base: selectedDiLoCoBase,
+      syncEvery: diSyncEvery,
+      numFragments: diNumFragments,
+      dylu: diDylu,
+      bf16Comm: diBf16,
+      heartbeatInterval: diHeartbeat,
+      workerId: diWorkerId,
+    });
+    if (diloco) job_params.diloco = diloco;
     enqueue.mutate({
       project_dir: project.project_dir,
       config: config.name,
@@ -636,6 +701,30 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
             </details>
           )}
 
+          {dilocoServersQ.data && dilocoServersQ.data.length > 0 && (
+            <DiLoCoPicker
+              servers={dilocoServersQ.data}
+              selectedBase={selectedDiLoCoBase}
+              onSelectBase={setSelectedDiLoCoBase}
+              syncEvery={diSyncEvery}
+              setSyncEvery={setDiSyncEvery}
+              numFragments={diNumFragments}
+              setNumFragments={setDiNumFragments}
+              dylu={diDylu}
+              setDylu={setDiDylu}
+              bf16Comm={diBf16}
+              setBf16Comm={setDiBf16}
+              heartbeatInterval={diHeartbeat}
+              setHeartbeatInterval={setDiHeartbeat}
+              workerId={diWorkerId}
+              setWorkerId={setDiWorkerId}
+              infoLoading={dilocoInfoQ.isLoading}
+              infoError={dilocoInfoQ.error}
+              info={dilocoInfoQ.data ?? null}
+              clusterFanout={useClusterFanout}
+            />
+          )}
+
           <details className="submit-section" open>
             <summary>
               <h4 className="dyn-heading">
@@ -718,5 +807,287 @@ function formatNproc(v: number | string | null): string {
   if (v === null) return "(unknown)";
   if (typeof v === "string") return `"${v}"`;
   return String(v);
+}
+
+// ---------------------------------------------------------------------------
+// DiLoCo
+// ---------------------------------------------------------------------------
+
+interface DiLoCoPickerProps {
+  servers: DiLoCoServer[];
+  selectedBase: string;
+  onSelectBase: (base: string) => void;
+  syncEvery: string;
+  setSyncEvery: (v: string) => void;
+  numFragments: string;
+  setNumFragments: (v: string) => void;
+  dylu: boolean;
+  setDylu: (v: boolean) => void;
+  bf16Comm: boolean;
+  setBf16Comm: (v: boolean) => void;
+  heartbeatInterval: string;
+  setHeartbeatInterval: (v: string) => void;
+  workerId: string;
+  setWorkerId: (v: string) => void;
+  infoLoading: boolean;
+  infoError: unknown;
+  info: DiLoCoInfo | null;
+  clusterFanout: boolean;
+}
+
+/** Radio picker over the unified DiLoCo server list, with the
+ *  dependent worker settings revealed only when a server is selected.
+ *  "None" is always present and is the default — operators who don't
+ *  want DiLoCo never see clutter beyond a single extra row. */
+function DiLoCoPicker(props: DiLoCoPickerProps) {
+  const {
+    servers,
+    selectedBase,
+    onSelectBase,
+    syncEvery,
+    setSyncEvery,
+    numFragments,
+    setNumFragments,
+    dylu,
+    setDylu,
+    bf16Comm,
+    setBf16Comm,
+    heartbeatInterval,
+    setHeartbeatInterval,
+    workerId,
+    setWorkerId,
+    infoLoading,
+    infoError,
+    info,
+    clusterFanout,
+  } = props;
+
+  // Multi-node fanout + DiLoCo together needs per-peer worker IDs and
+  // dataset sharding that isn't wired yet. Hide the picker (preserving
+  // any in-flight None selection) so the operator can't accidentally
+  // mis-submit. Standalone (no cluster) and single-node-within-cluster
+  // are both fine.
+  if (clusterFanout) {
+    return (
+      <details className="submit-section">
+        <summary>
+          <h4 className="dyn-heading">
+            DiLoCo{" "}
+            <span className="muted">
+              — disabled in cluster fanout submits (per-peer worker IDs
+              not yet wired)
+            </span>
+          </h4>
+        </summary>
+      </details>
+    );
+  }
+
+  return (
+    <details className="submit-section" open={!!selectedBase}>
+      <summary>
+        <h4 className="dyn-heading">
+          DiLoCo{" "}
+          {!selectedBase && (
+            <span className="muted">— none (vanilla training)</span>
+          )}
+          {selectedBase && (
+            <span className="muted">— join {selectedBase}</span>
+          )}
+        </h4>
+      </summary>
+
+      <div style={{ padding: "4px 8px 8px 8px" }}>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+            marginBottom: 8,
+          }}
+        >
+          <label>
+            <input
+              type="radio"
+              name="diloco-server"
+              checked={selectedBase === ""}
+              onChange={() => onSelectBase("")}
+            />{" "}
+            <strong>None</strong>{" "}
+            <span className="muted">— run as a regular training job</span>
+          </label>
+          {servers.map((s) => (
+            <label key={s.id}>
+              <input
+                type="radio"
+                name="diloco-server"
+                checked={selectedBase === s.base_url}
+                onChange={() => onSelectBase(s.base_url)}
+              />{" "}
+              <strong>{s.label}</strong>{" "}
+              <span className="muted">
+                — {s.base_url}
+                {s.source === "registered" && " (external)"}
+                {s.source === "local" && !s.alive && " (not running)"}
+              </span>
+            </label>
+          ))}
+        </div>
+
+        {selectedBase && (
+          <>
+            {infoLoading && (
+              <div className="muted">Loading server info…</div>
+            )}
+            {!!infoError && (
+              <div className="muted" style={{ color: "tomato" }}>
+                Could not fetch /info: {(infoError as Error).message}
+              </div>
+            )}
+            {info && (
+              <div className="muted" style={{ marginBottom: 6 }}>
+                Server mode: <strong>{info.mode ?? "—"}</strong>
+                {info.num_parameters !== undefined && (
+                  <> · {info.num_parameters.toLocaleString()} params</>
+                )}
+                {info.dylu_enabled && (
+                  <>
+                    {" "}
+                    · DyLU base sync_every={" "}
+                    <strong>{info.dylu_base_sync_every}</strong>
+                  </>
+                )}
+              </div>
+            )}
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 8,
+              }}
+            >
+              <label>
+                sync_every
+                <input
+                  type="number"
+                  min={1}
+                  value={syncEvery}
+                  onChange={(e) => setSyncEvery(e.target.value)}
+                  placeholder={
+                    info?.expected_client_settings?.sync_every != null
+                      ? String(info.expected_client_settings.sync_every)
+                      : "callback default (500)"
+                  }
+                  style={{ width: "100%" }}
+                />
+              </label>
+              <label>
+                num_fragments
+                <input
+                  type="number"
+                  min={1}
+                  value={numFragments}
+                  onChange={(e) => setNumFragments(e.target.value)}
+                  placeholder="1 (no streaming)"
+                  style={{ width: "100%" }}
+                />
+              </label>
+              <label>
+                heartbeat_interval (s)
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={heartbeatInterval}
+                  onChange={(e) => setHeartbeatInterval(e.target.value)}
+                  placeholder="30"
+                  style={{ width: "100%" }}
+                />
+              </label>
+              <label>
+                worker_id (optional)
+                <input
+                  type="text"
+                  value={workerId}
+                  onChange={(e) => setWorkerId(e.target.value)}
+                  placeholder="auto"
+                  style={{ width: "100%" }}
+                />
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={dylu}
+                  onChange={(e) => setDylu(e.target.checked)}
+                />{" "}
+                Enable DyLU{" "}
+                {info?.dylu_enabled && (
+                  <span className="muted">
+                    (server requires this; the dependent fields above are
+                    overridden by the server's heartbeat response)
+                  </span>
+                )}
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={bf16Comm}
+                  onChange={(e) => setBf16Comm(e.target.checked)}
+                />{" "}
+                bf16 pseudo-gradient communication
+              </label>
+            </div>
+          </>
+        )}
+      </div>
+    </details>
+  );
+}
+
+interface DiLoCoFormSnapshot {
+  base: string;
+  syncEvery: string;
+  numFragments: string;
+  dylu: boolean;
+  bf16Comm: boolean;
+  heartbeatInterval: string;
+  workerId: string;
+}
+
+/** Construct the ``job_params.diloco`` payload from the form snapshot.
+ *  Returns null when the operator picked "None" — callers should skip
+ *  ``job_params.diloco`` entirely in that case. */
+function buildDiLoCoPayload(
+  s: DiLoCoFormSnapshot,
+): Record<string, unknown> | null {
+  if (!s.base) return null;
+  // The base URL is what the proxy + UI use; the DiLoCoCallback
+  // expects ``host:port``. Strip scheme + trailing slash here so the
+  // callback can use the value verbatim.
+  const serverAddr = s.base.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  const payload: Record<string, unknown> = {
+    server_addr: serverAddr,
+    dylu: s.dylu,
+    bf16_comm: s.bf16Comm,
+  };
+  const sync = s.syncEvery.trim();
+  if (sync) {
+    const n = Number(sync);
+    if (Number.isFinite(n)) payload.sync_every = Math.max(1, Math.floor(n));
+  }
+  const frags = s.numFragments.trim();
+  if (frags) {
+    const n = Number(frags);
+    if (Number.isFinite(n)) payload.num_fragments = Math.max(1, Math.floor(n));
+  }
+  const hb = s.heartbeatInterval.trim();
+  if (hb) {
+    const n = Number(hb);
+    if (Number.isFinite(n) && n >= 0) payload.heartbeat_interval = n;
+  }
+  const wid = s.workerId.trim();
+  if (wid) payload.worker_id = wid;
+  return payload;
 }
 
