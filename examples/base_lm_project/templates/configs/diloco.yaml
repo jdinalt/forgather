@@ -1,0 +1,93 @@
+-- extends "projects/finetune_v2.yaml"
+
+## DiLoCo bringup target.
+##
+## Follows the finetune_v2 load-from-path pattern: every worker (and the
+## server) must start from the SAME initialized parameters, so the
+## project requires a `--model-id-or-path` and loads from there rather
+## than constructing a model in-place. The shared init is produced once
+## via the model project's "Run" modal in the webui (model-construct
+## action), or `forgather model construct …` on the CLI.
+##
+## The DiLoCo callback's constructor arguments fall back to DILOCO_*
+## env vars when the template passes None, so this config works both:
+##   - From the webui DiLoCo radio group, which populates DILOCO_*
+##     env vars on the spawned training process via job_params.
+##   - From `forgather diloco worker --server host:port -- train …`,
+##     which sets the same env vars.
+##
+## When DILOCO_SERVER is unset, the callback is a no-op and the same
+## config behaves as a vanilla finetune.
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Finetune + DiLoCo"
+    -- set ns.config_description = "Finetune that joins a DiLoCo server when DILOCO_SERVER env is set"
+
+[trainer_callbacks]
+    -- include 'diloco_lm_callbacks'
+
+#-------------------- diloco_lm_callbacks --------------------
+-- extends 'callbacks/lm_callbacks.yaml'
+
+[callback_list]
+    => super()
+    diloco_callback: !singleton:forgather.ml.trainer.callbacks:DiLoCoCallback
+        ## All DILOCO_* env vars are read by the callback constructor
+        ## when these are None; the webui sets them based on the
+        ## operator's selections. Surfaced explicitly so the YAML
+        ## documents which knobs exist.
+        server_addr: {{ diloco_server | toyaml(None) }}
+        sync_every: {{ diloco_sync_every | toyaml(None) }}
+        worker_id: {{ diloco_worker_id | toyaml(None) }}
+        bf16_comm: {{ diloco_bf16_comm | toyaml(None) }}
+        dylu: {{ diloco_dylu | toyaml(None) }}
+        heartbeat_interval: {{ diloco_heartbeat_interval | toyaml(None) }}
+        num_fragments: {{ diloco_num_fragments | toyaml(None) }}
+        timeout: {{ diloco_timeout | toyaml(600) }}
+        max_sync_retries: {{ diloco_max_sync_retries | toyaml(3) }}
+
+[dynamic_args]
+    == super()
+    ## DiLoCo override knobs surfaced on the train submit modal. The
+    ## webui's DiLoCo radio group writes to these when the operator
+    ## picks a server. They're optional from the CLI side; unset means
+    ## env-var fallback (or callback default).
+    diloco_server:
+        names: "--diloco-server"
+        type: str
+        group: "DiLoCo"
+        help: "DiLoCo server address host:port. When unset, the callback is a no-op."
+    diloco_sync_every:
+        names: "--diloco-sync-every"
+        type: int
+        group: "DiLoCo"
+        min: 1
+        help: "Local optimizer steps between syncs."
+    diloco_num_fragments:
+        names: "--diloco-fragments"
+        type: int
+        group: "DiLoCo"
+        min: 1
+        help: "Number of streaming-sync fragments (1 = no streaming)."
+    diloco_dylu:
+        names: "--diloco-dylu"
+        action: "store_true"
+        group: "DiLoCo"
+        help: "Enable Dynamic Local Updates (server must support it)."
+    diloco_bf16_comm:
+        names: "--diloco-bf16-comm"
+        type: bool
+        group: "DiLoCo"
+        help: "Cast pseudo-gradients to bf16 before sending."
+    diloco_heartbeat_interval:
+        names: "--diloco-heartbeat-interval"
+        type: float
+        group: "DiLoCo"
+        min: 0
+        help: "Seconds between heartbeats to the server."
+    diloco_worker_id:
+        names: "--diloco-worker-id"
+        type: str
+        group: "DiLoCo"
+        help: "Stable worker identity; auto-generated if unset."
