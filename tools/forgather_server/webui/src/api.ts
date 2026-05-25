@@ -1419,6 +1419,16 @@ export const api = {
     }
     return r.json();
   },
+  /** Trigger a native browser download for an arbitrary file on the
+   *  server. Uses a hidden <a> element pointed at the download endpoint. */
+  downloadFile: (path: string) => {
+    const a = document.createElement("a");
+    a.href = `/api/fs/download?path=${encodeURIComponent(path)}`;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  },
   listGpus: () => fetchJson<GpuInfo[]>("/api/gpus"),
   /** Returns null when the server is in standalone mode. */
   getClusterSelf: () => fetchJson<ClusterSelf | null>("/api/cluster/self"),
