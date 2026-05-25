@@ -1,9 +1,9 @@
 # DiLoCo: Work-Unit Dispatch (Design Proposal)
 
 **Status:** proposal — not implemented.
-**Revision:** 2 (incorporates review feedback on dropping reissue,
-moving suffix off dataset register, simplifying the wire payloads,
-and the pipeline-trainer iterator-restart consequence).
+**Revision:** 3 (adds the worker_id-must-be-set-at-preprocess-time
+contract and the server-side output_dir uniqueness check on top of
+v2's reissue-drop / no-server-side-suffix-allocation design).
 **Supersedes (when implemented):** the manual `--num-shards N --shard-index I`
 flow in `examples/tiny_experiments/diloco/` and
 `examples/base_lm_project/templates/configs/diloco.yaml`.
@@ -56,7 +56,9 @@ to be known in advance about worker count.
 3. Async DiLoCo, heterogeneous hardware, and elastic membership all
    "just work" without operator coordination.
 4. The unique-per-worker output dir is derivable from `worker_id` (or
-   the operator-supplied worker name) with no server-side allocation.
+   the operator-supplied worker name) at config-preprocessing time —
+   no server-side allocation, no runtime renaming. The DiLoCo server
+   independently enforces uniqueness on register as defense in depth.
 5. Existing manual `--shard-index` configs keep working, gated by an
    opt-in flag. Migration is per-config.
 
@@ -218,23 +220,88 @@ Existing `GET /v1/datasets/{handle}/iter?seed=&position=&limit=` is
 sufficient. Worker translates `(unit_id, K, length)` to `(position,
 limit)` and calls iter as-is.
 
-## Output-dir suffix
+## Worker-id provisioning (early-bound)
 
-Derived deterministically from `worker_id`:
+The worker_id is needed at **template-preprocessing time**, not just at
+runtime. Forgather configs derive the per-worker output directory leaf
+name from `getenv("DILOCO_WORKER_ID")` during preprocessing (see
+`examples/base_lm_project/templates/configs/diloco.yaml` `[globals]`).
+If the env var were unset at that moment, two workers would compute the
+same output dir and clobber each other's checkpoints / logs.
 
-```python
-output_dir_suffix = "-" + hashlib.sha256(worker_id.encode()).hexdigest()[:6]
+The scheduler (`tools/forgather_server/scheduler.py: _diloco_env_from_job_params`)
+therefore **always emits `DILOCO_WORKER_ID` when DiLoCo is enabled**.
+Precedence:
+
+1. Operator-supplied `worker_id` (from the submit modal or
+   `--diloco-worker-id`), if non-empty after whitespace strip.
+2. The `queue_id` — stable per submission, already surfaced as the
+   primary identifier in the Jobs view so operators can correlate.
+
+Choice (2) keeps the contract local to the scheduler: every spawned
+diloco-enabled worker has a non-empty `DILOCO_WORKER_ID` by
+construction. The config template can rely on this without sentinel
+values or conditional fallbacks. (The config still guards the
+suffix-append on whether the env var is set at all — for the case
+where the same config is also used for vanilla, non-DiLoCo finetuning.)
+
+### Output-dir derivation
+
+The config appends `worker_id` to the model name leaf:
+
+```
+ns.model_name = ns.model_name + "_" + getenv("DILOCO_WORKER_ID")
+ns.output_dir = joinpath(ns.models_dir, ns.model_name)
 ```
 
-If the operator supplied `--worker-id mybox-rank0`, the suffix is a
-short hash of that string; reproducible across restarts; no server
-state needed; no allocation race; no special case for re-registration.
-The server's diagnostic endpoint can surface the suffix (so an
-operator can confirm "yes, the directory I see on disk matches what
-the server thinks worker X is using") but is not the source of truth.
+Worker A with `worker_id="alpha"` writes to `models_dir/<base>_alpha/`;
+worker B with the auto-generated `queue_id` writes to
+`models_dir/<base>_q-7f3a…/`. Collisions can only happen if two
+workers were dispatched with the same operator-supplied `worker_id`
+(the queue_id fallback is unique by construction).
 
-A worker that opens multiple datasets uses the same suffix for all of
-them — suffix is per-worker, not per-dataset.
+### Server-side output_dir uniqueness check (defense in depth)
+
+The early-bind contract is sufficient when the webui is the only path
+to dispatch workers. To catch the manual-CLI footgun (operator forgot
+to bump `--diloco-worker-id` when launching the second worker), the
+DiLoCo server's `/register` handler is extended:
+
+```
+POST /register
+  body:  {
+           worker_id,
+           hostname,
+           extra: { ..., output_dir: "/abs/path/to/output" }   # new
+         }
+  reply: tensor (existing) | 409 on output_dir collision
+```
+
+The server keeps an in-memory `{output_dir: worker_id}` map of
+currently-registered workers:
+
+- **First register with a given output_dir** → record the mapping and
+  proceed as today.
+- **Re-register with same `worker_id` and same `output_dir`** →
+  reconnect path; proceed.
+- **Register with a `worker_id` that already exists** → existing
+  re-register-replaces semantics.
+- **Register with a different `worker_id` than the one currently
+  holding `output_dir`** → **refuse with 409** and a diagnostic
+  payload `{"error": "output_dir already claimed by worker_id=…"}`.
+  The worker on the receiving end of the 409 logs the error and
+  exits cleanly so the operator sees the diagnostic in the Jobs view's
+  TTY pane immediately — not after the new worker has begun
+  overwriting checkpoint files.
+
+On deregistration (`/deregister` or eviction by the health monitor),
+the output_dir mapping is cleared so a fresh worker with a new
+`worker_id` can claim that path later.
+
+This is one of the few places where the server enforces invariants
+rather than just bookkeeping; the cost (one extra map lookup on
+register, one entry on a typically tiny map) is trivial against the
+cost of silent checkpoint corruption.
 
 ## Worker integration
 
@@ -428,21 +495,36 @@ Phase 1: backend coordination (testable with `curl`)
   `/work/request`, `/work/complete`, `/work/queues`, `/work/queue`.
 - Extend `DiLoCoServer.save_state` to persist the bitmaps + the
   `(dataset_id, shuffle_seed) → queue` map.
+- Extend `/register` to accept `extra.output_dir` and enforce
+  per-output_dir uniqueness (409 on collision with another worker_id).
+  Persist the `output_dir → worker_id` map alongside the worker
+  registry; clear entries on deregister / eviction.
 - Tests: register, request, exhaustion, dataset_id mismatch, server
   restart preserving bitmaps, two queues for same dataset under
-  different seeds, completion accounting.
+  different seeds, completion accounting, output_dir collision returns
+  409, reconnect with same worker_id+output_dir succeeds, post-evict
+  re-claim by a new worker_id succeeds.
 - CLI: `--default-work-units N` (default 1024).
 
 Phase 2: worker integration
 - Implement `WorkUnitDataset` and a `DiLoCoClient.request_work` /
   `complete_work` / `register_dataset` helper.
 - Extend `DiLoCoCallback`:
-  - Compute and apply `output_dir_suffix` from `worker_id`.
+  - Pass `args.output_dir` in the `/register` `extra` payload so the
+    server's uniqueness check can fire. Treat 409 as a fatal error and
+    abort training cleanly with the server's diagnostic message in the
+    TTY log.
   - When `diloco_work_dispatch=true` (template var / env var
     `DILOCO_WORK_DISPATCH=1`), wrap `args.train_dataset` in
     `WorkUnitDataset`.
 - **Prereq:** refactor `pipeline_trainer._get_example` to synthesize
   the meta example rather than fetching from the dataloader.
+
+Note: worker_id provisioning at the scheduler layer (always emit
+`DILOCO_WORKER_ID`, fall back to `queue_id`) is already implemented
+on the `feature/diloco-webui` branch and is independent of Phase 1 —
+it shipped with the existing webui DiLoCo radio so the bringup
+`diloco.yaml` template's output-dir derivation works today.
 
 Phase 3: webui surface
 - Training-submit DiLoCo radio gains a "Use work-unit dispatch"
@@ -470,11 +552,13 @@ Phase 4: deprecate manual sharding
   issuance order, exact-replay debugging would need the server to
   record `request → unit_id` history. Out of scope for phase 1; the
   bitmap + completion-bitmap pair is enough for "what got trained".
-- **Same `worker_id` collision.** Two workers with the same operator-
-  supplied `--worker-id` get the same `output_dir_suffix` and collide
-  on disk. Same collision-on-disk story as today's
-  `model_name + shard_index` if two operators pick the same shard
-  index. Document; don't try to prevent at this layer.
+- **Same `worker_id` collision.** Handled by the server-side
+  `output_dir` uniqueness check (Phase 1 scope). A second register
+  with the same `output_dir` but a different `worker_id` is refused
+  with 409; the colliding worker exits cleanly with the diagnostic in
+  its TTY log. Operators who hit this either bump their
+  `--diloco-worker-id` or let the scheduler's queue_id fallback handle
+  it. No silent on-disk clobber path remains.
 - **Cross-DiLoCo-server dataset sharing.** Out of scope. One DiLoCo
   server per training group.
 - **Streaming-DiLoCo (fragment sync).** Fragment sync is
@@ -497,8 +581,16 @@ A run with this implemented should be observable as:
    diagnostic UI shows the `(issued - completed)` gap by one unit.
 5. Within a single `(dataset_id, shuffle_seed)` queue: no row is
    trained on twice, guaranteed by construction.
-6. Worker output directories on disk are distinct per worker, with
-   suffixes that round-trip through `sha256(worker_id)[:6]`.
+6. Worker output directories on disk are distinct per worker. The
+   suffix is the operator-supplied `worker_id` (or the scheduler's
+   `queue_id` fallback), applied at config-preprocessing time via
+   `DILOCO_WORKER_ID`. The directory layout under `models_dir/` is
+   directly human-readable (`models_dir/<base>_<worker_id>/`).
+7. Attempting to start a second worker against the same `output_dir`
+   with a different `worker_id` fails fast: the DiLoCo server returns
+   409 on `/register`, the worker exits, and the operator sees a clear
+   "output_dir already claimed by worker_id=…" diagnostic in the TTY
+   pane — no silent on-disk clobber path.
 
 ---
 
