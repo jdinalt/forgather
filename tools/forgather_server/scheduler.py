@@ -29,7 +29,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from dataset_server.auth import (
     standalone_token_file as dataset_server_standalone_token_file,
@@ -698,13 +698,65 @@ def _build_construct(item, gpu_indices, tty_path):
     )
 
 
+def _diloco_env_from_job_params(
+    diloco: Dict[str, Any],
+) -> Dict[str, str]:
+    """Translate a ``job_params.diloco`` dict into ``DILOCO_*`` env vars.
+
+    The DiLoCoCallback constructor reads these as the fallback when its
+    template args are None. Only keys the operator actually set get
+    forwarded so the rest fall back to whatever the callback's
+    constructor default / project template specifies.
+
+    Expected input shape (all keys optional except ``server_addr``):
+        {
+          "server_addr": "host:port",
+          "sync_every": int,
+          "num_fragments": int,
+          "dylu": bool,
+          "bf16_comm": bool,
+          "heartbeat_interval": float,
+          "worker_id": str,
+        }
+    """
+    env: Dict[str, str] = {}
+    server = diloco.get("server_addr")
+    if not server:
+        return env
+    env["DILOCO_SERVER"] = str(server)
+    if diloco.get("sync_every") is not None:
+        env["DILOCO_SYNC_EVERY"] = str(int(diloco["sync_every"]))
+    if diloco.get("num_fragments") is not None:
+        env["DILOCO_NUM_FRAGMENTS"] = str(int(diloco["num_fragments"]))
+    if diloco.get("dylu") is not None:
+        env["DILOCO_DYLU"] = "1" if bool(diloco["dylu"]) else "0"
+    if diloco.get("bf16_comm") is not None:
+        env["DILOCO_BF16_COMM"] = "1" if bool(diloco["bf16_comm"]) else "0"
+    if diloco.get("heartbeat_interval") is not None:
+        env["DILOCO_HEARTBEAT_INTERVAL"] = str(float(diloco["heartbeat_interval"]))
+    wid = diloco.get("worker_id")
+    if wid:
+        env["DILOCO_WORKER_ID"] = str(wid)
+    return env
+
+
 def _build_training(item, gpu_indices, tty_path):
     # Multi-node training jobs (Phase 3 cluster-coordinator submit)
     # carry their torchrun rendezvous args + NCCL env in
     # ``job_params``. Single-node training jobs leave job_params empty
     # and the launcher falls back to ``--standalone``.
     rdzv_args = item.job_params.get("rdzv_args") or None
-    extra_env = item.job_params.get("extra_env") or None
+    extra_env = dict(item.job_params.get("extra_env") or {})
+    # DiLoCo opt-in: a non-empty ``job_params.diloco.server_addr``
+    # means this worker should join the named DiLoCo server. The
+    # DiLoCoCallback wired into the training config reads DILOCO_*
+    # env vars when its template args are None; the webui sets the
+    # env via this channel so no scheduler-side surgery to dynamic
+    # args is needed.
+    diloco = item.job_params.get("diloco") or {}
+    if isinstance(diloco, dict):
+        extra_env.update(_diloco_env_from_job_params(diloco))
+    extra_env = extra_env or None
     # ``nproc`` from job_params is an explicit single-node override
     # (typed into the SubmitModal nproc field, or supplied by other
     # callers that want to bypass the config's nproc_per_node).
