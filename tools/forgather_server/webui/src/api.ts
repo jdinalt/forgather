@@ -461,6 +461,7 @@ export interface Job {
     | "eval"
     | "inference"
     | "dataset_server"
+    | "diloco_server"
     | "tensorboard"
     | "mkdocs"
     | "convert"

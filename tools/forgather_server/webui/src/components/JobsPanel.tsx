@@ -26,6 +26,7 @@ const JOB_TYPE_CHIPS: Record<Job["job_type"], { label: string; className: string
   eval: { label: "eval", className: "type-eval" },
   inference: { label: "serve", className: "type-inference" },
   dataset_server: { label: "dataset-srv", className: "type-inference" },
+  diloco_server: { label: "diloco-srv", className: "type-inference" },
   tensorboard: { label: "tb", className: "type-tensorboard" },
   mkdocs: { label: "docs", className: "type-mkdocs" },
   convert: { label: "convert", className: "type-convert" },

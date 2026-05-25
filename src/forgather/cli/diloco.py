@@ -20,6 +20,16 @@ def _server_cmd(args):
         format="%(asctime)s [DiLoCo Server] %(levelname)s: %(message)s",
     )
 
+    # Echo the resolved configuration up-front so the TTY log contains
+    # exactly what we were asked to do — useful for diagnosing webui /
+    # autostart issues where the launching command isn't otherwise
+    # visible. argv first (verbatim from the caller), then the parsed
+    # namespace (post-defaults).
+    print(f"argv: {sys.argv}")
+    print("parsed args:")
+    for k, v in sorted(vars(args).items()):
+        print(f"  {k} = {v!r}")
+
     # Build outer optimizer factory
     nesterov = not args.no_nesterov
     outer_lr = args.outer_lr
