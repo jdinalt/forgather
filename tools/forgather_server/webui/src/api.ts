@@ -1061,6 +1061,101 @@ export interface IterResponse {
   rows: Array<Record<string, unknown>>;
 }
 
+// ---------------------------------------------------------------------------
+// DiLoCo
+// ---------------------------------------------------------------------------
+
+/** A DiLoCo server entry returned by ``GET /api/diloco/servers``. The
+ *  unified list mixes local (forgather_server-spawned) and user-added
+ *  registered entries; future cluster slices add ``source: "cluster"``. */
+export interface DiLoCoServer {
+  id: string;
+  label: string;
+  base_url: string;
+  source: "local" | "registered" | "cluster";
+  host?: string | null;
+  port?: number | null;
+  // Local-only:
+  queue_id?: string | null;
+  alive?: boolean | null;
+  // Registered-only:
+  has_auth_token?: boolean | null;
+  verify_tls?: boolean | null;
+}
+
+/** A user-added external DiLoCo server entry from ``GET /api/diloco/registry``. */
+export interface DiLoCoRegistryEntry {
+  id: string;
+  label: string;
+  base_url: string;
+  has_auth_token: boolean;
+  verify_tls?: boolean;
+}
+
+export interface AddDiLoCoRegistryEntryRequest {
+  label?: string;
+  base_url: string;
+  auth_token?: string;
+  verify_tls?: boolean;
+}
+
+/** One worker row inside DiLoCoStatus.workers. */
+export interface DiLoCoWorkerStatus {
+  hostname?: string;
+  registered_at?: number;
+  last_heartbeat?: number;
+  sync_round?: number;
+  last_sync_server_round?: number;
+  steps_per_second?: number;
+}
+
+/** Upstream ``/status`` response. Field set tracks DiLoCoServer._handle_status. */
+export interface DiLoCoStatus {
+  status?: string;
+  mode?: "sync" | "async";
+  sync_round?: number;
+  num_workers?: number;
+  num_registered?: number;
+  workers?: Record<string, DiLoCoWorkerStatus>;
+  pending_submissions?: string[];
+  started_at?: number;
+  uptime_seconds?: number;
+  total_submissions?: number;
+  dn_buffer_size?: number;
+  dn_buffered?: number;
+  dylu_enabled?: boolean;
+  dylu_base_sync_every?: number;
+  fragment_submissions?: number;
+  total_worker_deaths?: number;
+  heartbeat_timeout?: number;
+  min_workers?: number;
+  outer_lr?: number;
+  outer_momentum?: number;
+  save_dir?: string;
+  model_params?: number;
+  model_size_mb?: number;
+  dashboard_enabled?: boolean;
+}
+
+/** Upstream ``/info`` response — additive to /status, captures the
+ *  slower-moving facts a client needs to pick compatible settings. */
+export interface DiLoCoInfo {
+  output_dir?: string;
+  mode?: "sync" | "async";
+  async_mode?: boolean;
+  num_workers?: number;
+  num_parameters?: number;
+  model_size_mb?: number;
+  dylu_enabled?: boolean;
+  dylu_base_sync_every?: number;
+  expected_client_settings?: {
+    sync_every?: number | null;
+    dylu?: boolean;
+    bf16_comm?: boolean;
+    num_fragments_min?: number;
+  };
+}
+
 export const api = {
   listSearchRoots: () => fetchJson<SearchRoot[]>("/api/search-roots"),
   addSearchRoot: async (path: string, create = false) => {
@@ -2151,6 +2246,66 @@ export const api = {
         // not JSON
       }
       throw new Error(detail);
+    }
+  },
+
+  // ----- DiLoCo -----------------------------------------------------------
+  /** Unified list (local + registered; cluster added in a follow-up). */
+  listDiLoCoServers: () => fetchJson<DiLoCoServer[]>("/api/diloco/servers"),
+  /** Live status snapshot proxied from ``GET <base>/status``. */
+  diLoCoServerStatus: (base: string) =>
+    fetchJson<DiLoCoStatus>(
+      `/api/diloco/server-status?base=${encodeURIComponent(base)}`,
+    ),
+  /** Slower-moving facts (output_dir, num_parameters,
+   *  expected_client_settings) proxied from ``GET <base>/info``. */
+  diLoCoServerInfo: (base: string) =>
+    fetchJson<DiLoCoInfo>(
+      `/api/diloco/server-info?base=${encodeURIComponent(base)}`,
+    ),
+  /** Proxy POST ``<base>/control/{action}`` with an opaque JSON body. */
+  diLoCoServerControl: async (
+    base: string,
+    action: string,
+    body: Record<string, unknown> = {},
+  ) => {
+    const r = await fetch(
+      `/api/diloco/server-control/${encodeURIComponent(action)}?base=${encodeURIComponent(base)}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body ?? {}),
+      },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+    return r.json();
+  },
+  listDiLoCoRegistry: () =>
+    fetchJson<DiLoCoRegistryEntry[]>("/api/diloco/registry"),
+  addDiLoCoRegistryEntry: async (
+    req: AddDiLoCoRegistryEntryRequest,
+  ): Promise<DiLoCoRegistryEntry> => {
+    const r = await fetch("/api/diloco/registry", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+    return r.json();
+  },
+  deleteDiLoCoRegistryEntry: async (id: string): Promise<void> => {
+    const r = await fetch(`/api/diloco/registry/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
     }
   },
 };

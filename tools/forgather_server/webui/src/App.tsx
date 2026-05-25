@@ -21,6 +21,7 @@ import { InferenceModal } from "./components/InferenceModal";
 import { DatasetServerModal } from "./components/DatasetServerModal";
 import { InferencePanel } from "./components/InferencePanel";
 import { DatasetsPanel } from "./components/DatasetsPanel";
+import { DiLoCoPanel } from "./components/DiLoCoPanel";
 import type { SelectedLeaf } from "./components/DatasetsExploreTab";
 import { JobsPanel } from "./components/JobsPanel";
 import { ServicesPanel } from "./components/ServicesPanel";
@@ -49,7 +50,8 @@ type View =
   | "jobs"
   | "queue"
   | "inference"
-  | "datasets";
+  | "datasets"
+  | "diloco";
 export type ConfigTab = "info" | "pp" | "code" | "graph" | "templates" | "debug";
 
 // View metadata. "GPUs" is always the local node's GPU panel; "Nodes"
@@ -69,6 +71,7 @@ const VIEWS: { id: View; label: string; icon: string; clusterOnly?: boolean }[] 
     { id: "jobs", label: "Jobs", icon: "⚙" },
     { id: "inference", label: "Inference", icon: "🔮" },
     { id: "datasets", label: "Datasets", icon: "🗂" },
+    { id: "diloco", label: "DiLoCo", icon: "⚡" },
   ];
 
 // A window glyph with a left-biased vertical divider — represents the
@@ -1474,6 +1477,12 @@ export default function App() {
             pendingServerPick={pendingDatasetServer}
             onServerPickConsumed={clearPendingDatasetServer}
           />
+        </div>
+        <div
+          className="view-panel"
+          style={view === "diloco" ? undefined : { display: "none" }}
+        >
+          <DiLoCoPanel />
         </div>
       </div>
 
