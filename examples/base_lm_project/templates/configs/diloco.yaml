@@ -16,14 +16,27 @@
 ##   - From `forgather diloco worker --server host:port -- train …`,
 ##     which sets the same env vars.
 ##
-## When DILOCO_SERVER is unset, the callback is a no-op and the same
-## config behaves as a vanilla finetune.
+## When DILOCO_SERVER is unset (and ``--diloco-server`` isn't passed),
+## the DiLoCoCallback include is gated off at preprocessing and the
+## same config behaves as a vanilla finetune. With DILOCO_SERVER set,
+## the callback fails fast at startup if the server isn't reachable
+## — no silent training-island fallback.
 
 [config_metadata]
     == super()
     -- set ns.config_name = "DiLoCo"
     -- set ns.config_description = "DiLoCo webui bringup prototype"
     -- set ns.model_name = model_name | default("diloco")
+
+    ## Dataset override: bringup defaults to TinyStories (fast-iter-packed)
+    ## rather than the parent's fineweb-edu-packed. The parent's choice is
+    ## 894 GB / 190M rows — at K=1024 work units that's ~185k rows/unit,
+    ## which makes the work-dispatch loop effectively unobservable on a
+    ## smoke run. TinyStories (~2M rows) gives ~2000 rows/unit so units
+    ## cycle in a few minutes. CLI --dataset-project / --dataset-config
+    ## still override.
+    -- set ns.dataset_proj = dataset_proj | default(abspath(joinpath(ns.forgather_dir, "examples", "datasets", "roneneldan")))
+    -- set ns.dataset_config = dataset_config | default("fast-iter-packed.yaml")
 
 [globals]
     == super()
@@ -59,7 +72,19 @@
     -- include 'models/causal_lm/from_pretrained_config.yaml'
 
 [trainer_callbacks]
+    ## DILOCO_SERVER presence is the enable-gate: when unset (vanilla
+    ## finetune from this same config), the DiLoCoCallback isn't
+    ## constructed at all — we fall through to the plain lm_callbacks
+    ## list. The previous "callback always built; no-op when server
+    ## unset" pattern was a silent-failure trap (two workers training
+    ## islands with no sync, no error). The CLI override knob
+    ## (--diloco-server) becomes a Jinja var at preprocessing time,
+    ## not an env var; honor it here too.
+    -- if getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server)
     -- include 'diloco_lm_callbacks'
+    -- else
+    -- include 'callbacks/lm_callbacks.yaml'
+    -- endif
 
 [dynamic_args]
     == super()
@@ -80,7 +105,7 @@
         names: "--diloco-server"
         type: str
         group: "DiLoCo"
-        help: "DiLoCo server address host:port. When unset, the callback is a no-op."
+        help: "DiLoCo server address host:port. When unset, the DiLoCo callback isn't constructed and the config runs as a vanilla finetune."
     diloco_sync_every:
         names: "--diloco-sync-every"
         type: int

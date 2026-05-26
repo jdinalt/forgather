@@ -15,10 +15,11 @@ implements :class:`IterableDatasetBackend` so the higher-level
 ``ComposableIterableDataset`` (map / filter / shard / shuffle buffer /
 state-dict) sees a normal backend and operates on the rows that come
 out of it. The wrap point is ``fast_load_iterable_dataset``: when
-``DILOCO_WORK_DISPATCH=1`` is set in the env, the loader's backend
-construction is decorated with :func:`maybe_wrap_for_work_dispatch`
-before the composable wrapper is built. The dataset_id, length, and
-shuffle_seed are negotiated with the DiLoCo server at that point.
+``DILOCO_SERVER`` is set in the env and the split is the training
+split, the loader's backend construction is decorated with
+:func:`maybe_wrap_for_work_dispatch` before the composable wrapper is
+built. The dataset_id, length, and shuffle_seed are negotiated with
+the DiLoCo server at that point.
 
 Per-unit transient errors during iteration are swallowed and logged:
 the unit is already consumed from the server's bitmap, so propagating
@@ -36,13 +37,6 @@ from typing import Iterator, Optional, Tuple
 from .iterable_backend import IterableDatasetBackend
 
 logger = logging.getLogger(__name__)
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    val = os.environ.get(name, "")
-    if not val:
-        return default
-    return val.lower() in ("1", "true", "yes")
 
 
 def unit_range(unit_id: int, total_units: int, length: int) -> Tuple[int, int]:
@@ -330,16 +324,16 @@ def maybe_wrap_for_work_dispatch(
     Reads inputs from env vars to avoid polluting the loader's
     signature with DiLoCo-specific knobs:
 
-    - ``DILOCO_WORK_DISPATCH`` (truthy required) — opt-in gate.
     - ``DILOCO_SERVER`` (host:port required) — DiLoCo server addr.
+      Presence of this var is the gate; when unset the wrap is a no-op.
     - ``DILOCO_WORKER_ID`` (required) — worker identity. Set by the
       scheduler when DiLoCo is enabled, with a queue_id fallback.
 
-    Returns ``backend`` unchanged when the opt-in gate is off or any
-    prerequisite is missing — non-DiLoCo runs see no behavior change.
-    Errors during ``/datasets/register`` are logged at ERROR and the
-    backend is returned unchanged, so a server hiccup doesn't crash
-    training (just disables work-dispatch for the run).
+    Returns ``backend`` unchanged when no DiLoCo server is configured —
+    non-DiLoCo runs see no behavior change. Errors during
+    ``/datasets/register`` are logged at ERROR and the backend is
+    returned unchanged, so a server hiccup doesn't crash training (just
+    disables work-dispatch for the run).
 
     The wrap uses its **own** ``DiLoCoClient`` — it does NOT share
     state with the ``DiLoCoCallback`` that manages the parameter-sync
@@ -358,21 +352,18 @@ def maybe_wrap_for_work_dispatch(
         The seed the queue is keyed by. Phase 1 default is 0;
         multi-epoch rotation is a follow-up.
     """
-    if not _env_bool("DILOCO_WORK_DISPATCH"):
-        return backend
-
     server_addr = os.environ.get("DILOCO_SERVER", "").strip()
-    worker_id = os.environ.get("DILOCO_WORKER_ID", "").strip()
     if not server_addr:
-        logger.error(
-            "DILOCO_WORK_DISPATCH=1 but DILOCO_SERVER is unset — "
-            "skipping work-unit dispatch wrap."
-        )
+        # No DiLoCo server in this process: vanilla single-node run, or
+        # eval/test load. Nothing to dispatch.
         return backend
+    worker_id = os.environ.get("DILOCO_WORKER_ID", "").strip()
     if not worker_id:
         logger.error(
-            "DILOCO_WORK_DISPATCH=1 but DILOCO_WORKER_ID is unset — "
-            "skipping work-unit dispatch wrap."
+            "DILOCO_SERVER is set but DILOCO_WORKER_ID is unset — "
+            "skipping work-unit dispatch wrap. The scheduler should "
+            "have emitted both; check the DiLoCo callback's startup "
+            "diagnostics."
         )
         return backend
 
@@ -380,7 +371,7 @@ def maybe_wrap_for_work_dispatch(
         length = len(backend)
     except TypeError:
         logger.error(
-            "DILOCO_WORK_DISPATCH=1 but backend has no __len__; "
+            "DiLoCo work-dispatch enabled but backend has no __len__; "
             "work-unit dispatch needs a fixed dataset length. "
             "Skipping wrap."
         )

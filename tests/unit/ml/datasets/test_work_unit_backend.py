@@ -330,7 +330,7 @@ class TestBackendInterface:
 
 @pytest.fixture(autouse=True)
 def _clean_diloco_env(monkeypatch):
-    for k in ("DILOCO_WORK_DISPATCH", "DILOCO_SERVER", "DILOCO_WORKER_ID"):
+    for k in ("DILOCO_SERVER", "DILOCO_WORKER_ID"):
         monkeypatch.delenv(k, raising=False)
 
 
@@ -339,24 +339,19 @@ def _fake_backend(length=1000):
 
 
 class TestMaybeWrap:
-    def test_opt_out_returns_unchanged(self):
+    def test_no_server_returns_unchanged(self):
+        """DILOCO_SERVER unset is the gate: vanilla single-node runs
+        (and eval/test loads in DiLoCo runs, which use a different
+        code path) see no wrap."""
         b = _fake_backend()
         out = maybe_wrap_for_work_dispatch(b, path="x")
         assert out is b
 
-    def test_missing_server_addr_returns_unchanged(self, monkeypatch, caplog):
-        monkeypatch.setenv("DILOCO_WORK_DISPATCH", "1")
-        monkeypatch.setenv("DILOCO_WORKER_ID", "w0")
-        b = _fake_backend()
-        with caplog.at_level(
-            logging.ERROR, logger="forgather.ml.datasets.work_unit_backend"
-        ):
-            out = maybe_wrap_for_work_dispatch(b, path="x")
-        assert out is b
-        assert any("DILOCO_SERVER" in rec.message for rec in caplog.records)
-
     def test_missing_worker_id_returns_unchanged(self, monkeypatch, caplog):
-        monkeypatch.setenv("DILOCO_WORK_DISPATCH", "1")
+        """Server set but worker_id missing is a scheduler bug: the
+        wrap logs an ERROR and returns the backend unchanged rather
+        than crashing the load. The DiLoCoCallback startup check
+        catches this case first in normal flow."""
         monkeypatch.setenv("DILOCO_SERVER", "h:1")
         b = _fake_backend()
         with caplog.at_level(
@@ -367,7 +362,6 @@ class TestMaybeWrap:
         assert any("DILOCO_WORKER_ID" in rec.message for rec in caplog.records)
 
     def test_no_len_returns_unchanged(self, monkeypatch, caplog):
-        monkeypatch.setenv("DILOCO_WORK_DISPATCH", "1")
         monkeypatch.setenv("DILOCO_SERVER", "h:1")
         monkeypatch.setenv("DILOCO_WORKER_ID", "w0")
 
@@ -396,7 +390,6 @@ class TestMaybeWrap:
         assert any("__len__" in rec.message for rec in caplog.records)
 
     def test_wraps_on_happy_path(self, monkeypatch):
-        monkeypatch.setenv("DILOCO_WORK_DISPATCH", "1")
         monkeypatch.setenv("DILOCO_SERVER", "diloco-host:8512")
         monkeypatch.setenv("DILOCO_WORKER_ID", "alpha")
         b = _fake_backend(length=2000)
@@ -417,7 +410,6 @@ class TestMaybeWrap:
         assert len(call.kwargs["dataset_id"]) == 16
 
     def test_register_failure_returns_unchanged(self, monkeypatch, caplog):
-        monkeypatch.setenv("DILOCO_WORK_DISPATCH", "1")
         monkeypatch.setenv("DILOCO_SERVER", "h:1")
         monkeypatch.setenv("DILOCO_WORKER_ID", "w0")
         b = _fake_backend()
@@ -435,7 +427,6 @@ class TestMaybeWrap:
     def test_invalid_path_returns_unchanged(self, monkeypatch, caplog):
         """compute_dataset_id rejects an empty path; the wrap falls
         back gracefully rather than crashing the loader."""
-        monkeypatch.setenv("DILOCO_WORK_DISPATCH", "1")
         monkeypatch.setenv("DILOCO_SERVER", "h:1")
         monkeypatch.setenv("DILOCO_WORKER_ID", "w0")
         b = _fake_backend()
@@ -448,15 +439,18 @@ class TestMaybeWrap:
 
 
 # ---------------------------------------------------------------------------
-# Caller-level gate via fast_load_iterable_dataset(diloco_work_dispatch=...)
+# Loader-level gate via the diloco_work_dispatch kwarg
 # ---------------------------------------------------------------------------
 
 
 class TestLoaderGate:
-    """The ``diloco_work_dispatch`` kwarg on
-    ``fast_load_iterable_dataset`` is the caller-level gate. Eval /
-    test / validation split loads pass False so they're never wrapped
-    even when the env var says yes."""
+    """Work-unit dispatch is train-only by design — every worker must
+    run the full eval / test pass and metrics are averaged. The kwarg
+    ``diloco_work_dispatch`` is the template-level off-switch: eval /
+    validation / test split templates pass False so they're never
+    wrapped even when DILOCO_SERVER is set. It is *not* surfaced via
+    the webui or scheduler — DiLoCo is enabled / disabled purely by
+    the presence of DILOCO_SERVER in the worker env."""
 
     def _setup_loader_mocks(self, wrap_calls):
         """Common mocks for the loader-gate tests.
@@ -492,11 +486,10 @@ class TestLoaderGate:
 
     def test_kwarg_false_skips_wrap_even_with_env_set(self, monkeypatch):
         """Caller setting ``diloco_work_dispatch=False`` must skip the
-        wrap regardless of env vars. The eval / test split loads rely
-        on this — work-unit dispatch is train-only by design."""
+        wrap regardless of env vars. Eval / validation / test split
+        loads rely on this — work-unit dispatch is train-only."""
         from forgather.ml.datasets import fast_hf_loader
 
-        monkeypatch.setenv("DILOCO_WORK_DISPATCH", "1")
         monkeypatch.setenv("DILOCO_SERVER", "h:1")
         monkeypatch.setenv("DILOCO_WORKER_ID", "w0")
         monkeypatch.setenv(fast_hf_loader.DATASET_SERVER_ENV_VAR, "http://x:1")
@@ -514,11 +507,10 @@ class TestLoaderGate:
         ), f"wrap was invoked despite diloco_work_dispatch=False: {wrap_calls}"
 
     def test_kwarg_true_invokes_wrap_when_env_set(self, monkeypatch):
-        """Default ``diloco_work_dispatch=True`` invokes the wrap path
-        (which itself checks the env var)."""
+        """Default ``diloco_work_dispatch=True`` invokes the wrap
+        helper. The helper itself then gates on DILOCO_SERVER."""
         from forgather.ml.datasets import fast_hf_loader
 
-        monkeypatch.setenv("DILOCO_WORK_DISPATCH", "1")
         monkeypatch.setenv("DILOCO_SERVER", "h:1")
         monkeypatch.setenv("DILOCO_WORKER_ID", "w0")
         monkeypatch.setenv(fast_hf_loader.DATASET_SERVER_ENV_VAR, "http://x:1")

@@ -5,6 +5,8 @@ Backs the (in-flight) DiLoCo view in the webui. Surface:
   GET    /api/diloco/servers          Unified list (local + registered).
   GET    /api/diloco/server-status    Proxy to an upstream DiLoCo /status.
   GET    /api/diloco/server-info      Proxy to an upstream DiLoCo /info.
+  GET    /api/diloco/work-queues      Proxy to upstream /work/queues.
+  GET    /api/diloco/work-queue       Proxy to upstream /work/queue.
   POST   /api/diloco/server-control/{action}
                                       Proxy to upstream /control/{action}.
   GET    /api/diloco/registry         List user-added external entries.
@@ -245,6 +247,31 @@ async def proxy_status(base: str) -> JSONResponse:
 async def proxy_info(base: str) -> JSONResponse:
     """Forward ``GET <base>/info`` for client-settings negotiation."""
     return await _proxy_get(base, "/info")
+
+
+@router.get("/diloco/work-queues")
+async def proxy_work_queues(base: str) -> JSONResponse:
+    """Forward ``GET <base>/work/queues`` — summary list of active queues."""
+    return await _proxy_get(base, "/work/queues")
+
+
+@router.get("/diloco/work-queue")
+async def proxy_work_queue(
+    base: str, dataset_id: str, shuffle_seed: int
+) -> JSONResponse:
+    """Forward ``GET <base>/work/queue?dataset_id=&shuffle_seed=`` —
+    single-queue detail with base64 bitmaps and per-worker counts.
+
+    ``dataset_id`` + ``shuffle_seed`` are passed straight through to
+    the upstream; ``base`` goes through the standard SSRF allowlist.
+    """
+    from urllib.parse import quote, urlencode
+
+    qs = urlencode(
+        {"dataset_id": dataset_id, "shuffle_seed": int(shuffle_seed)},
+        quote_via=quote,
+    )
+    return await _proxy_get(base, f"/work/queue?{qs}")
 
 
 # Set of control actions the DiLoCo server itself recognises. Kept here

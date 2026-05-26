@@ -124,6 +124,13 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     // without forcing the operator to reopen the modal.
     refetchInterval: 10_000,
   });
+  // Track when persisted state existed but couldn't be restored, so we
+  // can surface a warning instead of silently reverting to defaults
+  // (which was the failure mode that made operators submit "vanilla
+  // finetune" jobs thinking they were still configured for DiLoCo).
+  const [dilocoPersistError, setDilocoPersistError] = useState<string | null>(
+    null,
+  );
   const persistedDiLoCo = useMemo<DiLoCoPersisted>(() => {
     const raw = persistGet(dilocoStorageKey);
     if (!raw) return DEFAULT_DILOCO_PERSISTED;
@@ -132,7 +139,12 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
         ...DEFAULT_DILOCO_PERSISTED,
         ...(JSON.parse(raw) as Partial<DiLoCoPersisted>),
       };
-    } catch {
+    } catch (err) {
+      setDilocoPersistError(
+        `Saved DiLoCo settings for this config couldn't be parsed (${
+          (err as Error).message
+        }). Re-pick the server below.`,
+      );
       return DEFAULT_DILOCO_PERSISTED;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -175,17 +187,27 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     diHeartbeat,
   ]);
   // If the persisted base isn't currently in the server list (server
-  // went offline, was renamed, etc.) fall back to "None". Avoids a
-  // ghost state where the dependent fields render even though no
-  // radio button is checked.
+  // went offline, was renamed, etc.) fall back to "None" AND surface a
+  // warning. The silent fallback was the failure mode that produced
+  // "vanilla finetune that the operator thought was DiLoCo" — the
+  // warning makes the desync visible so the operator can re-pick.
   useEffect(() => {
     if (!selectedDiLoCoBase) return;
     const servers = dilocoServersQ.data;
     if (!servers) return; // still loading; don't clobber
     if (!servers.some((s) => s.base_url === selectedDiLoCoBase)) {
+      setDilocoPersistError(
+        `Previously-selected DiLoCo server ${selectedDiLoCoBase} is no longer ` +
+          `in the server list. Re-pick below or DiLoCo will be off for this submit.`,
+      );
       setSelectedDiLoCoBase("");
     }
   }, [dilocoServersQ.data, selectedDiLoCoBase]);
+  // Clear the persistence warning once the operator makes a fresh
+  // selection — they've acknowledged it by acting.
+  useEffect(() => {
+    if (selectedDiLoCoBase) setDilocoPersistError(null);
+  }, [selectedDiLoCoBase]);
   // /info for the selected server — used to seed sensible defaults
   // (sync_every from dylu_base_sync_every, dylu requirement, etc.)
   // and to flag obvious mismatches. Disabled when no server picked.
@@ -781,6 +803,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
               setHeartbeatInterval={setDiHeartbeat}
               workerId={diWorkerId}
               setWorkerId={setDiWorkerId}
+              persistError={dilocoPersistError}
               infoLoading={dilocoInfoQ.isLoading}
               infoError={dilocoInfoQ.error}
               info={dilocoInfoQ.data ?? null}
@@ -910,6 +933,7 @@ interface DiLoCoPickerProps {
   setHeartbeatInterval: (v: string) => void;
   workerId: string;
   setWorkerId: (v: string) => void;
+  persistError: string | null;
   infoLoading: boolean;
   infoError: unknown;
   info: DiLoCoInfo | null;
@@ -937,6 +961,7 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
     setHeartbeatInterval,
     workerId,
     setWorkerId,
+    persistError,
     infoLoading,
     infoError,
     info,
@@ -965,20 +990,43 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
   }
 
   return (
-    <details className="submit-section" open={!!selectedBase}>
+    <details
+      className="submit-section"
+      open={!!selectedBase || !!persistError}
+    >
       <summary>
         <h4 className="dyn-heading">
           DiLoCo{" "}
-          {!selectedBase && (
+          {!selectedBase && !persistError && (
             <span className="muted">— none (vanilla training)</span>
           )}
           {selectedBase && (
             <span className="muted">— join {selectedBase}</span>
           )}
+          {!selectedBase && persistError && (
+            <span style={{ color: "tomato" }}>
+              ⚠ previous selection couldn't be restored — re-pick below
+            </span>
+          )}
         </h4>
       </summary>
 
       <div style={{ padding: "4px 8px 8px 8px" }}>
+        {persistError && (
+          <div
+            role="alert"
+            style={{
+              padding: "6px 8px",
+              marginBottom: 8,
+              border: "1px solid tomato",
+              borderRadius: 4,
+              color: "tomato",
+              fontSize: "smaller",
+            }}
+          >
+            {persistError}
+          </div>
+        )}
         <div
           style={{
             display: "flex",

@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { api, DiLoCoInfo, DiLoCoServer, DiLoCoStatus } from "../api";
+import {
+  api,
+  DiLoCoInfo,
+  DiLoCoQueueSummary,
+  DiLoCoServer,
+  DiLoCoStatus,
+} from "../api";
 import { persistGet, persistSet } from "../persist";
 
 const STORAGE_KEY = "forgather-diloco-state";
@@ -102,6 +108,16 @@ export function DiLoCoPanel() {
     // /info changes only on server restart; no auto-refresh.
     staleTime: 60_000,
   });
+  // Per-server list of work queues (one entry per active
+  // ``(dataset_id, shuffle_seed)`` queue). Polled on the same cadence
+  // as /status so the heatmaps update in lock-step with sync rounds.
+  const queuesQuery = useQuery({
+    queryKey: ["diloco", "work-queues", selected?.base_url],
+    queryFn: () => api.diLoCoWorkQueues(selected!.base_url),
+    enabled: !!selected,
+    refetchInterval: state.refreshSeconds * 1000,
+    refetchIntervalInBackground: false,
+  });
 
   return (
     <div className="inference-panel">
@@ -177,6 +193,8 @@ export function DiLoCoPanel() {
               info={infoQuery.data ?? null}
               statusLoading={statusQuery.isLoading}
               statusError={statusQuery.error}
+              queues={queuesQuery.data ?? null}
+              refreshSeconds={state.refreshSeconds}
             />
           )}
         </div>
@@ -480,12 +498,16 @@ function ServerDetail({
   info,
   statusLoading,
   statusError,
+  queues,
+  refreshSeconds,
 }: {
   server: DiLoCoServer;
   status: DiLoCoStatus | null;
   info: DiLoCoInfo | null;
   statusLoading: boolean;
   statusError: unknown;
+  queues: DiLoCoQueueSummary[] | null;
+  refreshSeconds: number;
 }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: 4 }}>
@@ -522,6 +544,13 @@ function ServerDetail({
       {status && <StatusOverview status={status} info={info} />}
       {status && <WorkersTable status={status} />}
       {status && <ServerMetrics status={status} info={info} />}
+      {queues && queues.length > 0 && (
+        <WorkQueuesSection
+          baseUrl={server.base_url}
+          queues={queues}
+          refreshSeconds={refreshSeconds}
+        />
+      )}
     </div>
   );
 }
@@ -698,4 +727,210 @@ function ServerMetrics({
       ))}
     </section>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Work-unit dispatch — per-queue heatmaps
+// ---------------------------------------------------------------------------
+
+function WorkQueuesSection({
+  baseUrl,
+  queues,
+  refreshSeconds,
+}: {
+  baseUrl: string;
+  queues: DiLoCoQueueSummary[];
+  refreshSeconds: number;
+}) {
+  return (
+    <section
+      style={{
+        border: "1px solid var(--border, #444)",
+        borderRadius: 6,
+        padding: 12,
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+      }}
+    >
+      <header style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <strong>Work-unit dispatch</strong>
+        <span className="muted" style={{ fontSize: "smaller" }}>
+          one queue per (dataset_id, shuffle_seed)
+        </span>
+      </header>
+      {queues.map((q) => (
+        <QueueHeatmap
+          key={`${q.dataset_id}|${q.shuffle_seed}`}
+          baseUrl={baseUrl}
+          summary={q}
+          refreshSeconds={refreshSeconds}
+        />
+      ))}
+    </section>
+  );
+}
+
+function QueueHeatmap({
+  baseUrl,
+  summary,
+  refreshSeconds,
+}: {
+  baseUrl: string;
+  summary: DiLoCoQueueSummary;
+  refreshSeconds: number;
+}) {
+  // Fetch the detail (bitmaps + per-worker counters) per queue. Each
+  // bitmap is K bits → at K=1024 that's 128 bytes, base64 ≈ 172
+  // bytes. Polling at the panel's cadence is cheap.
+  const detailQuery = useQuery({
+    queryKey: [
+      "diloco",
+      "work-queue",
+      baseUrl,
+      summary.dataset_id,
+      summary.shuffle_seed,
+    ],
+    queryFn: () =>
+      api.diLoCoWorkQueue(baseUrl, summary.dataset_id, summary.shuffle_seed),
+    refetchInterval: refreshSeconds * 1000,
+    refetchIntervalInBackground: false,
+  });
+
+  const detail = detailQuery.data;
+  const issuedBytes = useMemo(
+    () => (detail ? decodeBase64(detail.issued_bitmap_b64) : null),
+    [detail],
+  );
+  const completedBytes = useMemo(
+    () => (detail ? decodeBase64(detail.completed_bitmap_b64) : null),
+    [detail],
+  );
+
+  // K=1024 → 32×32 grid is the natural shape; for other K pick a
+  // squarish grid: ceil(sqrt(K)) cols.
+  const cols = Math.ceil(Math.sqrt(summary.total_units));
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        padding: 8,
+        background: "var(--row-alt, #1a1a1a)",
+        borderRadius: 4,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          flexWrap: "wrap",
+        }}
+      >
+        <code style={{ fontSize: "smaller" }}>
+          {summary.dataset_id}@{summary.shuffle_seed}
+        </code>
+        <span style={{ flex: 1 }} />
+        <span className="muted" style={{ fontSize: "smaller" }}>
+          {summary.issued_count}/{summary.total_units} issued
+          {summary.completed_count > 0 &&
+            ` · ${summary.completed_count} confirmed`}
+          {" · "}
+          {summary.hint.length.toLocaleString()} rows
+        </span>
+      </div>
+
+      {issuedBytes && completedBytes ? (
+        <div
+          aria-label="work unit heatmap"
+          style={{
+            display: "grid",
+            gridTemplateColumns: `repeat(${cols}, 1fr)`,
+            gap: 1,
+            width: "100%",
+            maxWidth: 480,
+          }}
+        >
+          {Array.from({ length: summary.total_units }, (_, i) => {
+            const issued = bitGet(issuedBytes, i);
+            const completed = bitGet(completedBytes, i);
+            // Three states: available (transparent) / issued
+            // (orange) / issued+confirmed-complete (green).
+            const bg = completed
+              ? "#2d6a4f"
+              : issued
+                ? "#b8741b"
+                : "rgba(255,255,255,0.06)";
+            return (
+              <div
+                key={i}
+                title={`unit ${i}: ${
+                  completed ? "completed" : issued ? "issued" : "available"
+                }`}
+                style={{
+                  width: "100%",
+                  aspectRatio: "1 / 1",
+                  background: bg,
+                  borderRadius: 1,
+                }}
+              />
+            );
+          })}
+        </div>
+      ) : (
+        <div className="muted" style={{ fontSize: "smaller" }}>
+          Loading heatmap…
+        </div>
+      )}
+
+      {detail && Object.keys(detail.by_worker).length > 0 && (
+        <table
+          style={{
+            width: "100%",
+            borderCollapse: "collapse",
+            fontSize: "smaller",
+            marginTop: 4,
+          }}
+        >
+          <thead>
+            <tr style={{ textAlign: "left" }}>
+              <th style={{ padding: "2px 6px" }}>Worker</th>
+              <th style={{ padding: "2px 6px" }}>Issued</th>
+              <th style={{ padding: "2px 6px" }}>Completed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.entries(detail.by_worker)
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([wid, c]) => (
+                <tr
+                  key={wid}
+                  style={{ borderTop: "1px solid var(--border, #2a2a2a)" }}
+                >
+                  <td style={{ padding: "2px 6px" }}>{wid}</td>
+                  <td style={{ padding: "2px 6px" }}>{c.units_issued}</td>
+                  <td style={{ padding: "2px 6px" }}>{c.units_completed}</td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function decodeBase64(s: string): Uint8Array {
+  // atob → binary string → byte array. Adequate for K=1024 (~128 bytes);
+  // for very large K we'd want Uint8Array.fromBase64 or similar.
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function bitGet(bm: Uint8Array, i: number): boolean {
+  return ((bm[i >> 3] >> (i & 7)) & 1) === 1;
 }

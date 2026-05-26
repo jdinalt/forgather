@@ -26,6 +26,22 @@ import torch
 logger = logging.getLogger(__name__)
 
 
+class DiLoCoServerUnreachable(ConnectionError):
+    """Raised when the DiLoCo server can't be contacted at startup.
+
+    The DiLoCoCallback does a ``/status`` round-trip in
+    ``on_train_begin`` before constructing the worker; if the server
+    URL is wrong, the server is down, or a firewall is in the way,
+    we fail loudly here rather than letting training begin and then
+    diverging silently when the first sync 500 steps later fails.
+
+    Inherits from ConnectionError so callers catching the broader
+    type still work; new callers can branch on the specific type.
+    """
+
+    pass
+
+
 class DiLoCoRegisterCollisionError(ConnectionError):
     """Raised when ``/register`` returns HTTP 409.
 

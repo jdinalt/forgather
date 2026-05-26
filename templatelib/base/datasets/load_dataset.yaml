@@ -46,9 +46,10 @@ validation_dataset_split: &validation_dataset_split !singleton:{{ ns.load_method
     <<: *load_dataset_args
     split: "validation"
     ## DiLoCo work-unit dispatch is train-only by design — every
-    ## worker runs the full eval pass and metrics are averaged. The
-    ## loader honors False here even when ``DILOCO_WORK_DISPATCH=1``
-    ## is set in the env.
+    ## worker runs the full eval pass and metrics are averaged. This
+    ## kwarg is the template-level off-switch; it has no webui or
+    ## scheduler surface (DiLoCo enable / disable is purely
+    ## ``DILOCO_SERVER`` presence in the worker's env).
     diloco_work_dispatch: False
 
     [test_dataset_split]

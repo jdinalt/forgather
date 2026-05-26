@@ -47,47 +47,57 @@ def _make_control():
     return TrainerControl()
 
 
-# Patch target: the import inside on_train_begin resolves to this module
+# Patch targets: the imports inside on_train_begin resolve to these modules
 _WORKER_PATCH = "forgather.ml.diloco.worker.DiLoCoWorker"
+_CLIENT_PATCH = "forgather.ml.diloco.client.DiLoCoClient"
 
 
-class TestNoOpBehavior:
-    """Callback should be inactive when no server_addr is configured."""
+class TestFailFastWhenUnconfigured:
+    """The callback was reworked from "silent no-op when DILOCO_SERVER
+    is unset" to "fail fast on misconfiguration." The previous silent
+    no-op was masking distributed-training islands (two workers,
+    callback present, no server, no sync, no warning). The template
+    is now responsible for gating the include on DILOCO_SERVER; if
+    the gate is missing and we reach here without a server_addr,
+    we raise."""
 
-    def test_inactive_when_no_server(self):
-        """Callback with no server_addr has active=False."""
+    def test_inactive_property_still_works(self):
+        """``active`` is still False without a server_addr — used by
+        the template to decide whether to include the callback at all."""
         cb = DiLoCoCallback()
         assert not cb.active
+        cb2 = DiLoCoCallback(server_addr="")
+        assert not cb2.active
 
-    def test_inactive_with_empty_string(self):
-        """Callback with empty server_addr has active=False."""
-        cb = DiLoCoCallback(server_addr="")
-        assert not cb.active
+    def test_on_train_begin_raises_when_no_server(self):
+        """on_train_begin raises DiLoCoServerUnreachable when the
+        callback was constructed without a server_addr. Previously this
+        was a silent no-op."""
+        from forgather.ml.diloco.client import DiLoCoServerUnreachable
 
-    def test_on_train_begin_noop(self):
-        """on_train_begin does nothing when inactive."""
         cb = DiLoCoCallback()
         args, state, control = _make_args(), _make_state(), _make_control()
         model = TinyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
-        cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
-        assert cb._worker is None
+        with pytest.raises(DiLoCoServerUnreachable, match="DILOCO_SERVER"):
+            cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
 
-    def test_on_log_noop(self):
-        """on_log does nothing when inactive."""
+    def test_on_log_noop_when_inactive(self):
+        """on_log is still a no-op when the worker was never started
+        (it's called on every step, so raising would be catastrophic)."""
         cb = DiLoCoCallback()
         args, state, control = _make_args(), _make_state(), _make_control()
         logs = {"loss": 1.0}
-
         cb.on_log(args, state, control, logs=logs)
         assert "diloco/sync_count" not in logs
 
-    def test_on_train_end_noop(self):
-        """on_train_end does nothing when inactive."""
+    def test_on_train_end_noop_when_inactive(self):
+        """on_train_end is still a no-op when the worker was never
+        started (covers the on_train_begin-raised path so cleanup
+        doesn't double-fault)."""
         cb = DiLoCoCallback()
         args, state, control = _make_args(), _make_state(), _make_control()
-        # Should not raise
         cb.on_train_end(args, state, control)
 
     def test_state_dict_empty_when_inactive(self):
@@ -100,6 +110,28 @@ class TestNoOpBehavior:
         cb = DiLoCoCallback()
         cb.load_state_dict({})
         assert cb._pending_state is None
+
+    @patch(_WORKER_PATCH)
+    @patch(_CLIENT_PATCH)
+    def test_on_train_begin_raises_when_server_unreachable(
+        self, MockClient, MockWorker
+    ):
+        """on_train_begin raises DiLoCoServerUnreachable when the
+        /status probe at startup fails. Surfaces the failure while
+        the operator's still watching the TTY, not 500 steps in."""
+        from forgather.ml.diloco.client import DiLoCoServerUnreachable
+
+        MockClient.return_value.get_status.side_effect = ConnectionError("refused")
+
+        cb = DiLoCoCallback(server_addr="unreachable:9999")
+        args, state, control = _make_args(), _make_state(), _make_control()
+        model = TinyModel()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+        with pytest.raises(DiLoCoServerUnreachable, match="/status round-trip"):
+            cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+        # Worker was never started since the probe came first.
+        MockWorker.return_value.start.assert_not_called()
 
 
 class TestEnvVarConfiguration:
@@ -183,10 +215,15 @@ class TestEnvVarConfiguration:
 
 
 class TestWorkerLifecycle:
-    """Worker created/started in on_train_begin, stopped in on_train_end."""
+    """Worker created/started in on_train_begin, stopped in on_train_end.
 
+    The /status pre-probe must be stubbed in every test here — the
+    callback's fail-fast path otherwise tries to hit the network and
+    blows up before reaching the worker construction we care about."""
+
+    @patch(_CLIENT_PATCH)
     @patch(_WORKER_PATCH)
-    def test_worker_created_on_train_begin(self, MockWorker):
+    def test_worker_created_on_train_begin(self, MockWorker, MockClient):
         """on_train_begin creates and starts a DiLoCoWorker."""
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {}
@@ -212,9 +249,12 @@ class TestWorkerLifecycle:
             max_sync_retries=3,
         )
         mock_instance.start.assert_called_once()
+        # Pre-probe should have happened first.
+        MockClient.return_value.get_status.assert_called_once()
 
+    @patch(_CLIENT_PATCH)
     @patch(_WORKER_PATCH)
-    def test_worker_stopped_on_train_end(self, MockWorker):
+    def test_worker_stopped_on_train_end(self, MockWorker, MockClient):
         """on_train_end stops the worker."""
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {}
@@ -230,18 +270,22 @@ class TestWorkerLifecycle:
         mock_instance.stop.assert_called_once()
         assert cb._worker is None
 
+    @patch(_CLIENT_PATCH)
     @patch(_WORKER_PATCH)
-    def test_worker_not_created_without_model(self, MockWorker):
-        """on_train_begin without model in kwargs logs error, no worker created."""
+    def test_missing_model_raises(self, MockWorker, MockClient):
+        """on_train_begin without model in kwargs raises (used to be
+        a silent log+return — now a fatal RuntimeError)."""
         cb = DiLoCoCallback(server_addr="host:8512")
         args, state, control = _make_args(), _make_state(), _make_control()
 
-        cb.on_train_begin(args, state, control)
+        with pytest.raises(RuntimeError, match="model or optimizer"):
+            cb.on_train_begin(args, state, control)
         MockWorker.assert_not_called()
         assert cb._worker is None
 
+    @patch(_CLIENT_PATCH)
     @patch(_WORKER_PATCH)
-    def test_custom_parameters_passed_to_worker(self, MockWorker):
+    def test_custom_parameters_passed_to_worker(self, MockWorker, MockClient):
         """All callback parameters are forwarded to DiLoCoWorker."""
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {}
@@ -281,8 +325,9 @@ class TestWorkerLifecycle:
 class TestMetricsInjection:
     """Sync metrics injected into logs dict."""
 
+    @patch(_CLIENT_PATCH)
     @patch(_WORKER_PATCH)
-    def test_metrics_injected_on_log(self, MockWorker):
+    def test_metrics_injected_on_log(self, MockWorker, MockClient):
         """on_log adds sync_metrics to the logs dict."""
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {
@@ -317,8 +362,9 @@ class TestMetricsInjection:
         cb.on_log(args, state, control, logs=logs)
         assert logs == {"loss": 1.5}
 
+    @patch(_CLIENT_PATCH)
     @patch(_WORKER_PATCH)
-    def test_no_crash_when_logs_is_none(self, MockWorker):
+    def test_no_crash_when_logs_is_none(self, MockWorker, MockClient):
         """on_log handles None logs gracefully."""
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {"diloco/sync_count": 1}
@@ -336,8 +382,9 @@ class TestMetricsInjection:
 class TestStatefulProtocol:
     """state_dict/load_state_dict, deferred restore, empty state when inactive."""
 
+    @patch(_CLIENT_PATCH)
     @patch(_WORKER_PATCH)
-    def test_state_dict_captures_worker_state(self, MockWorker):
+    def test_state_dict_captures_worker_state(self, MockWorker, MockClient):
         """state_dict returns worker metrics and config."""
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {}
@@ -387,8 +434,9 @@ class TestStatefulProtocol:
         cb.load_state_dict(saved)
         assert cb._pending_state == saved
 
+    @patch(_CLIENT_PATCH)
     @patch(_WORKER_PATCH)
-    def test_deferred_state_applied_on_train_begin(self, MockWorker):
+    def test_deferred_state_applied_on_train_begin(self, MockWorker, MockClient):
         """Pending state from load_state_dict is applied when worker starts."""
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {}
@@ -427,8 +475,9 @@ class TestStatefulProtocol:
         # Pending state should be cleared
         assert cb._pending_state is None
 
+    @patch(_CLIENT_PATCH)
     @patch(_WORKER_PATCH)
-    def test_no_pending_state_when_not_loaded(self, MockWorker):
+    def test_no_pending_state_when_not_loaded(self, MockWorker, MockClient):
         """on_train_begin works fine without any pending state."""
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {}
@@ -450,8 +499,9 @@ class TestStatefulProtocol:
         cb.load_state_dict({})
         assert cb._pending_state is None
 
+    @patch(_CLIENT_PATCH)
     @patch(_WORKER_PATCH)
-    def test_roundtrip_state_dict(self, MockWorker):
+    def test_roundtrip_state_dict(self, MockWorker, MockClient):
         """state_dict output can be loaded back via load_state_dict."""
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {}

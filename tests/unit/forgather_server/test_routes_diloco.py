@@ -254,6 +254,78 @@ class TestProxy:
         assert r.status_code == 200
         assert r.json() == upstream
 
+    def test_work_queues_proxies(self, client, no_local_servers, monkeypatch):
+        upstream = [
+            {
+                "dataset_id": "abc123",
+                "shuffle_seed": 0,
+                "total_units": 1024,
+                "issued_count": 7,
+                "completed_count": 3,
+                "hint": {"length": 100000},
+            }
+        ]
+
+        def fake_handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/work/queues"
+            return httpx.Response(200, json=upstream)
+
+        _patch_async_client(monkeypatch, fake_handler)
+        r = client.get(
+            "/api/diloco/work-queues",
+            params={"base": "http://127.0.0.1:8512"},
+        )
+        assert r.status_code == 200
+        assert r.json() == upstream
+
+    def test_work_queue_proxies_with_query_args(
+        self, client, no_local_servers, monkeypatch
+    ):
+        upstream = {
+            "dataset_id": "abc123",
+            "shuffle_seed": 42,
+            "total_units": 1024,
+            "issued_count": 5,
+            "completed_count": 2,
+            "hint": {"length": 100000},
+            "issued_bitmap_b64": "AwA=",
+            "completed_bitmap_b64": "AQA=",
+            "by_worker": {"alpha": {"units_issued": 3, "units_completed": 1}},
+        }
+        captured = {}
+
+        def fake_handler(request: httpx.Request) -> httpx.Response:
+            captured["path"] = request.url.path
+            captured["query"] = dict(request.url.params)
+            return httpx.Response(200, json=upstream)
+
+        _patch_async_client(monkeypatch, fake_handler)
+        r = client.get(
+            "/api/diloco/work-queue",
+            params={
+                "base": "http://127.0.0.1:8512",
+                "dataset_id": "abc123",
+                "shuffle_seed": 42,
+            },
+        )
+        assert r.status_code == 200
+        assert r.json() == upstream
+        # Upstream got the path + the right query args.
+        assert captured["path"] == "/work/queue"
+        assert captured["query"] == {"dataset_id": "abc123", "shuffle_seed": "42"}
+
+    def test_work_queue_refused_for_unregistered_base(self, client, no_local_servers):
+        # SSRF: a non-loopback / non-registered base is refused.
+        r = client.get(
+            "/api/diloco/work-queue",
+            params={
+                "base": "http://wan-host:8512",
+                "dataset_id": "abc",
+                "shuffle_seed": 0,
+            },
+        )
+        assert r.status_code == 403
+
     def test_control_rejects_unknown_action(self, client, no_local_servers):
         r = client.post(
             "/api/diloco/server-control/eat_my_homework",

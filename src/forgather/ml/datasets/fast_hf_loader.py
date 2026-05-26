@@ -708,14 +708,15 @@ def _remote_load_iterable_dataset(
         length=body.get("length"),
         column_names=body.get("column_names"),
     )
-    # DiLoCo work-unit dispatch opt-in (env-driven; no-op when off).
-    # See docs/design/diloco-work-unit-dispatch.md. Applies at the
-    # backend layer so the higher-level ComposableIterableDataset
-    # composes its map / filter / slice / shard ops on top of the
-    # dispatched row stream. The ``diloco_work_dispatch`` kwarg is
-    # the caller-level gate (eval / test splits set it False so
-    # every worker runs the full eval pass — work-unit dispatch is
-    # train-only by design).
+    # DiLoCo work-unit dispatch (env-driven; no-op when DILOCO_SERVER
+    # is unset). Applies at the backend layer so the higher-level
+    # ComposableIterableDataset composes its map / filter / slice /
+    # shard ops on top of the dispatched row stream. The
+    # ``diloco_work_dispatch`` kwarg is the template-level off-switch:
+    # eval / test split loads set it False so every worker runs the
+    # full eval pass and metrics are averaged across workers.
+    # Train loads keep the default True — wrapping then fires iff
+    # DILOCO_SERVER is set.
     if diloco_work_dispatch:
         from .work_unit_backend import maybe_wrap_for_work_dispatch
 
@@ -783,9 +784,9 @@ def _auto_load_iterable_dataset(
         load_args=load_args,
         resolver=resolver,
     )
-    # DiLoCo work-unit dispatch opt-in — same hook as the explicit
-    # FORGATHER_DATASET_SERVER path above. ``diloco_work_dispatch``
-    # is the caller-level gate (False for eval / test loads). The
+    # DiLoCo work-unit dispatch — same hook as the explicit
+    # FORGATHER_DATASET_SERVER path above. ``diloco_work_dispatch`` is
+    # the template-level off-switch (False for eval / test loads). The
     # cluster auto-routing path lazily resolves on first access; the
     # wrap's __len__ call will trigger that resolve as a side effect.
     if diloco_work_dispatch:
@@ -868,16 +869,17 @@ def fast_load_iterable_dataset(
         Whether to reset length-estimation counters at the start of each
         new iteration pass.
     diloco_work_dispatch : bool, optional
-        Gate for the DiLoCo work-unit dispatch wrap. When True (default)
-        and the env vars are set (``DILOCO_WORK_DISPATCH=1`` +
-        ``DILOCO_SERVER`` + ``DILOCO_WORKER_ID``), the constructed
-        backend is wrapped with a ``WorkUnitBackend`` that pulls
-        per-unit row ranges from the DiLoCo server. Set to ``False``
-        on eval / validation / test loads — work-unit dispatch is
-        train-only by design (every worker must run the full eval pass
-        and metrics are averaged across workers). The
+        Template-level off-switch for the DiLoCo work-unit dispatch
+        wrap. Defaults to True so train loads in DiLoCo runs go through
+        the server-driven row dispatch (the wrap itself no-ops unless
+        ``DILOCO_SERVER`` is set in the env). Eval / validation / test
+        split templates pass ``False`` here — work-unit dispatch is
+        train-only by design (every worker runs the full eval pass and
+        metrics are averaged). The
         ``templatelib/base/datasets/load_dataset.yaml`` template wires
-        this for the validation and test splits.
+        this for the validation and test splits. Not surfaced via the
+        webui or scheduler — DiLoCo is enabled / disabled by whether
+        ``DILOCO_SERVER`` is set, not by an operator-facing toggle.
     **load_dataset_kwargs
         Extra keyword arguments forwarded to ``datasets.load_dataset``
         on the initial (slow-path) local load. Not forwarded to the

@@ -1158,6 +1158,30 @@ export interface DiLoCoInfo {
   };
 }
 
+/** Summary entry from ``GET /api/diloco/work-queues``. One per
+ *  ``(dataset_id, shuffle_seed)`` pair active on the upstream
+ *  server. No bitmaps — fetch the detail endpoint for those. */
+export interface DiLoCoQueueSummary {
+  dataset_id: string;
+  shuffle_seed: number;
+  total_units: number;
+  issued_count: number;
+  completed_count: number;
+  hint: { length: number; source?: string | null };
+}
+
+/** Full detail from ``GET /api/diloco/work-queue``. ``*_bitmap_b64``
+ *  is ``K`` bits packed little-endian per byte, base64-encoded —
+ *  decode client-side to drive the per-unit heatmap. */
+export interface DiLoCoQueueDetail extends DiLoCoQueueSummary {
+  issued_bitmap_b64: string;
+  completed_bitmap_b64: string;
+  by_worker: Record<
+    string,
+    { units_issued: number; units_completed: number }
+  >;
+}
+
 export const api = {
   listSearchRoots: () => fetchJson<SearchRoot[]>("/api/search-roots"),
   addSearchRoot: async (path: string, create = false) => {
@@ -2264,6 +2288,20 @@ export const api = {
   diLoCoServerInfo: (base: string) =>
     fetchJson<DiLoCoInfo>(
       `/api/diloco/server-info?base=${encodeURIComponent(base)}`,
+    ),
+  /** Summaries of all work-unit dispatch queues on the upstream
+   *  DiLoCo server. Empty list when work-dispatch isn't being used. */
+  diLoCoWorkQueues: (base: string) =>
+    fetchJson<DiLoCoQueueSummary[]>(
+      `/api/diloco/work-queues?base=${encodeURIComponent(base)}`,
+    ),
+  /** Full state of a single queue, including base64 bitmaps for the
+   *  per-unit heatmap and per-worker counters. */
+  diLoCoWorkQueue: (base: string, dataset_id: string, shuffle_seed: number) =>
+    fetchJson<DiLoCoQueueDetail>(
+      `/api/diloco/work-queue?base=${encodeURIComponent(base)}` +
+        `&dataset_id=${encodeURIComponent(dataset_id)}` +
+        `&shuffle_seed=${shuffle_seed}`,
     ),
   /** Proxy POST ``<base>/control/{action}`` with an opaque JSON body. */
   diLoCoServerControl: async (
