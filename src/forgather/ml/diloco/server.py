@@ -1689,10 +1689,48 @@ class DiLoCoServer:
             maybe_delete_oldest_checkpoint(self.output_dir, self.save_total_limit)
         self._dirty = False
 
+    @staticmethod
+    def _reorder_state_dict(
+        state_dict: Dict[str, torch.Tensor], saved_names: List[str]
+    ) -> Dict[str, torch.Tensor]:
+        """Rebuild ``state_dict`` in the order given by ``saved_names``.
+
+        Validates the key sets match (loud failure on architecture
+        drift). Extra keys in ``state_dict`` not in ``saved_names`` are
+        dropped — the saved order is authoritative; if the live model
+        gained a param the operator should treat that as a model-arch
+        change and not resume.
+        """
+        sd_keys = set(state_dict.keys())
+        saved_keys = set(saved_names)
+        missing = saved_keys - sd_keys
+        extra = sd_keys - saved_keys
+        if missing or extra:
+            raise RuntimeError(
+                f"Model param keys don't match the saved checkpoint's "
+                f"param_names (model arch drift?). Missing: {sorted(missing)[:5]}"
+                f"{'...' if len(missing) > 5 else ''}. "
+                f"Extra: {sorted(extra)[:5]}"
+                f"{'...' if len(extra) > 5 else ''}."
+            )
+        return {name: state_dict[name] for name in saved_names}
+
     def load_state(self, checkpoint_path: Optional[str] = None):
         """Load server state from a checkpoint directory and reset internal
         Args:
             checkpoint_path: Path to a checkpoint directory; defaults to searching output_dir.
+
+        Param ordering is taken from ``server_state.pt``'s ``param_names``
+        list (the canonical order at save time), not from the on-disk
+        model state_dict iteration order. The two can disagree — e.g.
+        ``save_model_checkpoint`` currently writes safetensors index
+        keys in arbitrary hash order — and the SGD optimizer's
+        ``state_dict()`` keys momentum buffers by integer slot, so a
+        slot-vs-slot mismatch on reload would silently apply a momentum
+        buffer of one shape to a param of another. Caught the bug
+        cold on the May 26 bringup: hidden_size=512 param paired with
+        intermediate_size=1280 momentum → ``buf.add_(grad)`` crash on
+        the first sync after restart. See #45 for the trace.
         """
         if self._running:
             raise RuntimeError(
@@ -1719,15 +1757,35 @@ class DiLoCoServer:
         logger.info(f"Loading model from checkpoint at {checkpoint_path}")
         state_dict = load_model_checkpoint(checkpoint_path, module=None, device="cpu")
 
-        # Initialize from state-dictionary
-        self._initialize(state_dict)
-
-        # Load server state if present
+        # Peek at server_state.pt BEFORE initializing so we can reorder
+        # the state_dict to match the canonical save-time order. The
+        # outer-optimizer state uses integer-keyed slots so the param
+        # list at slot i must hold the same param it did at save time.
         server_state_path = os.path.join(checkpoint_path, "server_state.pt")
+        server_state: Optional[Dict[str, Any]] = None
         if os.path.exists(server_state_path):
             server_state = torch.load(
                 server_state_path, map_location="cpu", weights_only=False
             )
+            saved_names = server_state.get("param_names")
+            if saved_names:
+                state_dict = self._reorder_state_dict(state_dict, saved_names)
+            else:
+                # Legacy server_state.pt without param_names: nothing we
+                # can do to canonicalize. The optimizer reload may
+                # still misalign — log loudly so the operator can spot
+                # a downstream crash and reach for a clean restart.
+                logger.warning(
+                    "server_state.pt has no 'param_names' entry — using "
+                    "state_dict iteration order, which may not match the "
+                    "saved optimizer state. Pre-#45 checkpoint."
+                )
+
+        # Initialize from state-dictionary
+        self._initialize(state_dict)
+
+        # Load server state if present
+        if server_state is not None:
             self.outer_optimizer.load_state_dict(server_state["outer_optimizer"])
             self._sync_round = server_state["sync_round"]
             self._total_submissions = server_state.get("total_submissions", 0)
