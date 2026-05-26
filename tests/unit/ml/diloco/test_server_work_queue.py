@@ -20,6 +20,7 @@ server, hit it with DiLoCoClient + a few direct urllib calls for the
 
 import base64
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -271,7 +272,17 @@ class TestQueueDiagnostics:
 
 
 class TestPersistence:
-    def test_work_queues_survive_save_load(self, tmp_path):
+    def test_work_queues_NOT_persisted_across_save_load(self, tmp_path):
+        """Regression for #46.
+
+        Work-queue persistence was removed because it created a
+        cross-experiment hazard: same output_dir, new dataset →
+        old queues with stale dataset_ids and stale hint.length lingered
+        in /work/queues, confusing the operator. Workers re-register
+        their datasets on connect, so the server reconstructs the
+        queue map fresh on demand. The cost is bounded re-work after
+        a server crash (≤ N_workers in-flight units), which matches
+        the existing worker-death budget."""
         sd = _state_dict()
         ckpt = make_initial_checkpoint(sd, tmp_path)
         s = DiLoCoServer(
@@ -289,15 +300,14 @@ class TestPersistence:
             u0 = c.request_work("w0", "ds-1", 42)["unit_id"]
             c.request_work("w0", "ds-1", 42)
             c.complete_work("w0", "ds-1", 42, u0)
-            # Force a save against an explicit dir (don't rotate).
             save_dir = str(tmp_path / "saved")
             s._dirty = True
             s.save_state(save_dir)
         finally:
             s.stop()
 
-        # Fresh server loaded from the saved checkpoint should see the
-        # same queue state.
+        # Fresh server: queues come up empty, ready for fresh
+        # registrations from workers.
         s2 = DiLoCoServer(
             output_dir=str(tmp_path),
             from_checkpoint=save_dir,
@@ -305,19 +315,88 @@ class TestPersistence:
             port=0,
             default_work_units=8,
         )
-        with s2._work_queues_lock:
-            q = s2._work_queues[("ds-1", 42)]
-            assert q.total_units == 8
-            assert q.hint_length == 5000
-            assert q.issued_count == 2
-            assert q.completed_count == 1
-            # u0 and one more bit issued.
-            issued_ones = sum(_bit_get(q.issued, i) for i in range(q.total_units))
-            assert issued_ones == 2
-            assert q.by_worker["w0"]["units_issued"] == 2
-            assert q.by_worker["w0"]["units_completed"] == 1
-        # The dataset_lengths map is also restored.
-        assert s2._dataset_lengths["ds-1"] == 5000
+        assert s2._work_queues == {}
+        assert s2._dataset_lengths == {}
+
+        # And the persisted file no longer contains a work_queues key
+        # at all — confirm via direct inspection so a future regression
+        # that re-adds the key without restoring the load path also
+        # fails this test.
+        import torch as _torch
+
+        loaded = _torch.load(
+            os.path.join(save_dir, "server_state.pt"),
+            map_location="cpu",
+            weights_only=False,
+        )
+        assert "work_queues" not in loaded
+        assert "dataset_lengths" not in loaded
+
+    def test_legacy_checkpoint_with_work_queues_loads_with_warning(
+        self, tmp_path, caplog
+    ):
+        """A pre-#46 server_state.pt that contains a work_queues
+        entry must still load cleanly, but the operator should see a
+        clear warning that those queues are being dropped. Mid-epoch
+        resume that worked under the old behavior is intentionally
+        gone — workers re-register on connect, in-flight units get
+        re-issued (≤ N_workers extra units trained per crash)."""
+        import logging
+
+        import torch as _torch
+
+        sd = _state_dict()
+        ckpt = make_initial_checkpoint(sd, tmp_path)
+        s = DiLoCoServer(
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=1,
+            port=0,
+            default_work_units=8,
+        )
+        s.start()
+        try:
+            save_dir = str(tmp_path / "saved")
+            s._dirty = True
+            s.save_state(save_dir)
+        finally:
+            s.stop()
+
+        # Inject a legacy-shaped work_queues entry into the saved
+        # server_state.pt, then reload and confirm the warning fires
+        # and the queues themselves are NOT rehydrated.
+        sp = os.path.join(save_dir, "server_state.pt")
+        ss = _torch.load(sp, map_location="cpu", weights_only=False)
+        ss["work_queues"] = {
+            "stale-ds|0": {
+                "dataset_id": "stale-ds",
+                "shuffle_seed": 0,
+                "total_units": 8,
+                "issued": bytes(b"\x00"),
+                "completed": bytes(b"\x00"),
+                "hint_length": 12345,
+                "issued_count": 0,
+                "completed_count": 0,
+                "by_worker": {},
+            }
+        }
+        _torch.save(ss, sp)
+
+        with caplog.at_level(logging.WARNING, logger="forgather.ml.diloco.server"):
+            s2 = DiLoCoServer(
+                output_dir=str(tmp_path),
+                from_checkpoint=save_dir,
+                num_workers=1,
+                port=0,
+                default_work_units=8,
+            )
+
+        assert s2._work_queues == {}
+        assert any(
+            "work-queue" in rec.message for rec in caplog.records
+        ), "Expected a warning about ignored legacy work_queues, got: " + repr(
+            [rec.message for rec in caplog.records]
+        )
 
     def test_legacy_checkpoint_loads_with_empty_queue_map(self, tmp_path):
         """Checkpoints written before this feature landed have no

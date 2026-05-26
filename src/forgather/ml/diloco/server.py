@@ -1648,28 +1648,22 @@ class DiLoCoServer:
             checkpoint_path, self.get_global_params(), safetensors=self.safetensors
         )
 
-        # Save server state (optimizer, round, metadata) separately.
-        # Work-queue state rides along so a server restart preserves the
-        # issuance bitmap — already-issued units remain consumed across
-        # restarts, same calculus as worker death (≤ N_workers units
-        # lost per epoch). Key is "dataset_id|seed" string-joined to
-        # dodge tuple-as-dict-key serialization edges.
-        with self._work_queues_lock:
-            work_queues_state = {
-                f"{dsid}|{seed}": {
-                    "dataset_id": dsid,
-                    "shuffle_seed": seed,
-                    "total_units": q.total_units,
-                    "issued": bytes(q.issued),
-                    "completed": bytes(q.completed),
-                    "hint_length": q.hint_length,
-                    "issued_count": q.issued_count,
-                    "completed_count": q.completed_count,
-                    "by_worker": {k: dict(v) for k, v in q.by_worker.items()},
-                }
-                for (dsid, seed), q in self._work_queues.items()
-            }
-            dataset_lengths = dict(self._dataset_lengths)
+        # Work-queue state is intentionally NOT persisted (#46). Earlier
+        # versions rode the per-queue bitmap into server_state.pt so a
+        # server restart preserved issuance — the rationale was crash
+        # recovery within a run. In practice the more common pattern
+        # was "operator changed the dataset, output_dir stayed the
+        # same" → workers register a fresh dataset_id, but the old
+        # queue lingers in /work/queues with a stale hint.length and
+        # an unrecognized dataset_id key. The 2026-05-26 bringup
+        # chased exactly this confusion.
+        #
+        # Trade: on a server crash, in-flight units (≤ N_workers, one
+        # per worker) become re-issuable. That matches the design's
+        # accepted worker-death budget. Workers re-register their
+        # datasets on startup anyway, so the server reconstructs the
+        # queue map on demand. Operators who really want mid-epoch
+        # resume can keep their own queue snapshot.
         server_state = {
             "outer_optimizer": self.outer_optimizer.state_dict(),
             "sync_round": self._sync_round,
@@ -1677,8 +1671,6 @@ class DiLoCoServer:
             "param_names": self._param_names,
             "async_mode": self.async_mode,
             "total_submissions": self._total_submissions,
-            "work_queues": work_queues_state,
-            "dataset_lengths": dataset_lengths,
         }
         torch.save(server_state, os.path.join(checkpoint_path, "server_state.pt"))
 
@@ -1790,32 +1782,25 @@ class DiLoCoServer:
             self._sync_round = server_state["sync_round"]
             self._total_submissions = server_state.get("total_submissions", 0)
 
-            # Rehydrate work-queue state if present. Absent for
-            # checkpoints written before this feature landed — fresh
-            # _work_queues is the right behavior in that case (workers
-            # will re-register their datasets on first contact).
-            work_queues_state = server_state.get("work_queues") or {}
-            with self._work_queues_lock:
-                for entry in work_queues_state.values():
-                    dsid = entry["dataset_id"]
-                    seed = int(entry["shuffle_seed"])
-                    self._work_queues[(dsid, seed)] = WorkQueue(
-                        total_units=int(entry["total_units"]),
-                        issued=bytearray(entry["issued"]),
-                        completed=bytearray(entry["completed"]),
-                        hint_length=int(entry["hint_length"]),
-                        issued_count=int(entry.get("issued_count", 0)),
-                        completed_count=int(entry.get("completed_count", 0)),
-                        by_worker={
-                            k: dict(v)
-                            for k, v in (entry.get("by_worker") or {}).items()
-                        },
-                    )
-                self._dataset_lengths.update(server_state.get("dataset_lengths") or {})
+            # Work-queue state is no longer persisted (#46). For
+            # backward-compat with pre-#46 checkpoints, surface a
+            # warning if any work-queue entries are present — they're
+            # being silently ignored, and the operator should know in
+            # case they were expecting mid-epoch resume from this
+            # checkpoint.
+            legacy_queues = server_state.get("work_queues") or {}
+            if legacy_queues:
+                logger.warning(
+                    "Ignoring %d work-queue entr%s in legacy server_state.pt — "
+                    "work-queue persistence was removed in #46. Workers will "
+                    "re-register their datasets on connect; any in-flight "
+                    "units from the prior run will be re-issued.",
+                    len(legacy_queues),
+                    "y" if len(legacy_queues) == 1 else "ies",
+                )
 
             logger.info(
-                f"Server state loaded from {checkpoint_path}, at round {self._sync_round}; "
-                f"restored {len(work_queues_state)} work queue(s)"
+                f"Server state loaded from {checkpoint_path}, at round {self._sync_round}"
             )
         else:
             logger.warning(
