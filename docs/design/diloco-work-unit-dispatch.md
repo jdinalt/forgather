@@ -1,9 +1,10 @@
 # DiLoCo: Work-Unit Dispatch (Design Proposal)
 
 **Status:** proposal — not implemented.
-**Revision:** 3 (adds the worker_id-must-be-set-at-preprocess-time
-contract and the server-side output_dir uniqueness check on top of
-v2's reissue-drop / no-server-side-suffix-allocation design).
+**Revision:** 4 (simplifies the server-side uniqueness check from
+"reject by output_dir" to "reject re-registration of an already-live
+worker_id" — the server doesn't need to know what the template did
+with the worker_id; the worker_id itself is the proxy).
 **Supersedes (when implemented):** the manual `--num-shards N --shard-index I`
 flow in `examples/tiny_experiments/diloco/` and
 `examples/base_lm_project/templates/configs/diloco.yaml`.
@@ -58,7 +59,10 @@ to be known in advance about worker count.
 4. The unique-per-worker output dir is derivable from `worker_id` (or
    the operator-supplied worker name) at config-preprocessing time —
    no server-side allocation, no runtime renaming. The DiLoCo server
-   independently enforces uniqueness on register as defense in depth.
+   independently enforces `worker_id` uniqueness on register as
+   defense in depth (rejects a second registration of an already-live
+   worker_id; the server doesn't need to know how the template uses
+   the value).
 5. Existing manual `--shard-index` configs keep working, gated by an
    opt-in flag. Migration is per-config.
 
@@ -260,48 +264,72 @@ worker B with the auto-generated `queue_id` writes to
 workers were dispatched with the same operator-supplied `worker_id`
 (the queue_id fallback is unique by construction).
 
-### Server-side output_dir uniqueness check (defense in depth)
+### Server-side `worker_id` uniqueness check (defense in depth)
 
-The early-bind contract is sufficient when the webui is the only path
-to dispatch workers. To catch the manual-CLI footgun (operator forgot
-to bump `--diloco-worker-id` when launching the second worker), the
-DiLoCo server's `/register` handler is extended:
+The early-bind contract is sufficient when the webui is the only
+dispatch path. To catch the manual-CLI footgun (operator forgot to
+bump `--diloco-worker-id` when launching the second worker), the
+DiLoCo server's `/register` handler enforces:
+
+> **A `worker_id` already present in the registry cannot be
+> registered again.**
+
+The server has no view into how a template translates `worker_id`
+into an output directory, training-run identifier, log-file name, or
+anything else — different configs may do completely different things
+with it. The simplest correct rule is to treat the `worker_id` itself
+as the uniqueness proxy: if two workers identify themselves the same
+way, the *downstream consequences* of that identity collision belong
+to the operator's templates, not to the server. Refusing the second
+registration breaks the collision cleanly regardless of what those
+templates do.
 
 ```
 POST /register
-  body:  {
-           worker_id,
-           hostname,
-           extra: { ..., output_dir: "/abs/path/to/output" }   # new
-         }
-  reply: tensor (existing) | 409 on output_dir collision
+  body:  { worker_id, hostname, extra: { ... } }
+  reply: tensor (existing) | 409 if worker_id is already registered
 ```
 
-The server keeps an in-memory `{output_dir: worker_id}` map of
-currently-registered workers:
+Behavior:
 
-- **First register with a given output_dir** → record the mapping and
-  proceed as today.
-- **Re-register with same `worker_id` and same `output_dir`** →
-  reconnect path; proceed.
-- **Register with a `worker_id` that already exists** → existing
-  re-register-replaces semantics.
-- **Register with a different `worker_id` than the one currently
-  holding `output_dir`** → **refuse with 409** and a diagnostic
-  payload `{"error": "output_dir already claimed by worker_id=…"}`.
-  The worker on the receiving end of the 409 logs the error and
-  exits cleanly so the operator sees the diagnostic in the Jobs view's
-  TTY pane immediately — not after the new worker has begun
-  overwriting checkpoint files.
+- **`worker_id` not in registry** → register, return initial params
+  (existing path).
+- **`worker_id` already in registry** → refuse with 409:
+  `{"error": "worker_id '<id>' is already registered; if the previous
+  worker is dead, wait for heartbeat eviction (default ~120s) or POST
+  /deregister"}`.
 
-On deregistration (`/deregister` or eviction by the health monitor),
-the output_dir mapping is cleared so a fresh worker with a new
-`worker_id` can claim that path later.
+This **replaces** today's "re-register replaces the existing entry"
+semantics. The previous behavior was designed for a single worker
+reconnecting after a brief outage, but it doubles as a silent
+collision masker — two operators using the same worker_id today
+just kick each other out invisibly. The new semantic is honest: brief
+outage means the worker waits for heartbeat eviction or the operator
+explicitly cleans up via `/deregister`.
 
-This is one of the few places where the server enforces invariants
-rather than just bookkeeping; the cost (one extra map lookup on
-register, one entry on a typically tiny map) is trivial against the
-cost of silent checkpoint corruption.
+Worker-side handling: the `DiLoCoCallback` treats 409 on register as
+a fatal clean-exit. The diagnostic from the server lands directly in
+the worker's TTY pane via stderr / logger, so the operator sees
+"worker_id 'alpha' is already registered; …" in the Jobs view
+without poking around server logs.
+
+The cost is one dict membership check per `/register` against a
+small in-memory set. The benefit is that no silent on-disk clobber
+path remains, regardless of what the operator's config templates do
+with the worker_id downstream.
+
+### Eviction interaction
+
+The heartbeat-timeout eviction path (`_handle_worker_death`) already
+removes entries from `self._workers`. After eviction, the
+`worker_id` becomes available again — a worker restarting via a
+supervisor process can re-register once eviction has fired. No
+explicit interaction needed; the existing health-monitor cadence is
+sufficient.
+
+For operators who want to recover faster than the heartbeat timeout,
+`/deregister` provides an explicit clean-up path (already present in
+the API).
 
 ## Worker integration
 
@@ -495,25 +523,26 @@ Phase 1: backend coordination (testable with `curl`)
   `/work/request`, `/work/complete`, `/work/queues`, `/work/queue`.
 - Extend `DiLoCoServer.save_state` to persist the bitmaps + the
   `(dataset_id, shuffle_seed) → queue` map.
-- Extend `/register` to accept `extra.output_dir` and enforce
-  per-output_dir uniqueness (409 on collision with another worker_id).
-  Persist the `output_dir → worker_id` map alongside the worker
-  registry; clear entries on deregister / eviction.
+- Tighten `/register` semantics: refuse a second registration of an
+  already-live `worker_id` with 409 + diagnostic. Replaces today's
+  silent "re-register replaces" path. The heartbeat-eviction path
+  already clears the registry entry, so a worker restarting via a
+  supervisor process can re-register once eviction has fired.
 - Tests: register, request, exhaustion, dataset_id mismatch, server
   restart preserving bitmaps, two queues for same dataset under
-  different seeds, completion accounting, output_dir collision returns
-  409, reconnect with same worker_id+output_dir succeeds, post-evict
-  re-claim by a new worker_id succeeds.
+  different seeds, completion accounting, duplicate-worker_id
+  register returns 409, register after `/deregister` succeeds,
+  register after heartbeat eviction succeeds.
 - CLI: `--default-work-units N` (default 1024).
 
 Phase 2: worker integration
 - Implement `WorkUnitDataset` and a `DiLoCoClient.request_work` /
   `complete_work` / `register_dataset` helper.
 - Extend `DiLoCoCallback`:
-  - Pass `args.output_dir` in the `/register` `extra` payload so the
-    server's uniqueness check can fire. Treat 409 as a fatal error and
-    abort training cleanly with the server's diagnostic message in the
-    TTY log.
+  - Treat 409 on `/register` as a fatal clean-exit. The diagnostic
+    payload from the server lands in the worker's TTY pane via the
+    logger so the operator sees "worker_id 'alpha' is already
+    registered; …" in the Jobs view without poking around server logs.
   - When `diloco_work_dispatch=true` (template var / env var
     `DILOCO_WORK_DISPATCH=1`), wrap `args.train_dataset` in
     `WorkUnitDataset`.
@@ -553,12 +582,12 @@ Phase 4: deprecate manual sharding
   record `request → unit_id` history. Out of scope for phase 1; the
   bitmap + completion-bitmap pair is enough for "what got trained".
 - **Same `worker_id` collision.** Handled by the server-side
-  `output_dir` uniqueness check (Phase 1 scope). A second register
-  with the same `output_dir` but a different `worker_id` is refused
-  with 409; the colliding worker exits cleanly with the diagnostic in
-  its TTY log. Operators who hit this either bump their
-  `--diloco-worker-id` or let the scheduler's queue_id fallback handle
-  it. No silent on-disk clobber path remains.
+  `worker_id` uniqueness check (Phase 1 scope): a second register of
+  an already-live `worker_id` returns 409 and the colliding worker
+  exits cleanly. The previous "re-register replaces" path is gone —
+  it doubled as a silent collision masker. Operators recovering from
+  a crashed worker either wait for the heartbeat-timeout eviction
+  (~120s default) or POST `/deregister` for an immediate clean-up.
 - **Cross-DiLoCo-server dataset sharing.** Out of scope. One DiLoCo
   server per training group.
 - **Streaming-DiLoCo (fragment sync).** Fragment sync is
@@ -586,11 +615,13 @@ A run with this implemented should be observable as:
    `queue_id` fallback), applied at config-preprocessing time via
    `DILOCO_WORKER_ID`. The directory layout under `models_dir/` is
    directly human-readable (`models_dir/<base>_<worker_id>/`).
-7. Attempting to start a second worker against the same `output_dir`
-   with a different `worker_id` fails fast: the DiLoCo server returns
-   409 on `/register`, the worker exits, and the operator sees a clear
-   "output_dir already claimed by worker_id=…" diagnostic in the TTY
-   pane — no silent on-disk clobber path.
+7. Attempting to start a second worker with a `worker_id` that's
+   already in the registry fails fast: the DiLoCo server returns 409
+   on `/register`, the worker exits, and the operator sees a clear
+   "worker_id '<id>' is already registered; …" diagnostic in the TTY
+   pane. To recover, the operator either bumps `--diloco-worker-id`,
+   waits for heartbeat eviction (if the first worker actually died),
+   or POSTs `/deregister` explicitly.
 
 ---
 
