@@ -1,10 +1,16 @@
 # DiLoCo: Work-Unit Dispatch (Design Proposal)
 
 **Status:** proposal — not implemented.
-**Revision:** 4 (simplifies the server-side uniqueness check from
-"reject by output_dir" to "reject re-registration of an already-live
-worker_id" — the server doesn't need to know what the template did
-with the worker_id; the worker_id itself is the proxy).
+**Revision:** 5 (moves the worker-side wrap from
+``IterableDataset`` layer to the ``IterableDatasetBackend`` layer
+and from ``DiLoCoCallback`` to ``fast_load_iterable_dataset``.
+``StatefulDataLoader`` forbids post-init dataset mutation, and a
+wrap above ``ComposableIterableDataset`` would slice rows *after*
+the template's map / filter / merge layers — both wrong. The
+correct insertion point is at backend construction inside
+``fast_load_iterable_dataset``; the higher-level ``Composable``
+wrapper then sees a normal backend and composes its ops over the
+dispatched row stream).
 **Supersedes (when implemented):** the manual `--num-shards N --shard-index I`
 flow in `examples/tiny_experiments/diloco/` and
 `examples/base_lm_project/templates/configs/diloco.yaml`.
@@ -333,73 +339,124 @@ the API).
 
 ## Worker integration
 
-Worker startup sequence:
+The wrap is a **backend-layer** concern: a `WorkUnitBackend` that
+implements the same `IterableDatasetBackend` interface as
+`ArrowBackend` / `ResilientRemoteBackend` / `InMemoryBackend`, and
+gets dependency-injected at backend-construction time from inside
+`fast_load_iterable_dataset` (see `src/forgather/ml/datasets/`).
 
-1. `DiLoCoCallback._setup()` registers with the DiLoCo server (existing
-   `/register` endpoint). Receives initial global params.
-2. Worker computes its own `output_dir_suffix` from `worker_id` and
-   appends it to `args.output_dir`. This needs to happen before the
-   trainer creates any checkpoint or log directory.
-3. Worker resolves the dataset (existing `fast_load_iterable_dataset`
-   path), gets the handle, computes `dataset_id` from the same args.
-4. Worker picks a `shuffle_seed` — for first epoch typically a fixed
-   value or `args.seed`. For subsequent epochs, derives a new one
-   (e.g. `seed_n = args.seed + epoch_n`).
-5. Worker calls `POST /datasets/register` with
-   `(worker_id, dataset_id, shuffle_seed, hint)`. Receives `K`.
-6. Worker wraps the dataset handle in a `WorkUnitDataset` iterable.
-   Training loop iterates over it normally.
+Two reasons it can't live at a higher layer:
 
-`WorkUnitDataset` skeleton:
+- `ComposableIterableDataset` composes map / filter / select / shard /
+  shuffle-buffer ops over a backend. Wrapping at *that* layer would
+  put work-unit slicing **after** the template's post-processing
+  pipeline — the slice would cut the wrong rows.
+- `StatefulDataLoader` rejects post-init dataset mutation
+  (`ValueError: dataset attribute should not be set after StatefulDataLoader
+  is initialized`). Any callback-based wrap can't replace the dataset
+  in flight.
+
+The backend layer doesn't have either problem: by the time
+`ComposableIterableDataset` is built, the work-dispatch wrap is
+already in the backend slot, and the higher-level wrapper sees a
+normal `IterableDatasetBackend`.
+
+### The opt-in hook
+
+Inside `fast_load_iterable_dataset` (specifically the remote and
+auto-routing paths — phase 1 requires a dataset_server-backed
+backend so the worker can seek to arbitrary positions cheaply), after
+the inner backend is constructed:
 
 ```python
-class WorkUnitDataset(IterableDataset):
-    def __init__(self, ds, diloco_client, dataset_id, shuffle_seed, K):
-        self.ds = ds
-        self.client = diloco_client
-        self.dataset_id = dataset_id
-        self.seed = shuffle_seed
-        self.K = K
-        self.length = len(ds)
+backend = ResilientRemoteBackend(...)
+backend = maybe_wrap_for_work_dispatch(
+    backend, path=path, name=name, split=split,
+    data_files=data_files, revision=revision,
+)
+ds = ComposableIterableDataset(backend, ...)
+```
 
-    def _range(self, unit_id):
-        start = (unit_id * self.length) // self.K
-        end = ((unit_id + 1) * self.length) // self.K
-        return start, end - start
+`maybe_wrap_for_work_dispatch` is env-driven (zero loader-signature
+pollution):
+
+- `DILOCO_WORK_DISPATCH` (truthy required) — opt-in gate.
+- `DILOCO_SERVER` (required) — DiLoCo server addr.
+- `DILOCO_WORKER_ID` (required) — set by the scheduler with a
+  queue_id fallback.
+
+When the opt-in gate is off or any prerequisite is missing, the
+helper returns the input backend unchanged (no behavior change for
+non-DiLoCo runs). Errors during `/datasets/register` are logged at
+ERROR; the backend is returned unchanged so a server hiccup disables
+work-dispatch for the run but doesn't crash training.
+
+### `WorkUnitBackend` shape
+
+```python
+class WorkUnitBackend(IterableDatasetBackend):
+    def __init__(self, wrapped, client, worker_id, dataset_id,
+                 shuffle_seed, total_units, length): ...
 
     def __iter__(self):
         while True:
-            resp = self.client.request_work(self.dataset_id, self.seed)
+            resp = self.client.request_work(
+                self.worker_id, self.dataset_id, self.shuffle_seed
+            )
             if resp.get("exhausted"):
                 return
             unit_id = resp["unit_id"]
-            start, limit = self._range(unit_id)
+            start, end = unit_range(unit_id, self.total_units, self.length)
             try:
-                view = self.ds.shuffle(self.seed).seek(start)
+                view = self.wrapped.seek(start)
                 yielded = 0
                 for row in view:
-                    if yielded >= limit:
+                    if yielded >= end - start:
                         break
                     yield row
                     yielded += 1
             except Exception as exc:
-                # Transient dataloader error — log + move on.
-                # The unit is already consumed from the queue;
-                # any partial rows are lost. See "consequences" below.
-                logger.warning("unit %s drained partially: %s", unit_id, exc)
-            finally:
-                # Best-effort diagnostic ack; no correctness impact.
-                try:
-                    self.client.complete_work(self.dataset_id, self.seed, unit_id)
-                except Exception:
-                    pass
+                # Per-unit drain error — unit is already consumed.
+                logger.warning("unit %d drain failed: %s", unit_id, exc)
+            try:
+                self.client.complete_work(
+                    self.worker_id, self.dataset_id,
+                    self.shuffle_seed, unit_id,
+                )
+            except Exception:
+                pass  # diagnostic-only
+
+    def __len__(self): return self.length
+    def shuffle(self, seed=None): ...  # wraps wrapped.shuffle(seed); queue keying unchanged
+    def seek(self, position): return self  # no-op; positions are server-driven
+    def position(self): return 0  # composable.state_dict has nothing useful to record
 ```
 
-Multi-epoch handling lives **outside** `WorkUnitDataset` — when the
-trainer's epoch boundary fires (or when the inner iterator returns due
-to `exhausted`), the surrounding code creates a fresh `WorkUnitDataset`
-with the next `shuffle_seed`. This composes naturally with the
-trainer's existing `set_epoch` hook.
+### Decoupling from `DiLoCoCallback`
+
+`DiLoCoCallback` (which manages the parameter-sync `DiLoCoWorker`)
+does **not** participate in the dataset wrap. The two subsystems are
+orthogonal:
+
+- `DiLoCoCallback` owns the optimizer-step hooks and the
+  parameter-sync HTTP traffic.
+- `WorkUnitBackend` owns the data dispatch HTTP traffic.
+
+They share env vars (`DILOCO_WORKER_ID`, `DILOCO_SERVER`) as common
+identity but never call into each other. `WorkUnitBackend` constructs
+its own `DiLoCoClient`. This is a deliberate separation — same
+worker_id, two independent clients, two orthogonal correctness
+properties (param-sync vs no-row-trained-twice).
+
+### Multi-epoch handling
+
+Multi-epoch shuffle rotation is a follow-up; phase 1 keeps
+`shuffle_seed = 0` fixed at construction time. The follow-up would
+either:
+- thread a per-epoch seed through `maybe_wrap_for_work_dispatch` as
+  the template re-evaluates the dataset at epoch boundary, or
+- have `WorkUnitBackend.set_epoch(n)` re-register against the server
+  with a new seed and reset its in-process state.
 
 ## Lifecycle scenarios
 
@@ -468,20 +525,19 @@ batch away and constructs `torch.empty_like(..., device="meta")`).
 
 Under work-unit dispatch each PP rank would issue + consume one unit
 just to peek at shape, then immediately throw the data away. **Phase 2
-prerequisite:** replace this with a synthesized meta tensor derived from
-config (`per_device_train_batch_size × max_length × torch.long`). The
-fetched batch contents are unused anyway, so this is a strict cleanup,
-not a behavior change. Tracked separately from the DiLoCo work but
-must land before / alongside `WorkUnitDataset` for PP+DiLoCo to work
-sanely.
+prerequisite:** the actual fix in the current codebase was simpler —
+the manual splitter never used the example arg at all, so the whole
+``_get_example`` machinery was dead code that just happened to consume
+a batch. It's been removed entirely. Cost under work-dispatch: zero.
 
 ### 2. Transient dataloader errors mid-unit lose rows
 
-If the dataset_server connection blips mid-unit, the worker should
-**swallow the error inside `WorkUnitDataset.__iter__`** (logging is
-fine) and move on to the next unit. The partial rows are lost for the
-epoch. The alternative — propagating the error and crashing the
-training loop — is much worse.
+If the dataset_server connection blips mid-unit, the worker
+**swallows the error inside `WorkUnitBackend.__iter__`** (logging
+the unit_id at WARNING) and moves on to the next unit. The partial
+rows are lost for the epoch. The alternative — propagating the error
+and crashing the training loop — is much worse, and the unit is
+already consumed from the server's bitmap anyway.
 
 ### 3. Worker checkpoint resume doesn't replay rows
 
@@ -489,10 +545,10 @@ Today, checkpoint resume restores the dataloader's `state_dict` so
 training resumes at the same iteration position. Under work-unit
 dispatch, the rows previously consumed are no longer in the queue.
 This is actually **better** behavior for DiLoCo (the global params
-have moved on; replaying old rows would only add gradient noise), but
-`WorkUnitDataset.state_dict()` / `load_state_dict()` should be no-ops
-or return a stub so the trainer's resume logic doesn't try to seek to
-a position that no longer makes sense.
+have moved on; replaying old rows would only add gradient noise).
+`WorkUnitBackend.position()` returns `0` and the surrounding
+`ComposableIterableDataset.state_dict()` carries that through —
+resume just asks the server for the next available unit.
 
 ### 4. Workers can be on different epochs simultaneously
 
@@ -536,18 +592,32 @@ Phase 1: backend coordination (testable with `curl`)
 - CLI: `--default-work-units N` (default 1024).
 
 Phase 2: worker integration
-- Implement `WorkUnitDataset` and a `DiLoCoClient.request_work` /
-  `complete_work` / `register_dataset` helper.
-- Extend `DiLoCoCallback`:
-  - Treat 409 on `/register` as a fatal clean-exit. The diagnostic
-    payload from the server lands in the worker's TTY pane via the
-    logger so the operator sees "worker_id 'alpha' is already
-    registered; …" in the Jobs view without poking around server logs.
-  - When `diloco_work_dispatch=true` (template var / env var
-    `DILOCO_WORK_DISPATCH=1`), wrap `args.train_dataset` in
-    `WorkUnitDataset`.
-- **Prereq:** refactor `pipeline_trainer._get_example` to synthesize
-  the meta example rather than fetching from the dataloader.
+- Implement `WorkUnitBackend(IterableDatasetBackend)` in
+  `forgather.ml.datasets.work_unit_backend`. Wraps another backend
+  (typically `ResilientRemoteBackend`); ``__iter__`` does the
+  request → wrapped.seek(start) → iter → complete loop.
+- Add `DiLoCoClient.request_work` / `complete_work` /
+  `register_dataset` (phase 1 server already speaks these endpoints).
+- Add `maybe_wrap_for_work_dispatch(backend, **load_args)` env-driven
+  helper that opts in based on `DILOCO_WORK_DISPATCH` + reads
+  `DILOCO_SERVER` / `DILOCO_WORKER_ID`. Returns the unwrapped
+  backend on any failure (graceful fallback).
+- Hook the helper into `fast_load_iterable_dataset`
+  (`_remote_load_iterable_dataset` + `_auto_load_iterable_dataset`)
+  immediately after the inner backend is constructed. The higher-
+  level `ComposableIterableDataset` is then built around the
+  wrapped backend and composes its map / filter / shard / state_dict
+  ops normally.
+- Extend `DiLoCoCallback`: treat 409 on `/register` as a fatal
+  clean-exit so the operator sees the server's diagnostic in the TTY
+  pane. The callback **does not** wrap the dataset — that's the
+  helper's job. The two subsystems are deliberately decoupled.
+
+Pipeline-trainer side-cleanup that needs to land in phase 1 (already
+done in this branch): the dead `_get_example` /
+`example_args` plumbing in `PipelineTrainer` was removed entirely —
+the only remaining splitter never used it, so there's no need to
+synthesize a meta tensor at all.
 
 Note: worker_id provisioning at the scheduler layer (always emit
 `DILOCO_WORKER_ID`, fall back to `queue_id`) is already implemented

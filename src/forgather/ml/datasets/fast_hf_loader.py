@@ -707,6 +707,21 @@ def _remote_load_iterable_dataset(
         length=body.get("length"),
         column_names=body.get("column_names"),
     )
+    # DiLoCo work-unit dispatch opt-in (env-driven; no-op when off).
+    # See docs/design/diloco-work-unit-dispatch.md. Applies at the
+    # backend layer so the higher-level ComposableIterableDataset
+    # composes its map / filter / slice / shard ops on top of the
+    # dispatched row stream.
+    from .work_unit_backend import maybe_wrap_for_work_dispatch
+
+    backend = maybe_wrap_for_work_dispatch(
+        backend,
+        path=path,
+        name=name,
+        split=split,
+        data_files=data_files,
+        revision=revision,
+    )
     ds = ComposableIterableDataset(
         backend,
         length_estimate=length_estimate,
@@ -761,6 +776,20 @@ def _auto_load_iterable_dataset(
         token=None,
         load_args=load_args,
         resolver=resolver,
+    )
+    # DiLoCo work-unit dispatch opt-in — same hook as the explicit
+    # FORGATHER_DATASET_SERVER path above. The cluster auto-routing
+    # path lazily resolves on first access; the wrap's __len__ call
+    # will trigger that resolve as a side effect, which is fine.
+    from .work_unit_backend import maybe_wrap_for_work_dispatch
+
+    backend = maybe_wrap_for_work_dispatch(
+        backend,
+        path=path,
+        name=name,
+        split=split,
+        data_files=data_files,
+        revision=revision,
     )
     ds = ComposableIterableDataset(
         backend,

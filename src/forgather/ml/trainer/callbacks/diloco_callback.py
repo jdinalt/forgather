@@ -112,7 +112,6 @@ class DiLoCoCallback(TrainerCallback):
         num_fragments: Optional[int] = None,
         timeout: float = 600,
         max_sync_retries: int = 3,
-        work_dispatch: Optional[bool] = None,
     ):
         # Resolve with env var fallbacks
         self.server_addr = server_addr or os.environ.get("DILOCO_SERVER", "")
@@ -136,18 +135,6 @@ class DiLoCoCallback(TrainerCallback):
         )
         self.timeout = timeout
         self.max_sync_retries = max_sync_retries
-        # Work-unit dispatch opt-in. When True, on_train_begin wraps
-        # the train dataloader's dataset with a WorkUnitDataset so the
-        # worker pulls per-unit row ranges from the DiLoCo server
-        # instead of using a static --num-shards / --shard-index
-        # partition (see docs/design/diloco-work-unit-dispatch.md).
-        # Defaults to False — preserves the legacy manual-shard path
-        # until configs opt in.
-        self.work_dispatch = (
-            work_dispatch
-            if work_dispatch is not None
-            else _env_bool("DILOCO_WORK_DISPATCH", False)
-        )
 
         # Worker instance (created in on_train_begin)
         self._worker = None
@@ -167,7 +154,7 @@ class DiLoCoCallback(TrainerCallback):
         control: TrainerControl,
         **kwargs,
     ):
-        """Create and start the DiLoCoWorker; optionally wrap the train dataset.
+        """Create and start the DiLoCoWorker.
 
         Raises
         ------
@@ -178,6 +165,15 @@ class DiLoCoCallback(TrainerCallback):
             sees this as a fatal exception and exits cleanly; the
             server's diagnostic body is in the exception message so
             the operator's TTY pane shows exactly what to do.
+
+        Note: work-unit dispatch (training-data dispatch via the
+        DiLoCo server's work-queue endpoints) is **not** handled
+        here — it's a separate, self-configuring concern owned by
+        :func:`forgather.ml.diloco.work_unit_dataset.maybe_wrap_for_work_dispatch`
+        which the project template calls at dataset-construction
+        time. The two subsystems share env vars (``DILOCO_WORKER_ID``,
+        ``DILOCO_SERVER``) but otherwise don't interact — this
+        callback only manages the worker's parameter-sync lifecycle.
         """
         if not self.active:
             logger.info("DiLoCoCallback: no server_addr configured, running as no-op")
@@ -229,133 +225,9 @@ class DiLoCoCallback(TrainerCallback):
             self._apply_pending_state()
             self._pending_state = None
 
-        # Work-unit dispatch: replace trainer.train_dataloader.dataset
-        # with a WorkUnitDataset that pulls per-unit row ranges from
-        # the DiLoCo server. Opt-in via the work_dispatch constructor
-        # arg / DILOCO_WORK_DISPATCH env var. When off, the dataset is
-        # untouched and the worker uses whatever sharding the project
-        # template configured (typically --num-shards / --shard-index
-        # — legacy path; see design doc for migration).
-        if self.work_dispatch:
-            train_dataloader = kwargs.get("train_dataloader")
-            if train_dataloader is None:
-                logger.error(
-                    "DiLoCoCallback: work_dispatch=True but no train_dataloader "
-                    "in callback kwargs. Falling back to whatever sharding the "
-                    "project template configured."
-                )
-            else:
-                self._install_work_dispatch(train_dataloader)
-
         logger.info(
             f"DiLoCoCallback: worker started "
-            f"(server={self.server_addr}, sync_every={self.sync_every}, "
-            f"work_dispatch={self.work_dispatch})"
-        )
-
-    def _install_work_dispatch(self, train_dataloader) -> None:
-        """Replace the train dataloader's dataset with a WorkUnitDataset.
-
-        Reads load_args off the dataset's resilient-remote-backend (the
-        regular dataset_server path stores them as ``._load_args``),
-        computes the canonical ``dataset_id``, registers the queue,
-        and swaps the dataset on the dataloader in place.
-        """
-        from forgather.ml.datasets.dataset_id import compute_dataset_id
-        from forgather.ml.diloco.work_unit_dataset import WorkUnitDataset
-
-        dataset = getattr(train_dataloader, "dataset", None)
-        if dataset is None:
-            logger.error(
-                "DiLoCoCallback: train_dataloader.dataset is None; cannot "
-                "install work-unit dispatch."
-            )
-            return
-
-        # Reach the load_args. The dataset_server-backed path wraps
-        # ``ResilientRemoteBackend`` inside ``ComposableIterableDataset``;
-        # the backend carries ``_load_args``. Local-path datasets don't
-        # have this, and phase 1 of the work-dispatch design requires
-        # dataset_server.
-        backend = getattr(dataset, "_backend", None)
-        load_args = getattr(backend, "_load_args", None)
-        if not load_args:
-            logger.error(
-                "DiLoCoCallback: train dataset has no _load_args (is it a "
-                "dataset_server-backed dataset?). work_dispatch requires the "
-                "dataset_server path. Skipping wrap; falling back to manual "
-                "sharding."
-            )
-            return
-
-        try:
-            dataset_id = compute_dataset_id(
-                path=load_args.get("path"),
-                name=load_args.get("name"),
-                split=load_args.get("split"),
-                data_files=load_args.get("data_files"),
-                revision=load_args.get("revision"),
-            )
-        except ValueError as exc:
-            logger.error(
-                "DiLoCoCallback: could not compute dataset_id from load_args=%r: %s",
-                load_args,
-                exc,
-            )
-            return
-
-        try:
-            length = len(dataset)
-        except TypeError:
-            logger.error(
-                "DiLoCoCallback: train dataset has no __len__; work_dispatch "
-                "needs a fixed dataset length to compute per-unit row ranges. "
-                "Skipping wrap."
-            )
-            return
-
-        # shuffle_seed: same seed across the fleet → same shuffle →
-        # matched unit ranges. For phase 1 we fix this at 0 — the
-        # operator can override via a future template knob if they
-        # want reproducible shuffles. Multi-epoch rotation (new
-        # shuffle_seed per epoch) is a follow-up.
-        shuffle_seed = 0
-
-        client = self._worker.client
-        try:
-            reply = client.register_dataset(
-                worker_id=self._worker.worker_id,
-                dataset_id=dataset_id,
-                shuffle_seed=shuffle_seed,
-                hint={"length": length},
-            )
-        except Exception as exc:
-            logger.error(
-                "DiLoCoCallback: /datasets/register failed for dataset_id=%s: %s. "
-                "Skipping work-unit dispatch wrap.",
-                dataset_id,
-                exc,
-            )
-            return
-
-        total_units = int(reply["total_units"])
-        wrapped = WorkUnitDataset(
-            base=dataset,
-            client=client,
-            worker_id=self._worker.worker_id,
-            dataset_id=dataset_id,
-            shuffle_seed=shuffle_seed,
-            total_units=total_units,
-            length=length,
-        )
-        train_dataloader.dataset = wrapped
-        logger.info(
-            "DiLoCoCallback: train dataset wrapped with WorkUnitDataset "
-            "(dataset_id=%s, shuffle_seed=%d, K=%d, length=%d)",
-            dataset_id,
-            shuffle_seed,
-            total_units,
-            length,
+            f"(server={self.server_addr}, sync_every={self.sync_every})"
         )
 
     def _apply_pending_state(self):
