@@ -523,6 +523,50 @@ class TestMakeShardDictionaries(unittest.TestCase):
         result = _make_shard_dictionaries(weight_map, {})
         self.assertEqual(result, {})
 
+    def test_preserves_state_dict_iteration_order(self):
+        """Regression for #44.
+
+        _make_shard_dictionaries used to iterate
+        ``_intersect_weight_map(...)``, which returned a ``set`` —
+        iteration order was hash-based, so the per-shard tensor order
+        was undefined and the resulting safetensors index file came
+        out shuffled. That ordering scramble was the upstream cause
+        of the DiLoCoServer optimizer-state corruption fixed by #45.
+
+        Use the real-life key names from the live model where the
+        crash was first observed. With these strings,
+        ``set(...).__iter__`` returns ``attention.query_linear``
+        between ``input_encoder.embedding`` and ``feedforward.up_proj``
+        — the exact reorder pattern in the safetensors index that
+        caused the 2026-05-26 bringup crash.
+        """
+        names = [
+            "causal_lm.input_encoder.embedding.weight",
+            "causal_lm.layer_stack.layers.0.feedforward.up_proj.weight",
+            "causal_lm.layer_stack.layers.0.feedforward.gate_proj.weight",
+            "causal_lm.layer_stack.layers.0.feedforward.down_proj.weight",
+            "causal_lm.layer_stack.layers.0.attention.query_linear.weight",
+        ]
+        # Sanity check on the test fixture: these keys MUST reorder
+        # under set iteration, otherwise the test wouldn't actually
+        # exercise the bug. CPython 3.12 set-iter for this specific
+        # set moves attention.query_linear to slot 1.
+        assert list(set(names)) != names, (
+            "Test fixture's keys no longer reorder under set iteration "
+            "on this CPython — pick different keys to keep the test "
+            "actually exercising the #44 regression."
+        )
+
+        weight_map = {n: "shard1.bin" for n in names}
+        state_dict = {n: torch.zeros(2) for n in names}
+        result = _make_shard_dictionaries(weight_map, state_dict)
+        self.assertEqual(
+            list(result["shard1.bin"].keys()),
+            names,
+            "weight order in the per-shard dict must follow the input "
+            "state_dict's iteration order, not weight_map / hash order",
+        )
+
 
 class TestGetCheckpointMetadata(unittest.TestCase):
     """Test get_checkpoint_metadata function."""
@@ -1356,7 +1400,9 @@ class TestLoadCheckpointWithTiedWeights(unittest.TestCase):
             source.embedding.weight.normal_()
 
         # Write an HF-style sharded index where lm_head.weight is omitted.
-        deduped = {k: v for k, v in source.state_dict().items() if k != "lm_head.weight"}
+        deduped = {
+            k: v for k, v in source.state_dict().items() if k != "lm_head.weight"
+        }
         index = make_shard_index([deduped], safetensors=True)
         with open(os.path.join(self.tmpdir, SAFE_WEIGHTS_INDEX_NAME), "w") as f:
             json.dump(index, f)
