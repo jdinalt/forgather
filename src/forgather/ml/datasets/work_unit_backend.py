@@ -121,6 +121,16 @@ class WorkUnitBackend(IterableDatasetBackend):
         self._shuffle_seed = int(shuffle_seed)
         self._total_units = int(total_units)
         self._length = int(length)
+        # Running count of rows yielded across all dispatched units in
+        # the current iteration. ``position()`` returns this so
+        # ``ComposableIterableDataset._iter_window`` (which does
+        # ``yielded_idx = backend.position() - 1; if yielded_idx < start: continue``)
+        # advances through any view-slice filter correctly. Semantics
+        # mismatch the dataset's actual row positions — the count is
+        # "rows yielded by this iter", not "row index in the source
+        # dataset" — but is consistent with how the composable uses
+        # ``position()``.
+        self._yielded = 0
 
     # ----- Backend interface --------------------------------------------
 
@@ -136,6 +146,11 @@ class WorkUnitBackend(IterableDatasetBackend):
         failures propagate (no unit was issued — the higher-level
         retry logic handles it).
         """
+        # Reset the per-iter yielded counter. Each ``__iter__`` pass
+        # advances ``position()`` from 0 monotonically — that's the
+        # contract ``ComposableIterableDataset._iter_window`` relies
+        # on for its view-slice filter.
+        self._yielded = 0
         while True:
             try:
                 resp = self._client.request_work(
@@ -166,16 +181,18 @@ class WorkUnitBackend(IterableDatasetBackend):
                 for row in view:
                     if yielded >= limit:
                         break
+                    self._yielded += 1
                     yield row
                     yielded += 1
                 logger.debug(
-                    "Drained unit %d: yielded %d rows [%d:%d) for (%s, seed=%d)",
+                    "Drained unit %d: yielded %d rows [%d:%d) for (%s, seed=%d) — total yielded so far: %d",
                     unit_id,
                     yielded,
                     start,
                     end,
                     self._dataset_id,
                     self._shuffle_seed,
+                    self._yielded,
                 )
             except Exception as exc:
                 # Per-unit drain error — the unit is already consumed
@@ -250,11 +267,32 @@ class WorkUnitBackend(IterableDatasetBackend):
         return self
 
     def position(self) -> int:
-        # No meaningful flat-position concept across server-dispatched
-        # units. Return 0 — the composable's state_dict will record 0
-        # and ``load_state_dict`` will be a no-op for our purposes
-        # (queue position lives on the DiLoCo server).
-        return 0
+        """Running count of rows yielded by the current ``__iter__`` pass.
+
+        The flat dataset-position notion doesn't apply under work-unit
+        dispatch (rows come from server-dispatched slices, not sequential
+        positions). But ``ComposableIterableDataset._iter_window`` uses
+        ``backend.position()`` to compute ``yielded_idx = position - 1``
+        for its view-slice filter: returning a row counter that
+        monotonically increases with each yield keeps that loop
+        consistent. Returning 0 (the previous stub) made every yielded
+        row look pre-slice and the composable silently discarded them
+        all — the dataset_server got hit but no rows reached the
+        trainer, GPU stayed cold.
+
+        Semantic note: the counter is "rows yielded by this iter", not
+        "row index in the source dataset". Under work-dispatch a
+        view-slice's ``start`` becomes "discard the first N dispatched
+        rows" rather than "skip dataset rows [0, N)". For the manual
+        ``train[10000:]``-style slicing used by the standard project
+        templates this is a minor semantic difference (the first
+        10000 dispatched rows are dropped during warmup), and the
+        operator's intent of "leave the first N for eval" still holds
+        because the eval load uses a different ``dataset_id`` /
+        queue. Full slice-aware dispatch is a follow-up; see the
+        design doc.
+        """
+        return self._yielded
 
     # ----- Optional metadata --------------------------------------------
 

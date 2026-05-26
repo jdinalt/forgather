@@ -45,11 +45,17 @@ train_dataset_split: &train_dataset_split !singleton:{{ ns.load_method }}@train_
 validation_dataset_split: &validation_dataset_split !singleton:{{ ns.load_method }}@validation_dataset_split
     <<: *load_dataset_args
     split: "validation"
+    ## DiLoCo work-unit dispatch is train-only by design — every
+    ## worker runs the full eval pass and metrics are averaged. The
+    ## loader honors False here even when ``DILOCO_WORK_DISPATCH=1``
+    ## is set in the env.
+    diloco_work_dispatch: False
 
     [test_dataset_split]
 test_dataset_split: &test_dataset_split !singleton:{{ ns.load_method }}@test_dataset_split
     <<: *load_dataset_args
     split: "test"
+    diloco_work_dispatch: False
 
     [train_dataset]
 train_dataset: &train_dataset !singleton:{{ ns.preprocess_method }}@train_dataset

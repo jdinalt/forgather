@@ -224,11 +224,40 @@ class TestBackendInterface:
         result = backend.seek(5)
         assert result is backend  # contract returns a backend; we return self
 
-    def test_position_is_zero(self):
-        # The composable's state_dict reads position(); under work-
-        # dispatch there's no meaningful flat position, so we return 0.
+    def test_position_tracks_yielded_count(self):
+        # position() returns the count of rows yielded so far in the
+        # current __iter__ pass. ComposableIterableDataset._iter_window
+        # uses this to decide which rows pass the view-slice filter:
+        # with a stub returning 0, every row gets discarded because
+        # yielded_idx = position - 1 = -1 < start. Counter-based
+        # position keeps the iteration moving through the filter.
         backend, _, _ = _make_backend(list(range(16)), K=4)
+        # Fresh backend: nothing yielded yet.
         assert backend.position() == 0
+        # Drain a few rows; position advances with each yield.
+        it = iter(backend)
+        next(it)
+        assert backend.position() == 1
+        next(it)
+        next(it)
+        assert backend.position() == 3
+
+    def test_position_resets_on_new_iter(self):
+        # Each __iter__ pass starts fresh — the composable opens a new
+        # iterator per epoch and expects position to walk from 0.
+        # Partial drain first.
+        backend, _, _ = _make_backend(list(range(16)), K=4)
+        it = iter(backend)
+        next(it)
+        next(it)
+        assert backend.position() == 2
+        # Open a second iterator on the same backend; the counter
+        # resets at the top of __iter__ (line 1 of the impl). The
+        # underlying client is still serving units, so iteration
+        # continues.
+        it2 = iter(backend)
+        next(it2)
+        assert backend.position() == 1
 
     def test_shuffle_wraps_new_wrapped_backend(self):
         backend, inner, _ = _make_backend(list(range(16)), K=4)
@@ -241,6 +270,40 @@ class TestBackendInterface:
         assert shuffled._shuffle_seed == backend._shuffle_seed
         assert shuffled._total_units == backend._total_units
         assert shuffled._length == backend._length
+
+    def test_composable_slice_compatibility(self):
+        """Regression: with position() stubbed to 0, the composable's
+        view-slice filter (yielded_idx = position - 1 < start) would
+        discard every row. position() returning a yielded-row counter
+        keeps the filter consistent — rows past the slice start make
+        it through.
+
+        Simulates the exact loop pattern from
+        ComposableIterableDataset._iter_window with a slice start of
+        4 and a 16-row dataset.
+        """
+        backend, _, _ = _make_backend(list(range(16)), K=4)
+        # Mimic the composable's _iter_window with start=4 (would
+        # come from a slice(4, None) view).
+        slice_start = 4
+        slice_end = 16
+        yielded_rows = []
+        it = iter(backend)
+        while True:
+            if backend.position() >= slice_end:
+                break
+            try:
+                ex = next(it)
+            except StopIteration:
+                break
+            yielded_idx = backend.position() - 1
+            if yielded_idx < slice_start:
+                continue
+            yielded_rows.append(ex)
+        # Rows 4..15 should have made it through. Without the
+        # position()-as-counter fix, this list would be empty.
+        assert len(yielded_rows) == 12
+        assert [r["row"] for r in yielded_rows] == list(range(4, 16))
 
     def test_column_names_passthrough(self):
         class WithCols(FakeBackend):
@@ -382,3 +445,89 @@ class TestMaybeWrap:
             out = maybe_wrap_for_work_dispatch(b, path="")
         assert out is b
         assert any("dataset_id" in rec.message for rec in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Caller-level gate via fast_load_iterable_dataset(diloco_work_dispatch=...)
+# ---------------------------------------------------------------------------
+
+
+class TestLoaderGate:
+    """The ``diloco_work_dispatch`` kwarg on
+    ``fast_load_iterable_dataset`` is the caller-level gate. Eval /
+    test / validation split loads pass False so they're never wrapped
+    even when the env var says yes."""
+
+    def _setup_loader_mocks(self, wrap_calls):
+        """Common mocks for the loader-gate tests.
+
+        Patches the deferred imports inside _remote_load_iterable_dataset
+        at their source modules (the wrap helper is imported as
+        ``from .work_unit_backend import maybe_wrap_for_work_dispatch``
+        inside the function, so the patch target must be the source).
+        """
+
+        def spy_wrap(backend, **kw):
+            wrap_calls.append(kw)
+            return backend
+
+        return [
+            patch(
+                "forgather.ml.datasets.resilient_remote_backend._do_load_once",
+                return_value={"handle": "h1", "length": 1000, "column_names": []},
+            ),
+            patch(
+                "forgather.ml.datasets.resilient_remote_backend.ResilientRemoteBackend",
+                return_value=_fake_backend(length=1000),
+            ),
+            patch(
+                "forgather.ml.datasets.remote_backend.resolve_auth_token",
+                return_value="tok",
+            ),
+            patch(
+                "forgather.ml.datasets.work_unit_backend.maybe_wrap_for_work_dispatch",
+                side_effect=spy_wrap,
+            ),
+        ]
+
+    def test_kwarg_false_skips_wrap_even_with_env_set(self, monkeypatch):
+        """Caller setting ``diloco_work_dispatch=False`` must skip the
+        wrap regardless of env vars. The eval / test split loads rely
+        on this — work-unit dispatch is train-only by design."""
+        from forgather.ml.datasets import fast_hf_loader
+
+        monkeypatch.setenv("DILOCO_WORK_DISPATCH", "1")
+        monkeypatch.setenv("DILOCO_SERVER", "h:1")
+        monkeypatch.setenv("DILOCO_WORKER_ID", "w0")
+        monkeypatch.setenv(fast_hf_loader.DATASET_SERVER_ENV_VAR, "http://x:1")
+
+        wrap_calls = []
+        ctxs = self._setup_loader_mocks(wrap_calls)
+        with ctxs[0], ctxs[1], ctxs[2], ctxs[3]:
+            fast_hf_loader.fast_load_iterable_dataset(
+                "test/dataset",
+                split="validation",
+                diloco_work_dispatch=False,
+            )
+        assert (
+            wrap_calls == []
+        ), f"wrap was invoked despite diloco_work_dispatch=False: {wrap_calls}"
+
+    def test_kwarg_true_invokes_wrap_when_env_set(self, monkeypatch):
+        """Default ``diloco_work_dispatch=True`` invokes the wrap path
+        (which itself checks the env var)."""
+        from forgather.ml.datasets import fast_hf_loader
+
+        monkeypatch.setenv("DILOCO_WORK_DISPATCH", "1")
+        monkeypatch.setenv("DILOCO_SERVER", "h:1")
+        monkeypatch.setenv("DILOCO_WORKER_ID", "w0")
+        monkeypatch.setenv(fast_hf_loader.DATASET_SERVER_ENV_VAR, "http://x:1")
+
+        wrap_calls = []
+        ctxs = self._setup_loader_mocks(wrap_calls)
+        with ctxs[0], ctxs[1], ctxs[2], ctxs[3]:
+            fast_hf_loader.fast_load_iterable_dataset(
+                "test/dataset",
+                split="train",
+            )
+        assert len(wrap_calls) == 1, "wrap should have been invoked once"
