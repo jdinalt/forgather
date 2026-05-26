@@ -323,3 +323,89 @@ class DiLoCoClient:
     def get_status(self) -> dict:
         """Get server status."""
         return self._request_json("GET", "/status")
+
+    # ------------------------------------------------------------------
+    # Work-unit dispatch (see docs/design/diloco-work-unit-dispatch.md)
+    # ------------------------------------------------------------------
+
+    def register_dataset(
+        self,
+        worker_id: str,
+        dataset_id: str,
+        shuffle_seed: int,
+        hint: dict,
+    ) -> dict:
+        """Register (or confirm) a ``(dataset_id, shuffle_seed)`` work queue.
+
+        Returns ``{"total_units": K}`` — the configured per-queue
+        K from the server. Subsequent registrations of the same
+        (dataset_id, shuffle_seed) return the same value.
+
+        Raises on 409 (length mismatch against a prior registration of
+        the same dataset_id) — the worker should treat this as a fatal
+        config error and exit.
+        """
+        return self._request_json(
+            "POST",
+            "/datasets/register",
+            {
+                "worker_id": worker_id,
+                "dataset_id": dataset_id,
+                "shuffle_seed": int(shuffle_seed),
+                "hint": hint,
+            },
+        )
+
+    def request_work(self, worker_id: str, dataset_id: str, shuffle_seed: int) -> dict:
+        """Ask the server for the next available work unit.
+
+        Returns ``{"unit_id": int}`` or ``{"exhausted": true}`` when
+        the queue is drained.
+        """
+        return self._request_json(
+            "POST",
+            "/work/request",
+            {
+                "worker_id": worker_id,
+                "dataset_id": dataset_id,
+                "shuffle_seed": int(shuffle_seed),
+            },
+        )
+
+    def complete_work(
+        self,
+        worker_id: str,
+        dataset_id: str,
+        shuffle_seed: int,
+        unit_id: int,
+    ) -> dict:
+        """Mark a unit as confirmed-completed (diagnostic only).
+
+        Idempotent. Workers can skip this — issuance is one-way and
+        nothing about the queue's correctness path depends on
+        completion acks.
+        """
+        return self._request_json(
+            "POST",
+            "/work/complete",
+            {
+                "worker_id": worker_id,
+                "dataset_id": dataset_id,
+                "shuffle_seed": int(shuffle_seed),
+                "unit_id": int(unit_id),
+            },
+        )
+
+    def get_work_queues(self) -> list:
+        """List all active work queues (summaries only, no bitmaps)."""
+        return self._request_json("GET", "/work/queues")
+
+    def get_work_queue(self, dataset_id: str, shuffle_seed: int) -> dict:
+        """Get full state of a single queue including base64 bitmaps."""
+        from urllib.parse import quote
+
+        path = (
+            f"/work/queue?dataset_id={quote(dataset_id, safe='')}"
+            f"&shuffle_seed={int(shuffle_seed)}"
+        )
+        return self._request_json("GET", path)

@@ -24,6 +24,7 @@ Usage:
     server.start() # Non-blocking (background thread)
 """
 
+import base64
 import io
 import json
 import logging
@@ -36,6 +37,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import parse_qs, urlparse
 
 import torch
 
@@ -65,6 +67,87 @@ class WorkerInfo:
     last_sync_server_round: int = 0  # Server round when this worker last synced
     steps_per_second: float = 0.0
     extra: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class WorkQueue:
+    """One work-unit queue, keyed by ``(dataset_id, shuffle_seed)``.
+
+    A queue is a flat bitmap of K bits. An unset bit means "available";
+    a set bit means "issued — consumed from the queue regardless of
+    worker fate". Issuance is one-way: a unit is never returned to the
+    queue, so no per-unit timeout / heartbeat tracking is needed and no
+    row is ever trained on twice within an epoch. Worst case a dying
+    worker loses ≤ 1 unit out of K (default 1024).
+
+    ``completed`` is an optional second bitmap tracking units a worker
+    confirmed it drained. Not required for correctness — workers MAY
+    call ``/work/complete``; the bitmap stays all-zero if they don't.
+    Useful only for the diagnostic surface to distinguish
+    "issued ∧ completed" from "issued, fate unknown".
+
+    ``hint_length`` is the row count the *first* worker reported when
+    registering this dataset_id. Later registrations of the same
+    dataset_id must report a matching length, else 409.
+
+    ``by_worker`` accumulates per-worker request/complete counters for
+    the diagnostic surface — same rationale as ``completed``: nothing
+    in the issuance path depends on it.
+    """
+
+    total_units: int  # K
+    issued: bytearray
+    completed: bytearray
+    hint_length: int
+    issued_count: int = 0
+    completed_count: int = 0
+    by_worker: Dict[str, Dict[str, int]] = field(default_factory=dict)
+
+    @classmethod
+    def empty(cls, total_units: int, hint_length: int) -> "WorkQueue":
+        nbytes = (total_units + 7) // 8
+        return cls(
+            total_units=total_units,
+            issued=bytearray(nbytes),
+            completed=bytearray(nbytes),
+            hint_length=hint_length,
+        )
+
+
+def _bit_set(bm: bytearray, i: int) -> None:
+    bm[i >> 3] |= 1 << (i & 7)
+
+
+def _bit_get(bm: bytearray, i: int) -> bool:
+    return bool(bm[i >> 3] & (1 << (i & 7)))
+
+
+def _find_lowest_unset(bm: bytearray, total_bits: int) -> int:
+    """Return the index of the lowest unset bit in ``bm`` (within the
+    first ``total_bits`` bits), or -1 if every bit is set.
+
+    Scans byte-by-byte (each byte is 8 bits) and falls back to a
+    bitwise scan within the first byte that isn't 0xFF. K=1024 means
+    128 bytes per queue — even worst case (~half full) is a couple of
+    hundred byte comparisons, dwarfed by the HTTP round-trip cost.
+    """
+    full_bytes = total_bits >> 3
+    for byte_idx in range(full_bytes):
+        b = bm[byte_idx]
+        if b != 0xFF:
+            for bit in range(8):
+                if not (b & (1 << bit)):
+                    return (byte_idx << 3) | bit
+    # Handle a possible partial trailing byte (when K isn't a
+    # multiple of 8). Rare in practice — default K=1024 — but harmless.
+    extra = total_bits & 7
+    if extra:
+        byte_idx = full_bytes
+        b = bm[byte_idx]
+        for bit in range(extra):
+            if not (b & (1 << bit)):
+                return (byte_idx << 3) | bit
+    return -1
 
 
 def _default_outer_optimizer_factory(params):
@@ -178,11 +261,16 @@ class DiLoCoServer:
         heartbeat_timeout: float = 120.0,
         min_workers: int = 1,
         dashboard_enabled: bool = True,
+        default_work_units: int = 1024,
     ):
         if num_workers < 1:
             raise ValueError(f"num_workers must be >= 1, got {num_workers}")
         if min_workers < 1:
             raise ValueError(f"min_workers must be >= 1, got {min_workers}")
+        if default_work_units < 1:
+            raise ValueError(
+                f"default_work_units must be >= 1, got {default_work_units}"
+            )
 
         self.num_workers = num_workers
         self.min_workers = min_workers
@@ -198,6 +286,7 @@ class DiLoCoServer:
         self.dylu_base_sync_every = dylu_base_sync_every
         self.heartbeat_timeout = heartbeat_timeout
         self.dashboard_enabled = dashboard_enabled
+        self.default_work_units = default_work_units
         self.outer_optimizer_factory = (
             outer_optimizer_factory or _default_outer_optimizer_factory
         )
@@ -285,6 +374,20 @@ class DiLoCoServer:
 
         # Track worker deaths for status reporting
         self._total_worker_deaths = 0
+
+        # Work-unit dispatch state: per (dataset_id, shuffle_seed) queue.
+        # Keyed by Tuple[str, int]; in-process only — wire / disk forms use
+        # a "dataset_id|seed" string-joined key (see save_state/load_state)
+        # to dodge tuple-key serialization quirks.
+        # ``dataset_id`` is the worker-computed hash of normalized
+        # ``{path, name, split, data_files, revision}`` (see
+        # docs/design/diloco-work-unit-dispatch.md).
+        self._work_queues: Dict[Tuple[str, int], WorkQueue] = {}
+        self._work_queues_lock = threading.Lock()
+        # ``_dataset_lengths`` snapshots the first-registered length per
+        # dataset_id so a later worker shipping a stale dataset config
+        # (different row count) is caught with a 409 at register time.
+        self._dataset_lengths: Dict[str, int] = {}
 
         # Server state
         self._server: Optional[HTTPServer] = None
@@ -593,16 +696,40 @@ class DiLoCoServer:
         receive the current global parameters. If the number of registered
         workers exceeds num_workers, num_workers is increased. The new worker
         will NOT be expected for the current sync round (only for the next one).
-        Re-registering workers (e.g., after a restart) replace their old entry.
+
+        **Worker_id uniqueness is enforced**: a second registration of a
+        worker_id that's already in the registry is refused with 409. The
+        server treats worker_id itself as the uniqueness proxy — it has no
+        view into how the worker's config templates use that ID downstream
+        (output dir naming, log file paths, etc.), so collision at the
+        identity layer is the only honest signal we can act on. Operators
+        recovering from a crashed worker either wait for the heartbeat
+        eviction (~heartbeat_timeout seconds) or POST /deregister.
         """
         body = _read_request_body(handler)
         info = json.loads(body.decode("utf-8"))
         worker_id = info["worker_id"]
 
         with self._workers_lock:
-            is_reregistration = worker_id in self._workers
-            if is_reregistration:
-                logger.info(f"Worker {worker_id} re-registering (reconnection)")
+            if worker_id in self._workers:
+                # 409 with a diagnostic the worker logs into its TTY
+                # pane. The previous "re-register replaces" semantics
+                # were a silent collision masker — two operators using
+                # the same --diloco-worker-id used to invisibly kick
+                # each other out. Now it fails fast.
+                _send_json_response(
+                    handler,
+                    {
+                        "error": (
+                            f"worker_id '{worker_id}' is already registered; "
+                            f"if the previous worker is dead, wait for heartbeat "
+                            f"eviction (~{self.heartbeat_timeout:.0f}s default) or "
+                            f"POST /deregister"
+                        )
+                    },
+                    409,
+                )
+                return
 
             self._workers[worker_id] = WorkerInfo(
                 worker_id=worker_id,
@@ -1065,6 +1192,266 @@ class DiLoCoServer:
         }
         _send_json_response(handler, response)
 
+    # ------------------------------------------------------------------
+    # Work-unit dispatch (see docs/design/diloco-work-unit-dispatch.md)
+    # ------------------------------------------------------------------
+
+    def _handle_register_dataset(self, handler: BaseHTTPRequestHandler):
+        """Register a ``(dataset_id, shuffle_seed)`` queue, or confirm an
+        existing one.
+
+        First registration of a ``dataset_id`` snapshots its length; later
+        registrations of the *same* dataset_id must report a matching
+        length or get a 409. The queue itself is per
+        ``(dataset_id, shuffle_seed)`` — same dataset under a new seed
+        (new epoch) gets a fresh queue.
+        """
+        try:
+            body = json.loads(_read_request_body(handler).decode("utf-8"))
+        except (ValueError, json.JSONDecodeError) as exc:
+            _send_json_response(handler, {"error": f"bad JSON body: {exc}"}, 400)
+            return
+
+        worker_id = body.get("worker_id") or ""
+        dataset_id = body.get("dataset_id")
+        seed_raw = body.get("shuffle_seed")
+        hint = body.get("hint") or {}
+
+        if not isinstance(dataset_id, str) or not dataset_id:
+            _send_json_response(handler, {"error": "dataset_id required"}, 400)
+            return
+        try:
+            shuffle_seed = int(seed_raw)
+        except (TypeError, ValueError):
+            _send_json_response(handler, {"error": "shuffle_seed (int) required"}, 400)
+            return
+        try:
+            hint_length = int(hint.get("length"))
+        except (TypeError, ValueError):
+            _send_json_response(handler, {"error": "hint.length (int) required"}, 400)
+            return
+        if hint_length < 1:
+            _send_json_response(
+                handler, {"error": f"hint.length must be >= 1, got {hint_length}"}, 400
+            )
+            return
+
+        with self._work_queues_lock:
+            # Length-mismatch detection: a later worker shipping a stale
+            # dataset config (different row count) is caught here rather
+            # than allowed to silently mis-window.
+            prior_length = self._dataset_lengths.get(dataset_id)
+            if prior_length is not None and prior_length != hint_length:
+                _send_json_response(
+                    handler,
+                    {
+                        "error": (
+                            f"dataset_id '{dataset_id}' was previously registered "
+                            f"with length={prior_length}; new hint.length="
+                            f"{hint_length} disagrees"
+                        )
+                    },
+                    409,
+                )
+                return
+            self._dataset_lengths[dataset_id] = hint_length
+
+            key = (dataset_id, shuffle_seed)
+            queue = self._work_queues.get(key)
+            if queue is None:
+                queue = WorkQueue.empty(self.default_work_units, hint_length)
+                self._work_queues[key] = queue
+                logger.info(
+                    f"Registered work queue {dataset_id}@{shuffle_seed} "
+                    f"(K={self.default_work_units}, length={hint_length}, worker={worker_id!r})"
+                )
+            self._dirty = True
+
+        _send_json_response(handler, {"total_units": queue.total_units})
+
+    def _handle_request_work(self, handler: BaseHTTPRequestHandler):
+        """Issue the next available work unit from a queue.
+
+        One-way issuance: the returned unit is consumed from the queue
+        regardless of worker fate (no reissue, no per-unit timeout).
+        Worst case a dying worker loses one unit out of K. The benefit
+        is that no row is ever trained twice within an epoch — see
+        design doc §"Issuance is one-way".
+        """
+        try:
+            body = json.loads(_read_request_body(handler).decode("utf-8"))
+        except (ValueError, json.JSONDecodeError) as exc:
+            _send_json_response(handler, {"error": f"bad JSON body: {exc}"}, 400)
+            return
+
+        worker_id = body.get("worker_id") or ""
+        dataset_id = body.get("dataset_id")
+        seed_raw = body.get("shuffle_seed")
+        if not isinstance(dataset_id, str) or not dataset_id:
+            _send_json_response(handler, {"error": "dataset_id required"}, 400)
+            return
+        try:
+            shuffle_seed = int(seed_raw)
+        except (TypeError, ValueError):
+            _send_json_response(handler, {"error": "shuffle_seed (int) required"}, 400)
+            return
+
+        with self._work_queues_lock:
+            queue = self._work_queues.get((dataset_id, shuffle_seed))
+            if queue is None:
+                _send_json_response(
+                    handler,
+                    {
+                        "error": (
+                            f"no queue for ({dataset_id}, {shuffle_seed}); "
+                            f"call /datasets/register first"
+                        )
+                    },
+                    404,
+                )
+                return
+
+            unit_id = _find_lowest_unset(queue.issued, queue.total_units)
+            if unit_id < 0:
+                _send_json_response(handler, {"exhausted": True})
+                return
+
+            _bit_set(queue.issued, unit_id)
+            queue.issued_count += 1
+            counters = queue.by_worker.setdefault(
+                worker_id, {"units_issued": 0, "units_completed": 0}
+            )
+            counters["units_issued"] += 1
+            self._dirty = True
+
+        _send_json_response(handler, {"unit_id": unit_id})
+
+    def _handle_complete_work(self, handler: BaseHTTPRequestHandler):
+        """Mark a unit as confirmed-completed (diagnostic only).
+
+        Workers MAY call this on successful drain. Nothing about
+        issuance state changes if it's omitted; the completed bitmap
+        just stays zero. The diagnostic surface uses it to distinguish
+        "issued ∧ completed" from "issued, fate unknown".
+        """
+        try:
+            body = json.loads(_read_request_body(handler).decode("utf-8"))
+        except (ValueError, json.JSONDecodeError) as exc:
+            _send_json_response(handler, {"error": f"bad JSON body: {exc}"}, 400)
+            return
+
+        worker_id = body.get("worker_id") or ""
+        dataset_id = body.get("dataset_id")
+        seed_raw = body.get("shuffle_seed")
+        unit_raw = body.get("unit_id")
+        if not isinstance(dataset_id, str) or not dataset_id:
+            _send_json_response(handler, {"error": "dataset_id required"}, 400)
+            return
+        try:
+            shuffle_seed = int(seed_raw)
+            unit_id = int(unit_raw)
+        except (TypeError, ValueError):
+            _send_json_response(
+                handler, {"error": "shuffle_seed and unit_id (int) required"}, 400
+            )
+            return
+
+        with self._work_queues_lock:
+            queue = self._work_queues.get((dataset_id, shuffle_seed))
+            if queue is None:
+                _send_json_response(
+                    handler,
+                    {"error": f"no queue for ({dataset_id}, {shuffle_seed})"},
+                    404,
+                )
+                return
+            if not (0 <= unit_id < queue.total_units):
+                _send_json_response(
+                    handler,
+                    {
+                        "error": f"unit_id {unit_id} out of range [0, {queue.total_units})"
+                    },
+                    400,
+                )
+                return
+            # Idempotent: completing an already-completed unit is a no-op.
+            if not _bit_get(queue.completed, unit_id):
+                _bit_set(queue.completed, unit_id)
+                queue.completed_count += 1
+                counters = queue.by_worker.setdefault(
+                    worker_id, {"units_issued": 0, "units_completed": 0}
+                )
+                counters["units_completed"] += 1
+                self._dirty = True
+
+        _send_json_response(handler, {"ack": True})
+
+    def _handle_get_queues(self, handler: BaseHTTPRequestHandler):
+        """List all active work queues (summary only, no bitmaps)."""
+        with self._work_queues_lock:
+            queues = [
+                {
+                    "dataset_id": dsid,
+                    "shuffle_seed": seed,
+                    "total_units": q.total_units,
+                    "issued_count": q.issued_count,
+                    "completed_count": q.completed_count,
+                    "hint": {"length": q.hint_length},
+                }
+                for (dsid, seed), q in self._work_queues.items()
+            ]
+        _send_json_response(handler, queues)
+
+    def _handle_get_queue(self, handler: BaseHTTPRequestHandler):
+        """Single-queue detail with bitmaps (base64-encoded) and per-worker counts.
+
+        Bitmaps are K bits packed little-endian within each byte. K=1024
+        → 128 bytes per bitmap; cheap. The diagnostic UI decodes these
+        client-side to render a per-unit heatmap.
+        """
+        # The do_GET dispatcher passes self.path verbatim (no query
+        # parsing). Strip the path off and parse the query here.
+        parsed = urlparse(handler.path)
+        params = parse_qs(parsed.query)
+        dataset_id = (params.get("dataset_id") or [None])[0]
+        seed_raw = (params.get("shuffle_seed") or [None])[0]
+        if not dataset_id:
+            _send_json_response(handler, {"error": "dataset_id required"}, 400)
+            return
+        try:
+            shuffle_seed = int(seed_raw)
+        except (TypeError, ValueError):
+            _send_json_response(handler, {"error": "shuffle_seed (int) required"}, 400)
+            return
+
+        with self._work_queues_lock:
+            queue = self._work_queues.get((dataset_id, shuffle_seed))
+            if queue is None:
+                _send_json_response(
+                    handler,
+                    {"error": f"no queue for ({dataset_id}, {shuffle_seed})"},
+                    404,
+                )
+                return
+            response = {
+                "dataset_id": dataset_id,
+                "shuffle_seed": shuffle_seed,
+                "total_units": queue.total_units,
+                "issued_count": queue.issued_count,
+                "completed_count": queue.completed_count,
+                "hint": {"length": queue.hint_length},
+                "issued_bitmap_b64": base64.b64encode(bytes(queue.issued)).decode(
+                    "ascii"
+                ),
+                "completed_bitmap_b64": base64.b64encode(bytes(queue.completed)).decode(
+                    "ascii"
+                ),
+                # Copy so the response isn't mutated by concurrent
+                # request/complete calls after we drop the lock.
+                "by_worker": {k: dict(v) for k, v in queue.by_worker.items()},
+            }
+        _send_json_response(handler, response)
+
     def _handle_control(self, handler: BaseHTTPRequestHandler, action: str):
         """Dispatch control actions."""
         try:
@@ -1185,6 +1572,12 @@ class DiLoCoServer:
                         server_ref._handle_heartbeat(self)
                     elif path == "/deregister":
                         server_ref._handle_deregister(self)
+                    elif path == "/datasets/register":
+                        server_ref._handle_register_dataset(self)
+                    elif path == "/work/request":
+                        server_ref._handle_request_work(self)
+                    elif path == "/work/complete":
+                        server_ref._handle_complete_work(self)
                     elif path.startswith("/control/"):
                         action = path[len("/control/") :]
                         server_ref._handle_control(self, action)
@@ -1198,13 +1591,21 @@ class DiLoCoServer:
 
             def do_GET(self):
                 try:
-                    path = self.path.rstrip("/")
+                    # urlparse separates the path from the query string;
+                    # rstrip("/") here would mangle "/work/queue?…" so
+                    # apply it after parsing.
+                    parsed = urlparse(self.path)
+                    path = parsed.path.rstrip("/")
                     if path == "/global_params":
                         server_ref._handle_get_global_params(self)
                     elif path == "/status":
                         server_ref._handle_status(self)
                     elif path == "/info":
                         server_ref._handle_info(self)
+                    elif path == "/work/queues":
+                        server_ref._handle_get_queues(self)
+                    elif path == "/work/queue":
+                        server_ref._handle_get_queue(self)
                     elif path == "/dashboard" or path == "":
                         server_ref._handle_dashboard(self)
                     else:
@@ -1247,7 +1648,28 @@ class DiLoCoServer:
             checkpoint_path, self.get_global_params(), safetensors=self.safetensors
         )
 
-        # Save server state (optimizer, round, metadata) separately
+        # Save server state (optimizer, round, metadata) separately.
+        # Work-queue state rides along so a server restart preserves the
+        # issuance bitmap — already-issued units remain consumed across
+        # restarts, same calculus as worker death (≤ N_workers units
+        # lost per epoch). Key is "dataset_id|seed" string-joined to
+        # dodge tuple-as-dict-key serialization edges.
+        with self._work_queues_lock:
+            work_queues_state = {
+                f"{dsid}|{seed}": {
+                    "dataset_id": dsid,
+                    "shuffle_seed": seed,
+                    "total_units": q.total_units,
+                    "issued": bytes(q.issued),
+                    "completed": bytes(q.completed),
+                    "hint_length": q.hint_length,
+                    "issued_count": q.issued_count,
+                    "completed_count": q.completed_count,
+                    "by_worker": {k: dict(v) for k, v in q.by_worker.items()},
+                }
+                for (dsid, seed), q in self._work_queues.items()
+            }
+            dataset_lengths = dict(self._dataset_lengths)
         server_state = {
             "outer_optimizer": self.outer_optimizer.state_dict(),
             "sync_round": self._sync_round,
@@ -1255,6 +1677,8 @@ class DiLoCoServer:
             "param_names": self._param_names,
             "async_mode": self.async_mode,
             "total_submissions": self._total_submissions,
+            "work_queues": work_queues_state,
+            "dataset_lengths": dataset_lengths,
         }
         torch.save(server_state, os.path.join(checkpoint_path, "server_state.pt"))
 
@@ -1307,8 +1731,33 @@ class DiLoCoServer:
             self.outer_optimizer.load_state_dict(server_state["outer_optimizer"])
             self._sync_round = server_state["sync_round"]
             self._total_submissions = server_state.get("total_submissions", 0)
+
+            # Rehydrate work-queue state if present. Absent for
+            # checkpoints written before this feature landed — fresh
+            # _work_queues is the right behavior in that case (workers
+            # will re-register their datasets on first contact).
+            work_queues_state = server_state.get("work_queues") or {}
+            with self._work_queues_lock:
+                for entry in work_queues_state.values():
+                    dsid = entry["dataset_id"]
+                    seed = int(entry["shuffle_seed"])
+                    self._work_queues[(dsid, seed)] = WorkQueue(
+                        total_units=int(entry["total_units"]),
+                        issued=bytearray(entry["issued"]),
+                        completed=bytearray(entry["completed"]),
+                        hint_length=int(entry["hint_length"]),
+                        issued_count=int(entry.get("issued_count", 0)),
+                        completed_count=int(entry.get("completed_count", 0)),
+                        by_worker={
+                            k: dict(v)
+                            for k, v in (entry.get("by_worker") or {}).items()
+                        },
+                    )
+                self._dataset_lengths.update(server_state.get("dataset_lengths") or {})
+
             logger.info(
-                f"Server state loaded from {checkpoint_path}, at round {self._sync_round}"
+                f"Server state loaded from {checkpoint_path}, at round {self._sync_round}; "
+                f"restored {len(work_queues_state)} work queue(s)"
             )
         else:
             logger.warning(

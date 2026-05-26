@@ -75,6 +75,7 @@ def _server_cmd(args):
     dashboard_enabled = not getattr(args, "no_dashboard", False)
 
     save_total_limit = getattr(args, "save_total_limit", 3)
+    default_work_units = getattr(args, "default_work_units", 1024)
 
     # Create server
     server = DiLoCoServer(
@@ -92,6 +93,7 @@ def _server_cmd(args):
         dylu_base_sync_every=dylu_base,
         heartbeat_timeout=heartbeat_timeout,
         min_workers=min_workers,
+        default_work_units=default_work_units,
         dashboard_enabled=dashboard_enabled,
     )
 

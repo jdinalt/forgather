@@ -138,6 +138,16 @@ def create_diloco_parser(global_args):
         action="store_true",
         help="Disable the web dashboard (served at /dashboard by default)",
     )
+    server_parser.add_argument(
+        "--default-work-units",
+        type=int,
+        default=1024,
+        help=(
+            "Number of work units per (dataset_id, shuffle_seed) queue when\n"
+            "workers opt into work-unit dispatch. Server-wide; persists for\n"
+            "the lifetime of the server. (default: 1024)"
+        ),
+    )
 
     # status subcommand
     status_parser = subparsers.add_parser(
