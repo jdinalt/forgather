@@ -71,8 +71,6 @@ def create_manual_causal_lm_splitter(
 
     def manual_splitter(
         model: Module,
-        example_args: tuple,
-        example_kwargs: dict,
         stage_indices: List[Tuple[int, ...]],
         train: bool,
         device: torch.device,

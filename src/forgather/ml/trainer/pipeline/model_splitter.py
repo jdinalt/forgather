@@ -20,11 +20,16 @@ from torch.nn import Module
 # 4. attention_mask_creator: Optional function to create attention masks externally
 #
 # The splitter should NOT materialize modules - that's handled by the trainer.
+#
+# Historical note: earlier revisions threaded an ``(example_args, example_kwargs)``
+# tuple through this signature for a torch.export()-based splitter that has
+# since been removed. The current manual splitter doesn't trace; the
+# data-shape example was dead weight (and a real cost under DiLoCo work-unit
+# dispatch, where pulling one batch just to read input_ids.shape would burn
+# one work unit per pipeline rank for nothing). Dropped.
 ModelSplitter: TypeAlias = Callable[
     [
         Module,  # model: Model on meta device
-        tuple,  # example_args: Example micro-batch args for tracing
-        dict,  # example_kwargs: Example micro-batch kwargs for tracing
         List[Tuple[int, ...]],  # stage_indices: Stage indices per rank
         bool,  # train: Whether in train mode
         torch.device,  # device: Target device for this rank
