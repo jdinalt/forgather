@@ -97,6 +97,22 @@ class DiLoCoClient:
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                # Server-side 4xx/5xx — the response is the server's
+                # authoritative answer. Retrying wouldn't change it.
+                # 409 in particular is the work-queue's
+                # length-mismatch / worker_id-collision signal and
+                # the caller needs to see it promptly. Surface the
+                # status code + the server's diagnostic body so the
+                # caller can branch on "HTTP 409" cleanly.
+                try:
+                    error_body = e.read().decode("utf-8", errors="replace")
+                    error_detail = json.loads(error_body).get("error", error_body)
+                except Exception:
+                    error_detail = str(e)
+                raise ConnectionError(
+                    f"Server returned HTTP {e.code} for {url}: {error_detail}"
+                ) from e
             except urllib.error.URLError as e:
                 if attempt < max_retries:
                     logger.warning(
@@ -205,6 +221,22 @@ class DiLoCoClient:
                         f"Registered with server as {worker_id}, received global params"
                     )
                     return params
+            except urllib.error.HTTPError as e:
+                # HTTPError is a URLError subclass but the response IS
+                # from the server (it just isn't 2xx). Retrying won't
+                # change the outcome — 409 in particular is the explicit
+                # uniqueness-collision signal and the worker needs to
+                # see it promptly. Fast-fail with the status code +
+                # server diagnostic body so callers can branch on
+                # "HTTP 409" cleanly.
+                try:
+                    error_body = e.read().decode("utf-8", errors="replace")
+                    error_detail = json.loads(error_body).get("error", error_body)
+                except Exception:
+                    error_detail = str(e)
+                raise ConnectionError(
+                    f"DiLoCo /register returned HTTP {e.code}: {error_detail}"
+                ) from e
             except urllib.error.URLError as e:
                 if attempt < self.max_retries:
                     logger.warning(
