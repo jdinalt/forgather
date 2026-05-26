@@ -26,6 +26,29 @@ import torch
 logger = logging.getLogger(__name__)
 
 
+class DiLoCoRegisterCollisionError(ConnectionError):
+    """Raised when ``/register`` returns HTTP 409.
+
+    The server enforces ``worker_id`` uniqueness (see
+    docs/design/diloco-work-unit-dispatch.md): a second registration of
+    an already-live ``worker_id`` is refused with 409 + a diagnostic.
+    Workers that catch this should treat it as a fatal clean-exit
+    (re-registering won't succeed until the prior entry is evicted by
+    heartbeat timeout or cleared via /deregister).
+
+    Inherits from ConnectionError so legacy callers that catch the
+    broader exception type continue to work. New callers can match the
+    specific type to branch on the collision case.
+    """
+
+    def __init__(self, message: str, *, diagnostic: str = ""):
+        super().__init__(message)
+        # The server's diagnostic body (e.g. the "worker_id 'X' is
+        # already registered…" string) — surfaced separately so
+        # callers can log it cleanly without re-parsing the message.
+        self.diagnostic = diagnostic
+
+
 class DiLoCoClient:
     """
     HTTP client for DiLoCo parameter server communication.
@@ -234,6 +257,15 @@ class DiLoCoClient:
                     error_detail = json.loads(error_body).get("error", error_body)
                 except Exception:
                     error_detail = str(e)
+                if e.code == 409:
+                    # Type-distinguished so callers can match the
+                    # collision case specifically. Still a
+                    # ConnectionError subclass for back-compat with
+                    # broad exception handlers.
+                    raise DiLoCoRegisterCollisionError(
+                        f"DiLoCo /register returned HTTP 409: {error_detail}",
+                        diagnostic=error_detail,
+                    ) from e
                 raise ConnectionError(
                     f"DiLoCo /register returned HTTP {e.code}: {error_detail}"
                 ) from e
