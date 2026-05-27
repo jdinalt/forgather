@@ -134,11 +134,6 @@ def create_diloco_parser(global_args):
         ),
     )
     server_parser.add_argument(
-        "--no-dashboard",
-        action="store_true",
-        help="Disable the web dashboard (served at /dashboard by default)",
-    )
-    server_parser.add_argument(
         "--default-work-units",
         type=int,
         default=1024,

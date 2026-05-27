@@ -111,7 +111,10 @@ forgather -t default.yaml train
 watch -n 1 forgather diloco status --server localhost:8512
 ```
 
-Or visit `http://localhost:8512/dashboard` in a browser.
+Or open the forgather webui's **DiLoCo** view, which lists known servers
+on the left, polls `/status` for the selected one, and renders the
+workers table + outer-optimizer metrics + work-unit dispatch heatmap
+inline.
 
 ### 5. Stopping
 
@@ -121,7 +124,8 @@ deregister from the server on exit, so the server updates its worker count.
 The server runs until explicitly stopped. There are three ways to stop it:
 
 - **Ctrl-C** in the server terminal.
-- **Dashboard**: Click the Shutdown button at `http://localhost:8512/dashboard`.
+- **Webui**: forgather webui → **DiLoCo** view → select the server →
+  **Control** card → **Shutdown server**.
 - **HTTP API**: `curl -X POST http://localhost:8512/control/shutdown`
 
 To save server state on demand (without stopping):

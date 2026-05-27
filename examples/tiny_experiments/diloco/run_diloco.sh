@@ -138,7 +138,7 @@ done
 
 echo "==> All workers started. Training in progress..."
 echo "    Monitor: forgather diloco status --server localhost:$PORT"
-echo "    Dashboard: http://localhost:$PORT/dashboard"
+echo "    Webui:   forgather webui -> DiLoCo view -> select localhost:$PORT"
 echo "    Press Ctrl-C to stop."
 
 # Step 5: Wait for workers to finish

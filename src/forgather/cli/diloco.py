@@ -71,9 +71,6 @@ def _server_cmd(args):
     else:
         print("Health monitoring: disabled")
 
-    # Dashboard
-    dashboard_enabled = not getattr(args, "no_dashboard", False)
-
     save_total_limit = getattr(args, "save_total_limit", 3)
     default_work_units = getattr(args, "default_work_units", 1024)
 
@@ -94,12 +91,9 @@ def _server_cmd(args):
         heartbeat_timeout=heartbeat_timeout,
         min_workers=min_workers,
         default_work_units=default_work_units,
-        dashboard_enabled=dashboard_enabled,
     )
 
     print(f"Starting DiLoCo server on {args.host}:{args.port}")
-    if dashboard_enabled:
-        print(f"Dashboard: http://{args.host}:{args.port}/dashboard")
     print(f"Waiting for {args.num_workers} worker(s)...")
     print()
     print("To stop the server:")
@@ -107,11 +101,8 @@ def _server_cmd(args):
         "  Ctrl-C              Stop server"
         + (" (saves state automatically)" if args.output_dir else "")
     )
-    if dashboard_enabled:
-        print(
-            f"  Dashboard           Use the Shutdown button at http://localhost:{args.port}/dashboard"
-        )
     print(f"  curl -X POST        http://localhost:{args.port}/control/shutdown")
+    print(f"  forgather webui     DiLoCo view → Control card → Shutdown server")
     print()
 
     server.run()

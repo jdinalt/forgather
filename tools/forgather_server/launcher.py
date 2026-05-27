@@ -484,7 +484,6 @@ def spawn_diloco_server_process(
     no_nesterov: bool = False,
     heartbeat_timeout: Optional[float] = None,
     min_workers: Optional[int] = None,
-    no_dashboard: bool = False,
     extra_env: Optional[Dict[str, str]] = None,
 ) -> LaunchResult:
     """Spawn a DiLoCo parameter server.
@@ -511,7 +510,6 @@ def spawn_diloco_server_process(
         no_nesterov=no_nesterov,
         heartbeat_timeout=heartbeat_timeout,
         min_workers=min_workers,
-        no_dashboard=no_dashboard,
     )
     return _spawn_subprocess(cmd, [], tty_log_path, extra_env)
 

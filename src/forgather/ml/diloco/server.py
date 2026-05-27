@@ -239,8 +239,13 @@ class DiLoCoServer:
         min_workers: Minimum number of workers required to apply the outer
             optimizer in sync mode. If the number of registered workers drops
             below this value, the sync barrier will not release. Default: 1.
-        dashboard_enabled: If True, serve the web dashboard at /dashboard.
-            Default: True.
+
+    The server no longer ships a built-in web dashboard; the
+    forgather webui's DiLoCo view reproduces and supersedes it
+    (see tools/forgather_server/webui/src/components/DiLoCoPanel.tsx).
+    All control endpoints (/control/save_state, /kick_worker,
+    /update_optimizer, /update_num_workers, /shutdown) are unchanged
+    and remain the API the webui talks to.
     """
 
     def __init__(
@@ -260,7 +265,6 @@ class DiLoCoServer:
         dylu_base_sync_every: int = 500,
         heartbeat_timeout: float = 120.0,
         min_workers: int = 1,
-        dashboard_enabled: bool = True,
         default_work_units: int = 1024,
     ):
         if num_workers < 1:
@@ -285,7 +289,6 @@ class DiLoCoServer:
         self.dylu_enabled = dylu_enabled
         self.dylu_base_sync_every = dylu_base_sync_every
         self.heartbeat_timeout = heartbeat_timeout
-        self.dashboard_enabled = dashboard_enabled
         self.default_work_units = default_work_units
         self.outer_optimizer_factory = (
             outer_optimizer_factory or _default_outer_optimizer_factory
@@ -1231,18 +1234,8 @@ class DiLoCoServer:
         response["save_dir"] = self.output_dir
         response["model_params"] = self._model_params
         response["model_size_mb"] = round(self._model_size_mb, 2)
-        response["dashboard_enabled"] = self.dashboard_enabled
 
         _send_json_response(handler, response)
-
-    def _handle_dashboard(self, handler: BaseHTTPRequestHandler):
-        """Serve the web dashboard HTML page."""
-        if not self.dashboard_enabled:
-            _send_json_response(handler, {"error": "Dashboard disabled"}, 404)
-            return
-        from .dashboard import send_dashboard_response
-
-        send_dashboard_response(handler)
 
     def _handle_info(self, handler: BaseHTTPRequestHandler):
         """Handle info request.
@@ -1690,8 +1683,6 @@ class DiLoCoServer:
                         server_ref._handle_get_queues(self)
                     elif path == "/work/queue":
                         server_ref._handle_get_queue(self)
-                    elif path == "/dashboard" or path == "":
-                        server_ref._handle_dashboard(self)
                     else:
                         _send_json_response(
                             self, {"error": f"Unknown endpoint: {path}"}, 404
@@ -1923,8 +1914,6 @@ class DiLoCoServer:
         logger.info(
             f"Expecting {self.num_workers} worker(s), min_workers={self.min_workers}"
         )
-        if self.dashboard_enabled:
-            logger.info(f"Dashboard: http://{self.host}:{self.port}/dashboard")
         if self.heartbeat_timeout > 0:
             logger.info(f"Health monitoring: timeout={self.heartbeat_timeout}s")
         if self.async_mode and self.dn_buffer_size > 0:
@@ -1971,8 +1960,6 @@ class DiLoCoServer:
         logger.info(
             f"Expecting {self.num_workers} worker(s), min_workers={self.min_workers}"
         )
-        if self.dashboard_enabled:
-            logger.info(f"Dashboard: http://{self.host}:{self.port}/dashboard")
 
     def stop(self):
         """Stop the background server."""

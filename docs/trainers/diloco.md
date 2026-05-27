@@ -602,7 +602,6 @@ The server exposes these HTTP endpoints:
 | POST | `/deregister` | Worker departure |
 | GET | `/status` | Server status (mode, workers, sync round, fragment/async fields) |
 | GET | `/info` | Static facts a client needs to negotiate settings (output_dir, num_parameters, expected_client_settings) |
-| GET | `/dashboard` | Web dashboard UI (HTML page) |
 | POST | `/control/{action}` | Control endpoints: `save_state`, `kick_worker`, `update_optimizer`, `update_num_workers`, `shutdown` |
 
 Tensor data is serialized using `torch.save` to `BytesIO` and sent as
@@ -699,47 +698,35 @@ On checkpoint resume, the callback's `load_state_dict` is called during
 `_prepare()` (before the worker exists). The state is deferred and applied
 in `on_train_begin` after the worker is created and registered with the server.
 
-## Dashboard
+## Monitoring & Control
 
-The DiLoCo server includes a built-in web dashboard for real-time monitoring and
-control. Navigate to the server's address in a browser to access it.
+The DiLoCo server itself only exposes JSON endpoints — the operator-facing
+view lives in the **forgather webui's DiLoCo panel**
+(`tools/forgather_server/webui/src/components/DiLoCoPanel.tsx`). The
+panel lists known servers on the left and renders per-server detail
+on the right:
 
-### Accessing the Dashboard
+1. **Header**: server mode (sync/async badge), sync round, uptime,
+   parameter count + model size.
+2. **Workers table**: per-worker health dot (green/yellow/red by
+   heartbeat age), ID (hover for full id), hostname, sync round,
+   steps/s, relative heartbeat age, and a per-row **Kick** button.
+3. **Server metrics**: outer LR / momentum, worker-death count,
+   heartbeat timeout. Sync mode adds a pending-submissions progress
+   bar; async mode adds total-submissions, DN buffer status, and DyLU
+   state.
+4. **Control card**: **Save checkpoint**, **Shutdown** (confirm
+   overlay), live **Optimizer** tuning (LR + momentum + Apply),
+   **Workers** expected-count adjustment.
+5. **Work-unit dispatch**: per-queue heatmap (K cells, three states:
+   available / issued / completed), with per-worker counters.
 
-When the server starts, it logs the dashboard URL:
-
-```
-Dashboard: http://localhost:8512/dashboard
-```
-
-Open this URL in any browser. The root
-URL (`/`) also serves the dashboard.
-
-### Dashboard Panels
-
-The dashboard has four sections:
-
-1. **Header**: Server mode (sync/async), sync round counter, uptime, model size,
-   and a configurable refresh interval (1s to 30s).
-
-2. **Worker Table**: Shows all connected workers with their ID, hostname, sync
-   round, training speed (steps/s), last heartbeat (as relative time), and a
-   health indicator (green/yellow/red based on heartbeat recency). Each row has
-   a "Kick" button to evict a worker.
-
-3. **Server Metrics**: Outer optimizer hyperparameters (LR, momentum), pending
-   submission progress, DN buffer status (async mode), DyLU status, worker
-   death count, and fragment submission count.
-
-4. **Control Panel**: Interactive controls for:
-   - **Save State**: Save a checkpoint on demand (disabled if no `--save-dir`)
-   - **Optimizer**: Adjust outer LR and momentum in real time
-   - **Workers**: Change the expected worker count
-   - **Shutdown**: Gracefully stop the server (with confirmation dialog)
+An earlier version of the server shipped its own Alpine.js dashboard
+at `/dashboard`; that page was removed when the webui panel took
+over. The control endpoints below are unchanged and are what the
+webui's Control card talks to under the hood.
 
 ### Control Endpoints
-
-The dashboard uses these HTTP endpoints, which can also be called directly:
 
 | Endpoint | Body | Action |
 |----------|------|--------|
@@ -752,29 +739,14 @@ The dashboard uses these HTTP endpoints, which can also be called directly:
 All endpoints return `{"status": "ok", ...}` on success or `{"error": "..."}` on
 failure.
 
-### Disabling the Dashboard
-
-The dashboard is enabled by default. To disable it:
-
-```bash
-forgather diloco server -o ./model -n 2 --no-dashboard
-```
-
-Or in the programmatic API:
-
-```python
-server = DiLoCoServer("path/to/model", num_workers=2, dashboard_enabled=False)
-```
-
-When disabled, `GET /dashboard` returns a 404 response.
-
 ### Security Note
 
-The dashboard has no authentication. It provides full control over the training
-run, including the ability to shut down the server or modify optimizer
-hyperparameters. Only expose the server on trusted networks. Do not expose the
-server port to the public internet without additional access controls (e.g., a
-reverse proxy with authentication).
+The DiLoCo server's HTTP endpoints have no authentication. They
+provide full control over the training run, including shutdown and
+optimizer mutation. Only expose the server on trusted networks. Do
+not expose the server port to the public internet without additional
+access controls (e.g., a reverse proxy with authentication, or the
+forgather webui in front of it).
 
 ## Network Configuration
 

@@ -29,7 +29,6 @@ interface PersistedAdHoc {
   noNesterov: boolean;
   heartbeatTimeout: number;
   minWorkers: number;
-  noDashboard: boolean;
 }
 
 const DEFAULT_AD_HOC: PersistedAdHoc = {
@@ -49,7 +48,6 @@ const DEFAULT_AD_HOC: PersistedAdHoc = {
   noNesterov: false,
   heartbeatTimeout: 120,
   minWorkers: 1,
-  noDashboard: false,
 };
 
 function loadPersisted(): PersistedAdHoc {
@@ -138,7 +136,6 @@ export function DiLoCoServerModal({
         noNesterov: pickBool(editingService.args, "no_nesterov", false),
         heartbeatTimeout: pickNum(editingService.args, "heartbeat_timeout", 120),
         minWorkers: pickNum(editingService.args, "min_workers", 1),
-        noDashboard: pickBool(editingService.args, "no_dashboard", false),
       }
     : {
         ...persisted,
@@ -163,7 +160,6 @@ export function DiLoCoServerModal({
     seed.heartbeatTimeout,
   );
   const [minWorkers, setMinWorkers] = useState(seed.minWorkers);
-  const [noDashboard, setNoDashboard] = useState(seed.noDashboard);
   const [saving, setSaving] = useState(false);
 
   // Light validation — the backend re-checks but flagging in-UI is friendlier.
@@ -191,7 +187,6 @@ export function DiLoCoServerModal({
       no_nesterov: noNesterov,
       heartbeat_timeout: heartbeatTimeout,
       min_workers: minWorkers,
-      no_dashboard: noDashboard,
     };
     if (dnBufferSize > 0) args.dn_buffer_size = dnBufferSize;
     if (dylu) args.dylu_base_sync_every = dyluBase;
@@ -218,7 +213,6 @@ export function DiLoCoServerModal({
       noNesterov,
       heartbeatTimeout,
       minWorkers,
-      noDashboard,
     };
     persistSet(STORAGE_KEY, JSON.stringify(cur));
   };
@@ -514,14 +508,6 @@ export function DiLoCoServerModal({
                   onChange={(e) => setHeartbeatTimeout(Number(e.target.value))}
                   style={{ width: "100%" }}
                 />
-              </label>
-              <label style={{ alignSelf: "end" }}>
-                <input
-                  type="checkbox"
-                  checked={noDashboard}
-                  onChange={(e) => setNoDashboard(e.target.checked)}
-                />{" "}
-                Disable /dashboard
               </label>
             </div>
           </fieldset>

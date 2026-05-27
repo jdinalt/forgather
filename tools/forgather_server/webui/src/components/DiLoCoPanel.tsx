@@ -511,29 +511,20 @@ function ServerDetail({
 }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: 4 }}>
-      <header
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          flexWrap: "wrap",
-        }}
-      >
-        <strong style={{ fontSize: "larger" }}>{server.label}</strong>
-        <span className="muted">{server.base_url}</span>
-        <span style={{ flex: 1 }} />
-        <a
-          href={`${server.base_url}/dashboard`}
-          target="_blank"
-          rel="noreferrer noopener"
-          title="Open the DiLoCo server's built-in dashboard in a new tab"
-        >
-          Open built-in dashboard ↗
-        </a>
-      </header>
+      <DashboardHeader server={server} status={status} info={info} />
 
       {!!statusError && (
-        <div className="muted" style={{ color: "tomato" }}>
+        <div
+          role="alert"
+          style={{
+            background: "#2d1520",
+            border: "1px solid tomato",
+            borderRadius: 6,
+            padding: "8px 12px",
+            color: "tomato",
+            fontSize: "smaller",
+          }}
+        >
           {(statusError as Error)?.message ?? String(statusError)}
         </div>
       )}
@@ -541,9 +532,17 @@ function ServerDetail({
         <div className="muted">Loading status…</div>
       )}
 
-      {status && <StatusOverview status={status} info={info} />}
-      {status && <WorkersTable status={status} />}
-      {status && <ServerMetrics status={status} info={info} />}
+      {status && (
+        <WorkersTable baseUrl={server.base_url} status={status} />
+      )}
+      {status && <ServerMetrics status={status} />}
+      {status && (
+        <ControlPanel
+          baseUrl={server.base_url}
+          status={status}
+          info={info}
+        />
+      )}
       {queues && queues.length > 0 && (
         <WorkQueuesSection
           baseUrl={server.base_url}
@@ -572,159 +571,677 @@ function Field({
   );
 }
 
-function StatusOverview({
+/** Compact summary strip — mirrors the server's native dashboard
+ *  header. Mode badge, sync round, uptime, parameter count + size. */
+function DashboardHeader({
+  server,
   status,
   info,
 }: {
-  status: DiLoCoStatus;
+  server: DiLoCoServer;
+  status: DiLoCoStatus | null;
   info: DiLoCoInfo | null;
 }) {
+  const params = status?.model_params ?? info?.num_parameters;
+  const sizeMb = status?.model_size_mb;
+  const mode = status?.mode ?? "—";
+  const modeColor =
+    mode === "async"
+      ? { bg: "#3a2a1a", fg: "#ff9e64" }
+      : { bg: "#1a3a5c", fg: "#7aa2f7" };
   return (
-    <section
+    <header
       style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+        display: "flex",
+        alignItems: "center",
         gap: 12,
-        border: "1px solid var(--border, #444)",
+        flexWrap: "wrap",
+        padding: "10px 14px",
+        background: "var(--bg-surface, #24283b)",
+        border: "1px solid var(--border, #3b4261)",
         borderRadius: 6,
-        padding: 12,
       }}
     >
-      <Field label="Status" value={status.status ?? "—"} />
-      <Field label="Mode" value={status.mode ?? "—"} />
-      <Field label="Sync round" value={status.sync_round ?? 0} />
-      <Field
-        label="Workers"
-        value={`${status.num_registered ?? 0}/${status.num_workers ?? "?"}`}
-      />
-      <Field label="Uptime" value={formatUptime(status.uptime_seconds)} />
-      {info?.num_parameters !== undefined && (
-        <Field
-          label="Parameters"
-          value={info.num_parameters.toLocaleString()}
-        />
+      <strong style={{ fontSize: 16 }}>{server.label}</strong>
+      {status && (
+        <span
+          style={{
+            display: "inline-block",
+            padding: "2px 8px",
+            borderRadius: 4,
+            fontSize: 11,
+            fontWeight: 600,
+            textTransform: "uppercase",
+            background: modeColor.bg,
+            color: modeColor.fg,
+          }}
+        >
+          {mode}
+        </span>
       )}
-      {status.model_size_mb !== undefined && (
-        <Field
-          label="Model size"
-          value={`${status.model_size_mb.toFixed(1)} MB`}
-        />
+      {status && (
+        <span className="muted">
+          Round <b style={{ color: "var(--text, inherit)" }}>{status.sync_round ?? 0}</b>
+        </span>
       )}
-    </section>
+      <span className="muted">
+        {formatUptime(status?.uptime_seconds)}
+      </span>
+      {params !== undefined && (
+        <span className="muted">
+          {formatParams(params)}
+          {sizeMb !== undefined && ` (${sizeMb.toFixed(1)} MB)`}
+        </span>
+      )}
+      <span className="muted" style={{ marginLeft: "auto", fontSize: 11 }}>
+        {server.base_url}
+      </span>
+    </header>
   );
 }
 
-function WorkersTable({ status }: { status: DiLoCoStatus }) {
+function formatParams(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return String(n);
+}
+
+function workerHealthColor(lastHeartbeat: number | undefined): string {
+  if (!lastHeartbeat) return "#f7768e"; // red
+  const ago = Date.now() / 1000 - lastHeartbeat;
+  if (ago < 60) return "#9ece6a"; // green
+  if (ago < 120) return "#e0af68"; // yellow
+  return "#f7768e";
+}
+
+function truncId(id: string): string {
+  return id.length > 20 ? `${id.slice(0, 17)}…` : id;
+}
+
+function WorkersTable({
+  baseUrl,
+  status,
+}: {
+  baseUrl: string;
+  status: DiLoCoStatus;
+}) {
+  const queryClient = useQueryClient();
+  const kickMutation = useMutation({
+    mutationFn: (workerId: string) =>
+      api.diLoCoServerControl(baseUrl, "kick_worker", {
+        worker_id: workerId,
+      }),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["diloco", "status", baseUrl] });
+    },
+  });
+
   const workers = status.workers ?? {};
   const ids = Object.keys(workers);
-  if (ids.length === 0) {
-    return (
-      <section
-        style={{
-          border: "1px solid var(--border, #444)",
-          borderRadius: 6,
-          padding: 12,
-        }}
-      >
-        <div className="muted">No workers registered.</div>
-      </section>
-    );
-  }
+
+  const headerRow = (
+    <header
+      style={{
+        padding: "8px 14px",
+        background: "var(--bg-surface, #24283b)",
+        borderBottom: "1px solid var(--border, #3b4261)",
+        fontWeight: 600,
+      }}
+    >
+      Workers{" "}
+      <span className="muted" style={{ fontWeight: 400, fontSize: "smaller" }}>
+        ({status.num_registered ?? 0}/{status.num_workers ?? "?"})
+      </span>
+    </header>
+  );
+
   return (
     <section
       style={{
-        border: "1px solid var(--border, #444)",
+        border: "1px solid var(--border, #3b4261)",
         borderRadius: 6,
-        overflow: "auto",
+        overflow: "hidden",
       }}
     >
-      <table style={{ width: "100%", borderCollapse: "collapse" }}>
-        <thead>
-          <tr style={{ textAlign: "left" }}>
-            <th style={{ padding: "6px 8px" }}>Worker</th>
-            <th style={{ padding: "6px 8px" }}>Host</th>
-            <th style={{ padding: "6px 8px" }}>Sync round</th>
-            <th style={{ padding: "6px 8px" }}>Steps/s</th>
-            <th style={{ padding: "6px 8px" }}>Last heartbeat</th>
-          </tr>
-        </thead>
-        <tbody>
-          {ids.map((wid) => {
-            const w = workers[wid];
-            return (
-              <tr
-                key={wid}
-                style={{ borderTop: "1px solid var(--border, #2a2a2a)" }}
-              >
-                <td style={{ padding: "6px 8px" }}>{wid}</td>
-                <td style={{ padding: "6px 8px" }}>{w.hostname ?? "—"}</td>
-                <td style={{ padding: "6px 8px" }}>{w.sync_round ?? 0}</td>
-                <td style={{ padding: "6px 8px" }}>
-                  {w.steps_per_second !== undefined
-                    ? w.steps_per_second.toFixed(2)
-                    : "—"}
-                </td>
-                <td style={{ padding: "6px 8px" }}>
-                  {relativeAge(w.last_heartbeat)}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      {headerRow}
+      {ids.length === 0 ? (
+        <div className="muted" style={{ padding: "16px 14px" }}>
+          No workers connected
+        </div>
+      ) : (
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ textAlign: "left" }}>
+              <th style={{ padding: "6px 8px", width: 28 }}></th>
+              <th style={{ padding: "6px 8px" }}>ID</th>
+              <th style={{ padding: "6px 8px" }}>Hostname</th>
+              <th style={{ padding: "6px 8px" }}>Round</th>
+              <th style={{ padding: "6px 8px" }}>Steps/s</th>
+              <th style={{ padding: "6px 8px" }}>Last heartbeat</th>
+              <th style={{ padding: "6px 8px" }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {ids.map((wid) => {
+              const w = workers[wid];
+              return (
+                <tr
+                  key={wid}
+                  style={{ borderTop: "1px solid var(--border, #2a2a2a)" }}
+                >
+                  <td style={{ padding: "6px 8px" }}>
+                    <span
+                      title="Health (green <60s heartbeat, yellow <120s, red older)"
+                      style={{
+                        display: "inline-block",
+                        width: 10,
+                        height: 10,
+                        borderRadius: "50%",
+                        background: workerHealthColor(w.last_heartbeat),
+                      }}
+                    />
+                  </td>
+                  <td
+                    style={{ padding: "6px 8px", fontFamily: "monospace" }}
+                    title={wid}
+                  >
+                    {truncId(wid)}
+                  </td>
+                  <td style={{ padding: "6px 8px" }}>{w.hostname ?? "—"}</td>
+                  <td style={{ padding: "6px 8px" }}>{w.sync_round ?? 0}</td>
+                  <td style={{ padding: "6px 8px" }}>
+                    {w.steps_per_second && w.steps_per_second > 0
+                      ? w.steps_per_second.toFixed(2)
+                      : "—"}
+                  </td>
+                  <td style={{ padding: "6px 8px" }}>
+                    {relativeAge(w.last_heartbeat)}
+                  </td>
+                  <td style={{ padding: "6px 8px", textAlign: "right" }}>
+                    <button
+                      className="tiny"
+                      onClick={() => {
+                        if (window.confirm(`Kick worker ${wid}?`)) {
+                          kickMutation.mutate(wid);
+                        }
+                      }}
+                      disabled={kickMutation.isPending}
+                      title="Force-evict this worker from the server"
+                    >
+                      Kick
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
     </section>
   );
 }
 
-function ServerMetrics({
-  status,
-  info,
-}: {
-  status: DiLoCoStatus;
-  info: DiLoCoInfo | null;
-}) {
-  const rows: Array<[string, React.ReactNode]> = [];
-  if (status.outer_lr !== undefined) rows.push(["Outer LR", status.outer_lr]);
-  if (status.outer_momentum !== undefined)
-    rows.push(["Outer momentum", status.outer_momentum]);
-  if (status.mode === "async") {
-    if (status.dn_buffer_size !== undefined)
-      rows.push([
-        "DN buffer",
-        `${status.dn_buffered ?? 0}/${status.dn_buffer_size}`,
-      ]);
-    if (status.dylu_enabled)
-      rows.push(["DyLU base sync_every", status.dylu_base_sync_every ?? "—"]);
-    if (status.total_submissions !== undefined)
-      rows.push(["Total submissions", status.total_submissions]);
-  }
-  if (status.heartbeat_timeout !== undefined)
-    rows.push(["Heartbeat timeout", `${status.heartbeat_timeout}s`]);
-  if (status.min_workers !== undefined)
-    rows.push(["min_workers", status.min_workers]);
-  if (status.total_worker_deaths !== undefined && status.total_worker_deaths > 0)
-    rows.push(["Worker deaths", status.total_worker_deaths]);
-  if (status.fragment_submissions)
-    rows.push(["Fragment submissions", status.fragment_submissions]);
-  if (info?.output_dir) rows.push(["output_dir", info.output_dir]);
-  if (status.save_dir && status.save_dir !== info?.output_dir)
-    rows.push(["save_dir", status.save_dir]);
+function ServerMetrics({ status }: { status: DiLoCoStatus }) {
+  // Always-shown metric grid. Mirrors the server dashboard's "Server
+  // Metrics" panel; sync vs async paths diverge after the first row.
+  const baseMetrics: Array<[string, React.ReactNode]> = [];
+  baseMetrics.push(["Outer LR", status.outer_lr ?? "—"]);
+  baseMetrics.push(["Outer momentum", status.outer_momentum ?? "—"]);
+  baseMetrics.push(["Worker deaths", status.total_worker_deaths ?? 0]);
+  baseMetrics.push([
+    "HB timeout",
+    status.heartbeat_timeout !== undefined
+      ? `${status.heartbeat_timeout}s`
+      : "—",
+  ]);
 
-  if (rows.length === 0) return null;
+  const pendingCount = status.pending_submissions?.length ?? 0;
+  const expectedCount = Math.max(status.num_workers ?? 1, 1);
+  const pendingPct = Math.min(100, (pendingCount / expectedCount) * 100);
+
   return (
     <section
       style={{
-        border: "1px solid var(--border, #444)",
+        border: "1px solid var(--border, #3b4261)",
         borderRadius: 6,
-        padding: 12,
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-        gap: 12,
+        overflow: "hidden",
       }}
     >
-      {rows.map(([k, v]) => (
-        <Field key={k} label={k} value={v} />
-      ))}
+      <header
+        style={{
+          padding: "8px 14px",
+          background: "var(--bg-surface, #24283b)",
+          borderBottom: "1px solid var(--border, #3b4261)",
+          fontWeight: 600,
+        }}
+      >
+        Server metrics
+      </header>
+      <div style={{ padding: 14 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+            gap: 12,
+          }}
+        >
+          {baseMetrics.map(([k, v]) => (
+            <Field key={k} label={k} value={v} />
+          ))}
+        </div>
+
+        {status.mode === "sync" && status.pending_submissions && (
+          <div style={{ marginTop: 12 }}>
+            <div className="muted" style={{ fontSize: "smaller" }}>
+              Pending submissions ({pendingCount}/{expectedCount})
+            </div>
+            <div
+              style={{
+                marginTop: 4,
+                background: "var(--bg, #1a1b26)",
+                border: "1px solid var(--border, #3b4261)",
+                borderRadius: 4,
+                height: 10,
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  width: `${pendingPct}%`,
+                  height: "100%",
+                  background: "#7aa2f7",
+                  transition: "width 200ms ease",
+                }}
+              />
+            </div>
+          </div>
+        )}
+
+        {status.mode === "async" && (
+          <div
+            style={{
+              marginTop: 12,
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+              gap: 12,
+            }}
+          >
+            <Field
+              label="Total submissions"
+              value={status.total_submissions ?? 0}
+            />
+            <Field
+              label="DN buffer"
+              value={
+                status.dn_buffer_size && status.dn_buffer_size > 0
+                  ? `${status.dn_buffered ?? 0}/${status.dn_buffer_size}`
+                  : "off"
+              }
+            />
+            <Field
+              label="DyLU"
+              value={
+                status.dylu_enabled
+                  ? `on (H=${status.dylu_base_sync_every ?? "?"})`
+                  : "off"
+              }
+            />
+          </div>
+        )}
+
+        {!!status.fragment_submissions && (
+          <div style={{ marginTop: 12 }}>
+            <Field
+              label="Fragment submissions"
+              value={status.fragment_submissions}
+            />
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** Save / shutdown / optimizer / worker-count controls. Mirrors the
+ *  server dashboard's "Control" panel. Each row goes through
+ *  ``api.diLoCoServerControl`` which proxies to the upstream server's
+ *  ``/control/{action}`` endpoint. */
+function ControlPanel({
+  baseUrl,
+  status,
+  info,
+}: {
+  baseUrl: string;
+  status: DiLoCoStatus;
+  info: DiLoCoInfo | null;
+}) {
+  const queryClient = useQueryClient();
+
+  const [confirmShutdown, setConfirmShutdown] = useState(false);
+  const [formLr, setFormLr] = useState<string>("");
+  const [formMomentum, setFormMomentum] = useState<string>("");
+  const [formNumWorkers, setFormNumWorkers] = useState<string>("");
+  const [actionMsg, setActionMsg] = useState<
+    { ok: boolean; text: string } | null
+  >(null);
+
+  // Seed form fields from /status the first time they land. Operator
+  // edits don't get clobbered: each ref tracks "the value we last
+  // seeded" and only re-seeds if the field still matches.
+  const lrSeed = useMemo(
+    () =>
+      status.outer_lr !== undefined ? String(status.outer_lr) : "",
+    [status.outer_lr],
+  );
+  const momSeed = useMemo(
+    () =>
+      status.outer_momentum !== undefined
+        ? String(status.outer_momentum)
+        : "",
+    [status.outer_momentum],
+  );
+  const numWorkersSeed = useMemo(
+    () =>
+      status.num_workers !== undefined ? String(status.num_workers) : "",
+    [status.num_workers],
+  );
+  useEffect(() => {
+    if (formLr === "" && lrSeed !== "") setFormLr(lrSeed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lrSeed]);
+  useEffect(() => {
+    if (formMomentum === "" && momSeed !== "") setFormMomentum(momSeed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [momSeed]);
+  useEffect(() => {
+    if (formNumWorkers === "" && numWorkersSeed !== "")
+      setFormNumWorkers(numWorkersSeed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [numWorkersSeed]);
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["diloco", "status", baseUrl] });
+    queryClient.invalidateQueries({ queryKey: ["diloco", "info", baseUrl] });
+    queryClient.invalidateQueries({
+      queryKey: ["diloco", "servers"],
+    });
+  };
+
+  const controlMutation = useMutation({
+    mutationFn: ({
+      action,
+      body,
+    }: {
+      action: string;
+      body?: Record<string, unknown>;
+    }) => api.diLoCoServerControl(baseUrl, action, body ?? {}),
+    onSuccess: (_data, vars) => {
+      setActionMsg({ ok: true, text: `${vars.action.replace(/_/g, " ")}: OK` });
+      invalidate();
+      window.setTimeout(() => setActionMsg(null), 4000);
+    },
+    onError: (err: unknown, vars) => {
+      setActionMsg({
+        ok: false,
+        text: `${vars.action}: ${(err as Error)?.message ?? String(err)}`,
+      });
+      window.setTimeout(() => setActionMsg(null), 6000);
+    },
+  });
+
+  const saveDir = status.save_dir ?? info?.output_dir ?? null;
+
+  return (
+    <section
+      style={{
+        border: "1px solid var(--border, #3b4261)",
+        borderRadius: 6,
+        overflow: "hidden",
+      }}
+    >
+      <header
+        style={{
+          padding: "8px 14px",
+          background: "var(--bg-surface, #24283b)",
+          borderBottom: "1px solid var(--border, #3b4261)",
+          fontWeight: 600,
+        }}
+      >
+        Control
+      </header>
+      <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 14 }}>
+        {actionMsg && (
+          <div
+            role="status"
+            style={{
+              padding: "6px 10px",
+              borderRadius: 4,
+              fontSize: "smaller",
+              color: actionMsg.ok ? "#9ece6a" : "tomato",
+              border: `1px solid ${actionMsg.ok ? "#9ece6a" : "tomato"}`,
+            }}
+          >
+            {actionMsg.text}
+          </div>
+        )}
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+            gap: 12,
+          }}
+        >
+          {/* Save Checkpoint */}
+          <div
+            style={{
+              border: "1px solid var(--border, #3b4261)",
+              borderRadius: 4,
+              padding: 10,
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+            }}
+          >
+            <div style={{ fontWeight: 600 }}>Save state</div>
+            <button
+              onClick={() =>
+                controlMutation.mutate({ action: "save_state" })
+              }
+              disabled={controlMutation.isPending || !saveDir}
+              title={
+                saveDir
+                  ? `Save checkpoint to ${saveDir}`
+                  : "No save_dir configured on the server"
+              }
+            >
+              Save checkpoint
+            </button>
+            {!saveDir && (
+              <div className="muted" style={{ fontSize: 11 }}>
+                No save_dir configured
+              </div>
+            )}
+            {saveDir && (
+              <div className="muted" style={{ fontSize: 11, wordBreak: "break-all" }}>
+                {saveDir}
+              </div>
+            )}
+          </div>
+
+          {/* Shutdown */}
+          <div
+            style={{
+              border: "1px solid var(--border, #3b4261)",
+              borderRadius: 4,
+              padding: 10,
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+            }}
+          >
+            <div style={{ fontWeight: 600 }}>Shutdown</div>
+            <button
+              onClick={() => setConfirmShutdown(true)}
+              disabled={controlMutation.isPending}
+              style={{ background: "#3a2a2a", color: "#f7768e" }}
+              title="Stop the DiLoCo server. All connected workers will lose sync."
+            >
+              Shutdown server
+            </button>
+          </div>
+
+          {/* Outer optimizer */}
+          <div
+            style={{
+              border: "1px solid var(--border, #3b4261)",
+              borderRadius: 4,
+              padding: 10,
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+            }}
+          >
+            <div style={{ fontWeight: 600 }}>Optimizer</div>
+            <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <span className="muted" style={{ minWidth: 64 }}>LR</span>
+              <input
+                type="number"
+                step="any"
+                value={formLr}
+                onChange={(e) => setFormLr(e.target.value)}
+                style={{ flex: 1, minWidth: 0 }}
+              />
+            </label>
+            <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <span className="muted" style={{ minWidth: 64 }}>Momentum</span>
+              <input
+                type="number"
+                step="any"
+                value={formMomentum}
+                onChange={(e) => setFormMomentum(e.target.value)}
+                style={{ flex: 1, minWidth: 0 }}
+              />
+            </label>
+            <button
+              onClick={() => {
+                const body: Record<string, unknown> = {};
+                if (formLr.trim()) body.lr = Number(formLr);
+                if (formMomentum.trim()) body.momentum = Number(formMomentum);
+                if (Object.keys(body).length === 0) return;
+                controlMutation.mutate({ action: "update_optimizer", body });
+              }}
+              disabled={
+                controlMutation.isPending ||
+                (formLr.trim() === "" && formMomentum.trim() === "")
+              }
+            >
+              Apply
+            </button>
+          </div>
+
+          {/* Expected worker count */}
+          <div
+            style={{
+              border: "1px solid var(--border, #3b4261)",
+              borderRadius: 4,
+              padding: 10,
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+            }}
+          >
+            <div style={{ fontWeight: 600 }}>Workers</div>
+            <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <span className="muted" style={{ minWidth: 64 }}>Expected</span>
+              <input
+                type="number"
+                min={status.min_workers ?? 1}
+                step={1}
+                value={formNumWorkers}
+                onChange={(e) => setFormNumWorkers(e.target.value)}
+                style={{ flex: 1, minWidth: 0 }}
+              />
+            </label>
+            <button
+              onClick={() => {
+                const n = Number(formNumWorkers);
+                if (!Number.isFinite(n) || n < 1) return;
+                controlMutation.mutate({
+                  action: "update_num_workers",
+                  body: { num_workers: Math.floor(n) },
+                });
+              }}
+              disabled={
+                controlMutation.isPending || formNumWorkers.trim() === ""
+              }
+            >
+              Apply
+            </button>
+            {status.min_workers !== undefined && (
+              <div className="muted" style={{ fontSize: 11 }}>
+                min_workers = {status.min_workers}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {info?.output_dir && (
+          <div className="muted" style={{ fontSize: 11, wordBreak: "break-all" }}>
+            output_dir: {info.output_dir}
+          </div>
+        )}
+      </div>
+
+      {confirmShutdown && (
+        <div
+          role="dialog"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setConfirmShutdown(false);
+          }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.5)",
+            zIndex: 100,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <div
+            style={{
+              background: "var(--bg-surface, #24283b)",
+              border: "1px solid var(--border, #3b4261)",
+              borderRadius: 6,
+              padding: 16,
+              maxWidth: 420,
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+            }}
+          >
+            <p style={{ margin: 0 }}>
+              Shut down the DiLoCo server? Any connected workers will fail
+              to sync; the next sync attempt will surface as a connection
+              error in their TTY pane.
+            </p>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setConfirmShutdown(false)}>Cancel</button>
+              <button
+                style={{ background: "#3a2a2a", color: "#f7768e" }}
+                onClick={() => {
+                  setConfirmShutdown(false);
+                  controlMutation.mutate({ action: "shutdown" });
+                }}
+              >
+                Confirm shutdown
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

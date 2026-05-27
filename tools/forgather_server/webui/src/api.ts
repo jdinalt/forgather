@@ -1136,7 +1136,6 @@ export interface DiLoCoStatus {
   save_dir?: string;
   model_params?: number;
   model_size_mb?: number;
-  dashboard_enabled?: boolean;
 }
 
 /** Upstream ``/info`` response — additive to /status, captures the

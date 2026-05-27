@@ -584,7 +584,6 @@ def _build_diloco_server(item, gpu_indices, tty_path):
         min_workers=(
             int(p["min_workers"]) if p.get("min_workers") is not None else None
         ),
-        no_dashboard=bool(p.get("no_dashboard", False)),
         tty_log_path=tty_path,
     )
 

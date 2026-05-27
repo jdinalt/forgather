@@ -41,7 +41,6 @@ def build_diloco_server_command(
     no_nesterov: bool = False,
     heartbeat_timeout: Optional[float] = None,
     min_workers: Optional[int] = None,
-    no_dashboard: bool = False,
 ) -> List[str]:
     """Build argv for ``forgather diloco server``.
 
@@ -92,6 +91,4 @@ def build_diloco_server_command(
         cmd.extend(["--heartbeat-timeout", str(float(heartbeat_timeout))])
     if min_workers is not None:
         cmd.extend(["--min-workers", str(int(min_workers))])
-    if no_dashboard:
-        cmd.append("--no-dashboard")
     return cmd
