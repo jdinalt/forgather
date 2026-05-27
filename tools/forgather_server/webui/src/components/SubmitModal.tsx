@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   ClusterJobSubmitRequest,
@@ -217,6 +217,11 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     enabled: !!selectedDiLoCoBase,
     staleTime: 60_000,
   });
+  // Tracks the last value the DiLoCo pre-fill wrote into
+  // model_id_or_path. Lets the seeding effect distinguish "operator
+  // typed something different" from "still the value we put there"
+  // when picking a new server.
+  const modelPathSeededRef = useRef<string | null>(null);
   // Seed defaults whenever /info loads for a fresh selection. Operator
   // edits aren't overwritten — we only seed empty fields.
   useEffect(() => {
@@ -238,18 +243,30 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     // worker constructs its model against the same checkpoint the
     // server loaded from. Catches the operator-misconfiguration
     // class of bug paired with the server-side fingerprint check
-    // (#51 / DiLoCoModelMismatchError). Only seeds when the field
-    // is empty — operator overrides win, and seeding only fires when
-    // the schema actually exposes that dest (some DiLoCo configs
-    // don't, e.g. tinyv2 doesn't require --model-id-or-path).
+    // (#51 / DiLoCoModelMismatchError).
+    //
+    // Behavior: each time a server is freshly picked (or its info
+    // changes), overwrite the field with the server's output_dir
+    // — UNLESS the operator has manually edited the field since the
+    // last seed, in which case their value wins. modelPathSeededRef
+    // tracks the value we last wrote so we can tell "operator-typed"
+    // from "still-our-seed" without an explicit dirty flag.
     if (info.output_dir) {
       const hasDest = (argsQ.data ?? []).some(
         (a) => a.dest === "model_id_or_path",
       );
       if (hasDest) {
+        const next = info.output_dir;
         setValues((prev) => {
-          if (prev.model_id_or_path && prev.model_id_or_path.trim()) return prev;
-          return { ...prev, model_id_or_path: info.output_dir as string };
+          const cur = prev.model_id_or_path ?? "";
+          // First seed (cur empty / matches a cached server pre-fill)
+          // OR cur still equals what we last wrote: replace.
+          const operatorEdited =
+            cur.trim() !== "" &&
+            cur !== modelPathSeededRef.current;
+          if (operatorEdited) return prev;
+          modelPathSeededRef.current = next;
+          return { ...prev, model_id_or_path: next };
         });
       }
     }
