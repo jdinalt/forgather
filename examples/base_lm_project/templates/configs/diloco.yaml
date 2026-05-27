@@ -1,26 +1,38 @@
 -- extends "projects/lm_training_project.yaml"
 
-## DiLoCo bringup target.
+## DiLoCo bringup target — composed from mixins.
 ##
-## Follows the finetune_v2 load-from-path pattern: every worker (and the
-## server) must start from the SAME initialized parameters, so the
-## project requires a `--model-id-or-path` and loads from there rather
-## than constructing a model in-place. The shared init is produced once
-## via the model project's "Run" modal in the webui (model-construct
-## action), or `forgather model construct …` on the CLI.
+## Mixin imports below pull in per-section macros that emit YAML
+## fragments. Namespace mutation (`-- set ns.X = …`) stays inline in
+## the leaf so the override chain is visible at the call site (and
+## because Jinja namespaces don't survive macro-parameter passing
+## anyway).
 ##
-## The DiLoCo callback's constructor arguments fall back to DILOCO_*
-## env vars when the template passes None, so this config works both:
-##   - From the webui DiLoCo radio group, which populates DILOCO_*
-##     env vars on the spawned training process via job_params.
-##   - From `forgather diloco worker --server host:port -- train …`,
-##     which sets the same env vars.
+## Composition recipe:
+##   - mixins/finetune: load-from-path scaffolding (model_id_or_path,
+##     from_pretrained_config, --model-id-or-path arg + deletions).
+##   - mixins/diloco: callback entry, DiLoCo dynamic args, eval-bypass
+##     injection. Worker-id suffix is inline below because it mutates ns.
 ##
-## When DILOCO_SERVER is unset (and ``--diloco-server`` isn't passed),
-## the DiLoCoCallback include is gated off at preprocessing and the
-## same config behaves as a vanilla finetune. With DILOCO_SERVER set,
-## the callback fails fast at startup if the server isn't reachable
-## — no silent training-island fallback.
+## Activation:
+##   - DILOCO_SERVER env var (set by the scheduler) OR --diloco-server
+##     CLI override → callback gets constructed, eval bypass active.
+##   - Neither set → callback include falls through to plain
+##     lm_callbacks; same leaf runs as a vanilla finetune.
+##
+## When DiLoCo is on, the callback fails fast at startup if the server
+## isn't reachable — no silent training-island fallback.
+
+{% from "mixins/finetune.yaml" import
+    variable_listing as ft_variable_listing,
+    dynamic_args as ft_dynamic_args
+%}
+{% from "mixins/diloco.yaml" import
+    callback_entry as dl_callback_entry,
+    dynamic_args as dl_dynamic_args,
+    eval_pp_args as dl_eval_pp_args
+%}
+
 
 [config_metadata]
     == super()
@@ -28,135 +40,71 @@
     -- set ns.config_description = "DiLoCo webui bringup prototype"
     -- set ns.model_name = model_name | default("diloco")
 
-    ## Dataset override: bringup defaults to TinyStories (fast-iter-packed)
-    ## rather than the parent's fineweb-edu-packed. The parent's choice is
-    ## 894 GB / 190M rows — at K=1024 work units that's ~185k rows/unit,
-    ## which makes the work-dispatch loop effectively unobservable on a
-    ## smoke run. TinyStories (~2M rows) gives ~2000 rows/unit so units
-    ## cycle in a few minutes. CLI --dataset-project / --dataset-config
-    ## still override.
+    ## Dataset override: TinyStories (fast-iter-packed) for bringup
+    ## smoke runs. ~2M rows → ~2000 rows/unit at K=1024 so the
+    ## work-dispatch loop cycles visibly in minutes. CLI
+    ## --dataset-project / --dataset-config still override.
     -- set ns.dataset_proj = dataset_proj | default(abspath(joinpath(ns.forgather_dir, "examples", "datasets", "roneneldan")))
     -- set ns.dataset_config = dataset_config | default("fast-iter-packed.yaml")
 
+
 [globals]
     == super()
-    ## If not specified, default to model-dir and model-name
-	-- set ns.model_id_or_path = model_id_or_path | default(joinpath(ns.models_dir, ns.model_name))
-    ## Append the DiLoCo worker-id to the model name so each worker gets a
-    ## unique output directory. This prevents two workers racing on the
-    ## same checkpoint / log files.
-    ##
-    ## DILOCO_WORKER_ID is always set when DiLoCo is enabled: the scheduler
-    ## (tools/forgather_server/scheduler.py: _diloco_env_from_job_params)
-    ## uses the operator-supplied worker_id if present, falling back to the
-    ## queue_id so we never have an undefined value at preprocessing time.
-    ##
-    ## When DILOCO_SERVER is unset (running vanilla finetune from this same
-    ## config), DILOCO_WORKER_ID is also unset and ns.model_name stays
-    ## intact — no surprising suffix gets appended.
+    ## finetune: default model_id_or_path to per-model output dir.
+    -- set ns.model_id_or_path = model_id_or_path | default(joinpath(ns.models_dir, ns.model_name))
+
+    ## diloco: append worker-id to model_name so each worker gets a
+    ## unique output dir. When DILOCO_WORKER_ID is unset (vanilla
+    ## mode), ns.model_name stays intact.
     -- if getenv("DILOCO_WORKER_ID")
     -- set ns.model_name = ns.model_name + "_" + getenv("DILOCO_WORKER_ID")
     -- endif
+
+    ## Output / logging dirs derive from the final ns.model_name
+    ## (after the diloco worker-id append).
     -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
     -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
 
+
 [variable_listing]
     == super()
-# ns.model_id_or_path: {{ ns.model_id_or_path }}
+{{ ft_variable_listing(ns.model_id_or_path) }}
+
 
 [eval_dataset_project_pp_args]
     == super()
-    load_dataset_args:
-        diloco_work_dispatch: False
+{{ dl_eval_pp_args() }}
+
 
 [construct_new_model]
+    ## finetune scaffolding: load from pretrained config. Inlined
+    ## here (not in the mixin) because Jinja macros can't carry ns
+    ## through ``-- include`` boundaries.
     -- include 'models/causal_lm/from_pretrained_config.yaml'
 
+
 [trainer_callbacks]
-    ## DILOCO_SERVER presence is the enable-gate: when unset (vanilla
-    ## finetune from this same config), the DiLoCoCallback isn't
-    ## constructed at all — we fall through to the plain lm_callbacks
-    ## list. The previous "callback always built; no-op when server
-    ## unset" pattern was a silent-failure trap (two workers training
-    ## islands with no sync, no error). The CLI override knob
-    ## (--diloco-server) becomes a Jinja var at preprocessing time,
-    ## not an env var; honor it here too.
+    ## DiLoCo enable-gate. When off → vanilla lm_callbacks. When on
+    ## → delegated sub-template below that extends lm_callbacks and
+    ## adds the DiLoCo callback (Forgather's diamond-resolution
+    ## pattern for "this block extends a second template").
     -- if getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server)
-    -- include 'diloco_lm_callbacks'
+    -- include 'diloco_callbacks_subtemplate'
     -- else
     -- include 'callbacks/lm_callbacks.yaml'
     -- endif
 
+
 [dynamic_args]
     == super()
-    model_id_or_path:
-        names: [ "--model-id-or-path", "-M" ]
-        type: "path"
-        group: "Model"
-        required: true
-        help: "HF model ID or local path to model"
-    # Delete menu items which we don't use
-    model_project: ~
-    model_config: ~
-    ## DiLoCo override knobs surfaced on the train submit modal. The
-    ## webui's DiLoCo radio group writes to these when the operator
-    ## picks a server. They're optional from the CLI side; unset means
-    ## env-var fallback (or callback default).
-    diloco_server:
-        names: "--diloco-server"
-        type: str
-        group: "DiLoCo"
-        help: "DiLoCo server address host:port. When unset, the DiLoCo callback isn't constructed and the config runs as a vanilla finetune."
-    diloco_sync_every:
-        names: "--diloco-sync-every"
-        type: int
-        group: "DiLoCo"
-        min: 1
-        help: "Local optimizer steps between syncs."
-    diloco_num_fragments:
-        names: "--diloco-fragments"
-        type: int
-        group: "DiLoCo"
-        min: 1
-        help: "Number of streaming-sync fragments (1 = no streaming)."
-    diloco_dylu:
-        names: "--diloco-dylu"
-        action: "store_true"
-        group: "DiLoCo"
-        help: "Enable Dynamic Local Updates (server must support it)."
-    diloco_bf16_comm:
-        names: "--diloco-bf16-comm"
-        type: bool
-        group: "DiLoCo"
-        help: "Cast pseudo-gradients to bf16 before sending."
-    diloco_heartbeat_interval:
-        names: "--diloco-heartbeat-interval"
-        type: float
-        group: "DiLoCo"
-        min: 0
-        help: "Seconds between heartbeats to the server."
-    diloco_worker_id:
-        names: "--diloco-worker-id"
-        type: str
-        group: "DiLoCo"
-        help: "Stable worker identity; auto-generated if unset."
-    
-#-------------------- diloco_lm_callbacks --------------------
+{{ ft_dynamic_args() }}
+{{ dl_dynamic_args() }}
+
+
+#-------------------- diloco_callbacks_subtemplate --------------------
 -- extends 'callbacks/lm_callbacks.yaml'
+{% from "mixins/diloco.yaml" import callback_entry as dl_callback_entry %}
 
 [callback_list]
     => super()
-    diloco_callback: !singleton:forgather.ml.trainer.callbacks:DiLoCoCallback
-        ## All DILOCO_* env vars are read by the callback constructor
-        ## when these are None; the webui sets them based on the
-        ## operator's selections. Surfaced explicitly so the YAML
-        ## documents which knobs exist.
-        server_addr: {{ diloco_server | toyaml(None) }}
-        sync_every: {{ diloco_sync_every | toyaml(None) }}
-        worker_id: {{ diloco_worker_id | toyaml(None) }}
-        bf16_comm: {{ diloco_bf16_comm | toyaml(None) }}
-        dylu: {{ diloco_dylu | toyaml(None) }}
-        heartbeat_interval: {{ diloco_heartbeat_interval | toyaml(None) }}
-        num_fragments: {{ diloco_num_fragments | toyaml(None) }}
-        timeout: {{ diloco_timeout | toyaml(600) }}
-        max_sync_retries: {{ diloco_max_sync_retries | toyaml(3) }}
+{{ dl_callback_entry() }}
