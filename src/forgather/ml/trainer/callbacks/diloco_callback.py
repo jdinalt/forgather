@@ -182,7 +182,7 @@ class DiLoCoCallback(TrainerCallback):
         Note: work-unit dispatch (training-data dispatch via the
         DiLoCo server's work-queue endpoints) is **not** handled
         here — it's a separate, self-configuring concern owned by
-        :func:`forgather.ml.diloco.work_unit_dataset.maybe_wrap_for_work_dispatch`
+        :func:`forgather.ml.datasets.work_unit_backend.maybe_wrap_for_work_dispatch`
         which the project template calls at dataset-construction
         time. The two subsystems share env vars (``DILOCO_WORKER_ID``,
         ``DILOCO_SERVER``) but otherwise don't interact — this

@@ -525,12 +525,30 @@ either:
 
 ### DiLoCo server restart
 
-- Queue state persisted in the server's checkpoint (extending the
-  existing `save_state`).
-- On restart: bitmaps are restored. Units that were issued before the
-  restart stay issued. Worker reconnects, asks for next, gets next
-  unset bit. **Already-issued-but-not-trained units are lost** — same
-  ≤1-unit-per-worker-death calculus.
+_Implementation note: the proposal here described persisted queue
+state across server restarts. The first live bringup uncovered a
+cross-experiment hazard with that design — stale queues from a
+previous run lingered in the persisted state and surfaced as
+ghost queues on `/work/queues` after the operator switched
+datasets. The implementation reverses the proposal: `_work_queues`
+is **not** written to `server_state.pt`, and a pre-#46 file
+containing them is loaded with a warning + dropped. The trade is
+broader: on a server restart **all** in-flight + already-completed
+units in the live epoch return to "available" and workers re-issue
+from scratch on first contact. Justifies the cost as: server
+restarts are rare; the cross-experiment ghost-queue surface was a
+weekly footgun. The 409-on-length-mismatch guard described in the
+next section still protects against the worst form of dataset
+mismatch._
+
+- ~~Queue state persisted in the server's checkpoint~~ — dropped
+  (see note above). The server doesn't checkpoint queues at all
+  now.
+- On restart: bitmaps are reset. Workers re-register their datasets
+  on first contact (the wrap calls `/datasets/register` lazily on
+  the iterator's first request). The queue map is reconstructed
+  fresh; previously-trained rows within the epoch may be re-issued.
+  Crash recovery beyond "the queue resets" is out of scope.
 
 ### Worker dataset mismatch
 

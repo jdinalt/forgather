@@ -246,6 +246,64 @@ class TestQueueDiagnostics:
         assert detail["issued_count"] == 2
         assert detail["completed_count"] == 0
 
+    def test_queue_label_round_trips_hint_fields(self, client):
+        """Workers ship path/name/split/revision/data_files alongside
+        length in the register hint so the webui can render a readable
+        label next to the dataset_id. Server stores the first
+        registration's values and returns them on /work/queues +
+        /work/queue. Later workers' divergent values are ignored.
+        Regression guard for the hint extension."""
+        # First registration: full set of identity fields.
+        client.register_dataset(
+            "w0",
+            "ds-1",
+            42,
+            {
+                "length": 1000,
+                "path": "roneneldan/TinyStories",
+                "name": "default",
+                "split": "train",
+                "revision": "f54c09f",
+                "data_files": ["a.parquet", "b.parquet"],
+            },
+        )
+        # Second registration with the same dataset_id but DIFFERENT
+        # display fields. Length matches (length-mismatch would 409),
+        # but the label fields should not overwrite the first.
+        client.register_dataset(
+            "w1",
+            "ds-1",
+            42,
+            {
+                "length": 1000,
+                "path": "this-should-be-ignored",
+                "split": "validation",
+            },
+        )
+
+        # Summary endpoint.
+        qs = client.get_work_queues()
+        ours = next(q for q in qs if q["dataset_id"] == "ds-1")
+        assert ours["hint"]["path"] == "roneneldan/TinyStories"
+        assert ours["hint"]["name"] == "default"
+        assert ours["hint"]["split"] == "train"
+        assert ours["hint"]["revision"] == "f54c09f"
+        assert ours["hint"]["data_files"] == ["a.parquet", "b.parquet"]
+        assert ours["hint"]["length"] == 1000
+
+        # Detail endpoint mirrors the same fields.
+        detail = client.get_work_queue("ds-1", 42)
+        assert detail["hint"]["path"] == "roneneldan/TinyStories"
+        assert detail["hint"]["split"] == "train"
+
+    def test_queue_label_optional_fields_omitted(self, client):
+        """A worker that only ships ``length`` (pre-hint-extension or
+        a load with no name/split) gets a hint with just length back —
+        not a hint sprinkled with None placeholders."""
+        client.register_dataset("w0", "ds-1", 42, {"length": 500})
+        detail = client.get_work_queue("ds-1", 42)
+        assert detail["hint"] == {"length": 500}
+
     def test_queue_by_worker_counters(self, server):
         c0 = DiLoCoClient(f"localhost:{server.port}", timeout=10)
         c1 = DiLoCoClient(f"localhost:{server.port}", timeout=10)

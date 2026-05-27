@@ -347,21 +347,30 @@ class TestMaybeWrap:
         out = maybe_wrap_for_work_dispatch(b, path="x")
         assert out is b
 
-    def test_missing_worker_id_returns_unchanged(self, monkeypatch, caplog):
-        """Server set but worker_id missing is a scheduler bug: the
-        wrap logs an ERROR and returns the backend unchanged rather
-        than crashing the load. The DiLoCoCallback startup check
-        catches this case first in normal flow."""
+    def test_missing_worker_id_raises(self, monkeypatch):
+        """Server set but worker_id missing is fatal — previously the
+        wrap returned the bare backend with an ERROR log, which
+        silently put every worker on identical rows (broken data
+        parallelism). Now it raises so the operator sees the
+        misconfiguration."""
+        from forgather.ml.datasets.work_unit_backend import (
+            DiLoCoWorkDispatchUnavailable,
+        )
+
         monkeypatch.setenv("DILOCO_SERVER", "h:1")
         b = _fake_backend()
-        with caplog.at_level(
-            logging.ERROR, logger="forgather.ml.datasets.work_unit_backend"
-        ):
-            out = maybe_wrap_for_work_dispatch(b, path="x")
-        assert out is b
-        assert any("DILOCO_WORKER_ID" in rec.message for rec in caplog.records)
+        with pytest.raises(DiLoCoWorkDispatchUnavailable, match="DILOCO_WORKER_ID"):
+            maybe_wrap_for_work_dispatch(b, path="x")
 
-    def test_no_len_returns_unchanged(self, monkeypatch, caplog):
+    def test_no_len_raises(self, monkeypatch):
+        """A backend without ``__len__`` can't be sliced into work
+        units. Falling back silently would mean every worker iterates
+        the full row stream — same broken-parallelism class as the
+        missing-worker_id case."""
+        from forgather.ml.datasets.work_unit_backend import (
+            DiLoCoWorkDispatchUnavailable,
+        )
+
         monkeypatch.setenv("DILOCO_SERVER", "h:1")
         monkeypatch.setenv("DILOCO_WORKER_ID", "w0")
 
@@ -382,12 +391,8 @@ class TestMaybeWrap:
                 return 0
 
         b = NoLen()
-        with caplog.at_level(
-            logging.ERROR, logger="forgather.ml.datasets.work_unit_backend"
-        ):
-            out = maybe_wrap_for_work_dispatch(b, path="x")
-        assert out is b
-        assert any("__len__" in rec.message for rec in caplog.records)
+        with pytest.raises(DiLoCoWorkDispatchUnavailable, match="__len__"):
+            maybe_wrap_for_work_dispatch(b, path="x")
 
     def test_wraps_on_happy_path(self, monkeypatch):
         monkeypatch.setenv("DILOCO_SERVER", "diloco-host:8512")
@@ -415,7 +420,14 @@ class TestMaybeWrap:
         }
         assert len(call.kwargs["dataset_id"]) == 16
 
-    def test_register_failure_returns_unchanged(self, monkeypatch, caplog):
+    def test_register_failure_raises(self, monkeypatch):
+        """A transient /datasets/register failure on a DiLoCo run is
+        fatal, not a soft fallback. Without the bitmap the workers
+        can't share the dataset; the only safe move is to abort."""
+        from forgather.ml.datasets.work_unit_backend import (
+            DiLoCoWorkDispatchUnavailable,
+        )
+
         monkeypatch.setenv("DILOCO_SERVER", "h:1")
         monkeypatch.setenv("DILOCO_WORKER_ID", "w0")
         b = _fake_backend()
@@ -423,25 +435,24 @@ class TestMaybeWrap:
             MockClient.return_value.register_dataset.side_effect = ConnectionError(
                 "server unreachable"
             )
-            with caplog.at_level(
-                logging.ERROR, logger="forgather.ml.datasets.work_unit_backend"
+            with pytest.raises(
+                DiLoCoWorkDispatchUnavailable, match="/datasets/register"
             ):
-                out = maybe_wrap_for_work_dispatch(b, path="x")
-        assert out is b
-        assert any("/datasets/register failed" in rec.message for rec in caplog.records)
+                maybe_wrap_for_work_dispatch(b, path="x")
 
-    def test_invalid_path_returns_unchanged(self, monkeypatch, caplog):
-        """compute_dataset_id rejects an empty path; the wrap falls
-        back gracefully rather than crashing the loader."""
+    def test_invalid_path_raises(self, monkeypatch):
+        """compute_dataset_id rejects an empty path. Without a stable
+        identity hash the queue can't be keyed; abort rather than
+        falling back."""
+        from forgather.ml.datasets.work_unit_backend import (
+            DiLoCoWorkDispatchUnavailable,
+        )
+
         monkeypatch.setenv("DILOCO_SERVER", "h:1")
         monkeypatch.setenv("DILOCO_WORKER_ID", "w0")
         b = _fake_backend()
-        with caplog.at_level(
-            logging.ERROR, logger="forgather.ml.datasets.work_unit_backend"
-        ):
-            out = maybe_wrap_for_work_dispatch(b, path="")
-        assert out is b
-        assert any("dataset_id" in rec.message for rec in caplog.records)
+        with pytest.raises(DiLoCoWorkDispatchUnavailable, match="dataset_id"):
+            maybe_wrap_for_work_dispatch(b, path="")
 
 
 # ---------------------------------------------------------------------------

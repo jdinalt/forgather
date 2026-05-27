@@ -214,11 +214,15 @@ process:
 | `requested_gpus` | `1` for `inference`, `0` for the rest  | GPU reservation count.                  |
 
 Everything else is forwarded verbatim to the job's `job_params`. The
-**dispatch-injected** fields (`scheme`, `routable_host` — added by the
-scheduler post-submit for inference / dataset_server / diloco_server /
-mkdocs jobs) are excluded from the service signature so a service's
-pre- and post-dispatch signatures match, which is what makes restart-
-without-double-spawn and ▶/⏹ correctness work.
+**dispatch-injected** fields are excluded from the service signature
+so a service's pre- and post-dispatch signatures match (what makes
+restart-without-double-spawn and ▶/⏹ correctness work):
+- `scheme` — stamped for `inference` and `dataset_server` to reflect
+  whether the spawned child is actually serving TLS.
+- `routable_host` — stamped for `inference`, `dataset_server`,
+  `diloco_server`, and `mkdocs` whenever the operator bound to
+  `0.0.0.0` / `::` / empty, with a LAN-routable address picked from
+  the cluster's known peer set or psutil's first non-loopback IP.
 
 The names are operator-chosen, must match `[A-Za-z0-9_-]+`, and are
 purely human labels — dedupe between configured services and live

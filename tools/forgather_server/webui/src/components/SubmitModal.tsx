@@ -128,27 +128,44 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   // can surface a warning instead of silently reverting to defaults
   // (which was the failure mode that made operators submit "vanilla
   // finetune" jobs thinking they were still configured for DiLoCo).
+  //
+  // The parser returns both the value AND the optional error so we
+  // don't have to call setState inside useMemo (which would trigger
+  // React's "Cannot update a component while rendering" warning).
+  // ``error`` is null on the happy path; the matching useEffect
+  // below lifts it into component state.
+  const persistedDiLoCoParse = useMemo<{
+    value: DiLoCoPersisted;
+    error: string | null;
+  }>(() => {
+    const raw = persistGet(dilocoStorageKey);
+    if (!raw) return { value: DEFAULT_DILOCO_PERSISTED, error: null };
+    try {
+      return {
+        value: {
+          ...DEFAULT_DILOCO_PERSISTED,
+          ...(JSON.parse(raw) as Partial<DiLoCoPersisted>),
+        },
+        error: null,
+      };
+    } catch (err) {
+      return {
+        value: DEFAULT_DILOCO_PERSISTED,
+        error: `Saved DiLoCo settings for this config couldn't be parsed (${
+          (err as Error).message
+        }). Re-pick the server below.`,
+      };
+    }
+  }, [dilocoStorageKey]);
+  const persistedDiLoCo = persistedDiLoCoParse.value;
   const [dilocoPersistError, setDilocoPersistError] = useState<string | null>(
     null,
   );
-  const persistedDiLoCo = useMemo<DiLoCoPersisted>(() => {
-    const raw = persistGet(dilocoStorageKey);
-    if (!raw) return DEFAULT_DILOCO_PERSISTED;
-    try {
-      return {
-        ...DEFAULT_DILOCO_PERSISTED,
-        ...(JSON.parse(raw) as Partial<DiLoCoPersisted>),
-      };
-    } catch (err) {
-      setDilocoPersistError(
-        `Saved DiLoCo settings for this config couldn't be parsed (${
-          (err as Error).message
-        }). Re-pick the server below.`,
-      );
-      return DEFAULT_DILOCO_PERSISTED;
+  useEffect(() => {
+    if (persistedDiLoCoParse.error) {
+      setDilocoPersistError(persistedDiLoCoParse.error);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dilocoStorageKey]);
+  }, [persistedDiLoCoParse.error]);
   const [selectedDiLoCoBase, setSelectedDiLoCoBase] = useState<string>(
     persistedDiLoCo.base,
   );
@@ -822,7 +839,11 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
             </details>
           )}
 
-          {dilocoServersQ.data && dilocoServersQ.data.length > 0 && (
+          {/* Render the picker whenever the server list has resolved
+              (even if it's empty) so the persistence-warning banner
+              has somewhere to surface. Hiding the picker on an empty
+              list defeated the whole point of the warning. */}
+          {dilocoServersQ.data && (
             <DiLoCoPicker
               servers={dilocoServersQ.data}
               selectedBase={selectedDiLoCoBase}

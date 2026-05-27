@@ -1000,17 +1000,21 @@ function JobCard({
             Open in Datasets
           </button>
         )}
-        {isDiLoCoServer && job.alive && onOpenDiLoCoServer && (
-          <button
-            className="secondary"
-            onClick={() =>
-              onOpenDiLoCoServer(job.queue_id ?? job.id)
-            }
-            title="Open the DiLoCo view with this server selected"
-          >
-            Open in DiLoCo
-          </button>
-        )}
+        {isDiLoCoServer &&
+          job.alive &&
+          onOpenDiLoCoServer &&
+          // DiLoCoPanel keys server selection on ``local:<queue_id>``
+          // — falling back to job.id would never resolve a match, so
+          // hide the button rather than dispatch a no-op pendingPick.
+          !!job.queue_id && (
+            <button
+              className="secondary"
+              onClick={() => onOpenDiLoCoServer(job.queue_id as string)}
+              title="Open the DiLoCo view with this server selected"
+            >
+              Open in DiLoCo
+            </button>
+          )}
         {canControl && (
           <>
             <button

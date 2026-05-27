@@ -38,17 +38,17 @@
 
     [train_dataset_split]
 train_dataset_split: &train_dataset_split !singleton:{{ ns.load_method }}@train_dataset_split
-    <<: [ *load_dataset_args, {{ load_dataset_args | toyaml({}) }} ]
+    <<: [ {{ load_dataset_args | toyaml({}) }}, *load_dataset_args ]
     split: "train"
 
     [validation_dataset_split]
 validation_dataset_split: &validation_dataset_split !singleton:{{ ns.load_method }}@validation_dataset_split
-    <<: [ *load_dataset_args, {{ load_dataset_args | toyaml({}) }} ]
+    <<: [ {{ load_dataset_args | toyaml({}) }}, *load_dataset_args ]
     split: "validation"
 
     [test_dataset_split]
 test_dataset_split: &test_dataset_split !singleton:{{ ns.load_method }}@test_dataset_split
-    <<: [ *load_dataset_args, {{ load_dataset_args | toyaml({}) }} ]
+    <<: [ {{ load_dataset_args | toyaml({}) }}, *load_dataset_args ]
     split: "test"
 
     [train_dataset]

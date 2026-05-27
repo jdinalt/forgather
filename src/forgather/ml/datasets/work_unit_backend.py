@@ -39,6 +39,26 @@ from .iterable_backend import IterableDatasetBackend
 logger = logging.getLogger(__name__)
 
 
+class DiLoCoWorkDispatchUnavailable(RuntimeError):
+    """Raised when ``DILOCO_SERVER`` is set but the work-dispatch wrap
+    cannot be constructed.
+
+    The wrap has several preconditions (worker_id, backend with
+    ``__len__``, a hashable dataset identity, a reachable
+    ``/datasets/register`` endpoint). When any of them fails on a
+    DiLoCo-enabled run, the worker can't share the dataset with its
+    peers and silently falling back to the bare backend would mean
+    every worker iterates the full row stream on identical rows —
+    broken-data-parallelism dressed up as a feature.
+
+    Surface as a fatal startup error so the operator sees the
+    misconfiguration in the TTY pane instead of training islands
+    that look healthy from outside.
+    """
+
+    pass
+
+
 def unit_range(unit_id: int, total_units: int, length: int) -> Tuple[int, int]:
     """Deterministic ``[start, end)`` row range for ``unit_id``.
 
@@ -357,25 +377,35 @@ def maybe_wrap_for_work_dispatch(
         # No DiLoCo server in this process: vanilla single-node run, or
         # eval/test load. Nothing to dispatch.
         return backend
+    # From here on: DILOCO_SERVER is set, so this load needs to
+    # participate in work dispatch. Any failure to wire up the wrap
+    # is fatal — silently falling back to the bare backend would
+    # mean every worker iterates the full dataset on identical rows,
+    # which is the broken-data-parallelism class of silent failure
+    # (see feedback_no_silent_fallback in agent memory: "experimental
+    # ML subsystems must fail loudly when misconfigured; never
+    # silently fall back to a 'looks like it's running' mode").
     worker_id = os.environ.get("DILOCO_WORKER_ID", "").strip()
     if not worker_id:
-        logger.error(
-            "DILOCO_SERVER is set but DILOCO_WORKER_ID is unset — "
-            "skipping work-unit dispatch wrap. The scheduler should "
-            "have emitted both; check the DiLoCo callback's startup "
-            "diagnostics."
+        raise DiLoCoWorkDispatchUnavailable(
+            "DILOCO_SERVER is set but DILOCO_WORKER_ID is unset. The "
+            "scheduler emits both whenever DiLoCo is enabled; this "
+            "almost always means a CLI-spawned worker forgot "
+            "--diloco-worker-id, or DILOCO_WORKER_ID was clobbered. "
+            "Set it explicitly (any string unique per worker)."
         )
-        return backend
 
     try:
         length = len(backend)
-    except TypeError:
-        logger.error(
-            "DiLoCo work-dispatch enabled but backend has no __len__; "
-            "work-unit dispatch needs a fixed dataset length. "
-            "Skipping wrap."
-        )
-        return backend
+    except TypeError as exc:
+        raise DiLoCoWorkDispatchUnavailable(
+            "DiLoCo work-dispatch requires the dataset backend to "
+            "expose __len__ (work-unit math needs a fixed row count). "
+            f"This backend doesn't ({type(backend).__name__}). "
+            "Switch to an iterable backend with a known length (e.g. "
+            "via the dataset_server / fast_load_iterable_dataset path) "
+            "or run without DiLoCo for this dataset."
+        ) from exc
 
     # Deferred imports keep the loader path light when DiLoCo isn't
     # in use.
@@ -391,12 +421,12 @@ def maybe_wrap_for_work_dispatch(
             revision=revision,
         )
     except ValueError as exc:
-        logger.error(
-            "Could not compute dataset_id from load args: %s. "
-            "Skipping work-unit dispatch wrap.",
-            exc,
-        )
-        return backend
+        raise DiLoCoWorkDispatchUnavailable(
+            f"Could not compute dataset_id from load args: {exc}. "
+            "Work-unit dispatch needs a stable identity hash to key "
+            "the server-side queue; falling back to the bare backend "
+            "would silently put every worker on identical rows."
+        ) from exc
 
     # Transient client — not shared with the DiLoCoCallback's worker.
     client = DiLoCoClient(server_addr)
@@ -427,13 +457,12 @@ def maybe_wrap_for_work_dispatch(
             hint=hint,
         )
     except Exception as exc:
-        logger.error(
-            "/datasets/register failed for dataset_id=%s: %s. "
-            "Skipping work-unit dispatch wrap.",
-            dataset_id,
-            exc,
-        )
-        return backend
+        raise DiLoCoWorkDispatchUnavailable(
+            f"/datasets/register on {server_addr!r} failed for "
+            f"dataset_id={dataset_id}: {exc}. Workers cannot share "
+            "the dataset without the server's bitmap, so the only "
+            "safe alternative to a wrap is to abort training."
+        ) from exc
 
     total_units = int(reply["total_units"])
     logger.info(

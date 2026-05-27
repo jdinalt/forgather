@@ -283,3 +283,10 @@ class TestStatusExtensions:
         _, _, body = _get(f"http://localhost:{server.port}/status")
         data = json.loads(body)
         assert "dashboard_enabled" not in data
+
+    def test_info_carries_output_dir(self, server, tmp_path):
+        """The webui's Submit-training-job modal pre-fills
+        --model-id-or-path from this field. Regression test for #52."""
+        _, _, body = _get(f"http://localhost:{server.port}/info")
+        data = json.loads(body)
+        assert data.get("output_dir") == str(tmp_path)

@@ -382,7 +382,7 @@ Workers adjust their `sync_every` dynamically.
 forgather diloco server -o ./model -n 3 --async --dylu --dylu-base-sync-every 500
 
 # Worker with DyLU enabled
-forgather diloco worker --server host:8512 --sync-every 500 --dylu -- train
+forgather diloco worker --server host:8512 --sync-every 500 --worker-id w0 --dylu -- train
 ```
 
 ### Staleness Tracking
@@ -434,6 +434,7 @@ communication becomes fully overlapped.
 forgather diloco worker \
     --server 192.168.1.100:8512 \
     --sync-every 500 \
+    --worker-id w0 \
     --num-fragments 4 \
     -p my_project -t train.yaml \
     train
@@ -717,14 +718,24 @@ in `on_train_begin` after the worker is created and registered with the server.
 
 The callback also runs a `/status` round-trip in `on_train_begin` before
 constructing the worker, and the worker's `/register` call ships a
-`{name: shape}` map of every named parameter. The server compares against
-its own `_param_list` shapes and rejects mismatched models with HTTP 422
-+ a diagnostic naming the divergent param. This catches the operator-
-misconfiguration case — pointing a worker at the wrong
-`--model-id-or-path` — at register time rather than letting it surface
-hundreds of steps later in the first sync's optimizer step. The webui's
-Submit-training-job modal pre-fills `--model-id-or-path` from the
-selected DiLoCo server's `/info.output_dir` to keep the easy path easy.
+`{name: shape}` map of every named parameter (the `param_shapes` field in
+the register body). The server compares against its own `_param_list`
+shapes and rejects mismatched models with HTTP 422 + a diagnostic naming
+the divergent param. This catches the operator-misconfiguration case —
+pointing a worker at the wrong `--model-id-or-path` — at register time
+rather than letting it surface hundreds of steps later in the first
+sync's optimizer step.
+
+The check only fires when the worker actually ships `param_shapes`
+(post-#51 builds; on by default in this codebase). Workers from an
+older build that omit the field still register cleanly and would
+crash later in sync if the model is wrong — there's no server-side
+way to detect a missing fingerprint as suspicious without breaking
+those callers.
+
+The webui's Submit-training-job modal pre-fills `--model-id-or-path`
+from the selected DiLoCo server's `/info.output_dir` to keep the easy
+path easy.
 
 ## Work-unit dispatch
 
@@ -745,14 +756,35 @@ operator-facing toggle. The wrap fires when:
 - `DILOCO_SERVER` is set in the worker's environment, AND
 - `DILOCO_WORKER_ID` is set (the scheduler defaults this to the
   queue_id when DiLoCo is enabled), AND
-- The dataset is loaded via `forgather.ml.datasets:fast_load_iterable_dataset`
-  (i.e., the modern iterable backend; the local non-streaming loader
-  doesn't participate).
+- The dataset is loaded via the iterable-backend path —
+  `forgather.ml.datasets:fast_load_iterable_dataset` routing through a
+  `forgather dataset_server` (`FORGATHER_DATASET_SERVER` env var) or
+  the cluster auto-routing (`cluster-auto://`) variant. The
+  in-process local loader (no `FORGATHER_DATASET_SERVER`) doesn't
+  participate; if you point a DiLoCo worker at a local-loader
+  config, the wrap aborts with `DiLoCoWorkDispatchUnavailable` at
+  startup so you see the misconfiguration before training begins.
+
+Any failure to wire up the wrap when `DILOCO_SERVER` is set —
+unreachable `/datasets/register`, missing `DILOCO_WORKER_ID`, a
+backend without `__len__`, or an invalid load arg — is fatal at
+startup, surfaced as `DiLoCoWorkDispatchUnavailable` in the worker's
+TTY. Silently falling back to a bare backend would mean every
+worker iterates the full row stream on identical rows, which is the
+broken-data-parallelism class of failure the system explicitly
+guards against.
 
 Train loads wrap automatically. Eval and test loads bypass the wrap so
-every worker runs the full eval pass and metrics are averaged — the
-generic `templatelib/base/datasets/load_dataset.yaml` template sets
-`diloco_work_dispatch: False` on the validation and test splits.
+every worker runs the full eval pass and metrics are averaged. The
+bypass works via a `diloco_work_dispatch: False` kwarg on the load
+call; the DiLoCo template mixin
+(`templatelib/examples/mixins/diloco.yaml`) injects it for the eval
+dataset project through the `eval_pp_args` macro, which leaf configs
+splat into their `[eval_dataset_project_pp_args]`. The generic
+`load_dataset.yaml` template doesn't know about the kwarg — it
+forwards whatever `load_dataset_args` dict the parent project
+injected, so a non-forgather load_method that doesn't accept
+`diloco_work_dispatch` won't see it either.
 
 ### dataset_id
 

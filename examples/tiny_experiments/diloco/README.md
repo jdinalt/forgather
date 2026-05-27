@@ -194,14 +194,31 @@ and is composed into this project's `templates/project.yaml` via `{% from %}`
 macro imports. See that mixin file for the full list of injected fragments
 (callback singleton, dynamic args, eval-bypass kwargs).
 
-## Dataset Sharding
+## Dataset partitioning
 
-Training data is sharded across workers so each sees a unique subset. Evaluation
-data is **not** sharded -- each worker evaluates on the full validation set,
-producing comparable eval loss values across workers.
+Two layers do different things here, and the difference matters in
+this smoke-run setup:
 
-This is configured in `project.yaml` via the `shard_eval: False` pp_kwarg
-passed to the dataset sub-project.
+- **Eval / test loads** run the full dataset on every worker so eval
+  loss values are comparable across the cohort. The DiLoCo mixin
+  injects `diloco_work_dispatch: False` into the eval dataset
+  project's `load_dataset_args` (via `[eval_dataset_project_pp_args]`
+  in `templates/project.yaml`).
+- **Train load partitioning** is server-driven via the DiLoCo
+  server's work-unit dispatch when the worker routes through a
+  `forgather dataset_server` (`FORGATHER_DATASET_SERVER` env). The
+  default `run_diloco.sh` setup in this example does NOT spin up a
+  dataset_server, so each worker iterates the full train stream and
+  trains on identical rows; pseudo-gradient averaging still works
+  but there's no data-parallel speedup. To exercise actual row
+  partitioning, spawn a `forgather dataset_server` for the same
+  dataset and set `FORGATHER_DATASET_SERVER` in each worker's env;
+  the wrap then registers a `(dataset_id, shuffle_seed)` queue on
+  the DiLoCo server and workers pull non-overlapping unit ranges.
+
+The legacy `--num-shards` / `--shard-index` flow is gone — the
+project template never declared those dynamic args, and the
+worker CLI ignores them.
 
 ## Streaming Mode
 

@@ -12,6 +12,7 @@ import {
   Job,
 } from "../api";
 import { persistGet, persistSet } from "../persist";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 const STORAGE_KEY = "forgather-diloco-state";
 
@@ -408,7 +409,20 @@ function ServerRow({
 
   return (
     <li
+      role="button"
+      tabIndex={0}
+      aria-current={selected ? "true" : undefined}
       onClick={onSelect}
+      onKeyDown={(e) => {
+        // Keyboard users select with Enter or Space — matches the
+        // browser default for <button> elements which <li role=button>
+        // doesn't inherit. Preventing default on Space stops the page
+        // from scrolling underneath the focused row.
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
       style={{
         cursor: "pointer",
         padding: "6px 8px",
@@ -716,12 +730,21 @@ function formatParams(n: number): string {
   return String(n);
 }
 
-function workerHealthColor(lastHeartbeat: number | undefined): string {
+function workerHealthColor(
+  lastHeartbeat: number | undefined,
+  heartbeatTimeout: number | undefined,
+): string {
   if (!lastHeartbeat) return "#f7768e"; // red
   const ago = Date.now() / 1000 - lastHeartbeat;
-  if (ago < 60) return "#9ece6a"; // green
-  if (ago < 120) return "#e0af68"; // yellow
-  return "#f7768e";
+  // Derive thresholds from the server's configured heartbeat_timeout
+  // so a server set to a non-default cadence (e.g. 30s for fast
+  // smoke tests, 600s for cross-WAN) gets accurate health colors.
+  // Falls back to the documented default (120s) when the server
+  // hasn't advertised it.
+  const timeout = heartbeatTimeout && heartbeatTimeout > 0 ? heartbeatTimeout : 120;
+  if (ago < timeout * 0.5) return "#9ece6a"; // green: well within budget
+  if (ago < timeout) return "#e0af68"; // yellow: trending stale
+  return "#f7768e"; // red: server will evict on next sweep
 }
 
 function truncId(id: string): string {
@@ -779,6 +802,7 @@ function WorkersSection({
               baseUrl={baseUrl}
               workerId={wid}
               workerStatus={workers[wid]}
+              heartbeatTimeout={status.heartbeat_timeout}
               // Match by queue_id: scheduler defaults
               // DILOCO_WORKER_ID = queue_id for webui-spawned jobs.
               job={
@@ -799,12 +823,14 @@ function WorkerCard({
   baseUrl,
   workerId,
   workerStatus,
+  heartbeatTimeout,
   job,
   refreshSeconds,
 }: {
   baseUrl: string;
   workerId: string;
   workerStatus: DiLoCoWorkerStatus;
+  heartbeatTimeout: number | undefined;
   job: Job | null;
   refreshSeconds: number;
 }) {
@@ -863,7 +889,10 @@ function WorkerCard({
             width: 10,
             height: 10,
             borderRadius: "50%",
-            background: workerHealthColor(workerStatus.last_heartbeat),
+            background: workerHealthColor(
+              workerStatus.last_heartbeat,
+              heartbeatTimeout,
+            ),
           }}
         />
         <code
@@ -1491,54 +1520,72 @@ function ControlPanel({
       </div>
 
       {confirmShutdown && (
-        <div
-          role="dialog"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setConfirmShutdown(false);
+        <ShutdownConfirmDialog
+          onCancel={() => setConfirmShutdown(false)}
+          onConfirm={() => {
+            setConfirmShutdown(false);
+            controlMutation.mutate({ action: "shutdown" });
           }}
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.5)",
-            zIndex: 100,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <div
-            style={{
-              background: "var(--bg-surface, #24283b)",
-              border: "1px solid var(--border, #3b4261)",
-              borderRadius: 6,
-              padding: 16,
-              maxWidth: 420,
-              display: "flex",
-              flexDirection: "column",
-              gap: 12,
-            }}
-          >
-            <p style={{ margin: 0 }}>
-              Shut down the DiLoCo server? Any connected workers will fail
-              to sync; the next sync attempt will surface as a connection
-              error in their TTY pane.
-            </p>
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button onClick={() => setConfirmShutdown(false)}>Cancel</button>
-              <button
-                style={{ background: "#3a2a2a", color: "#f7768e" }}
-                onClick={() => {
-                  setConfirmShutdown(false);
-                  controlMutation.mutate({ action: "shutdown" });
-                }}
-              >
-                Confirm shutdown
-              </button>
-            </div>
-          </div>
-        </div>
+        />
       )}
     </section>
+  );
+}
+
+/** A11y-correct confirm dialog for the Shutdown action. Uses
+ *  ModalBackdrop for click-outside dismissal, declares the dialog
+ *  role + aria-modal so AT users get the right announcements, and
+ *  binds Escape to Cancel so keyboard-only operators can dismiss
+ *  without reaching for the mouse. */
+function ShutdownConfirmDialog({
+  onCancel,
+  onConfirm,
+}: {
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+  return (
+    <ModalBackdrop onClose={onCancel}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="diloco-shutdown-title"
+        style={{
+          background: "var(--bg-surface, #24283b)",
+          border: "1px solid var(--border, #3b4261)",
+          borderRadius: 6,
+          padding: 16,
+          maxWidth: 420,
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+        }}
+      >
+        <p id="diloco-shutdown-title" style={{ margin: 0 }}>
+          Shut down the DiLoCo server? Any connected workers will fail
+          to sync; the next sync attempt will surface as a connection
+          error in their TTY pane.
+        </p>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button onClick={onCancel} autoFocus>
+            Cancel
+          </button>
+          <button
+            style={{ background: "#3a2a2a", color: "#f7768e" }}
+            onClick={onConfirm}
+          >
+            Confirm shutdown
+          </button>
+        </div>
+      </div>
+    </ModalBackdrop>
   );
 }
 

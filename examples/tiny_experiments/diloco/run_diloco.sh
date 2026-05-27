@@ -85,7 +85,7 @@ fi
 # Step 2: Start server
 echo "==> Starting DiLoCo server on port $PORT with $NUM_WORKERS workers..."
 forgather diloco server \
-    -m "$MODEL_DIR" \
+    -o "$MODEL_DIR" \
     -n "$NUM_WORKERS" \
     --port "$PORT" \
     > >(sed 's/^/[server] /') 2>&1 &
