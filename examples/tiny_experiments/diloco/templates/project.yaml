@@ -19,6 +19,11 @@
 ##   - Neither set → callback include falls through to plain
 ##     lm_callbacks; same leaf runs as a vanilla tinyv2 training job.
 
+{% from "mixins/finetune.yaml" import
+    variable_listing as ft_variable_listing,
+    dynamic_args as ft_dynamic_args
+    with context
+%}
 {% from "mixins/diloco.yaml" import
     callback_entry as dl_callback_entry,
     dynamic_args as dl_dynamic_args,
@@ -36,6 +41,9 @@
 
 [globals]
     == super()
+    ## finetune: default model_id_or_path to per-model output dir.
+    -- set ns.model_id_or_path = model_id_or_path | default(joinpath(ns.models_dir, ns.model_name))
+
     ## diloco: append worker-id to model_name so each worker gets a
     ## unique output dir. The scheduler sets DILOCO_WORKER_ID (with a
     ## queue_id fallback) whenever DiLoCo is enabled, so this branch
@@ -47,9 +55,21 @@
     -- endif
 
 
+[variable_listing]
+    == super()
+{{ ft_variable_listing(ns.model_id_or_path) }}
+
+
 [eval_dataset_project_pp_args]
     == super()
 {{ dl_eval_pp_args() }}
+
+
+[construct_new_model]
+    ## finetune scaffolding: load from pretrained config. Inlined
+    ## here (not in the mixin) because Jinja macros can't carry ns
+    ## through ``-- include`` boundaries.
+    -- include 'models/causal_lm/from_pretrained_config.yaml'
 
 
 [trainer_callbacks]
@@ -63,13 +83,9 @@
     -- endif
 
 
-[optimizer]
-    == super()
-    lr: 1.0e-3
-
-
 [dynamic_args]
     == super()
+{{ ft_dynamic_args() }}
 {{ dl_dynamic_args() }}
 
 
