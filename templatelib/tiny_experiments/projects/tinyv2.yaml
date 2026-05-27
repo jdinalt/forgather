@@ -8,9 +8,8 @@
     -- set ns.model_name = model_name | default("tinyv2")
 
     -- set ns.dataset_proj = dataset_project | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan'))
-    -- set ns.dataset_config = dataset_config | default("tinystories-abridged.yaml")
-    -- set ns.batch_density = 0.60
-    -- set ns.dispatch_batches = dispatch_batches | default(True)
+    -- set ns.dataset_config = dataset_config | default("fast-iter-packed.yaml")
+    -- set ns.batch_density = 0.97
 
     -- set ns.model_project_dir = abspath(model_project | default((joinpath(ns.forgather_dir, "examples", "models", "llama"))))
     -- set ns.model_project_config = model_config | default("4M.yaml")
@@ -19,9 +18,8 @@
     -- set ns.warmup_tokens = warmup_tokens | default(4)
     -- set ns.min_cooldown_tokens = min_cooldown_tokens | default(100)
 
-    -- set ns.seq_len = seq_len | default(512)
-    -- set ns.per_device_train_batch_size = batch_size | default(32)
-    -- set ns.gradient_accumulation_steps = gradient_accumulation_steps | default(1)
+    -- set ns.seq_len = seq_len | default(2048)
+    -- set ns.per_device_train_batch_size =  batch_size | default(8)
 
     -- set ns.base_logging_tokens = 1
     -- set ns.base_validation_tokens = 10
@@ -37,8 +35,7 @@
     float32_matmul_precision: {{ float32_matmul_precision | toyaml("high") }}
     default_dtype: {{ default_dtype | toyaml("float32") }}
     mixed_precision: {{ mixed_precision | toyaml("bf16") }}
-    fp8_recipe: {{ fp8_recipe | toyaml(None) }}
 
 [trainer_callbacks]
     ## See definition below
-    -- include 'callbacks/tiny_callbacks.yaml'
+    -- include "callbacks/lm_callbacks.yaml"
