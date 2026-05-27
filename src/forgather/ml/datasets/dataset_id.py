@@ -65,6 +65,9 @@ def compute_dataset_id(
     split: Optional[str] = None,
     data_files: Optional[Union[str, List[str], dict]] = None,
     revision: Optional[str] = None,
+    *,
+    slice_start: Optional[int] = None,
+    slice_end: Optional[int] = None,
 ) -> str:
     """Return the canonical 16-hex-character dataset_id.
 
@@ -73,6 +76,21 @@ def compute_dataset_id(
     ``fast_load_iterable_dataset``). Equal inputs (after normalization)
     produce equal ids; ordering of ``data_files`` list entries doesn't
     matter.
+
+    ``slice_start`` / ``slice_end`` are absorbed into the hash so two
+    workers using different slices of the same source dataset get
+    distinct queue keys. Pass the wrapper's resolved bounds
+    (``_split_start_idx`` / ``_split_end_idx``) — not the raw
+    ``"train[100:200]"`` notation, which is already parsed into those
+    fields by the time dispatch is enabled. ``None`` means "open" at
+    that end (start defaults to 0, end to backend length) and is
+    hashed as such — open and "0 to length" produce different ids,
+    which is intentional (full-dataset views shouldn't accidentally
+    collide with explicitly-bounded ones).
+
+    Shard info is deliberately **not** part of the hash: under DiLoCo
+    work-unit dispatch all DDP ranks share one queue, so per-rank
+    sharding must not key separate queues.
 
     The returned id is suitable for use as a queue key on the DiLoCo
     server and as a stable identifier in log messages.
@@ -85,6 +103,8 @@ def compute_dataset_id(
         "split": _normalize_str(split),
         "data_files": _normalize_data_files(data_files),
         "revision": _normalize_str(revision),
+        "slice_start": int(slice_start) if slice_start is not None else None,
+        "slice_end": int(slice_end) if slice_end is not None else None,
     }
     payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
