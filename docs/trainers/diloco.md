@@ -125,35 +125,50 @@ forgather diloco server -o path/to/output --from-checkpoint output_models/my_mod
 
 ### 2. Start Workers
 
-On each machine, launch a worker that wraps the normal training command:
+On each machine, launch a worker that wraps the normal training command.
+Each worker needs a unique `--worker-id` so its output directory doesn't
+collide with the others (the project template appends the worker id to
+`ns.model_name`):
 
 ```bash
 # sync mode
 forgather diloco worker \
+    --server 192.168.1.100:8512 \
     --sync-every 500 \
+    --worker-id w0 \
     -p my_project -t train.yaml \
-    train --num-shards 2 --shard-index 0 -d 0
+    train -d 0
 
 # with DyLU - server adjusts sync frequency dynamically
 forgather diloco worker \
     --server 192.168.1.100:8512 \
     --sync-every 500 \
+    --worker-id w1 \
     --dylu \
     --heartbeat-interval 30 \
     -p my_project -t train.yaml \
-    train --num-shards 2 --shard-index 1 -d 1
+    train -d 1
 ```
 
 Worker arguments:
 - `--server`: Server address as `host:port`
 - `--sync-every`: Local steps between syncs (default: 500)
-- `--worker-id`: Optional unique ID (auto-generated if omitted)
+- `--worker-id`: Unique worker identity. Drives the per-worker output-dir
+  suffix the project template appends to `ns.model_name`, and the
+  uniqueness key the server enforces on `/register`. Auto-generated when
+  omitted but operators typically set it explicitly so logs / output dirs
+  are predictable.
 - `--no-bf16`: Send full-precision pseudo-gradients instead of bfloat16
 - `--dylu`: Enable dynamic sync frequency adjustment from server
 - `--heartbeat-interval`: Seconds between heartbeats for speed reporting (default: 30)
-- `--num-shards`: Number of shards to split the dataset into
-- `--shard-index`: Which shard to train on
 - `-d`: CUDA visible devices
+
+Dataset partitioning across workers is handled by the server's **work-unit
+dispatch**: each worker registers its train dataset with the DiLoCo server
+on first iteration and pulls per-unit row ranges on demand, so no row is
+trained on twice within an epoch. There's no operator-facing toggle —
+dispatch is active whenever `DILOCO_SERVER` is set on the worker process.
+See the *Work-unit dispatch* section below.
 
 ### 3. Monitor
 
@@ -698,6 +713,76 @@ On checkpoint resume, the callback's `load_state_dict` is called during
 `_prepare()` (before the worker exists). The state is deferred and applied
 in `on_train_begin` after the worker is created and registered with the server.
 
+### Model fingerprint check
+
+The callback also runs a `/status` round-trip in `on_train_begin` before
+constructing the worker, and the worker's `/register` call ships a
+`{name: shape}` map of every named parameter. The server compares against
+its own `_param_list` shapes and rejects mismatched models with HTTP 422
++ a diagnostic naming the divergent param. This catches the operator-
+misconfiguration case — pointing a worker at the wrong
+`--model-id-or-path` — at register time rather than letting it surface
+hundreds of steps later in the first sync's optimizer step. The webui's
+Submit-training-job modal pre-fills `--model-id-or-path` from the
+selected DiLoCo server's `/info.output_dir` to keep the easy path easy.
+
+## Work-unit dispatch
+
+Workers in a DiLoCo run partition the training dataset through a
+server-driven dispatch loop, not via manual `--num-shards` / `--shard-index`
+flags. The server holds a per-`(dataset_id, shuffle_seed)` queue of `K`
+work units (default `K=1024`); each worker requests the next available
+unit, streams that unit's row range from its dataset backend, and asks
+for another. Issuance is one-way — once a unit is issued it's consumed
+from the queue regardless of worker fate, so within an epoch no row is
+ever trained on twice.
+
+### Activation
+
+Work-unit dispatch is **unconditional** when DiLoCo is enabled. No
+operator-facing toggle. The wrap fires when:
+
+- `DILOCO_SERVER` is set in the worker's environment, AND
+- `DILOCO_WORKER_ID` is set (the scheduler defaults this to the
+  queue_id when DiLoCo is enabled), AND
+- The dataset is loaded via `forgather.ml.datasets:fast_load_iterable_dataset`
+  (i.e., the modern iterable backend; the local non-streaming loader
+  doesn't participate).
+
+Train loads wrap automatically. Eval and test loads bypass the wrap so
+every worker runs the full eval pass and metrics are averaged — the
+generic `templatelib/base/datasets/load_dataset.yaml` template sets
+`diloco_work_dispatch: False` on the validation and test splits.
+
+### dataset_id
+
+The `dataset_id` is a stable 16-hex hash of the normalized load args
+(`path`, `name`, `split`, `data_files`, `revision`). Two workers
+loading "the same dataset" agree on the dataset_id by construction;
+the server uses it to route them to the same queue. The worker also
+ships the human-readable fields alongside the hash so the webui can
+label queues with `roneneldan/TinyStories@train` instead of just the
+hex.
+
+### Interleaved / multi-source datasets
+
+Each call to `fast_load_iterable_dataset` registers its own queue.
+A training run that interleaves two HF paths produces two queues; the
+webui renders each as its own heatmap card. Workers in a multi-source
+run hold one issued unit per source at a time.
+
+### Crash recovery
+
+If a worker dies holding an issued unit, that unit is lost (the
+server's one-way issuance design — at most `N_workers` units lost per
+epoch). The DiLoCo server's `_work_queues` is **not** persisted across
+server restarts (pre-#46 it was, but cross-experiment state-bleed from
+a stale checkpoint outweighed crash-recovery utility). On server
+restart, workers re-register their datasets on first contact and the
+queue map is reconstructed fresh.
+
+Design details: `docs/design/diloco-work-unit-dispatch.md`.
+
 ## Monitoring & Control
 
 The DiLoCo server itself only exposes JSON endpoints — the operator-facing
@@ -786,9 +871,10 @@ bind to all interfaces:
 forgather diloco server -o ./model -n 4 --host 0.0.0.0
 ```
 
-**Warning**: This exposes the server (including the dashboard with full control
-capabilities) to any machine on the network. Only use this on trusted networks
-with appropriate firewall rules.
+**Warning**: This exposes the server's HTTP control endpoints (including
+`/control/shutdown`, `/control/update_optimizer`, etc., which the webui
+DiLoCo view's Control card calls into) to any machine on the network.
+Only use this on trusted networks with appropriate firewall rules.
 
 ## References
 

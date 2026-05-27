@@ -220,22 +220,29 @@ Step 500:  Apply fragment 2, submit fragment 3, reset
 
 ## Output Directories
 
-When `--shard-index` is provided, the model name is automatically suffixed
-with the shard index (e.g., `default_model_shard0`, `default_model_shard1`).
-This gives each worker its own output directory under `output_models/`,
-preventing checkpoint race conditions.
+Each worker passes a unique `--worker-id` (e.g. `w0`, `w1`) — the
+project template's `[globals]` block appends it to `ns.model_name` so
+each worker lands in its own output directory under `output_models/`,
+preventing checkpoint and log races.
 
 | Scenario | Output directory |
 |----------|----------------|
-| Standalone | `output_models/default_model/` |
-| Worker shard 0 | `output_models/default_model_shard0/` |
-| Worker shard 1 | `output_models/default_model_shard1/` |
+| Standalone (no DiLoCo) | `output_models/tinyv2/` |
+| Worker `--worker-id w0` | `output_models/tinyv2_w0/` |
+| Worker `--worker-id w1` | `output_models/tinyv2_w1/` |
+
+When launched via the webui, the scheduler sets `DILOCO_WORKER_ID` from
+the job's `queue_id` automatically, so the suffix is unique by
+construction even without an explicit `--diloco-worker-id`.
 
 ## Notes
 
 - When using `forgather diloco worker`, DiLoCo parameters (sync_every, bf16, etc.)
   are passed via environment variables. All DiLoCo callback parameters default to
   `null` in the config, so env var values take effect automatically.
-- The server must use the same model architecture as the training project. If the
-  worker uses a different model, the server will return a clear error identifying
-  the parameter name mismatch.
+- The server validates each worker's model against its own at
+  `/register` time — both the param-name set and the per-param shapes
+  must match. A mismatched worker is rejected with a 422 + a
+  diagnostic naming the divergent param, so an operator pointing a
+  worker at the wrong `--model-id-or-path` finds out before any
+  training rounds happen.

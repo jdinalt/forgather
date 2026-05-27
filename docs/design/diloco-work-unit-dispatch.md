@@ -1,6 +1,26 @@
-# DiLoCo: Work-Unit Dispatch (Design Proposal)
+# DiLoCo: Work-Unit Dispatch (Design Proposal — Implemented)
 
-**Status:** proposal — not implemented.
+**Status:** **implemented** as of the `feature/diloco-webui` work
+(May 2026). User-facing docs:
+[`docs/trainers/diloco.md#work-unit-dispatch`](../trainers/diloco.md).
+The design proposal below is kept as the rationale-of-record. A few
+details diverged from the proposal during implementation; the
+**Implementation notes** subsection at the end of each affected
+chunk calls them out. The biggest deltas:
+
+- The operator-facing "Use work-unit dispatch" toggle / the
+  `DILOCO_WORK_DISPATCH` env var (proposed as opt-in gates) were
+  ripped out before merging. Work-unit dispatch is unconditional
+  when `DILOCO_SERVER` is set on the worker process; the
+  template-internal `diloco_work_dispatch: False` kwarg is the
+  eval-bypass channel.
+- Work-queue persistence (Phase 1.3) was dropped after the
+  first live bringup — the cross-experiment state-bleed footgun
+  outweighed mid-epoch crash recovery value.
+- The server's `/register` got a structural fingerprint check
+  during bringup, separate from the work-queue work but in the
+  same PR — see `docs/trainers/diloco.md#model-fingerprint-check`.
+
 **Revision:** 5 (moves the worker-side wrap from
 ``IterableDataset`` layer to the ``IterableDatasetBackend`` layer
 and from ``DiLoCoCallback`` to ``fast_load_iterable_dataset``.
@@ -11,8 +31,8 @@ correct insertion point is at backend construction inside
 ``fast_load_iterable_dataset``; the higher-level ``Composable``
 wrapper then sees a normal backend and composes its ops over the
 dispatched row stream).
-**Supersedes (when implemented):** the manual `--num-shards N --shard-index I`
-flow in `examples/tiny_experiments/diloco/` and
+**Supersedes:** the manual `--num-shards N --shard-index I` flow
+in `examples/tiny_experiments/diloco/` and
 `examples/base_lm_project/templates/configs/diloco.yaml`.
 
 ## Scope note (read first)
@@ -71,6 +91,14 @@ to be known in advance about worker count.
    the value).
 5. Existing manual `--shard-index` configs keep working, gated by an
    opt-in flag. Migration is per-config.
+   _Implementation note: the opt-in flag was removed before merging;
+   work-unit dispatch is unconditional when `DILOCO_SERVER` is set.
+   The migration ended up being "delete the `--num-shards` /
+   `--shard-index` dynamic-args from any custom template that
+   declares them." Both first-party examples
+   (`examples/tiny_experiments/diloco`,
+   `examples/base_lm_project/templates/configs/diloco.yaml`) shipped
+   with the change._
 
 ## Non-goals
 
