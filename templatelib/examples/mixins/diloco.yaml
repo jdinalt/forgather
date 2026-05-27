@@ -82,10 +82,3 @@
         group: "DiLoCo"
         help: "Stable worker identity; auto-generated if unset."
 -- endmacro
-
-
-## ``eval_pp_args`` (removed): under the composable-level work-unit
-## dispatch design, eval bypass is configured at the partition level
-## (``shard_dataset: False`` for eval) by ``lm_training_project.yaml``
-## directly — every worker runs the full eval pass. No mixin
-## injection needed.

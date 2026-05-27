@@ -72,12 +72,6 @@
 {{ ft_variable_listing(ns.model_id_or_path) }}
 
 
-## (was: eval_pp_args injected diloco_work_dispatch: False. Under the
-## composable-level dispatch design, eval bypass is handled by
-## lm_training_project's shard_dataset: False override for the eval
-## dataset when DILOCO_SERVER is set — no per-leaf injection needed.)
-
-
 [construct_new_model]
     ## finetune scaffolding: load from pretrained config. Inlined
     ## here (not in the mixin) because Jinja macros can't carry ns
