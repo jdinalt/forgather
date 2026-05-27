@@ -1,4 +1,5 @@
 -- extends 'callbacks/loggers.yaml'
+{% from "mixins/diloco.yaml" import callback_entry as dl_callback_entry with context %}
 
 [loggers_dependencies]
     == super()
@@ -39,6 +40,14 @@ text_gen_callback_args: &text_gen_callback_args
         action: "abort"
     weight_norm: !call:forgather.ml.trainer.callbacks:WeightNormLogger
     param_norm: !call:forgather.ml.trainer.callbacks:ParameterNormLogger
+    ## DiLoCo parameter-sync callback. Emitted only when
+    ## DILOCO_SERVER is set in the env or --diloco-server passes a
+    ## non-empty value on the CLI. The callback constructor reads
+    ## DILOCO_* env vars internally for any args not explicitly set.
+    ## See docs/trainers/diloco.md.
+    -- if getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server)
+{{ dl_callback_entry() }}
+    -- endif
 
 [tb_scalars]
 .define: &tb_scalars !dict

@@ -100,9 +100,6 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_schedule
 ### Fused output-linear x cross-entropy-loss kernel
 .define: &fused_loss_factory !partial:forgather.ml.loss:LinearCrossEntropyLoss
 
-[trainer_callbacks]
-    -- include "callbacks/lm_callbacks.yaml"
-
 [dynamic_args]
     == super()
     annealing_tokens:

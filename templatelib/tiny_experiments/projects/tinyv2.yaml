@@ -44,6 +44,3 @@
     float32_matmul_precision: {{ float32_matmul_precision | toyaml("high") }}
     default_dtype: {{ default_dtype | toyaml("float32") }}
     mixed_precision: {{ mixed_precision | toyaml("bf16") }}
-
-[trainer_callbacks]
-    -- include "callbacks/lm_callbacks.yaml"

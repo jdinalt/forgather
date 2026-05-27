@@ -1,4 +1,9 @@
 -- extends "training_script/causal_lm/causal_lm.yaml"
+{% from "mixins/diloco.yaml" import
+    callback_entry as dl_callback_entry,
+    dynamic_args as dl_dynamic_args
+    with context
+%}
 ## ---------------------------------------------------------------------------
 ## LM Training Project
 ##
@@ -317,6 +322,16 @@
         -- set ns.eval_dataset_config = ns.dataset_config
     -- endif
 
+    ## DiLoCo: per-worker output dir. When DILOCO_WORKER_ID is set
+    ## (the scheduler emits it whenever DiLoCo is enabled, with a
+    ## queue_id fallback), append it to model_name so each worker
+    ## gets a distinct on-disk directory. No-op for non-DiLoCo runs.
+    -- if getenv("DILOCO_WORKER_ID")
+        -- set ns.model_name = ns.model_name + "_" + getenv("DILOCO_WORKER_ID")
+        -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
+        -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
+    -- endif
+
     ## Convert M-token inputs to raw token counts
     -- set ns.total_tokens = ns.total_tokens * 1000 * 1000
     -- set ns.warmup_tokens = ns.warmup_tokens * 1000 * 1000
@@ -571,8 +586,21 @@ optimizer_groups: &optimizer_groups
 
 ## ===== CLI arguments ========================================================
 ##
+## ===== Callbacks ============================================================
+##
+## Use lm_callbacks by default — text-gen, divergence detector,
+## weight/param norm loggers on top of base loggers. The
+## ``[callback_list]`` block inside ``lm_callbacks.yaml`` also emits
+## the DiLoCo parameter-sync callback when ``DILOCO_SERVER`` is set,
+## so any descendant of this project gets DiLoCo for free via
+## ``--diloco-server`` or the env var.
+[trainer_callbacks]
+    -- include "callbacks/lm_callbacks.yaml"
+
+
 [dynamic_args]
     == super()
+{{ dl_dynamic_args() }}
     model_project:
         names: "--model-project"
         type: path
