@@ -3,10 +3,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   api,
+  ControlAction,
   DiLoCoInfo,
   DiLoCoQueueSummary,
   DiLoCoServer,
   DiLoCoStatus,
+  DiLoCoWorkerStatus,
+  Job,
 } from "../api";
 import { persistGet, persistSet } from "../persist";
 
@@ -118,6 +121,18 @@ export function DiLoCoPanel() {
     refetchInterval: state.refreshSeconds * 1000,
     refetchIntervalInBackground: false,
   });
+  // Forgather-side jobs list. Used to map each DiLoCo worker_id back
+  // to its job_id (the scheduler defaults DILOCO_WORKER_ID = queue_id,
+  // so for webui-spawned workers the mapping is direct). With a
+  // matched Job we can fetch per-worker training status + drive the
+  // per-worker control protocol (Save / Save & Stop / Abort).
+  const jobsQuery = useQuery({
+    queryKey: ["jobs", "for-diloco"],
+    queryFn: () => api.listJobs(false),
+    enabled: !!selected,
+    refetchInterval: state.refreshSeconds * 1000,
+    refetchIntervalInBackground: false,
+  });
 
   return (
     <div className="inference-panel">
@@ -194,6 +209,7 @@ export function DiLoCoPanel() {
               statusLoading={statusQuery.isLoading}
               statusError={statusQuery.error}
               queues={queuesQuery.data ?? null}
+              jobs={jobsQuery.data ?? null}
               refreshSeconds={state.refreshSeconds}
             />
           )}
@@ -499,6 +515,7 @@ function ServerDetail({
   statusLoading,
   statusError,
   queues,
+  jobs,
   refreshSeconds,
 }: {
   server: DiLoCoServer;
@@ -507,10 +524,22 @@ function ServerDetail({
   statusLoading: boolean;
   statusError: unknown;
   queues: DiLoCoQueueSummary[] | null;
+  jobs: Job[] | null;
   refreshSeconds: number;
 }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: 4 }}>
+    // Bounded container keeps wide-monitor layout readable. Everything
+    // below this point sits inside ~1100px and centers in the pane.
+    <div
+      style={{
+        maxWidth: 1100,
+        marginInline: "auto",
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+        padding: 4,
+      }}
+    >
       <DashboardHeader server={server} status={status} info={info} />
 
       {!!statusError && (
@@ -533,15 +562,31 @@ function ServerDetail({
       )}
 
       {status && (
-        <WorkersTable baseUrl={server.base_url} status={status} />
-      )}
-      {status && <ServerMetrics status={status} />}
-      {status && (
-        <ControlPanel
+        <WorkersSection
           baseUrl={server.base_url}
           status={status}
-          info={info}
+          jobs={jobs}
+          refreshSeconds={refreshSeconds}
         />
+      )}
+      {status && (
+        // Metrics + Control side-by-side on wide screens, stacked on
+        // narrow ones. ``auto-fit`` collapses to one column when the
+        // viewport can't hold two minmax(320px,…) cells.
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+            gap: 10,
+          }}
+        >
+          <ServerMetrics status={status} />
+          <ControlPanel
+            baseUrl={server.base_url}
+            status={status}
+            info={info}
+          />
+        </div>
       )}
       {queues && queues.length > 0 && (
         <WorkQueuesSection
@@ -659,43 +704,19 @@ function truncId(id: string): string {
   return id.length > 20 ? `${id.slice(0, 17)}…` : id;
 }
 
-function WorkersTable({
+function WorkersSection({
   baseUrl,
   status,
+  jobs,
+  refreshSeconds,
 }: {
   baseUrl: string;
   status: DiLoCoStatus;
+  jobs: Job[] | null;
+  refreshSeconds: number;
 }) {
-  const queryClient = useQueryClient();
-  const kickMutation = useMutation({
-    mutationFn: (workerId: string) =>
-      api.diLoCoServerControl(baseUrl, "kick_worker", {
-        worker_id: workerId,
-      }),
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["diloco", "status", baseUrl] });
-    },
-  });
-
   const workers = status.workers ?? {};
   const ids = Object.keys(workers);
-
-  const headerRow = (
-    <header
-      style={{
-        padding: "8px 14px",
-        background: "var(--bg-surface, #24283b)",
-        borderBottom: "1px solid var(--border, #3b4261)",
-        fontWeight: 600,
-      }}
-    >
-      Workers{" "}
-      <span className="muted" style={{ fontWeight: 400, fontSize: "smaller" }}>
-        ({status.num_registered ?? 0}/{status.num_workers ?? "?"})
-      </span>
-    </header>
-  );
-
   return (
     <section
       style={{
@@ -704,82 +725,330 @@ function WorkersTable({
         overflow: "hidden",
       }}
     >
-      {headerRow}
+      <header
+        style={{
+          padding: "8px 14px",
+          background: "var(--bg-surface, #24283b)",
+          borderBottom: "1px solid var(--border, #3b4261)",
+          fontWeight: 600,
+        }}
+      >
+        Workers{" "}
+        <span className="muted" style={{ fontWeight: 400, fontSize: "smaller" }}>
+          ({status.num_registered ?? 0}/{status.num_workers ?? "?"})
+        </span>
+      </header>
       {ids.length === 0 ? (
         <div className="muted" style={{ padding: "16px 14px" }}>
           No workers connected
         </div>
       ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ textAlign: "left" }}>
-              <th style={{ padding: "6px 8px", width: 28 }}></th>
-              <th style={{ padding: "6px 8px" }}>ID</th>
-              <th style={{ padding: "6px 8px" }}>Hostname</th>
-              <th style={{ padding: "6px 8px" }}>Round</th>
-              <th style={{ padding: "6px 8px" }}>Steps/s</th>
-              <th style={{ padding: "6px 8px" }}>Last heartbeat</th>
-              <th style={{ padding: "6px 8px" }}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {ids.map((wid) => {
-              const w = workers[wid];
-              return (
-                <tr
-                  key={wid}
-                  style={{ borderTop: "1px solid var(--border, #2a2a2a)" }}
-                >
-                  <td style={{ padding: "6px 8px" }}>
-                    <span
-                      title="Health (green <60s heartbeat, yellow <120s, red older)"
-                      style={{
-                        display: "inline-block",
-                        width: 10,
-                        height: 10,
-                        borderRadius: "50%",
-                        background: workerHealthColor(w.last_heartbeat),
-                      }}
-                    />
-                  </td>
-                  <td
-                    style={{ padding: "6px 8px", fontFamily: "monospace" }}
-                    title={wid}
-                  >
-                    {truncId(wid)}
-                  </td>
-                  <td style={{ padding: "6px 8px" }}>{w.hostname ?? "—"}</td>
-                  <td style={{ padding: "6px 8px" }}>{w.sync_round ?? 0}</td>
-                  <td style={{ padding: "6px 8px" }}>
-                    {w.steps_per_second && w.steps_per_second > 0
-                      ? w.steps_per_second.toFixed(2)
-                      : "—"}
-                  </td>
-                  <td style={{ padding: "6px 8px" }}>
-                    {relativeAge(w.last_heartbeat)}
-                  </td>
-                  <td style={{ padding: "6px 8px", textAlign: "right" }}>
-                    <button
-                      className="tiny"
-                      onClick={() => {
-                        if (window.confirm(`Kick worker ${wid}?`)) {
-                          kickMutation.mutate(wid);
-                        }
-                      }}
-                      disabled={kickMutation.isPending}
-                      title="Force-evict this worker from the server"
-                    >
-                      Kick
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          {ids.map((wid) => (
+            <WorkerCard
+              key={wid}
+              baseUrl={baseUrl}
+              workerId={wid}
+              workerStatus={workers[wid]}
+              // Match by queue_id: scheduler defaults
+              // DILOCO_WORKER_ID = queue_id for webui-spawned jobs.
+              job={
+                jobs?.find(
+                  (j) => j.queue_id === wid || j.job_id === wid,
+                ) ?? null
+              }
+              refreshSeconds={refreshSeconds}
+            />
+          ))}
+        </div>
       )}
     </section>
   );
+}
+
+function WorkerCard({
+  baseUrl,
+  workerId,
+  workerStatus,
+  job,
+  refreshSeconds,
+}: {
+  baseUrl: string;
+  workerId: string;
+  workerStatus: DiLoCoWorkerStatus;
+  job: Job | null;
+  refreshSeconds: number;
+}) {
+  const queryClient = useQueryClient();
+  // Per-worker training status — only fetched when we have a matched
+  // job_id (the trainer-control protocol requires the correlated id).
+  // Polls at the panel cadence so the row's progress bar / stat pills
+  // tick in sync with the rest of the view.
+  const jobStatusQ = useQuery({
+    queryKey: ["jobs", "status", job?.job_id],
+    queryFn: () => api.jobStatus(job!.job_id!),
+    enabled: !!job?.job_id && !!job?.alive,
+    refetchInterval: refreshSeconds * 1000,
+    refetchIntervalInBackground: false,
+  });
+
+  const kickMutation = useMutation({
+    mutationFn: () =>
+      api.diLoCoServerControl(baseUrl, "kick_worker", {
+        worker_id: workerId,
+      }),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["diloco", "status", baseUrl] });
+    },
+  });
+
+  const jobControlMutation = useMutation({
+    mutationFn: (action: ControlAction) => api.jobControl(job!.job_id!, action),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({
+        queryKey: ["jobs", "status", job?.job_id],
+      });
+    },
+  });
+
+  const canControlJob = !!job?.job_id && !!job?.alive && job.job_type === "training";
+  const stats = jobStatusQ.data ?? null;
+
+  return (
+    <div
+      style={{
+        borderTop: "1px solid var(--border, #2a2a2a)",
+        padding: "10px 14px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+      }}
+    >
+      {/* Top row: identity + DiLoCo-server-side facts + Kick */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span
+          title="Health (green <60s heartbeat, yellow <120s, red older)"
+          style={{
+            display: "inline-block",
+            width: 10,
+            height: 10,
+            borderRadius: "50%",
+            background: workerHealthColor(workerStatus.last_heartbeat),
+          }}
+        />
+        <code
+          title={workerId}
+          style={{ fontFamily: "monospace", fontSize: 12 }}
+        >
+          {truncId(workerId)}
+        </code>
+        <span className="muted" style={{ fontSize: 12 }}>
+          {workerStatus.hostname ?? "—"}
+        </span>
+        <span className="muted" style={{ fontSize: 12 }}>
+          Round <b style={{ color: "var(--text, inherit)" }}>{workerStatus.sync_round ?? 0}</b>
+        </span>
+        {workerStatus.steps_per_second !== undefined &&
+          workerStatus.steps_per_second > 0 && (
+            <span className="muted" style={{ fontSize: 12 }}>
+              {workerStatus.steps_per_second.toFixed(2)} steps/s
+            </span>
+          )}
+        <span className="muted" style={{ fontSize: 12 }}>
+          hb {relativeAge(workerStatus.last_heartbeat)}
+        </span>
+        <span style={{ flex: 1 }} />
+        <button
+          className="tiny"
+          onClick={() => {
+            if (window.confirm(`Kick worker ${workerId}?`))
+              kickMutation.mutate();
+          }}
+          disabled={kickMutation.isPending}
+          title="Force-evict this worker from the DiLoCo server"
+        >
+          Kick
+        </button>
+      </div>
+
+      {/* Middle: training-job progress + stats (when we have a job) */}
+      {stats && <JobStatsRow stats={stats} />}
+      {!job && (
+        <div className="muted" style={{ fontSize: 11 }}>
+          No correlated forgather job — training-side stats and controls
+          unavailable. (Worker may have been spawned outside the webui;
+          set --diloco-worker-id = the job's queue_id to enable
+          correlation.)
+        </div>
+      )}
+
+      {/* Bottom: trainer-protocol controls (Save / Save & Stop / Abort) */}
+      {canControlJob && (
+        <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap" }}>
+          <button
+            className="tiny"
+            onClick={() => jobControlMutation.mutate("save")}
+            disabled={jobControlMutation.isPending}
+            title="Request a checkpoint save without stopping training"
+          >
+            Save checkpoint
+          </button>
+          <button
+            className="tiny"
+            onClick={() => {
+              if (window.confirm(`Save final checkpoint and stop worker ${workerId}?`))
+                jobControlMutation.mutate("save-stop");
+            }}
+            disabled={jobControlMutation.isPending}
+            title="Save a final checkpoint, then stop training cleanly"
+          >
+            Save &amp; Stop
+          </button>
+          <button
+            className="tiny"
+            style={{ color: "tomato" }}
+            onClick={() => {
+              if (window.confirm(`Abort training on worker ${workerId}? Any unsaved progress is lost.`))
+                jobControlMutation.mutate("abort");
+            }}
+            disabled={jobControlMutation.isPending}
+            title="Stop training immediately without saving"
+          >
+            Abort
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Per-worker training stats — progress bar from global_step / max_steps
+ *  plus a compact pill row mirroring JobsPanel's JobStatusBlock (loss,
+ *  lr, tok/s, peak_mem, grad_norm, epoch). */
+function JobStatsRow({ stats }: { stats: Record<string, unknown> }) {
+  const step = typeof stats.global_step === "number" ? stats.global_step : null;
+  const max = typeof stats.max_steps === "number" ? stats.max_steps : null;
+  const showProgress = step !== null && max !== null && max > 0;
+  const pct = showProgress ? Math.max(0, Math.min(100, ((step as number) / (max as number)) * 100)) : 0;
+
+  // Same display order as JobsPanel.JobStatusBlock — loss / lr /
+  // grad_norm / epoch / tok/s / tokens / peak_mem. Each picker
+  // returns null when the field is missing or wrong-shaped so the
+  // pill is silently dropped.
+  const pickers: Array<[string, string, (v: unknown) => string | null]> = [
+    ["loss", "loss", (v) => (typeof v === "number" ? v.toFixed(4) : null)],
+    ["lr", "learning_rate", (v) => (typeof v === "number" ? fmtLr(v) : null)],
+    [
+      "grad_norm",
+      "grad_norm",
+      (v) => (typeof v === "number" ? v.toFixed(3) : null),
+    ],
+    ["epoch", "epoch", (v) => (typeof v === "number" ? v.toFixed(3) : null)],
+    [
+      "tok/s",
+      "tok_per_sec",
+      (v) => (typeof v === "number" ? fmtCount(v) : null),
+    ],
+    ["tokens", "tokens", (v) => (typeof v === "number" ? fmtCount(v) : null)],
+    ["peak_mem", "peak_mem", (v) => fmtPeakMem(v)],
+  ];
+  const pills: Array<[string, string]> = [];
+  for (const [label, key, fn] of pickers) {
+    const out = fn(stats[key]);
+    if (out !== null) pills.push([label, out]);
+  }
+
+  if (!showProgress && pills.length === 0) return null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {showProgress && (
+        <div
+          title={`${step} / ${max} steps`}
+          style={{ display: "flex", alignItems: "center", gap: 8 }}
+        >
+          <div
+            style={{
+              flex: 1,
+              background: "var(--bg, #1a1b26)",
+              border: "1px solid var(--border, #3b4261)",
+              borderRadius: 4,
+              height: 8,
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                width: `${pct}%`,
+                height: "100%",
+                background: "#7aa2f7",
+                transition: "width 200ms ease",
+              }}
+            />
+          </div>
+          <span className="muted" style={{ fontSize: 11, whiteSpace: "nowrap" }}>
+            {step}/{max} ({pct.toFixed(1)}%)
+          </span>
+        </div>
+      )}
+      {pills.length > 0 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {pills.map(([k, v]) => (
+            <span
+              key={k}
+              style={{
+                fontSize: 11,
+                background: "var(--bg, #1a1b26)",
+                border: "1px solid var(--border, #3b4261)",
+                borderRadius: 4,
+                padding: "1px 6px",
+              }}
+            >
+              <span className="muted">{k}</span> {v}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Formatter helpers (mirror JobsPanel's privates; duplicated to avoid a
+// cross-component import — they're trivial and unlikely to drift in
+// the lifetime of this view).
+// ---------------------------------------------------------------------------
+
+function fmtLr(v: number): string {
+  if (v === 0) return "0";
+  const abs = Math.abs(v);
+  if (abs < 1e-5 || abs >= 100) return v.toExponential(2);
+  return v.toPrecision(4).replace(/\.?0+$/, "");
+}
+
+function fmtCount(v: number): string {
+  return Math.round(v).toLocaleString();
+}
+
+function fmtPeakMem(v: unknown): string | null {
+  const values: number[] = [];
+  if (typeof v === "number") values.push(v);
+  else if (Array.isArray(v)) {
+    for (const x of v) if (typeof x === "number") values.push(x);
+  } else return null;
+  if (values.length === 0) return null;
+  const max = Math.max(...values);
+  if (!Number.isFinite(max) || max <= 0) return null;
+  const useGiB = max / 1024 ** 3 >= 1;
+  const fmt = (n: number) =>
+    useGiB ? (n / 1024 ** 3).toFixed(2) : (n / 1024 ** 2).toFixed(0);
+  const unit = useGiB ? "GiB" : "MiB";
+  return `${values.map(fmt).join(", ")} ${unit}`;
 }
 
 function ServerMetrics({ status }: { status: DiLoCoStatus }) {
@@ -1010,7 +1279,7 @@ function ControlPanel({
       >
         Control
       </header>
-      <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
         {actionMsg && (
           <div
             role="status"
@@ -1026,11 +1295,14 @@ function ControlPanel({
           </div>
         )}
 
+        {/* Two columns inside the Control panel max out at ~200px each
+            so the buttons don't stretch to "1/5 of the screen" on wide
+            monitors. The grid still collapses to one column on narrow. */}
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-            gap: 12,
+            gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+            gap: 10,
           }}
         >
           {/* Save Checkpoint */}
