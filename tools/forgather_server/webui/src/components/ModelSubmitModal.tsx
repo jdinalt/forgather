@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api, ConfigInfo, ProjectInfo } from "../api";
 import { useDatasetSource } from "../dataset-source";
+import { persistGet, persistSet } from "../persist";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import {
   coerceArgs,
@@ -51,6 +52,63 @@ interface NumericField {
   max?: number;
   integer?: boolean;
 }
+
+/** Per-(project, config) form-state cache. Mirrors DiLoCoServerModal's
+ *  approach: localStorage holds the operator's last-used settings so
+ *  reopening the modal doesn't dump them. Dynamic-args values are
+ *  cached separately on the server side via ``setOverrides``; these
+ *  are the model-modal-specific knobs that live entirely in the
+ *  frontend (device, dtype, subcommand toggles, test settings,
+ *  priority). */
+interface PersistedModelSubmit {
+  subcommand: Subcommand;
+  device: string;
+  dtype: string;
+  noInitWeights: boolean;
+  saveCheckpoint: boolean;
+  safetensors: boolean;
+  gradientCheckpointing: boolean;
+  fuseOptimWithBackward: boolean;
+  loadFromCheckpoint: string;
+  batchSize: string;
+  sequenceLength: string;
+  steps: string;
+  lr: string;
+  packed: boolean;
+  amp: string;
+  priority: number;
+}
+
+const DEFAULT_PERSISTED: PersistedModelSubmit = {
+  subcommand: "construct",
+  device: "meta",
+  dtype: "",
+  noInitWeights: false,
+  saveCheckpoint: false,
+  safetensors: false,
+  gradientCheckpointing: false,
+  fuseOptimWithBackward: false,
+  loadFromCheckpoint: "",
+  batchSize: "2",
+  sequenceLength: "512",
+  steps: "1",
+  lr: "0.01",
+  packed: false,
+  amp: "",
+  priority: 0,
+};
+
+function loadPersisted(key: string): PersistedModelSubmit {
+  const raw = persistGet(key);
+  if (!raw) return DEFAULT_PERSISTED;
+  try {
+    const parsed = JSON.parse(raw) as Partial<PersistedModelSubmit>;
+    return { ...DEFAULT_PERSISTED, ...parsed };
+  } catch {
+    return DEFAULT_PERSISTED;
+  }
+}
+
 
 function checkNumericFields(fields: NumericField[]): string[] {
   const violations: string[] = [];
@@ -113,25 +171,98 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
     initial: overridesQ.data?.dataset_source ?? null,
   });
 
-  const [subcommand, setSubcommand] = useState<Subcommand>("construct");
-  const [device, setDevice] = useState<string>("meta");
-  const [dtype, setDtype] = useState<string>("");
-  const [noInitWeights, setNoInitWeights] = useState<boolean>(false);
-  const [refreshModel, setRefreshModel] = useState<boolean>(false);
-  const [saveCheckpoint, setSaveCheckpoint] = useState<boolean>(false);
-  const [safetensors, setSafetensors] = useState<boolean>(false);
-  const [gradientCheckpointing, setGradientCheckpointing] = useState<boolean>(false);
-  const [fuseOptimWithBackward, setFuseOptimWithBackward] = useState<boolean>(false);
-  const [loadFromCheckpoint, setLoadFromCheckpoint] = useState<string>("");
+  // Per-(project, config) form state, seeded from localStorage so
+  // reopening the modal lands on whatever the operator submitted
+  // last. Persistence happens in a single useEffect at the bottom of
+  // this block; submit also touches the cache before enqueueing to
+  // guarantee at-least-once write even if the modal closes fast.
+  const storageKey = useMemo(
+    () => `forgather-submit-model/${project.project_dir}/${config.name}`,
+    [project.project_dir, config.name],
+  );
+  const persisted = useMemo<PersistedModelSubmit>(
+    () => loadPersisted(storageKey),
+    [storageKey],
+  );
 
-  const [batchSize, setBatchSize] = useState<string>("2");
-  const [sequenceLength, setSequenceLength] = useState<string>("512");
-  const [steps, setSteps] = useState<string>("1");
-  const [lr, setLr] = useState<string>("0.01");
-  const [packed, setPacked] = useState<boolean>(false);
-  const [amp, setAmp] = useState<string>("");
+  const [subcommand, setSubcommand] = useState<Subcommand>(persisted.subcommand);
+  const [device, setDevice] = useState<string>(persisted.device);
+  const [dtype, setDtype] = useState<string>(persisted.dtype);
+  const [noInitWeights, setNoInitWeights] = useState<boolean>(persisted.noInitWeights);
+  const [saveCheckpoint, setSaveCheckpoint] = useState<boolean>(persisted.saveCheckpoint);
+  const [safetensors, setSafetensors] = useState<boolean>(persisted.safetensors);
+  const [gradientCheckpointing, setGradientCheckpointing] = useState<boolean>(
+    persisted.gradientCheckpointing,
+  );
+  const [fuseOptimWithBackward, setFuseOptimWithBackward] = useState<boolean>(
+    persisted.fuseOptimWithBackward,
+  );
+  const [loadFromCheckpoint, setLoadFromCheckpoint] = useState<string>(
+    persisted.loadFromCheckpoint,
+  );
 
-  const [priority, setPriority] = useState<number>(0);
+  const [batchSize, setBatchSize] = useState<string>(persisted.batchSize);
+  const [sequenceLength, setSequenceLength] = useState<string>(persisted.sequenceLength);
+  const [steps, setSteps] = useState<string>(persisted.steps);
+  const [lr, setLr] = useState<string>(persisted.lr);
+  const [packed, setPacked] = useState<boolean>(persisted.packed);
+  const [amp, setAmp] = useState<string>(persisted.amp);
+
+  const [priority, setPriority] = useState<number>(persisted.priority);
+
+  // Mirror operator edits back into localStorage. Same shape as the
+  // initial seed so loadPersisted can read it on the next mount.
+  useEffect(() => {
+    persistSet(
+      storageKey,
+      JSON.stringify({
+        subcommand,
+        device,
+        dtype,
+        noInitWeights,
+        saveCheckpoint,
+        safetensors,
+        gradientCheckpointing,
+        fuseOptimWithBackward,
+        loadFromCheckpoint,
+        batchSize,
+        sequenceLength,
+        steps,
+        lr,
+        packed,
+        amp,
+        priority,
+      } satisfies PersistedModelSubmit),
+    );
+  }, [
+    storageKey,
+    subcommand,
+    device,
+    dtype,
+    noInitWeights,
+    saveCheckpoint,
+    safetensors,
+    gradientCheckpointing,
+    fuseOptimWithBackward,
+    loadFromCheckpoint,
+    batchSize,
+    sequenceLength,
+    steps,
+    lr,
+    packed,
+    amp,
+    priority,
+  ]);
+
+  // Meta device can't hold real weights, so save_checkpoint and
+  // load_from_checkpoint don't apply. Effective values mask out the
+  // operator's stored intent when device == "meta" — UI shows them
+  // unchecked + disabled and submit ignores them. The raw state
+  // stays intact so a flip back to cpu/cuda restores the prior
+  // intent.
+  const metaDevice = device === "meta";
+  const effectiveSaveCheckpoint = saveCheckpoint && !metaDevice;
+  const effectiveLoadFromCheckpoint = metaDevice ? "" : loadFromCheckpoint;
 
   // GPU reservation is implicit: cuda → 1, otherwise 0. The launcher
   // restricts the spawned process to that single GPU via
@@ -208,6 +339,15 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
     ]);
   }, [subcommand, batchSize, sequenceLength, steps, lr]);
 
+  // no-init-weights leaves parameters uninitialized; without a
+  // Load-from-checkpoint path those random-bit weights become the
+  // model's actual weights. Almost always an operator error, so
+  // block submit instead of letting it through. Device==meta is
+  // exempted: meta tensors have no storage to populate either way,
+  // and the noInitWeights checkbox is meaningless in that mode.
+  const noInitWithoutLoad =
+    noInitWeights && !metaDevice && !loadFromCheckpoint.trim();
+
   const submitBlockedReason: string | undefined =
     missingRequired.length > 0
       ? `Required arg(s) missing: ${missingRequired.map((a) => a.cli_name).join(", ")}`
@@ -215,7 +355,9 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
         ? `Out-of-range value(s): ${outOfBounds.map((a) => a.cli_name).join(", ")}`
         : builtinViolations.length > 0
           ? `Invalid value(s): ${builtinViolations.join("; ")}`
-          : undefined;
+          : noInitWithoutLoad
+            ? "no-init-weights requires a Load-from-checkpoint path (otherwise the model would run with random uninitialized weights)"
+            : undefined;
 
   const submit = () => {
     const schema = argsQ.data ?? [];
@@ -224,14 +366,17 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
       subcommand,
       device,
       no_init_weights: noInitWeights,
-      refresh_model: refreshModel,
-      save_checkpoint: saveCheckpoint,
+      // Mask the meta-incompatible knobs out at submit time so a
+      // stale operator preference can't sneak through if the meta-
+      // device disable logic is ever bypassed.
+      save_checkpoint: effectiveSaveCheckpoint,
       safetensors,
       gradient_checkpointing: gradientCheckpointing,
       fuse_optim_with_backward: fuseOptimWithBackward,
     };
     if (dtype) params.dtype = dtype;
-    if (loadFromCheckpoint) params.load_from_checkpoint = loadFromCheckpoint;
+    if (effectiveLoadFromCheckpoint)
+      params.load_from_checkpoint = effectiveLoadFromCheckpoint;
     if (subcommand === "test") {
       const bs = Number(batchSize);
       const sl = Number(sequenceLength);
@@ -347,7 +492,7 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
           </div>
 
           <div className="submit-row">
-            <label title="Skip parameter initialization (saves time when weights will be loaded from a checkpoint anyway).">
+            <label title="Skip parameter initialization (saves time when weights will be loaded from a checkpoint anyway). Requires a Load-from-checkpoint path on non-meta devices — otherwise the model runs with uninitialized random weights.">
               <input
                 type="checkbox"
                 checked={noInitWeights}
@@ -355,27 +500,35 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
               />
               no-init-weights
             </label>
-            <label title="Delete the model's output_dir before constructing — forces regeneration of generated model code from sources.">
+            <label
+              title={
+                metaDevice
+                  ? "Disabled on the meta device: meta tensors have no real storage so there's nothing to checkpoint."
+                  : "After construction, save the model weights as a checkpoint into the model's output_dir."
+              }
+              style={metaDevice ? { opacity: 0.5 } : undefined}
+            >
               <input
                 type="checkbox"
-                checked={refreshModel}
-                onChange={(e) => setRefreshModel(e.target.checked)}
-              />
-              refresh-model
-            </label>
-            <label title="After construction, save the model weights as a checkpoint into the model's output_dir.">
-              <input
-                type="checkbox"
-                checked={saveCheckpoint}
+                checked={effectiveSaveCheckpoint}
                 onChange={(e) => setSaveCheckpoint(e.target.checked)}
+                disabled={metaDevice}
               />
               save-checkpoint
             </label>
-            <label title="Use safetensors format for the saved checkpoint (only meaningful with save-checkpoint).">
+            <label
+              title={
+                effectiveSaveCheckpoint
+                  ? "Use safetensors format for the saved checkpoint."
+                  : "Only meaningful when save-checkpoint is enabled."
+              }
+              style={!effectiveSaveCheckpoint ? { opacity: 0.5 } : undefined}
+            >
               <input
                 type="checkbox"
                 checked={safetensors}
                 onChange={(e) => setSafetensors(e.target.checked)}
+                disabled={!effectiveSaveCheckpoint}
               />
               safetensors
             </label>
@@ -402,16 +555,25 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
 
           <div className="submit-row">
             <label
-              style={{ flex: 1 }}
-              title="Load weights from this checkpoint after construction. Requires a real device (not 'meta')."
+              style={{ flex: 1, opacity: metaDevice ? 0.5 : undefined }}
+              title={
+                metaDevice
+                  ? "Disabled on the meta device: meta tensors have no real storage to load weights into."
+                  : "Load weights from this checkpoint after construction. Required when no-init-weights is set."
+              }
             >
-              Load from checkpoint (optional)
+              Load from checkpoint{noInitWeights && !metaDevice ? " (required)" : " (optional)"}
               <PathField
-                value={loadFromCheckpoint}
+                value={effectiveLoadFromCheckpoint}
                 onChange={setLoadFromCheckpoint}
                 placeholder="/path/to/checkpoint"
-                title="Pick a checkpoint directory or file"
+                title={
+                  metaDevice
+                    ? "Disabled on the meta device"
+                    : "Pick a checkpoint directory or file"
+                }
                 wide
+                disabled={metaDevice}
               />
             </label>
           </div>
