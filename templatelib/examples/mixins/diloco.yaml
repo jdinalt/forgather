@@ -84,11 +84,8 @@
 -- endmacro
 
 
--- macro eval_pp_args()
-    ## DiLoCo work-unit dispatch is train-only by design — every
-    ## worker runs the full eval pass so metrics are averaged. The
-    ## generic load_dataset.yaml template splats this dict as kwargs
-    ## onto the eval load_method call via its ``<<:`` merge.
-    load_dataset_args:
-        diloco_work_dispatch: False
--- endmacro
+## ``eval_pp_args`` (removed): under the composable-level work-unit
+## dispatch design, eval bypass is configured at the partition level
+## (``shard_dataset: False`` for eval) by ``lm_training_project.yaml``
+## directly — every worker runs the full eval pass. No mixin
+## injection needed.

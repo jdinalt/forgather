@@ -30,8 +30,7 @@
 %}
 {% from "mixins/diloco.yaml" import
     callback_entry as dl_callback_entry,
-    dynamic_args as dl_dynamic_args,
-    eval_pp_args as dl_eval_pp_args
+    dynamic_args as dl_dynamic_args
     with context
 %}
 
@@ -73,9 +72,10 @@
 {{ ft_variable_listing(ns.model_id_or_path) }}
 
 
-[eval_dataset_project_pp_args]
-    == super()
-{{ dl_eval_pp_args() }}
+## (was: eval_pp_args injected diloco_work_dispatch: False. Under the
+## composable-level dispatch design, eval bypass is handled by
+## lm_training_project's shard_dataset: False override for the eval
+## dataset when DILOCO_SERVER is set — no per-leaf injection needed.)
 
 
 [construct_new_model]

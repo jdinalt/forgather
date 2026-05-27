@@ -1,9 +1,10 @@
 import logging
+import os
 import re
 from collections.abc import Sequence
 from contextlib import nullcontext
 from types import NoneType
-from typing import Any, Callable, Literal, Optional, Union
+from typing import Any, Callable, Literal, Optional, Tuple, Union
 
 from datasets.distributed import split_dataset_by_node
 from transformers import PreTrainedTokenizerBase
@@ -166,6 +167,90 @@ def default_tokenize_map_fn(
     return {"input_ids": outputs["input_ids"]}
 
 
+_PARTITION_METHODS = ("conventional", "work_units")
+
+
+def _resolve_partition_method(
+    shard_dataset: Optional[Union[bool, dict]],
+    has_diloco: bool,
+) -> Tuple[Optional[str], Optional[dict]]:
+    """Normalize ``shard_dataset`` into a (method, kwargs) pair.
+
+    Accepted shapes:
+
+    - ``None`` / ``False``                            → no partitioning.
+    - ``True``                                        → conventional shard via WORLD_SIZE/RANK.
+    - ``{"num_shards": N, "index": I}``               → legacy explicit conventional shard.
+    - ``{"method": "conventional", ...}``             → conventional shard. Extra
+      ``num_shards`` / ``index`` overrides WORLD_SIZE / RANK.
+    - ``{"method": "work_units"}``                    → DiLoCo work-unit dispatch.
+
+    Validity matrix (raises ``ValueError`` on the two error cells):
+
+    - ``method='work_units'`` requires ``DILOCO_SERVER`` set (otherwise
+      there's no server to dispatch from).
+    - ``method='conventional'`` (any form) combined with
+      ``DILOCO_SERVER`` set raises — under DiLoCo, conventional
+      sharding causes asymmetric-DDP row overlap (DDPx4 + DDPx8 hosts
+      produce overlapping shard offsets). Use ``method='work_units'``
+      so all ranks across all hosts share one dispatch queue.
+
+    Returns
+    -------
+    (method, kwargs)
+        ``method`` is one of ``"conventional"``, ``"work_units"``, or
+        ``None`` (no partitioning). ``kwargs`` is the
+        ``{num_shards, index}`` dict for ``"conventional"`` and
+        ``None`` for the other two cases.
+    """
+    if shard_dataset is None or shard_dataset is False:
+        return None, None
+
+    if shard_dataset is True:
+        method = "conventional"
+        kwargs = {"num_shards": get_world_size(), "index": get_rank()}
+    elif isinstance(shard_dataset, dict):
+        method = shard_dataset.get("method", "conventional")
+        if method not in _PARTITION_METHODS:
+            raise ValueError(
+                f"Unknown shard_dataset.method: {method!r}. "
+                f"Must be one of {_PARTITION_METHODS} or omitted "
+                "(defaults to 'conventional')."
+            )
+        if method == "conventional":
+            kwargs = {
+                "num_shards": shard_dataset.get("num_shards", get_world_size()),
+                "index": shard_dataset.get("index", get_rank()),
+            }
+        else:  # work_units
+            kwargs = None
+    else:
+        raise TypeError(
+            f"shard_dataset must be bool, dict, or None; got {type(shard_dataset).__name__}"
+        )
+
+    if method == "work_units" and not has_diloco:
+        raise ValueError(
+            "shard_dataset.method='work_units' requires DILOCO_SERVER "
+            "to be set in the environment — there's no server to "
+            "dispatch work units from. Either start a DiLoCo server "
+            "and set DILOCO_SERVER, or use "
+            "shard_dataset.method='conventional' (or omit method) for "
+            "standard DDP."
+        )
+    if method == "conventional" and has_diloco:
+        raise ValueError(
+            "shard_dataset.method='conventional' (or bool=True / "
+            "{num_shards, index}) combined with DiLoCo (DILOCO_SERVER "
+            "is set) causes asymmetric-DDP row overlap: hosts with "
+            "different WORLD_SIZE produce overlapping per-rank shard "
+            "offsets and train on the same rows. Use "
+            "shard_dataset.method='work_units' so all DDP ranks across "
+            "all DiLoCo hosts compete for units in one shared queue."
+        )
+    return method, kwargs
+
+
 def preprocess_dataset(
     dataset: HFDataset | HFIterableDataset | IterableDatasetWithLength,
     tokenizer: PreTrainedTokenizerBase,
@@ -223,9 +308,25 @@ def preprocess_dataset(
         Explicitly specify dataset type.
     dataset_length : int or None, optional
         Set dataset length, when no __len__ is available.
-    shard_dataset : bool or dict or None, optional
-        Shard the dataset for distributed training.
-        If bool and True, num_shards defaults to WORLD_SIZE and index to RANK.
+    shard_dataset : bool, dict, or None, optional
+        Configure how the dataset is partitioned across DDP ranks.
+
+        - ``None`` / ``False``: no partitioning (single-host or
+          dispatch_batches mode).
+        - ``True``: conventional sharding via WORLD_SIZE / RANK.
+        - ``{"num_shards": N, "index": I}``: explicit conventional
+          shard (legacy form; equivalent to
+          ``{"method": "conventional", "num_shards": N, "index": I}``).
+        - ``{"method": "conventional", ...}``: conventional shard. Can
+          override ``num_shards`` / ``index``.
+        - ``{"method": "work_units"}``: DiLoCo work-unit dispatch.
+          Requires ``DILOCO_SERVER`` to be set; all DDP ranks across
+          all DiLoCo hosts compete for units in one shared queue.
+
+        Combining ``conventional`` with DiLoCo is rejected at preprocess
+        time — different host topologies (e.g. DDPx4 vs DDPx8) produce
+        overlapping shard offsets. Combining ``work_units`` without
+        DiLoCo is also rejected (no server to dispatch from).
 
     Returns
     -------
@@ -237,25 +338,24 @@ def preprocess_dataset(
         dataset_type is None or dataset_type == "map" or dataset_type == "iterable"
     ), "dataset_type must be one of None, 'map', or 'iterable'"
 
-    if shard_dataset is not None:
-        # Set defaults for bool shard_dataset
-        if isinstance(shard_dataset, bool):
-            if shard_dataset:
-                shard_dataset = dict(
-                    num_shards=get_world_size(),
-                    index=get_rank(),
-                )
-            else:
-                shard_dataset = None
+    # Resolve the partition method up-front so misconfiguration (e.g.
+    # work_units without DILOCO_SERVER) fails at preprocess time
+    # rather than mid-training when the dispatch loop fires.
+    has_diloco = bool(os.environ.get("DILOCO_SERVER", "").strip())
+    partition_method, partition_kwargs = _resolve_partition_method(
+        shard_dataset, has_diloco=has_diloco
+    )
 
     # This ensures that the dataset is preprocessed by rank0 and cached before other
     # ranks join in. In the context of Huggingface datasets, the result is that the
     # preprocessed dataset will be cached by rank0 and the cached dataset will be loaded
     # by the other ranks, which avoid potential race conditions and duplicate work.
     #
-    # If "shard_dataset" is set, each rank is expected to have its own shard, in which case
-    # we don't want to use main_process_first()
-    with main_process_first() if shard_dataset is None else nullcontext():
+    # If we're partitioning per rank (conventional shard or work-unit
+    # dispatch), each rank is expected to handle its own slice — don't
+    # take the main_process_first() lock.
+    use_main_first = partition_method is None
+    with main_process_first() if use_main_first else nullcontext():
         if fn_kwargs is None:
             fn_kwargs = dict()
 
@@ -287,9 +387,9 @@ def preprocess_dataset(
             ), "This dataset does not appear to support the 'select' API"
             dataset = dataset.select(select_range)
 
-        if shard_dataset is not None:
-            world_size = shard_dataset["num_shards"]
-            rank = shard_dataset["index"]
+        if partition_method == "conventional":
+            world_size = partition_kwargs["num_shards"]
+            rank = partition_kwargs["index"]
 
             # As an optimization, skip sharding output would be the same as the input
             if world_size > 1:
@@ -313,6 +413,23 @@ def preprocess_dataset(
                         num_shards=world_size,
                         index=rank,
                     )
+        elif partition_method == "work_units":
+            # DiLoCo work-unit dispatch — server-driven row partitioning
+            # that subsumes conventional sharding. The wrap operates on
+            # the composable's post-slice view bounds (and refuses to
+            # compose with an already-applied shard).
+            if not isinstance(dataset, ComposableIterableDataset):
+                raise TypeError(
+                    "shard_dataset.method='work_units' is only "
+                    "supported on ComposableIterableDataset (the "
+                    "dispatch loop reads slice bounds and load_args "
+                    "off the wrapper). Got "
+                    f"{type(dataset).__name__} — load via "
+                    "fast_load_iterable_dataset."
+                )
+            from .work_unit_dispatch import maybe_enable_work_dispatch
+
+            dataset = maybe_enable_work_dispatch(dataset)
 
         # Map-style dataset?
         if (dataset_type and dataset_type == "map") or isinstance(dataset, HFDataset):

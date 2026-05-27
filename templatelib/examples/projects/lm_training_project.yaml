@@ -426,7 +426,20 @@
     <<: &common_dataset_args
         preprocess_args: *tokenizer_args
         tokenizer: *tokenizer
-        shard_dataset: {{ ns.dispatch_batches == False }}
+    ## Train partitioning. Under DiLoCo: work-unit dispatch (server
+    ## hands out row ranges; all DDP ranks across all hosts share one
+    ## queue, so asymmetric DDPx4 / DDPx8 hosts compose cleanly).
+    ## Otherwise: conventional DDP shard when not dispatching batches.
+    ## NB: ``shard_dataset`` is intentionally a SIBLING of ``<<:`` (4
+    ## spaces, same as ``<<:`` itself) so it overrides any value the
+    ## merge would otherwise pull in — common_dataset_args no longer
+    ## carries shard_dataset because train and eval pick different
+    ## values under DiLoCo.
+    -- if getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server)
+    shard_dataset: { method: "work_units" }
+    -- else
+    shard_dataset: {{ ns.dispatch_batches == False }}
+    -- endif
 
     [eval_dataset_project]
 .define: &eval_dataset_dict !call:forgather:from_project
@@ -435,6 +448,16 @@
     targets: [ "eval_dataset" ]
     pp_kwargs: *eval_dataset_project_pp_args
     <<: *common_dataset_args
+    ## Eval partitioning. Under DiLoCo: every worker runs the full
+    ## eval pass and metrics are averaged across workers — no
+    ## sharding (which would otherwise give asymmetric DDP topologies
+    ## different rows). Otherwise: conventional DDP shard when not
+    ## dispatching batches.
+    -- if getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server)
+    shard_dataset: False
+    -- else
+    shard_dataset: {{ ns.dispatch_batches == False }}
+    -- endif
 
     [dataset_splits]
 train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]
