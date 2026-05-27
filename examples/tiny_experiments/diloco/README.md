@@ -54,41 +54,52 @@ forwarding or `--host 0.0.0.0` (see `docs/trainers/diloco.md` for details).
 
 ### 3. Start Workers
 
-Each worker needs a unique dataset shard. With 2 workers, use `--num-shards 2`
-and assign each worker a different `--shard-index`.
+Each worker needs a unique `--worker-id`. The project template appends that
+id to the model name (`ns.model_name = "tinyv2_" + worker_id`) so each worker
+lands in its own output directory — no race on checkpoints / logs / generation
+samples.
+
+Manual dataset sharding (`--num-shards` / `--shard-index`) has been removed.
+For a single-node smoke run like this one, all workers iterate the full
+dataset and average pseudo-gradients via DiLoCo; for a multi-node run with
+distinct dataset slices per worker, point all workers at a shared
+`forgather dataset_server` and the DiLoCo server's work-unit dispatch will
+hand out non-overlapping row ranges automatically.
 
 **Option A: Using `forgather diloco worker` CLI** (recommended):
 
-Note that the `-d N` arguments are equivalent to `CUDA_VISIBLE_DEVICES=N`, which controls
-which GPUs are avaialble to each worker.
+`-d N` maps to `CUDA_VISIBLE_DEVICES=N` and controls which GPU the worker sees.
 
 ```bash
-# Worker A (shard 0)
+# Worker A
 forgather diloco worker \
     --server localhost:8512 \
     --sync-every 500 \
+    --worker-id w0 \
     -t default.yaml \
-    train --num-shards 2 --shard-index 0 -d 0
+    train -d 0
 
-# Worker B (shard 1)
+# Worker B
 forgather diloco worker \
     --server localhost:8512 \
     --sync-every 500 \
+    --worker-id w1 \
     -t default.yaml \
-    train --num-shards 2 --shard-index 1 -d 1
+    train -d 1
 ```
 
-Note: If you only have a single GPU, you can run both workers on the same GPU by setting `-d 0` on both. It will not train any faster than with a single GPU, but it at least allows for testing.
+If you only have a single GPU, you can run both workers on the same GPU by
+setting `-d 0` on both. It won't train any faster than a single-GPU run, but
+it lets you smoke-test the DiLoCo flow.
 
-**Option B: Using dynamic args** (configuration-level control):
+**Option B: Using env vars** (configuration-level control):
 
 ```bash
-DILOCO_SERVER=localhost:8512 DILOCO_SYNC_EVERY=500 \
-forgather -t default.yaml \
-    train --num-shards 2 --shard-index 0
+DILOCO_SERVER=localhost:8512 DILOCO_SYNC_EVERY=500 DILOCO_WORKER_ID=w0 \
+forgather -t default.yaml train
 ```
 
-**Option C: Standalone** (no server, callback is a no-op):
+**Option C: Standalone** (no server, callback isn't constructed):
 
 ```bash
 forgather -t default.yaml train
@@ -139,6 +150,7 @@ forgather checkpoint link -f
 
 | Config | Description |
 |--------|-------------|
+| `baseline.yaml` | Non-DiLoCo baseline (same tinyv2 hyperparameters, for comparison) |
 | `default.yaml` | Basic DiLoCo training with standard full-model sync |
 | `streaming.yaml` | DiLoCo with 4-fragment streaming for overlapped communication |
 
@@ -146,31 +158,37 @@ forgather checkpoint link -f
 
 | Argument | Description |
 |----------|-------------|
-| `--num-shards N` | Number of dataset shards (set to number of workers) |
-| `--shard-index I` | Dataset shard index for this worker (0-based) |
 | `--diloco-server HOST:PORT` | DiLoCo server address |
 | `--diloco-sync-every N` | Local optimizer steps between syncs |
-| `--diloco-worker-id ID` | Unique worker ID |
-| `--diloco-no-bf16` | Disable bfloat16 pseudo-gradient compression |
+| `--diloco-worker-id ID` | Unique worker identity (also drives the output-dir suffix) |
+| `--diloco-bf16-comm` | Cast pseudo-gradients to bf16 before sending (default on) |
 | `--diloco-dylu` | Enable Dynamic Local Updates |
-| `--diloco-heartbeat SECS` | Seconds between heartbeats |
+| `--diloco-heartbeat-interval SECS` | Seconds between heartbeats |
 | `--diloco-fragments N` | Number of streaming fragments |
 
 ## How It Works
 
 The `DiLoCoCallback` bridges the DiLoCo worker system with Forgather's trainer:
 
-1. **on_train_begin**: Creates and starts a `DiLoCoWorker` that hooks into the
-   optimizer. Every `sync_every` steps, pseudo-gradients are sent to the server.
+1. **on_train_begin**: Verifies the configured DiLoCo server is reachable
+   (`/status` round-trip), then creates and starts a `DiLoCoWorker` that hooks
+   into the optimizer. Every `sync_every` steps, pseudo-gradients are sent to
+   the server. If the server is unset or unreachable, training aborts here
+   instead of silently running as a no-op.
 2. **on_log**: Injects DiLoCo metrics (sync_count, sync_time, bandwidth) into
    the training logs.
 3. **on_train_end**: Stops the worker and deregisters from the server.
 4. **Checkpointing**: The callback implements `Stateful`, so sync progress is
    automatically saved and restored by the checkpoint manager.
 
-When no server address is configured (no `--diloco-server`, no `DILOCO_SERVER`
-env var), the callback does nothing, allowing the same configuration for
-standalone training.
+When no server is configured (`DILOCO_SERVER` unset and `--diloco-server`
+not passed), the template gates the callback include off entirely — the same
+config behaves as a vanilla tinyv2 single-node training run.
+
+The DiLoCo-specific YAML lives in `templatelib/examples/mixins/diloco.yaml`
+and is composed into this project's `templates/project.yaml` via `{% from %}`
+macro imports. See that mixin file for the full list of injected fragments
+(callback singleton, dynamic args, eval-bypass kwargs).
 
 ## Dataset Sharding
 

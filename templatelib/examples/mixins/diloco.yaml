@@ -9,6 +9,13 @@
 ## (e.g. ns.model_name += "_" + worker_id) stays in the leaf — see
 ## the worker_id_suffix invocation pattern below.
 ##
+## **Import with context**: callers must use
+## ``{% from "mixins/diloco.yaml" import … with context %}``. Without
+## ``with context`` the macro can't see the caller's Jinja variables,
+## so ``-- set diloco_num_fragments = 4`` in a leaf would render as
+## ``num_fragments: null`` instead of ``4``. The current Forgather
+## dynamic-args also need the context to flow through.
+##
 ## Activation: ``DILOCO_SERVER`` env var (set by the scheduler when
 ## DiLoCo is enabled) OR the ``--diloco-server`` Jinja var (CLI
 ## override). When neither is set the callback should be gated off

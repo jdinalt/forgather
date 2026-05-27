@@ -26,11 +26,13 @@
 {% from "mixins/finetune.yaml" import
     variable_listing as ft_variable_listing,
     dynamic_args as ft_dynamic_args
+    with context
 %}
 {% from "mixins/diloco.yaml" import
     callback_entry as dl_callback_entry,
     dynamic_args as dl_dynamic_args,
     eval_pp_args as dl_eval_pp_args
+    with context
 %}
 
 
@@ -103,7 +105,7 @@
 
 #-------------------- diloco_callbacks_subtemplate --------------------
 -- extends 'callbacks/lm_callbacks.yaml'
-{% from "mixins/diloco.yaml" import callback_entry as dl_callback_entry %}
+{% from "mixins/diloco.yaml" import callback_entry as dl_callback_entry with context %}
 
 [callback_list]
     => super()
