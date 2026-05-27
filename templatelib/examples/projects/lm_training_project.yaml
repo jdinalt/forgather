@@ -414,13 +414,16 @@
     [dataset_project_pp_args]
 .define: &dataset_project_pp_args !dict
 
+    [eval_dataset_project_pp_args]
+.define: &eval_dataset_project_pp_args !dict
+
     [dataset_project]
 .define: &dataset_dict !call:forgather:from_project
     project_dir: "{{ ns.dataset_proj }}"
     config_template: "{{ ns.dataset_config }}"
     targets: [ "train_dataset" ]
+    pp_kwargs: *dataset_project_pp_args
     <<: &common_dataset_args
-        pp_kwargs: *dataset_project_pp_args
         preprocess_args: *tokenizer_args
         tokenizer: *tokenizer
         shard_dataset: {{ ns.dispatch_batches == False }}
@@ -430,6 +433,7 @@
     project_dir: "{{ ns.eval_dataset_proj }}"
     config_template: "{{ ns.eval_dataset_config }}"
     targets: [ "eval_dataset" ]
+    pp_kwargs: *eval_dataset_project_pp_args
     <<: *common_dataset_args
 
     [dataset_splits]

@@ -64,9 +64,10 @@
     == super()
 # ns.model_id_or_path: {{ ns.model_id_or_path }}
 
-[dataset_project_pp_args]
+[eval_dataset_project_pp_args]
     == super()
-    shard_eval: False
+    load_dataset_args:
+        diloco_work_dispatch: False
 
 [construct_new_model]
     -- include 'models/causal_lm/from_pretrained_config.yaml'
