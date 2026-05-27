@@ -258,6 +258,15 @@ class DiLoCoWorker:
             "sync_every": self.sync_every,
             "bf16_comm": self.bf16_comm,
             "dylu": self.dylu,
+            # Structural model fingerprint. Server compares against
+            # its own param set + shapes and 422s on mismatch — see
+            # DiLoCoModelMismatchError. Catches the "operator pointed
+            # this worker at the wrong --model-id-or-path" case at
+            # register time instead of letting it surface 500 steps
+            # later in the first sync's optimizer step.
+            "param_shapes": {
+                name: list(p.shape) for name, p in self.model.named_parameters()
+            },
         }
 
         # Add GPU info if available

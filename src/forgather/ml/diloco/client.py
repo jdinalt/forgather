@@ -26,6 +26,67 @@ import torch
 logger = logging.getLogger(__name__)
 
 
+class DiLoCoModelMismatchError(ConnectionError):
+    """Raised when ``/register`` returns HTTP 422 for a model fingerprint
+    mismatch.
+
+    Workers send a ``param_shapes`` map (``{name: [d0, d1, …]}``) for
+    every entry in ``self.model.named_parameters()``. The server
+    compares against its own param set + shapes. Mismatches are
+    fatal — without this check, a wrong ``--model-id-or-path`` on a
+    worker would silently train a different architecture against the
+    server's global weights and crash hundreds of steps later in the
+    first sync's optimizer step. Same failure mode as #45 but caused
+    by operator misconfiguration rather than save/load mechanics.
+
+    Inherits from ConnectionError so legacy broad-catch callers still
+    work; new callers can branch on the specific type.
+    """
+
+    def __init__(self, message: str, *, diagnostic: str = ""):
+        super().__init__(message)
+        self.diagnostic = diagnostic
+
+
+class DiLoCoServerUnreachable(ConnectionError):
+    """Raised when the DiLoCo server can't be contacted at startup.
+
+    The DiLoCoCallback does a ``/status`` round-trip in
+    ``on_train_begin`` before constructing the worker; if the server
+    URL is wrong, the server is down, or a firewall is in the way,
+    we fail loudly here rather than letting training begin and then
+    diverging silently when the first sync 500 steps later fails.
+
+    Inherits from ConnectionError so callers catching the broader
+    type still work; new callers can branch on the specific type.
+    """
+
+    pass
+
+
+class DiLoCoRegisterCollisionError(ConnectionError):
+    """Raised when ``/register`` returns HTTP 409.
+
+    The server enforces ``worker_id`` uniqueness (see
+    docs/design/diloco-work-unit-dispatch.md): a second registration of
+    an already-live ``worker_id`` is refused with 409 + a diagnostic.
+    Workers that catch this should treat it as a fatal clean-exit
+    (re-registering won't succeed until the prior entry is evicted by
+    heartbeat timeout or cleared via /deregister).
+
+    Inherits from ConnectionError so legacy callers that catch the
+    broader exception type continue to work. New callers can match the
+    specific type to branch on the collision case.
+    """
+
+    def __init__(self, message: str, *, diagnostic: str = ""):
+        super().__init__(message)
+        # The server's diagnostic body (e.g. the "worker_id 'X' is
+        # already registered…" string) — surfaced separately so
+        # callers can log it cleanly without re-parsing the message.
+        self.diagnostic = diagnostic
+
+
 class DiLoCoClient:
     """
     HTTP client for DiLoCo parameter server communication.
@@ -97,6 +158,22 @@ class DiLoCoClient:
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                # Server-side 4xx/5xx — the response is the server's
+                # authoritative answer. Retrying wouldn't change it.
+                # 409 in particular is the work-queue's
+                # length-mismatch / worker_id-collision signal and
+                # the caller needs to see it promptly. Surface the
+                # status code + the server's diagnostic body so the
+                # caller can branch on "HTTP 409" cleanly.
+                try:
+                    error_body = e.read().decode("utf-8", errors="replace")
+                    error_detail = json.loads(error_body).get("error", error_body)
+                except Exception:
+                    error_detail = str(e)
+                raise ConnectionError(
+                    f"Server returned HTTP {e.code} for {url}: {error_detail}"
+                ) from e
             except urllib.error.URLError as e:
                 if attempt < max_retries:
                     logger.warning(
@@ -205,6 +282,42 @@ class DiLoCoClient:
                         f"Registered with server as {worker_id}, received global params"
                     )
                     return params
+            except urllib.error.HTTPError as e:
+                # HTTPError is a URLError subclass but the response IS
+                # from the server (it just isn't 2xx). Retrying won't
+                # change the outcome — 409 in particular is the explicit
+                # uniqueness-collision signal and the worker needs to
+                # see it promptly. Fast-fail with the status code +
+                # server diagnostic body so callers can branch on
+                # "HTTP 409" cleanly.
+                try:
+                    error_body = e.read().decode("utf-8", errors="replace")
+                    error_detail = json.loads(error_body).get("error", error_body)
+                except Exception:
+                    error_detail = str(e)
+                if e.code == 409:
+                    # Type-distinguished so callers can match the
+                    # collision case specifically. Still a
+                    # ConnectionError subclass for back-compat with
+                    # broad exception handlers.
+                    raise DiLoCoRegisterCollisionError(
+                        f"DiLoCo /register returned HTTP 409: {error_detail}",
+                        diagnostic=error_detail,
+                    ) from e
+                if e.code == 422:
+                    # Model fingerprint mismatch: worker's
+                    # param_shapes don't agree with the server's
+                    # _param_list. Operator likely pointed the
+                    # worker at the wrong --model-id-or-path. Surface
+                    # the diagnostic loudly so the TTY pane shows
+                    # the divergent params.
+                    raise DiLoCoModelMismatchError(
+                        f"DiLoCo /register returned HTTP 422: {error_detail}",
+                        diagnostic=error_detail,
+                    ) from e
+                raise ConnectionError(
+                    f"DiLoCo /register returned HTTP {e.code}: {error_detail}"
+                ) from e
             except urllib.error.URLError as e:
                 if attempt < self.max_retries:
                     logger.warning(
@@ -323,3 +436,89 @@ class DiLoCoClient:
     def get_status(self) -> dict:
         """Get server status."""
         return self._request_json("GET", "/status")
+
+    # ------------------------------------------------------------------
+    # Work-unit dispatch (see docs/design/diloco-work-unit-dispatch.md)
+    # ------------------------------------------------------------------
+
+    def register_dataset(
+        self,
+        worker_id: str,
+        dataset_id: str,
+        shuffle_seed: int,
+        hint: dict,
+    ) -> dict:
+        """Register (or confirm) a ``(dataset_id, shuffle_seed)`` work queue.
+
+        Returns ``{"total_units": K}`` — the configured per-queue
+        K from the server. Subsequent registrations of the same
+        (dataset_id, shuffle_seed) return the same value.
+
+        Raises on 409 (length mismatch against a prior registration of
+        the same dataset_id) — the worker should treat this as a fatal
+        config error and exit.
+        """
+        return self._request_json(
+            "POST",
+            "/datasets/register",
+            {
+                "worker_id": worker_id,
+                "dataset_id": dataset_id,
+                "shuffle_seed": int(shuffle_seed),
+                "hint": hint,
+            },
+        )
+
+    def request_work(self, worker_id: str, dataset_id: str, shuffle_seed: int) -> dict:
+        """Ask the server for the next available work unit.
+
+        Returns ``{"unit_id": int}`` or ``{"exhausted": true}`` when
+        the queue is drained.
+        """
+        return self._request_json(
+            "POST",
+            "/work/request",
+            {
+                "worker_id": worker_id,
+                "dataset_id": dataset_id,
+                "shuffle_seed": int(shuffle_seed),
+            },
+        )
+
+    def complete_work(
+        self,
+        worker_id: str,
+        dataset_id: str,
+        shuffle_seed: int,
+        unit_id: int,
+    ) -> dict:
+        """Mark a unit as confirmed-completed (diagnostic only).
+
+        Idempotent. Workers can skip this — issuance is one-way and
+        nothing about the queue's correctness path depends on
+        completion acks.
+        """
+        return self._request_json(
+            "POST",
+            "/work/complete",
+            {
+                "worker_id": worker_id,
+                "dataset_id": dataset_id,
+                "shuffle_seed": int(shuffle_seed),
+                "unit_id": int(unit_id),
+            },
+        )
+
+    def get_work_queues(self) -> list:
+        """List all active work queues (summaries only, no bitmaps)."""
+        return self._request_json("GET", "/work/queues")
+
+    def get_work_queue(self, dataset_id: str, shuffle_seed: int) -> dict:
+        """Get full state of a single queue including base64 bitmaps."""
+        from urllib.parse import quote
+
+        path = (
+            f"/work/queue?dataset_id={quote(dataset_id, safe='')}"
+            f"&shuffle_seed={int(shuffle_seed)}"
+        )
+        return self._request_json("GET", path)

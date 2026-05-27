@@ -21,6 +21,8 @@ import { InferenceModal } from "./components/InferenceModal";
 import { DatasetServerModal } from "./components/DatasetServerModal";
 import { InferencePanel } from "./components/InferencePanel";
 import { DatasetsPanel } from "./components/DatasetsPanel";
+import { DiLoCoPanel } from "./components/DiLoCoPanel";
+import { DiLoCoServerModal } from "./components/DiLoCoServerModal";
 import type { SelectedLeaf } from "./components/DatasetsExploreTab";
 import { JobsPanel } from "./components/JobsPanel";
 import { ServicesPanel } from "./components/ServicesPanel";
@@ -49,7 +51,8 @@ type View =
   | "jobs"
   | "queue"
   | "inference"
-  | "datasets";
+  | "datasets"
+  | "diloco";
 export type ConfigTab = "info" | "pp" | "code" | "graph" | "templates" | "debug";
 
 // View metadata. "GPUs" is always the local node's GPU panel; "Nodes"
@@ -69,6 +72,7 @@ const VIEWS: { id: View; label: string; icon: string; clusterOnly?: boolean }[] 
     { id: "jobs", label: "Jobs", icon: "⚙" },
     { id: "inference", label: "Inference", icon: "🔮" },
     { id: "datasets", label: "Datasets", icon: "🗂" },
+    { id: "diloco", label: "DiLoCo", icon: "⚡" },
   ];
 
 // A window glyph with a left-biased vertical divider — represents the
@@ -304,6 +308,7 @@ export default function App() {
   const [datasetServerOpen, setDatasetServerOpen] = useState(false);
   const [tensorboardOpen, setTensorboardOpen] = useState(false);
   const [mkdocsOpen, setMkdocsOpen] = useState(false);
+  const [dilocoServerOpen, setDilocoServerOpen] = useState(false);
   // Edit-service state: when set, the matching modal is rendered in
   // edit mode pre-populated from this service's args. Single piece of
   // state — only one edit modal is open at a time. Dispatched from
@@ -398,6 +403,21 @@ export default function App() {
   }, []);
   const clearPendingDatasetServer = useCallback(
     () => setPendingDatasetServer(null),
+    [],
+  );
+
+  // Same pattern for the DiLoCo view: a Job card's "Open in DiLoCo"
+  // button stamps a pending queueId, the panel reads it once, then
+  // calls clear so the auto-pick logic resumes.
+  const [pendingDiLoCoServer, setPendingDiLoCoServer] = useState<
+    { queueId: string; key: number } | null
+  >(null);
+  const openDiLoCoServer = useCallback((queueId: string) => {
+    setPendingDiLoCoServer({ queueId, key: Date.now() });
+    setView("diloco");
+  }, []);
+  const clearPendingDiLoCoServer = useCallback(
+    () => setPendingDiLoCoServer(null),
     [],
   );
 
@@ -824,7 +844,7 @@ export default function App() {
     // Filled in for entries under "Services" — the backend service
     // type each launcher creates instances of. Used to fan out the
     // configured-service list under the matching launcher row.
-    serviceType?: "inference" | "dataset" | "tensorboard" | "mkdocs";
+    serviceType?: "inference" | "dataset" | "tensorboard" | "mkdocs" | "diloco";
   }
 
   // Long-running spawned processes the operator wants to launch and
@@ -870,6 +890,16 @@ export default function App() {
       docRelpath: "docs/guides/mkdocs.md",
       mkdocsSlug: "guides/mkdocs/",
       serviceType: "mkdocs",
+    },
+    {
+      icon: "⚡",
+      label: "DiLoCo…",
+      title:
+        "Start a DiLoCo parameter server. CPU-only, long-lived; holds global model parameters and accepts pseudo-gradient submissions from workers over HTTP.",
+      onOpen: () => setDilocoServerOpen(true),
+      docRelpath: "docs/trainers/diloco.md",
+      mkdocsSlug: "trainers/diloco/",
+      serviceType: "diloco",
     },
   ];
 
@@ -1443,6 +1473,7 @@ export default function App() {
             onAutoWatchConsumed={() => setAutoWatchJobId(null)}
             onOpenInferenceServer={openInferenceServer}
             onOpenDatasetServer={openDatasetServer}
+            onOpenDiLoCoServer={openDiLoCoServer}
           />
         </div>
         <div
@@ -1475,6 +1506,15 @@ export default function App() {
             onServerPickConsumed={clearPendingDatasetServer}
           />
         </div>
+        <div
+          className="view-panel"
+          style={view === "diloco" ? undefined : { display: "none" }}
+        >
+          <DiLoCoPanel
+            pendingServerPick={pendingDiLoCoServer}
+            onServerPickConsumed={clearPendingDiLoCoServer}
+          />
+        </div>
       </div>
 
       {startServerOpen && (
@@ -1505,6 +1545,13 @@ export default function App() {
       {mkdocsOpen && (
         <MkDocsModal
           onClose={() => setMkdocsOpen(false)}
+          onSubmitted={onJobSubmitted}
+          onServiceCreated={expandServicesCategory}
+        />
+      )}
+      {dilocoServerOpen && (
+        <DiLoCoServerModal
+          onClose={() => setDilocoServerOpen(false)}
           onSubmitted={onJobSubmitted}
           onServiceCreated={expandServicesCategory}
         />
@@ -1551,6 +1598,17 @@ export default function App() {
       )}
       {editingService && editingService.service.type === "mkdocs" && (
         <MkDocsModal
+          editingService={{
+            name: editingService.service.name,
+            enabled: editingService.service.enabled,
+            running: editingService.running,
+            args: editingService.service.args,
+          }}
+          onClose={() => setEditingService(null)}
+        />
+      )}
+      {editingService && editingService.service.type === "diloco" && (
+        <DiLoCoServerModal
           editingService={{
             name: editingService.service.name,
             enabled: editingService.service.enabled,

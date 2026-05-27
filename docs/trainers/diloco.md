@@ -125,35 +125,50 @@ forgather diloco server -o path/to/output --from-checkpoint output_models/my_mod
 
 ### 2. Start Workers
 
-On each machine, launch a worker that wraps the normal training command:
+On each machine, launch a worker that wraps the normal training command.
+Each worker needs a unique `--worker-id` so its output directory doesn't
+collide with the others (the project template appends the worker id to
+`ns.model_name`):
 
 ```bash
 # sync mode
 forgather diloco worker \
+    --server 192.168.1.100:8512 \
     --sync-every 500 \
+    --worker-id w0 \
     -p my_project -t train.yaml \
-    train --num-shards 2 --shard-index 0 -d 0
+    train -d 0
 
 # with DyLU - server adjusts sync frequency dynamically
 forgather diloco worker \
     --server 192.168.1.100:8512 \
     --sync-every 500 \
+    --worker-id w1 \
     --dylu \
     --heartbeat-interval 30 \
     -p my_project -t train.yaml \
-    train --num-shards 2 --shard-index 1 -d 1
+    train -d 1
 ```
 
 Worker arguments:
 - `--server`: Server address as `host:port`
 - `--sync-every`: Local steps between syncs (default: 500)
-- `--worker-id`: Optional unique ID (auto-generated if omitted)
+- `--worker-id`: Unique worker identity. Drives the per-worker output-dir
+  suffix the project template appends to `ns.model_name`, and the
+  uniqueness key the server enforces on `/register`. Auto-generated when
+  omitted but operators typically set it explicitly so logs / output dirs
+  are predictable.
 - `--no-bf16`: Send full-precision pseudo-gradients instead of bfloat16
 - `--dylu`: Enable dynamic sync frequency adjustment from server
 - `--heartbeat-interval`: Seconds between heartbeats for speed reporting (default: 30)
-- `--num-shards`: Number of shards to split the dataset into
-- `--shard-index`: Which shard to train on
 - `-d`: CUDA visible devices
+
+Dataset partitioning across workers is handled by the server's **work-unit
+dispatch**: each worker registers its train dataset with the DiLoCo server
+on first iteration and pulls per-unit row ranges on demand, so no row is
+trained on twice within an epoch. There's no operator-facing toggle —
+dispatch is active whenever `DILOCO_SERVER` is set on the worker process.
+See the *Work-unit dispatch* section below.
 
 ### 3. Monitor
 
@@ -367,7 +382,7 @@ Workers adjust their `sync_every` dynamically.
 forgather diloco server -o ./model -n 3 --async --dylu --dylu-base-sync-every 500
 
 # Worker with DyLU enabled
-forgather diloco worker --server host:8512 --sync-every 500 --dylu -- train
+forgather diloco worker --server host:8512 --sync-every 500 --worker-id w0 --dylu -- train
 ```
 
 ### Staleness Tracking
@@ -419,6 +434,7 @@ communication becomes fully overlapped.
 forgather diloco worker \
     --server 192.168.1.100:8512 \
     --sync-every 500 \
+    --worker-id w0 \
     --num-fragments 4 \
     -p my_project -t train.yaml \
     train
@@ -601,7 +617,7 @@ The server exposes these HTTP endpoints:
 | POST | `/heartbeat` | Worker heartbeat with training speed; returns DyLU recommendation if enabled |
 | POST | `/deregister` | Worker departure |
 | GET | `/status` | Server status (mode, workers, sync round, fragment/async fields) |
-| GET | `/dashboard` | Web dashboard UI (HTML page) |
+| GET | `/info` | Static facts a client needs to negotiate settings (output_dir, num_parameters, expected_client_settings) |
 | POST | `/control/{action}` | Control endpoints: `save_state`, `kick_worker`, `update_optimizer`, `update_num_workers`, `shutdown` |
 
 Tensor data is serialized using `torch.save` to `BytesIO` and sent as
@@ -698,47 +714,136 @@ On checkpoint resume, the callback's `load_state_dict` is called during
 `_prepare()` (before the worker exists). The state is deferred and applied
 in `on_train_begin` after the worker is created and registered with the server.
 
-## Dashboard
+### Model fingerprint check
 
-The DiLoCo server includes a built-in web dashboard for real-time monitoring and
-control. Navigate to the server's address in a browser to access it.
+The callback also runs a `/status` round-trip in `on_train_begin` before
+constructing the worker, and the worker's `/register` call ships a
+`{name: shape}` map of every named parameter (the `param_shapes` field in
+the register body). The server compares against its own `_param_list`
+shapes and rejects mismatched models with HTTP 422 + a diagnostic naming
+the divergent param. This catches the operator-misconfiguration case —
+pointing a worker at the wrong `--model-id-or-path` — at register time
+rather than letting it surface hundreds of steps later in the first
+sync's optimizer step.
 
-### Accessing the Dashboard
+The check only fires when the worker actually ships `param_shapes`
+(post-#51 builds; on by default in this codebase). Workers from an
+older build that omit the field still register cleanly and would
+crash later in sync if the model is wrong — there's no server-side
+way to detect a missing fingerprint as suspicious without breaking
+those callers.
 
-When the server starts, it logs the dashboard URL:
+The webui's Submit-training-job modal pre-fills `--model-id-or-path`
+from the selected DiLoCo server's `/info.output_dir` to keep the easy
+path easy.
 
-```
-Dashboard: http://localhost:8512/dashboard
-```
+## Work-unit dispatch
 
-Open this URL in any browser. The root
-URL (`/`) also serves the dashboard.
+Workers in a DiLoCo run partition the training dataset through a
+server-driven dispatch loop, not via manual `--num-shards` / `--shard-index`
+flags. The server holds a per-`(dataset_id, shuffle_seed)` queue of `K`
+work units (default `K=1024`); each worker requests the next available
+unit, streams that unit's row range from its dataset backend, and asks
+for another. Issuance is one-way — once a unit is issued it's consumed
+from the queue regardless of worker fate, so within an epoch no row is
+ever trained on twice.
 
-### Dashboard Panels
+### Activation
 
-The dashboard has four sections:
+Work-unit dispatch is **unconditional** when DiLoCo is enabled. No
+operator-facing toggle. The wrap fires when:
 
-1. **Header**: Server mode (sync/async), sync round counter, uptime, model size,
-   and a configurable refresh interval (1s to 30s).
+- `DILOCO_SERVER` is set in the worker's environment, AND
+- `DILOCO_WORKER_ID` is set (the scheduler defaults this to the
+  queue_id when DiLoCo is enabled), AND
+- The dataset is loaded via the iterable-backend path —
+  `forgather.ml.datasets:fast_load_iterable_dataset` routing through a
+  `forgather dataset_server` (`FORGATHER_DATASET_SERVER` env var) or
+  the cluster auto-routing (`cluster-auto://`) variant. The
+  in-process local loader (no `FORGATHER_DATASET_SERVER`) doesn't
+  participate; if you point a DiLoCo worker at a local-loader
+  config, the wrap aborts with `DiLoCoWorkDispatchUnavailable` at
+  startup so you see the misconfiguration before training begins.
 
-2. **Worker Table**: Shows all connected workers with their ID, hostname, sync
-   round, training speed (steps/s), last heartbeat (as relative time), and a
-   health indicator (green/yellow/red based on heartbeat recency). Each row has
-   a "Kick" button to evict a worker.
+Any failure to wire up the wrap when `DILOCO_SERVER` is set —
+unreachable `/datasets/register`, missing `DILOCO_WORKER_ID`, a
+backend without `__len__`, or an invalid load arg — is fatal at
+startup, surfaced as `DiLoCoWorkDispatchUnavailable` in the worker's
+TTY. Silently falling back to a bare backend would mean every
+worker iterates the full row stream on identical rows, which is the
+broken-data-parallelism class of failure the system explicitly
+guards against.
 
-3. **Server Metrics**: Outer optimizer hyperparameters (LR, momentum), pending
-   submission progress, DN buffer status (async mode), DyLU status, worker
-   death count, and fragment submission count.
+Train loads wrap automatically. Eval and test loads bypass the wrap so
+every worker runs the full eval pass and metrics are averaged. The
+bypass works via a `diloco_work_dispatch: False` kwarg on the load
+call; the DiLoCo template mixin
+(`templatelib/examples/mixins/diloco.yaml`) injects it for the eval
+dataset project through the `eval_pp_args` macro, which leaf configs
+splat into their `[eval_dataset_project_pp_args]`. The generic
+`load_dataset.yaml` template doesn't know about the kwarg — it
+forwards whatever `load_dataset_args` dict the parent project
+injected, so a non-forgather load_method that doesn't accept
+`diloco_work_dispatch` won't see it either.
 
-4. **Control Panel**: Interactive controls for:
-   - **Save State**: Save a checkpoint on demand (disabled if no `--save-dir`)
-   - **Optimizer**: Adjust outer LR and momentum in real time
-   - **Workers**: Change the expected worker count
-   - **Shutdown**: Gracefully stop the server (with confirmation dialog)
+### dataset_id
+
+The `dataset_id` is a stable 16-hex hash of the normalized load args
+(`path`, `name`, `split`, `data_files`, `revision`). Two workers
+loading "the same dataset" agree on the dataset_id by construction;
+the server uses it to route them to the same queue. The worker also
+ships the human-readable fields alongside the hash so the webui can
+label queues with `roneneldan/TinyStories@train` instead of just the
+hex.
+
+### Interleaved / multi-source datasets
+
+Each call to `fast_load_iterable_dataset` registers its own queue.
+A training run that interleaves two HF paths produces two queues; the
+webui renders each as its own heatmap card. Workers in a multi-source
+run hold one issued unit per source at a time.
+
+### Crash recovery
+
+If a worker dies holding an issued unit, that unit is lost (the
+server's one-way issuance design — at most `N_workers` units lost per
+epoch). The DiLoCo server's `_work_queues` is **not** persisted across
+server restarts (pre-#46 it was, but cross-experiment state-bleed from
+a stale checkpoint outweighed crash-recovery utility). On server
+restart, workers re-register their datasets on first contact and the
+queue map is reconstructed fresh.
+
+Design details: `docs/design/diloco-work-unit-dispatch.md`.
+
+## Monitoring & Control
+
+The DiLoCo server itself only exposes JSON endpoints — the operator-facing
+view lives in the **forgather webui's DiLoCo panel**
+(`tools/forgather_server/webui/src/components/DiLoCoPanel.tsx`). The
+panel lists known servers on the left and renders per-server detail
+on the right:
+
+1. **Header**: server mode (sync/async badge), sync round, uptime,
+   parameter count + model size.
+2. **Workers table**: per-worker health dot (green/yellow/red by
+   heartbeat age), ID (hover for full id), hostname, sync round,
+   steps/s, relative heartbeat age, and a per-row **Kick** button.
+3. **Server metrics**: outer LR / momentum, worker-death count,
+   heartbeat timeout. Sync mode adds a pending-submissions progress
+   bar; async mode adds total-submissions, DN buffer status, and DyLU
+   state.
+4. **Control card**: **Save checkpoint**, **Shutdown** (confirm
+   overlay), live **Optimizer** tuning (LR + momentum + Apply),
+   **Workers** expected-count adjustment.
+5. **Work-unit dispatch**: per-queue heatmap (K cells, three states:
+   available / issued / completed), with per-worker counters.
+
+An earlier version of the server shipped its own Alpine.js dashboard
+at `/dashboard`; that page was removed when the webui panel took
+over. The control endpoints below are unchanged and are what the
+webui's Control card talks to under the hood.
 
 ### Control Endpoints
-
-The dashboard uses these HTTP endpoints, which can also be called directly:
 
 | Endpoint | Body | Action |
 |----------|------|--------|
@@ -751,29 +856,14 @@ The dashboard uses these HTTP endpoints, which can also be called directly:
 All endpoints return `{"status": "ok", ...}` on success or `{"error": "..."}` on
 failure.
 
-### Disabling the Dashboard
-
-The dashboard is enabled by default. To disable it:
-
-```bash
-forgather diloco server -o ./model -n 2 --no-dashboard
-```
-
-Or in the programmatic API:
-
-```python
-server = DiLoCoServer("path/to/model", num_workers=2, dashboard_enabled=False)
-```
-
-When disabled, `GET /dashboard` returns a 404 response.
-
 ### Security Note
 
-The dashboard has no authentication. It provides full control over the training
-run, including the ability to shut down the server or modify optimizer
-hyperparameters. Only expose the server on trusted networks. Do not expose the
-server port to the public internet without additional access controls (e.g., a
-reverse proxy with authentication).
+The DiLoCo server's HTTP endpoints have no authentication. They
+provide full control over the training run, including shutdown and
+optimizer mutation. Only expose the server on trusted networks. Do
+not expose the server port to the public internet without additional
+access controls (e.g., a reverse proxy with authentication, or the
+forgather webui in front of it).
 
 ## Network Configuration
 
@@ -813,9 +903,10 @@ bind to all interfaces:
 forgather diloco server -o ./model -n 4 --host 0.0.0.0
 ```
 
-**Warning**: This exposes the server (including the dashboard with full control
-capabilities) to any machine on the network. Only use this on trusted networks
-with appropriate firewall rules.
+**Warning**: This exposes the server's HTTP control endpoints (including
+`/control/shutdown`, `/control/update_optimizer`, etc., which the webui
+DiLoCo view's Control card calls into) to any machine on the network.
+Only use this on trusted networks with appropriate firewall rules.
 
 ## References
 

@@ -21,6 +21,10 @@ interface Props {
    *  setup) and the next pick is almost always a sibling of the last
    *  one. Omit for one-shot picks where remembering would surprise. */
   rememberKey?: string;
+  /** Disable both the text input and the Browse button. The caller
+   *  is responsible for displaying any associated dimming / tooltip
+   *  on the surrounding label. */
+  disabled?: boolean;
 }
 
 const REMEMBER_PREFIX = "pathfield.last:";
@@ -46,6 +50,7 @@ export function PathField({
   title,
   wide = false,
   rememberKey,
+  disabled = false,
 }: Props) {
   const [browsing, setBrowsing] = useState(false);
 
@@ -67,11 +72,13 @@ export function PathField({
         placeholder={placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
       />
       <button
         type="button"
         className="secondary"
         onClick={() => setBrowsing(true)}
+        disabled={disabled}
       >
         Browse…
       </button>

@@ -655,6 +655,7 @@ def _remote_load_iterable_dataset(
     revision: Optional[str] = None,
     length_estimate: str = "dynamic",
     reset_length_on_iter: bool = False,
+    diloco_work_dispatch: bool = True,
 ) -> ComposableIterableDataset:
     """
     Load via a remote `tools.dataset_server`. Sends a POST /v1/load
@@ -707,6 +708,26 @@ def _remote_load_iterable_dataset(
         length=body.get("length"),
         column_names=body.get("column_names"),
     )
+    # DiLoCo work-unit dispatch (env-driven; no-op when DILOCO_SERVER
+    # is unset). Applies at the backend layer so the higher-level
+    # ComposableIterableDataset composes its map / filter / slice /
+    # shard ops on top of the dispatched row stream. The
+    # ``diloco_work_dispatch`` kwarg is the template-level off-switch:
+    # eval / test split loads set it False so every worker runs the
+    # full eval pass and metrics are averaged across workers.
+    # Train loads keep the default True — wrapping then fires iff
+    # DILOCO_SERVER is set.
+    if diloco_work_dispatch:
+        from .work_unit_backend import maybe_wrap_for_work_dispatch
+
+        backend = maybe_wrap_for_work_dispatch(
+            backend,
+            path=path,
+            name=name,
+            split=split,
+            data_files=data_files,
+            revision=revision,
+        )
     ds = ComposableIterableDataset(
         backend,
         length_estimate=length_estimate,
@@ -726,6 +747,7 @@ def _auto_load_iterable_dataset(
     revision: Optional[str] = None,
     length_estimate: str = "dynamic",
     reset_length_on_iter: bool = False,
+    diloco_work_dispatch: bool = True,
 ) -> ComposableIterableDataset:
     """Cluster ``auto`` routing entry point.
 
@@ -762,6 +784,22 @@ def _auto_load_iterable_dataset(
         load_args=load_args,
         resolver=resolver,
     )
+    # DiLoCo work-unit dispatch — same hook as the explicit
+    # FORGATHER_DATASET_SERVER path above. ``diloco_work_dispatch`` is
+    # the template-level off-switch (False for eval / test loads). The
+    # cluster auto-routing path lazily resolves on first access; the
+    # wrap's __len__ call will trigger that resolve as a side effect.
+    if diloco_work_dispatch:
+        from .work_unit_backend import maybe_wrap_for_work_dispatch
+
+        backend = maybe_wrap_for_work_dispatch(
+            backend,
+            path=path,
+            name=name,
+            split=split,
+            data_files=data_files,
+            revision=revision,
+        )
     ds = ComposableIterableDataset(
         backend,
         length_estimate=length_estimate,
@@ -783,6 +821,7 @@ def fast_load_iterable_dataset(
     index_dir: Optional[str] = None,
     length_estimate: str = "dynamic",
     reset_length_on_iter: bool = False,
+    diloco_work_dispatch: bool = True,
     **load_dataset_kwargs,
 ) -> ComposableIterableDataset:
     """
@@ -829,6 +868,18 @@ def fast_load_iterable_dataset(
     reset_length_on_iter : bool, optional
         Whether to reset length-estimation counters at the start of each
         new iteration pass.
+    diloco_work_dispatch : bool, optional
+        Template-level off-switch for the DiLoCo work-unit dispatch
+        wrap. Defaults to True so train loads in DiLoCo runs go through
+        the server-driven row dispatch (the wrap itself no-ops unless
+        ``DILOCO_SERVER`` is set in the env). Eval / validation / test
+        split templates pass ``False`` here — work-unit dispatch is
+        train-only by design (every worker runs the full eval pass and
+        metrics are averaged). The
+        ``templatelib/base/datasets/load_dataset.yaml`` template wires
+        this for the validation and test splits. Not surfaced via the
+        webui or scheduler — DiLoCo is enabled / disabled by whether
+        ``DILOCO_SERVER`` is set, not by an operator-facing toggle.
     **load_dataset_kwargs
         Extra keyword arguments forwarded to ``datasets.load_dataset``
         on the initial (slow-path) local load. Not forwarded to the
@@ -876,6 +927,7 @@ def fast_load_iterable_dataset(
                 revision=revision,
                 length_estimate=length_estimate,
                 reset_length_on_iter=reset_length_on_iter,
+                diloco_work_dispatch=diloco_work_dispatch,
             )
         return _remote_load_iterable_dataset(
             server_url,
@@ -886,6 +938,7 @@ def fast_load_iterable_dataset(
             revision=revision,
             length_estimate=length_estimate,
             reset_length_on_iter=reset_length_on_iter,
+            diloco_work_dispatch=diloco_work_dispatch,
         )
     return _local_load_iterable_dataset(
         path=path,

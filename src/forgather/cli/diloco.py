@@ -20,6 +20,16 @@ def _server_cmd(args):
         format="%(asctime)s [DiLoCo Server] %(levelname)s: %(message)s",
     )
 
+    # Echo the resolved configuration up-front so the TTY log contains
+    # exactly what we were asked to do — useful for diagnosing webui /
+    # autostart issues where the launching command isn't otherwise
+    # visible. argv first (verbatim from the caller), then the parsed
+    # namespace (post-defaults).
+    print(f"argv: {sys.argv}")
+    print("parsed args:")
+    for k, v in sorted(vars(args).items()):
+        print(f"  {k} = {v!r}")
+
     # Build outer optimizer factory
     nesterov = not args.no_nesterov
     outer_lr = args.outer_lr
@@ -61,10 +71,8 @@ def _server_cmd(args):
     else:
         print("Health monitoring: disabled")
 
-    # Dashboard
-    dashboard_enabled = not getattr(args, "no_dashboard", False)
-
     save_total_limit = getattr(args, "save_total_limit", 3)
+    default_work_units = getattr(args, "default_work_units", 1024)
 
     # Create server
     server = DiLoCoServer(
@@ -82,12 +90,10 @@ def _server_cmd(args):
         dylu_base_sync_every=dylu_base,
         heartbeat_timeout=heartbeat_timeout,
         min_workers=min_workers,
-        dashboard_enabled=dashboard_enabled,
+        default_work_units=default_work_units,
     )
 
     print(f"Starting DiLoCo server on {args.host}:{args.port}")
-    if dashboard_enabled:
-        print(f"Dashboard: http://{args.host}:{args.port}/dashboard")
     print(f"Waiting for {args.num_workers} worker(s)...")
     print()
     print("To stop the server:")
@@ -95,11 +101,8 @@ def _server_cmd(args):
         "  Ctrl-C              Stop server"
         + (" (saves state automatically)" if args.output_dir else "")
     )
-    if dashboard_enabled:
-        print(
-            f"  Dashboard           Use the Shutdown button at http://localhost:{args.port}/dashboard"
-        )
     print(f"  curl -X POST        http://localhost:{args.port}/control/shutdown")
+    print(f"  forgather webui     DiLoCo view → Control card → Shutdown server")
     print()
 
     server.run()

@@ -371,7 +371,17 @@ class TestWorkerReconnection(_ServerTestBase):
     """Test worker reconnection after server restart or network failure."""
 
     def test_worker_reconnect_re_registers(self):
-        """_reconnect() re-registers and gets fresh global params."""
+        """_reconnect() re-registers and gets fresh global params after
+        the previous registry entry has been cleared.
+
+        Under the worker_id-uniqueness rule (see
+        docs/design/diloco-work-unit-dispatch.md), the server refuses a
+        second register for an already-registered worker_id with 409.
+        DiLoCoWorker._reconnect() swallows that error silently (it's
+        wrapped in a broad except), so to exercise the success path the
+        test must clear the registry entry first — same as the eviction
+        / explicit-deregister recovery paths an operator would use.
+        """
         torch.manual_seed(42)
         model = TinyModel(dim=8)
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
@@ -389,7 +399,13 @@ class TestWorkerReconnection(_ServerTestBase):
             )
             worker.start()
 
-            # Reconnect
+            # Simulate eviction (heartbeat-timeout path) so the
+            # worker_id is free for re-register. Without this, the
+            # re-register inside _reconnect() would hit 409, get
+            # swallowed by the broad except, and _reconnections would
+            # stay at 0.
+            server._handle_worker_death(worker.worker_id)
+
             initial_reconnections = worker._reconnections
             worker._reconnect()
 
@@ -399,8 +415,11 @@ class TestWorkerReconnection(_ServerTestBase):
         finally:
             server.stop()
 
-    def test_re_registration_replaces_old_entry(self):
-        """Re-registering a worker replaces its old entry (no duplicates)."""
+    def test_re_registration_refused_with_409(self):
+        """A second registration of an already-live worker_id is refused
+        with 409 (worker_id is the server's uniqueness proxy — see
+        docs/design/diloco-work-unit-dispatch.md). The original
+        WorkerInfo entry is preserved unchanged."""
         sd = _make_state_dict()
         server = self._make_server(sd, num_workers=1, heartbeat_timeout=0)
         server.start()
@@ -408,11 +427,19 @@ class TestWorkerReconnection(_ServerTestBase):
             client = DiLoCoClient(f"localhost:{server.port}")
             client.register("w1", {"hostname": "host1"})
             self.assertEqual(len(server._workers), 1)
+            self.assertEqual(server._workers["w1"].hostname, "host1")
 
-            # Re-register with different hostname
-            client.register("w1", {"hostname": "host2"})
+            # Second register with same worker_id should fail. The
+            # DiLoCoClient wraps the HTTPError as ConnectionError; the
+            # 409 status is sniff-checked via the message.
+            with self.assertRaises(ConnectionError) as ctx:
+                client.register("w1", {"hostname": "host2"})
+            self.assertIn("HTTP 409", str(ctx.exception))
+            self.assertIn("already registered", str(ctx.exception))
+
+            # Original entry is intact (no replace-on-collide).
             self.assertEqual(len(server._workers), 1)
-            self.assertEqual(server._workers["w1"].hostname, "host2")
+            self.assertEqual(server._workers["w1"].hostname, "host1")
         finally:
             server.stop()
 
@@ -719,7 +746,12 @@ class TestEdgeCases(_ServerTestBase):
             server.stop()
 
     def test_worker_sync_metrics_include_retry_fields(self):
-        """sync_metrics includes retry and reconnection counters."""
+        """sync_metrics includes retry and reconnection counters.
+
+        Reconnect needs the worker_id free in the registry for the
+        re-register to succeed (see test_worker_reconnect_re_registers
+        for the design context).
+        """
         torch.manual_seed(42)
         model = TinyModel(dim=8)
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
@@ -742,7 +774,9 @@ class TestEdgeCases(_ServerTestBase):
             self.assertNotIn("diloco/sync_retries", metrics)
             self.assertNotIn("diloco/reconnections", metrics)
 
-            # Simulate a reconnection
+            # Simulate a reconnection — clear the registry entry first
+            # (see test_worker_reconnect_re_registers).
+            server._handle_worker_death(worker.worker_id)
             worker._reconnect()
             metrics = worker.sync_metrics
             self.assertEqual(metrics["diloco/reconnections"], 1)

@@ -189,6 +189,141 @@ class TestDiLoCoServer:
         params = server.get_global_params()
         assert params["w"].dtype == torch.float32
 
+    def test_load_state_reorders_state_dict_to_match_saved_param_names(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression for #45.
+
+        Repro of the bug that crashed the live bringup on 2026-05-26:
+        ``save_model_checkpoint`` emits the safetensors index in
+        arbitrary order, so a later ``load_model_checkpoint`` can
+        return the state_dict in a different order than the one
+        ``_initialize`` saw at save time. The outer optimizer's
+        ``state_dict()`` keys its momentum buffers by integer slot, so
+        a slot-i param of shape ``[A,A]`` at save time paired with a
+        slot-i param of shape ``[B,B]`` at load time → first
+        ``optimizer.step()`` crashes with ``tensor a (A) must match
+        tensor b (B)``.
+
+        Use distinctly-shaped params so a mismatched pair would crash
+        immediately. Simulate the on-disk order drift by patching
+        ``load_model_checkpoint`` to return the state_dict in a
+        deliberately different (reversed) order. The fix should pull
+        ``param_names`` from ``server_state.pt`` and reorder the
+        loaded state_dict to match — restoring the slot-vs-slot
+        correspondence the optimizer state depends on.
+        """
+        # Two params, distinctly different shapes — a wrong pairing
+        # would crash on the optimizer step below.
+        torch.manual_seed(0)
+        sd = {
+            "small.weight": torch.randn(4, 4),
+            "big.weight": torch.randn(16, 16),
+        }
+        ckpt = make_initial_checkpoint(sd, tmp_path / "initial")
+
+        server = DiLoCoServer(
+            output_dir=str(tmp_path),
+            from_checkpoint=str(ckpt),
+            num_workers=1,
+            save_every_n_rounds=0,
+        )
+        server.start()
+
+        # Build up real momentum in the outer optimizer so the
+        # next-round optimizer step actually exercises the buffer
+        # arithmetic (just loading optimizer state with empty
+        # momentum wouldn't trigger the original crash).
+        for _ in range(2):
+            server._pending_pseudograds["w0"] = {
+                k: torch.randn_like(v) for k, v in sd.items()
+            }
+            server._apply_outer_optimizer()
+
+        saved_param_names = list(server._param_names)
+        server.save_state()
+        checkpoint_dir = tmp_path / "checkpoints" / f"checkpoint-{server._sync_round}"
+        server.stop()
+
+        # Force a fresh-load to see a *different* state_dict order than
+        # the save-time canonical order. This mirrors the bug where
+        # safetensors writes index keys in hash order.
+        from forgather.ml.diloco import server as server_mod
+
+        real_load = server_mod.load_model_checkpoint
+
+        def reversed_load(*args, **kwargs):
+            sd = real_load(*args, **kwargs)
+            return {k: sd[k] for k in reversed(list(sd.keys()))}
+
+        monkeypatch.setattr(server_mod, "load_model_checkpoint", reversed_load)
+
+        # The load itself must succeed despite the on-disk reordering.
+        server2 = DiLoCoServer(
+            output_dir=str(tmp_path / "server2_output"),
+            from_checkpoint=str(checkpoint_dir),
+            num_workers=1,
+        )
+
+        # The reloaded server should canonicalize to the save-time order.
+        assert server2._param_names == saved_param_names, (
+            "load_state didn't honor saved param_names — slot-vs-slot "
+            "pairing with the optimizer state will be wrong"
+        )
+
+        # And the optimizer step must succeed with the loaded momentum.
+        # This is the actual bug: the live crash was here, in
+        # SGD._single_tensor_sgd's buf.add_(grad).
+        server2.start()
+        server2._pending_pseudograds["w0"] = {
+            k: torch.randn_like(v) for k, v in sd.items()
+        }
+        server2._apply_outer_optimizer()
+        server2.stop()
+
+    def test_load_state_rejects_arch_drift(self, tmp_path):
+        """An incompatible checkpoint (key set differs from the live
+        model's) is fatal at load time — better than the alternative
+        of silently dropping params and applying a wrong-sized
+        momentum buffer to whatever's left."""
+        sd = _make_state_dict(dim=4)
+        ckpt = make_initial_checkpoint(sd, tmp_path / "initial")
+        server = DiLoCoServer(
+            output_dir=str(tmp_path),
+            from_checkpoint=str(ckpt),
+            num_workers=1,
+            save_every_n_rounds=0,
+        )
+        server.start()
+        server._pending_pseudograds["w0"] = {
+            k: torch.zeros_like(v) for k, v in sd.items()
+        }
+        server._apply_outer_optimizer()
+        server.save_state()
+        checkpoint_dir = tmp_path / "checkpoints" / f"checkpoint-{server._sync_round}"
+        server.stop()
+
+        # Pretend the live model has a different key set than what
+        # the saved checkpoint says — simulating an architecture
+        # change between save and load.
+        import unittest.mock as mock
+
+        from forgather.ml.diloco import server as server_mod
+
+        real_load = server_mod.load_model_checkpoint
+
+        def renamed_load(*args, **kwargs):
+            sd = real_load(*args, **kwargs)
+            return {f"renamed.{k}": v for k, v in sd.items()}
+
+        with mock.patch.object(server_mod, "load_model_checkpoint", renamed_load):
+            with pytest.raises(RuntimeError, match="param_names"):
+                DiLoCoServer(
+                    output_dir=str(tmp_path / "server2"),
+                    from_checkpoint=str(checkpoint_dir),
+                    num_workers=1,
+                )
+
     def test_save_load_state(self, tmp_path):
         """Test server state save and load with checkpoint format."""
         sd = _make_state_dict(dim=4)

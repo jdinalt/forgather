@@ -26,7 +26,6 @@ from torch import Tensor, distributed
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.pipelining import ScheduleGPipe
-from torch.distributed.pipelining.microbatch import split_args_kwargs_into_chunks
 from torch.distributed.pipelining.stage import _PipelineStageBase
 from torch.nn import Module
 from torch.utils.data import DataLoader
@@ -484,12 +483,6 @@ class PipelineTrainer(
         # Get parameter sharing metadata
         self.sharing_metadata = create_sharing_metadata(model)
 
-        # Get a micro-batch from the train_dataloader to use for tracing.
-        dataloader = (
-            self.train_dataloader if self.train_dataloader else self.eval_dataloader
-        )
-        example_args, example_kwargs = self._get_example(dataloader)
-
         # stage_indices : A List[Tuple[int]] with the assigned stage indices for each rank
         #   e.g. stage_indices[rank] would have the stage indices for "rank"
         stage_indices = pipeline_stage_indices(
@@ -506,7 +499,7 @@ class PipelineTrainer(
             logger.debug(f"All assigned pipeline indices {stage_indices}")
             logger.info("Splitting model...")
         all_pipeline_modules, pipeline_modules, pipeline_stages = self._split_model(
-            model, example_args, example_kwargs, stage_indices, train=True
+            model, stage_indices, train=True
         )
         # all_pipeline_modules : A list of all modules in the pipeline
         # pipeline_modules : A list of modules assigned to this rank
@@ -692,51 +685,8 @@ class PipelineTrainer(
                 fullgraph=self.args.torch_compile_full_graph,
             )
 
-    def _get_example(self, example_dataloader):
-        """Build an example microbatch for pipeline stage tracing.
-
-        Pipeline parallel requires all batches to have identical shapes. This
-        method draws one real batch from the dataloader, creates a meta-device
-        tensor with the same shape as ``"input_ids"``, splits it into
-        ``n_microbatches`` chunks, and returns the first chunk for use during
-        model splitting (tracing).
-
-        Parameters
-        ----------
-        example_dataloader : iterable
-            Dataloader from which to extract the batch shape.
-
-        Returns
-        -------
-        tuple of (tuple, dict)
-            ``(example_args, example_kwargs)`` representing a single microbatch
-            on the meta device, suitable for passing to ``model_splitter``.
-
-        Notes
-        -----
-        Currently hardcoded to use ``"input_ids"`` as the primary input tensor.
-        """
-        # Note that pipeline parallel requires all batches to have the same shape!
-        # TODO: We have hard-coded "input_ids" This should be more flexible, as this is not always the case.
-        example_batch = next(iter(example_dataloader))
-        example_args = (torch.empty_like(example_batch["input_ids"], device="meta"),)
-        example_kwargs = dict(
-            #    input_ids=torch.empty_like(
-            #        example_batch["input_ids"],
-            #        device="meta"
-            #    ),
-        )
-
-        # Split into microbatches
-        split_args, split_kwargs = split_args_kwargs_into_chunks(
-            example_args, example_kwargs, chunks=self.args.n_microbatches
-        )
-
-        # Return example micro-batches
-        return split_args[0], split_kwargs[0]
-
     def _split_model(
-        self, model, example_args, example_kwargs, stage_indices, train
+        self, model, stage_indices, train
     ) -> Tuple[List[Module], List[Module], List[_PipelineStageBase]]:
         """
         Split model into pipeline stages using the injected splitter.
@@ -756,8 +706,6 @@ class PipelineTrainer(
             attention_mask_creator,
         ) = self.model_splitter(
             model,
-            example_args,
-            example_kwargs,
             stage_indices,
             train,
             device=self.dist.device,  # type: ignore[call-arg]

@@ -1,0 +1,44 @@
+## Mixin: finetune training context — start from existing weights.
+##
+## Provides per-section macros for the load-from-path pattern: the
+## model loads from ``--model-id-or-path`` rather than being
+## constructed in-place. Composable with strategy mixins (DiLoCo,
+## LoRA, …) by importing both and calling each contributing macro
+## inside the matching section of your leaf config.
+##
+## Convention: macros emit YAML text only. Namespace mutation
+## (``-- set ns.foo = …``) stays in the leaf — Jinja namespace
+## objects don't survive macro-parameter passing cleanly, and
+## leaving ns ownership with the leaf keeps the override chain
+## obvious at the call site.
+##
+## **Import with context**: callers must use
+## ``{% from "mixins/finetune.yaml" import … with context %}`` so
+## Forgather's dynamic-args (e.g. ``model_id_or_path``) flow into
+## the macro scope. Without ``with context`` Jinja macros only see
+## their definition module's globals.
+
+-- macro variable_listing(model_id_or_path)
+# ns.model_id_or_path: {{ model_id_or_path }}
+-- endmacro
+
+
+## Note: ``construct_new_model`` is intentionally *not* a macro — the
+## include statement it would wrap runs inside Jinja's macro scope and
+## the included template wouldn't see the caller's ``ns`` namespace.
+## Inline the ``-- include 'models/causal_lm/from_pretrained_config.yaml'``
+## directly in the leaf's [construct_new_model] section. Documented
+## here so the mixin's contract is complete despite the omission.
+
+
+-- macro dynamic_args()
+    model_id_or_path:
+        names: [ "--model-id-or-path", "-M" ]
+        type: "path"
+        group: "Model"
+        required: true
+        help: "HF model ID or local path to model"
+    ## Delete menu items that don't apply on the load-from-path path.
+    model_project: ~
+    model_config: ~
+-- endmacro

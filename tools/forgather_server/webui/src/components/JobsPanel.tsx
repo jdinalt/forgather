@@ -26,6 +26,7 @@ const JOB_TYPE_CHIPS: Record<Job["job_type"], { label: string; className: string
   eval: { label: "eval", className: "type-eval" },
   inference: { label: "serve", className: "type-inference" },
   dataset_server: { label: "dataset-srv", className: "type-inference" },
+  diloco_server: { label: "diloco-srv", className: "type-inference" },
   tensorboard: { label: "tb", className: "type-tensorboard" },
   mkdocs: { label: "docs", className: "type-mkdocs" },
   convert: { label: "convert", className: "type-convert" },
@@ -79,6 +80,7 @@ interface Props {
    *  by URL covers both modes. */
   onOpenInferenceServer?: (jobId: string, baseUrl: string) => void;
   onOpenDatasetServer?: (queueId: string) => void;
+  onOpenDiLoCoServer?: (queueId: string) => void;
 }
 
 /** Unified jobs view: JobRecords we launched + TrainerControlClient endpoints
@@ -90,6 +92,7 @@ export function JobsPanel({
   onAutoWatchConsumed,
   onOpenInferenceServer,
   onOpenDatasetServer,
+  onOpenDiLoCoServer,
 }: Props = {}) {
   const demoMode = useDemoMode();
   const [includeDead, setIncludeDead] = useState(false);
@@ -402,6 +405,7 @@ export function JobsPanel({
               }
               onOpenInferenceServer={onOpenInferenceServer}
               onOpenDatasetServer={onOpenDatasetServer}
+              onOpenDiLoCoServer={onOpenDiLoCoServer}
             />
           ))}
         </div>
@@ -547,6 +551,7 @@ function JobCard({
   controlPending,
   onOpenInferenceServer,
   onOpenDatasetServer,
+  onOpenDiLoCoServer,
 }: {
   job: Job;
   status: Record<string, unknown> | null;
@@ -558,6 +563,7 @@ function JobCard({
   controlPending: boolean;
   onOpenInferenceServer?: (jobId: string, baseUrl: string) => void;
   onOpenDatasetServer?: (queueId: string) => void;
+  onOpenDiLoCoServer?: (queueId: string) => void;
 }) {
   const demoMode = useDemoMode();
   const startedSec = job.started_at ?? job.submitted_at ?? null;
@@ -575,6 +581,7 @@ function JobCard({
   const isEval = job.job_type === "eval";
   const isInference = job.job_type === "inference";
   const isDatasetServer = job.job_type === "dataset_server";
+  const isDiLoCoServer = job.job_type === "diloco_server";
   const isTensorBoard = job.job_type === "tensorboard";
   const isMkDocs = job.job_type === "mkdocs";
   const isConvert = job.job_type === "convert";
@@ -649,6 +656,21 @@ function JobCard({
       : null;
   const dsUrl = dsPort
     ? `${jobScheme}://${urlHost(dsHost)}:${dsPort}`
+    : null;
+
+  // DiLoCo server: HTTP-only service. Same URL-rendering shape as
+  // dataset / inference — uses urlHost so a 0.0.0.0 bind resolves
+  // through routable_host instead of falling back to localhost.
+  const dilocoHost =
+    isDiLoCoServer && typeof job.job_params?.host === "string"
+      ? (job.job_params.host as string)
+      : null;
+  const dilocoPort =
+    isDiLoCoServer && typeof job.job_params?.port === "number"
+      ? (job.job_params.port as number)
+      : null;
+  const dilocoUrl = dilocoPort
+    ? `http://${urlHost(dilocoHost)}:${dilocoPort}`
     : null;
 
   // TensorBoard is the same idea: a local web server. ``bind_all`` →
@@ -820,6 +842,20 @@ function JobCard({
           )}
         </div>
       )}
+      {isDiLoCoServer && job.job_params && (
+        <div className="queue-dirs muted">
+          <div>
+            <span>url:</span>{" "}
+            <code>{dilocoUrl ?? "—"}</code>
+          </div>
+          {typeof job.job_params.num_workers === "number" && (
+            <div>
+              <span>workers:</span>{" "}
+              <code>{job.job_params.num_workers as number}</code>
+            </div>
+          )}
+        </div>
+      )}
       {isDatasetServer && job.job_params && (
         <div className="queue-dirs muted">
           <div>
@@ -964,6 +1000,21 @@ function JobCard({
             Open in Datasets
           </button>
         )}
+        {isDiLoCoServer &&
+          job.alive &&
+          onOpenDiLoCoServer &&
+          // DiLoCoPanel keys server selection on ``local:<queue_id>``
+          // — falling back to job.id would never resolve a match, so
+          // hide the button rather than dispatch a no-op pendingPick.
+          !!job.queue_id && (
+            <button
+              className="secondary"
+              onClick={() => onOpenDiLoCoServer(job.queue_id as string)}
+              title="Open the DiLoCo view with this server selected"
+            >
+              Open in DiLoCo
+            </button>
+          )}
         {canControl && (
           <>
             <button

@@ -140,6 +140,7 @@ the same args the corresponding modal would have submitted as
 | `inference`   | `inference`      | The **Inference…** modal     |
 | `tensorboard` | `tensorboard`    | The **TensorBoard…** modal   |
 | `mkdocs`      | `mkdocs`         | The **MkDocs…** modal        |
+| `diloco`      | `diloco_server`  | The **DiLoCo server…** modal |
 
 ```yaml
 services:
@@ -191,6 +192,15 @@ services:
       dirty: false
       watch:                    # optional
         - /repo/docs
+
+  diloco:
+    ringdale:
+      enabled: false            # opt-in; spawn manually via the DiLoCo modal
+      output_dir: /shared/models/ringdale
+      port: 8512
+      num_workers: 2
+      host: 0.0.0.0             # ``routable_host`` is stamped by the scheduler
+                                # so cross-machine workers can reach it
 ```
 
 **Operator-meta keys** — recognized at the entry top level alongside
@@ -204,11 +214,15 @@ process:
 | `requested_gpus` | `1` for `inference`, `0` for the rest  | GPU reservation count.                  |
 
 Everything else is forwarded verbatim to the job's `job_params`. The
-**dispatch-injected** fields (`scheme`, `routable_host` — added by the
-scheduler post-submit for inference / dataset_server jobs) are
-excluded from the service signature so a service's pre- and
-post-dispatch signatures match, which is what makes restart-without-
-double-spawn and ▶/⏹ correctness work.
+**dispatch-injected** fields are excluded from the service signature
+so a service's pre- and post-dispatch signatures match (what makes
+restart-without-double-spawn and ▶/⏹ correctness work):
+- `scheme` — stamped for `inference` and `dataset_server` to reflect
+  whether the spawned child is actually serving TLS.
+- `routable_host` — stamped for `inference`, `dataset_server`,
+  `diloco_server`, and `mkdocs` whenever the operator bound to
+  `0.0.0.0` / `::` / empty, with a LAN-routable address picked from
+  the cluster's known peer set or psutil's first non-loopback IP.
 
 The names are operator-chosen, must match `[A-Za-z0-9_-]+`, and are
 purely human labels — dedupe between configured services and live

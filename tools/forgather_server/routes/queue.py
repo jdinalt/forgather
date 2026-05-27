@@ -128,6 +128,7 @@ _SUPPORTED_JOB_TYPES = {
     "eval",
     "inference",
     "dataset_server",
+    "diloco_server",
     "tensorboard",
     "mkdocs",
     "convert",
@@ -145,6 +146,7 @@ _REQUIRED_PARAMS_BY_TYPE = {
     "eval": {"eval_project", "eval_template", "model_path"},
     "inference": {"model_path", "port"},
     "dataset_server": {"port"},
+    "diloco_server": {"output_dir", "port", "num_workers"},
     "tensorboard": {"logdir", "port"},
     "mkdocs": {"config_file", "port"},
     "convert": {"src_model_path", "dst_model_path"},
@@ -173,6 +175,7 @@ _ZERO_GPU_JOB_TYPES = {
     "model",
     "dataset",
     "dataset_server",
+    "diloco_server",
     "construct",
     "inference",
     # Training and eval support CPU dispatch now that:

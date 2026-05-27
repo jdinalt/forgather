@@ -24,6 +24,7 @@ Usage:
     server.start() # Non-blocking (background thread)
 """
 
+import base64
 import io
 import json
 import logging
@@ -36,6 +37,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import parse_qs, urlparse
 
 import torch
 
@@ -65,6 +67,141 @@ class WorkerInfo:
     last_sync_server_round: int = 0  # Server round when this worker last synced
     steps_per_second: float = 0.0
     extra: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class WorkQueue:
+    """One work-unit queue, keyed by ``(dataset_id, shuffle_seed)``.
+
+    A queue is a flat bitmap of K bits. An unset bit means "available";
+    a set bit means "issued — consumed from the queue regardless of
+    worker fate". Issuance is one-way: a unit is never returned to the
+    queue, so no per-unit timeout / heartbeat tracking is needed and no
+    row is ever trained on twice within an epoch. Worst case a dying
+    worker loses ≤ 1 unit out of K (default 1024).
+
+    ``completed`` is an optional second bitmap tracking units a worker
+    confirmed it drained. Not required for correctness — workers MAY
+    call ``/work/complete``; the bitmap stays all-zero if they don't.
+    Useful only for the diagnostic surface to distinguish
+    "issued ∧ completed" from "issued, fate unknown".
+
+    ``hint_length`` is the row count the *first* worker reported when
+    registering this dataset_id. Later registrations of the same
+    dataset_id must report a matching length, else 409.
+
+    ``by_worker`` accumulates per-worker request/complete counters for
+    the diagnostic surface — same rationale as ``completed``: nothing
+    in the issuance path depends on it.
+    """
+
+    total_units: int  # K
+    issued: bytearray
+    completed: bytearray
+    hint_length: int
+    issued_count: int = 0
+    completed_count: int = 0
+    by_worker: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    # Optional dataset-identity strings the first registering worker
+    # supplies. They're surfaced as-is via ``/work/queues`` and
+    # ``/work/queue`` so the webui can show a human-readable label
+    # ("roneneldan/TinyStories@train") next to the otherwise-opaque
+    # 16-hex ``dataset_id``. Best-effort — workers that don't ship
+    # these fields just leave them None.
+    dataset_path: Optional[str] = None
+    dataset_name: Optional[str] = None
+    dataset_split: Optional[str] = None
+    dataset_revision: Optional[str] = None
+    dataset_data_files: Optional[List[str]] = None
+
+    @classmethod
+    def empty(
+        cls,
+        total_units: int,
+        hint_length: int,
+        *,
+        dataset_path: Optional[str] = None,
+        dataset_name: Optional[str] = None,
+        dataset_split: Optional[str] = None,
+        dataset_revision: Optional[str] = None,
+        dataset_data_files: Optional[List[str]] = None,
+    ) -> "WorkQueue":
+        nbytes = (total_units + 7) // 8
+        return cls(
+            total_units=total_units,
+            issued=bytearray(nbytes),
+            completed=bytearray(nbytes),
+            hint_length=hint_length,
+            dataset_path=dataset_path,
+            dataset_name=dataset_name,
+            dataset_split=dataset_split,
+            dataset_revision=dataset_revision,
+            dataset_data_files=dataset_data_files,
+        )
+
+
+def _queue_summary_dict(
+    dataset_id: str, shuffle_seed: int, q: "WorkQueue"
+) -> Dict[str, Any]:
+    """Shape the JSON-serializable summary the webui consumes for both
+    ``/work/queues`` (list) and ``/work/queue`` (detail). The detail
+    response adds bitmaps + by_worker on top of this base.
+    """
+    hint: Dict[str, Any] = {"length": q.hint_length}
+    if q.dataset_path is not None:
+        hint["path"] = q.dataset_path
+    if q.dataset_name is not None:
+        hint["name"] = q.dataset_name
+    if q.dataset_split is not None:
+        hint["split"] = q.dataset_split
+    if q.dataset_revision is not None:
+        hint["revision"] = q.dataset_revision
+    if q.dataset_data_files:
+        hint["data_files"] = list(q.dataset_data_files)
+    return {
+        "dataset_id": dataset_id,
+        "shuffle_seed": shuffle_seed,
+        "total_units": q.total_units,
+        "issued_count": q.issued_count,
+        "completed_count": q.completed_count,
+        "hint": hint,
+    }
+
+
+def _bit_set(bm: bytearray, i: int) -> None:
+    bm[i >> 3] |= 1 << (i & 7)
+
+
+def _bit_get(bm: bytearray, i: int) -> bool:
+    return bool(bm[i >> 3] & (1 << (i & 7)))
+
+
+def _find_lowest_unset(bm: bytearray, total_bits: int) -> int:
+    """Return the index of the lowest unset bit in ``bm`` (within the
+    first ``total_bits`` bits), or -1 if every bit is set.
+
+    Scans byte-by-byte (each byte is 8 bits) and falls back to a
+    bitwise scan within the first byte that isn't 0xFF. K=1024 means
+    128 bytes per queue — even worst case (~half full) is a couple of
+    hundred byte comparisons, dwarfed by the HTTP round-trip cost.
+    """
+    full_bytes = total_bits >> 3
+    for byte_idx in range(full_bytes):
+        b = bm[byte_idx]
+        if b != 0xFF:
+            for bit in range(8):
+                if not (b & (1 << bit)):
+                    return (byte_idx << 3) | bit
+    # Handle a possible partial trailing byte (when K isn't a
+    # multiple of 8). Rare in practice — default K=1024 — but harmless.
+    extra = total_bits & 7
+    if extra:
+        byte_idx = full_bytes
+        b = bm[byte_idx]
+        for bit in range(extra):
+            if not (b & (1 << bit)):
+                return (byte_idx << 3) | bit
+    return -1
 
 
 def _default_outer_optimizer_factory(params):
@@ -156,8 +293,13 @@ class DiLoCoServer:
         min_workers: Minimum number of workers required to apply the outer
             optimizer in sync mode. If the number of registered workers drops
             below this value, the sync barrier will not release. Default: 1.
-        dashboard_enabled: If True, serve the web dashboard at /dashboard.
-            Default: True.
+
+    The server no longer ships a built-in web dashboard; the
+    forgather webui's DiLoCo view reproduces and supersedes it
+    (see tools/forgather_server/webui/src/components/DiLoCoPanel.tsx).
+    All control endpoints (/control/save_state, /kick_worker,
+    /update_optimizer, /update_num_workers, /shutdown) are unchanged
+    and remain the API the webui talks to.
     """
 
     def __init__(
@@ -177,12 +319,16 @@ class DiLoCoServer:
         dylu_base_sync_every: int = 500,
         heartbeat_timeout: float = 120.0,
         min_workers: int = 1,
-        dashboard_enabled: bool = True,
+        default_work_units: int = 1024,
     ):
         if num_workers < 1:
             raise ValueError(f"num_workers must be >= 1, got {num_workers}")
         if min_workers < 1:
             raise ValueError(f"min_workers must be >= 1, got {min_workers}")
+        if default_work_units < 1:
+            raise ValueError(
+                f"default_work_units must be >= 1, got {default_work_units}"
+            )
 
         self.num_workers = num_workers
         self.min_workers = min_workers
@@ -197,7 +343,7 @@ class DiLoCoServer:
         self.dylu_enabled = dylu_enabled
         self.dylu_base_sync_every = dylu_base_sync_every
         self.heartbeat_timeout = heartbeat_timeout
-        self.dashboard_enabled = dashboard_enabled
+        self.default_work_units = default_work_units
         self.outer_optimizer_factory = (
             outer_optimizer_factory or _default_outer_optimizer_factory
         )
@@ -285,6 +431,20 @@ class DiLoCoServer:
 
         # Track worker deaths for status reporting
         self._total_worker_deaths = 0
+
+        # Work-unit dispatch state: per (dataset_id, shuffle_seed) queue.
+        # Keyed by Tuple[str, int]; in-process only — wire / disk forms use
+        # a "dataset_id|seed" string-joined key (see save_state/load_state)
+        # to dodge tuple-key serialization quirks.
+        # ``dataset_id`` is the worker-computed hash of normalized
+        # ``{path, name, split, data_files, revision}`` (see
+        # docs/design/diloco-work-unit-dispatch.md).
+        self._work_queues: Dict[Tuple[str, int], WorkQueue] = {}
+        self._work_queues_lock = threading.Lock()
+        # ``_dataset_lengths`` snapshots the first-registered length per
+        # dataset_id so a later worker shipping a stale dataset config
+        # (different row count) is caught with a 409 at register time.
+        self._dataset_lengths: Dict[str, int] = {}
 
         # Server state
         self._server: Optional[HTTPServer] = None
@@ -593,16 +753,58 @@ class DiLoCoServer:
         receive the current global parameters. If the number of registered
         workers exceeds num_workers, num_workers is increased. The new worker
         will NOT be expected for the current sync round (only for the next one).
-        Re-registering workers (e.g., after a restart) replace their old entry.
+
+        **Worker_id uniqueness is enforced**: a second registration of a
+        worker_id that's already in the registry is refused with 409. The
+        server treats worker_id itself as the uniqueness proxy — it has no
+        view into how the worker's config templates use that ID downstream
+        (output dir naming, log file paths, etc.), so collision at the
+        identity layer is the only honest signal we can act on. Operators
+        recovering from a crashed worker either wait for the heartbeat
+        eviction (~heartbeat_timeout seconds) or POST /deregister.
         """
         body = _read_request_body(handler)
         info = json.loads(body.decode("utf-8"))
         worker_id = info["worker_id"]
 
+        # Structural-fingerprint pre-check: workers that opt in by
+        # sending ``param_shapes`` get their model compared to the
+        # server's _param_list shapes BEFORE any registry mutation.
+        # Mismatch → 422 with a diagnostic. Pre-#51 workers (no
+        # param_shapes in info) skip the check for backward compat;
+        # they still hit the (less helpful) shape-mismatch crash at
+        # first sync if the operator pointed them at the wrong model.
+        worker_shapes = info.get("param_shapes")
+        if worker_shapes is not None:
+            mismatch = self._diff_model_fingerprint(worker_shapes)
+            if mismatch is not None:
+                _send_json_response(
+                    handler,
+                    {"error": mismatch, "kind": "model_mismatch"},
+                    422,
+                )
+                return
+
         with self._workers_lock:
-            is_reregistration = worker_id in self._workers
-            if is_reregistration:
-                logger.info(f"Worker {worker_id} re-registering (reconnection)")
+            if worker_id in self._workers:
+                # 409 with a diagnostic the worker logs into its TTY
+                # pane. The previous "re-register replaces" semantics
+                # were a silent collision masker — two operators using
+                # the same --diloco-worker-id used to invisibly kick
+                # each other out. Now it fails fast.
+                _send_json_response(
+                    handler,
+                    {
+                        "error": (
+                            f"worker_id '{worker_id}' is already registered; "
+                            f"if the previous worker is dead, wait for heartbeat "
+                            f"eviction (~{self.heartbeat_timeout:.0f}s default) or "
+                            f"POST /deregister"
+                        )
+                    },
+                    409,
+                )
+                return
 
             self._workers[worker_id] = WorkerInfo(
                 worker_id=worker_id,
@@ -631,6 +833,72 @@ class DiLoCoServer:
                 _send_tensor_response(handler, self.get_global_params())
         else:
             _send_tensor_response(handler, self.get_global_params())
+
+    def _diff_model_fingerprint(
+        self, worker_shapes: Dict[str, List[int]]
+    ) -> Optional[str]:
+        """Compare a worker's ``{name: shape}`` to the server's params.
+
+        Returns a diagnostic string when the worker's model doesn't
+        match the server's (different param set, or different shape
+        for a shared name). Returns ``None`` on a clean match.
+
+        The server's ``_param_names`` is whatever was loaded from the
+        checkpoint (state_dict order, potentially including buffers).
+        The worker's ``param_shapes`` comes from
+        ``model.named_parameters()`` (params only). For DiLoCo
+        correctness the param sets must agree exactly — server
+        sync-applies pseudograds against ``_param_list``, and any
+        named-param the worker submits must hit a server slot of the
+        matching shape. Buffers on the server that don't appear in
+        the worker's named_parameters() are also flagged here:
+        they'd silently get random outer-optimizer momentum applied
+        to them with no corresponding pseudograd contribution.
+        """
+        server_shapes: Dict[str, List[int]] = {
+            name: list(self._param_list[i].shape)
+            for i, name in enumerate(self._param_names)
+        }
+        worker_set = set(worker_shapes)
+        server_set = set(server_shapes)
+
+        missing_on_server = worker_set - server_set
+        missing_on_worker = server_set - worker_set
+        shape_mismatch = [
+            (name, worker_shapes[name], server_shapes[name])
+            for name in worker_set & server_set
+            if list(worker_shapes[name]) != server_shapes[name]
+        ]
+
+        if not (missing_on_server or missing_on_worker or shape_mismatch):
+            return None
+
+        parts = [
+            "Worker model does not match server model. The operator "
+            "likely pointed this worker at the wrong "
+            "--model-id-or-path (or built it from a different "
+            "model project / config than the server is using)."
+        ]
+        if shape_mismatch:
+            sample = shape_mismatch[:5]
+            parts.append(f"  Shape mismatch on {len(shape_mismatch)} param(s):")
+            for name, wshape, sshape in sample:
+                parts.append(f"    {name}: worker={wshape}, server={sshape}")
+            if len(shape_mismatch) > 5:
+                parts.append(f"    ... and {len(shape_mismatch) - 5} more")
+        if missing_on_server:
+            sample = sorted(missing_on_server)[:5]
+            parts.append(
+                f"  {len(missing_on_server)} param(s) on worker but not server: "
+                f"{sample}{'...' if len(missing_on_server) > 5 else ''}"
+            )
+        if missing_on_worker:
+            sample = sorted(missing_on_worker)[:5]
+            parts.append(
+                f"  {len(missing_on_worker)} param(s) on server but not worker: "
+                f"{sample}{'...' if len(missing_on_worker) > 5 else ''}"
+            )
+        return "\n".join(parts)
 
     def _validate_pseudograd_params(
         self, worker_id: str, pseudograds: Dict[str, torch.Tensor]
@@ -1020,18 +1288,324 @@ class DiLoCoServer:
         response["save_dir"] = self.output_dir
         response["model_params"] = self._model_params
         response["model_size_mb"] = round(self._model_size_mb, 2)
-        response["dashboard_enabled"] = self.dashboard_enabled
 
         _send_json_response(handler, response)
 
-    def _handle_dashboard(self, handler: BaseHTTPRequestHandler):
-        """Serve the web dashboard HTML page."""
-        if not self.dashboard_enabled:
-            _send_json_response(handler, {"error": "Dashboard disabled"}, 404)
-            return
-        from .dashboard import send_dashboard_response
+    def _handle_info(self, handler: BaseHTTPRequestHandler):
+        """Handle info request.
 
-        send_dashboard_response(handler)
+        Returns the static-ish facts a client needs to negotiate compatible
+        settings before submitting pseudo-gradients: which checkpoint the
+        server was started from, the parameter count, and recommended
+        client-side defaults (``expected_client_settings``). Distinct from
+        ``/status`` which is the live, rapidly-changing snapshot.
+        """
+        response = {
+            "output_dir": self.output_dir,
+            "mode": "async" if self.async_mode else "sync",
+            "async_mode": self.async_mode,
+            "num_workers": self.num_workers,
+            "num_parameters": self._model_params,
+            "model_size_mb": round(self._model_size_mb, 2),
+            "dylu_enabled": self.dylu_enabled,
+            "dylu_base_sync_every": self.dylu_base_sync_every,
+            "expected_client_settings": {
+                # DyLU servers want all workers ramped to the base rate so
+                # the per-worker scaling has a known anchor. Non-DyLU
+                # servers leave sync_every up to the worker.
+                "sync_every": (
+                    self.dylu_base_sync_every if self.dylu_enabled else None
+                ),
+                "dylu": self.dylu_enabled,
+                "bf16_comm": True,
+                "num_fragments_min": 1,
+            },
+        }
+        _send_json_response(handler, response)
+
+    # ------------------------------------------------------------------
+    # Work-unit dispatch (see docs/design/diloco-work-unit-dispatch.md)
+    # ------------------------------------------------------------------
+
+    def _handle_register_dataset(self, handler: BaseHTTPRequestHandler):
+        """Register a ``(dataset_id, shuffle_seed)`` queue, or confirm an
+        existing one.
+
+        First registration of a ``dataset_id`` snapshots its length; later
+        registrations of the *same* dataset_id must report a matching
+        length or get a 409. The queue itself is per
+        ``(dataset_id, shuffle_seed)`` — same dataset under a new seed
+        (new epoch) gets a fresh queue.
+        """
+        try:
+            body = json.loads(_read_request_body(handler).decode("utf-8"))
+        except (ValueError, json.JSONDecodeError) as exc:
+            _send_json_response(handler, {"error": f"bad JSON body: {exc}"}, 400)
+            return
+
+        worker_id = body.get("worker_id") or ""
+        dataset_id = body.get("dataset_id")
+        seed_raw = body.get("shuffle_seed")
+        hint = body.get("hint") or {}
+
+        if not isinstance(dataset_id, str) or not dataset_id:
+            _send_json_response(handler, {"error": "dataset_id required"}, 400)
+            return
+        try:
+            shuffle_seed = int(seed_raw)
+        except (TypeError, ValueError):
+            _send_json_response(handler, {"error": "shuffle_seed (int) required"}, 400)
+            return
+        try:
+            hint_length = int(hint.get("length"))
+        except (TypeError, ValueError):
+            _send_json_response(handler, {"error": "hint.length (int) required"}, 400)
+            return
+        if hint_length < 1:
+            _send_json_response(
+                handler, {"error": f"hint.length must be >= 1, got {hint_length}"}, 400
+            )
+            return
+
+        with self._work_queues_lock:
+            # Length-mismatch detection: a later worker shipping a stale
+            # dataset config (different row count) is caught here rather
+            # than allowed to silently mis-window.
+            prior_length = self._dataset_lengths.get(dataset_id)
+            if prior_length is not None and prior_length != hint_length:
+                _send_json_response(
+                    handler,
+                    {
+                        "error": (
+                            f"dataset_id '{dataset_id}' was previously registered "
+                            f"with length={prior_length}; new hint.length="
+                            f"{hint_length} disagrees"
+                        )
+                    },
+                    409,
+                )
+                return
+            self._dataset_lengths[dataset_id] = hint_length
+
+            key = (dataset_id, shuffle_seed)
+            queue = self._work_queues.get(key)
+            if queue is None:
+                # Pluck optional dataset-identity strings from the hint.
+                # The first worker to register the queue snapshots
+                # these; later workers' values are ignored (they
+                # should be identical anyway since dataset_id is a
+                # hash of exactly this set of fields).
+                hint_path = (
+                    hint.get("path") if isinstance(hint.get("path"), str) else None
+                )
+                hint_name = (
+                    hint.get("name") if isinstance(hint.get("name"), str) else None
+                )
+                hint_split = (
+                    hint.get("split") if isinstance(hint.get("split"), str) else None
+                )
+                hint_revision = (
+                    hint.get("revision")
+                    if isinstance(hint.get("revision"), str)
+                    else None
+                )
+                hint_data_files = hint.get("data_files")
+                if isinstance(hint_data_files, str):
+                    hint_data_files = [hint_data_files]
+                elif isinstance(hint_data_files, list):
+                    hint_data_files = [x for x in hint_data_files if isinstance(x, str)]
+                else:
+                    hint_data_files = None
+                queue = WorkQueue.empty(
+                    self.default_work_units,
+                    hint_length,
+                    dataset_path=hint_path,
+                    dataset_name=hint_name,
+                    dataset_split=hint_split,
+                    dataset_revision=hint_revision,
+                    dataset_data_files=hint_data_files,
+                )
+                self._work_queues[key] = queue
+                label = hint_path or dataset_id
+                if hint_split:
+                    label = f"{label}@{hint_split}"
+                logger.info(
+                    f"Registered work queue {dataset_id}@{shuffle_seed} "
+                    f"(K={self.default_work_units}, length={hint_length}, "
+                    f"label={label!r}, worker={worker_id!r})"
+                )
+            self._dirty = True
+
+        _send_json_response(handler, {"total_units": queue.total_units})
+
+    def _handle_request_work(self, handler: BaseHTTPRequestHandler):
+        """Issue the next available work unit from a queue.
+
+        One-way issuance: the returned unit is consumed from the queue
+        regardless of worker fate (no reissue, no per-unit timeout).
+        Worst case a dying worker loses one unit out of K. The benefit
+        is that no row is ever trained twice within an epoch — see
+        design doc §"Issuance is one-way".
+        """
+        try:
+            body = json.loads(_read_request_body(handler).decode("utf-8"))
+        except (ValueError, json.JSONDecodeError) as exc:
+            _send_json_response(handler, {"error": f"bad JSON body: {exc}"}, 400)
+            return
+
+        worker_id = body.get("worker_id") or ""
+        dataset_id = body.get("dataset_id")
+        seed_raw = body.get("shuffle_seed")
+        if not isinstance(dataset_id, str) or not dataset_id:
+            _send_json_response(handler, {"error": "dataset_id required"}, 400)
+            return
+        try:
+            shuffle_seed = int(seed_raw)
+        except (TypeError, ValueError):
+            _send_json_response(handler, {"error": "shuffle_seed (int) required"}, 400)
+            return
+
+        with self._work_queues_lock:
+            queue = self._work_queues.get((dataset_id, shuffle_seed))
+            if queue is None:
+                _send_json_response(
+                    handler,
+                    {
+                        "error": (
+                            f"no queue for ({dataset_id}, {shuffle_seed}); "
+                            f"call /datasets/register first"
+                        )
+                    },
+                    404,
+                )
+                return
+
+            unit_id = _find_lowest_unset(queue.issued, queue.total_units)
+            if unit_id < 0:
+                _send_json_response(handler, {"exhausted": True})
+                return
+
+            _bit_set(queue.issued, unit_id)
+            queue.issued_count += 1
+            counters = queue.by_worker.setdefault(
+                worker_id, {"units_issued": 0, "units_completed": 0}
+            )
+            counters["units_issued"] += 1
+            self._dirty = True
+
+        _send_json_response(handler, {"unit_id": unit_id})
+
+    def _handle_complete_work(self, handler: BaseHTTPRequestHandler):
+        """Mark a unit as confirmed-completed (diagnostic only).
+
+        Workers MAY call this on successful drain. Nothing about
+        issuance state changes if it's omitted; the completed bitmap
+        just stays zero. The diagnostic surface uses it to distinguish
+        "issued ∧ completed" from "issued, fate unknown".
+        """
+        try:
+            body = json.loads(_read_request_body(handler).decode("utf-8"))
+        except (ValueError, json.JSONDecodeError) as exc:
+            _send_json_response(handler, {"error": f"bad JSON body: {exc}"}, 400)
+            return
+
+        worker_id = body.get("worker_id") or ""
+        dataset_id = body.get("dataset_id")
+        seed_raw = body.get("shuffle_seed")
+        unit_raw = body.get("unit_id")
+        if not isinstance(dataset_id, str) or not dataset_id:
+            _send_json_response(handler, {"error": "dataset_id required"}, 400)
+            return
+        try:
+            shuffle_seed = int(seed_raw)
+            unit_id = int(unit_raw)
+        except (TypeError, ValueError):
+            _send_json_response(
+                handler, {"error": "shuffle_seed and unit_id (int) required"}, 400
+            )
+            return
+
+        with self._work_queues_lock:
+            queue = self._work_queues.get((dataset_id, shuffle_seed))
+            if queue is None:
+                _send_json_response(
+                    handler,
+                    {"error": f"no queue for ({dataset_id}, {shuffle_seed})"},
+                    404,
+                )
+                return
+            if not (0 <= unit_id < queue.total_units):
+                _send_json_response(
+                    handler,
+                    {
+                        "error": f"unit_id {unit_id} out of range [0, {queue.total_units})"
+                    },
+                    400,
+                )
+                return
+            # Idempotent: completing an already-completed unit is a no-op.
+            if not _bit_get(queue.completed, unit_id):
+                _bit_set(queue.completed, unit_id)
+                queue.completed_count += 1
+                counters = queue.by_worker.setdefault(
+                    worker_id, {"units_issued": 0, "units_completed": 0}
+                )
+                counters["units_completed"] += 1
+                self._dirty = True
+
+        _send_json_response(handler, {"ack": True})
+
+    def _handle_get_queues(self, handler: BaseHTTPRequestHandler):
+        """List all active work queues (summary only, no bitmaps)."""
+        with self._work_queues_lock:
+            queues = [
+                _queue_summary_dict(dsid, seed, q)
+                for (dsid, seed), q in self._work_queues.items()
+            ]
+        _send_json_response(handler, queues)
+
+    def _handle_get_queue(self, handler: BaseHTTPRequestHandler):
+        """Single-queue detail with bitmaps (base64-encoded) and per-worker counts.
+
+        Bitmaps are K bits packed little-endian within each byte. K=1024
+        → 128 bytes per bitmap; cheap. The diagnostic UI decodes these
+        client-side to render a per-unit heatmap.
+        """
+        # The do_GET dispatcher passes self.path verbatim (no query
+        # parsing). Strip the path off and parse the query here.
+        parsed = urlparse(handler.path)
+        params = parse_qs(parsed.query)
+        dataset_id = (params.get("dataset_id") or [None])[0]
+        seed_raw = (params.get("shuffle_seed") or [None])[0]
+        if not dataset_id:
+            _send_json_response(handler, {"error": "dataset_id required"}, 400)
+            return
+        try:
+            shuffle_seed = int(seed_raw)
+        except (TypeError, ValueError):
+            _send_json_response(handler, {"error": "shuffle_seed (int) required"}, 400)
+            return
+
+        with self._work_queues_lock:
+            queue = self._work_queues.get((dataset_id, shuffle_seed))
+            if queue is None:
+                _send_json_response(
+                    handler,
+                    {"error": f"no queue for ({dataset_id}, {shuffle_seed})"},
+                    404,
+                )
+                return
+            response = _queue_summary_dict(dataset_id, shuffle_seed, queue)
+            response.update(
+                issued_bitmap_b64=base64.b64encode(bytes(queue.issued)).decode("ascii"),
+                completed_bitmap_b64=base64.b64encode(bytes(queue.completed)).decode(
+                    "ascii"
+                ),
+                # Copy so the response isn't mutated by concurrent
+                # request/complete calls after we drop the lock.
+                by_worker={k: dict(v) for k, v in queue.by_worker.items()},
+            )
+        _send_json_response(handler, response)
 
     def _handle_control(self, handler: BaseHTTPRequestHandler, action: str):
         """Dispatch control actions."""
@@ -1153,6 +1727,12 @@ class DiLoCoServer:
                         server_ref._handle_heartbeat(self)
                     elif path == "/deregister":
                         server_ref._handle_deregister(self)
+                    elif path == "/datasets/register":
+                        server_ref._handle_register_dataset(self)
+                    elif path == "/work/request":
+                        server_ref._handle_request_work(self)
+                    elif path == "/work/complete":
+                        server_ref._handle_complete_work(self)
                     elif path.startswith("/control/"):
                         action = path[len("/control/") :]
                         server_ref._handle_control(self, action)
@@ -1166,13 +1746,21 @@ class DiLoCoServer:
 
             def do_GET(self):
                 try:
-                    path = self.path.rstrip("/")
+                    # urlparse separates the path from the query string;
+                    # rstrip("/") here would mangle "/work/queue?…" so
+                    # apply it after parsing.
+                    parsed = urlparse(self.path)
+                    path = parsed.path.rstrip("/")
                     if path == "/global_params":
                         server_ref._handle_get_global_params(self)
                     elif path == "/status":
                         server_ref._handle_status(self)
-                    elif path == "/dashboard" or path == "":
-                        server_ref._handle_dashboard(self)
+                    elif path == "/info":
+                        server_ref._handle_info(self)
+                    elif path == "/work/queues":
+                        server_ref._handle_get_queues(self)
+                    elif path == "/work/queue":
+                        server_ref._handle_get_queue(self)
                     else:
                         _send_json_response(
                             self, {"error": f"Unknown endpoint: {path}"}, 404
@@ -1213,7 +1801,22 @@ class DiLoCoServer:
             checkpoint_path, self.get_global_params(), safetensors=self.safetensors
         )
 
-        # Save server state (optimizer, round, metadata) separately
+        # Work-queue state is intentionally NOT persisted (#46). Earlier
+        # versions rode the per-queue bitmap into server_state.pt so a
+        # server restart preserved issuance — the rationale was crash
+        # recovery within a run. In practice the more common pattern
+        # was "operator changed the dataset, output_dir stayed the
+        # same" → workers register a fresh dataset_id, but the old
+        # queue lingers in /work/queues with a stale hint.length and
+        # an unrecognized dataset_id key. The 2026-05-26 bringup
+        # chased exactly this confusion.
+        #
+        # Trade: on a server crash, in-flight units (≤ N_workers, one
+        # per worker) become re-issuable. That matches the design's
+        # accepted worker-death budget. Workers re-register their
+        # datasets on startup anyway, so the server reconstructs the
+        # queue map on demand. Operators who really want mid-epoch
+        # resume can keep their own queue snapshot.
         server_state = {
             "outer_optimizer": self.outer_optimizer.state_dict(),
             "sync_round": self._sync_round,
@@ -1231,10 +1834,48 @@ class DiLoCoServer:
             maybe_delete_oldest_checkpoint(self.output_dir, self.save_total_limit)
         self._dirty = False
 
+    @staticmethod
+    def _reorder_state_dict(
+        state_dict: Dict[str, torch.Tensor], saved_names: List[str]
+    ) -> Dict[str, torch.Tensor]:
+        """Rebuild ``state_dict`` in the order given by ``saved_names``.
+
+        Validates the key sets match (loud failure on architecture
+        drift). Extra keys in ``state_dict`` not in ``saved_names`` are
+        dropped — the saved order is authoritative; if the live model
+        gained a param the operator should treat that as a model-arch
+        change and not resume.
+        """
+        sd_keys = set(state_dict.keys())
+        saved_keys = set(saved_names)
+        missing = saved_keys - sd_keys
+        extra = sd_keys - saved_keys
+        if missing or extra:
+            raise RuntimeError(
+                f"Model param keys don't match the saved checkpoint's "
+                f"param_names (model arch drift?). Missing: {sorted(missing)[:5]}"
+                f"{'...' if len(missing) > 5 else ''}. "
+                f"Extra: {sorted(extra)[:5]}"
+                f"{'...' if len(extra) > 5 else ''}."
+            )
+        return {name: state_dict[name] for name in saved_names}
+
     def load_state(self, checkpoint_path: Optional[str] = None):
         """Load server state from a checkpoint directory and reset internal
         Args:
             checkpoint_path: Path to a checkpoint directory; defaults to searching output_dir.
+
+        Param ordering is taken from ``server_state.pt``'s ``param_names``
+        list (the canonical order at save time), not from the on-disk
+        model state_dict iteration order. The two can disagree — e.g.
+        ``save_model_checkpoint`` currently writes safetensors index
+        keys in arbitrary hash order — and the SGD optimizer's
+        ``state_dict()`` keys momentum buffers by integer slot, so a
+        slot-vs-slot mismatch on reload would silently apply a momentum
+        buffer of one shape to a param of another. Caught the bug
+        cold on the May 26 bringup: hidden_size=512 param paired with
+        intermediate_size=1280 momentum → ``buf.add_(grad)`` crash on
+        the first sync after restart. See #45 for the trace.
         """
         if self._running:
             raise RuntimeError(
@@ -1261,18 +1902,56 @@ class DiLoCoServer:
         logger.info(f"Loading model from checkpoint at {checkpoint_path}")
         state_dict = load_model_checkpoint(checkpoint_path, module=None, device="cpu")
 
-        # Initialize from state-dictionary
-        self._initialize(state_dict)
-
-        # Load server state if present
+        # Peek at server_state.pt BEFORE initializing so we can reorder
+        # the state_dict to match the canonical save-time order. The
+        # outer-optimizer state uses integer-keyed slots so the param
+        # list at slot i must hold the same param it did at save time.
         server_state_path = os.path.join(checkpoint_path, "server_state.pt")
+        server_state: Optional[Dict[str, Any]] = None
         if os.path.exists(server_state_path):
             server_state = torch.load(
                 server_state_path, map_location="cpu", weights_only=False
             )
+            saved_names = server_state.get("param_names")
+            if saved_names:
+                state_dict = self._reorder_state_dict(state_dict, saved_names)
+            else:
+                # Legacy server_state.pt without param_names: nothing we
+                # can do to canonicalize. The optimizer reload may
+                # still misalign — log loudly so the operator can spot
+                # a downstream crash and reach for a clean restart.
+                logger.warning(
+                    "server_state.pt has no 'param_names' entry — using "
+                    "state_dict iteration order, which may not match the "
+                    "saved optimizer state. Pre-#45 checkpoint."
+                )
+
+        # Initialize from state-dictionary
+        self._initialize(state_dict)
+
+        # Load server state if present
+        if server_state is not None:
             self.outer_optimizer.load_state_dict(server_state["outer_optimizer"])
             self._sync_round = server_state["sync_round"]
             self._total_submissions = server_state.get("total_submissions", 0)
+
+            # Work-queue state is no longer persisted (#46). For
+            # backward-compat with pre-#46 checkpoints, surface a
+            # warning if any work-queue entries are present — they're
+            # being silently ignored, and the operator should know in
+            # case they were expecting mid-epoch resume from this
+            # checkpoint.
+            legacy_queues = server_state.get("work_queues") or {}
+            if legacy_queues:
+                logger.warning(
+                    "Ignoring %d work-queue entr%s in legacy server_state.pt — "
+                    "work-queue persistence was removed in #46. Workers will "
+                    "re-register their datasets on connect; any in-flight "
+                    "units from the prior run will be re-issued.",
+                    len(legacy_queues),
+                    "y" if len(legacy_queues) == 1 else "ies",
+                )
+
             logger.info(
                 f"Server state loaded from {checkpoint_path}, at round {self._sync_round}"
             )
@@ -1313,8 +1992,6 @@ class DiLoCoServer:
         logger.info(
             f"Expecting {self.num_workers} worker(s), min_workers={self.min_workers}"
         )
-        if self.dashboard_enabled:
-            logger.info(f"Dashboard: http://{self.host}:{self.port}/dashboard")
         if self.heartbeat_timeout > 0:
             logger.info(f"Health monitoring: timeout={self.heartbeat_timeout}s")
         if self.async_mode and self.dn_buffer_size > 0:
@@ -1361,8 +2038,6 @@ class DiLoCoServer:
         logger.info(
             f"Expecting {self.num_workers} worker(s), min_workers={self.min_workers}"
         )
-        if self.dashboard_enabled:
-            logger.info(f"Dashboard: http://{self.host}:{self.port}/dashboard")
 
     def stop(self):
         """Stop the background server."""

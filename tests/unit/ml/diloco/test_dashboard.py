@@ -50,7 +50,10 @@ def _post_json(url, data=None):
 
 @pytest.fixture
 def server(tmp_path):
-    """Create a dashboard-enabled server on a random port."""
+    """Create a server on a random port. (The built-in HTML dashboard
+    was removed in favor of the webui's DiLoCo view; these tests now
+    cover only the control endpoints + the status-field surface the
+    webui consumes.)"""
     sd = _make_state_dict()
     ckpt = make_initial_checkpoint(sd, tmp_path / "initial")
     srv = DiLoCoServer(
@@ -59,27 +62,6 @@ def server(tmp_path):
         num_workers=2,
         port=0,
         outer_optimizer_factory=_simple_sgd,
-        dashboard_enabled=True,
-    )
-    srv.start()
-    time.sleep(0.2)
-    yield srv
-    if srv._running:
-        srv.stop()
-
-
-@pytest.fixture
-def server_no_dashboard(tmp_path):
-    """Create a server with dashboard disabled."""
-    sd = _make_state_dict()
-    ckpt = make_initial_checkpoint(sd, tmp_path / "initial")
-    srv = DiLoCoServer(
-        output_dir=str(tmp_path),
-        from_checkpoint=str(ckpt),
-        num_workers=1,
-        port=0,
-        outer_optimizer_factory=_simple_sgd,
-        dashboard_enabled=False,
     )
     srv.start()
     time.sleep(0.2)
@@ -108,28 +90,14 @@ def server_with_save(tmp_path):
         srv.stop()
 
 
-class TestDashboardServing:
-    def test_dashboard_returns_html(self, server):
-        status, headers, body = _get(f"http://localhost:{server.port}/dashboard")
-        assert status == 200
-        assert "text/html" in headers.get("Content-Type", "")
-        assert b"DiLoCo" in body
-        assert b"alpine" in body.lower()
-
-    def test_root_returns_dashboard(self, server):
-        status, headers, body = _get(f"http://localhost:{server.port}/")
-        assert status == 200
-        assert b"DiLoCo" in body
-
-    def test_dashboard_disabled_returns_404(self, server_no_dashboard):
-        status, _, body = _get(f"http://localhost:{server_no_dashboard.port}/dashboard")
-        assert status == 404
-        data = json.loads(body)
-        assert "disabled" in data.get("error", "").lower()
-
-    def test_root_disabled_returns_404(self, server_no_dashboard):
-        status, _, _ = _get(f"http://localhost:{server_no_dashboard.port}/")
-        assert status == 404
+def test_dashboard_endpoint_removed(server):
+    """The /dashboard and / endpoints used to serve the Alpine.js
+    HTML dashboard. They were removed when the webui's DiLoCo view
+    took over; both should now 404."""
+    status_dash, _, _ = _get(f"http://localhost:{server.port}/dashboard")
+    assert status_dash == 404
+    status_root, _, _ = _get(f"http://localhost:{server.port}/")
+    assert status_root == 404
 
 
 class TestControlEndpoints:
@@ -288,7 +256,11 @@ class TestControlEndpoints:
 
 
 class TestStatusExtensions:
-    def test_status_has_dashboard_fields(self, server):
+    """The /status response carries the same monitoring fields the
+    webui's DiLoCo view consumes (formerly read by the built-in
+    HTML dashboard)."""
+
+    def test_status_has_monitoring_fields(self, server):
         status_code, _, body = _get(f"http://localhost:{server.port}/status")
         assert status_code == 200
         data = json.loads(body)
@@ -297,16 +269,24 @@ class TestStatusExtensions:
         assert "outer_momentum" in data
         assert "model_params" in data
         assert "model_size_mb" in data
-        assert "dashboard_enabled" in data
 
         # Verify values
         assert data["outer_lr"] == 1.0  # from _simple_sgd
         assert data["outer_momentum"] == 0.5
         assert data["model_params"] == 8 * 8 * 2  # 2 layers of 8x8
         assert isinstance(data["model_size_mb"], (int, float))
-        assert data["dashboard_enabled"] is True
 
-    def test_status_dashboard_disabled_field(self, server_no_dashboard):
-        _, _, body = _get(f"http://localhost:{server_no_dashboard.port}/status")
+    def test_status_does_not_advertise_dashboard(self, server):
+        """The dashboard_enabled field is gone (the dashboard itself
+        was removed). The webui shouldn't have any reason to ask
+        about it."""
+        _, _, body = _get(f"http://localhost:{server.port}/status")
         data = json.loads(body)
-        assert data["dashboard_enabled"] is False
+        assert "dashboard_enabled" not in data
+
+    def test_info_carries_output_dir(self, server, tmp_path):
+        """The webui's Submit-training-job modal pre-fills
+        --model-id-or-path from this field. Regression test for #52."""
+        _, _, body = _get(f"http://localhost:{server.port}/info")
+        data = json.loads(body)
+        assert data.get("output_dir") == str(tmp_path)

@@ -12,7 +12,9 @@
 #   1. Checks for model weights, constructs them if missing
 #   2. Starts the DiLoCo server
 #   3. Waits for the server to be ready
-#   4. Starts N workers with correct shard indices
+#   4. Starts N workers, each with a unique --diloco-worker-id so
+#      each worker gets a distinct output dir (the project template
+#      appends the worker id to ns.model_name)
 #   5. Waits for all workers to finish
 #   6. Stops the server
 #
@@ -83,7 +85,7 @@ fi
 # Step 2: Start server
 echo "==> Starting DiLoCo server on port $PORT with $NUM_WORKERS workers..."
 forgather diloco server \
-    -m "$MODEL_DIR" \
+    -o "$MODEL_DIR" \
     -n "$NUM_WORKERS" \
     --port "$PORT" \
     > >(sed 's/^/[server] /') 2>&1 &
@@ -109,17 +111,25 @@ if ! curl -s "http://localhost:$PORT/status" > /dev/null 2>&1; then
     exit 1
 fi
 
-# Step 4: Start workers
+# Step 4: Start workers. Each worker gets a unique --diloco-worker-id
+# so the project template ([globals] in templates/project.yaml)
+# appends "_$WORKER_ID" to ns.model_name and the workers land in
+# distinct output dirs. The manual --num-shards/--shard-index flow
+# has been removed -- the dataset is iterated in full on each worker
+# (or partitioned via the DiLoCo server's work-unit dispatch when a
+# dataset_server is in the picture; not exercised by this script).
 echo "==> Starting $NUM_WORKERS workers (sync_every=$SYNC_EVERY, config=$CONFIG)..."
 for i in $(seq 0 $((NUM_WORKERS - 1))); do
-    echo "    Worker $i starting..."
+    WORKER_ID="w$i"
+    echo "    Worker $WORKER_ID starting..."
     forgather diloco worker \
         --server "localhost:$PORT" \
         --sync-every "$SYNC_EVERY" \
+        --worker-id "$WORKER_ID" \
         -p . \
         -t "$CONFIG" \
-        train --num-shards "$NUM_WORKERS" --shard-index "$i" \
-        > >(sed "s/^/[worker$i] /") 2>&1 &
+        train \
+        > >(sed "s/^/[$WORKER_ID] /") 2>&1 &
     WORKER_PID=$!
     PIDS+=("$WORKER_PID")
     # Small delay to avoid race conditions in log output
@@ -128,7 +138,7 @@ done
 
 echo "==> All workers started. Training in progress..."
 echo "    Monitor: forgather diloco status --server localhost:$PORT"
-echo "    Dashboard: http://localhost:$PORT/dashboard"
+echo "    Webui:   forgather webui -> DiLoCo view -> select localhost:$PORT"
 echo "    Press Ctrl-C to stop."
 
 # Step 5: Wait for workers to finish

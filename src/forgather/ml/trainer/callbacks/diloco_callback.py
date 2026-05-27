@@ -24,14 +24,14 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
+from forgather.ml.distributed import prefix_logger_rank
+
 from ..trainer_types import (
     MinimalTrainingArguments,
     TrainerCallback,
     TrainerControl,
     TrainerState,
 )
-
-from forgather.ml.distributed import prefix_logger_rank
 
 logger = logging.getLogger(__name__)
 prefix_logger_rank(logger, show_all_ranks=True)
@@ -68,9 +68,22 @@ class DiLoCoCallback(TrainerCallback):
     Implements the Stateful protocol for checkpoint persistence. The checkpoint
     manager auto-discovers Stateful callbacks and saves/restores their state.
 
-    When ``server_addr`` is empty (and DILOCO_SERVER is unset), all methods are
-    no-ops. This allows a single training configuration to work both with and
-    without a DiLoCo server.
+    **The callback is fail-fast on misconfiguration.** If it's constructed
+    (in the trainer's callback list) but ``server_addr`` is unset (and
+    ``DILOCO_SERVER`` is also unset in the env), ``on_train_begin``
+    raises ``DiLoCoServerUnreachable`` rather than no-op'ing. The
+    older "silent no-op when DILOCO_SERVER is unset" path was a
+    silent-failure footgun: two workers running with the callback
+    present but no reachable server would train islands with no
+    coordination and no error. The template gates the callback
+    include on ``getenv("DILOCO_SERVER")`` so vanilla finetunes
+    never reach this code path at all; if the gate is bypassed and
+    we end up here without a server, we fail loudly.
+
+    Likewise, a *configured* but *unreachable* server is fatal at
+    startup — the callback does a ``/status`` round-trip before
+    proceeding so the operator sees the failure in the TTY pane,
+    not five hundred steps later when the first sync fails.
 
     Parameters
     ----------
@@ -154,21 +167,73 @@ class DiLoCoCallback(TrainerCallback):
         control: TrainerControl,
         **kwargs,
     ):
-        """Create and start the DiLoCoWorker."""
+        """Create and start the DiLoCoWorker.
+
+        Raises
+        ------
+        DiLoCoRegisterCollisionError
+            Propagated from ``DiLoCoWorker.start()`` when the server
+            refuses our ``worker_id`` with HTTP 409 (another worker
+            with the same id is still registered). The training loop
+            sees this as a fatal exception and exits cleanly; the
+            server's diagnostic body is in the exception message so
+            the operator's TTY pane shows exactly what to do.
+
+        Note: work-unit dispatch (training-data dispatch via the
+        DiLoCo server's work-queue endpoints) is **not** handled
+        here — it's a separate, self-configuring concern owned by
+        :func:`forgather.ml.datasets.work_unit_backend.maybe_wrap_for_work_dispatch`
+        which the project template calls at dataset-construction
+        time. The two subsystems share env vars (``DILOCO_WORKER_ID``,
+        ``DILOCO_SERVER``) but otherwise don't interact — this
+        callback only manages the worker's parameter-sync lifecycle.
+        """
+        from forgather.ml.diloco.client import (
+            DiLoCoClient,
+            DiLoCoModelMismatchError,
+            DiLoCoRegisterCollisionError,
+            DiLoCoServerUnreachable,
+        )
+        from forgather.ml.diloco.worker import DiLoCoWorker
+
         if not self.active:
-            logger.info("DiLoCoCallback: no server_addr configured, running as no-op")
-            return
+            # Fail-fast: the callback being in the trainer's enabled
+            # list but having no server_addr is a misconfiguration. The
+            # older silent no-op hid two-worker islands-without-sync
+            # incidents. The template should have gated this include
+            # on ``getenv("DILOCO_SERVER")``; if we reach here that
+            # gate is missing.
+            raise DiLoCoServerUnreachable(
+                "DiLoCoCallback is enabled but neither the ``server_addr`` "
+                "constructor arg nor the ``DILOCO_SERVER`` env var is set. "
+                "Either gate the callback include in the template on "
+                "``getenv('DILOCO_SERVER')`` (vanilla finetune path), or "
+                "set DILOCO_SERVER to point at a running diloco server."
+            )
 
         model = kwargs.get("model")
         optimizer = kwargs.get("optimizer")
         if model is None or optimizer is None:
-            logger.error(
-                "DiLoCoCallback: model or optimizer not provided in kwargs. "
-                "Cannot initialize DiLoCoWorker."
+            raise RuntimeError(
+                "DiLoCoCallback: model or optimizer not provided in "
+                "on_train_begin kwargs. Cannot initialize DiLoCoWorker."
             )
-            return
 
-        from forgather.ml.diloco.worker import DiLoCoWorker
+        # Reachability pre-check: a /status round-trip before we
+        # bother building the worker. Surfaces "server URL wrong",
+        # "server down", "wrong port", "firewall" while the operator
+        # is still watching the TTY, instead of 500 local steps later
+        # when the first sync fails.
+        probe = DiLoCoClient(self.server_addr, timeout=min(self.timeout, 10.0))
+        try:
+            probe.get_status()
+        except Exception as exc:
+            raise DiLoCoServerUnreachable(
+                f"DiLoCoCallback: /status round-trip to "
+                f"{self.server_addr!r} failed at startup: {exc}. "
+                f"The server must be running and reachable before "
+                f"workers can register."
+            ) from exc
 
         self._worker = DiLoCoWorker(
             model=model,
@@ -183,7 +248,33 @@ class DiLoCoCallback(TrainerCallback):
             num_fragments=self.num_fragments,
             max_sync_retries=self.max_sync_retries,
         )
-        self._worker.start()
+        try:
+            self._worker.start()
+        except DiLoCoRegisterCollisionError as exc:
+            # Server refused the worker_id (another worker holds it).
+            # Log the diagnostic at ERROR so the TTY pane shows it,
+            # clear the worker handle so on_train_end / on_save don't
+            # try to operate on a half-initialized instance, then
+            # re-raise to abort training.
+            logger.error(
+                "DiLoCoCallback: server refused worker_id=%r — %s",
+                self._worker.worker_id,
+                exc.diagnostic or str(exc),
+            )
+            self._worker = None
+            raise
+        except DiLoCoModelMismatchError as exc:
+            # Server rejected our model fingerprint — operator
+            # almost certainly pointed this worker at the wrong
+            # --model-id-or-path. Surface the per-param diagnostic
+            # so they can spot the divergent dim immediately.
+            logger.error(
+                "DiLoCoCallback: server rejected worker model " "(worker_id=%r) — %s",
+                self._worker.worker_id,
+                exc.diagnostic or str(exc),
+            )
+            self._worker = None
+            raise
 
         # Apply deferred checkpoint state
         if self._pending_state is not None:

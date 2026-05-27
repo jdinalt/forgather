@@ -29,7 +29,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from dataset_server.auth import (
     standalone_token_file as dataset_server_standalone_token_file,
@@ -557,6 +557,37 @@ def _build_update(item, gpu_indices, tty_path):
     )
 
 
+def _build_diloco_server(item, gpu_indices, tty_path):
+    p = item.job_params
+    return launcher.spawn_diloco_server_process(
+        output_dir=p["output_dir"],
+        num_workers=int(p["num_workers"]),
+        port=int(p.get("port", 8512)),
+        host=p.get("host", "127.0.0.1"),
+        async_mode=bool(p.get("async_mode", False)),
+        dn_buffer_size=int(p.get("dn_buffer_size", 0) or 0),
+        dylu=bool(p.get("dylu", False)),
+        dylu_base_sync_every=int(p.get("dylu_base_sync_every", 500) or 500),
+        from_checkpoint=p.get("from_checkpoint") or None,
+        save_every=int(p.get("save_every", 10) or 0),
+        save_total_limit=int(p.get("save_total_limit", 3) or 0),
+        outer_lr=(float(p["outer_lr"]) if p.get("outer_lr") is not None else None),
+        outer_momentum=(
+            float(p["outer_momentum"]) if p.get("outer_momentum") is not None else None
+        ),
+        no_nesterov=bool(p.get("no_nesterov", False)),
+        heartbeat_timeout=(
+            float(p["heartbeat_timeout"])
+            if p.get("heartbeat_timeout") is not None
+            else None
+        ),
+        min_workers=(
+            int(p["min_workers"]) if p.get("min_workers") is not None else None
+        ),
+        tty_log_path=tty_path,
+    )
+
+
 def _build_mkdocs(item, gpu_indices, tty_path):
     p = item.job_params
     watch = p.get("watch")
@@ -666,13 +697,76 @@ def _build_construct(item, gpu_indices, tty_path):
     )
 
 
+def _diloco_env_from_job_params(
+    diloco: Dict[str, Any],
+    queue_id: str,
+) -> Dict[str, str]:
+    """Translate a ``job_params.diloco`` dict into ``DILOCO_*`` env vars.
+
+    The DiLoCoCallback constructor reads these as the fallback when its
+    template args are None. Only keys the operator actually set get
+    forwarded so the rest fall back to whatever the callback's
+    constructor default / project template specifies.
+
+    Special case for ``worker_id``: the env var is **always set** when
+    DiLoCo is enabled, even if the operator didn't supply one — config
+    preprocessing reads ``DILOCO_WORKER_ID`` to derive a unique output
+    directory per worker, so a missing value at preprocessing time
+    would cause two workers to share an output dir and clobber each
+    other's checkpoints. When the operator leaves ``worker_id`` blank,
+    we fall back to the queue_id (stable, unique per job submission,
+    and already surfaced in the Jobs view so the operator can correlate).
+
+    Expected input shape (all keys optional except ``server_addr``):
+        {
+          "server_addr": "host:port",
+          "sync_every": int,
+          "num_fragments": int,
+          "dylu": bool,
+          "bf16_comm": bool,
+          "heartbeat_interval": float,
+          "worker_id": str,
+        }
+    """
+    env: Dict[str, str] = {}
+    server = diloco.get("server_addr")
+    if not server:
+        return env
+    env["DILOCO_SERVER"] = str(server)
+    if diloco.get("sync_every") is not None:
+        env["DILOCO_SYNC_EVERY"] = str(int(diloco["sync_every"]))
+    if diloco.get("num_fragments") is not None:
+        env["DILOCO_NUM_FRAGMENTS"] = str(int(diloco["num_fragments"]))
+    if diloco.get("dylu") is not None:
+        env["DILOCO_DYLU"] = "1" if bool(diloco["dylu"]) else "0"
+    if diloco.get("bf16_comm") is not None:
+        env["DILOCO_BF16_COMM"] = "1" if bool(diloco["bf16_comm"]) else "0"
+    if diloco.get("heartbeat_interval") is not None:
+        env["DILOCO_HEARTBEAT_INTERVAL"] = str(float(diloco["heartbeat_interval"]))
+    # Always-set: operator-supplied value if present, otherwise the
+    # queue_id as a stable per-submission fallback.
+    wid = (diloco.get("worker_id") or "").strip()
+    env["DILOCO_WORKER_ID"] = wid or queue_id
+    return env
+
+
 def _build_training(item, gpu_indices, tty_path):
     # Multi-node training jobs (Phase 3 cluster-coordinator submit)
     # carry their torchrun rendezvous args + NCCL env in
     # ``job_params``. Single-node training jobs leave job_params empty
     # and the launcher falls back to ``--standalone``.
     rdzv_args = item.job_params.get("rdzv_args") or None
-    extra_env = item.job_params.get("extra_env") or None
+    extra_env = dict(item.job_params.get("extra_env") or {})
+    # DiLoCo opt-in: a non-empty ``job_params.diloco.server_addr``
+    # means this worker should join the named DiLoCo server. The
+    # DiLoCoCallback wired into the training config reads DILOCO_*
+    # env vars when its template args are None; the webui sets the
+    # env via this channel so no scheduler-side surgery to dynamic
+    # args is needed.
+    diloco = item.job_params.get("diloco") or {}
+    if isinstance(diloco, dict):
+        extra_env.update(_diloco_env_from_job_params(diloco, item.queue_id))
+    extra_env = extra_env or None
     # ``nproc`` from job_params is an explicit single-node override
     # (typed into the SubmitModal nproc field, or supplied by other
     # callers that want to bypass the config's nproc_per_node).
@@ -710,6 +804,7 @@ _LAUNCHERS = {
     "finalize": _build_finalize,
     "update": _build_update,
     "mkdocs": _build_mkdocs,
+    "diloco_server": _build_diloco_server,
     "model": _build_model,
     "dataset": _build_dataset,
     "construct": _build_construct,
@@ -943,10 +1038,15 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
     # or fall back to the first non-loopback psutil-detected IP.
     # Leave unset for explicit bind hosts (operator knows what they
     # typed). Applies to every job type that exposes a clickable URL
-    # on its Job card — currently inference, dataset_server, and
-    # mkdocs. TensorBoard renders its own URL with its bind_all
+    # on its Job card — inference, dataset_server, diloco_server,
+    # and mkdocs. TensorBoard renders its own URL with its bind_all
     # toggle in mind and is left alone.
-    if item.job_type in ("inference", "dataset_server", "mkdocs"):
+    if item.job_type in (
+        "inference",
+        "dataset_server",
+        "diloco_server",
+        "mkdocs",
+    ):
         if finalized_params.get("host") in ("0.0.0.0", "::", ""):
             routable = detect_routable_host()
             if routable:

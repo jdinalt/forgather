@@ -1,4 +1,8 @@
--- extends "projects/tiny.yaml"
+-- extends "projects/tinyv2.yaml"
+
+## Non-DiLoCo baseline: same tinyv2 hyperparameters as the DiLoCo
+## configs, for comparison. Lets you see how a vanilla single-node
+## run scores against an N-worker DiLoCo run on the same setup.
 
 [config_metadata]
     == super()

@@ -29,6 +29,7 @@ from . import (
     convert_ops,
     dataset_ops,
     dataset_server_ops,
+    diloco_server_ops,
     eval_ops,
     finalize_ops,
     inference_ops,
@@ -460,6 +461,55 @@ def spawn_tensorboard_process(
         reload_multifile=reload_multifile,
         samples_per_plugin=samples_per_plugin,
         path_prefix=path_prefix,
+    )
+    return _spawn_subprocess(cmd, [], tty_log_path, extra_env)
+
+
+def spawn_diloco_server_process(
+    *,
+    output_dir: str,
+    num_workers: int,
+    tty_log_path: Path,
+    port: int = 8512,
+    host: str = "127.0.0.1",
+    async_mode: bool = False,
+    dn_buffer_size: int = 0,
+    dylu: bool = False,
+    dylu_base_sync_every: int = 500,
+    from_checkpoint: Optional[str] = None,
+    save_every: int = 10,
+    save_total_limit: int = 3,
+    outer_lr: Optional[float] = None,
+    outer_momentum: Optional[float] = None,
+    no_nesterov: bool = False,
+    heartbeat_timeout: Optional[float] = None,
+    min_workers: Optional[int] = None,
+    extra_env: Optional[Dict[str, str]] = None,
+) -> LaunchResult:
+    """Spawn a DiLoCo parameter server.
+
+    CPU-only (no GPUs reserved); long-lived like dataset_server / mkdocs /
+    tensorboard. The DiLoCo server holds global model parameters in
+    memory and applies the outer optimizer when workers submit pseudo-
+    gradients over HTTP. Auth / TLS land in a follow-up.
+    """
+    cmd = diloco_server_ops.build_diloco_server_command(
+        output_dir=output_dir,
+        num_workers=num_workers,
+        port=port,
+        host=host,
+        async_mode=async_mode,
+        dn_buffer_size=dn_buffer_size,
+        dylu=dylu,
+        dylu_base_sync_every=dylu_base_sync_every,
+        from_checkpoint=from_checkpoint,
+        save_every=save_every,
+        save_total_limit=save_total_limit,
+        outer_lr=outer_lr,
+        outer_momentum=outer_momentum,
+        no_nesterov=no_nesterov,
+        heartbeat_timeout=heartbeat_timeout,
+        min_workers=min_workers,
     )
     return _spawn_subprocess(cmd, [], tty_log_path, extra_env)
 

@@ -145,7 +145,7 @@ Tests for the Distributed Local-Compute Optimization (DiLoCo) system:
 | `test_server_client.py` | Client-server communication |
 | `test_streaming.py` | Streaming and buffering during sync |
 | `test_async.py` | Asynchronous operations |
-| `test_dashboard.py` | Monitoring dashboard |
+| `test_dashboard.py` | Server control endpoints + status fields the webui DiLoCo view consumes |
 | `test_fault_tolerance.py` | Failure recovery mechanisms |
 | `test_diloco_callback.py` | DiLoCo training callback integration |
 

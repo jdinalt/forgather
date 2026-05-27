@@ -258,9 +258,7 @@ def retie_parameters(module, sharing_metadata: List[List[str]]) -> None:
         setattr(sub_module, fqn_atoms[-1], canonical_tensor)
 
 
-def _tied_aliases_in_module(
-    module: nn.Module, checkpoint_keys: Set[str]
-) -> Set[str]:
+def _tied_aliases_in_module(module: nn.Module, checkpoint_keys: Set[str]) -> Set[str]:
     """Return module FQNs whose absence from the checkpoint is explained by weight tying.
 
     Safetensors cannot represent shared storage, so HF's save deduplicates
@@ -438,14 +436,25 @@ def _make_shard_dictionaries(
     a map of file_name -> state_dict which only includes the weights
     actually in 'module'
 
+    Weight order within each shard follows the input ``state_dict``'s
+    iteration order (which is module-traversal order for an
+    ``nn.Module.state_dict()``). Iterating ``state_dict`` directly —
+    rather than the set returned by ``_intersect_weight_map`` — is
+    load-bearing for DiLoCo, which keys its outer-optimizer momentum
+    state by integer slot in ``_param_list``: a save-time order that
+    disagrees with the load-time order silently misaligns slots and
+    crashes the first ``optimizer.step()`` after restart (see #44 /
+    #45 for the trace).
+
     returns Dict[file_name: str, Dict[weight_name: str, weight: Tensor]]
     """
 
-    intersection = _intersect_weight_map(weight_map, state_dict)
+    weight_map_keys = set(weight_map.keys())
     file_map = {}
-    for weight_name in intersection:
+    for weight_name, weight in state_dict.items():
+        if weight_name not in weight_map_keys:
+            continue
         file_name = weight_map[weight_name]
-        weight = state_dict[weight_name]
 
         if file_name not in file_map:
             file_map[file_name] = {}
@@ -696,8 +705,11 @@ def load_checkpoint(
     if checkpoint_meta.is_index:
         shard_index = load_shard_index(model_dir, checkpoint_meta.file_name)
         if module is not None and _maybe_install_torchao_quantization(
-            model_dir, module, shard_index=shard_index,
-            safetensors=checkpoint_meta.safetensors, device=device,
+            model_dir,
+            module,
+            shard_index=shard_index,
+            safetensors=checkpoint_meta.safetensors,
+            device=device,
         ):
             # Quantized weights are tensor subclasses; ``Tensor.copy_``
             # between two quantized subclasses fails with a metadata
@@ -804,7 +816,10 @@ def _maybe_install_torchao_quantization(
     if base_config is None:
         if state_dict is None and shard_index is not None:
             state_dict = _peek_first_shard(
-                model_dir, shard_index, safetensors=safetensors, device=device,
+                model_dir,
+                shard_index,
+                safetensors=safetensors,
+                device=device,
             )
         if state_dict is not None:
             base_config = detect_torchao_quantization(state_dict=state_dict)
@@ -984,13 +999,15 @@ def load_sharded_checkpoint(
 
         return all_module_keys
 
-    # Dict mode: accumulate tensors into a dict and return
+    # Dict mode: accumulate tensors into a dict and return.
+    # Shard files are iterated in sorted order so the returned dict's
+    # key order is deterministic across runs (otherwise a multi-shard
+    # checkpoint would expose hash-order cross-shard, mirroring the
+    # write-side bug fixed by #44 on the per-shard level).
     target_keys = keys if keys is not None else set(weight_map.keys())
     loadable_keys = target_keys.intersection(set(weight_map.keys()))
 
-    shard_files = set()
-    for weight_name in loadable_keys:
-        shard_files.add(weight_map[weight_name])
+    shard_files = sorted({weight_map[name] for name in loadable_keys})
 
     result: Dict[str, Tensor] = {}
     for shard_file_name in shard_files:

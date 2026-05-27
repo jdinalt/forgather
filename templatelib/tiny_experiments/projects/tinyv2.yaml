@@ -7,28 +7,35 @@
     -- set ns.config_description = "A project template for running tiny model experiments."
     -- set ns.model_name = model_name | default("tinyv2")
 
+    ## Dataset
     -- set ns.dataset_proj = dataset_project | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan'))
-    -- set ns.dataset_config = dataset_config | default("tinystories-abridged.yaml")
-    -- set ns.batch_density = 0.60
-    -- set ns.dispatch_batches = dispatch_batches | default(True)
+    -- set ns.dataset_config = dataset_config | default("fast-iter-packed.yaml")
 
+    ## Model
     -- set ns.model_project_dir = abspath(model_project | default((joinpath(ns.forgather_dir, "examples", "models", "llama"))))
     -- set ns.model_project_config = model_config | default("4M.yaml")
 
+    ## Training budget (millions of tokens)
     -- set ns.total_tokens = total_tokens | default(80)
     -- set ns.warmup_tokens = warmup_tokens | default(4)
     -- set ns.min_cooldown_tokens = min_cooldown_tokens | default(100)
 
-    -- set ns.seq_len = seq_len | default(512)
-    -- set ns.per_device_train_batch_size = batch_size | default(32)
-    -- set ns.gradient_accumulation_steps = gradient_accumulation_steps | default(1)
+    ## Batching
+    -- set ns.seq_len = seq_len | default(2048)
+    -- set ns.per_device_train_batch_size =  batch_size | default(8)
 
+    ## LR scaling
+    -- set ns.base_lr = lr | default(1.5e-3)
+
+    ## Cadence
     -- set ns.base_logging_tokens = 1
     -- set ns.base_validation_tokens = 10
     -- set ns.base_save_tokens = 500
 
-    -- set ns.base_lr = lr | default(1.5e-3)
-    -- set ns.base_batch_size = 16384
+[datacollator]
+    == super()
+    max_length: {{ ns.seq_len }}
+    padding: "max_length"
 
 [trainer_args]
     == super()
@@ -37,8 +44,6 @@
     float32_matmul_precision: {{ float32_matmul_precision | toyaml("high") }}
     default_dtype: {{ default_dtype | toyaml("float32") }}
     mixed_precision: {{ mixed_precision | toyaml("bf16") }}
-    fp8_recipe: {{ fp8_recipe | toyaml(None) }}
 
 [trainer_callbacks]
-    ## See definition below
-    -- include 'callbacks/tiny_callbacks.yaml'
+    -- include "callbacks/lm_callbacks.yaml"
