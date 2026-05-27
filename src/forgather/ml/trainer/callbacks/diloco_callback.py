@@ -190,6 +190,7 @@ class DiLoCoCallback(TrainerCallback):
         """
         from forgather.ml.diloco.client import (
             DiLoCoClient,
+            DiLoCoModelMismatchError,
             DiLoCoRegisterCollisionError,
             DiLoCoServerUnreachable,
         )
@@ -257,6 +258,18 @@ class DiLoCoCallback(TrainerCallback):
             # re-raise to abort training.
             logger.error(
                 "DiLoCoCallback: server refused worker_id=%r — %s",
+                self._worker.worker_id,
+                exc.diagnostic or str(exc),
+            )
+            self._worker = None
+            raise
+        except DiLoCoModelMismatchError as exc:
+            # Server rejected our model fingerprint — operator
+            # almost certainly pointed this worker at the wrong
+            # --model-id-or-path. Surface the per-param diagnostic
+            # so they can spot the divergent dim immediately.
+            logger.error(
+                "DiLoCoCallback: server rejected worker model " "(worker_id=%r) — %s",
                 self._worker.worker_id,
                 exc.diagnostic or str(exc),
             )

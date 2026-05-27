@@ -234,8 +234,27 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     if (typeof exp.bf16_comm === "boolean") {
       setDiBf16(exp.bf16_comm);
     }
+    // Seed --model-id-or-path from the server's output_dir so the
+    // worker constructs its model against the same checkpoint the
+    // server loaded from. Catches the operator-misconfiguration
+    // class of bug paired with the server-side fingerprint check
+    // (#51 / DiLoCoModelMismatchError). Only seeds when the field
+    // is empty — operator overrides win, and seeding only fires when
+    // the schema actually exposes that dest (some DiLoCo configs
+    // don't, e.g. tinyv2 doesn't require --model-id-or-path).
+    if (info.output_dir) {
+      const hasDest = (argsQ.data ?? []).some(
+        (a) => a.dest === "model_id_or_path",
+      );
+      if (hasDest) {
+        setValues((prev) => {
+          if (prev.model_id_or_path && prev.model_id_or_path.trim()) return prev;
+          return { ...prev, model_id_or_path: info.output_dir as string };
+        });
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dilocoInfoQ.data, selectedDiLoCoBase]);
+  }, [dilocoInfoQ.data, selectedDiLoCoBase, argsQ.data]);
 
   // Dataset-source selector — state + queries + seeding live in the
   // shared hook. ``null`` = local (in-process loader). The hook waits

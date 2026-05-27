@@ -26,6 +26,28 @@ import torch
 logger = logging.getLogger(__name__)
 
 
+class DiLoCoModelMismatchError(ConnectionError):
+    """Raised when ``/register`` returns HTTP 422 for a model fingerprint
+    mismatch.
+
+    Workers send a ``param_shapes`` map (``{name: [d0, d1, …]}``) for
+    every entry in ``self.model.named_parameters()``. The server
+    compares against its own param set + shapes. Mismatches are
+    fatal — without this check, a wrong ``--model-id-or-path`` on a
+    worker would silently train a different architecture against the
+    server's global weights and crash hundreds of steps later in the
+    first sync's optimizer step. Same failure mode as #45 but caused
+    by operator misconfiguration rather than save/load mechanics.
+
+    Inherits from ConnectionError so legacy broad-catch callers still
+    work; new callers can branch on the specific type.
+    """
+
+    def __init__(self, message: str, *, diagnostic: str = ""):
+        super().__init__(message)
+        self.diagnostic = diagnostic
+
+
 class DiLoCoServerUnreachable(ConnectionError):
     """Raised when the DiLoCo server can't be contacted at startup.
 
@@ -280,6 +302,17 @@ class DiLoCoClient:
                     # broad exception handlers.
                     raise DiLoCoRegisterCollisionError(
                         f"DiLoCo /register returned HTTP 409: {error_detail}",
+                        diagnostic=error_detail,
+                    ) from e
+                if e.code == 422:
+                    # Model fingerprint mismatch: worker's
+                    # param_shapes don't agree with the server's
+                    # _param_list. Operator likely pointed the
+                    # worker at the wrong --model-id-or-path. Surface
+                    # the diagnostic loudly so the TTY pane shows
+                    # the divergent params.
+                    raise DiLoCoModelMismatchError(
+                        f"DiLoCo /register returned HTTP 422: {error_detail}",
                         diagnostic=error_detail,
                     ) from e
                 raise ConnectionError(

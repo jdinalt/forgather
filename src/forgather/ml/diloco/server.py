@@ -710,6 +710,24 @@ class DiLoCoServer:
         info = json.loads(body.decode("utf-8"))
         worker_id = info["worker_id"]
 
+        # Structural-fingerprint pre-check: workers that opt in by
+        # sending ``param_shapes`` get their model compared to the
+        # server's _param_list shapes BEFORE any registry mutation.
+        # Mismatch → 422 with a diagnostic. Pre-#51 workers (no
+        # param_shapes in info) skip the check for backward compat;
+        # they still hit the (less helpful) shape-mismatch crash at
+        # first sync if the operator pointed them at the wrong model.
+        worker_shapes = info.get("param_shapes")
+        if worker_shapes is not None:
+            mismatch = self._diff_model_fingerprint(worker_shapes)
+            if mismatch is not None:
+                _send_json_response(
+                    handler,
+                    {"error": mismatch, "kind": "model_mismatch"},
+                    422,
+                )
+                return
+
         with self._workers_lock:
             if worker_id in self._workers:
                 # 409 with a diagnostic the worker logs into its TTY
@@ -758,6 +776,72 @@ class DiLoCoServer:
                 _send_tensor_response(handler, self.get_global_params())
         else:
             _send_tensor_response(handler, self.get_global_params())
+
+    def _diff_model_fingerprint(
+        self, worker_shapes: Dict[str, List[int]]
+    ) -> Optional[str]:
+        """Compare a worker's ``{name: shape}`` to the server's params.
+
+        Returns a diagnostic string when the worker's model doesn't
+        match the server's (different param set, or different shape
+        for a shared name). Returns ``None`` on a clean match.
+
+        The server's ``_param_names`` is whatever was loaded from the
+        checkpoint (state_dict order, potentially including buffers).
+        The worker's ``param_shapes`` comes from
+        ``model.named_parameters()`` (params only). For DiLoCo
+        correctness the param sets must agree exactly — server
+        sync-applies pseudograds against ``_param_list``, and any
+        named-param the worker submits must hit a server slot of the
+        matching shape. Buffers on the server that don't appear in
+        the worker's named_parameters() are also flagged here:
+        they'd silently get random outer-optimizer momentum applied
+        to them with no corresponding pseudograd contribution.
+        """
+        server_shapes: Dict[str, List[int]] = {
+            name: list(self._param_list[i].shape)
+            for i, name in enumerate(self._param_names)
+        }
+        worker_set = set(worker_shapes)
+        server_set = set(server_shapes)
+
+        missing_on_server = worker_set - server_set
+        missing_on_worker = server_set - worker_set
+        shape_mismatch = [
+            (name, worker_shapes[name], server_shapes[name])
+            for name in worker_set & server_set
+            if list(worker_shapes[name]) != server_shapes[name]
+        ]
+
+        if not (missing_on_server or missing_on_worker or shape_mismatch):
+            return None
+
+        parts = [
+            "Worker model does not match server model. The operator "
+            "likely pointed this worker at the wrong "
+            "--model-id-or-path (or built it from a different "
+            "model project / config than the server is using)."
+        ]
+        if shape_mismatch:
+            sample = shape_mismatch[:5]
+            parts.append(f"  Shape mismatch on {len(shape_mismatch)} param(s):")
+            for name, wshape, sshape in sample:
+                parts.append(f"    {name}: worker={wshape}, server={sshape}")
+            if len(shape_mismatch) > 5:
+                parts.append(f"    ... and {len(shape_mismatch) - 5} more")
+        if missing_on_server:
+            sample = sorted(missing_on_server)[:5]
+            parts.append(
+                f"  {len(missing_on_server)} param(s) on worker but not server: "
+                f"{sample}{'...' if len(missing_on_server) > 5 else ''}"
+            )
+        if missing_on_worker:
+            sample = sorted(missing_on_worker)[:5]
+            parts.append(
+                f"  {len(missing_on_worker)} param(s) on server but not worker: "
+                f"{sample}{'...' if len(missing_on_worker) > 5 else ''}"
+            )
+        return "\n".join(parts)
 
     def _validate_pseudograd_params(
         self, worker_id: str, pseudograds: Dict[str, torch.Tensor]
