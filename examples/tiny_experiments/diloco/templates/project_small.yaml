@@ -1,0 +1,97 @@
+-- extends "projects/small.yaml"
+
+## Tiny Experiments / DiLoCo project — "small" variant.
+##
+## Same composition pattern as ``project.yaml`` (DiLoCo + finetune
+## mixins + worker-id suffix), but extends the larger
+## ``projects/small.yaml`` base instead of ``projects/tinyv2.yaml``.
+## The ``small`` base is sized for DDP (it sets
+## ``trainer_type = "ddp"`` by default and uses the Llama "small"
+## model + Fineweb-Edu Packed), so leaf configs extending this
+## project can run as e.g. two DDPx2 hosts composed via DiLoCo —
+## exercising the cross-host DiLoCo coordination on top of the
+## within-host DDP one.
+##
+## Worker-id suffix lives inline in [globals] below because Jinja
+## namespaces don't survive macro-parameter passing — see
+## templatelib/examples/mixins/diloco.yaml for the rationale.
+##
+## Activation:
+##   - DILOCO_SERVER env var (set by the scheduler / launcher) OR
+##     --diloco-server CLI override → DiLoCo callback gets constructed
+##     and the eval bypass is active.
+##   - Neither set → callback include falls through to plain
+##     lm_callbacks; same leaf runs as a vanilla small-model DDP job.
+
+{% from "mixins/finetune.yaml" import
+    variable_listing as ft_variable_listing,
+    dynamic_args as ft_dynamic_args
+    with context
+%}
+{% from "mixins/diloco.yaml" import
+    callback_entry as dl_callback_entry,
+    dynamic_args as dl_dynamic_args
+    with context
+%}
+
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DiLoCo Training (Small)"
+    -- set ns.config_description = "Small Llama with DiLoCo distributed local-SGD (DDPx2 per worker)"
+    -- set ns.log_name = "diloco_small"
+
+
+[globals]
+    == super()
+    ## finetune: default model_id_or_path to per-model output dir.
+    -- set ns.model_id_or_path = model_id_or_path | default(joinpath(ns.models_dir, ns.model_name))
+
+    ## diloco: append worker-id to model_name so each worker gets a
+    ## unique output dir. The scheduler sets DILOCO_WORKER_ID (with a
+    ## queue_id fallback) whenever DiLoCo is enabled, so this branch
+    ## fires for every DiLoCo worker and is a no-op for vanilla runs.
+    -- if getenv("DILOCO_WORKER_ID")
+    -- set ns.model_name = ns.model_name + "_" + getenv("DILOCO_WORKER_ID")
+    -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
+    -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
+    -- endif
+
+
+[variable_listing]
+    == super()
+{{ ft_variable_listing(ns.model_id_or_path) }}
+
+
+[construct_new_model]
+    ## finetune scaffolding: load from pretrained config. Inlined
+    ## here (not in the mixin) because Jinja macros can't carry ns
+    ## through ``-- include`` boundaries.
+    -- include 'models/causal_lm/from_pretrained_config.yaml'
+
+
+[trainer_callbacks]
+    ## DiLoCo enable-gate. When off → fall through to the plain
+    ## small-base lm_callbacks. When on → delegated sub-template
+    ## below that extends lm_callbacks and appends the DiLoCo
+    ## callback.
+    -- if getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server)
+    -- include 'diloco_callbacks_subtemplate'
+    -- else
+    -- include 'callbacks/lm_callbacks.yaml'
+    -- endif
+
+
+[dynamic_args]
+    == super()
+{{ ft_dynamic_args() }}
+{{ dl_dynamic_args() }}
+
+
+#-------------------- diloco_callbacks_subtemplate --------------------
+-- extends 'callbacks/lm_callbacks.yaml'
+{% from "mixins/diloco.yaml" import callback_entry as dl_callback_entry with context %}
+
+[callback_list]
+    => super()
+{{ dl_callback_entry() }}
