@@ -102,16 +102,70 @@ class WorkQueue:
     issued_count: int = 0
     completed_count: int = 0
     by_worker: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    # Optional dataset-identity strings the first registering worker
+    # supplies. They're surfaced as-is via ``/work/queues`` and
+    # ``/work/queue`` so the webui can show a human-readable label
+    # ("roneneldan/TinyStories@train") next to the otherwise-opaque
+    # 16-hex ``dataset_id``. Best-effort — workers that don't ship
+    # these fields just leave them None.
+    dataset_path: Optional[str] = None
+    dataset_name: Optional[str] = None
+    dataset_split: Optional[str] = None
+    dataset_revision: Optional[str] = None
+    dataset_data_files: Optional[List[str]] = None
 
     @classmethod
-    def empty(cls, total_units: int, hint_length: int) -> "WorkQueue":
+    def empty(
+        cls,
+        total_units: int,
+        hint_length: int,
+        *,
+        dataset_path: Optional[str] = None,
+        dataset_name: Optional[str] = None,
+        dataset_split: Optional[str] = None,
+        dataset_revision: Optional[str] = None,
+        dataset_data_files: Optional[List[str]] = None,
+    ) -> "WorkQueue":
         nbytes = (total_units + 7) // 8
         return cls(
             total_units=total_units,
             issued=bytearray(nbytes),
             completed=bytearray(nbytes),
             hint_length=hint_length,
+            dataset_path=dataset_path,
+            dataset_name=dataset_name,
+            dataset_split=dataset_split,
+            dataset_revision=dataset_revision,
+            dataset_data_files=dataset_data_files,
         )
+
+
+def _queue_summary_dict(
+    dataset_id: str, shuffle_seed: int, q: "WorkQueue"
+) -> Dict[str, Any]:
+    """Shape the JSON-serializable summary the webui consumes for both
+    ``/work/queues`` (list) and ``/work/queue`` (detail). The detail
+    response adds bitmaps + by_worker on top of this base.
+    """
+    hint: Dict[str, Any] = {"length": q.hint_length}
+    if q.dataset_path is not None:
+        hint["path"] = q.dataset_path
+    if q.dataset_name is not None:
+        hint["name"] = q.dataset_name
+    if q.dataset_split is not None:
+        hint["split"] = q.dataset_split
+    if q.dataset_revision is not None:
+        hint["revision"] = q.dataset_revision
+    if q.dataset_data_files:
+        hint["data_files"] = list(q.dataset_data_files)
+    return {
+        "dataset_id": dataset_id,
+        "shuffle_seed": shuffle_seed,
+        "total_units": q.total_units,
+        "issued_count": q.issued_count,
+        "completed_count": q.completed_count,
+        "hint": hint,
+    }
 
 
 def _bit_set(bm: bytearray, i: int) -> None:
@@ -1336,11 +1390,49 @@ class DiLoCoServer:
             key = (dataset_id, shuffle_seed)
             queue = self._work_queues.get(key)
             if queue is None:
-                queue = WorkQueue.empty(self.default_work_units, hint_length)
+                # Pluck optional dataset-identity strings from the hint.
+                # The first worker to register the queue snapshots
+                # these; later workers' values are ignored (they
+                # should be identical anyway since dataset_id is a
+                # hash of exactly this set of fields).
+                hint_path = (
+                    hint.get("path") if isinstance(hint.get("path"), str) else None
+                )
+                hint_name = (
+                    hint.get("name") if isinstance(hint.get("name"), str) else None
+                )
+                hint_split = (
+                    hint.get("split") if isinstance(hint.get("split"), str) else None
+                )
+                hint_revision = (
+                    hint.get("revision")
+                    if isinstance(hint.get("revision"), str)
+                    else None
+                )
+                hint_data_files = hint.get("data_files")
+                if isinstance(hint_data_files, str):
+                    hint_data_files = [hint_data_files]
+                elif isinstance(hint_data_files, list):
+                    hint_data_files = [x for x in hint_data_files if isinstance(x, str)]
+                else:
+                    hint_data_files = None
+                queue = WorkQueue.empty(
+                    self.default_work_units,
+                    hint_length,
+                    dataset_path=hint_path,
+                    dataset_name=hint_name,
+                    dataset_split=hint_split,
+                    dataset_revision=hint_revision,
+                    dataset_data_files=hint_data_files,
+                )
                 self._work_queues[key] = queue
+                label = hint_path or dataset_id
+                if hint_split:
+                    label = f"{label}@{hint_split}"
                 logger.info(
                     f"Registered work queue {dataset_id}@{shuffle_seed} "
-                    f"(K={self.default_work_units}, length={hint_length}, worker={worker_id!r})"
+                    f"(K={self.default_work_units}, length={hint_length}, "
+                    f"label={label!r}, worker={worker_id!r})"
                 )
             self._dirty = True
 
@@ -1467,14 +1559,7 @@ class DiLoCoServer:
         """List all active work queues (summary only, no bitmaps)."""
         with self._work_queues_lock:
             queues = [
-                {
-                    "dataset_id": dsid,
-                    "shuffle_seed": seed,
-                    "total_units": q.total_units,
-                    "issued_count": q.issued_count,
-                    "completed_count": q.completed_count,
-                    "hint": {"length": q.hint_length},
-                }
+                _queue_summary_dict(dsid, seed, q)
                 for (dsid, seed), q in self._work_queues.items()
             ]
         _send_json_response(handler, queues)
@@ -1510,23 +1595,16 @@ class DiLoCoServer:
                     404,
                 )
                 return
-            response = {
-                "dataset_id": dataset_id,
-                "shuffle_seed": shuffle_seed,
-                "total_units": queue.total_units,
-                "issued_count": queue.issued_count,
-                "completed_count": queue.completed_count,
-                "hint": {"length": queue.hint_length},
-                "issued_bitmap_b64": base64.b64encode(bytes(queue.issued)).decode(
-                    "ascii"
-                ),
-                "completed_bitmap_b64": base64.b64encode(bytes(queue.completed)).decode(
+            response = _queue_summary_dict(dataset_id, shuffle_seed, queue)
+            response.update(
+                issued_bitmap_b64=base64.b64encode(bytes(queue.issued)).decode("ascii"),
+                completed_bitmap_b64=base64.b64encode(bytes(queue.completed)).decode(
                     "ascii"
                 ),
                 # Copy so the response isn't mutated by concurrent
                 # request/complete calls after we drop the lock.
-                "by_worker": {k: dict(v) for k, v in queue.by_worker.items()},
-            }
+                by_worker={k: dict(v) for k, v in queue.by_worker.items()},
+            )
         _send_json_response(handler, response)
 
     def _handle_control(self, handler: BaseHTTPRequestHandler, action: str):

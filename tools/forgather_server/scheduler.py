@@ -1038,10 +1038,15 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
     # or fall back to the first non-loopback psutil-detected IP.
     # Leave unset for explicit bind hosts (operator knows what they
     # typed). Applies to every job type that exposes a clickable URL
-    # on its Job card — currently inference, dataset_server, and
-    # mkdocs. TensorBoard renders its own URL with its bind_all
+    # on its Job card — inference, dataset_server, diloco_server,
+    # and mkdocs. TensorBoard renders its own URL with its bind_all
     # toggle in mind and is left alone.
-    if item.job_type in ("inference", "dataset_server", "mkdocs"):
+    if item.job_type in (
+        "inference",
+        "dataset_server",
+        "diloco_server",
+        "mkdocs",
+    ):
         if finalized_params.get("host") in ("0.0.0.0", "::", ""):
             routable = detect_routable_host()
             if routable:

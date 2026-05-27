@@ -81,15 +81,19 @@ class DiLoCoServerModel(BaseModel):
     verify_tls: Optional[bool] = None
 
 
-def _browser_host(host: Optional[str]) -> str:
+def _browser_host(host: Optional[str], routable_host: Optional[str] = None) -> str:
     """Translate a server's bind host into something a browser can hit.
 
-    ``0.0.0.0`` binds every interface but isn't a routable target —
-    resolve it to ``localhost`` so the proxy at least works for
-    same-host operators. Cluster routing (the actual LAN-routable
-    address) is a follow-up.
+    ``0.0.0.0`` binds every interface but isn't a routable target.
+    When the scheduler stamped a ``routable_host`` (a cluster-routable
+    address or the first non-loopback psutil-detected IP), prefer it
+    so cross-machine browsers can reach the server. Fall back to
+    ``localhost`` for same-host operators when no routable address
+    was discovered.
     """
     if not host or host == "0.0.0.0":
+        if routable_host:
+            return routable_host
         return "localhost"
     return host
 
@@ -116,7 +120,8 @@ def _local_servers() -> List[DiLoCoServerModel]:
         if port is None:
             continue
         host = params.get("host") or "127.0.0.1"
-        base_url = f"http://{_browser_host(host)}:{port}"
+        routable = params.get("routable_host")
+        base_url = f"http://{_browser_host(host, routable)}:{port}"
         out.append(
             DiLoCoServerModel(
                 id=f"local:{r.queue_id}",

@@ -63,7 +63,13 @@ function relativeAge(epoch: number | undefined): string {
   return `${(dt / 3600).toFixed(1)}h ago`;
 }
 
-export function DiLoCoPanel() {
+export function DiLoCoPanel({
+  pendingServerPick,
+  onServerPickConsumed,
+}: {
+  pendingServerPick?: { queueId: string; key: number } | null;
+  onServerPickConsumed?: () => void;
+} = {}) {
   const [state, setState] = useState<PanelState>(loadState);
   useEffect(() => {
     persistSet(STORAGE_KEY, JSON.stringify(state));
@@ -89,6 +95,23 @@ export function DiLoCoPanel() {
       setState((s) => ({ ...s, selectedId: servers[0].id }));
     }
   }, [state.selectedId, servers]);
+
+  // "Open in DiLoCo" from a Job card: select the matching local
+  // server (id = "local:<queue_id>") then signal consumption so the
+  // auto-pick logic doesn't fight a future re-fire of the same pick.
+  // The ``key`` in the pending object lets the effect re-fire when
+  // the operator clicks Open again for the same queue.
+  useEffect(() => {
+    if (!pendingServerPick) return;
+    const target = `local:${pendingServerPick.queueId}`;
+    if (servers.some((s) => s.id === target)) {
+      setState((s) => ({ ...s, selectedId: target }));
+      onServerPickConsumed?.();
+    }
+    // Don't consume when the server hasn't shown up yet — the
+    // job_records refresh cycle will give us another shot.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingServerPick, servers]);
 
   const selected = useMemo(
     () => servers.find((s) => s.id === state.selectedId) ?? null,
@@ -528,12 +551,13 @@ function ServerDetail({
   refreshSeconds: number;
 }) {
   return (
-    // Bounded container keeps wide-monitor layout readable. Everything
-    // below this point sits inside ~1100px and centers in the pane.
+    // Bounded container keeps wide-monitor layout readable. Left-
+    // aligned (no marginInline:auto) so it doesn't shift around as
+    // operator sizes the window — content always anchors to the
+    // left edge of the pane.
     <div
       style={{
         maxWidth: 1100,
-        marginInline: "auto",
         display: "flex",
         flexDirection: "column",
         gap: 10,
@@ -1539,23 +1563,36 @@ function WorkQueuesSection({
         padding: 12,
         display: "flex",
         flexDirection: "column",
-        gap: 12,
+        gap: 10,
       }}
     >
       <header style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <strong>Work-unit dispatch</strong>
         <span className="muted" style={{ fontSize: "smaller" }}>
-          one queue per (dataset_id, shuffle_seed)
+          one queue per (dataset_id, shuffle_seed) — interleaved /
+          multi-source runs surface each underlying registration as
+          its own card
         </span>
       </header>
-      {queues.map((q) => (
-        <QueueHeatmap
-          key={`${q.dataset_id}|${q.shuffle_seed}`}
-          baseUrl={baseUrl}
-          summary={q}
-          refreshSeconds={refreshSeconds}
-        />
-      ))}
+      {/* auto-fit so multiple queues (interleaved / split-per-source
+          training runs) wrap side-by-side rather than stacking
+          vertically and pushing everything below offscreen. */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+          gap: 10,
+        }}
+      >
+        {queues.map((q) => (
+          <QueueHeatmap
+            key={`${q.dataset_id}|${q.shuffle_seed}`}
+            baseUrl={baseUrl}
+            summary={q}
+            refreshSeconds={refreshSeconds}
+          />
+        ))}
+      </div>
     </section>
   );
 }
@@ -1619,9 +1656,19 @@ function QueueHeatmap({
           flexWrap: "wrap",
         }}
       >
-        <code style={{ fontSize: "smaller" }}>
-          {summary.dataset_id}@{summary.shuffle_seed}
-        </code>
+        <strong style={{ fontSize: 12 }}>
+          {formatQueueLabel(summary) ?? summary.dataset_id}
+          <span className="muted">@{summary.shuffle_seed}</span>
+        </strong>
+        {formatQueueLabel(summary) && (
+          <code
+            className="muted"
+            style={{ fontSize: 11 }}
+            title="dataset_id (16-hex hash of path/name/split/data_files/revision)"
+          >
+            {summary.dataset_id}
+          </code>
+        )}
         <span style={{ flex: 1 }} />
         <span className="muted" style={{ fontSize: "smaller" }}>
           {summary.issued_count}/{summary.total_units} issued
@@ -1640,7 +1687,11 @@ function QueueHeatmap({
             gridTemplateColumns: `repeat(${cols}, 1fr)`,
             gap: 1,
             width: "100%",
-            maxWidth: 480,
+            // Halved from the original 480 — at K=1024 (32x32 grid)
+            // each cell is now ~7.5px, still hover-targetable and
+            // packed tightly enough that two side-by-side queue
+            // cards fit in one row at typical webui widths.
+            maxWidth: 240,
           }}
         >
           {Array.from({ length: summary.total_units }, (_, i) => {
@@ -1710,6 +1761,21 @@ function QueueHeatmap({
     </div>
   );
 }
+
+/** Render a human-readable dataset label from the hint fields the
+ *  worker shipped on /datasets/register. Pre-#hint-extension servers
+ *  / workers won't have these so the queue card falls back to the
+ *  raw dataset_id hash. */
+function formatQueueLabel(summary: DiLoCoQueueSummary): string | null {
+  const h = summary.hint;
+  // ``path`` is always present when the hint extension is in play.
+  if (!h.path) return null;
+  let s = h.path;
+  if (h.name) s += `:${h.name}`;
+  if (h.split) s += `@${h.split}`;
+  return s;
+}
+
 
 function decodeBase64(s: string): Uint8Array {
   // atob → binary string → byte array. Adequate for K=1024 (~128 bytes);

@@ -406,6 +406,21 @@ export default function App() {
     [],
   );
 
+  // Same pattern for the DiLoCo view: a Job card's "Open in DiLoCo"
+  // button stamps a pending queueId, the panel reads it once, then
+  // calls clear so the auto-pick logic resumes.
+  const [pendingDiLoCoServer, setPendingDiLoCoServer] = useState<
+    { queueId: string; key: number } | null
+  >(null);
+  const openDiLoCoServer = useCallback((queueId: string) => {
+    setPendingDiLoCoServer({ queueId, key: Date.now() });
+    setView("diloco");
+  }, []);
+  const clearPendingDiLoCoServer = useCallback(
+    () => setPendingDiLoCoServer(null),
+    [],
+  );
+
   // Wired into every submit modal's onSubmitted prop. Reads the sticky
   // localStorage preference at submit time so a stale toggle from an earlier
   // modal can't trigger an unintended view switch.
@@ -1458,6 +1473,7 @@ export default function App() {
             onAutoWatchConsumed={() => setAutoWatchJobId(null)}
             onOpenInferenceServer={openInferenceServer}
             onOpenDatasetServer={openDatasetServer}
+            onOpenDiLoCoServer={openDiLoCoServer}
           />
         </div>
         <div
@@ -1494,7 +1510,10 @@ export default function App() {
           className="view-panel"
           style={view === "diloco" ? undefined : { display: "none" }}
         >
-          <DiLoCoPanel />
+          <DiLoCoPanel
+            pendingServerPick={pendingDiLoCoServer}
+            onServerPickConsumed={clearPendingDiLoCoServer}
+          />
         </div>
       </div>
 

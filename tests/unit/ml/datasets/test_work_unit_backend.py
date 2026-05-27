@@ -402,11 +402,17 @@ class TestMaybeWrap:
         assert out._worker_id == "alpha"
         # Underlying backend preserved.
         assert out._wrapped is b
-        # register_dataset got the right shape.
+        # register_dataset got the right shape. The hint carries
+        # the load args alongside the length so the server can
+        # render a readable label next to the dataset_id hash.
         call = MockClient.return_value.register_dataset.call_args
         assert call.kwargs["worker_id"] == "alpha"
         assert call.kwargs["shuffle_seed"] == 0
-        assert call.kwargs["hint"] == {"length": 2000}
+        assert call.kwargs["hint"] == {
+            "length": 2000,
+            "path": "test/dataset",
+            "split": "train",
+        }
         assert len(call.kwargs["dataset_id"]) == 16
 
     def test_register_failure_returns_unchanged(self, monkeypatch, caplog):

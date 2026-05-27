@@ -400,12 +400,31 @@ def maybe_wrap_for_work_dispatch(
 
     # Transient client — not shared with the DiLoCoCallback's worker.
     client = DiLoCoClient(server_addr)
+    # Include the load args in the hint so the server can render a
+    # human-readable label ("roneneldan/TinyStories@train") next to
+    # the otherwise-opaque dataset_id hash. The server stores these
+    # only on first registration of a (dataset_id, shuffle_seed)
+    # pair; later workers' values are ignored.
+    hint: dict = {"length": length}
+    if path:
+        hint["path"] = path
+    if name:
+        hint["name"] = name
+    if split:
+        hint["split"] = split
+    if revision:
+        hint["revision"] = revision
+    if data_files:
+        # Normalize to list for stable JSON shape.
+        hint["data_files"] = (
+            [data_files] if isinstance(data_files, str) else list(data_files)
+        )
     try:
         reply = client.register_dataset(
             worker_id=worker_id,
             dataset_id=dataset_id,
             shuffle_seed=int(shuffle_seed),
-            hint={"length": length},
+            hint=hint,
         )
     except Exception as exc:
         logger.error(

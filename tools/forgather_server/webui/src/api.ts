@@ -1159,14 +1159,27 @@ export interface DiLoCoInfo {
 
 /** Summary entry from ``GET /api/diloco/work-queues``. One per
  *  ``(dataset_id, shuffle_seed)`` pair active on the upstream
- *  server. No bitmaps — fetch the detail endpoint for those. */
+ *  server. No bitmaps — fetch the detail endpoint for those.
+ *  ``hint`` carries the load args the first registering worker
+ *  shipped (path / name / split / revision / data_files) so the
+ *  webui can render a readable label next to the otherwise-opaque
+ *  ``dataset_id`` hash. Fields are absent when the worker omitted
+ *  them or for legacy server builds. */
 export interface DiLoCoQueueSummary {
   dataset_id: string;
   shuffle_seed: number;
   total_units: number;
   issued_count: number;
   completed_count: number;
-  hint: { length: number; source?: string | null };
+  hint: {
+    length: number;
+    source?: string | null;
+    path?: string;
+    name?: string;
+    split?: string;
+    revision?: string;
+    data_files?: string[];
+  };
 }
 
 /** Full detail from ``GET /api/diloco/work-queue``. ``*_bitmap_b64``
