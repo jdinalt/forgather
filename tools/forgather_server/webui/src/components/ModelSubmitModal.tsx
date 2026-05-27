@@ -254,14 +254,23 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
     priority,
   ]);
 
-  // Meta device can't hold real weights, so save_checkpoint and
-  // load_from_checkpoint don't apply. Effective values mask out the
-  // operator's stored intent when device == "meta" — UI shows them
-  // unchecked + disabled and submit ignores them. The raw state
-  // stays intact so a flip back to cpu/cuda restores the prior
-  // intent.
+  // Subcommand- and device-gated knobs. The raw state stays around
+  // (so switching subcommand back restores the operator's last
+  // intent), but UI rendering + submit payload mask values that
+  // don't apply to the current path.
+  //
+  //   construct only: save-checkpoint, safetensors
+  //   test only:      gradient-checkpointing, fuse-optim-with-backward,
+  //                   dataset source
+  //   both:           device, dtype, no-init-weights, Load from checkpoint
+  //
+  // Meta device adds extra restrictions on top: save-checkpoint and
+  // Load-from-checkpoint don't apply when device == "meta" because
+  // meta tensors have no real storage.
   const metaDevice = device === "meta";
-  const effectiveSaveCheckpoint = saveCheckpoint && !metaDevice;
+  const isConstruct = subcommand === "construct";
+  const isTest = subcommand === "test";
+  const effectiveSaveCheckpoint = saveCheckpoint && !metaDevice && isConstruct;
   const effectiveLoadFromCheckpoint = metaDevice ? "" : loadFromCheckpoint;
 
   // GPU reservation is implicit: cuda → 1, otherwise 0. The launcher
@@ -366,18 +375,21 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
       subcommand,
       device,
       no_init_weights: noInitWeights,
-      // Mask the meta-incompatible knobs out at submit time so a
-      // stale operator preference can't sneak through if the meta-
-      // device disable logic is ever bypassed.
+      // Mask the meta-incompatible and subcommand-incompatible knobs
+      // out at submit time so a stale operator preference can't sneak
+      // through if the UI-side gating is ever bypassed. The effective*
+      // values fold both restrictions in one place.
       save_checkpoint: effectiveSaveCheckpoint,
-      safetensors,
-      gradient_checkpointing: gradientCheckpointing,
-      fuse_optim_with_backward: fuseOptimWithBackward,
+      // safetensors is only meaningful when save-checkpoint is on,
+      // which itself is construct-only — mask consistently.
+      safetensors: safetensors && effectiveSaveCheckpoint,
+      gradient_checkpointing: gradientCheckpointing && isTest,
+      fuse_optim_with_backward: fuseOptimWithBackward && isTest,
     };
     if (dtype) params.dtype = dtype;
     if (effectiveLoadFromCheckpoint)
       params.load_from_checkpoint = effectiveLoadFromCheckpoint;
-    if (subcommand === "test") {
+    if (isTest) {
       const bs = Number(batchSize);
       const sl = Number(sequenceLength);
       const st = Number(steps);
@@ -397,7 +409,10 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
       priority,
       job_type: "model",
       job_params: params,
-      dataset_source: datasetSource,
+      // Dataset source only flows to the spawned process when the
+      // subcommand will actually consume a dataset. ``construct``
+      // never loads data; ``test`` does.
+      dataset_source: isTest ? datasetSource : null,
     });
     api
       .setOverrides(
@@ -442,8 +457,6 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
               <code>{project.project_dir}</code>
             </div>
           </div>
-
-          {datasetSourceSelector}
 
           <div className="submit-row">
             <label title="construct: build the model and print its parameter / architecture summary. test: run a few train steps against random or a real dataset to verify forward + backward.">
@@ -491,6 +504,8 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
             </label>
           </div>
 
+          {/* Common to both subcommands: no-init-weights gates how
+              the parameters get populated (or don't) on both paths. */}
           <div className="submit-row">
             <label title="Skip parameter initialization (saves time when weights will be loaded from a checkpoint anyway). Requires a Load-from-checkpoint path on non-meta devices — otherwise the model runs with uninitialized random weights.">
               <input
@@ -500,58 +515,47 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
               />
               no-init-weights
             </label>
-            <label
-              title={
-                metaDevice
-                  ? "Disabled on the meta device: meta tensors have no real storage so there's nothing to checkpoint."
-                  : "After construction, save the model weights as a checkpoint into the model's output_dir."
-              }
-              style={metaDevice ? { opacity: 0.5 } : undefined}
-            >
-              <input
-                type="checkbox"
-                checked={effectiveSaveCheckpoint}
-                onChange={(e) => setSaveCheckpoint(e.target.checked)}
-                disabled={metaDevice}
-              />
-              save-checkpoint
-            </label>
-            <label
-              title={
-                effectiveSaveCheckpoint
-                  ? "Use safetensors format for the saved checkpoint."
-                  : "Only meaningful when save-checkpoint is enabled."
-              }
-              style={!effectiveSaveCheckpoint ? { opacity: 0.5 } : undefined}
-            >
-              <input
-                type="checkbox"
-                checked={safetensors}
-                onChange={(e) => setSafetensors(e.target.checked)}
-                disabled={!effectiveSaveCheckpoint}
-              />
-              safetensors
-            </label>
           </div>
 
-          <div className="submit-row">
-            <label title="Enable gradient checkpointing on the model (model.gradient_checkpointing_enable). Useful smoke test that the feature is wired up and doesn't crash on this architecture.">
-              <input
-                type="checkbox"
-                checked={gradientCheckpointing}
-                onChange={(e) => setGradientCheckpointing(e.target.checked)}
-              />
-              gradient-checkpointing
-            </label>
-            <label title="Fuse optimizer.step + zero_grad into a per-parameter post-grad hook (saves memory by avoiding a full grad accumulation). Only meaningful in test; smoke-tests that the model's grad path supports it.">
-              <input
-                type="checkbox"
-                checked={fuseOptimWithBackward}
-                onChange={(e) => setFuseOptimWithBackward(e.target.checked)}
-              />
-              fuse-optim-with-backward
-            </label>
-          </div>
+          {/* Construct-only: save-checkpoint + safetensors. The
+              ``test`` subcommand discards the model after the smoke
+              pass, so writing a checkpoint there isn't meaningful. */}
+          {isConstruct && (
+            <div className="submit-row">
+              <label
+                title={
+                  metaDevice
+                    ? "Disabled on the meta device: meta tensors have no real storage so there's nothing to checkpoint."
+                    : "After construction, save the model weights as a checkpoint into the model's output_dir."
+                }
+                style={metaDevice ? { opacity: 0.5 } : undefined}
+              >
+                <input
+                  type="checkbox"
+                  checked={effectiveSaveCheckpoint}
+                  onChange={(e) => setSaveCheckpoint(e.target.checked)}
+                  disabled={metaDevice}
+                />
+                save-checkpoint
+              </label>
+              <label
+                title={
+                  effectiveSaveCheckpoint
+                    ? "Use safetensors format for the saved checkpoint."
+                    : "Only meaningful when save-checkpoint is enabled."
+                }
+                style={!effectiveSaveCheckpoint ? { opacity: 0.5 } : undefined}
+              >
+                <input
+                  type="checkbox"
+                  checked={safetensors}
+                  onChange={(e) => setSafetensors(e.target.checked)}
+                  disabled={!effectiveSaveCheckpoint}
+                />
+                safetensors
+              </label>
+            </div>
+          )}
 
           <div className="submit-row">
             <label
@@ -578,9 +582,34 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
             </label>
           </div>
 
-          {subcommand === "test" && (
+          {isTest && (
             <>
               <h4 className="dyn-heading">Test settings</h4>
+              {/* The smoke-test loads a dataset (random or real)
+                  for the forward+backward pass. Construct never
+                  consumes data, so the selector lives here. */}
+              {datasetSourceSelector}
+              {/* gradient-checkpointing + fuse-optim-with-backward
+                  are only meaningful during the test's train loop;
+                  they don't apply to a bare construct call. */}
+              <div className="submit-row">
+                <label title="Enable gradient checkpointing on the model (model.gradient_checkpointing_enable). Useful smoke test that the feature is wired up and doesn't crash on this architecture.">
+                  <input
+                    type="checkbox"
+                    checked={gradientCheckpointing}
+                    onChange={(e) => setGradientCheckpointing(e.target.checked)}
+                  />
+                  gradient-checkpointing
+                </label>
+                <label title="Fuse optimizer.step + zero_grad into a per-parameter post-grad hook (saves memory by avoiding a full grad accumulation). Smoke-tests that the model's grad path supports it.">
+                  <input
+                    type="checkbox"
+                    checked={fuseOptimWithBackward}
+                    onChange={(e) => setFuseOptimWithBackward(e.target.checked)}
+                  />
+                  fuse-optim-with-backward
+                </label>
+              </div>
               <div className="submit-row">
                 <label title="Number of examples per training step.">
                   Batch size
