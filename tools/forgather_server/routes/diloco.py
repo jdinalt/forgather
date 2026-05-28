@@ -151,8 +151,18 @@ def _ever_local_base_urls() -> List[str]:
     polling sees the next request rejected as an SSRF violation
     (403) instead of the more accurate connection-refused (502) that
     would otherwise come from the upstream attempt.
+
+    Caveat: this is "ever-consented-to", not "still-valid". A
+    terminated job's host:port pair can later be reused by an
+    unrelated process (OS ephemeral-port reuse, DHCP reassignment
+    of a LAN address). The threat is bounded — the operator already
+    has full RCE on the box, and the proxy only exposes GETs / a
+    controlled set of POST control actions — but a long-running
+    forgather_server's allowlist will accumulate stale entries. A
+    TTL or "prune on job-record removal" hook is a reasonable
+    follow-up; tracked separately from this fix.
     """
-    out: List[str] = []
+    seen: Dict[str, None] = {}
     for r in job_records.list_records():
         if r.job_type != _DILOCO_JOB_TYPE:
             continue
@@ -165,8 +175,8 @@ def _ever_local_base_urls() -> List[str]:
             continue
         host = params.get("host") or "127.0.0.1"
         routable = params.get("routable_host")
-        out.append(f"http://{_browser_host(host, routable)}:{port}")
-    return out
+        seen[f"http://{_browser_host(host, routable)}:{port}"] = None
+    return list(seen)
 
 
 def _registered_servers() -> List[DiLoCoServerModel]:

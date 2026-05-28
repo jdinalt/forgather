@@ -257,7 +257,13 @@ _UPSTREAM_AUTH_FAILED_HEADER = "x-upstream-auth-failed"
 
 def _upstream_auth_headers(status: int) -> Dict[str, str]:
     """Tag 401/403 from upstream so clients can distinguish from a
-    same-origin session 401. Empty dict on success / non-auth errors."""
+    same-origin session 401. Empty dict on success / non-auth errors.
+
+    The 403 case is harmless overhead now that the webui no longer
+    treats 403 as a reauth signal (see ``webui/src/auth.ts``); kept
+    for symmetry in case a future client wants to reuse this header
+    for upstream-403 detection.
+    """
     if status in (401, 403):
         return {_UPSTREAM_AUTH_FAILED_HEADER: "1"}
     return {}
