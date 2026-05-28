@@ -6,7 +6,7 @@
     - "{{ joinpath(ns.forgather_dir, 'examples/models/llama_canon/templates') }}"
 
 [configs]
-name: "models"
+name: "Canon Models"
 description: "Canon model definitions for experiments"
 config_prefix: "configs"
 default_config: "baseline.yaml"

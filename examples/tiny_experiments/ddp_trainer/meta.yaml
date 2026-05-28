@@ -1,7 +1,7 @@
 -- extends "meta_defaults.yaml"
 
 [configs]
-name: "ddp_trainer"
+name: "DDP Trainer"
 description: "Test DDP Trainer"
 config_prefix: "configs"
 default_config: "2gpu.yaml"
