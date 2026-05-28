@@ -112,10 +112,6 @@ def _validate_base(base: str) -> str:
     via training-job submission — an "SSRF guard" on top of that adds
     friction without security. Pass ``--lock-inference-proxy`` to the
     server to switch to strict-localhost-only mode.
-
-    Rejections are 403s tagged with ``X-Forgather-Proxy-Refused: 1``
-    so the webui renders them inline instead of treating them as
-    session-expired.
     """
     try:
         parsed = urlparse(base)
@@ -125,14 +121,9 @@ def _validate_base(base: str) -> str:
         raise HTTPException(
             status_code=400,
             detail=f"unsupported scheme: {parsed.scheme!r}",
-            headers={"X-Forgather-Proxy-Refused": "1"},
         )
     if not parsed.netloc:
-        raise HTTPException(
-            status_code=400,
-            detail="missing host",
-            headers={"X-Forgather-Proxy-Refused": "1"},
-        )
+        raise HTTPException(status_code=400, detail="missing host")
 
     if LOCK_TO_LOCALHOST:
         # Lowercased for case-insensitive match. parsed.hostname strips
@@ -147,7 +138,6 @@ def _validate_base(base: str) -> str:
                     "without --lock-inference-proxy to allow remote "
                     "upstreams."
                 ),
-                headers={"X-Forgather-Proxy-Refused": "1"},
             )
 
     return base.rstrip("/")
@@ -267,7 +257,13 @@ _UPSTREAM_AUTH_FAILED_HEADER = "x-upstream-auth-failed"
 
 def _upstream_auth_headers(status: int) -> Dict[str, str]:
     """Tag 401/403 from upstream so clients can distinguish from a
-    same-origin session 401. Empty dict on success / non-auth errors."""
+    same-origin session 401. Empty dict on success / non-auth errors.
+
+    The 403 case is harmless overhead now that the webui no longer
+    treats 403 as a reauth signal (see ``webui/src/auth.ts``); kept
+    for symmetry in case a future client wants to reuse this header
+    for upstream-403 detection.
+    """
     if status in (401, 403):
         return {_UPSTREAM_AUTH_FAILED_HEADER: "1"}
     return {}
@@ -616,7 +612,6 @@ def get_user_entry_token(entry_id: str):
         raise HTTPException(
             status_code=403,
             detail="token reveal is disabled in read-only demo mode",
-            headers={"X-Forgather-Demo-Blocked": "1"},
         )
     for e in inference_server_registry.list_entries():
         if e.id == entry_id:

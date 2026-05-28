@@ -99,7 +99,7 @@ def _browser_host(host: Optional[str], routable_host: Optional[str] = None) -> s
 
 
 def _local_servers() -> List[DiLoCoServerModel]:
-    """JobRecord-derived DiLoCo servers spawned by this forgather_server.
+    """Running JobRecord-derived DiLoCo servers spawned by this forgather_server.
 
     Terminal-status records (done / failed / aborted) are filtered out:
     a dead server can't be selected for training and can't be inspected
@@ -137,6 +137,46 @@ def _local_servers() -> List[DiLoCoServerModel]:
     # Newest first — matches the Jobs view's implicit ordering.
     out.sort(key=lambda s: s.queue_id or "", reverse=True)
     return out
+
+
+def _ever_local_base_urls() -> List[str]:
+    """Base URLs of every DiLoCo server this forgather_server has ever
+    spawned, regardless of current job status.
+
+    Used only by the SSRF allowlist. A URL that was once legitimately
+    spawned by us (and shown to the user as a server to inspect)
+    remains a safe proxy target after the upstream process exits:
+    the host:port pair is consented-to. Without this, a user who
+    shuts down a local DiLoCo server while the webui panel is still
+    polling sees the next request rejected as an SSRF violation
+    (403) instead of the more accurate connection-refused (502) that
+    would otherwise come from the upstream attempt.
+
+    Caveat: this is "ever-consented-to", not "still-valid". A
+    terminated job's host:port pair can later be reused by an
+    unrelated process (OS ephemeral-port reuse, DHCP reassignment
+    of a LAN address). The threat is bounded — the operator already
+    has full RCE on the box, and the proxy only exposes GETs / a
+    controlled set of POST control actions — but a long-running
+    forgather_server's allowlist will accumulate stale entries. A
+    TTL or "prune on job-record removal" hook is a reasonable
+    follow-up; tracked separately from this fix.
+    """
+    seen: Dict[str, None] = {}
+    for r in job_records.list_records():
+        if r.job_type != _DILOCO_JOB_TYPE:
+            continue
+        params = r.job_params or {}
+        try:
+            port = int(params.get("port")) if params.get("port") is not None else None
+        except (TypeError, ValueError):
+            port = None
+        if port is None:
+            continue
+        host = params.get("host") or "127.0.0.1"
+        routable = params.get("routable_host")
+        seen[f"http://{_browser_host(host, routable)}:{port}"] = None
+    return list(seen)
 
 
 def _registered_servers() -> List[DiLoCoServerModel]:
@@ -194,13 +234,14 @@ def _is_loopback(host: str) -> bool:
 def _known_base_urls() -> List[str]:
     """Bases this server is willing to reach (loopback aside).
 
-    Local-spawned server URLs and the registry entries together form
-    the SSRF allowlist: the act of registering (or spawning) is the
-    consent.
+    Ever-spawned local URLs (running or terminated) and registered
+    URLs together form the SSRF allowlist: the act of registering or
+    spawning is the consent. Terminated-but-still-allowlisted local
+    URLs hit the actual upstream attempt downstream of this check,
+    which produces a 502 on connection-refused — a far more accurate
+    signal than the SSRF guard's 403.
     """
-    bases: List[str] = []
-    for s in _local_servers():
-        bases.append(s.base_url)
+    bases: List[str] = list(_ever_local_base_urls())
     for e in diloco_server_registry.list_entries():
         bases.append(e.base_url)
     return bases

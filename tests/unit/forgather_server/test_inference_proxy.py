@@ -74,7 +74,6 @@ def test_validate_base_locked_rejects_remote(url):
     with pytest.raises(HTTPException) as ei:
         inference_proxy._validate_base(url)
     assert ei.value.status_code == 403
-    assert ei.value.headers.get("X-Forgather-Proxy-Refused") == "1"
     assert "locked" in ei.value.detail.lower()
 
 
@@ -83,7 +82,6 @@ def test_validate_base_rejects_non_http_scheme():
         inference_proxy._validate_base("file:///etc/passwd")
     assert ei.value.status_code == 400
     assert "scheme" in ei.value.detail
-    assert ei.value.headers.get("X-Forgather-Proxy-Refused") == "1"
 
 
 def test_validate_base_rejects_non_http_scheme_even_when_locked():

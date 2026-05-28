@@ -366,3 +366,39 @@ class TestProxy:
             params={"base": "http://127.0.0.1:8512"},
         )
         assert r.status_code == 502
+
+    def test_terminated_local_server_returns_502_not_403(self, client, monkeypatch):
+        """A local DiLoCo server that has terminated must still pass the
+        SSRF allowlist so the upstream attempt produces a 502 — not a 403
+        that the webui's fetch wrapper used to misread as session-expired.
+        Regression test for the bug where shutting down a DiLoCo server
+        forced the user to re-enter their password.
+        """
+
+        class TerminatedRec:
+            queue_id = "q-dead"
+            job_type = "diloco_server"
+            config = "diloco:8512"
+            status = "done"  # terminal — won't appear in _local_servers()
+            job_params = {"host": "192.168.9.43", "port": 8512}
+
+        monkeypatch.setattr(
+            diloco_routes.job_records, "list_records", lambda: [TerminatedRec()]
+        )
+
+        def fake_handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("refused")
+
+        _patch_async_client(monkeypatch, fake_handler)
+        r = client.get(
+            "/api/diloco/work-queue",
+            params={
+                "base": "http://192.168.9.43:8512",
+                "dataset_id": "abc",
+                "shuffle_seed": 0,
+            },
+        )
+        assert r.status_code == 502, (
+            "terminated-local DiLoCo URL should reach the upstream attempt "
+            f"and surface its 502, but got {r.status_code}"
+        )

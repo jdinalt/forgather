@@ -193,7 +193,6 @@ def local_server_bundle(queue_id: str):
         raise HTTPException(
             status_code=403,
             detail="bundle-export is disabled in read-only demo mode",
-            headers={"X-Forgather-Demo-Blocked": "1"},
         )
     for r in job_records.list_records():
         if r.job_type != "dataset_server" or r.queue_id != queue_id:

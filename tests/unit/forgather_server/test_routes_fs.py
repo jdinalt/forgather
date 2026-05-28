@@ -121,7 +121,6 @@ class TestDownloadFile:
 
         r = client.get(f"/api/fs/download?path={f}")
         assert r.status_code == 403
-        assert r.headers.get("X-Forgather-Fs-Root-Denied") == "1"
 
     def test_download_outside_fs_root_raises_403(self, tmp_path, monkeypatch):
         """Path-allowlist gate must reject reads outside the configured roots."""
@@ -148,4 +147,3 @@ class TestDownloadFile:
 
         r = client.get(f"/api/fs/download?path={outside}")
         assert r.status_code == 403
-        assert r.headers.get("X-Forgather-Fs-Root-Denied") == "1"

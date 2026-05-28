@@ -81,7 +81,6 @@ def _enforce_fs_root(path) -> None:
     raise HTTPException(
         status_code=403,
         detail=f"path is outside the configured filesystem roots: {path}",
-        headers={"X-Forgather-Fs-Root-Denied": "1"},
     )
 
 

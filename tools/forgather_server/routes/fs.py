@@ -184,17 +184,13 @@ _FORBIDDEN_PATHS: set[str] = {
 def _enforce_fs_root(path) -> None:
     """403 if the path isn't a descendant of a configured fs-root.
 
-    No-op when no fs-root allowlist is configured. The 403 carries the
-    ``X-Forgather-Fs-Root-Denied`` header so the webui fetch wrapper
-    can distinguish a policy-403 from a session-expiry 403 (same
-    pattern as the demo-mode gate).
+    No-op when no fs-root allowlist is configured.
     """
     if fs_paths.is_path_in_fs_root(path):
         return
     raise HTTPException(
         status_code=403,
         detail=f"path is outside the configured filesystem roots: {path}",
-        headers={"X-Forgather-Fs-Root-Denied": "1"},
     )
 
 
@@ -728,7 +724,6 @@ def download_file(path: str):
                 "/fs/download is disabled when no fs-root allowlist is "
                 "configured (would otherwise expose arbitrary files)"
             ),
-            headers={"X-Forgather-Fs-Root-Denied": "1"},
         )
     _reject_symlink_in_chain(path)
     target = Path(os.path.expanduser(path)).resolve()
