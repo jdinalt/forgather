@@ -748,7 +748,13 @@ function workerHealthColor(
 }
 
 function truncId(id: string): string {
-  return id.length > 20 ? `${id.slice(0, 17)}…` : id;
+  // The common case is ``q_<timestamp>_<8-hex>`` (~25 chars) or its
+  // pipeline-group variant ``q_<timestamp>_<8-hex>_pp<N>`` (~28-30
+  // chars); both should fit verbatim. The threshold here is a safety
+  // net for unusual operator-supplied --diloco-worker-id values that
+  // could blow out the layout. Title attr still carries the full id
+  // for hover.
+  return id.length > 48 ? `${id.slice(0, 45)}…` : id;
 }
 
 function WorkersSection({
