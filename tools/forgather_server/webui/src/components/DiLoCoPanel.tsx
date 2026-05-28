@@ -1232,17 +1232,23 @@ function WorkerCard({
           hb {relativeAge(workerStatus.last_heartbeat)}
         </span>
         <span style={{ flex: 1 }} />
-        <button
-          className="tiny"
-          onClick={() => {
-            if (window.confirm(`Kick worker ${workerId}?`))
-              kickMutation.mutate();
-          }}
-          disabled={kickMutation.isPending}
-          title="Force-evict this worker from the DiLoCo server"
-        >
-          Kick
-        </button>
+        {/* Per-rank Kick is suppressed in compact mode: under
+            atomic group eviction, kicking one rank just spells
+            "kick the whole group" the long way around. The group
+            header carries a single Kick group button. */}
+        {!compact && (
+          <button
+            className="tiny"
+            onClick={() => {
+              if (window.confirm(`Kick worker ${workerId}?`))
+                kickMutation.mutate();
+            }}
+            disabled={kickMutation.isPending}
+            title="Force-evict this worker from the DiLoCo server"
+          >
+            Kick
+          </button>
+        )}
       </div>
 
       {/* Middle: training-job progress + stats (when we have a job).
