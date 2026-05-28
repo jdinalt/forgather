@@ -458,6 +458,38 @@ class TestDDPRankAwareness:
             # Follower does NOT call deregister.
             m_deregister.assert_not_called()
 
+    def test_refuses_streaming_fragments_under_ddp(self, server_with_model):
+        """Streaming-fragment sync (num_fragments > 1) isn't yet
+        DDP-rank-aware — followers would race the leader's HTTP
+        submissions. Construction-time refusal is the safer behavior
+        until that path gets a leader/follower split of its own.
+
+        Simulates a DDP context by passing a stub that satisfies the
+        ``dist.is_available() and dist.is_initialized()`` check so the
+        worker sees world_size > 1.
+        """
+        server, model = server_with_model
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+        from unittest.mock import patch
+
+        with (
+            patch("forgather.ml.diloco.worker.dist.is_available", return_value=True),
+            patch("forgather.ml.diloco.worker.dist.is_initialized", return_value=True),
+            patch("forgather.ml.diloco.worker.dist.get_rank", return_value=0),
+            patch("forgather.ml.diloco.worker.dist.get_world_size", return_value=2),
+        ):
+            with pytest.raises(ValueError, match="streaming-fragment sync"):
+                DiLoCoWorker(
+                    model,
+                    optimizer,
+                    server_addr=f"localhost:{server.port}",
+                    sync_every=1000,
+                    num_fragments=4,
+                    bf16_comm=False,
+                    heartbeat_interval=0,
+                )
+
     def test_leader_registers_normally(self, server_with_model):
         """Default behavior (no distributed group): worker IS the
         leader, registers as before."""

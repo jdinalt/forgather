@@ -806,24 +806,43 @@ they fail asymmetric DDP — host A's `shard(4,0)` and host B's
 the workers would train on the same data.
 
 **Operator config.** ``preprocess_dataset`` accepts a
-``shard_dataset.method`` field:
+``shard_dataset.method`` field plus a per-dataset
+``partition_purpose: "train" | "eval"`` kwarg. The validity matrix
+splits per purpose: train requires cross-host coordination under
+DiLoCo (work_units is the only safe choice), eval is replicated
+across hosts so conventional sharding is fine and work_units makes
+no sense.
+
+`partition_purpose='train'`:
 
 | Config                            | `DILOCO_SERVER` unset | `DILOCO_SERVER` set |
 |-----------------------------------|----------------------|---------------------|
-| `False`                           | OK                   | OK (eval path)      |
+| `False`                           | OK                   | OK                  |
 | `True` / `{method: conventional}` | OK                   | **error**            |
 | `{method: work_units}`            | **error**            | OK                  |
 
-`lm_training_project.yaml` selects the right value automatically
-based on the env / Jinja vars. The two error cells fail at
-preprocess time with a message naming the symptom — no silent
-training on identical rows.
+`partition_purpose='eval'`:
 
-**Eval bypass.** Under DiLoCo, eval gets `shard_dataset: False`
-(every worker runs the full eval pass; metrics are averaged across
-workers). The previous design used a `diloco_work_dispatch: False`
-kwarg on the loader; that kwarg is gone. The bypass now lives in the
-template's `shard_dataset` selection per train-vs-eval.
+| Config                            | `DILOCO_SERVER` unset | `DILOCO_SERVER` set |
+|-----------------------------------|----------------------|---------------------|
+| `False`                           | OK                   | OK                  |
+| `True` / `{method: conventional}` | OK                   | OK (within-host DDP shard) |
+| `{method: work_units}`            | **error**            | **error**            |
+
+`lm_training_project.yaml` selects the right value automatically
+based on the env / Jinja vars. `load_dataset.yaml` stamps
+`partition_purpose` per-singleton (train→"train", eval/test→"eval");
+snowflake dataset templates do the same.
+
+**Eval under DiLoCo.** Eval is replicated across DiLoCo hosts (every
+host runs the full eval pass; metrics averaged across hosts), but
+within each host we want DDP sharding to split the eval workload
+across the DDP ranks of that host — otherwise every rank runs the
+full eval locally for an identical result, burning W× compute.
+``lm_training_project.yaml`` emits ``shard_dataset:
+{{ ns.dispatch_batches == False }}`` for eval unconditionally
+(True for vanilla DDP, False under dispatch_batches=True), and the
+eval-side validity check allows ``conventional + DiLoCo``.
 
 **Multi-epoch and `set_epoch`.** No special handling needed. The
 dispatch's lazy-register cache is keyed by

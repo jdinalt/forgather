@@ -136,6 +136,22 @@ class DiLoCoWorker:
         # Fragment manager (None if num_fragments <= 1)
         self._fragment_manager: Optional[FragmentManager] = None
         if num_fragments > 1:
+            # Streaming-fragment sync isn't DDP-rank-aware yet —
+            # followers would each spawn a background thread submitting
+            # ``submit_fragment_pseudogradients`` against the server
+            # with an unregistered worker_id (since followers never
+            # registered), racing the leader. Refuse the combo at
+            # construction time rather than silently misbehave. The
+            # non-streaming path (num_fragments==1) IS DDP-rank-aware
+            # via the leader/follower split in start()/_sync().
+            if self._is_dist and self._ddp_world_size > 1:
+                raise ValueError(
+                    f"DiLoCo streaming-fragment sync (num_fragments="
+                    f"{num_fragments}) is not yet compatible with DDP "
+                    f"(world_size={self._ddp_world_size}). Use "
+                    "num_fragments=1 under DDP, or run streaming on a "
+                    "single-process worker (no torch.distributed group)."
+                )
             self._fragment_manager = FragmentManager(model, num_fragments)
 
         # State

@@ -842,8 +842,10 @@ replicated by design.
 
 ``lm_training_project.yaml`` wires this automatically: train picks
 ``method='work_units'`` under DiLoCo (else conventional), and eval
-picks ``True`` unconditionally (DDP within host, replicated across
-hosts).
+picks ``{{ ns.dispatch_batches == False }}`` unconditionally — i.e.
+``True`` (DDP within host, replicated across hosts) when
+``dispatch_batches`` is off, ``False`` (full eval per process) when
+``dispatch_batches`` is on, regardless of DiLoCo state.
 
 ### dataset_id
 
