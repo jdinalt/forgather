@@ -805,10 +805,18 @@ function WorkersSection({
               heartbeatTimeout={status.heartbeat_timeout}
               // Match by queue_id: scheduler defaults
               // DILOCO_WORKER_ID = queue_id for webui-spawned jobs.
+              // Under pipeline parallel (issue #84) each rank's
+              // worker_id is "<queue_id>_pp<N>"; strip the suffix so
+              // every rank of the same job correlates to the same
+              // queue_id. The match still falls back to the exact
+              // string for non-pipeline runs.
               job={
-                jobs?.find(
-                  (j) => j.queue_id === wid || j.job_id === wid,
-                ) ?? null
+                jobs?.find((j) => {
+                  if (j.queue_id === wid || j.job_id === wid) return true;
+                  const ppMatch = wid.match(/^(.+)_pp\d+$/);
+                  if (ppMatch && j.queue_id === ppMatch[1]) return true;
+                  return false;
+                }) ?? null
               }
               refreshSeconds={refreshSeconds}
             />
