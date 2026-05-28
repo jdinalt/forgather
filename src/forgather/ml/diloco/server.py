@@ -520,22 +520,50 @@ class DiLoCoServer:
         }
 
     def _apply_outer_optimizer(self):
-        """Average pending pseudo-gradients and apply the outer optimizer step."""
-        n = len(self._pending_pseudograds)
-        if n == 0:
+        """Average pending pseudo-gradients and apply the outer optimizer step.
+
+        Per-name aggregation is over **the workers whose slice contained
+        that name**, not over the whole worker set. For solo groups the
+        contributor set equals the full worker set and behavior collapses
+        to the pre-#84 contract. For pipeline-parallel groups, each name
+        is held by typically one rank per group (G ranks across G groups
+        of pp_world_size members each); tied-parameter aliases may be
+        held by multiple ranks and are averaged identically since the
+        aliased pseudo-gradients are by construction the same data.
+        """
+        if not self._pending_pseudograds:
             return
 
-        # Average pseudo-gradients and set as .grad
+        missing_contributors: List[str] = []
         for i, name in enumerate(self._param_names):
-            avg_grad = None
+            contributors: List[torch.Tensor] = []
             for worker_pseudograds in self._pending_pseudograds.values():
-                pg = worker_pseudograds[name].float()
-                if avg_grad is None:
-                    avg_grad = pg.clone()
-                else:
-                    avg_grad.add_(pg)
-            avg_grad.div_(n)
-            self._param_list[i].grad = avg_grad
+                pg = worker_pseudograds.get(name)
+                if pg is not None:
+                    contributors.append(pg.float())
+            if not contributors:
+                # No worker carries this name — the group-coverage check
+                # at registration should have prevented this. Skip the
+                # outer optimizer step on this slot (grad=None makes
+                # SGD/Adam treat it as a no-op).
+                missing_contributors.append(name)
+                self._param_list[i].grad = None
+                continue
+            avg = contributors[0].clone()
+            for pg in contributors[1:]:
+                avg.add_(pg)
+            avg.div_(len(contributors))
+            self._param_list[i].grad = avg
+
+        if missing_contributors:
+            sample = missing_contributors[:5]
+            logger.error(
+                f"_apply_outer_optimizer: {len(missing_contributors)} "
+                f"param(s) had no contributor in this round: {sample}"
+                f"{'...' if len(missing_contributors) > 5 else ''}. "
+                f"The group-coverage check should have prevented this; "
+                f"check for a stale group registry."
+            )
 
         self.outer_optimizer.step()
         self.outer_optimizer.zero_grad()
@@ -760,9 +788,8 @@ class DiLoCoServer:
                     self._round_expected_workers.discard(wid)
 
             expected = self._get_expected_worker_count()
-            submitted = len(self._pending_pseudograds)
 
-            if expected > 0 and submitted >= expected:
+            if expected > 0 and self._round_complete():
                 # Enough workers have submitted - release the barrier
                 my_round = self._sync_round
                 self._apply_outer_optimizer()
@@ -915,6 +942,26 @@ class DiLoCoServer:
                             f"invalid group geometry: pp_rank={pp_rank}, "
                             f"pp_world_size={pp_world_size}. Required: "
                             f"pp_world_size >= 1, 0 <= pp_rank < pp_world_size."
+                        )
+                    },
+                    400,
+                )
+                return
+            if pp_world_size > 1 and self.async_mode:
+                # Async barrier semantics with disjoint slice contributions
+                # is fragile (which submissions can be combined? per-rank
+                # for one group? across groups?). Out of scope for #84;
+                # operators can downgrade to sync mode or use a non-
+                # pipeline trainer.
+                _send_json_response(
+                    handler,
+                    {
+                        "error": (
+                            "pipeline-group registration "
+                            f"(pp_world_size={pp_world_size}) is not "
+                            "compatible with async_mode. Start the "
+                            "DiLoCo server without --async, or use a "
+                            "non-pipeline trainer."
                         )
                     },
                     400,
@@ -1168,37 +1215,83 @@ class DiLoCoServer:
     def _validate_pseudograd_params(
         self, worker_id: str, pseudograds: Dict[str, torch.Tensor]
     ) -> Optional[str]:
-        """Validate pseudo-gradient parameter names match global params.
+        """Validate pseudo-gradient parameter names against the worker's
+        registered slice.
+
+        Each submitted name must exist on the server (no "extras"). For a
+        solo worker, the expected name set equals the server's full
+        ``_param_names``. For a pipeline-parallel rank, the expected set
+        is the slice it registered with — looked up via
+        ``_worker_to_group`` → ``WorkerGroup.member_param_names``.
+        Submissions with extras → 400; submissions missing some of the
+        worker's own slice names → 400 (the worker is internally
+        inconsistent, e.g. a config edit mid-training).
 
         Returns an error message string if there's a mismatch, None if valid.
         """
         pg_names = set(pseudograds.keys())
         global_names = set(self._param_names)
 
-        if pg_names == global_names:
-            return None
-
-        missing = global_names - pg_names
+        # Always reject names that aren't on the server at all.
         extra = pg_names - global_names
-
-        parts = [f"Parameter name mismatch from worker {worker_id}."]
-        if missing:
-            sample = sorted(missing)[:5]
-            parts.append(
-                f"  Missing {len(missing)} params (expected by server): "
-                f"{sample}{'...' if len(missing) > 5 else ''}"
-            )
         if extra:
             sample = sorted(extra)[:5]
-            parts.append(
-                f"  Unexpected {len(extra)} params (sent by worker): "
-                f"{sample}{'...' if len(extra) > 5 else ''}"
+            parts = [
+                f"Parameter name mismatch from worker {worker_id}.",
+                f"  Unexpected {len(extra)} params (sent by worker, "
+                f"not on server): {sample}"
+                f"{'...' if len(extra) > 5 else ''}",
+                "  This usually means the worker is using a different "
+                "model architecture than the server.",
+            ]
+            return "\n".join(parts)
+
+        # For sliced workers, also reject submissions missing names from
+        # the registered slice (worker is internally inconsistent).
+        expected = self._slice_expectation_for(worker_id)
+        if expected is not None and not pg_names.issuperset(expected):
+            missing = expected - pg_names
+            sample = sorted(missing)[:5]
+            return (
+                f"Parameter name mismatch from worker {worker_id}.\n"
+                f"  Worker registered a slice with {len(expected)} "
+                f"param(s) but submitted only {len(pg_names)}. "
+                f"Missing {len(missing)} from this submission: "
+                f"{sample}{'...' if len(missing) > 5 else ''}"
             )
-        parts.append(
-            "  This usually means the worker is using a different model "
-            "architecture than the server."
-        )
-        return "\n".join(parts)
+        return None
+
+    def _slice_expectation_for(self, worker_id: str) -> Optional[set]:
+        """Return the registered slice's param-name set for this worker.
+
+        ``None`` when the worker has no slice metadata (legacy / test
+        path that omitted ``param_shapes`` at register time). Caller
+        treats that as "any submission with no extras is acceptable".
+        """
+        with self._workers_lock:
+            group_id = self._worker_to_group.get(worker_id)
+            if group_id is None:
+                return None
+            group = self._groups.get(group_id)
+            if group is None:
+                return None
+            for pp_rank, wid in group.members.items():
+                if wid == worker_id:
+                    names = group.member_param_names.get(pp_rank)
+                    return set(names) if names else None
+        return None
+
+    def _round_complete(self) -> bool:
+        """True iff every expected worker has submitted for this round.
+
+        Solo groups: collapses to the pre-#84 length check (every
+        registered worker_id has a pending submission). Pipeline groups:
+        every member of every group has submitted its slice.
+        """
+        if self._round_expected_workers is None:
+            return False
+        submitted = set(self._pending_pseudograds.keys())
+        return self._round_expected_workers.issubset(submitted)
 
     def _handle_submit_pseudograd(self, handler: BaseHTTPRequestHandler):
         """
@@ -1262,7 +1355,7 @@ class DiLoCoServer:
                 f"({submitted}/{expected}) for round {my_round}"
             )
 
-            if submitted >= expected:
+            if self._round_complete():
                 self._apply_outer_optimizer()
                 self._completed_rounds[my_round] = self.get_global_params()
 
