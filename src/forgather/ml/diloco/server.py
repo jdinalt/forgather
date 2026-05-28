@@ -455,8 +455,12 @@ class DiLoCoServer:
             defaultdict(dict)
         )
         self._fragment_rounds: Dict[int, int] = defaultdict(int)
+        # (fragment_id, round) -> {worker_id: {name: tensor}}. Stored
+        # per-worker so each rank in a pipeline group receives only the
+        # names it submitted for this fragment (its slice's intersection
+        # with the fragment), not the union across the group.
         self._completed_fragment_rounds: Dict[
-            Tuple[int, int], Dict[str, torch.Tensor]
+            Tuple[int, int], Dict[str, Dict[str, torch.Tensor]]
         ] = {}
         # Reuse _sync_cond for fragment barrier notifications
         self._fragment_submissions = 0  # Total fragment submissions
@@ -663,26 +667,41 @@ class DiLoCoServer:
         Args:
             pseudograds_list: List of per-worker pseudo-gradient dicts for this
                 fragment. Each dict maps param_name -> tensor.
+
+        Per-name aggregation is over **the workers whose submission
+        carried that name** — same contributors-only model as the
+        full-sync path. Under pipeline groups each rank's fragment_id_k
+        covers a different subset of names (the fragment's intersection
+        with the rank's slice); the per-name averaging naturally handles
+        that.
         """
-        n = len(pseudograds_list)
-        if n == 0:
+        if not pseudograds_list:
             return
 
-        # Get the param names from the first submission
-        frag_param_names = list(pseudograds_list[0].keys())
+        # Union of all submitted names; each name is updated using only
+        # the workers that carried it.
+        frag_param_names: List[str] = []
+        seen: set = set()
+        for worker_pg in pseudograds_list:
+            for name in worker_pg.keys():
+                if name not in seen:
+                    seen.add(name)
+                    frag_param_names.append(name)
 
-        # Average pseudo-gradients and set as .grad on fragment params only
         for name in frag_param_names:
             idx = self._param_name_to_idx[name]
-            avg_grad = None
-            for worker_pg in pseudograds_list:
-                pg = worker_pg[name].float()
-                if avg_grad is None:
-                    avg_grad = pg.clone()
-                else:
-                    avg_grad.add_(pg)
-            avg_grad.div_(n)
-            self._param_list[idx].grad = avg_grad
+            contributors: List[torch.Tensor] = [
+                worker_pg[name].float()
+                for worker_pg in pseudograds_list
+                if name in worker_pg
+            ]
+            if not contributors:
+                continue
+            avg = contributors[0].clone()
+            for pg in contributors[1:]:
+                avg.add_(pg)
+            avg.div_(len(contributors))
+            self._param_list[idx].grad = avg
 
         # step() skips params with None grad; only fragment params updated
         self.outer_optimizer.step()
@@ -803,19 +822,19 @@ class DiLoCoServer:
                 for wid in evict:
                     self._fragment_pending[frag_id].pop(wid, None)
 
-                frag_expected = expected  # Same expected count
-                frag_submitted = len(self._fragment_pending[frag_id])
-
-                if frag_expected > 0 and frag_submitted >= frag_expected:
+                if expected > 0 and self._fragment_round_complete(frag_id):
                     my_frag_round = self._fragment_rounds[frag_id]
-                    pg_list = list(self._fragment_pending[frag_id].values())
+                    pending = self._fragment_pending[frag_id]
+                    pg_list = list(pending.values())
                     if pg_list:
                         self._apply_fragment_outer_optimizer(pg_list)
 
-                        frag_param_names = list(pg_list[0].keys())
-                        result = self._get_params_by_names(frag_param_names)
+                        per_worker: Dict[str, Dict[str, torch.Tensor]] = {
+                            wid: self._get_params_by_names(list(pgs.keys()))
+                            for wid, pgs in pending.items()
+                        }
                         self._completed_fragment_rounds[(frag_id, my_frag_round)] = (
-                            result
+                            per_worker
                         )
 
                         self._fragment_rounds[frag_id] += 1
@@ -1447,12 +1466,31 @@ class DiLoCoServer:
                 handler, worker_id, fragment_id, pseudograds
             )
 
+    def _fragment_round_complete(self, fragment_id: int) -> bool:
+        """True iff every expected worker has submitted for this fragment.
+
+        Uses ``_round_expected_workers`` as the membership snapshot
+        (same set the full-sync barrier uses — every worker_id from
+        every active group). For solo groups this collapses to the
+        pre-#84 length check. For pipeline groups, the fragment
+        releases only when each rank has submitted its slice's portion
+        of ``fragment_id``.
+        """
+        if self._round_expected_workers is None:
+            return False
+        submitted = set(self._fragment_pending[fragment_id].keys())
+        return self._round_expected_workers.issubset(submitted)
+
     def _handle_submit_fragment_sync(
         self, handler, worker_id, fragment_id, pseudograds
     ):
         """Per-fragment synchronous submission with fault-tolerant barrier."""
         with self._sync_cond:
             my_round = self._fragment_rounds[fragment_id]
+
+            # Lazy-init expected workers (same as full-sync path).
+            if self._round_expected_workers is None:
+                self._snapshot_round_expected_workers()
 
             self._fragment_pending[fragment_id][worker_id] = pseudograds
 
@@ -1467,14 +1505,22 @@ class DiLoCoServer:
                 f"({submitted}/{expected}) for fragment round {my_round}"
             )
 
-            if submitted >= expected:
-                # All expected workers submitted for this fragment
-                pg_list = list(self._fragment_pending[fragment_id].values())
+            if self._fragment_round_complete(fragment_id):
+                # All expected workers submitted for this fragment.
+                # Aggregate using contributors-only per-name; then build
+                # the per-worker response (each worker receives only the
+                # names it submitted — important under pipeline groups
+                # where different ranks of the same fragment_id carry
+                # different name subsets).
+                pending = self._fragment_pending[fragment_id]
+                pg_list = list(pending.values())
                 self._apply_fragment_outer_optimizer(pg_list)
 
-                frag_param_names = list(pseudograds.keys())
-                result = self._get_params_by_names(frag_param_names)
-                self._completed_fragment_rounds[(fragment_id, my_round)] = result
+                per_worker: Dict[str, Dict[str, torch.Tensor]] = {
+                    wid: self._get_params_by_names(list(pgs.keys()))
+                    for wid, pgs in pending.items()
+                }
+                self._completed_fragment_rounds[(fragment_id, my_round)] = per_worker
 
                 self._fragment_rounds[fragment_id] += 1
                 self._fragment_pending[fragment_id].clear()
@@ -1492,7 +1538,7 @@ class DiLoCoServer:
 
                 self._sync_cond.notify_all()
 
-            # Wait for this fragment round's result
+            # Wait for this fragment round's result.
             key = (fragment_id, my_round)
             while key not in self._completed_fragment_rounds:
                 if not self._sync_cond.wait(timeout=600):
@@ -1501,7 +1547,24 @@ class DiLoCoServer:
                     )
                     return
 
-            result = self._completed_fragment_rounds[key]
+            per_worker_results = self._completed_fragment_rounds[key]
+            result = per_worker_results.get(worker_id)
+            if result is None:
+                # Worker died mid-round and was removed from pending; if
+                # the barrier still released for the survivors, this
+                # worker's slot is gone. Fall back to whatever was
+                # computed for any rank (legacy / solo-group safety).
+                # Pipeline workers never hit this since whole-group
+                # eviction takes the survivor out before the barrier.
+                if per_worker_results:
+                    result = next(iter(per_worker_results.values()))
+                else:
+                    _send_json_response(
+                        handler,
+                        {"error": "fragment round completed without our submission"},
+                        500,
+                    )
+                    return
 
         _send_tensor_response(handler, result)
 
