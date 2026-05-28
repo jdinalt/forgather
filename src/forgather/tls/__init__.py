@@ -39,6 +39,8 @@ from .runtime import (
     httpx_verify,
     httpx_verify_for_url,
     is_enabled,
+    stdlib_ssl_context,
+    urllib_ssl_context,
     uvicorn_ssl_kwargs,
 )
 
@@ -55,6 +57,8 @@ __all__ = [
     "httpx_verify_for_url",
     "is_enabled",
     "load_config",
+    "stdlib_ssl_context",
     "tls_dir",
+    "urllib_ssl_context",
     "uvicorn_ssl_kwargs",
 ]

@@ -96,6 +96,86 @@ def uvicorn_ssl_kwargs(
     return kwargs
 
 
+def stdlib_ssl_context(
+    args: Optional[argparse.Namespace] = None, cfg: Optional[TLSConfig] = None
+) -> Optional[ssl.SSLContext]:
+    """Return a server-side :class:`ssl.SSLContext` for ``http.server`` use.
+
+    The stdlib analogue of :func:`uvicorn_ssl_kwargs`: returns a context
+    that can be applied to a listening socket via
+    ``ctx.wrap_socket(sock, server_side=True)``. Returns ``None`` when
+    TLS is off for this invocation.
+
+    When a cluster CA bundle is present, the context is configured with
+    ``verify_mode = ssl.CERT_OPTIONAL`` and the bundle loaded as the CA,
+    so the TLS handshake validates any client cert that *is* presented
+    against the cluster CA. The application layer can then read
+    ``conn.getpeercert()`` to learn whether a valid peer cert was
+    supplied (mTLS), or fall back to a bearer-token check otherwise.
+
+    Raises :class:`FileNotFoundError` if TLS is requested but cert/key
+    files are missing.
+    """
+    cfg, on, cert, key = _resolve_state(args, cfg)
+    if not on:
+        return None
+    if not cert or not key:
+        raise FileNotFoundError(
+            "TLS enabled but server cert/key not configured "
+            "(run 'forgather tls init' or pass --tls-cert/--tls-key)"
+        )
+    if not Path(cert).is_file():
+        raise FileNotFoundError(f"TLS cert not found: {cert}")
+    if not Path(key).is_file():
+        raise FileNotFoundError(f"TLS key not found: {key}")
+    ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ctx.load_cert_chain(certfile=cert, keyfile=key)
+    bundle = cfg.effective_bundle()
+    if bundle is not None:
+        ctx.load_verify_locations(cafile=str(bundle))
+        ctx.verify_mode = ssl.CERT_OPTIONAL
+    return ctx
+
+
+def urllib_ssl_context(
+    cfg: Optional[TLSConfig] = None, verify: bool = True
+) -> Optional[ssl.SSLContext]:
+    """Return a client-side :class:`ssl.SSLContext` for ``urllib.request`` use.
+
+    The stdlib analogue of :func:`httpx_peer_kwargs`: builds a single
+    context that carries (a) the cluster CA bundle for verifying the
+    *peer's* cert, and (b) when this node is provisioned, its own
+    cert+key for presenting identity via mTLS. Pass to
+    ``urllib.request.urlopen(..., context=...)``.
+
+    ``verify=False`` returns an unverified context — opt-in escape
+    hatch for SSH-tunneled remotes and similar cases where the operator
+    has accepted the trust boundary externally.
+
+    Returns ``None`` when no bundle exists and ``verify`` is True; the
+    caller should then either fall back to system trust (urllib's
+    default when no ``context=`` is passed) or refuse outright.
+    """
+    cfg = cfg or load_config()
+    if not verify:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    bundle = cfg.effective_bundle()
+    if bundle is None:
+        return None
+    ctx = ssl.create_default_context(cafile=str(bundle))
+    if not cfg.verify_hostname:
+        ctx.check_hostname = False
+    if cfg.is_provisioned():
+        # Load this node's cert+key so we can present mTLS identity
+        # when the peer asks for it. Silent no-op for peers that
+        # don't request a client cert.
+        ctx.load_cert_chain(str(cfg.server_cert), str(cfg.server_key))
+    return ctx
+
+
 def httpx_client_cert(
     cfg: Optional[TLSConfig] = None,
 ) -> Optional[tuple[str, str]]:
@@ -194,9 +274,7 @@ def httpx_verify(cfg: Optional[TLSConfig] = None) -> object:
     return ctx
 
 
-def httpx_verify_for_url(
-    url: str, cfg: Optional[TLSConfig] = None
-) -> object:
+def httpx_verify_for_url(url: str, cfg: Optional[TLSConfig] = None) -> object:
     """Same as :func:`httpx_verify` but returns ``False`` for plain ``http://``.
 
     Saves an unnecessary file-system check when the URL won't be using TLS.
@@ -206,9 +284,7 @@ def httpx_verify_for_url(
     return httpx_verify(cfg)
 
 
-def client_scheme(
-    host: str = "127.0.0.1", cfg: Optional[TLSConfig] = None
-) -> str:
+def client_scheme(host: str = "127.0.0.1", cfg: Optional[TLSConfig] = None) -> str:
     """Default URL scheme for clients connecting to ``host``.
 
     On the local host, picks ``https`` iff TLS is locally provisioned

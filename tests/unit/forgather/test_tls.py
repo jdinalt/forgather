@@ -23,6 +23,8 @@ from forgather.tls import (
     httpx_verify,
     is_enabled,
     load_config,
+    stdlib_ssl_context,
+    urllib_ssl_context,
     uvicorn_ssl_kwargs,
 )
 from forgather.tls.ca import (
@@ -76,8 +78,9 @@ def test_create_ca_writes_files_with_basic_constraints(tls_root):
 
 
 def test_mint_server_cert_chains_to_ca(tls_root):
-    cfg = _provisioned_cfg(tls_root, hostnames=("localhost", "host.example"),
-                           ips=("127.0.0.1", "10.0.0.1"))
+    cfg = _provisioned_cfg(
+        tls_root, hostnames=("localhost", "host.example"), ips=("127.0.0.1", "10.0.0.1")
+    )
     info = cert_info(cfg.server_cert)
     assert info["is_ca"] is False
     assert "localhost" in info["san_dns"]
@@ -249,9 +252,10 @@ def test_mint_with_no_san_flags_uses_placeholder(tls_root):
     address to mint its cert. Validate by checking the placeholder
     SAN is present.
     """
-    from forgather.cli.tls import _cmd_mint
     import argparse
     import tempfile
+
+    from forgather.cli.tls import _cmd_mint
 
     _provisioned_cfg(tls_root)
     with tempfile.TemporaryDirectory() as out_dir:
@@ -282,8 +286,8 @@ def test_random_serial_numbers_dont_collide(tls_root):
     serial_b = cert_info(cfg.server_cert)["serial"]
     assert serial_a != serial_b
     # Both should be high-entropy (>= 64 bits).
-    assert int(serial_a) > 2 ** 64
-    assert int(serial_b) > 2 ** 64
+    assert int(serial_a) > 2**64
+    assert int(serial_b) > 2**64
 
 
 def test_san_hard_cap_refuses_huge_lists(tls_root):
@@ -306,8 +310,9 @@ def test_discovery_caps_auto_san(tls_root):
 
 def test_resolve_state_precedence(tls_root):
     """--no-tls always wins; --tls wins over disabled config; default falls back."""
-    from forgather.tls.runtime import _resolve_state
     import argparse
+
+    from forgather.tls.runtime import _resolve_state
 
     _provisioned_cfg(tls_root)
     cfg = load_config()
@@ -348,8 +353,9 @@ def test_policy_error_branches_on_state(tls_root):
 
 def test_install_rejects_mismatched_cert_and_key(tls_root, tmp_path):
     """`forgather tls install` must refuse a cert/key pair that don't match."""
-    from forgather.cli.tls import _cmd_install
     import argparse
+
+    from forgather.cli.tls import _cmd_install
 
     cfg = _provisioned_cfg(tls_root)
     # Mint two independent cert/key pairs.
@@ -421,3 +427,133 @@ def test_member_tls_preserved_when_update_omits_field(tls_root):
         assert members["node-b"].tls is False
     finally:
         cluster._state._reset_for_tests()
+
+
+# ---------------------------------------------------------------------------
+# stdlib_ssl_context / urllib_ssl_context (DiLoCo / http.server adapters)
+# ---------------------------------------------------------------------------
+
+
+def test_stdlib_ssl_context_none_when_disabled(tls_root):
+    """No CLI flag + unprovisioned config → None (cleartext server)."""
+    assert stdlib_ssl_context() is None
+
+
+def test_stdlib_ssl_context_loads_cert_chain_when_provisioned(tls_root):
+    """Provisioned cluster + TLS on → server context with cert chain
+    loaded and CERT_OPTIONAL configured so mTLS handshakes work."""
+    _provisioned_cfg(tls_root)
+    ctx = stdlib_ssl_context()
+    assert isinstance(ctx, ssl.SSLContext)
+    # Server context loads keylog if requested; we don't assert that.
+    # Bundle present → CERT_OPTIONAL.
+    assert ctx.verify_mode == ssl.CERT_OPTIONAL
+
+
+def test_stdlib_ssl_context_no_bundle_skips_client_auth(tls_root):
+    """Cert+key provisioned but no CA bundle → context has no client-auth.
+    Verify mode falls back to CERT_NONE (server's default for CLIENT_AUTH
+    Purpose), so no mTLS path."""
+    cfg = _provisioned_cfg(tls_root)
+    # Remove the bundle to simulate a half-provisioned host.
+    cfg.ca_bundle.unlink()
+    cfg.ca_cert.unlink()
+    save_config(cfg)
+    cfg2 = load_config()
+    assert cfg2.effective_bundle() is None
+    ctx = stdlib_ssl_context(cfg=cfg2)
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.verify_mode == ssl.CERT_NONE
+
+
+def test_stdlib_ssl_context_raises_when_files_missing(tls_root, monkeypatch):
+    """TLS forced on but cert file doesn't exist → FileNotFoundError."""
+    import argparse
+
+    args = argparse.Namespace(
+        tls=True,
+        no_tls=False,
+        tls_cert="/nonexistent/cert.pem",
+        tls_key="/nonexistent/key.pem",
+    )
+    with pytest.raises(FileNotFoundError):
+        stdlib_ssl_context(args=args)
+
+
+def test_urllib_ssl_context_none_when_no_bundle(tls_root):
+    """Default (verify=True) and no CA bundle → None; caller falls back
+    to system trust (urllib's default when no context= is passed)."""
+    ctx = urllib_ssl_context()
+    assert ctx is None
+
+
+def test_urllib_ssl_context_loads_bundle_when_provisioned(tls_root):
+    """Provisioned cluster → SSLContext with CA bundle + this node's
+    cert loaded for mTLS identity. check_hostname off by default
+    (matches httpx_verify's LAN-friendly mode)."""
+    _provisioned_cfg(tls_root)
+    ctx = urllib_ssl_context()
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.check_hostname is False
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_urllib_ssl_context_strict_hostname(tls_root):
+    """verify_hostname=True flips on RFC-6125 SAN matching."""
+    cfg = _provisioned_cfg(tls_root)
+    cfg.verify_hostname = True
+    save_config(cfg)
+    cfg2 = load_config()
+    ctx = urllib_ssl_context(cfg2)
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.check_hostname is True
+
+
+def test_urllib_ssl_context_verify_false_returns_unverified_ctx(tls_root):
+    """verify=False opt-out → context that won't verify chain or hostname.
+    Used for SSH-tunneled remotes where the trust boundary is external."""
+    _provisioned_cfg(tls_root)
+    ctx = urllib_ssl_context(verify=False)
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.check_hostname is False
+    assert ctx.verify_mode == ssl.CERT_NONE
+
+
+def test_stdlib_and_urllib_contexts_interoperate(tls_root):
+    """End-to-end: spin up an http.server with stdlib_ssl_context,
+    hit it with urllib using urllib_ssl_context, verify the
+    handshake completes and the request succeeds."""
+    import http.server
+    import threading
+    import urllib.request
+
+    _provisioned_cfg(tls_root)
+    server_ctx = stdlib_ssl_context()
+    assert server_ctx is not None
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *args, **kwargs):
+            pass  # silence
+
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    httpd.socket = server_ctx.wrap_socket(httpd.socket, server_side=True)
+    port = httpd.server_address[1]
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    try:
+        client_ctx = urllib_ssl_context()
+        assert client_ctx is not None
+        # Use localhost which is in the SAN list of _provisioned_cfg.
+        url = f"https://localhost:{port}/"
+        with urllib.request.urlopen(url, context=client_ctx, timeout=5) as resp:
+            assert resp.status == 200
+            assert resp.read() == b"ok"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
