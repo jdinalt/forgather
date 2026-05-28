@@ -796,27 +796,23 @@ function WorkersSection({
             flexDirection: "column",
           }}
         >
-          {ids.map((wid) => (
-            <WorkerCard
-              key={wid}
+          {groupWorkers(workers).map((group) => (
+            <GroupCard
+              key={group.groupId}
               baseUrl={baseUrl}
-              workerId={wid}
-              workerStatus={workers[wid]}
+              group={group}
+              workers={workers}
               heartbeatTimeout={status.heartbeat_timeout}
-              // Match by queue_id: scheduler defaults
+              // Match by queue_id. The scheduler defaults
               // DILOCO_WORKER_ID = queue_id for webui-spawned jobs.
-              // Under pipeline parallel (issue #84) each rank's
-              // worker_id is "<queue_id>_pp<N>"; strip the suffix so
-              // every rank of the same job correlates to the same
-              // queue_id. The match still falls back to the exact
-              // string for non-pipeline runs.
+              // Pipeline ranks register as "<queue_id>_pp<N>"; the
+              // group's id strips that suffix, so this match works
+              // for both solo and pipeline jobs.
               job={
-                jobs?.find((j) => {
-                  if (j.queue_id === wid || j.job_id === wid) return true;
-                  const ppMatch = wid.match(/^(.+)_pp\d+$/);
-                  if (ppMatch && j.queue_id === ppMatch[1]) return true;
-                  return false;
-                }) ?? null
+                jobs?.find(
+                  (j) =>
+                    j.queue_id === group.groupId || j.job_id === group.groupId,
+                ) ?? null
               }
               refreshSeconds={refreshSeconds}
             />
@@ -824,6 +820,308 @@ function WorkersSection({
         </div>
       )}
     </section>
+  );
+}
+
+interface GroupMember {
+  workerId: string;
+  ppRank: number;
+}
+
+interface GroupView {
+  groupId: string;
+  members: GroupMember[];
+  /** True iff at least one member's worker_id carried a ``_pp<N>``
+   *  suffix. Solo workers form a group of one with this flag false
+   *  and render as a plain ``WorkerCard`` (pre-#84 behavior). */
+  isPipelineGroup: boolean;
+}
+
+/** Group workers by stripping the ``_pp<N>`` suffix from ``worker_id``.
+ *  Workers without that suffix form a degenerate group of one. */
+function groupWorkers(
+  workers: Record<string, DiLoCoWorkerStatus>,
+): GroupView[] {
+  const groups: Record<string, GroupView> = {};
+  for (const wid of Object.keys(workers)) {
+    const ppMatch = wid.match(/^(.+)_pp(\d+)$/);
+    const groupId = ppMatch ? ppMatch[1] : wid;
+    const ppRank = ppMatch ? parseInt(ppMatch[2], 10) : 0;
+    if (!groups[groupId]) {
+      groups[groupId] = {
+        groupId,
+        members: [],
+        isPipelineGroup: false,
+      };
+    }
+    groups[groupId].members.push({ workerId: wid, ppRank });
+    if (ppMatch) groups[groupId].isPipelineGroup = true;
+  }
+  for (const g of Object.values(groups)) {
+    g.members.sort((a, b) => a.ppRank - b.ppRank);
+  }
+  return Object.values(groups).sort((a, b) =>
+    a.groupId.localeCompare(b.groupId),
+  );
+}
+
+/** Aggregator card for a DiLoCo worker group.
+ *
+ *  Solo workers (single member, no ``_pp<N>`` suffix on their worker_id)
+ *  render as a plain ``WorkerCard`` — preserves the pre-#84 panel layout
+ *  exactly. Pipeline groups (multiple members) render as a compact
+ *  header summarising the canonical (pp_rank=0) stats with a ``PP×N``
+ *  badge and an expand caret; expanded, each rank's full ``WorkerCard``
+ *  is shown below.
+ *
+ *  Atomic group eviction (server-side) means kicking any one member
+ *  takes the whole group down, so the group header's Kick button just
+ *  targets pp_rank=0; per-rank Kick buttons stay inside each expanded
+ *  ``WorkerCard`` for diagnostic use. The trainer-protocol controls
+ *  (Save / Stop / Abort) act on the shared job, so they're emitted
+ *  once on the group header instead of per-rank. */
+function GroupCard({
+  baseUrl,
+  group,
+  workers,
+  heartbeatTimeout,
+  job,
+  refreshSeconds,
+}: {
+  baseUrl: string;
+  group: GroupView;
+  workers: Record<string, DiLoCoWorkerStatus>;
+  heartbeatTimeout: number | undefined;
+  job: Job | null;
+  refreshSeconds: number;
+}) {
+  // Solo case: identical to pre-#84 rendering. WorkerCard owns the
+  // full layout; no per-group affordances added.
+  if (!group.isPipelineGroup) {
+    const m = group.members[0];
+    return (
+      <WorkerCard
+        baseUrl={baseUrl}
+        workerId={m.workerId}
+        workerStatus={workers[m.workerId]}
+        heartbeatTimeout={heartbeatTimeout}
+        job={job}
+        refreshSeconds={refreshSeconds}
+      />
+    );
+  }
+
+  // Pipeline group: one canonical row + optional expand.
+  const queryClient = useQueryClient();
+  const [expanded, setExpanded] = useState(false);
+
+  const canonicalMember = group.members[0];
+  const canonical = workers[canonicalMember.workerId];
+
+  // Worst-case (oldest) heartbeat across all ranks — surfaces a
+  // straggler before the group is evicted.
+  const oldestHeartbeat = Math.min(
+    ...group.members.map((m) => workers[m.workerId].last_heartbeat ?? Infinity),
+  );
+
+  const jobStatusQ = useQuery({
+    queryKey: ["jobs", "status", job?.job_id],
+    queryFn: () => api.jobStatus(job!.job_id!),
+    enabled: !!job?.job_id && !!job?.alive,
+    refetchInterval: refreshSeconds * 1000,
+    refetchIntervalInBackground: false,
+  });
+
+  // Group-level Kick targets pp_rank=0; atomic eviction takes the rest.
+  const kickMutation = useMutation({
+    mutationFn: () =>
+      api.diLoCoServerControl(baseUrl, "kick_worker", {
+        worker_id: canonicalMember.workerId,
+      }),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["diloco", "status", baseUrl] });
+    },
+  });
+
+  const jobControlMutation = useMutation({
+    mutationFn: (action: ControlAction) => api.jobControl(job!.job_id!, action),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({
+        queryKey: ["jobs", "status", job?.job_id],
+      });
+    },
+  });
+
+  const canControlJob = !!job?.job_id && !!job?.alive && job.job_type === "training";
+  const stats = jobStatusQ.data ?? null;
+  const ppN = group.members.length;
+
+  return (
+    <div
+      style={{
+        borderTop: "1px solid var(--border, #2a2a2a)",
+        padding: "10px 14px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+      }}
+    >
+      {/* Group header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <button
+          className="tiny"
+          onClick={() => setExpanded((e) => !e)}
+          title={expanded ? "Collapse per-rank diagnostics" : "Expand per-rank diagnostics"}
+          style={{
+            width: 20,
+            padding: "0 4px",
+            fontFamily: "monospace",
+          }}
+        >
+          {expanded ? "▾" : "▸"}
+        </button>
+        <span
+          title={`Group health: oldest heartbeat among ${ppN} ranks`}
+          style={{
+            display: "inline-block",
+            width: 10,
+            height: 10,
+            borderRadius: "50%",
+            background: workerHealthColor(oldestHeartbeat, heartbeatTimeout),
+          }}
+        />
+        <code title={group.groupId} style={{ fontFamily: "monospace", fontSize: 12 }}>
+          {truncId(group.groupId)}
+        </code>
+        <span
+          className="muted"
+          style={{
+            fontSize: 11,
+            padding: "1px 6px",
+            borderRadius: 3,
+            background: "var(--bg-surface, #24283b)",
+            border: "1px solid var(--border, #3b4261)",
+          }}
+          title={`${ppN} pipeline ranks`}
+        >
+          PP×{ppN}
+        </span>
+        <span className="muted" style={{ fontSize: 12 }}>
+          Round <b style={{ color: "var(--text, inherit)" }}>{canonical.sync_round ?? 0}</b>
+        </span>
+        {canonical.steps_per_second !== undefined &&
+          canonical.steps_per_second > 0 && (
+            <span className="muted" style={{ fontSize: 12 }}>
+              {canonical.steps_per_second.toFixed(2)} steps/s
+            </span>
+          )}
+        <span className="muted" style={{ fontSize: 12 }}>
+          hb {relativeAge(oldestHeartbeat)}
+        </span>
+        <span style={{ flex: 1 }} />
+        <button
+          className="tiny"
+          onClick={() => {
+            if (
+              window.confirm(
+                `Kick group ${group.groupId}? All ${ppN} pipeline ranks will be evicted (atomic group eviction).`,
+              )
+            )
+              kickMutation.mutate();
+          }}
+          disabled={kickMutation.isPending}
+          title="Force-evict this group from the DiLoCo server"
+        >
+          Kick group
+        </button>
+      </div>
+
+      {stats && <JobStatsRow stats={stats} />}
+      {!job && (
+        <div className="muted" style={{ fontSize: 11 }}>
+          No correlated forgather job — training-side stats and controls
+          unavailable. (Worker may have been spawned outside the webui;
+          set --diloco-worker-id = the job's queue_id to enable
+          correlation.)
+        </div>
+      )}
+
+      {canControlJob && (
+        <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap" }}>
+          <button
+            className="tiny"
+            onClick={() => jobControlMutation.mutate("save")}
+            disabled={jobControlMutation.isPending}
+            title="Request a checkpoint save without stopping training"
+          >
+            Save checkpoint
+          </button>
+          <button
+            className="tiny"
+            onClick={() => {
+              if (
+                window.confirm(
+                  `Save final checkpoint and stop group ${group.groupId}?`,
+                )
+              )
+                jobControlMutation.mutate("save-stop");
+            }}
+            disabled={jobControlMutation.isPending}
+            title="Save a final checkpoint, then stop training cleanly"
+          >
+            Save &amp; Stop
+          </button>
+          <button
+            className="tiny"
+            style={{ color: "tomato" }}
+            onClick={() => {
+              if (
+                window.confirm(
+                  `Abort training on group ${group.groupId}? Any unsaved progress is lost.`,
+                )
+              )
+                jobControlMutation.mutate("abort");
+            }}
+            disabled={jobControlMutation.isPending}
+            title="Stop training immediately without saving"
+          >
+            Abort
+          </button>
+        </div>
+      )}
+
+      {/* Expanded per-rank diagnostics */}
+      {expanded && (
+        <div
+          style={{
+            marginTop: 4,
+            paddingLeft: 12,
+            borderLeft: "2px solid var(--border, #3b4261)",
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          {group.members.map((m) => (
+            <WorkerCard
+              key={m.workerId}
+              baseUrl={baseUrl}
+              workerId={m.workerId}
+              workerStatus={workers[m.workerId]}
+              heartbeatTimeout={heartbeatTimeout}
+              // Per-rank cards still need the job for the JobStatsRow,
+              // but its trainer-protocol buttons are redundant with
+              // the group header's (same job; the user clicks once on
+              // the header). The control buttons render iff
+              // ``canControlJob`` — keeping them lets the user see
+              // per-rank job lookup status without changing semantics.
+              job={job}
+              refreshSeconds={refreshSeconds}
+            />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
