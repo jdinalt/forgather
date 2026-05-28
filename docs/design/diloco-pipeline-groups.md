@@ -253,6 +253,13 @@ The `trainer` kwarg is already threaded through callbacks by
 
 ## Out of scope / future work
 
+- **Security model.** The DiLoCo server's HTTP wire is unauthenticated
+  (trusted-LAN model). A worker can claim any `group_id` / `pp_rank`
+  without verification; pipeline-group membership is operator-
+  conventional, not enforced. The unsealed-group and ghost-worker
+  guards in this PR protect against accidental misuse but not against
+  a network adversary. Authentication, audit logging, and identity-
+  bound group membership are tracked in issue #90.
 - **Pipeline + within-stage DDP composition.** Each pipeline rank
   could itself wrap its stage modules with `DistributedDataParallel`,
   giving a 2-D rank topology (`pp_world_size × dp_world_size`). The

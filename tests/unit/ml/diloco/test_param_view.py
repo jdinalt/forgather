@@ -236,10 +236,11 @@ def test_pipeline_view_apply_global_silently_skips_other_ranks_names():
 # ---------------------------------------------------------------------------
 
 
-def test_simple_view_surfaces_tied_aliases():
-    """``remove_duplicate=False`` surfaces both names of a tied pair.
-    After ``apply_global`` to one alias, the other is updated too —
-    they share storage."""
+def test_simple_view_dedupes_tied_aliases():
+    """``SimpleModelParamView`` uses ``remove_duplicate=True`` so a tied
+    pair surfaces under only the canonical name. This preserves
+    compatibility with HF/safetensors checkpoints that store aliases
+    only once."""
     a = nn.Linear(4, 8, bias=False)
     b = nn.Linear(4, 8, bias=False)
     b.weight = a.weight  # tied weights
@@ -250,11 +251,36 @@ def test_simple_view_surfaces_tied_aliases():
 
     view = SimpleModelParamView(wrapper)
     names = list(view.param_shapes().keys())
+    # Only ONE of the alias names appears (PyTorch picks the first
+    # registered name as canonical).
+    assert "a.weight" in names
+    assert "b.weight" not in names
+
+    # Applying a new value to the canonical name still updates both
+    # underlying tensors (they share storage).
+    new_val = torch.full_like(a.weight, 9.0)
+    view.apply_global({"a.weight": new_val})
+    assert torch.allclose(a.weight.data, new_val)
+    assert torch.allclose(b.weight.data, new_val)
+
+
+def test_pipeline_view_surfaces_tied_aliases():
+    """``PipelineParamView`` uses ``remove_duplicate=False`` to match
+    the pipeline trainer's checkpoint format. Within a single stage
+    that holds both aliases, both names surface and share storage."""
+    a = nn.Linear(4, 8, bias=False)
+    b = nn.Linear(4, 8, bias=False)
+    b.weight = a.weight  # tied weights
+
+    stage = nn.Module()
+    stage.a = a
+    stage.b = b
+
+    view = PipelineParamView([stage])
+    names = list(view.param_shapes().keys())
     assert "a.weight" in names and "b.weight" in names
 
-    # Applying a new value to "a.weight" propagates to "b.weight" via
-    # the shared storage — the iterator sees both names but the
-    # underlying tensor is one.
+    # apply_global to one alias updates both via shared storage.
     new_val = torch.full_like(a.weight, 9.0)
     view.apply_global({"a.weight": new_val})
     assert torch.allclose(a.weight.data, new_val)

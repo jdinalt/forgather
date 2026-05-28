@@ -808,7 +808,14 @@ class DiLoCoServer:
 
             expected = self._get_expected_worker_count()
 
-            if expected > 0 and self._round_complete():
+            # Only release the barrier if there's actually something to
+            # apply. After a whole-group eviction the expected set and
+            # pending dict can both be empty, in which case ``issubset``
+            # trivially returns True — we'd stamp a stale-state
+            # ``_completed_rounds`` entry that future waiters could
+            # block on. Gate on non-empty pending so the eviction path
+            # cleanly defers to the next live submission.
+            if expected > 0 and self._pending_pseudograds and self._round_complete():
                 # Enough workers have submitted - release the barrier
                 my_round = self._sync_round
                 self._apply_outer_optimizer()
@@ -854,10 +861,28 @@ class DiLoCoServer:
         This ensures faster workers contribute more updates while slower workers
         don't become bottlenecks.
 
-        Returns None if not enough speed data is available.
+        **Disabled under pipeline groups (issue #84):** in sync mode all
+        ranks of a group must reach the barrier at the same local step.
+        Per-rank DyLU adjustments would push ranks to different
+        ``sync_every`` values and the barrier would never release. The
+        server returns ``None`` for any worker belonging to a
+        ``pp_world_size > 1`` group; the worker's heartbeat handler
+        then skips the adjustment.
+
+        Returns None if not enough speed data is available, the server
+        runs in sync mode, or the worker is in a pipeline group.
         """
         if not self.dylu_enabled:
             return None
+        # Sync-mode + group-aware barrier requires lockstep sync_every.
+        if not self.async_mode:
+            return None
+        with self._workers_lock:
+            group_id = self._worker_to_group.get(worker_id)
+            if group_id is not None:
+                group = self._groups.get(group_id)
+                if group is not None and group.pp_world_size > 1:
+                    return None
 
         with self._workers_lock:
             speeds = {
@@ -923,7 +948,7 @@ class DiLoCoServer:
             if mismatch is not None:
                 _send_json_response(
                     handler,
-                    {"error": mismatch, "kind": "model_mismatch"},
+                    {"error": mismatch, "kind": "slice_mismatch"},
                     422,
                 )
                 return
@@ -1286,6 +1311,10 @@ class DiLoCoServer:
         ``None`` when the worker has no slice metadata (legacy / test
         path that omitted ``param_shapes`` at register time). Caller
         treats that as "any submission with no extras is acceptable".
+
+        Lock invariant: this helper acquires ``_workers_lock`` itself
+        and must NOT be called from inside another ``_workers_lock``
+        critical section.
         """
         with self._workers_lock:
             group_id = self._worker_to_group.get(worker_id)
@@ -1299,6 +1328,29 @@ class DiLoCoServer:
                     names = group.member_param_names.get(pp_rank)
                     return set(names) if names else None
         return None
+
+    def _worker_group_sealed(self, worker_id: str) -> Optional[bool]:
+        """Return whether the worker's owning group is sealed.
+
+        Returns ``None`` when the worker is unknown (already evicted or
+        never registered). Returns ``True`` for solo groups (sealed at
+        registration) and for pipeline groups with all members
+        registered; ``False`` for partial pipeline groups.
+
+        Used by the submit / heartbeat paths to refuse submissions
+        from unsealed groups (correctness — only sealed groups have a
+        verified-cover slice union) and from ghost worker_ids (workers
+        whose group was atomically evicted but whose HTTP client is
+        still alive).
+        """
+        with self._workers_lock:
+            if worker_id not in self._workers:
+                return None
+            group_id = self._worker_to_group.get(worker_id)
+            if group_id is None:
+                return None
+            group = self._groups.get(group_id)
+            return group.sealed if group is not None else None
 
     def _round_complete(self) -> bool:
         """True iff every expected worker has submitted for this round.
@@ -1331,6 +1383,42 @@ class DiLoCoServer:
 
         worker_id = header["worker_id"]
         pseudograds = _deserialize_state_dict(tensor_data)
+
+        # Reject ghost worker_ids: a worker whose group was atomically
+        # evicted but whose HTTP client is still alive could otherwise
+        # silently re-inject pseudograds into the next round
+        # (``_round_complete`` uses ``issubset`` which tolerates extras,
+        # and per-name aggregation picks them up). Pre-#89 a missing
+        # worker_id was silently accepted into ``_pending_pseudograds``.
+        sealed = self._worker_group_sealed(worker_id)
+        if sealed is None:
+            _send_json_response(
+                handler,
+                {
+                    "error": (
+                        f"worker_id '{worker_id}' is not registered; "
+                        f"if its group was atomically evicted, the "
+                        f"worker should re-register or exit."
+                    ),
+                    "kind": "unknown_worker",
+                },
+                404,
+            )
+            return
+        if not sealed:
+            _send_json_response(
+                handler,
+                {
+                    "error": (
+                        f"worker_id '{worker_id}' belongs to an unsealed "
+                        f"group; submissions are accepted only after all "
+                        f"pp_world_size members have registered."
+                    ),
+                    "kind": "group_unsealed",
+                },
+                409,
+            )
+            return
 
         # Validate parameter names match
         error = self._validate_pseudograd_params(worker_id, pseudograds)
@@ -1443,6 +1531,30 @@ class DiLoCoServer:
         fragment_id = header["fragment_id"]
         pseudograds = _deserialize_state_dict(tensor_data)
 
+        # Ghost / unsealed-group rejection (same gate as the full-sync
+        # submit path).
+        sealed = self._worker_group_sealed(worker_id)
+        if sealed is None:
+            _send_json_response(
+                handler,
+                {
+                    "error": (f"worker_id '{worker_id}' is not registered"),
+                    "kind": "unknown_worker",
+                },
+                404,
+            )
+            return
+        if not sealed:
+            _send_json_response(
+                handler,
+                {
+                    "error": (f"worker_id '{worker_id}' belongs to an unsealed group"),
+                    "kind": "group_unsealed",
+                },
+                409,
+            )
+            return
+
         # Validate all submitted param names exist in the global model
         unknown = set(pseudograds.keys()) - set(self._param_names)
         if unknown:
@@ -1456,6 +1568,31 @@ class DiLoCoServer:
             logger.error(error)
             _send_json_response(handler, {"error": error}, 400)
             return
+
+        # Slice-membership validation (consistent with full-sync path):
+        # the fragment's submitted names must be a subset of the
+        # worker's registered slice. Without this a rank could spoof
+        # updates to names outside its slice and silently corrupt
+        # another rank's parameters.
+        expected = self._slice_expectation_for(worker_id)
+        if expected is not None:
+            outside_slice = set(pseudograds.keys()) - expected
+            if outside_slice:
+                sample = sorted(outside_slice)[:5]
+                _send_json_response(
+                    handler,
+                    {
+                        "error": (
+                            f"Fragment {fragment_id} from worker "
+                            f"{worker_id} contains {len(outside_slice)} "
+                            f"name(s) outside this rank's registered "
+                            f"slice: {sample}"
+                            f"{'...' if len(outside_slice) > 5 else ''}"
+                        )
+                    },
+                    400,
+                )
+                return
 
         if self.async_mode:
             self._handle_submit_fragment_async(
@@ -1615,10 +1752,26 @@ class DiLoCoServer:
         worker_id = info["worker_id"]
 
         with self._workers_lock:
-            if worker_id in self._workers:
-                self._workers[worker_id].last_heartbeat = time.time()
-                if "steps_per_second" in info:
-                    self._workers[worker_id].steps_per_second = info["steps_per_second"]
+            if worker_id not in self._workers:
+                # Ghost worker: its group was atomically evicted but
+                # this HTTP client is still alive. Tell it explicitly
+                # so it stops sending heartbeats (and stops re-injecting
+                # pseudograds — see the submit handlers' same guard).
+                _send_json_response(
+                    handler,
+                    {
+                        "error": (
+                            f"worker_id '{worker_id}' is not registered; "
+                            f"re-register or exit."
+                        ),
+                        "kind": "unknown_worker",
+                    },
+                    404,
+                )
+                return
+            self._workers[worker_id].last_heartbeat = time.time()
+            if "steps_per_second" in info:
+                self._workers[worker_id].steps_per_second = info["steps_per_second"]
 
         # Compute DyLU recommendation if enabled
         recommended_sync_every = self._compute_dylu_sync_every(worker_id)

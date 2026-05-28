@@ -114,7 +114,7 @@ def test_shape_mismatch_returns_422(server):
         _raw_register(server, "alpha", bad)
     assert exc_info.value.code == 422
     body = json.loads(exc_info.value.read().decode("utf-8"))
-    assert body["kind"] == "model_mismatch"
+    assert body["kind"] == "slice_mismatch"
     assert "layer.weight" in body["error"]
     assert "[4, 8]" in body["error"]
     assert "[4, 4]" in body["error"]

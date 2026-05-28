@@ -18,15 +18,26 @@ Two implementations:
   stores on ``trainer.pipeline_modules``. Each rank's slice is
   exposed independently; the worker submits only its rank's slice.
 
-Tied-parameter handling. Both views use
-``named_parameters(remove_duplicate=False)`` so that tied / aliased
-parameter names all appear in the iteration. This matches the
-server's parameter storage (built from ``model_state_dict.values()``
-with ``.clone()`` per slot, which gives independent storage even for
-aliased names). Submitting all aliases lets the server keep aliased
-slots in sync without divergence — important when the server is
-loaded from a pipeline-trained checkpoint (which writes aliases via
-``make_state_dict(remove_duplicate=False)``).
+Tied-parameter handling.
+
+  - ``SimpleModelParamView`` uses ``remove_duplicate=True`` (PyTorch
+    default) so tied parameters submit once under the canonical name.
+    Compatible with HF/safetensors checkpoints, where the server's
+    ``_param_names`` is the deduplicated set.
+  - ``PipelineParamView`` uses ``remove_duplicate=False`` to match
+    the pipeline trainer's checkpoint format
+    (``make_state_dict(remove_duplicate=False)`` at
+    ``pipeline_trainer.py:783``), where the server's ``_param_names``
+    contains aliases. Within a single rank, ``retie_parameters``
+    ensures aliases share storage so ``apply_global`` to one name
+    updates all. Across ranks (alias on stage 0, alias on stage N),
+    storage is NOT shared; each rank computes its own pseudo-gradient
+    for its alias and the server's per-name averaging blends them —
+    which is harmless for truly tied params (the pre-image is shared,
+    so the local pseudo-gradients tend to be identical) but masks a
+    real bug if the same name is held by two ranks for unrelated
+    reasons. The seal-time coverage check doesn't distinguish these
+    cases; a follow-up may add an explicit sharing-metadata block.
 """
 
 from __future__ import annotations
@@ -97,15 +108,29 @@ class SimpleModelParamView(ParamView):
 
     Pre-#84 behavior of DiLoCoWorker. Used when no pipeline trainer is
     detected — single-GPU, DDP, FSDP2, etc.
+
+    Uses ``remove_duplicate=True`` (the PyTorch default) so tied
+    parameters submit once under the canonical name. This preserves
+    compatibility with HF/safetensors checkpoints (and any other
+    ``state_dict`` saved with the default ``remove_duplicate=True``),
+    where the server's ``_param_names`` is the deduplicated set. Sending
+    both alias names would surface as "missing on server" → 422 from
+    the slice fingerprint check.
+
+    The flip side: a server initialized from a pipeline-trained
+    checkpoint (``make_state_dict(remove_duplicate=False)``) has BOTH
+    alias slots, and a solo worker submitting only the canonical name
+    leaves the aliased slot un-updated. This is a known limitation of
+    the cross-mode (solo worker ↔ pipeline-saved checkpoint) path;
+    workers running under a pipeline trainer use ``PipelineParamView``
+    which submits the full alias set.
     """
 
     def __init__(self, model: nn.Module):
         self.model = model
 
     def named_parameters(self) -> Iterator[Tuple[str, torch.Tensor]]:
-        # remove_duplicate=False so tied / aliased names all appear.
-        # See module docstring for rationale.
-        yield from self.model.named_parameters(remove_duplicate=False)
+        yield from self.model.named_parameters()
 
     def param_shapes(self) -> Dict[str, List[int]]:
         return {name: list(p.shape) for name, p in self.named_parameters()}

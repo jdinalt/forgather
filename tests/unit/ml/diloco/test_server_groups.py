@@ -377,6 +377,165 @@ def test_partial_group_then_death_removes_partial(server):
 # ---------------------------------------------------------------------------
 
 
+def _submit_fragment(
+    server: DiLoCoServer, worker_id: str, fragment_id: int, names: List[str]
+):
+    """Submit a fragment pseudograd carrying ``names`` (zeros, fp32)."""
+    import struct
+
+    header = {"worker_id": worker_id, "fragment_id": fragment_id}
+    header_bytes = json.dumps(header).encode("utf-8")
+    tensors = {name: torch.zeros(4, 4, dtype=torch.float32) for name in names}
+    import io as _io
+
+    buf = _io.BytesIO()
+    torch.save(tensors, buf)
+    tensor_bytes = buf.getvalue()
+    body = struct.pack("!I", len(header_bytes)) + header_bytes + tensor_bytes
+    req = urllib.request.Request(
+        f"http://localhost:{server.port}/submit_fragment_pseudograd",
+        data=body,
+        headers={"Content-Type": "application/octet-stream"},
+        method="POST",
+    )
+    return urllib.request.urlopen(req, timeout=10)
+
+
+def test_fragments_with_groups_per_worker_response(server):
+    """Each rank in a pipeline group fragments its own slice; the
+    per-fragment barrier releases when every rank has submitted
+    fragment_id_k. Each rank receives back only the names it
+    submitted (its slice's portion of the fragment) — verified by
+    asserting the per-worker keyed _completed_fragment_rounds entry
+    exists for each rank after the barrier releases."""
+    _register(
+        server,
+        "alpha_pp0",
+        _slice_a(),
+        {"group_id": "alpha", "pp_rank": 0, "pp_world_size": 2},
+    )
+    _register(
+        server,
+        "alpha_pp1",
+        _slice_b(),
+        {"group_id": "alpha", "pp_rank": 1, "pp_world_size": 2},
+    )
+
+    import threading
+
+    results: Dict[str, int] = {}
+
+    def submit(worker_id, names):
+        resp = _submit_fragment(server, worker_id, 0, names)
+        results[worker_id] = resp.status
+
+    # Submit both ranks' fragment 0 in parallel so the barrier
+    # serialization is exercised.
+    t0 = threading.Thread(
+        target=submit, args=("alpha_pp0", ["layer_0.weight", "layer_1.weight"])
+    )
+    t1 = threading.Thread(
+        target=submit, args=("alpha_pp1", ["layer_2.weight", "layer_3.weight"])
+    )
+    t0.start()
+    t1.start()
+    t0.join(timeout=10)
+    t1.join(timeout=10)
+
+    assert results == {"alpha_pp0": 200, "alpha_pp1": 200}
+    # The per-worker keyed completed-fragment-round entry must exist
+    # and contain BOTH workers' per-slice responses.
+    assert (0, 0) in server._completed_fragment_rounds
+    per_worker = server._completed_fragment_rounds[(0, 0)]
+    assert set(per_worker.keys()) == {"alpha_pp0", "alpha_pp1"}
+    assert set(per_worker["alpha_pp0"].keys()) == {"layer_0.weight", "layer_1.weight"}
+    assert set(per_worker["alpha_pp1"].keys()) == {"layer_2.weight", "layer_3.weight"}
+
+
+# ---------------------------------------------------------------------------
+# Unsealed-group / ghost-worker guards (submit / heartbeat)
+# ---------------------------------------------------------------------------
+
+
+def test_submit_rejected_for_unsealed_group(server):
+    """A rank that has registered but whose group hasn't sealed yet
+    cannot submit pseudograds — the barrier would otherwise admit a
+    partial-group contribution."""
+    import struct
+
+    _register(
+        server,
+        "alpha_pp0",
+        _slice_a(),
+        {"group_id": "alpha", "pp_rank": 0, "pp_world_size": 2},
+    )
+    # Rank 1 hasn't registered → group not sealed.
+    header = {"worker_id": "alpha_pp0"}
+    header_bytes = json.dumps(header).encode("utf-8")
+    import io as _io
+
+    buf = _io.BytesIO()
+    torch.save(
+        {name: torch.zeros(4, 4) for name in _slice_a()},
+        buf,
+    )
+    body = struct.pack("!I", len(header_bytes)) + header_bytes + buf.getvalue()
+    req = urllib.request.Request(
+        f"http://localhost:{server.port}/submit_pseudograd",
+        data=body,
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(req, timeout=5)
+    assert exc.value.code == 409
+    body_err = json.loads(exc.value.read().decode("utf-8"))
+    assert body_err["kind"] == "group_unsealed"
+
+
+def test_submit_rejected_for_ghost_worker(server):
+    """An evicted worker_id (group atomically evicted but client still
+    alive) cannot continue submitting — the registry now refuses 404."""
+    import struct
+
+    _register(server, "alpha", _full_shapes())
+    server._handle_worker_death("alpha")
+
+    header = {"worker_id": "alpha"}
+    header_bytes = json.dumps(header).encode("utf-8")
+    import io as _io
+
+    buf = _io.BytesIO()
+    torch.save({name: torch.zeros(4, 4) for name in _full_shapes()}, buf)
+    body = struct.pack("!I", len(header_bytes)) + header_bytes + buf.getvalue()
+    req = urllib.request.Request(
+        f"http://localhost:{server.port}/submit_pseudograd",
+        data=body,
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(req, timeout=5)
+    assert exc.value.code == 404
+    body_err = json.loads(exc.value.read().decode("utf-8"))
+    assert body_err["kind"] == "unknown_worker"
+
+
+def test_heartbeat_rejected_for_ghost_worker(server):
+    """A ghost worker's heartbeat must also be rejected so the client
+    knows to stop."""
+    _register(server, "alpha", _full_shapes())
+    server._handle_worker_death("alpha")
+
+    body = json.dumps({"worker_id": "alpha"}).encode("utf-8")
+    req = urllib.request.Request(
+        f"http://localhost:{server.port}/heartbeat",
+        data=body,
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(req, timeout=5)
+    assert exc.value.code == 404
+
+
 def test_tied_alias_across_slices_accepted(tmp_path):
     """A name shared across two slices (representing a tied parameter
     held on both stages — e.g. an embedding tied to a transposed-view

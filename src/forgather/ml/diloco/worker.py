@@ -172,6 +172,41 @@ class DiLoCoWorker:
             # group-of-one. Cross-pipeline-rank broadcast is a no-op
             # (different slices).
             self._is_leader = True
+            # Pipeline + within-stage DDP composition isn't supported
+            # by the forgather trainer today. If both are active, the
+            # worker would build a PipelineParamView covering this
+            # rank's slice while DDP would also try to broadcast
+            # post-sync params via NCCL — but each pipeline rank holds
+            # different parameter names, so the broadcast collective
+            # would mismatch and either deadlock or surface as an
+            # opaque NCCL error. Refuse the combo at construction time
+            # so the failure is loud. When pipeline+DDP composition
+            # lands later, this gate relaxes to "only refuse when the
+            # required pp_group plumbing is missing".
+            if self._is_dist and self._ddp_world_size > 1:
+                raise ValueError(
+                    f"DiLoCo + pipeline-parallel (pp_world_size="
+                    f"{self.pp_world_size}) is not yet compatible "
+                    f"with within-stage DDP (world_size="
+                    f"{self._ddp_world_size}). Use one process per "
+                    "pipeline rank without within-stage DDP, or wait "
+                    "for the pipeline+DDP composition to land."
+                )
+            # DyLU under pipeline groups would push ranks to different
+            # ``sync_every`` settings and break the group barrier
+            # (every rank must hit the sync boundary at the same
+            # local step). The server's ``_compute_dylu_sync_every``
+            # also gates on this, but failing at construction time
+            # gives the operator a clear single-process error rather
+            # than a silent wire-level skip.
+            if self.dylu:
+                raise ValueError(
+                    f"DiLoCo DyLU is not compatible with pipeline "
+                    f"groups (pp_world_size={self.pp_world_size}). "
+                    "Per-rank sync-every adjustments would desync "
+                    "the group's barrier. Disable --diloco-dylu or "
+                    "use a non-pipeline trainer."
+                )
         else:
             self._is_leader = self._ddp_rank == 0
 
