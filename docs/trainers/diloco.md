@@ -999,6 +999,53 @@ forgather diloco server -o ./model -n 4 --host 0.0.0.0
 DiLoCo view's Control card calls into) to any machine on the network.
 Only use this on trusted networks with appropriate firewall rules.
 
+## Pipeline parallel + DiLoCo
+
+When the training project uses `trainer_type: pipeline`, each pipeline
+rank only holds a slice of the model on-device — the standard
+`trainer.model` is a meta-device placeholder. DiLoCo's pre-#84
+contract (every worker holds the full model and submits whole-model
+pseudo-gradients) doesn't compose; the worker side and server side
+both need to be slice-aware.
+
+The current implementation (issue #84) treats each pipeline rank as
+its own DiLoCo worker:
+
+- The `DiLoCoCallback` detects the pipeline trainer via
+  `trainer.pipeline_modules` and constructs a `PipelineParamView` over
+  the rank's on-device stage modules.
+- The worker's `--diloco-worker-id` base (e.g. `alpha`) becomes
+  `alpha_pp0`, `alpha_pp1`, ... on the server — one entry per
+  pipeline rank.
+- The ranks form a `WorkerGroup`. The server verifies that the union
+  of all members' slices exactly covers its full parameter set, then
+  coordinates the per-rank submissions into one logical sync round.
+- Each rank submits only its own slice's pseudo-gradients; the server
+  applies the contributors per-name. Bandwidth scales as `slice_size
+  × pp_world_size`, equal to one full model per group.
+
+Streaming fragments (`num_fragments > 1`) compose with pipeline
+groups: each rank partitions its slice into N fragments; the server's
+per-fragment barrier waits for every rank's submission of each
+`fragment_id`.
+
+Currently out of scope (will fail at startup with a clear error):
+
+- **Async mode + pipeline groups**. Async barrier semantics with
+  disjoint slice contributions is fragile. Use sync mode (the default)
+  with pipeline trainers.
+- **Pipeline + within-stage DDP**. The forgather trainer does not
+  currently compose these. When it does, the `PipelineParamView`
+  plumbing will gain a `pp_group` argument so post-sync params can be
+  broadcast across the within-stage DDP sub-group.
+
+If a member of a pipeline group dies (heartbeat timeout or explicit
+deregister), the whole group is evicted atomically — a partial group
+can't produce valid pseudo-gradients. Other groups continue
+uninterrupted.
+
+See `docs/design/diloco-pipeline-groups.md` for the full design.
+
 ## References
 
 - Douillard et al., "DiLoCo: Distributed Low-Communication Training of Language Models" (2024)

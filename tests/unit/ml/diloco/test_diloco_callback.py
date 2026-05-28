@@ -247,6 +247,7 @@ class TestWorkerLifecycle:
             heartbeat_interval=30.0,
             num_fragments=1,
             max_sync_retries=3,
+            param_view=None,
         )
         mock_instance.start.assert_called_once()
         # Pre-probe should have happened first.
@@ -319,7 +320,89 @@ class TestWorkerLifecycle:
             heartbeat_interval=10.0,
             num_fragments=4,
             max_sync_retries=5,
+            param_view=None,
         )
+
+
+class TestPipelineDetection:
+    """Issue #84: when the trainer kwarg has ``pipeline_modules``, the
+    callback constructs a ``PipelineParamView`` and registers as one
+    rank of a ``pp_world_size``-sized group."""
+
+    @patch(_CLIENT_PATCH)
+    @patch(_WORKER_PATCH)
+    def test_pipeline_trainer_builds_param_view_and_group_kwargs(
+        self, MockWorker, MockClient
+    ):
+        mock_instance = MockWorker.return_value
+        mock_instance.sync_metrics = {}
+
+        # Fake pipeline trainer: only the attributes the callback reads.
+        fake_trainer = MagicMock()
+        fake_trainer.pipeline_modules = [TinyModel(), TinyModel()]
+        fake_trainer.sharing_metadata = []
+        fake_trainer.dist.rank = 1
+        fake_trainer.dist.world_size = 3
+
+        cb = DiLoCoCallback(server_addr="host:8512", worker_id="alpha")
+        args, state, control = _make_args(), _make_state(), _make_control()
+        model = TinyModel()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+        cb.on_train_begin(
+            args,
+            state,
+            control,
+            model=model,
+            optimizer=optimizer,
+            trainer=fake_trainer,
+        )
+
+        # Worker was constructed with a ParamView, group args, and a
+        # rank-suffixed worker_id derived from the operator's "alpha".
+        call_kwargs = MockWorker.call_args.kwargs
+        assert call_kwargs["worker_id"] == "alpha_pp1"
+        assert call_kwargs["group_id"] == "alpha"
+        assert call_kwargs["pp_rank"] == 1
+        assert call_kwargs["pp_world_size"] == 3
+        # PipelineParamView instance
+        from forgather.ml.diloco.param_view import PipelineParamView
+
+        assert isinstance(call_kwargs["param_view"], PipelineParamView)
+
+    @patch(_CLIENT_PATCH)
+    @patch(_WORKER_PATCH)
+    def test_non_pipeline_trainer_keeps_solo_path(self, MockWorker, MockClient):
+        """A trainer kwarg without ``pipeline_modules`` (or with it set
+        to None / empty) takes the solo-worker path: no ParamView, no
+        group kwargs."""
+        mock_instance = MockWorker.return_value
+        mock_instance.sync_metrics = {}
+
+        fake_trainer = MagicMock()
+        fake_trainer.pipeline_modules = None  # not a pipeline trainer
+
+        cb = DiLoCoCallback(server_addr="host:8512")
+        args, state, control = _make_args(), _make_state(), _make_control()
+        model = TinyModel()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+        cb.on_train_begin(
+            args,
+            state,
+            control,
+            model=model,
+            optimizer=optimizer,
+            trainer=fake_trainer,
+        )
+
+        call_kwargs = MockWorker.call_args.kwargs
+        # param_view stays None (worker will build a SimpleModelParamView)
+        assert call_kwargs["param_view"] is None
+        # No group kwargs (worker defaults to pp_world_size=1)
+        assert "group_id" not in call_kwargs
+        assert "pp_rank" not in call_kwargs
+        assert "pp_world_size" not in call_kwargs
 
 
 class TestMetricsInjection:

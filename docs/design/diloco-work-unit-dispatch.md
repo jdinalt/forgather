@@ -5,6 +5,9 @@
 revision 6) to move the wrap from the backend layer into
 ``ComposableIterableDataset``. User-facing docs:
 [`docs/trainers/diloco.md#work-unit-dispatch`](../trainers/diloco.md).
+Related design: [DiLoCo + pipeline parallel](./diloco-pipeline-groups.md)
+covers the per-rank-worker / `WorkerGroup` model used when each rank
+holds only a slice of the model.
 The design proposal below is kept as the rationale-of-record. A few
 details diverged from the proposal during implementation; the
 **Implementation notes** subsection at the end of each affected
