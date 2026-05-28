@@ -29,6 +29,7 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_datase
     fn_kwargs: !var "preprocess_args"
     map_fn: *map_function
     to_iterable: True
+    partition_purpose: "train"
 
 [eval_dataset]
 eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
@@ -37,6 +38,7 @@ eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@
     desc: "Tokenizing validation"
     fn_kwargs: !var "preprocess_args"
     map_fn: *map_function
+    partition_purpose: "eval"
 
 [test_dataset]
 test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@test_dataset
@@ -45,6 +47,7 @@ test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@
     desc: "Tokenizing test"
     fn_kwargs: !var "preprocess_args"
     map_fn: *map_function
+    partition_purpose: "eval"
 
 [dynamic_args]
     == super()

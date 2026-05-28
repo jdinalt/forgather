@@ -48,18 +48,21 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_datase
         map_fn: *map_function
     dataset: *train_dataset_split
     desc: "Tokenizing train"
+    partition_purpose: "train"
 
 [eval_dataset]
 eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
     <<: *common_dataset_args
     dataset: *validation_dataset_split
     desc: "Tokenizing validation"
+    partition_purpose: "eval"
 
 [test_dataset]
 test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@test_dataset
     <<: *common_dataset_args
     dataset: *validation_dataset_split
     desc: "Tokenizing test"
+    partition_purpose: "eval"
 
 [dynamic_args]
     == super()

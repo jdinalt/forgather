@@ -1,7 +1,9 @@
 # DiLoCo: Work-Unit Dispatch (Design Proposal — Implemented)
 
 **Status:** **implemented** as of the `feature/diloco-webui` work
-(May 2026). User-facing docs:
+(May 2026), revised in `feature/diloco-dataset-dispatch` (May 2026,
+revision 6) to move the wrap from the backend layer into
+``ComposableIterableDataset``. User-facing docs:
 [`docs/trainers/diloco.md#work-unit-dispatch`](../trainers/diloco.md).
 The design proposal below is kept as the rationale-of-record. A few
 details diverged from the proposal during implementation; the
@@ -10,27 +12,40 @@ chunk calls them out. The biggest deltas:
 
 - The operator-facing "Use work-unit dispatch" toggle / the
   `DILOCO_WORK_DISPATCH` env var (proposed as opt-in gates) were
-  ripped out before merging. Work-unit dispatch is unconditional
-  when `DILOCO_SERVER` is set on the worker process; the
-  template-internal `diloco_work_dispatch: False` kwarg is the
-  eval-bypass channel.
+  ripped out before merging. Dispatch is unconditional when
+  ``shard_dataset.method`` is set to ``"work_units"`` in the
+  template, which the project default selects whenever
+  ``DILOCO_SERVER`` is set (revision 6).
 - Work-queue persistence (Phase 1.3) was dropped after the
   first live bringup — the cross-experiment state-bleed footgun
   outweighed mid-epoch crash recovery value.
 - The server's `/register` got a structural fingerprint check
   during bringup, separate from the work-queue work but in the
   same PR — see `docs/trainers/diloco.md#model-fingerprint-check`.
+- **Revision 6**: work-unit dispatch now lives **inside**
+  ``ComposableIterableDataset`` (state + ``enable_work_dispatch``
+  method, applied by ``preprocess_dataset`` after slice/shard are
+  settled), not as an ``IterableDatasetBackend`` wrap below the
+  composable. The backend-layer placement (revision 5) couldn't see
+  the wrapper's slice bounds, so it dispatched over the full backend
+  and discarded the first N rows via a yield-counter trick — wasted
+  budget and percentage-slice incorrectness. It also couldn't compose
+  with DDP/FSDP ``.shard()`` for asymmetric topologies. The new
+  placement absorbs the slice into the ``dataset_id`` hash and lets
+  all DDP ranks across all DiLoCo hosts share one queue (replacing
+  conventional sharding entirely; the two are mutually exclusive via
+  the new ``shard_dataset.method`` config). See [Revision 6 details](#revision-6-composable-level-dispatch)
+  for the full delta.
 
-**Revision:** 5 (moves the worker-side wrap from
-``IterableDataset`` layer to the ``IterableDatasetBackend`` layer
-and from ``DiLoCoCallback`` to ``fast_load_iterable_dataset``.
-``StatefulDataLoader`` forbids post-init dataset mutation, and a
-wrap above ``ComposableIterableDataset`` would slice rows *after*
-the template's map / filter / merge layers — both wrong. The
-correct insertion point is at backend construction inside
-``fast_load_iterable_dataset``; the higher-level ``Composable``
-wrapper then sees a normal backend and composes its ops over the
-dispatched row stream).
+**Revision:** 6 (moves the dispatch from the
+``IterableDatasetBackend`` layer up into
+``ComposableIterableDataset``, applied by ``preprocess_dataset``
+after slice/shard are settled. The ``dataset_id`` hash absorbs
+slice bounds so two slices of the same source dataset get
+separate queues. ``shard_dataset.method`` config makes the
+partition choice (conventional vs work_units) explicit and rejects
+the two combinations that don't compose — work_units without DiLoCo
+and conventional sharding under DiLoCo (asymmetric-DDP row overlap)).
 **Supersedes:** the manual `--num-shards N --shard-index I` flow
 in `examples/tiny_experiments/diloco/` and
 `examples/base_lm_project/templates/configs/diloco.yaml`.
@@ -738,6 +753,108 @@ A run with this implemented should be observable as:
    pane. To recover, the operator either bumps `--diloco-worker-id`,
    waits for heartbeat eviction (if the first worker actually died),
    or POSTs `/deregister` explicitly.
+
+---
+
+## Revision 6: composable-level dispatch
+
+Revision 5 placed the wrap as an ``IterableDatasetBackend``
+(`WorkUnitBackend`) below ``ComposableIterableDataset``. Two real
+problems showed up in operator-facing use:
+
+1. **Slice math was wrong.** Operators routinely use
+   `split="train[10000:]"` to reserve the first N rows for eval.
+   The backend doesn't know about the wrapper's slice; it carved the
+   full N rows into K units. The composable's slice filter then
+   *discarded* the first 10000 dispatched rows by misusing
+   `WorkUnitBackend.position()` as a yield counter — a kludge
+   documented at length in the old code. Workers burned dispatch
+   budget on rows they immediately threw away, and percentage slices
+   ("train[:25%]") composed even worse.
+
+2. **DDP composition broke for asymmetric topologies.** Templates
+   call `ComposableIterableDataset.shard(world_size, rank)` for DDP.
+   With one host running DDPx4 and another DDPx8, per-rank shard
+   offsets overlap heavily — workers train on the same rows.
+   `WorkUnitBackend` couldn't fix this because shard hadn't been
+   applied yet when the wrap fired.
+
+The fix moves dispatch into the composable:
+
+- ``ComposableIterableDataset`` carries the load identity
+  (`_load_args`, stamped by the loaders) plus dispatch state
+  (`_wud_client`, `_wud_worker_id`, `_wud_registered` cache).
+- ``_iter_window`` branches: when dispatch is enabled, it lazily
+  registers the ``(dataset_id, effective_seed)`` pair with the
+  DiLoCo server and drives row emission from the work queue against
+  the **post-slice view bounds**. The yield-counter `position()`
+  trick is gone.
+- ``compute_dataset_id`` absorbs ``slice_start`` / ``slice_end`` so
+  two different slices of the same source dataset key separate
+  queues. Shard info is **not** absorbed (per the shared-queue model
+  below).
+- ``shard()`` and ``enable_work_dispatch()`` are mutually exclusive.
+  Either ordering raises with a clear message naming the
+  asymmetric-DDP failure that would result.
+
+**The shared-queue model.** Under DiLoCo, dispatch IS the
+partitioning. All DDP ranks across all DiLoCo hosts compete for
+units in one shared queue keyed only by ``(dataset_id, seed)``.
+Per-rank queues (the design's first instinct) were rejected because
+they fail asymmetric DDP — host A's `shard(4,0)` and host B's
+`shard(8,0)` cover overlapping rows, so even with separate queues
+the workers would train on the same data.
+
+**Operator config.** ``preprocess_dataset`` accepts a
+``shard_dataset.method`` field plus a per-dataset
+``partition_purpose: "train" | "eval"`` kwarg. The validity matrix
+splits per purpose: train requires cross-host coordination under
+DiLoCo (work_units is the only safe choice), eval is replicated
+across hosts so conventional sharding is fine and work_units makes
+no sense.
+
+`partition_purpose='train'`:
+
+| Config                            | `DILOCO_SERVER` unset | `DILOCO_SERVER` set |
+|-----------------------------------|----------------------|---------------------|
+| `False`                           | OK                   | OK                  |
+| `True` / `{method: conventional}` | OK                   | **error**            |
+| `{method: work_units}`            | **error**            | OK                  |
+
+`partition_purpose='eval'`:
+
+| Config                            | `DILOCO_SERVER` unset | `DILOCO_SERVER` set |
+|-----------------------------------|----------------------|---------------------|
+| `False`                           | OK                   | OK                  |
+| `True` / `{method: conventional}` | OK                   | OK (within-host DDP shard) |
+| `{method: work_units}`            | **error**            | **error**            |
+
+`lm_training_project.yaml` selects the right value automatically
+based on the env / Jinja vars. `load_dataset.yaml` stamps
+`partition_purpose` per-singleton (train→"train", eval/test→"eval");
+snowflake dataset templates do the same.
+
+**Eval under DiLoCo.** Eval is replicated across DiLoCo hosts (every
+host runs the full eval pass; metrics averaged across hosts), but
+within each host we want DDP sharding to split the eval workload
+across the DDP ranks of that host — otherwise every rank runs the
+full eval locally for an identical result, burning W× compute.
+``lm_training_project.yaml`` emits ``shard_dataset:
+{{ ns.dispatch_batches == False }}`` for eval unconditionally
+(True for vanilla DDP, False under dispatch_batches=True), and the
+eval-side validity check allows ``conventional + DiLoCo``.
+
+**Multi-epoch and `set_epoch`.** No special handling needed. The
+dispatch's lazy-register cache is keyed by
+``(dataset_id, effective_seed)``. ``set_epoch(N>0)`` changes the
+seed, so the cache misses and the composable registers a fresh
+queue with the new seed.
+
+**DataLoader `num_workers > 1`.** Allowed and correct (each forked
+worker gets its own ``DiLoCoClient``; server atomicity prevents
+double-issuance). Discouraged in operator docs because it
+multiplies connection count, reduces shuffle quality, and rarely
+helps throughput for iterable datasets in this codebase.
 
 ---
 

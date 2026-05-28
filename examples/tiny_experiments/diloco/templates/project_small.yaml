@@ -1,0 +1,24 @@
+-- extends "projects/small.yaml"
+-- set enable_diloco = True
+
+## Tiny Experiments / DiLoCo project — "small" variant.
+## ``enable_diloco = True`` forces template rendering as DiLoCo-enabled;
+## the parent (``small.yaml`` → ``tinyv2.yaml`` → ``lm_training_project.yaml``)
+## owns all the actual wiring.
+##
+## The ``small`` base sets ``trainer_type = "ddp"`` by default and uses
+## the Llama "small" model + Fineweb-Edu Packed. Leaf configs extending
+## this project can run as e.g. two DDPx2 hosts composed via DiLoCo —
+## exercising cross-host DiLoCo coordination on top of within-host DDP.
+##
+## NB: ``enable_diloco`` is a RENDER-TIME signal. Running this config
+## still requires ``DILOCO_SERVER`` to be set in the worker env
+## (preprocess_dataset's validity check rejects ``work_units`` without
+## it).
+
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DiLoCo Training (Small)"
+    -- set ns.config_description = "Small Llama with DiLoCo distributed local-SGD (DDPx2 per worker)"
+    -- set ns.log_name = "diloco_small"

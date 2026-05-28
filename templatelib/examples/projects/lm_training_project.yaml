@@ -1,4 +1,9 @@
 -- extends "training_script/causal_lm/causal_lm.yaml"
+{% from "mixins/diloco.yaml" import
+    callback_entry as dl_callback_entry,
+    dynamic_args as dl_dynamic_args
+    with context
+%}
 ## ---------------------------------------------------------------------------
 ## LM Training Project
 ##
@@ -317,6 +322,52 @@
         -- set ns.eval_dataset_config = ns.dataset_config
     -- endif
 
+    ## DiLoCo enabled? Single source of truth — referenced by the
+    ## conditional model construction below, the per-worker
+    ## output_dir suffix, the train-dataset partition-method gate in
+    ## [dataset_project], the DiLoCo callback gate in
+    ## [trainer_callbacks], and lm_callbacks.yaml's own DiLoCo
+    ## callback gate.
+    ##
+    ## Three signals OR'd:
+    ##   1. ``DILOCO_SERVER`` env var (set by the scheduler at worker
+    ##      spawn). This is the RUNTIME signal — actual DiLoCo runs
+    ##      always have it set.
+    ##   2. ``diloco_server`` Jinja var (from --diloco-server CLI or
+    ##      a leaf -- set). Mostly historical / cli-driven.
+    ##   3. ``enable_diloco`` Jinja var (from --enable-diloco CLI or
+    ##      a leaf -- set). RENDER-TIME diagnostic override: forces
+    ##      the template to render as DiLoCo-enabled so ``forgather
+    ##      pp/ls`` can show what the rendered config looks like
+    ##      under DiLoCo without spinning up a server. NB: this only
+    ##      affects rendering. Actually RUNNING the rendered config
+    ##      still requires DILOCO_SERVER to be set in the worker's
+    ##      env — preprocess_dataset's validity check rejects
+    ##      ``shard_dataset.method='work_units'`` if
+    ##      ``DILOCO_SERVER`` is unset at runtime.
+    -- set ns.diloco_is_enabled = getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server) or (enable_diloco is defined and enable_diloco)
+
+    ## Model load path. Default to this project's main model dir
+    ## (captured BEFORE the worker-id suffix gets appended below, so
+    ## all DiLoCo workers default to loading from the same shared
+    ## checkpoint while writing to per-worker output dirs).
+    ## Operators override via --model-id-or-path.
+    -- if model_id_or_path is defined and model_id_or_path
+        -- set ns.model_id_or_path = model_id_or_path
+    -- else
+        -- set ns.model_id_or_path = joinpath(ns.models_dir, ns.model_name)
+    -- endif
+
+    ## DiLoCo: per-worker output dir. When DILOCO_WORKER_ID is set
+    ## (the scheduler emits it whenever DiLoCo is enabled, with a
+    ## queue_id fallback), append it to model_name so each worker
+    ## gets a distinct on-disk directory. No-op for non-DiLoCo runs.
+    -- if getenv("DILOCO_WORKER_ID")
+        -- set ns.model_name = ns.model_name + "_" + getenv("DILOCO_WORKER_ID")
+        -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
+        -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
+    -- endif
+
     ## Convert M-token inputs to raw token counts
     -- set ns.total_tokens = ns.total_tokens * 1000 * 1000
     -- set ns.warmup_tokens = ns.warmup_tokens * 1000 * 1000
@@ -394,6 +445,8 @@
 # ns.global_lr: {{ ns.global_lr }}
 # ns.trainer_type: {{ ns.trainer_type }}
 # ns.trainer_class: {{ ns.trainer_class }}
+# ns.diloco_is_enabled: {{ "True" if ns.diloco_is_enabled else "False" }}
+# ns.model_id_or_path: {{ ns.model_id_or_path }}
 -- if ns.trainer_type == "pipeline"
 # Pipeline Parallel:
 # ns.stages_per_rank: {{ ns.stages_per_rank }}
@@ -426,7 +479,20 @@
     <<: &common_dataset_args
         preprocess_args: *tokenizer_args
         tokenizer: *tokenizer
-        shard_dataset: {{ ns.dispatch_batches == False }}
+    ## Train partitioning. Under DiLoCo: work-unit dispatch (server
+    ## hands out row ranges; all DDP ranks across all hosts share one
+    ## queue, so asymmetric DDPx4 / DDPx8 hosts compose cleanly).
+    ## Otherwise: conventional DDP shard when not dispatching batches.
+    ## NB: ``shard_dataset`` is intentionally a SIBLING of ``<<:`` (4
+    ## spaces, same as ``<<:`` itself) so it overrides any value the
+    ## merge would otherwise pull in — common_dataset_args no longer
+    ## carries shard_dataset because train and eval pick different
+    ## values under DiLoCo.
+    -- if ns.diloco_is_enabled
+    shard_dataset: { method: "work_units" }
+    -- else
+    shard_dataset: {{ ns.dispatch_batches == False }}
+    -- endif
 
     [eval_dataset_project]
 .define: &eval_dataset_dict !call:forgather:from_project
@@ -435,6 +501,16 @@
     targets: [ "eval_dataset" ]
     pp_kwargs: *eval_dataset_project_pp_args
     <<: *common_dataset_args
+    ## Eval partitioning is independent of DiLoCo. Eval is replicated
+    ## across DiLoCo workers (every host runs the full eval; metrics
+    ## are averaged across hosts) and we WANT within-host DDP
+    ## sharding to split the eval workload across the DDP ranks of
+    ## each host — without it, every DDP rank runs the full eval
+    ## locally, burning W× compute for an identical result.
+    ## ``partition_purpose: "eval"`` (stamped per-singleton by
+    ## load_dataset.yaml) lets preprocess_dataset's validity check
+    ## allow conventional + DiLoCo here without complaint.
+    shard_dataset: {{ ns.dispatch_batches == False }}
 
     [dataset_splits]
 train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]
@@ -447,21 +523,39 @@ eval_dataset: &eval_dataset !call:getitem [ *eval_dataset_dict, 'eval_dataset' ]
     attn_implementation: "{{ ns.attn_implementation }}"
 
 [construct_new_model]
+    ## Under DiLoCo, the include emits ``&tokenizer`` and ``&model``
+    ## directly from a pretrained checkpoint (every worker must start
+    ## from the same initial weights — newly-constructed models would
+    ## have different random initializations and DiLoCo's parameter
+    ## sync averages divergent states). The ``--model-id-or-path``
+    ## arg (or ``ns.model_id_or_path`` default) points at the
+    ## checkpoint. The sub-blocks below then emit nothing under DiLoCo
+    ## so the non-DiLoCo construct-via-model_project path is skipped.
+    -- if ns.diloco_is_enabled
+    -- include 'models/causal_lm/from_pretrained_config.yaml'
+    -- endif
+
     [model_project_pp_args]
+    -- if not ns.diloco_is_enabled
 .define: &model_project_pp_args
     output_dir: "{{ ns.output_dir }}"
+    -- endif
 
     [model_project]
+    -- if not ns.diloco_is_enabled
 .define: &model_dict !call:forgather:from_project
     project_dir: "{{ ns.model_project_dir }}"
     config_template: "{{ ns.model_project_config }}"
     targets: [ "pretrained_tokenizer", "model" ]
     pp_kwargs: *model_project_pp_args
     model_constructor_args: *model_constructor_args
+    -- endif
 
     [model_assets]
+    -- if not ns.diloco_is_enabled
 tokenizer: &tokenizer !call:getitem [ *model_dict, 'pretrained_tokenizer' ]
 model: &model !call:getitem [ *model_dict, 'model' ]
+    -- endif
 
 ## ===== Trainer ==============================================================
 ##
@@ -546,19 +640,61 @@ optimizer_groups: &optimizer_groups
             weight_decay: 0.0
         factory: *no_decay_optim
 
-## ===== CLI arguments ========================================================
+## ===== Callbacks (DiLoCo-only injection) ====================================
 ##
+## This project does NOT include ``callbacks/lm_callbacks.yaml`` —
+## that's a deliberate design choice so leaves can pick their own
+## callback set without inheriting the full LM suite (text-gen,
+## divergence detector, etc.). The parent (``causal_lm.yaml``)
+## supplies just the base loggers; leaves can override
+## ``[trainer_callbacks]`` to add lm_callbacks or anything else.
+##
+## However, the DiLoCo parameter-sync callback IS pulled in here
+## conditionally — it's the cross-cutting concern that pairs with
+## the work-unit dispatch, the worker-id suffix, and the
+## ``--diloco-*`` CLI args we already provide. Under DiLoCo the
+## callback is required; without it, the workers never sync.
+##
+## Mechanics: Forgather's ``[callback_list]`` block inheritance only
+## flows through ``-- extends`` chains, not across ``-- include``
+## boundaries, so we can't override [callback_list] at this scope.
+## Instead, when DiLoCo is enabled, the [trainer_callbacks] block
+## includes a sub-template (defined at the bottom of this file)
+## that extends loggers.yaml and appends the DiLoCo callback. Leaves
+## that override [trainer_callbacks] with their own callback set
+## (e.g. tinyv2.yaml uses lm_callbacks.yaml) shadow this gate — those
+## callback files have their own DiLoCo gate (lm_callbacks.yaml does)
+## so DiLoCo still flows in through that path.
+[trainer_callbacks]
+    -- if ns.diloco_is_enabled
+    -- include 'lm_training_project_diloco_loggers'
+    -- else
+    -- include 'callbacks/loggers.yaml'
+    -- endif
+
+
 [dynamic_args]
     == super()
+{{ dl_dynamic_args() }}
+    enable_diloco:
+        names: "--enable-diloco"
+        action: "store_true"
+        group: "DiLoCo"
+        help: "Render-time only: force the template to render as if DiLoCo were active. Useful for `forgather pp`/`ls` diagnostics. Actual runs still require DILOCO_SERVER to be set in the worker env (preprocess_dataset's validity check enforces it)."
+    model_id_or_path:
+        names: ["--model-id-or-path", "-M"]
+        type: path
+        group: "Model"
+        help: "HF model ID or local path to load the model FROM. Required under DiLoCo (every worker must start from the same checkpoint). For non-DiLoCo runs, defaults to the project's main model dir."
     model_project:
         names: "--model-project"
         type: path
         group: "Model"
-        help: "Path to model project for model initialization"
+        help: "Path to model project for model initialization (non-DiLoCo path)."
     model_config:
         names: "--model-config"
         group: "Model"
-        help: "Model project configuration for model init"
+        help: "Model project configuration for model init (non-DiLoCo path)."
     dataset_proj:
         names: "--dataset-project"
         type: path
@@ -799,3 +935,19 @@ optimizer_groups: &optimizer_groups
         action: "store_true"
         group: "Logging"
         help: "Show how parameters are mapped to optimizer param groups"
+
+
+#-------------------- lm_training_project_diloco_loggers --------------------
+## DiLoCo + loggers callback set. Extends the base loggers template
+## and appends the DiLoCo parameter-sync callback. Used by
+## ``[trainer_callbacks]`` above when DiLoCo is enabled. Kept minimal
+## — does NOT pull in lm_callbacks (text-gen, divergence detector,
+## etc.); leaves that want those override [trainer_callbacks] to
+## include lm_callbacks instead, and lm_callbacks itself has its own
+## DiLoCo gate so DiLoCo composes either way.
+-- extends 'callbacks/loggers.yaml'
+{% from "mixins/diloco.yaml" import callback_entry as dl_callback_entry with context %}
+
+[callback_list]
+    => super()
+{{ dl_callback_entry() }}

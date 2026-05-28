@@ -1,0 +1,16 @@
+-- extends "project_small.yaml"
+
+## DiLoCo with the "small" Llama base on Fineweb-Edu Packed.
+##
+## Sized for cross-host DiLoCo testing where each host runs DDPx2
+## (or larger) — exercises the shared work-unit dispatch queue
+## across asymmetric or symmetric DDP topologies. Each worker's
+## within-host parallelism is DDP; across-host coordination is
+## DiLoCo. The shared queue keyed by (dataset_id, shuffle_seed)
+## hands out work units to all DDP ranks across all DiLoCo hosts.
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DiLoCo Small"
+    -- set ns.config_description = "Small Llama with DiLoCo + DDP for multi-host testing"
+    -- set ns.log_name = "diloco_small"

@@ -79,6 +79,16 @@ class ComposableIterableDataset(TorchIterableDataset):
         If ``True``, reset input/output counters at the start of every
         new iteration. Default ``False`` (counters accumulate across
         passes).
+    load_args : dict, optional
+        The canonical load identity (``{path, name, split, data_files,
+        revision}``) the loader used to construct the backend. Stamped
+        by ``fast_load_iterable_dataset`` so view-aware features (DiLoCo
+        work-unit dispatch in particular) can compute a stable
+        ``dataset_id`` post-slice. ``split`` is the base split name —
+        any slice notation in the original argument is already absorbed
+        into the wrapper's ``_split_start_idx`` / ``_split_end_idx``.
+        Datasets constructed without a loader (e.g. tests, ad-hoc
+        backends) leave this ``None``.
     """
 
     def __init__(
@@ -86,6 +96,7 @@ class ComposableIterableDataset(TorchIterableDataset):
         backend: IterableDatasetBackend,
         length_estimate: str = "dynamic",
         reset_length_on_iter: bool = False,
+        load_args: Optional[Dict[str, Any]] = None,
     ):
         if length_estimate not in _LENGTH_MODES:
             raise ValueError(
@@ -133,6 +144,26 @@ class ComposableIterableDataset(TorchIterableDataset):
         # restored backend cursor and counts instead of resetting them.
         self._restored_from_checkpoint: bool = False
 
+        # Canonical load identity used to compute a stable dataset_id
+        # for work-unit dispatch. None when the dataset wasn't built by
+        # ``fast_load_iterable_dataset`` (e.g. tests).
+        self._load_args: Optional[Dict[str, Any]] = (
+            dict(load_args) if load_args is not None else None
+        )
+
+        # DiLoCo work-unit dispatch state. Set by ``enable_work_dispatch``;
+        # read by ``_iter_window``. None by default — non-DiLoCo runs see
+        # no behavioral change.
+        self._wud_client: Optional[Any] = None
+        self._wud_worker_id: Optional[str] = None
+        # Per-process cache: (dataset_id, shuffle_seed) -> K. Maps the
+        # composable's lazy first-iter register call to the K returned
+        # by the DiLoCo server, so subsequent iter passes against the
+        # same (id, seed) skip the round trip. Shared by reference
+        # across clones (a ``.map()`` on a dispatch-enabled dataset
+        # produces a sibling that sees the same registration).
+        self._wud_registered: Dict[Tuple[str, int], int] = {}
+
     # ----- Construction helpers -----
 
     def _clone(self, **overrides) -> "ComposableIterableDataset":
@@ -171,6 +202,15 @@ class ComposableIterableDataset(TorchIterableDataset):
         new._restored_from_checkpoint = overrides.get(
             "restored_from_checkpoint", self._restored_from_checkpoint
         )
+        # Load args and dispatch state propagate to clones unchanged. A
+        # ``.map()`` or ``.slice()`` on a dispatch-enabled dataset
+        # produces a derived dataset that dispatches the same way; the
+        # lazy-register cache is shared by reference so siblings don't
+        # each re-register the same (dataset_id, seed) pair.
+        new._load_args = overrides.get("load_args", self._load_args)
+        new._wud_client = overrides.get("wud_client", self._wud_client)
+        new._wud_worker_id = overrides.get("wud_worker_id", self._wud_worker_id)
+        new._wud_registered = overrides.get("wud_registered", self._wud_registered)
         return new
 
     # ----- Backend metadata pass-through -----
@@ -417,7 +457,21 @@ class ComposableIterableDataset(TorchIterableDataset):
         at ``index``. Logical sharding only — there is no ``mode``
         parameter at this layer; the backend may do whatever physical
         optimization it wants internally.
+
+        Raises when work-unit dispatch is already enabled: under DiLoCo
+        the dispatch *is* the partitioning, and per-rank shards would
+        cause asymmetric-DDP row overlap. Set
+        ``shard_dataset.method: conventional`` if you actually need
+        per-rank sub-division.
         """
+        if self._wud_client is not None:
+            raise RuntimeError(
+                "Cannot shard a dataset with DiLoCo work-unit dispatch "
+                "enabled — dispatch already partitions across DDP "
+                "ranks. To force per-rank sub-division (asymmetric DDP "
+                "across DiLoCo hosts is known-broken), set "
+                "shard_dataset.method: conventional in your config."
+            )
         if num_shards < 1:
             raise ValueError(f"num_shards must be >= 1, got {num_shards}")
         if not 0 <= index < num_shards:
@@ -528,33 +582,251 @@ class ComposableIterableDataset(TorchIterableDataset):
 
         return self.map(_filter_map, with_indices=with_indices)
 
+    # ----- DiLoCo work-unit dispatch -----
+
+    def enable_work_dispatch(
+        self,
+        client: Any,
+        worker_id: str,
+    ) -> "ComposableIterableDataset":
+        """Enable DiLoCo work-unit dispatch for subsequent iterations.
+
+        Stamps ``client`` and ``worker_id`` onto the wrapper. The first
+        ``__iter__`` for each ``(dataset_id, effective_shuffle_seed)``
+        pair calls ``client.register_dataset(...)`` once to obtain the
+        queue size K; the iteration then drives row emission from the
+        DiLoCo server's work queue instead of doing a sequential
+        ``_iter_window`` walk.
+
+        Must be called after slice / shard are settled — re-applying
+        slice/shard after dispatch would shift the row bounds the queue
+        was registered against. ``shard()`` after dispatch raises;
+        re-slicing is permitted but invalidates the lazy-register cache
+        for the new bounds (the next iter re-registers under a new
+        dataset_id).
+
+        Requires ``self._load_args`` to be set — the canonical hash
+        input that lets workers agree on a queue key without coordinating
+        through the server beyond ``/datasets/register``.
+
+        Parameters
+        ----------
+        client : DiLoCoClient
+            Connected DiLoCo client used for ``register_dataset`` /
+            ``request_work`` / ``complete_work``.
+        worker_id : str
+            This worker's DiLoCo identity (same value passed to
+            ``/register``; one per DDP job — DDP ranks share it).
+
+        Returns
+        -------
+        self
+            For chaining. Mutates in place — does not clone.
+        """
+        if self._load_args is None:
+            raise RuntimeError(
+                "enable_work_dispatch() requires the wrapper to carry "
+                "load_args. Datasets constructed without going through "
+                "fast_load_iterable_dataset can't participate in "
+                "work-unit dispatch — there's no canonical identity to "
+                "hash for the queue key."
+            )
+        if self._shard is not None:
+            raise RuntimeError(
+                "Cannot enable DiLoCo work-unit dispatch on a sharded "
+                "dataset: dispatch already partitions across all DDP "
+                "ranks. Apply work-unit dispatch BEFORE any shard() "
+                "call (or skip shard entirely under DiLoCo)."
+            )
+        self._wud_client = client
+        self._wud_worker_id = worker_id
+        return self
+
+    def _wud_dataset_id(self) -> str:
+        """Compute the canonical ``dataset_id`` for the current view.
+
+        Absorbs the load identity and the active slice bounds (so two
+        different slices of the same source dataset key separate
+        queues). Shard is **not** absorbed — all DDP ranks share one
+        queue under dispatch, which is the whole point.
+        """
+        from .dataset_id import compute_dataset_id
+
+        return compute_dataset_id(
+            **self._load_args,
+            slice_start=self._split_start_idx,
+            slice_end=self._split_end_idx,
+        )
+
+    def _wud_iter_window(
+        self,
+        backend: IterableDatasetBackend,
+        start: int,
+        end: int,
+    ) -> Iterator[Dict]:
+        """Dispatch-driven replacement for ``_iter_window``.
+
+        Loops: register-once (per id+seed) → request_work → seek
+        backend to per-unit start → yield up to ``u_end - u_start``
+        rows → complete_work → next request. Exits when the server
+        returns ``{exhausted: true}``.
+
+        Per-unit drain errors are swallowed (the unit is already
+        consumed from the server's bitmap; propagating would crash
+        training). ``request_work`` failures propagate.
+        """
+        L = end - start
+        if L <= 0:
+            return
+
+        dataset_id = self._wud_dataset_id()
+        seed = self._effective_buffer_seed()
+        key = (dataset_id, int(seed))
+
+        if key not in self._wud_registered:
+            # Build the hint the server stores for human-readable
+            # queue labels (path / name / split / revision / data_files).
+            hint: Dict[str, Any] = {"length": L}
+            for f in ("path", "name", "split", "revision"):
+                v = self._load_args.get(f)
+                if v:
+                    hint[f] = v
+            data_files = self._load_args.get("data_files")
+            if data_files:
+                hint["data_files"] = (
+                    [data_files] if isinstance(data_files, str) else list(data_files)
+                )
+            try:
+                reply = self._wud_client.register_dataset(
+                    worker_id=self._wud_worker_id,
+                    dataset_id=dataset_id,
+                    shuffle_seed=int(seed),
+                    hint=hint,
+                )
+            except Exception as exc:
+                logger.error(
+                    "DiLoCo /datasets/register failed for "
+                    "(%s, seed=%d): %s — re-raising",
+                    dataset_id,
+                    int(seed),
+                    exc,
+                )
+                raise
+            self._wud_registered[key] = int(reply["total_units"])
+            logger.info(
+                "DiLoCo dispatch registered (dataset_id=%s, seed=%d, "
+                "K=%d, length=%d, worker_id=%s)",
+                dataset_id,
+                int(seed),
+                self._wud_registered[key],
+                L,
+                self._wud_worker_id,
+            )
+        K = self._wud_registered[key]
+
+        while True:
+            try:
+                resp = self._wud_client.request_work(
+                    self._wud_worker_id, dataset_id, int(seed)
+                )
+            except Exception as exc:
+                logger.error("DiLoCo work request failed: %s — re-raising", exc)
+                raise
+
+            if resp.get("exhausted"):
+                logger.info(
+                    "Work queue exhausted for (%s, seed=%d)",
+                    dataset_id,
+                    int(seed),
+                )
+                return
+
+            from .work_unit_dispatch import unit_range
+
+            unit_id = int(resp["unit_id"])
+            u_start, u_end = unit_range(unit_id, K, L)
+            limit = u_end - u_start
+
+            try:
+                view = backend.seek(start + u_start)
+                self._backend = view
+                yielded = 0
+                for row in view:
+                    if yielded >= limit:
+                        break
+                    yield row
+                    yielded += 1
+                logger.debug(
+                    "Drained unit %d: %d rows [%d:%d) " "for (%s, seed=%d)",
+                    unit_id,
+                    yielded,
+                    u_start,
+                    u_end,
+                    dataset_id,
+                    int(seed),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Unit %d drain failed (partial loss for this epoch): %s",
+                    unit_id,
+                    exc,
+                )
+
+            try:
+                self._wud_client.complete_work(
+                    self._wud_worker_id, dataset_id, int(seed), unit_id
+                )
+            except Exception as exc:
+                logger.debug("complete_work for unit %d failed: %s", unit_id, exc)
+
     # ----- iteration -----
 
     def __iter__(self) -> Iterator[Dict]:
         # Decide whether to reset count state at the start of this pass.
         self._maybe_reset_counts()
 
-        start, end = self._worker_view_bounds()
+        # Under DiLoCo work-unit dispatch the cursor is driven per-unit
+        # by the dispatch loop, not by a window seek. Skip the seek and
+        # use the dispatch generator below. Important: dispatch uses
+        # the FULL view bounds (post-slice, pre-DataLoader-subdivision)
+        # — forked DataLoader workers all register the same
+        # (dataset_id, seed) and compete for units in one queue. If we
+        # used _worker_view_bounds() here, each fork would send a
+        # different hint["length"] to the server (409 on register) and
+        # the unit math would be wrong (L for one fork doesn't match
+        # the server's K for the full view). The composable's
+        # state_dict cursor is also ignored under dispatch — request_work
+        # drives the seek per unit, so a saved mid-iter position is moot.
+        if self._wud_client is not None:
+            full_start, full_end = self._view_bounds()
+            self._restored_from_checkpoint = False
+            # Dispatch rows are not assigned stable backend positions, so
+            # ``with_indices`` indices start at 0 each iter pass — there
+            # isn't a meaningful "row index in source dataset" to expose
+            # for server-dispatched ranges.
+            first_idx = 0
+            gen = self._wud_iter_window(self._backend, full_start, full_end)
+        else:
+            start, end = self._worker_view_bounds()
+            # Position the backend at our window start unless we're resuming
+            # mid-window (after load_state_dict or partial iteration that
+            # left the cursor inside [start, end)).
+            cur = self._backend.position()
+            if cur < start or cur >= end:
+                self._backend = self._backend.seek(start)
 
-        # Position the backend at our window start unless we're resuming
-        # mid-window (after load_state_dict or partial iteration that
-        # left the cursor inside [start, end)).
-        cur = self._backend.position()
-        if cur < start or cur >= end:
-            self._backend = self._backend.seek(start)
+            # Clear the restored flag — by the time we're iterating we've
+            # honored it.
+            self._restored_from_checkpoint = False
 
-        # Clear the restored flag — by the time we're iterating we've
-        # honored it.
-        self._restored_from_checkpoint = False
+            # Index passed to map(with_indices=True): the actual position
+            # of the first example we're about to yield, NOT the static
+            # window start. Critical when resuming mid-window — otherwise
+            # `with_indices` indices restart at `start` regardless of
+            # where the saved cursor actually is.
+            first_idx = self._backend.position()
 
-        # Index passed to map(with_indices=True): the actual position
-        # of the first example we're about to yield, NOT the static
-        # window start. Critical when resuming mid-window — otherwise
-        # `with_indices` indices restart at `start` regardless of
-        # where the saved cursor actually is.
-        first_idx = self._backend.position()
-
-        gen = self._iter_window(self._backend, start, end)
+            gen = self._iter_window(self._backend, start, end)
         if self._shuffle_buffer_size:
             gen = self._reservoir_buffer(
                 gen, self._shuffle_buffer_size, self._effective_buffer_seed()

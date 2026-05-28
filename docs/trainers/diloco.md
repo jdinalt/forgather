@@ -774,27 +774,93 @@ worker iterates the full row stream on identical rows, which is the
 broken-data-parallelism class of failure the system explicitly
 guards against.
 
-Train loads wrap automatically. Eval and test loads bypass the wrap so
-every worker runs the full eval pass and metrics are averaged. The
-bypass works via a `diloco_work_dispatch: False` kwarg on the load
-call; the DiLoCo template mixin
-(`templatelib/examples/mixins/diloco.yaml`) injects it for the eval
-dataset project through the `eval_pp_args` macro, which leaf configs
-splat into their `[eval_dataset_project_pp_args]`. The generic
-`load_dataset.yaml` template doesn't know about the kwarg — it
-forwards whatever `load_dataset_args` dict the parent project
-injected, so a non-forgather load_method that doesn't accept
-`diloco_work_dispatch` won't see it either.
+**Where dispatch lives in the dataset pipeline.** The wrap is
+applied *inside* ``ComposableIterableDataset`` (state set by
+``enable_work_dispatch(client, worker_id)``; the dispatch loop lives
+in ``_iter_window``). ``preprocess_dataset`` calls it after slice and
+shard are settled — the dispatch operates on the post-slice view
+bounds, and `shard()` and `enable_work_dispatch()` are mutually
+exclusive. The implementation isn't a backend wrapper; it's a method
+on the composable itself.
+
+**How operators select dispatch.** The ``shard_dataset.method``
+field on the dataset preprocess block controls partitioning:
+
+```yaml
+# Conventional DDP sharding (default when DiLoCo is off):
+shard_dataset: True                            # WORLD_SIZE / RANK
+shard_dataset: {num_shards: 4, index: 0}       # explicit
+shard_dataset: {method: "conventional"}        # alias
+
+# DiLoCo work-unit dispatch (default when DiLoCo is on):
+shard_dataset: {method: "work_units"}
+
+# No partitioning:
+shard_dataset: False                           # full dataset per process
+```
+
+The validity matrix is enforced at preprocess time, and the rules
+depend on ``partition_purpose`` (stamped per-singleton in
+``load_dataset.yaml`` — train splits get ``"train"``, eval / test
+splits get ``"eval"``):
+
+**``partition_purpose='train'``** (strict — train requires cross-host
+coordination under DiLoCo):
+
+| Config                        | `DILOCO_SERVER` unset | `DILOCO_SERVER` set |
+|-------------------------------|----------------------|---------------------|
+| `False`                       | OK                   | OK                  |
+| `True` / `conventional`       | OK                   | **error**            |
+| `work_units`                  | **error**            | OK                  |
+
+Conventional + DiLoCo is rejected for the train dataset because
+asymmetric DDP topologies (e.g. DDPx4 on one host, DDPx8 on another)
+produce overlapping per-rank shards — workers train on the same rows.
+Work-unit dispatch replaces conventional sharding entirely for train:
+all DDP ranks across all DiLoCo hosts compete for units in one shared
+queue.
+
+**``partition_purpose='eval'``** (replicated across hosts — every host
+runs the full eval, metrics averaged across hosts):
+
+| Config                        | `DILOCO_SERVER` unset | `DILOCO_SERVER` set |
+|-------------------------------|----------------------|---------------------|
+| `False`                       | OK                   | OK                  |
+| `True` / `conventional`       | OK                   | OK                  |
+| `work_units`                  | **error**            | **error**            |
+
+Under DiLoCo, eval is intentionally replicated across hosts — the
+cross-host duplication is harmless because metrics get averaged. But
+within a single host we still want DDP sharding to split eval work
+across the ranks of that host, otherwise every DDP rank runs the full
+eval locally for an identical result (W× wasted compute). So
+``shard_dataset: True`` (= conventional within-host shard) is the
+right value for eval under DiLoCo, and the validity check allows it.
+``work_units`` is refused for eval — that would route eval through
+the cross-host work queue, which makes no sense given eval is
+replicated by design.
+
+``lm_training_project.yaml`` wires this automatically: train picks
+``method='work_units'`` under DiLoCo (else conventional), and eval
+picks ``{{ ns.dispatch_batches == False }}`` unconditionally — i.e.
+``True`` (DDP within host, replicated across hosts) when
+``dispatch_batches`` is off, ``False`` (full eval per process) when
+``dispatch_batches`` is on, regardless of DiLoCo state.
 
 ### dataset_id
 
 The `dataset_id` is a stable 16-hex hash of the normalized load args
-(`path`, `name`, `split`, `data_files`, `revision`). Two workers
-loading "the same dataset" agree on the dataset_id by construction;
-the server uses it to route them to the same queue. The worker also
-ships the human-readable fields alongside the hash so the webui can
-label queues with `roneneldan/TinyStories@train` instead of just the
-hex.
+(`path`, `name`, `split`, `data_files`, `revision`) plus the
+composable's resolved slice bounds (`slice_start`, `slice_end`). Two
+workers loading "the same dataset with the same slice" agree on the
+dataset_id by construction; two workers loading **different slices**
+of the same source dataset get **different** dataset_ids (so they
+share work only within the same slice). Shard info is deliberately
+**not** part of the hash: under DiLoCo, all DDP ranks across all
+hosts share one queue, so per-rank sharding must not key separate
+queues. The worker also ships the human-readable fields alongside the
+hash so the webui can label queues with
+`roneneldan/TinyStories@train` instead of just the hex.
 
 ### Interleaved / multi-source datasets
 
@@ -802,6 +868,29 @@ Each call to `fast_load_iterable_dataset` registers its own queue.
 A training run that interleaves two HF paths produces two queues; the
 webui renders each as its own heatmap card. Workers in a multi-source
 run hold one issued unit per source at a time.
+
+### DataLoader `num_workers > 1`
+
+Allowed and correct under work-unit dispatch — each forked DataLoader
+worker has its own `DiLoCoClient` and competes for units in the same
+queue. Server atomicity prevents double-issuance, so the rows are
+still partitioned correctly.
+
+Not recommended, though:
+
+- **Connection multiplication.** Each fork opens its own HTTP keep-
+  alive to the DiLoCo server *and* its own to the dataset_server. For
+  W=8 DDP × N=4 DataLoader workers that's 32 connections per host to
+  each service.
+- **Shuffle quality degrades.** The reservoir buffer is per-process;
+  N forks → N independent 1000-row buffers spread across the queue,
+  effectively worse shuffle than one big buffer.
+- **Throughput rarely improves.** With `ResilientRemoteBackend`
+  already streaming, the bottleneck under DiLoCo dispatch is usually
+  the dispatch round-trip, not the iter loop.
+
+Default to `dataloader_num_workers=0` (or `1`) for iterable datasets
+under DiLoCo unless you have a measured reason otherwise.
 
 ### Crash recovery
 

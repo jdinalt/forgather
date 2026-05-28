@@ -240,6 +240,12 @@ dataset_dict: &dataset_dict !singleton:datasets:load_dataset
 # Use a YAML merge to share the common dataset arguments across splits;
 # `fn_kwargs: !var "preprocess_args"` is the critical bit -- the training
 # project injects its `seq_len` through this variable at runtime.
+#
+# `partition_purpose: "train"` / `"eval"` distinguishes how each split
+# is partitioned across DDP / DiLoCo workers. Train is the
+# parameter-update split; eval / test are replicated across DiLoCo
+# hosts (every host runs the full eval; metrics averaged). See
+# `docs/trainers/diloco.md` for the full validity matrix.
 
 [train_dataset]
 train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
@@ -249,18 +255,21 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_datase
         map_fn: *map_function
     dataset: *train_dataset_split
     desc: "Tokenizing train"
+    partition_purpose: "train"
 
 [eval_dataset]
 eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
     <<: *common_dataset_args
     dataset: *validation_dataset_split
     desc: "Tokenizing validation"
+    partition_purpose: "eval"
 
 [test_dataset]
 test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@test_dataset
     <<: *common_dataset_args
     dataset: *validation_dataset_split
     desc: "Tokenizing test"
+    partition_purpose: "eval"
 
 [dynamic_args]
     == super()
