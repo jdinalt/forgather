@@ -44,6 +44,7 @@ import torch.nn as nn
 
 from .client import DiLoCoClient
 from .fragments import FragmentManager
+from .param_view import ParamView, SimpleModelParamView
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,10 @@ class DiLoCoWorker:
         heartbeat_interval: float = 30.0,
         num_fragments: int = 1,
         max_sync_retries: int = 3,
+        param_view: Optional[ParamView] = None,
+        group_id: Optional[str] = None,
+        pp_rank: int = 0,
+        pp_world_size: int = 1,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -113,6 +118,28 @@ class DiLoCoWorker:
         self.num_fragments = num_fragments
         self.max_sync_retries = max_sync_retries
 
+        # Pipeline-group registration metadata (issue #84). When
+        # ``pp_world_size > 1`` this worker is one rank of a
+        # ``group_id``; the registration payload carries the ``group``
+        # block and the server treats all ranks as a single logical
+        # DiLoCo worker that together covers the full model. Solo
+        # workers leave defaults (group_id=None, pp_world_size=1).
+        if pp_world_size < 1:
+            raise ValueError(f"pp_world_size must be >= 1, got {pp_world_size}")
+        if pp_rank < 0 or pp_rank >= pp_world_size:
+            raise ValueError(
+                f"pp_rank must satisfy 0 <= pp_rank < pp_world_size; "
+                f"got pp_rank={pp_rank}, pp_world_size={pp_world_size}"
+            )
+        self.group_id = group_id
+        self.pp_rank = pp_rank
+        self.pp_world_size = pp_world_size
+
+        # Param-view abstraction (issue #84). Defaults to a single-
+        # module view that matches pre-#84 behavior. Pipeline trainers
+        # pass a PipelineParamView covering only this rank's slice.
+        self.param_view: ParamView = param_view or SimpleModelParamView(model)
+
         self.client = DiLoCoClient(server_addr, timeout=timeout)
 
         # DDP rank-awareness. When running inside a torch-distributed
@@ -123,6 +150,14 @@ class DiLoCoWorker:
         # ranks via NCCL so DDP stays consistent. Other ranks have no
         # business contacting the server and would 409 on register if
         # they tried.
+        #
+        # Under pipeline parallel (``pp_world_size > 1``), every rank
+        # IS its own DiLoCo worker — there's nothing to broadcast
+        # across pipeline ranks because each rank owns a different
+        # slice. The DDP leader/follower model only kicks in for
+        # within-stage DDP replicas (not currently composed with
+        # pipeline in the forgather trainer, but the plumbing leaves
+        # the door open).
         if dist.is_available() and dist.is_initialized():
             self._is_dist = True
             self._ddp_rank = dist.get_rank()
@@ -131,7 +166,14 @@ class DiLoCoWorker:
             self._is_dist = False
             self._ddp_rank = 0
             self._ddp_world_size = 1
-        self._is_leader = self._ddp_rank == 0
+        if self.pp_world_size > 1:
+            # Every pipeline rank is its own DiLoCo worker (each owns
+            # one DDP-group-of-one); we are always the leader of that
+            # group-of-one. Cross-pipeline-rank broadcast is a no-op
+            # (different slices).
+            self._is_leader = True
+        else:
+            self._is_leader = self._ddp_rank == 0
 
         # Fragment manager (None if num_fragments <= 1)
         self._fragment_manager: Optional[FragmentManager] = None
@@ -144,7 +186,12 @@ class DiLoCoWorker:
             # construction time rather than silently misbehave. The
             # non-streaming path (num_fragments==1) IS DDP-rank-aware
             # via the leader/follower split in start()/_sync().
-            if self._is_dist and self._ddp_world_size > 1:
+            #
+            # Pipeline+fragments IS supported (issue #84): each
+            # pipeline rank fragments its own slice; the server's
+            # per-fragment barrier coordinates across ranks. The DDP
+            # restriction above is unchanged.
+            if self._is_dist and self._ddp_world_size > 1 and self.pp_world_size == 1:
                 raise ValueError(
                     f"DiLoCo streaming-fragment sync (num_fragments="
                     f"{num_fragments}) is not yet compatible with DDP "
@@ -152,7 +199,11 @@ class DiLoCoWorker:
                     "num_fragments=1 under DDP, or run streaming on a "
                     "single-process worker (no torch.distributed group)."
                 )
-            self._fragment_manager = FragmentManager(model, num_fragments)
+            # FragmentManager partitions named_parameters of its model
+            # argument; under pipeline this needs to be the slice's
+            # params, not the meta-device root model. Pass through the
+            # ParamView's view instead.
+            self._fragment_manager = FragmentManager(self.param_view, num_fragments)
 
         # State
         self._global_params: Dict[str, torch.Tensor] = {}
@@ -211,10 +262,20 @@ class DiLoCoWorker:
 
         Collective: every DDP rank in the group must call this at the
         same logical step. The leader sends; the followers receive.
+
+        Under pipeline parallel (``pp_world_size > 1``), this is a
+        no-op: every pipeline rank is its own DiLoCo worker and owns a
+        different slice, so there's nothing to broadcast across ranks.
+        When pipeline + within-stage DDP composition is added later,
+        this will broadcast across the within-stage DDP sub-group only.
         """
         if not self._is_dist:
             return
-        for p in self.model.parameters():
+        if self.pp_world_size > 1:
+            # Each rank IS the leader of its own DDP-group-of-one; no
+            # cross-rank broadcast is meaningful with disjoint slices.
+            return
+        for _name, p in self.param_view.named_parameters():
             dist.broadcast(p.data, src=0)
 
     def start(self):
@@ -341,22 +402,34 @@ class DiLoCoWorker:
             )
 
     def _get_worker_info(self) -> dict:
-        """Gather worker metadata for registration."""
+        """Gather worker metadata for registration.
+
+        Carries the structural slice fingerprint (``param_shapes`` for
+        this rank's slice) and, when ``pp_world_size > 1``, the
+        ``group`` block declaring this worker's pipeline-group
+        membership. See issue #84.
+        """
         info = {
             "hostname": platform.node(),
             "sync_every": self.sync_every,
             "bf16_comm": self.bf16_comm,
             "dylu": self.dylu,
-            # Structural model fingerprint. Server compares against
-            # its own param set + shapes and 422s on mismatch — see
-            # DiLoCoModelMismatchError. Catches the "operator pointed
-            # this worker at the wrong --model-id-or-path" case at
-            # register time instead of letting it surface 500 steps
-            # later in the first sync's optimizer step.
-            "param_shapes": {
-                name: list(p.shape) for name, p in self.model.named_parameters()
-            },
+            # Structural slice fingerprint. Server validates per-slice
+            # shape consistency at register time and verifies group
+            # coverage at seal time. For solo workers the slice IS the
+            # full model, and the contract collapses to the pre-#84
+            # full-model fingerprint check.
+            "param_shapes": self.param_view.param_shapes(),
         }
+
+        # Pipeline-group block (issue #84). Solo workers omit this and
+        # the server treats them as a degenerate group of one.
+        if self.pp_world_size > 1:
+            info["group"] = {
+                "group_id": self.group_id,
+                "pp_rank": self.pp_rank,
+                "pp_world_size": self.pp_world_size,
+            }
 
         # Add GPU info if available
         if torch.cuda.is_available():
@@ -368,11 +441,8 @@ class DiLoCoWorker:
         return info
 
     def _save_global_params_snapshot(self):
-        """Save a CPU copy of current model params as the global reference point."""
-        self._global_params = {
-            name: p.data.detach().clone().cpu()
-            for name, p in self.model.named_parameters()
-        }
+        """Save a CPU copy of this rank's slice as the global reference point."""
+        self._global_params = self.param_view.snapshot()
 
     def _compute_pseudogradients(self) -> Dict[str, torch.Tensor]:
         """
@@ -381,23 +451,16 @@ class DiLoCoWorker:
         This represents the negative of the accumulated local update direction.
         The server's outer optimizer uses these as gradients to update the
         global parameters toward where workers have moved.
+
+        Under pipeline parallel each rank only computes pseudo-gradients
+        for its own slice; the server aggregates per-name across the
+        contributing slices.
         """
-        pseudograds = {}
-        for name, p in self.model.named_parameters():
-            pg = self._global_params[name] - p.data.cpu()
-            if self.bf16_comm:
-                pg = pg.to(torch.bfloat16)
-            pseudograds[name] = pg
-        return pseudograds
+        return self.param_view.compute_pseudograds(self._global_params, self.bf16_comm)
 
     def _apply_global_params(self, global_params: Dict[str, torch.Tensor]):
-        """Load updated global params into the model."""
-        with torch.no_grad():
-            for name, p in self.model.named_parameters():
-                if name in global_params:
-                    p.data.copy_(global_params[name].to(dtype=p.dtype, device=p.device))
-                else:
-                    logger.warning(f"Parameter {name} not found in global params")
+        """Load updated global params (or this rank's slice of them) into the model."""
+        self.param_view.apply_global(global_params)
 
     def _post_step_hook(self, optimizer, args, kwargs):
         """Optimizer post-step hook. Triggers sync when sync_every steps reached."""
@@ -555,9 +618,12 @@ class DiLoCoWorker:
         # Apply any pending result from the previous fragment
         self._wait_and_apply_inflight_fragment()
 
-        # Compute pseudo-gradients for this fragment
+        # Compute pseudo-gradients for this fragment from this rank's
+        # slice. Under pipeline parallel each rank submits its own
+        # slice's portion of fragment_id; the server aggregates per-name
+        # across the contributing ranks.
         pseudograds = self._fragment_manager.compute_fragment_pseudogradients(
-            fragment_id, self._global_params, self.model, self.bf16_comm
+            fragment_id, self._global_params, self.param_view, self.bf16_comm
         )
 
         send_bytes = sum(p.numel() * p.element_size() for p in pseudograds.values())
@@ -616,7 +682,7 @@ class DiLoCoWorker:
 
             if new_params is not None:
                 self._fragment_manager.apply_fragment_global_params(
-                    frag_id, new_params, self.model, self._global_params
+                    frag_id, new_params, self.param_view, self._global_params
                 )
                 self._fragment_syncs += 1
 
