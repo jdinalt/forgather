@@ -463,16 +463,16 @@
     targets: [ "eval_dataset" ]
     pp_kwargs: *eval_dataset_project_pp_args
     <<: *common_dataset_args
-    ## Eval partitioning. Under DiLoCo: every worker runs the full
-    ## eval pass and metrics are averaged across workers — no
-    ## sharding (which would otherwise give asymmetric DDP topologies
-    ## different rows). Otherwise: conventional DDP shard when not
-    ## dispatching batches.
-    -- if getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server)
-    shard_dataset: False
-    -- else
+    ## Eval partitioning is independent of DiLoCo. Eval is replicated
+    ## across DiLoCo workers (every host runs the full eval; metrics
+    ## are averaged across hosts) and we WANT within-host DDP
+    ## sharding to split the eval workload across the DDP ranks of
+    ## each host — without it, every DDP rank runs the full eval
+    ## locally, burning W× compute for an identical result.
+    ## ``partition_purpose: "eval"`` (stamped per-singleton by
+    ## load_dataset.yaml) lets preprocess_dataset's validity check
+    ## allow conventional + DiLoCo here without complaint.
     shard_dataset: {{ ns.dispatch_batches == False }}
-    -- endif
 
     [dataset_splits]
 train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]

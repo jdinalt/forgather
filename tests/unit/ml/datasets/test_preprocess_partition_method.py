@@ -103,6 +103,61 @@ class TestValidityMatrix:
 
 
 # ---------------------------------------------------------------------------
+# Eval / test purpose — the strict DiLoCo rule loosens for replicated splits
+# ---------------------------------------------------------------------------
+
+
+class TestEvalPurpose:
+    """Under DiLoCo, the eval / test datasets are **replicated** across
+    workers (every host runs the full eval; metrics are averaged) and
+    we WANT within-host DDP sharding to split eval work across the DDP
+    ranks of a single host. So ``conventional + DiLoCo`` is fine when
+    ``partition_purpose='eval'``."""
+
+    def test_conventional_dict_with_diloco_ok_for_eval(self, monkeypatch):
+        monkeypatch.setenv("WORLD_SIZE", "4")
+        monkeypatch.setenv("RANK", "1")
+        method, kwargs = _resolve_partition_method(
+            {"method": "conventional"},
+            has_diloco=True,
+            partition_purpose="eval",
+        )
+        assert method == "conventional"
+        assert kwargs == {"num_shards": 4, "index": 1}
+
+    def test_legacy_bool_true_with_diloco_ok_for_eval(self, monkeypatch):
+        # The "True" form is the lm_training_project default for eval —
+        # it must not error under DiLoCo.
+        monkeypatch.setenv("WORLD_SIZE", "8")
+        monkeypatch.setenv("RANK", "3")
+        method, kwargs = _resolve_partition_method(
+            True, has_diloco=True, partition_purpose="eval"
+        )
+        assert method == "conventional"
+        assert kwargs == {"num_shards": 8, "index": 3}
+
+    def test_work_units_refused_for_eval(self):
+        # work_units IS DiLoCo cross-host coordination; eval shouldn't
+        # do that. Explicit error so an operator who picks work_units
+        # for eval sees what's wrong.
+        with pytest.raises(ValueError, match="only valid for the train dataset"):
+            _resolve_partition_method(
+                {"method": "work_units"},
+                has_diloco=True,
+                partition_purpose="eval",
+            )
+
+    def test_false_still_ok_for_eval(self):
+        assert _resolve_partition_method(
+            False, has_diloco=True, partition_purpose="eval"
+        ) == (None, None)
+
+    def test_unknown_purpose_raises(self):
+        with pytest.raises(ValueError, match="Unknown partition_purpose"):
+            _resolve_partition_method(True, has_diloco=False, partition_purpose="bogus")
+
+
+# ---------------------------------------------------------------------------
 # Type checking
 # ---------------------------------------------------------------------------
 

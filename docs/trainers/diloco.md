@@ -799,25 +799,51 @@ shard_dataset: {method: "work_units"}
 shard_dataset: False                           # full dataset per process
 ```
 
-The validity matrix is enforced at preprocess time:
+The validity matrix is enforced at preprocess time, and the rules
+depend on ``partition_purpose`` (stamped per-singleton in
+``load_dataset.yaml`` — train splits get ``"train"``, eval / test
+splits get ``"eval"``):
+
+**``partition_purpose='train'``** (strict — train requires cross-host
+coordination under DiLoCo):
 
 | Config                        | `DILOCO_SERVER` unset | `DILOCO_SERVER` set |
 |-------------------------------|----------------------|---------------------|
-| `False`                       | OK                   | OK (eval path)      |
+| `False`                       | OK                   | OK                  |
 | `True` / `conventional`       | OK                   | **error**            |
 | `work_units`                  | **error**            | OK                  |
 
-Conventional + DiLoCo is rejected because asymmetric DDP topologies
-(e.g. DDPx4 on one host, DDPx8 on another) produce overlapping
-per-rank shards. Work-unit dispatch replaces conventional sharding
-entirely: all DDP ranks across all DiLoCo hosts compete for units in
-the same shared queue.
+Conventional + DiLoCo is rejected for the train dataset because
+asymmetric DDP topologies (e.g. DDPx4 on one host, DDPx8 on another)
+produce overlapping per-rank shards — workers train on the same rows.
+Work-unit dispatch replaces conventional sharding entirely for train:
+all DDP ranks across all DiLoCo hosts compete for units in one shared
+queue.
 
-Train loads use ``work_units`` automatically under DiLoCo. Eval and
-test loads use ``shard_dataset: False`` under DiLoCo so every worker
-runs the full eval pass and metrics are averaged across workers. The
-``lm_training_project.yaml`` template wires both based on the
-``DILOCO_SERVER`` env / ``--diloco-server`` Jinja signal.
+**``partition_purpose='eval'``** (replicated across hosts — every host
+runs the full eval, metrics averaged across hosts):
+
+| Config                        | `DILOCO_SERVER` unset | `DILOCO_SERVER` set |
+|-------------------------------|----------------------|---------------------|
+| `False`                       | OK                   | OK                  |
+| `True` / `conventional`       | OK                   | OK                  |
+| `work_units`                  | **error**            | **error**            |
+
+Under DiLoCo, eval is intentionally replicated across hosts — the
+cross-host duplication is harmless because metrics get averaged. But
+within a single host we still want DDP sharding to split eval work
+across the ranks of that host, otherwise every DDP rank runs the full
+eval locally for an identical result (W× wasted compute). So
+``shard_dataset: True`` (= conventional within-host shard) is the
+right value for eval under DiLoCo, and the validity check allows it.
+``work_units`` is refused for eval — that would route eval through
+the cross-host work queue, which makes no sense given eval is
+replicated by design.
+
+``lm_training_project.yaml`` wires this automatically: train picks
+``method='work_units'`` under DiLoCo (else conventional), and eval
+picks ``True`` unconditionally (DDP within host, replicated across
+hosts).
 
 ### dataset_id
 

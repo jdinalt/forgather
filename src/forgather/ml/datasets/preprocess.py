@@ -168,11 +168,13 @@ def default_tokenize_map_fn(
 
 
 _PARTITION_METHODS = ("conventional", "work_units")
+_PARTITION_PURPOSES = ("train", "eval")
 
 
 def _resolve_partition_method(
     shard_dataset: Optional[Union[bool, dict]],
     has_diloco: bool,
+    partition_purpose: str = "train",
 ) -> Tuple[Optional[str], Optional[dict]]:
     """Normalize ``shard_dataset`` into a (method, kwargs) pair.
 
@@ -185,15 +187,29 @@ def _resolve_partition_method(
       ``num_shards`` / ``index`` overrides WORLD_SIZE / RANK.
     - ``{"method": "work_units"}``                    → DiLoCo work-unit dispatch.
 
-    Validity matrix (raises ``ValueError`` on the two error cells):
+    Validity matrix (raises ``ValueError`` on the error cells):
 
     - ``method='work_units'`` requires ``DILOCO_SERVER`` set (otherwise
-      there's no server to dispatch from).
-    - ``method='conventional'`` (any form) combined with
-      ``DILOCO_SERVER`` set raises — under DiLoCo, conventional
-      sharding causes asymmetric-DDP row overlap (DDPx4 + DDPx8 hosts
-      produce overlapping shard offsets). Use ``method='work_units'``
-      so all ranks across all hosts share one dispatch queue.
+      there's no server to dispatch from). Also requires
+      ``partition_purpose='train'`` — eval / test datasets are
+      replicated across DiLoCo workers (every host runs the full eval)
+      and don't go through the work-queue.
+    - ``method='conventional'`` combined with ``DILOCO_SERVER`` set
+      raises **only when ``partition_purpose='train'``** — for the
+      train dataset, conventional sharding causes asymmetric-DDP row
+      overlap (DDPx4 + DDPx8 hosts produce overlapping shard offsets
+      and train on the same rows). Eval / test are replicated across
+      hosts intentionally and conventional sharding is the right way
+      to split eval work across the DDP ranks within each host (the
+      cross-host duplication is harmless — metrics get averaged).
+
+    Parameters
+    ----------
+    partition_purpose : {"train", "eval"}
+        Distinguishes the train dataset's strict DiLoCo rules from the
+        eval / test datasets' replicated-across-hosts behavior. The
+        ``load_dataset.yaml`` template stamps this per-singleton; other
+        callers default to ``"train"`` for safety.
 
     Returns
     -------
@@ -203,6 +219,12 @@ def _resolve_partition_method(
         ``{num_shards, index}`` dict for ``"conventional"`` and
         ``None`` for the other two cases.
     """
+    if partition_purpose not in _PARTITION_PURPOSES:
+        raise ValueError(
+            f"Unknown partition_purpose: {partition_purpose!r}. "
+            f"Must be one of {_PARTITION_PURPOSES}."
+        )
+
     if shard_dataset is None or shard_dataset is False:
         return None, None
 
@@ -238,13 +260,23 @@ def _resolve_partition_method(
             "shard_dataset.method='conventional' (or omit method) for "
             "standard DDP."
         )
-    if method == "conventional" and has_diloco:
+    if method == "work_units" and partition_purpose != "train":
+        raise ValueError(
+            f"shard_dataset.method='work_units' is only valid for the "
+            f"train dataset (got partition_purpose={partition_purpose!r}). "
+            "Eval / test datasets are replicated across DiLoCo workers "
+            "by design — every host runs the full eval and metrics are "
+            "averaged across hosts. Use shard_dataset: True / False "
+            "for eval depending on whether you want within-host DDP "
+            "sharding."
+        )
+    if method == "conventional" and has_diloco and partition_purpose == "train":
         raise ValueError(
             "shard_dataset.method='conventional' (or bool=True / "
-            "{num_shards, index}) combined with DiLoCo (DILOCO_SERVER "
-            "is set) causes asymmetric-DDP row overlap: hosts with "
-            "different WORLD_SIZE produce overlapping per-rank shard "
-            "offsets and train on the same rows. Use "
+            "{num_shards, index}) for the TRAIN dataset under DiLoCo "
+            "(DILOCO_SERVER is set) causes asymmetric-DDP row overlap: "
+            "hosts with different WORLD_SIZE produce overlapping "
+            "per-rank shard offsets and train on the same rows. Use "
             "shard_dataset.method='work_units' so all DDP ranks across "
             "all DiLoCo hosts compete for units in one shared queue."
         )
@@ -270,6 +302,7 @@ def preprocess_dataset(
     dataset_length: Optional[int] = None,
     remove_columns: bool = True,
     shard_dataset: Optional[Union[bool, dict[str, int]]] = None,
+    partition_purpose: str = "train",
 ):
     """
     This is a fairly generic and flexible dataset preprocessor to quickly get a dataset
@@ -324,9 +357,20 @@ def preprocess_dataset(
           all DiLoCo hosts compete for units in one shared queue.
 
         Combining ``conventional`` with DiLoCo is rejected at preprocess
-        time — different host topologies (e.g. DDPx4 vs DDPx8) produce
-        overlapping shard offsets. Combining ``work_units`` without
-        DiLoCo is also rejected (no server to dispatch from).
+        time **for the train dataset** (``partition_purpose='train'``)
+        — different host topologies (e.g. DDPx4 vs DDPx8) produce
+        overlapping shard offsets. For eval / test
+        (``partition_purpose='eval'``), conventional sharding under
+        DiLoCo is allowed: every host runs the full eval (DDP-sharded
+        within host), metrics are averaged across hosts, and the
+        cross-host duplication is harmless. Combining ``work_units``
+        without DiLoCo is always rejected (no server to dispatch from).
+    partition_purpose : {"train", "eval"}, optional
+        Distinguishes the train dataset's strict DiLoCo rules from the
+        eval / test datasets' replicated-across-hosts behavior.
+        ``load_dataset.yaml`` stamps this per-singleton; other callers
+        default to ``"train"`` for safety. Determines which validity
+        rules apply to ``shard_dataset``.
 
     Returns
     -------
@@ -343,7 +387,9 @@ def preprocess_dataset(
     # rather than mid-training when the dispatch loop fires.
     has_diloco = bool(os.environ.get("DILOCO_SERVER", "").strip())
     partition_method, partition_kwargs = _resolve_partition_method(
-        shard_dataset, has_diloco=has_diloco
+        shard_dataset,
+        has_diloco=has_diloco,
+        partition_purpose=partition_purpose,
     )
 
     # This ensures that the dataset is preprocessed by rank0 and cached before other
