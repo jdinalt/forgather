@@ -1109,14 +1109,15 @@ function GroupCard({
               workerId={m.workerId}
               workerStatus={workers[m.workerId]}
               heartbeatTimeout={heartbeatTimeout}
-              // Per-rank cards still need the job for the JobStatsRow,
-              // but its trainer-protocol buttons are redundant with
-              // the group header's (same job; the user clicks once on
-              // the header). The control buttons render iff
-              // ``canControlJob`` — keeping them lets the user see
-              // per-rank job lookup status without changing semantics.
+              // Compact: the per-rank stats are identical to the
+              // group canonical (Round, steps/s) already shown on
+              // the header, and Save / Save & Stop / Abort are
+              // job-level controls — emitting them per-rank would
+              // be misleading since clicking any one targets the
+              // same shared job.
               job={job}
               refreshSeconds={refreshSeconds}
+              compact
             />
           ))}
         </div>
@@ -1132,6 +1133,7 @@ function WorkerCard({
   heartbeatTimeout,
   job,
   refreshSeconds,
+  compact = false,
 }: {
   baseUrl: string;
   workerId: string;
@@ -1139,6 +1141,13 @@ function WorkerCard({
   heartbeatTimeout: number | undefined;
   job: Job | null;
   refreshSeconds: number;
+  /** Compact mode hides the JobStatsRow, the "no correlated job"
+   *  warning, and the trainer-protocol controls (Save / Save & Stop /
+   *  Abort) — used by ``GroupCard`` for the expanded per-rank
+   *  diagnostic view, where those job-level affordances are
+   *  redundant with (and confusing alongside) the group header's
+   *  copy. Per-rank Kick stays — it's a server-level control. */
+  compact?: boolean;
 }) {
   const queryClient = useQueryClient();
   // Per-worker training status — only fetched when we have a matched
@@ -1236,9 +1245,11 @@ function WorkerCard({
         </button>
       </div>
 
-      {/* Middle: training-job progress + stats (when we have a job) */}
-      {stats && <JobStatsRow stats={stats} />}
-      {!job && (
+      {/* Middle: training-job progress + stats (when we have a job).
+          Suppressed in compact mode — the per-rank stats are identical
+          to the group's canonical stats already shown on the header. */}
+      {!compact && stats && <JobStatsRow stats={stats} />}
+      {!compact && !job && (
         <div className="muted" style={{ fontSize: 11 }}>
           No correlated forgather job — training-side stats and controls
           unavailable. (Worker may have been spawned outside the webui;
@@ -1247,8 +1258,11 @@ function WorkerCard({
         </div>
       )}
 
-      {/* Bottom: trainer-protocol controls (Save / Save & Stop / Abort) */}
-      {canControlJob && (
+      {/* Bottom: trainer-protocol controls (Save / Save & Stop / Abort).
+          Suppressed in compact mode — these are job-level (not
+          rank-level) controls and the group header already exposes
+          them once; duplicating per-rank would be misleading. */}
+      {!compact && canControlJob && (
         <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap" }}>
           <button
             className="tiny"
