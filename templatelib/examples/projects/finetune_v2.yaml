@@ -38,8 +38,19 @@
     ## If not specified, default to model-dir and model-name
 	-- set ns.model_id_or_path = model_id_or_path | default(joinpath(ns.models_dir, ns.model_name))
 
-    ## If explicity specified, use 'output_dir,' otherwise assume that 'ns.model_id_or_path'
+    ## Finetune semantics: --model-id-or-path is both source and
+    ## destination (continue training in place). Override the parent's
+    ## ns.output_dir to follow ns.model_id_or_path instead of
+    ## models_dir/model_name.
     -- set ns.output_dir = output_dir | default(ns.model_id_or_path)
+
+    ## Re-apply the DiLoCo per-worker suffix that the parent set on
+    ## its own ns.output_dir (which we just overwrote). Each worker
+    ## needs a distinct on-disk dir for local logs/checkpoints;
+    ## the server owns the un-suffixed model_id_or_path. See #83.
+    -- if getenv("DILOCO_WORKER_ID")
+        -- set ns.output_dir = ns.output_dir + "_" + getenv("DILOCO_WORKER_ID")
+    -- endif
     -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
 
 [variable_listing]

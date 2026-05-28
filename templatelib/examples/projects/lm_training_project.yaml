@@ -347,11 +347,11 @@
     ##      ``DILOCO_SERVER`` is unset at runtime.
     -- set ns.diloco_is_enabled = getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server) or (enable_diloco is defined and enable_diloco)
 
-    ## Model load path. Default to this project's main model dir
-    ## (captured BEFORE the worker-id suffix gets appended below, so
-    ## all DiLoCo workers default to loading from the same shared
-    ## checkpoint while writing to per-worker output dirs).
-    ## Operators override via --model-id-or-path.
+    ## Model load path. Operators override via --model-id-or-path
+    ## (typical for finetune from an external checkpoint); otherwise
+    ## default to this project's main model dir. Computed BEFORE the
+    ## worker-id suffix below so all DiLoCo workers default to
+    ## loading from the same shared checkpoint.
     -- if model_id_or_path is defined and model_id_or_path
         -- set ns.model_id_or_path = model_id_or_path
     -- else
@@ -360,11 +360,17 @@
 
     ## DiLoCo: per-worker output dir. When DILOCO_WORKER_ID is set
     ## (the scheduler emits it whenever DiLoCo is enabled, with a
-    ## queue_id fallback), append it to model_name so each worker
-    ## gets a distinct on-disk directory. No-op for non-DiLoCo runs.
+    ## queue_id fallback), append it to ``ns.output_dir`` so each
+    ## worker gets a distinct on-disk directory. No-op for non-DiLoCo
+    ## runs. The suffix operates on ``ns.output_dir`` (not
+    ## ``ns.model_name``) so any child template that overrides
+    ## ``ns.output_dir`` in its own ``[globals]`` (e.g.
+    ## ``finetune_v2.yaml`` derives it from ``ns.model_id_or_path``)
+    ## can re-apply this same two-line block at the end of its block
+    ## and get correct per-worker semantics without double-suffix
+    ## bugs.
     -- if getenv("DILOCO_WORKER_ID")
-        -- set ns.model_name = ns.model_name + "_" + getenv("DILOCO_WORKER_ID")
-        -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
+        -- set ns.output_dir = ns.output_dir + "_" + getenv("DILOCO_WORKER_ID")
         -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
     -- endif
 
