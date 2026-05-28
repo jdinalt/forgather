@@ -584,18 +584,37 @@ optimizer_groups: &optimizer_groups
             weight_decay: 0.0
         factory: *no_decay_optim
 
-## ===== CLI arguments ========================================================
+## ===== Callbacks (DiLoCo-only injection) ====================================
 ##
-## ===== Callbacks ============================================================
+## This project does NOT include ``callbacks/lm_callbacks.yaml`` —
+## that's a deliberate design choice so leaves can pick their own
+## callback set without inheriting the full LM suite (text-gen,
+## divergence detector, etc.). The parent (``causal_lm.yaml``)
+## supplies just the base loggers; leaves can override
+## ``[trainer_callbacks]`` to add lm_callbacks or anything else.
 ##
-## Use lm_callbacks by default — text-gen, divergence detector,
-## weight/param norm loggers on top of base loggers. The
-## ``[callback_list]`` block inside ``lm_callbacks.yaml`` also emits
-## the DiLoCo parameter-sync callback when ``DILOCO_SERVER`` is set,
-## so any descendant of this project gets DiLoCo for free via
-## ``--diloco-server`` or the env var.
+## However, the DiLoCo parameter-sync callback IS pulled in here
+## conditionally — it's the cross-cutting concern that pairs with
+## the work-unit dispatch, the worker-id suffix, and the
+## ``--diloco-*`` CLI args we already provide. Under DiLoCo the
+## callback is required; without it, the workers never sync.
+##
+## Mechanics: Forgather's ``[callback_list]`` block inheritance only
+## flows through ``-- extends`` chains, not across ``-- include``
+## boundaries, so we can't override [callback_list] at this scope.
+## Instead, when DiLoCo is enabled, the [trainer_callbacks] block
+## includes a sub-template (defined at the bottom of this file)
+## that extends loggers.yaml and appends the DiLoCo callback. Leaves
+## that override [trainer_callbacks] with their own callback set
+## (e.g. tinyv2.yaml uses lm_callbacks.yaml) shadow this gate — those
+## callback files have their own DiLoCo gate (lm_callbacks.yaml does)
+## so DiLoCo still flows in through that path.
 [trainer_callbacks]
-    -- include "callbacks/lm_callbacks.yaml"
+    -- if getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server)
+    -- include 'lm_training_project_diloco_loggers'
+    -- else
+    -- include 'callbacks/loggers.yaml'
+    -- endif
 
 
 [dynamic_args]
@@ -850,3 +869,19 @@ optimizer_groups: &optimizer_groups
         action: "store_true"
         group: "Logging"
         help: "Show how parameters are mapped to optimizer param groups"
+
+
+#-------------------- lm_training_project_diloco_loggers --------------------
+## DiLoCo + loggers callback set. Extends the base loggers template
+## and appends the DiLoCo parameter-sync callback. Used by
+## ``[trainer_callbacks]`` above when DiLoCo is enabled. Kept minimal
+## — does NOT pull in lm_callbacks (text-gen, divergence detector,
+## etc.); leaves that want those override [trainer_callbacks] to
+## include lm_callbacks instead, and lm_callbacks itself has its own
+## DiLoCo gate so DiLoCo composes either way.
+-- extends 'callbacks/loggers.yaml'
+{% from "mixins/diloco.yaml" import callback_entry as dl_callback_entry with context %}
+
+[callback_list]
+    => super()
+{{ dl_callback_entry() }}
