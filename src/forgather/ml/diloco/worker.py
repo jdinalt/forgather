@@ -39,6 +39,7 @@ import uuid
 from typing import Dict, List, Optional, Tuple
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 
 from .client import DiLoCoClient
@@ -114,6 +115,24 @@ class DiLoCoWorker:
 
         self.client = DiLoCoClient(server_addr, timeout=timeout)
 
+        # DDP rank-awareness. When running inside a torch-distributed
+        # group (e.g. ``torchrun`` with WORLD_SIZE > 1, or a Forgather
+        # DDP trainer), the whole DDP job is ONE DiLoCo worker —
+        # rank 0 talks to the server (register / sync / heartbeat /
+        # deregister) and broadcasts post-sync params to the other
+        # ranks via NCCL so DDP stays consistent. Other ranks have no
+        # business contacting the server and would 409 on register if
+        # they tried.
+        if dist.is_available() and dist.is_initialized():
+            self._is_dist = True
+            self._ddp_rank = dist.get_rank()
+            self._ddp_world_size = dist.get_world_size()
+        else:
+            self._is_dist = False
+            self._ddp_rank = 0
+            self._ddp_world_size = 1
+        self._is_leader = self._ddp_rank == 0
+
         # Fragment manager (None if num_fragments <= 1)
         self._fragment_manager: Optional[FragmentManager] = None
         if num_fragments > 1:
@@ -164,32 +183,79 @@ class DiLoCoWorker:
     def __exit__(self, *args):
         self.stop()
 
+    def _broadcast_params_from_leader(self):
+        """Broadcast model parameters from rank 0 to all other DDP ranks.
+
+        No-op when not in a torch-distributed group. Used to keep DDP
+        ranks consistent after the leader applies new global params
+        received from the DiLoCo server — without this, the leader's
+        post-sync weights would diverge from the followers' stale
+        weights, breaking DDP's "all ranks have identical params"
+        invariant.
+
+        Collective: every DDP rank in the group must call this at the
+        same logical step. The leader sends; the followers receive.
+        """
+        if not self._is_dist:
+            return
+        for p in self.model.parameters():
+            dist.broadcast(p.data, src=0)
+
     def start(self):
-        """Register with server, load global params, install optimizer hooks."""
+        """Register with server, load global params, install optimizer hooks.
+
+        Under DDP, only rank 0 talks to the server. All ranks install
+        the optimizer hook (so they participate in the broadcast at
+        sync time), but the HTTP round-trip is leader-only.
+        """
         if self._active:
             logger.warning("DiLoCoWorker already active")
             return
 
-        logger.info(f"DiLoCoWorker {self.worker_id}: registering with server...")
+        if self._is_leader:
+            logger.info(
+                f"DiLoCoWorker {self.worker_id}: registering with server "
+                f"(DDP rank {self._ddp_rank}/{self._ddp_world_size})"
+            )
 
-        # Register and get global params
-        worker_info = self._get_worker_info()
-        global_params = self.client.register(self.worker_id, worker_info)
+            # Register and get global params
+            worker_info = self._get_worker_info()
+            global_params = self.client.register(self.worker_id, worker_info)
 
-        # Load global params into model
-        self._apply_global_params(global_params)
-        self._save_global_params_snapshot()
+            # Load global params into model
+            self._apply_global_params(global_params)
+            self._save_global_params_snapshot()
+        else:
+            logger.info(
+                f"DiLoCoWorker {self.worker_id}: DDP follower "
+                f"(rank {self._ddp_rank}/{self._ddp_world_size}); leader "
+                "owns the server connection."
+            )
 
-        # Install optimizer hook
+        # Broadcast the leader's (post-register) params to all DDP
+        # ranks so everyone starts training from the same checkpoint.
+        # Redundant if all ranks loaded from the same --model-id-or-path
+        # but cheap insurance — the server may have returned params
+        # different from what the leader loaded (other DiLoCo hosts
+        # already pushed updates).
+        self._broadcast_params_from_leader()
+        if not self._is_leader:
+            # Followers' global-snapshot tracks the leader's so future
+            # sync-time pseudograd math (leader-only) and any
+            # diagnostic comparisons stay consistent.
+            self._save_global_params_snapshot()
+
+        # Install optimizer hook (on every rank — followers need to
+        # be in the broadcast collective at sync time).
         hook = self.optimizer.register_step_post_hook(self._post_step_hook)
         self._hooks.append(hook)
 
         self._active = True
         self._local_step = 0
 
-        # Start heartbeat thread (enables server-side health monitoring
-        # and DyLU speed reporting)
-        if self.heartbeat_interval > 0:
+        # Start heartbeat thread (leader only — followers don't have
+        # a server connection to heartbeat to)
+        if self._is_leader and self.heartbeat_interval > 0:
             self._heartbeat_stop.clear()
             self._heartbeat_thread = threading.Thread(
                 target=self._heartbeat_loop, daemon=True
@@ -211,26 +277,33 @@ class DiLoCoWorker:
         )
 
     def stop(self):
-        """Remove hooks and deregister from server."""
+        """Remove hooks and deregister from server.
+
+        Under DDP, only the leader (rank 0) deregisters; followers
+        never registered to begin with. Hook removal is per-rank.
+        """
         if not self._active:
             return
 
-        # Wait for any in-flight fragment to complete
-        self._wait_and_apply_inflight_fragment()
+        # Wait for any in-flight fragment to complete (leader only —
+        # followers have no in-flight server work).
+        if self._is_leader:
+            self._wait_and_apply_inflight_fragment()
 
-        # Stop heartbeat thread
-        if self._heartbeat_thread is not None:
-            self._heartbeat_stop.set()
-            self._heartbeat_thread.join(timeout=5)
-            self._heartbeat_thread = None
+            # Stop heartbeat thread
+            if self._heartbeat_thread is not None:
+                self._heartbeat_stop.set()
+                self._heartbeat_thread.join(timeout=5)
+                self._heartbeat_thread = None
 
-        # Remove optimizer hooks
+        # Remove optimizer hooks (every rank installed one)
         for hook in self._hooks:
             hook.remove()
         self._hooks.clear()
 
-        # Deregister
-        self.client.deregister(self.worker_id)
+        # Deregister (leader only)
+        if self._is_leader:
+            self.client.deregister(self.worker_id)
 
         self._active = False
 
@@ -336,74 +409,97 @@ class DiLoCoWorker:
     def _sync(self):
         """Perform a sync round with the server, with retry on failure.
 
-        On connection error, attempts to re-register with the server and
-        retry the sync up to max_sync_retries times. If all retries fail,
-        logs the error and continues training (the sync is skipped).
+        Under DDP, only the leader (rank 0) computes pseudogradients,
+        sends them to the server, and applies the returned global
+        params. All ranks then participate in a broadcast so DDP stays
+        consistent. Followers skip the HTTP work but still increment
+        their step counters / sync_count to stay in lockstep with the
+        leader.
+
+        On connection error, the leader attempts to re-register with
+        the server and retry the sync up to max_sync_retries times.
+        If all retries fail, logs the error and continues training
+        (the sync is skipped; followers fall through to the broadcast
+        of the leader's unchanged params, which is a no-op).
         """
         t0 = time.time()
 
-        logger.info(
-            f"DiLoCoWorker {self.worker_id}: starting sync "
-            f"(round {self._sync_count + 1}, after {self._local_step} local steps)"
-        )
-
-        # Compute pseudo-gradients
-        pseudograds = self._compute_pseudogradients()
-
-        # Track send size
-        send_bytes = sum(p.numel() * p.element_size() for p in pseudograds.values())
-        self._last_sync_send_bytes = send_bytes
-
-        # Submit with retry on connection failure
-        new_global_params = None
-        retry_delay = 2.0
-        for attempt in range(self.max_sync_retries + 1):
-            try:
-                new_global_params = self.client.submit_pseudogradients(
-                    self.worker_id, pseudograds
-                )
-                break
-            except ConnectionError as e:
-                if attempt < self.max_sync_retries:
-                    self._sync_retries += 1
-                    logger.warning(
-                        f"DiLoCoWorker {self.worker_id}: sync failed "
-                        f"(attempt {attempt + 1}/{self.max_sync_retries + 1}): {e}. "
-                        f"Reconnecting in {retry_delay:.0f}s..."
-                    )
-                    time.sleep(retry_delay)
-                    retry_delay *= 2
-                    self._reconnect()
-                    # Recompute pseudo-gradients (params may have changed
-                    # after reconnect)
-                    pseudograds = self._compute_pseudogradients()
-                else:
-                    logger.error(
-                        f"DiLoCoWorker {self.worker_id}: sync failed after "
-                        f"{self.max_sync_retries + 1} attempts: {e}. "
-                        f"Skipping this sync round."
-                    )
-
-        if new_global_params is not None:
-            # Track receive size
-            recv_bytes = sum(
-                p.numel() * p.element_size() for p in new_global_params.values()
-            )
-            self._last_sync_recv_bytes = recv_bytes
-
-            # Apply new global params to model
-            self._apply_global_params(new_global_params)
-            self._save_global_params_snapshot()
-
-            elapsed = time.time() - t0
-            self._last_sync_time = elapsed
-            self._total_sync_time += elapsed
-
+        if self._is_leader:
             logger.info(
-                f"DiLoCoWorker {self.worker_id}: sync round {self._sync_count + 1} complete. "
-                f"Sent {send_bytes / 1e6:.1f} MB, received {recv_bytes / 1e6:.1f} MB, "
-                f"took {elapsed:.1f}s"
+                f"DiLoCoWorker {self.worker_id}: starting sync "
+                f"(round {self._sync_count + 1}, after {self._local_step} local steps)"
             )
+
+            # Compute pseudo-gradients
+            pseudograds = self._compute_pseudogradients()
+
+            # Track send size
+            send_bytes = sum(p.numel() * p.element_size() for p in pseudograds.values())
+            self._last_sync_send_bytes = send_bytes
+
+            # Submit with retry on connection failure
+            new_global_params = None
+            retry_delay = 2.0
+            for attempt in range(self.max_sync_retries + 1):
+                try:
+                    new_global_params = self.client.submit_pseudogradients(
+                        self.worker_id, pseudograds
+                    )
+                    break
+                except ConnectionError as e:
+                    if attempt < self.max_sync_retries:
+                        self._sync_retries += 1
+                        logger.warning(
+                            f"DiLoCoWorker {self.worker_id}: sync failed "
+                            f"(attempt {attempt + 1}/{self.max_sync_retries + 1}): {e}. "
+                            f"Reconnecting in {retry_delay:.0f}s..."
+                        )
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                        self._reconnect()
+                        # Recompute pseudo-gradients (params may have changed
+                        # after reconnect)
+                        pseudograds = self._compute_pseudogradients()
+                    else:
+                        logger.error(
+                            f"DiLoCoWorker {self.worker_id}: sync failed after "
+                            f"{self.max_sync_retries + 1} attempts: {e}. "
+                            f"Skipping this sync round."
+                        )
+
+            if new_global_params is not None:
+                # Track receive size
+                recv_bytes = sum(
+                    p.numel() * p.element_size() for p in new_global_params.values()
+                )
+                self._last_sync_recv_bytes = recv_bytes
+
+                # Apply new global params to model
+                self._apply_global_params(new_global_params)
+                self._save_global_params_snapshot()
+
+                elapsed = time.time() - t0
+                self._last_sync_time = elapsed
+                self._total_sync_time += elapsed
+
+                logger.info(
+                    f"DiLoCoWorker {self.worker_id}: sync round {self._sync_count + 1} complete. "
+                    f"Sent {send_bytes / 1e6:.1f} MB, received {recv_bytes / 1e6:.1f} MB, "
+                    f"took {elapsed:.1f}s"
+                )
+
+        # Broadcast post-sync params from leader to all followers so
+        # DDP's "all ranks have identical params" invariant holds.
+        # Every DDP rank must participate in the collective at the
+        # same logical step — _local_step is in lockstep across ranks
+        # (DDP's gradient all-reduce keeps optimizer steps synchronized
+        # 1:1) so this fires on every rank simultaneously.
+        self._broadcast_params_from_leader()
+        if not self._is_leader:
+            # Followers refresh their snapshot to match the leader's
+            # post-sync params so any future diagnostic comparison
+            # remains apples-to-apples.
+            self._save_global_params_snapshot()
 
         # Reset local step counter (even on failure, to avoid repeated sync attempts)
         self._local_step = 0

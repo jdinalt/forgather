@@ -405,3 +405,79 @@ class TestWorkerMetrics:
             # Force sync
             worker.force_sync()
             assert worker._sync_count == 1
+
+
+class TestDDPRankAwareness:
+    """DDP rank-awareness: only the leader (rank 0) registers /
+    syncs / heartbeats; followers participate only in the broadcast.
+
+    Real torch.distributed initialization is heavyweight, so these
+    tests construct the worker and then patch ``_is_leader`` /
+    ``_is_dist`` to simulate a follower. The contract is small enough
+    to verify this way: ``start()`` on a follower must NOT call
+    ``client.register``, ``stop()`` must NOT call
+    ``client.deregister``, and the optimizer hook must still be
+    installed so the follower participates in the broadcast at sync
+    time.
+    """
+
+    def test_follower_does_not_register(self, server_with_model):
+        server, model = server_with_model
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+        from unittest.mock import patch
+
+        worker = DiLoCoWorker(
+            model,
+            optimizer,
+            server_addr=f"localhost:{server.port}",
+            sync_every=1000,
+            bf16_comm=False,
+            heartbeat_interval=0,
+        )
+        # Patch rank to simulate follower.
+        worker._is_dist = False  # skip broadcast collective in unit
+        worker._is_leader = False
+
+        with (
+            patch.object(worker.client, "register") as m_register,
+            patch.object(worker.client, "deregister") as m_deregister,
+        ):
+            worker.start()
+            try:
+                # Follower does NOT call register.
+                m_register.assert_not_called()
+                # But it DOES install an optimizer hook (so it
+                # participates in the broadcast at sync time).
+                assert len(worker._hooks) == 1
+                assert worker._active is True
+                # And heartbeat thread is not started.
+                assert worker._heartbeat_thread is None
+            finally:
+                worker.stop()
+            # Follower does NOT call deregister.
+            m_deregister.assert_not_called()
+
+    def test_leader_registers_normally(self, server_with_model):
+        """Default behavior (no distributed group): worker IS the
+        leader, registers as before."""
+        server, model = server_with_model
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+        worker = DiLoCoWorker(
+            model,
+            optimizer,
+            server_addr=f"localhost:{server.port}",
+            sync_every=1000,
+            bf16_comm=False,
+            heartbeat_interval=0,
+        )
+        # Confirm default rank state.
+        assert worker._is_leader is True
+        assert worker._ddp_rank == 0
+        worker.start()
+        try:
+            assert worker._active is True
+            assert len(worker._hooks) == 1
+        finally:
+            worker.stop()

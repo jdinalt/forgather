@@ -229,16 +229,31 @@ class DiLoCoCallback(TrainerCallback):
         # "server down", "wrong port", "firewall" while the operator
         # is still watching the TTY, instead of 500 local steps later
         # when the first sync fails.
-        probe = DiLoCoClient(self.server_addr, timeout=min(self.timeout, 10.0))
-        try:
-            probe.get_status()
-        except Exception as exc:
-            raise DiLoCoServerUnreachable(
-                f"DiLoCoCallback: /status round-trip to "
-                f"{self.server_addr!r} failed at startup: {exc}. "
-                f"The server must be running and reachable before "
-                f"workers can register."
-            ) from exc
+        #
+        # DDP rank 0 only — followers don't talk to the server, so
+        # they shouldn't probe it either. They'll still hit the
+        # broadcast collective inside DiLoCoWorker.start(), so if the
+        # leader fails the probe and aborts, followers will deadlock
+        # waiting for the broadcast — but the leader's exception is
+        # the actionable signal the operator needs, and the worker's
+        # train loop will get torn down by the trainer once the
+        # leader's process exits.
+        import torch.distributed as dist
+
+        is_leader = (
+            not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0
+        )
+        if is_leader:
+            probe = DiLoCoClient(self.server_addr, timeout=min(self.timeout, 10.0))
+            try:
+                probe.get_status()
+            except Exception as exc:
+                raise DiLoCoServerUnreachable(
+                    f"DiLoCoCallback: /status round-trip to "
+                    f"{self.server_addr!r} failed at startup: {exc}. "
+                    f"The server must be running and reachable before "
+                    f"workers can register."
+                ) from exc
 
         self._worker = DiLoCoWorker(
             model=model,
