@@ -55,9 +55,9 @@ forwarding or `--host 0.0.0.0` (see `docs/trainers/diloco.md` for details).
 ### 3. Start Workers
 
 Each worker needs a unique `--worker-id`. The project template appends that
-id to the model name (`ns.model_name = "tinyv2_" + worker_id`) so each worker
-lands in its own output directory — no race on checkpoints / logs / generation
-samples.
+id to the output directory (`ns.output_dir = <main>_<worker_id>`) so each
+worker lands in its own output directory — no race on checkpoints / logs /
+generation samples.
 
 Manual dataset sharding (`--num-shards` / `--shard-index`) has been removed.
 For a single-node smoke run like this one, all workers iterate the full
@@ -238,7 +238,7 @@ Step 500:  Apply fragment 2, submit fragment 3, reset
 ## Output Directories
 
 Each worker passes a unique `--worker-id` (e.g. `w0`, `w1`) — the
-project template's `[globals]` block appends it to `ns.model_name` so
+project template's `[globals]` block appends it to `ns.output_dir` so
 each worker lands in its own output directory under `output_models/`,
 preventing checkpoint and log races.
 

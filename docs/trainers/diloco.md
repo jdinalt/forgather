@@ -128,7 +128,9 @@ forgather diloco server -o path/to/output --from-checkpoint output_models/my_mod
 On each machine, launch a worker that wraps the normal training command.
 Each worker needs a unique `--worker-id` so its output directory doesn't
 collide with the others (the project template appends the worker id to
-`ns.model_name`):
+`ns.output_dir` — applies to both the implicit project default and any
+explicit `--output-dir` the operator passes, so workers get distinct
+per-worker dirs for free):
 
 ```bash
 # sync mode
@@ -154,7 +156,7 @@ Worker arguments:
 - `--server`: Server address as `host:port`
 - `--sync-every`: Local steps between syncs (default: 500)
 - `--worker-id`: Unique worker identity. Drives the per-worker output-dir
-  suffix the project template appends to `ns.model_name`, and the
+  suffix the project template appends to `ns.output_dir`, and the
   uniqueness key the server enforces on `/register`. Auto-generated when
   omitted but operators typically set it explicitly so logs / output dirs
   are predictable.
