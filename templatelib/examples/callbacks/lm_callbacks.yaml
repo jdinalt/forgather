@@ -40,12 +40,14 @@ text_gen_callback_args: &text_gen_callback_args
         action: "abort"
     weight_norm: !call:forgather.ml.trainer.callbacks:WeightNormLogger
     param_norm: !call:forgather.ml.trainer.callbacks:ParameterNormLogger
-    ## DiLoCo parameter-sync callback. Emitted only when
-    ## DILOCO_SERVER is set in the env or --diloco-server passes a
-    ## non-empty value on the CLI. The callback constructor reads
-    ## DILOCO_* env vars internally for any args not explicitly set.
-    ## See docs/trainers/diloco.md.
-    -- if getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server)
+    ## DiLoCo parameter-sync callback. Emitted only when DiLoCo is
+    ## active — the project's [globals] block sets
+    ## ``ns.diloco_is_enabled`` from DILOCO_SERVER / --diloco-server.
+    ## The default(false) is a safety net for projects that use this
+    ## file without going through ``lm_training_project.yaml`` (it
+    ## just means "no DiLoCo if nobody told me otherwise"). See
+    ## docs/trainers/diloco.md.
+    -- if ns.diloco_is_enabled | default(false)
 {{ dl_callback_entry() }}
     -- endif
 

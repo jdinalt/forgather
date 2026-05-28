@@ -322,6 +322,16 @@
         -- set ns.eval_dataset_config = ns.dataset_config
     -- endif
 
+    ## DiLoCo enabled? Single source of truth — referenced by the
+    ## per-worker output_dir suffix below, the train-dataset
+    ## partition-method gate in [dataset_project], the DiLoCo
+    ## callback gate in [trainer_callbacks], and lm_callbacks.yaml's
+    ## own DiLoCo callback gate. The scheduler emits DILOCO_SERVER
+    ## whenever DiLoCo is enabled; the ``--diloco-server`` Jinja var
+    ## (see dynamic_args / the diloco mixin) is the CLI / template
+    ## override path.
+    -- set ns.diloco_is_enabled = getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server)
+
     ## DiLoCo: per-worker output dir. When DILOCO_WORKER_ID is set
     ## (the scheduler emits it whenever DiLoCo is enabled, with a
     ## queue_id fallback), append it to model_name so each worker
@@ -409,6 +419,7 @@
 # ns.global_lr: {{ ns.global_lr }}
 # ns.trainer_type: {{ ns.trainer_type }}
 # ns.trainer_class: {{ ns.trainer_class }}
+# ns.diloco_is_enabled: {{ "True" if ns.diloco_is_enabled else "False" }}
 -- if ns.trainer_type == "pipeline"
 # Pipeline Parallel:
 # ns.stages_per_rank: {{ ns.stages_per_rank }}
@@ -450,7 +461,7 @@
     ## merge would otherwise pull in — common_dataset_args no longer
     ## carries shard_dataset because train and eval pick different
     ## values under DiLoCo.
-    -- if getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server)
+    -- if ns.diloco_is_enabled
     shard_dataset: { method: "work_units" }
     -- else
     shard_dataset: {{ ns.dispatch_batches == False }}
@@ -610,7 +621,7 @@ optimizer_groups: &optimizer_groups
 ## callback files have their own DiLoCo gate (lm_callbacks.yaml does)
 ## so DiLoCo still flows in through that path.
 [trainer_callbacks]
-    -- if getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server)
+    -- if ns.diloco_is_enabled
     -- include 'lm_training_project_diloco_loggers'
     -- else
     -- include 'callbacks/loggers.yaml'
