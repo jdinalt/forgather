@@ -14,7 +14,7 @@
 #   3. Waits for the server to be ready
 #   4. Starts N workers, each with a unique --diloco-worker-id so
 #      each worker gets a distinct output dir (the project template
-#      appends the worker id to ns.model_name)
+#      appends the worker id to ns.output_dir)
 #   5. Waits for all workers to finish
 #   6. Stops the server
 #
@@ -113,7 +113,7 @@ fi
 
 # Step 4: Start workers. Each worker gets a unique --diloco-worker-id
 # so the project template ([globals] in templates/project.yaml)
-# appends "_$WORKER_ID" to ns.model_name and the workers land in
+# appends "_$WORKER_ID" to ns.output_dir and the workers land in
 # distinct output dirs. The manual --num-shards/--shard-index flow
 # has been removed -- the dataset is iterated in full on each worker
 # (or partitioned via the DiLoCo server's work-unit dispatch when a

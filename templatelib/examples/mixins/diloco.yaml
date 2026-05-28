@@ -6,8 +6,8 @@
 ## contributing macro inside the matching section of your leaf.
 ##
 ## Convention: macros emit YAML text only. Namespace mutation
-## (e.g. ns.model_name += "_" + worker_id) stays in the leaf — see
-## the worker_id_suffix invocation pattern below.
+## (e.g. the per-worker ns.output_dir suffix) stays in the leaf
+## project — ``lm_training_project.yaml`` is the canonical example.
 ##
 ## **Import with context**: callers must use
 ## ``{% from "mixins/diloco.yaml" import … with context %}``. Without
