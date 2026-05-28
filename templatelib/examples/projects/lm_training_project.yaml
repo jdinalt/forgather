@@ -290,6 +290,7 @@
 
     ## Trainer selection
     -- set ns.trainer_type = trainer_type | default("basic")
+    -- set ns.enable_diloco = enable_diloco | default(False)
 
     ## Pipeline Parallel inputs (only used when trainer_type == "pipeline")
     -- set ns.pipe_schedule_factory = pipeline_schedule | default("ScheduleInterleaved1F1B")
@@ -335,8 +336,8 @@
     ##      always have it set.
     ##   2. ``diloco_server`` Jinja var (from --diloco-server CLI or
     ##      a leaf -- set). Mostly historical / cli-driven.
-    ##   3. ``enable_diloco`` Jinja var (from --enable-diloco CLI or
-    ##      a leaf -- set). RENDER-TIME diagnostic override: forces
+    ##   3. ``ns.enable_diloco`` Jinja var (from --enable-diloco CLI or
+    ##      template default). RENDER-TIME diagnostic override: forces
     ##      the template to render as DiLoCo-enabled so ``forgather
     ##      pp/ls`` can show what the rendered config looks like
     ##      under DiLoCo without spinning up a server. NB: this only
@@ -345,7 +346,7 @@
     ##      env — preprocess_dataset's validity check rejects
     ##      ``shard_dataset.method='work_units'`` if
     ##      ``DILOCO_SERVER`` is unset at runtime.
-    -- set ns.diloco_is_enabled = getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server) or (enable_diloco is defined and enable_diloco)
+    -- set ns.diloco_is_enabled = getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server) or ns.enable_diloco
 
     ## Model load path. Operators override via --model-id-or-path
     ## (typical for finetune from an external checkpoint); otherwise
@@ -451,7 +452,8 @@
 # ns.global_lr: {{ ns.global_lr }}
 # ns.trainer_type: {{ ns.trainer_type }}
 # ns.trainer_class: {{ ns.trainer_class }}
-# ns.diloco_is_enabled: {{ "True" if ns.diloco_is_enabled else "False" }}
+# ns.enable_diloco: {{ ns.enable_diloco }}
+# ns.diloco_is_enabled: {{ ns.diloco_is_enabled }}
 # ns.model_id_or_path: {{ ns.model_id_or_path }}
 -- if ns.trainer_type == "pipeline"
 # Pipeline Parallel:
@@ -684,7 +686,7 @@ optimizer_groups: &optimizer_groups
 {{ dl_dynamic_args() }}
     enable_diloco:
         names: "--enable-diloco"
-        action: "store_true"
+        type: bool
         group: "DiLoCo"
         help: "Render-time only: force the template to render as if DiLoCo were active. Useful for `forgather pp`/`ls` diagnostics. Actual runs still require DILOCO_SERVER to be set in the worker env (preprocess_dataset's validity check enforces it)."
     model_id_or_path:

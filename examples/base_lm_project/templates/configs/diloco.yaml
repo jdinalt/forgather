@@ -1,5 +1,4 @@
 -- extends "projects/lm_training_project.yaml"
--- set enable_diloco = True
 
 ## DiLoCo bringup target. ``enable_diloco = True`` forces template
 ## rendering as DiLoCo-enabled; the parent project owns all the
@@ -22,9 +21,4 @@
     -- set ns.config_description = "DiLoCo webui bringup prototype"
     -- set ns.model_name = model_name | default("diloco")
 
-    ## Dataset override: TinyStories (fast-iter-packed) for bringup
-    ## smoke runs. ~2M rows → ~2000 rows/unit at K=1024 so the
-    ## work-dispatch loop cycles visibly in minutes. CLI
-    ## --dataset-project / --dataset-config still override.
-    -- set ns.dataset_proj = dataset_proj | default(abspath(joinpath(ns.forgather_dir, "examples", "datasets", "roneneldan")))
-    -- set ns.dataset_config = dataset_config | default("fast-iter-packed.yaml")
+    -- set ns.enable_diloco = enable_diloco | default(True)
