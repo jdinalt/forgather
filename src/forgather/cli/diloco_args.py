@@ -165,6 +165,25 @@ def create_diloco_parser(global_args):
         default="localhost:8512",
         help="Server address as host:port (default: localhost:8512)",
     )
+    status_parser.add_argument(
+        "--auth-token",
+        default=None,
+        help=(
+            "Bearer token for authenticated servers. When omitted, the "
+            "client falls back to the FORGATHER_DILOCO_SERVER_TOKEN env "
+            "var, then to the per-port loopback file. Remote servers "
+            "without one of those configured will see 401."
+        ),
+    )
+    status_parser.add_argument(
+        "--no-verify-tls",
+        action="store_true",
+        help=(
+            "Skip TLS certificate verification on the upstream server. "
+            "Intended for SSH-tunneled remotes where the trust boundary "
+            "is external."
+        ),
+    )
 
     # worker subcommand
     worker_parser = subparsers.add_parser(

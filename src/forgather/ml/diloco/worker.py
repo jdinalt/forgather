@@ -106,6 +106,8 @@ class DiLoCoWorker:
         group_id: Optional[str] = None,
         pp_rank: int = 0,
         pp_world_size: int = 1,
+        auth_token: Optional[str] = None,
+        verify_tls: bool = True,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -140,7 +142,17 @@ class DiLoCoWorker:
         # pass a PipelineParamView covering only this rank's slice.
         self.param_view: ParamView = param_view or SimpleModelParamView(model)
 
-        self.client = DiLoCoClient(server_addr, timeout=timeout)
+        # Security (issue #90): forward bearer + TLS verification to
+        # the HTTP client. ``auth_token=None`` lets the client fall
+        # back to env-var / loopback-file discovery, which covers the
+        # common locally-spawned case where forgather_server wrote the
+        # token to the per-port file.
+        self.client = DiLoCoClient(
+            server_addr,
+            timeout=timeout,
+            token=auth_token,
+            verify_tls=verify_tls,
+        )
 
         # DDP rank-awareness. When running inside a torch-distributed
         # group (e.g. ``torchrun`` with WORLD_SIZE > 1, or a Forgather

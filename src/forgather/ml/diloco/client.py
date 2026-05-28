@@ -15,6 +15,7 @@ Usage:
 import io
 import json
 import logging
+import os
 import struct
 import time
 import urllib.error
@@ -23,7 +24,12 @@ from typing import Any, Dict, Optional
 
 import torch
 
+from forgather.ml.diloco.auth import read_standalone_token
+
 logger = logging.getLogger(__name__)
+
+#: Env var consulted as a fallback when no explicit token is passed.
+TOKEN_ENV_VAR = "FORGATHER_DILOCO_SERVER_TOKEN"
 
 
 class DiLoCoModelMismatchError(ConnectionError):
@@ -109,6 +115,8 @@ class DiLoCoClient:
         timeout: float = 600,
         max_retries: int = 3,
         retry_delay: float = 1.0,
+        token: Optional[str] = None,
+        verify_tls: bool = True,
     ):
         # Normalize address
         if not server_addr.startswith("http"):
@@ -117,10 +125,46 @@ class DiLoCoClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        # Security (issue #90): bearer token + TLS verification.
+        # Token resolution precedence (mirrors dataset_server's
+        # RemoteBackend): explicit ``token=`` arg → env var
+        # ``FORGATHER_DILOCO_SERVER_TOKEN`` → per-port loopback file.
+        # Returns ``None`` for remote URLs without an explicit token,
+        # in which case requests go unauthenticated (and will 401 if
+        # the server has auth enabled — the caller sees a clean
+        # ``ConnectionError`` describing the 401).
+        if token is None:
+            token = os.environ.get(TOKEN_ENV_VAR) or None
+        if token is None:
+            token = read_standalone_token(self.server_addr)
+        self.token = token
+        # SSL context — only built when the URL is https. Cleartext
+        # URLs pass ``context=None`` to urllib so it's a no-op there.
+        if self.server_addr.lower().startswith("https"):
+            from forgather.tls.runtime import urllib_ssl_context
+
+            self._ssl_ctx = urllib_ssl_context(verify=verify_tls)
+        else:
+            self._ssl_ctx = None
 
     def _url(self, path: str) -> str:
         """Build full URL for an endpoint."""
         return f"{self.server_addr}/{path.lstrip('/')}"
+
+    def _headers(self, content_type: Optional[str] = None) -> Dict[str, str]:
+        """Build request headers, attaching the bearer token when known.
+
+        ``Authorization: Bearer <token>`` is sent on every request when
+        a token is configured. The server's request handler verifies it
+        via constant-time compare (see ``ml/diloco/auth.py``); the
+        client doesn't need to discover whether auth is on or off.
+        """
+        headers: Dict[str, str] = {}
+        if content_type is not None:
+            headers["Content-Type"] = content_type
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
 
     def _serialize_state_dict(self, state_dict: Dict[str, torch.Tensor]) -> bytes:
         """Serialize a state dict to bytes."""
@@ -148,7 +192,7 @@ class DiLoCoClient:
             url,
             data=body,
             method=method,
-            headers={"Content-Type": "application/json"} if body else {},
+            headers=self._headers("application/json" if body else None),
         )
 
         max_retries = retries if retries is not None else self.max_retries
@@ -156,7 +200,9 @@ class DiLoCoClient:
 
         for attempt in range(max_retries + 1):
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with urllib.request.urlopen(
+                    req, timeout=self.timeout, context=self._ssl_ctx
+                ) as resp:
                     return json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
                 # Server-side 4xx/5xx — the response is the server's
@@ -211,10 +257,12 @@ class DiLoCoClient:
                 url,
                 data=body,
                 method=method,
-                headers={"Content-Type": content_type} if body else {},
+                headers=self._headers(content_type if body else None),
             )
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with urllib.request.urlopen(
+                    req, timeout=self.timeout, context=self._ssl_ctx
+                ) as resp:
                     data = resp.read()
                     return self._deserialize_state_dict(data)
             except urllib.error.HTTPError as e:
@@ -269,13 +317,15 @@ class DiLoCoClient:
             url,
             data=body,
             method="POST",
-            headers={"Content-Type": "application/json"},
+            headers=self._headers("application/json"),
         )
 
         delay = self.retry_delay
         for attempt in range(self.max_retries + 1):
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with urllib.request.urlopen(
+                    req, timeout=self.timeout, context=self._ssl_ctx
+                ) as resp:
                     data = resp.read()
                     params = self._deserialize_state_dict(data)
                     logger.info(

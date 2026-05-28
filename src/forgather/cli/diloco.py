@@ -163,7 +163,14 @@ def _status_cmd(args):
     """Get DiLoCo server status."""
     from forgather.ml.diloco.client import DiLoCoClient
 
-    client = DiLoCoClient(args.server, timeout=10)
+    # Token + verify_tls are picked up from explicit args / env /
+    # loopback per-port file by DiLoCoClient automatically.
+    client = DiLoCoClient(
+        args.server,
+        timeout=10,
+        token=getattr(args, "auth_token", None),
+        verify_tls=not getattr(args, "no_verify_tls", False),
+    )
 
     try:
         status = client.get_status()
