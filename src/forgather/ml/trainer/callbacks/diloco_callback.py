@@ -218,10 +218,46 @@ class DiLoCoCallback(TrainerCallback):
 
         model = kwargs.get("model")
         optimizer = kwargs.get("optimizer")
+        trainer = kwargs.get("trainer")
         if model is None or optimizer is None:
             raise RuntimeError(
                 "DiLoCoCallback: model or optimizer not provided in "
                 "on_train_begin kwargs. Cannot initialize DiLoCoWorker."
+            )
+
+        # Pipeline-parallel detection (issue #84). The pipeline trainer
+        # stores per-rank stage modules in ``trainer.pipeline_modules``
+        # and the meta-device root model in ``trainer.model``. Cloning
+        # meta tensors fails, so on pipeline trainers we hand the worker
+        # a ``PipelineParamView`` over the on-device stage modules and
+        # register as one rank of a ``pp_world_size``-sized group. Every
+        # pipeline rank becomes its own DiLoCo worker (worker_id derived
+        # from the operator's base id with a ``_pp<rank>`` suffix); the
+        # server (commits 1-3) coordinates the per-rank slice
+        # submissions into one logical DiLoCo job.
+        param_view = None
+        group_kwargs: Dict[str, object] = {}
+        worker_id = self.worker_id
+        if trainer is not None and getattr(trainer, "pipeline_modules", None):
+            from forgather.ml.diloco.param_view import PipelineParamView
+
+            pp_rank = trainer.dist.rank
+            pp_world_size = trainer.dist.world_size
+            param_view = PipelineParamView(
+                pipeline_modules=trainer.pipeline_modules,
+                sharing_metadata=getattr(trainer, "sharing_metadata", None),
+            )
+            base_id = worker_id or DiLoCoWorker._generate_worker_id()
+            worker_id = f"{base_id}_pp{pp_rank}"
+            group_kwargs = dict(
+                group_id=base_id,
+                pp_rank=pp_rank,
+                pp_world_size=pp_world_size,
+            )
+            logger.info(
+                f"DiLoCoCallback: pipeline trainer detected "
+                f"(pp_rank={pp_rank}/{pp_world_size}); registering as "
+                f"group '{base_id}' member '{worker_id}'."
             )
 
         # Reachability pre-check: a /status round-trip before we
@@ -260,13 +296,15 @@ class DiLoCoCallback(TrainerCallback):
             optimizer=optimizer,
             server_addr=self.server_addr,
             sync_every=self.sync_every,
-            worker_id=self.worker_id,
+            worker_id=worker_id,
             bf16_comm=self.bf16_comm,
             timeout=self.timeout,
             dylu=self.dylu,
             heartbeat_interval=self.heartbeat_interval,
             num_fragments=self.num_fragments,
             max_sync_retries=self.max_sync_retries,
+            param_view=param_view,
+            **group_kwargs,
         )
         try:
             self._worker.start()

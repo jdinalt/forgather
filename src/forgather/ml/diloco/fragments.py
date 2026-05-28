@@ -39,7 +39,14 @@ class FragmentManager:
             Must be >= 1 and <= number of parameters.
     """
 
-    def __init__(self, model: nn.Module, num_fragments: int):
+    def __init__(self, model, num_fragments: int):
+        """``model`` may be an ``nn.Module`` (pre-#84 contract) or a
+        ``ParamView`` (post-#84). Duck-typed via ``.named_parameters()``;
+        accepting either lets the worker pass its already-constructed
+        ``ParamView`` straight through without an unwrap step. Under
+        pipeline parallel the view exposes only the rank's slice, so
+        the fragment partitioning operates on the slice — exactly what
+        we want for per-rank fragment streaming."""
         if num_fragments < 1:
             raise ValueError(f"num_fragments must be >= 1, got {num_fragments}")
 
@@ -127,7 +134,7 @@ class FragmentManager:
         self,
         fragment_id: int,
         global_params: Dict[str, torch.Tensor],
-        model: nn.Module,
+        model,
         bf16_comm: bool = True,
     ) -> Dict[str, torch.Tensor]:
         """
@@ -161,7 +168,7 @@ class FragmentManager:
         self,
         fragment_id: int,
         new_params: Dict[str, torch.Tensor],
-        model: nn.Module,
+        model,
         global_params: Dict[str, torch.Tensor],
     ):
         """

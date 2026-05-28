@@ -513,3 +513,102 @@ class TestDDPRankAwareness:
             assert len(worker._hooks) == 1
         finally:
             worker.stop()
+
+
+class TestPipelineGroupGuards:
+    """Issue #84: the worker's construction-time refusals for unsafe
+    combinations under pipeline groups."""
+
+    def test_pure_pipeline_world_size_equals_pp_world_size_is_allowed(
+        self, server_with_model
+    ):
+        """Pure pipeline parallel: ``torch.distributed`` is initialized
+        with world_size == pp_world_size, each process IS one pipeline
+        rank. The worker MUST construct without complaint — the
+        within-stage DDP guard only fires when world_size exceeds
+        pp_world_size (genuine stage replication). Regression test
+        for the pp=2 + torchrun --nproc_per_node=2 startup failure."""
+        from unittest.mock import patch
+
+        from forgather.ml.diloco.param_view import PipelineParamView
+
+        server, model = server_with_model
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+        view = PipelineParamView([model])
+
+        with (
+            patch("forgather.ml.diloco.worker.dist.is_available", return_value=True),
+            patch("forgather.ml.diloco.worker.dist.is_initialized", return_value=True),
+            patch("forgather.ml.diloco.worker.dist.get_rank", return_value=1),
+            patch("forgather.ml.diloco.worker.dist.get_world_size", return_value=2),
+        ):
+            # Must not raise. (Network registration is irrelevant — we
+            # construct without calling start().)
+            DiLoCoWorker(
+                model,
+                optimizer,
+                server_addr=f"localhost:{server.port}",
+                sync_every=1000,
+                bf16_comm=False,
+                heartbeat_interval=0,
+                param_view=view,
+                group_id="alpha",
+                pp_rank=1,
+                pp_world_size=2,
+            )
+
+    def test_pipeline_plus_within_stage_ddp_is_rejected(self, server_with_model):
+        """When world_size > pp_world_size the extra processes are
+        within-stage DDP replicas — refused at construction time
+        until the composition is implemented."""
+        from unittest.mock import patch
+
+        from forgather.ml.diloco.param_view import PipelineParamView
+
+        server, model = server_with_model
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+        view = PipelineParamView([model])
+
+        with (
+            patch("forgather.ml.diloco.worker.dist.is_available", return_value=True),
+            patch("forgather.ml.diloco.worker.dist.is_initialized", return_value=True),
+            patch("forgather.ml.diloco.worker.dist.get_rank", return_value=0),
+            # world_size=4, pp_world_size=2 → 2 DDP replicas per pp rank
+            patch("forgather.ml.diloco.worker.dist.get_world_size", return_value=4),
+        ):
+            with pytest.raises(ValueError, match="within-stage DDP"):
+                DiLoCoWorker(
+                    model,
+                    optimizer,
+                    server_addr=f"localhost:{server.port}",
+                    sync_every=1000,
+                    bf16_comm=False,
+                    heartbeat_interval=0,
+                    param_view=view,
+                    group_id="alpha",
+                    pp_rank=0,
+                    pp_world_size=2,
+                )
+
+    def test_pipeline_plus_dylu_is_rejected(self, server_with_model):
+        """DyLU + pipeline groups would desync the group barrier."""
+        from forgather.ml.diloco.param_view import PipelineParamView
+
+        server, model = server_with_model
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+        view = PipelineParamView([model])
+
+        with pytest.raises(ValueError, match="DyLU"):
+            DiLoCoWorker(
+                model,
+                optimizer,
+                server_addr=f"localhost:{server.port}",
+                sync_every=1000,
+                bf16_comm=False,
+                heartbeat_interval=0,
+                param_view=view,
+                group_id="alpha",
+                pp_rank=0,
+                pp_world_size=2,
+                dylu=True,
+            )
