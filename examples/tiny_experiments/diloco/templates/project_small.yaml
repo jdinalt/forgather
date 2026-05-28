@@ -1,22 +1,20 @@
 -- extends "projects/small.yaml"
+-- set enable_diloco = True
 
-## Tiny Experiments / DiLoCo project — "small" variant. Finetune
-## scaffolding on top of the larger ``projects/small.yaml`` base
-## (which sets ``trainer_type = "ddp"`` by default and uses the
-## Llama "small" model + Fineweb-Edu Packed). Leaf configs extending
-## this project can run as e.g. two DDPx2 hosts composed via DiLoCo —
-## exercising the cross-host DiLoCo coordination on top of the
-## within-host DDP one.
+## Tiny Experiments / DiLoCo project — "small" variant.
+## ``enable_diloco = True`` forces template rendering as DiLoCo-enabled;
+## the parent (``small.yaml`` → ``tinyv2.yaml`` → ``lm_training_project.yaml``)
+## owns all the actual wiring.
 ##
-## DiLoCo wiring itself (callback, CLI args, worker-id suffix) lives
-## in lm_training_project.yaml and fires whenever DILOCO_SERVER is
-## set. This project just adds finetune-from-pretrained on top.
-
-{% from "mixins/finetune.yaml" import
-    variable_listing as ft_variable_listing,
-    dynamic_args as ft_dynamic_args
-    with context
-%}
+## The ``small`` base sets ``trainer_type = "ddp"`` by default and uses
+## the Llama "small" model + Fineweb-Edu Packed. Leaf configs extending
+## this project can run as e.g. two DDPx2 hosts composed via DiLoCo —
+## exercising cross-host DiLoCo coordination on top of within-host DDP.
+##
+## NB: ``enable_diloco`` is a RENDER-TIME signal. Running this config
+## still requires ``DILOCO_SERVER`` to be set in the worker env
+## (preprocess_dataset's validity check rejects ``work_units`` without
+## it).
 
 
 [config_metadata]
@@ -24,26 +22,3 @@
     -- set ns.config_name = "DiLoCo Training (Small)"
     -- set ns.config_description = "Small Llama with DiLoCo distributed local-SGD (DDPx2 per worker)"
     -- set ns.log_name = "diloco_small"
-
-
-[globals]
-    == super()
-    ## finetune: default model_id_or_path to per-model output dir.
-    -- set ns.model_id_or_path = model_id_or_path | default(joinpath(ns.models_dir, ns.model_name))
-
-
-[variable_listing]
-    == super()
-{{ ft_variable_listing(ns.model_id_or_path) }}
-
-
-[construct_new_model]
-    ## finetune scaffolding: load from pretrained config. Inlined
-    ## here (not in the mixin) because Jinja macros can't carry ns
-    ## through ``-- include`` boundaries.
-    -- include 'models/causal_lm/from_pretrained_config.yaml'
-
-
-[dynamic_args]
-    == super()
-{{ ft_dynamic_args() }}

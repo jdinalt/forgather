@@ -32,13 +32,11 @@
 
 
 -- macro dynamic_args()
-    model_id_or_path:
-        names: [ "--model-id-or-path", "-M" ]
-        type: "path"
-        group: "Model"
-        required: true
-        help: "HF model ID or local path to model"
-    ## Delete menu items that don't apply on the load-from-path path.
+    ## NB: ``--model-id-or-path`` itself is defined by
+    ## ``lm_training_project.yaml`` (it's a cross-cutting concern
+    ## shared with DiLoCo, which also needs the load-from-path).
+    ## This mixin just deletes the alternatives that don't apply on
+    ## the load-from-path code path.
     model_project: ~
     model_config: ~
 -- endmacro

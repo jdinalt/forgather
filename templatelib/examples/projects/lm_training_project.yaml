@@ -323,14 +323,40 @@
     -- endif
 
     ## DiLoCo enabled? Single source of truth — referenced by the
-    ## per-worker output_dir suffix below, the train-dataset
-    ## partition-method gate in [dataset_project], the DiLoCo
-    ## callback gate in [trainer_callbacks], and lm_callbacks.yaml's
-    ## own DiLoCo callback gate. The scheduler emits DILOCO_SERVER
-    ## whenever DiLoCo is enabled; the ``--diloco-server`` Jinja var
-    ## (see dynamic_args / the diloco mixin) is the CLI / template
-    ## override path.
-    -- set ns.diloco_is_enabled = getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server)
+    ## conditional model construction below, the per-worker
+    ## output_dir suffix, the train-dataset partition-method gate in
+    ## [dataset_project], the DiLoCo callback gate in
+    ## [trainer_callbacks], and lm_callbacks.yaml's own DiLoCo
+    ## callback gate.
+    ##
+    ## Three signals OR'd:
+    ##   1. ``DILOCO_SERVER`` env var (set by the scheduler at worker
+    ##      spawn). This is the RUNTIME signal — actual DiLoCo runs
+    ##      always have it set.
+    ##   2. ``diloco_server`` Jinja var (from --diloco-server CLI or
+    ##      a leaf -- set). Mostly historical / cli-driven.
+    ##   3. ``enable_diloco`` Jinja var (from --enable-diloco CLI or
+    ##      a leaf -- set). RENDER-TIME diagnostic override: forces
+    ##      the template to render as DiLoCo-enabled so ``forgather
+    ##      pp/ls`` can show what the rendered config looks like
+    ##      under DiLoCo without spinning up a server. NB: this only
+    ##      affects rendering. Actually RUNNING the rendered config
+    ##      still requires DILOCO_SERVER to be set in the worker's
+    ##      env — preprocess_dataset's validity check rejects
+    ##      ``shard_dataset.method='work_units'`` if
+    ##      ``DILOCO_SERVER`` is unset at runtime.
+    -- set ns.diloco_is_enabled = getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server) or (enable_diloco is defined and enable_diloco)
+
+    ## Model load path. Default to this project's main model dir
+    ## (captured BEFORE the worker-id suffix gets appended below, so
+    ## all DiLoCo workers default to loading from the same shared
+    ## checkpoint while writing to per-worker output dirs).
+    ## Operators override via --model-id-or-path.
+    -- if model_id_or_path is defined and model_id_or_path
+        -- set ns.model_id_or_path = model_id_or_path
+    -- else
+        -- set ns.model_id_or_path = joinpath(ns.models_dir, ns.model_name)
+    -- endif
 
     ## DiLoCo: per-worker output dir. When DILOCO_WORKER_ID is set
     ## (the scheduler emits it whenever DiLoCo is enabled, with a
@@ -420,6 +446,7 @@
 # ns.trainer_type: {{ ns.trainer_type }}
 # ns.trainer_class: {{ ns.trainer_class }}
 # ns.diloco_is_enabled: {{ "True" if ns.diloco_is_enabled else "False" }}
+# ns.model_id_or_path: {{ ns.model_id_or_path }}
 -- if ns.trainer_type == "pipeline"
 # Pipeline Parallel:
 # ns.stages_per_rank: {{ ns.stages_per_rank }}
@@ -496,21 +523,39 @@ eval_dataset: &eval_dataset !call:getitem [ *eval_dataset_dict, 'eval_dataset' ]
     attn_implementation: "{{ ns.attn_implementation }}"
 
 [construct_new_model]
+    ## Under DiLoCo, the include emits ``&tokenizer`` and ``&model``
+    ## directly from a pretrained checkpoint (every worker must start
+    ## from the same initial weights — newly-constructed models would
+    ## have different random initializations and DiLoCo's parameter
+    ## sync averages divergent states). The ``--model-id-or-path``
+    ## arg (or ``ns.model_id_or_path`` default) points at the
+    ## checkpoint. The sub-blocks below then emit nothing under DiLoCo
+    ## so the non-DiLoCo construct-via-model_project path is skipped.
+    -- if ns.diloco_is_enabled
+    -- include 'models/causal_lm/from_pretrained_config.yaml'
+    -- endif
+
     [model_project_pp_args]
+    -- if not ns.diloco_is_enabled
 .define: &model_project_pp_args
     output_dir: "{{ ns.output_dir }}"
+    -- endif
 
     [model_project]
+    -- if not ns.diloco_is_enabled
 .define: &model_dict !call:forgather:from_project
     project_dir: "{{ ns.model_project_dir }}"
     config_template: "{{ ns.model_project_config }}"
     targets: [ "pretrained_tokenizer", "model" ]
     pp_kwargs: *model_project_pp_args
     model_constructor_args: *model_constructor_args
+    -- endif
 
     [model_assets]
+    -- if not ns.diloco_is_enabled
 tokenizer: &tokenizer !call:getitem [ *model_dict, 'pretrained_tokenizer' ]
 model: &model !call:getitem [ *model_dict, 'model' ]
+    -- endif
 
 ## ===== Trainer ==============================================================
 ##
@@ -631,15 +676,25 @@ optimizer_groups: &optimizer_groups
 [dynamic_args]
     == super()
 {{ dl_dynamic_args() }}
+    enable_diloco:
+        names: "--enable-diloco"
+        action: "store_true"
+        group: "DiLoCo"
+        help: "Render-time only: force the template to render as if DiLoCo were active. Useful for `forgather pp`/`ls` diagnostics. Actual runs still require DILOCO_SERVER to be set in the worker env (preprocess_dataset's validity check enforces it)."
+    model_id_or_path:
+        names: ["--model-id-or-path", "-M"]
+        type: path
+        group: "Model"
+        help: "HF model ID or local path to load the model FROM. Required under DiLoCo (every worker must start from the same checkpoint). For non-DiLoCo runs, defaults to the project's main model dir."
     model_project:
         names: "--model-project"
         type: path
         group: "Model"
-        help: "Path to model project for model initialization"
+        help: "Path to model project for model initialization (non-DiLoCo path)."
     model_config:
         names: "--model-config"
         group: "Model"
-        help: "Model project configuration for model init"
+        help: "Model project configuration for model init (non-DiLoCo path)."
     dataset_proj:
         names: "--dataset-project"
         type: path

@@ -1,23 +1,19 @@
 -- extends "projects/lm_training_project.yaml"
+-- set enable_diloco = True
 
-## DiLoCo bringup target — a finetune leaf with a preset dataset
-## suited for visibly cycling the work-unit dispatch loop. The DiLoCo
-## wiring itself (callback, CLI args, worker-id suffix) lives in
-## lm_training_project.yaml and fires whenever DILOCO_SERVER is set;
-## this leaf only contributes finetune scaffolding + preset
-## overrides.
+## DiLoCo bringup target. ``enable_diloco = True`` forces template
+## rendering as DiLoCo-enabled; the parent project owns all the
+## actual wiring (callback, work-unit dispatch on train, conditional
+## from_pretrained_config model construction, --diloco-* CLI args,
+## worker-id-suffixed output dir). This leaf just sets the preset
+## dataset for the bringup smoke run.
 ##
-## Activation:
-##   - DILOCO_SERVER env var (set by the scheduler) OR --diloco-server
-##     CLI override → callback gets constructed, eval bypass active.
-##   - Neither set → same leaf runs as a vanilla finetune against
-##     the preset dataset.
-
-{% from "mixins/finetune.yaml" import
-    variable_listing as ft_variable_listing,
-    dynamic_args as ft_dynamic_args
-    with context
-%}
+## NB: ``enable_diloco`` is a RENDER-TIME signal. Running this config
+## still requires ``DILOCO_SERVER`` to be set in the worker env
+## (preprocess_dataset's validity check rejects ``work_units`` without
+## it). Set DILOCO_SERVER via the scheduler / launcher when actually
+## training; the flag here lets ``forgather pp`` / ``ls`` show the
+## DiLoCo-enabled rendering without spinning up a server.
 
 
 [config_metadata]
@@ -32,26 +28,3 @@
     ## --dataset-project / --dataset-config still override.
     -- set ns.dataset_proj = dataset_proj | default(abspath(joinpath(ns.forgather_dir, "examples", "datasets", "roneneldan")))
     -- set ns.dataset_config = dataset_config | default("fast-iter-packed.yaml")
-
-
-[globals]
-    == super()
-    ## finetune: default model_id_or_path to per-model output dir.
-    -- set ns.model_id_or_path = model_id_or_path | default(joinpath(ns.models_dir, ns.model_name))
-
-
-[variable_listing]
-    == super()
-{{ ft_variable_listing(ns.model_id_or_path) }}
-
-
-[construct_new_model]
-    ## finetune scaffolding: load from pretrained config. Inlined
-    ## here (not in the mixin) because Jinja macros can't carry ns
-    ## through ``-- include`` boundaries.
-    -- include 'models/causal_lm/from_pretrained_config.yaml'
-
-
-[dynamic_args]
-    == super()
-{{ ft_dynamic_args() }}
