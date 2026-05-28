@@ -39,6 +39,12 @@ from dataset_server.auth import (
 )
 
 from forgather import trainer_control
+from forgather.ml.diloco.auth import (
+    standalone_token_file as diloco_server_standalone_token_file,
+)
+from forgather.ml.diloco.auth import (
+    write_standalone_token as diloco_server_write_standalone_token,
+)
 
 from . import _atomic, _gc, gpu_monitor, job_records, launcher, queue_store
 from .job_records import RUNNING_STATUSES, TERMINAL_STATUSES, JobRecord
@@ -559,10 +565,18 @@ def _build_update(item, gpu_indices, tty_path):
 
 def _build_diloco_server(item, gpu_indices, tty_path):
     p = item.job_params
+    # Auth-token file path (per-port). The scheduler's _launch resolves
+    # and persists the token before invoking this builder; here we
+    # just hand the spawn the path to read from.
+    no_auth = bool(p.get("no_auth", False))
+    port = int(p.get("port", 8512))
+    auth_token_file = (
+        None if no_auth else str(diloco_server_standalone_token_file(port))
+    )
     return launcher.spawn_diloco_server_process(
         output_dir=p["output_dir"],
         num_workers=int(p["num_workers"]),
-        port=int(p.get("port", 8512)),
+        port=port,
         host=p.get("host", "127.0.0.1"),
         async_mode=bool(p.get("async_mode", False)),
         dn_buffer_size=int(p.get("dn_buffer_size", 0) or 0),
@@ -584,6 +598,11 @@ def _build_diloco_server(item, gpu_indices, tty_path):
         min_workers=(
             int(p["min_workers"]) if p.get("min_workers") is not None else None
         ),
+        auth_token_file=auth_token_file,
+        no_auth=no_auth,
+        bulk_port=(int(p["bulk_port"]) if p.get("bulk_port") is not None else None),
+        bulk_tls=p.get("bulk_tls"),
+        bulk_auth=p.get("bulk_auth"),
         tty_log_path=tty_path,
     )
 
@@ -922,6 +941,39 @@ def _resolve_inference_server_token(*, port: int, regen: bool) -> str:
     return token
 
 
+def _resolve_diloco_server_token(*, port: int, regen: bool) -> str:
+    """Return the bearer token a diloco_server spawn should use.
+
+    Mirrors ``_resolve_dataset_server_token``: per-port persisted token
+    file, reused across restarts until the operator passes
+    ``--regen-token``. The same file the standalone ``forgather diloco
+    server`` CLI reads, so a webui-spawned server and a manually-run
+    server are interchangeable from the worker's point of view.
+
+    Persistence may fail (e.g. read-only home); the spawn still gets
+    a valid token in memory and the JobRecord carries it, but the next
+    start won't auto-discover. Logged at WARNING; not raised.
+    """
+    token_path = diloco_server_standalone_token_file(port)
+    if not regen and token_path.is_file():
+        try:
+            existing = token_path.read_text().strip()
+        except OSError:
+            existing = ""
+        if existing:
+            return existing
+    token = secrets.token_hex(32)
+    try:
+        diloco_server_write_standalone_token(port, token)
+    except OSError as e:
+        log.warning(
+            "could not persist diloco_server token at %s: %s",
+            token_path,
+            e,
+        )
+    return token
+
+
 def _resolve_dataset_server_token(*, port: int, regen: bool) -> str:
     """Return the bearer token a dataset_server spawn should use.
 
@@ -1011,6 +1063,16 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
                 port=int(item.job_params.get("port", 8766)),
                 regen=bool(item.job_params.get("regen_token", False)),
             )
+        elif item.job_type == "diloco_server":
+            # Per-port persisted token (matches dataset_server). Worker
+            # plumbing in forgather.ml.diloco.client auto-discovers it
+            # from this same per-port file when the URL is loopback;
+            # the webui proxy reads it from the JobRecord and attaches
+            # the bearer header for cross-host browsers.
+            auth_token = _resolve_diloco_server_token(
+                port=int(item.job_params.get("port", 8512)),
+                regen=bool(item.job_params.get("regen_token", False)),
+            )
 
     # Stamp the actual URL scheme into job_params for inference and
     # dataset_server jobs. The spawned child picks TLS up from the
@@ -1021,7 +1083,7 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
     # TensorBoard and MkDocs are intentionally not stamped: those
     # services don't read forgather's TLS config and always serve HTTP.
     finalized_params = dict(item.job_params)
-    if item.job_type in ("inference", "dataset_server"):
+    if item.job_type in ("inference", "dataset_server", "diloco_server"):
         try:
             from forgather.tls import client_scheme as _client_scheme
 
