@@ -173,24 +173,29 @@ class DiLoCoWorker:
             # (different slices).
             self._is_leader = True
             # Pipeline + within-stage DDP composition isn't supported
-            # by the forgather trainer today. If both are active, the
-            # worker would build a PipelineParamView covering this
-            # rank's slice while DDP would also try to broadcast
-            # post-sync params via NCCL — but each pipeline rank holds
-            # different parameter names, so the broadcast collective
-            # would mismatch and either deadlock or surface as an
-            # opaque NCCL error. Refuse the combo at construction time
-            # so the failure is loud. When pipeline+DDP composition
-            # lands later, this gate relaxes to "only refuse when the
-            # required pp_group plumbing is missing".
-            if self._is_dist and self._ddp_world_size > 1:
+            # by the forgather trainer today. Under pure pipeline,
+            # the torch.distributed world_size equals pp_world_size
+            # (each process IS one pipeline rank). Within-stage DDP
+            # would multiply the world_size by the per-stage replica
+            # count, so world_size > pp_world_size is the signal. If
+            # both were active, the worker would build a
+            # PipelineParamView covering this rank's slice while DDP
+            # would also try to broadcast post-sync params via NCCL —
+            # but each pipeline rank holds different parameter names,
+            # so the broadcast collective would mismatch and either
+            # deadlock or surface as an opaque NCCL error. When
+            # pipeline+DDP composition lands, this gate will check
+            # for the ``pp_group`` plumbing instead.
+            if self._is_dist and self._ddp_world_size > self.pp_world_size:
                 raise ValueError(
                     f"DiLoCo + pipeline-parallel (pp_world_size="
                     f"{self.pp_world_size}) is not yet compatible "
-                    f"with within-stage DDP (world_size="
-                    f"{self._ddp_world_size}). Use one process per "
-                    "pipeline rank without within-stage DDP, or wait "
-                    "for the pipeline+DDP composition to land."
+                    f"with within-stage DDP "
+                    f"(torch.distributed world_size="
+                    f"{self._ddp_world_size}, exceeds pp_world_size). "
+                    "Use one process per pipeline rank without "
+                    "within-stage DDP, or wait for the pipeline+DDP "
+                    "composition to land."
                 )
             # DyLU under pipeline groups would push ranks to different
             # ``sync_every`` settings and break the group barrier
