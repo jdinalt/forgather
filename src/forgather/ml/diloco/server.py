@@ -239,6 +239,35 @@ def _find_lowest_unset(bm: bytearray, total_bits: int) -> int:
     return -1
 
 
+# Per-control-action allowlist of fields that are safe to audit-log.
+# Today's actions only carry intent metadata (no secrets); the allowlist
+# guards against a future control endpoint that accepts credential
+# material silently landing it in the audit log. Unknown actions log
+# no data fields.
+_CONTROL_AUDIT_FIELDS: Dict[str, frozenset] = {
+    "save_state": frozenset(),
+    "kick_worker": frozenset({"worker_id"}),
+    "update_optimizer": frozenset({"lr", "momentum", "nesterov"}),
+    "update_num_workers": frozenset({"num_workers"}),
+    "shutdown": frozenset(),
+}
+
+
+def _audit_control_data(action: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    """Redact a ``/control/{action}`` payload to its allowlisted fields.
+
+    Unknown actions return an empty dict — surfacing that a payload was
+    received without exposing its contents. Unknown fields under a
+    known action are silently dropped (logged at DEBUG via the audit
+    record's absence of those keys, not as a warning, to keep audit
+    output deterministic).
+    """
+    allowed = _CONTROL_AUDIT_FIELDS.get(action, frozenset())
+    if not isinstance(data, dict) or not allowed:
+        return {}
+    return {k: v for k, v in data.items() if k in allowed}
+
+
 def _utc_iso_now() -> str:
     """ISO-8601 UTC timestamp suitable for log records.
 
@@ -414,12 +443,24 @@ class DiLoCoServer:
         # constructed directly without a token); production CLI/spawn
         # paths always populate it. ``ssl_context=None`` keeps the
         # listener cleartext.
+        if auth_token is not None and not auth_token:
+            # Empty-string token is treated as "auth disabled" by
+            # ``verify_bearer``. That's intentional for the
+            # ``auth_token=None`` path, but an explicit empty string
+            # is almost always a misconfiguration (e.g. a token file
+            # that's whitespace-only). Surface it loudly so the
+            # operator notices.
+            logger.warning(
+                "DiLoCoServer constructed with auth_token='' (empty); "
+                "auth is effectively disabled. Pass auth_token=None to "
+                "do this intentionally, or supply a real token."
+            )
         self.auth_token = auth_token
         self.ssl_context = ssl_context
         # Optional second listener for bulk data transport (pseudo-
         # gradients + global-params). When ``bulk_port`` is set the
         # three bulk endpoints are served *only* on that port; the
-        # control port returns 404 with an ``X-Forgather-Bulk-Port``
+        # control port returns 404 with an ``X-Forgather-Bulk-Url``
         # hint header. Operators opt into the second listener for
         # throughput; on a trusted LAN they typically also disable
         # TLS+auth there (``bulk_ssl_context=None``,
@@ -910,6 +951,7 @@ class DiLoCoServer:
                     my_frag_round = self._fragment_rounds[frag_id]
                     pending = self._fragment_pending[frag_id]
                     pg_list = list(pending.values())
+                    contributing_workers = list(pending.keys())
                     if pg_list:
                         self._apply_fragment_outer_optimizer(pg_list)
 
@@ -925,6 +967,14 @@ class DiLoCoServer:
                         self._fragment_pending[frag_id].clear()
                         self._fragment_submissions += len(pg_list)
                         self._sync_round += 1
+                        self._audit(
+                            "fragment_outer_step",
+                            fragment_id=frag_id,
+                            fragment_round=my_frag_round,
+                            sync_round=self._sync_round,
+                            contributors=contributing_workers,
+                            triggered_by="eviction",
+                        )
 
             # Wake all waiting threads so they re-evaluate their conditions
             self._sync_cond.notify_all()
@@ -1742,6 +1792,7 @@ class DiLoCoServer:
                 # different name subsets).
                 pending = self._fragment_pending[fragment_id]
                 pg_list = list(pending.values())
+                contributing_workers = list(pending.keys())
                 self._apply_fragment_outer_optimizer(pg_list)
 
                 per_worker: Dict[str, Dict[str, torch.Tensor]] = {
@@ -1754,6 +1805,13 @@ class DiLoCoServer:
                 self._fragment_pending[fragment_id].clear()
                 self._fragment_submissions += len(pg_list)
                 self._sync_round += 1
+                self._audit(
+                    "fragment_outer_step",
+                    fragment_id=fragment_id,
+                    fragment_round=my_round,
+                    sync_round=self._sync_round,
+                    contributors=contributing_workers,
+                )
 
                 # Clean up old fragment rounds
                 old = [
@@ -2285,10 +2343,19 @@ class DiLoCoServer:
 
             # Audit every control invocation. Phase 1 has no per-caller
             # identity binding (issue #90 deferred); the bearer that
-            # got past the auth gate is the only identity we have, and
-            # we deliberately don't log tokens. Future PRs that add
-            # per-rank identity should populate ``caller`` here.
-            self._audit("control", action=action, data=data)
+            # got past the auth gate is the only identity we have.
+            #
+            # Per-action allowlist for ``data`` fields so the audit log
+            # captures the *intent* of the action without becoming a
+            # future-compat hazard for new control endpoints that may
+            # accept secret material (tokens, credentials, etc.).
+            # Unknown actions log no data; unknown fields under a known
+            # action are dropped.
+            self._audit(
+                "control",
+                action=action,
+                data=_audit_control_data(action, data),
+            )
 
             if action == "save_state":
                 self._handle_control_save(handler, data)
@@ -2440,7 +2507,7 @@ class DiLoCoServer:
 
         * ``"control"`` — full route table. When ``bulk_port`` is set
           the three bulk paths are intentionally absent (a 404 with an
-          ``X-Forgather-Bulk-Port`` hint is returned instead).
+          ``X-Forgather-Bulk-Url`` hint is returned instead).
         * ``"bulk"`` — only the three bulk paths plus ``/health``;
           auth check uses ``bulk_auth_enabled`` + the bearer
           (defaults to the control token when ``bulk_auth_enabled``).
@@ -2521,9 +2588,12 @@ class DiLoCoServer:
                             404,
                         )
                         return
-                    if self._bulk_offloaded(path):
-                        return
+                    # Auth check before the bulk-URL hint (issue #90
+                    # review L1): an unauthenticated caller doesn't get
+                    # to learn the bulk-listener topology.
                     if not self._authenticated(path):
+                        return
+                    if self._bulk_offloaded(path):
                         return
                     if path == "/register":
                         server_ref._handle_register(self)
@@ -2566,9 +2636,12 @@ class DiLoCoServer:
                             404,
                         )
                         return
-                    if self._bulk_offloaded(path):
-                        return
+                    # Auth check before the bulk-URL hint (issue #90
+                    # review L1): unauthenticated callers don't learn
+                    # the bulk-listener topology.
                     if not self._authenticated(path):
+                        return
+                    if self._bulk_offloaded(path):
                         return
                     if path == "/health":
                         _send_json_response(self, {"status": "ok"})

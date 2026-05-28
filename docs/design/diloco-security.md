@@ -138,10 +138,13 @@ Instrumented events:
 | `deregister` | worker_id |
 | `eviction` | trigger_worker_id, evicted (list), group_id, remaining |
 | `outer_step` | sync_round, contributors, missing_contributors |
-| `control` | action, data |
+| `fragment_outer_step` | fragment_id, fragment_round, sync_round, contributors, triggered_by (optional) |
+| `control` | action, data (per-action allowlisted; see `_CONTROL_AUDIT_FIELDS`) |
 
 Tokens are never written to this file (regression-guarded by
-`test_token_is_never_logged`).
+`test_token_is_never_logged`). The control-payload allowlist is the
+forward-compat guardrail for future control endpoints that may carry
+secret material — unknown fields under a known action are dropped.
 
 ## RCE hardening
 

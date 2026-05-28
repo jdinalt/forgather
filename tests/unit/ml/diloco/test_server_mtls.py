@@ -19,6 +19,7 @@ Tests:
 
 from __future__ import annotations
 
+import json
 import time
 import urllib.error
 import urllib.request
@@ -196,6 +197,85 @@ class _FakeHandler:
 
     def end_headers(self):
         pass
+
+
+def test_mtls_control_plus_cleartext_bulk(tmp_path, tls_root):
+    """Recommended production posture (per the design doc):
+    control plane on TLS + mTLS, bulk plane on cleartext + no-auth.
+    End-to-end: mTLS register, then /global_params via the cleartext
+    bulk listener."""
+    import socket
+
+    cfg = _provisioned_cfg(tls_root)
+    ctx = stdlib_ssl_context()
+    assert ctx is not None
+    # Pick a free port for the cleartext bulk listener.
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    bulk_port = s.getsockname()[1]
+    s.close()
+
+    ckpt = make_initial_checkpoint(_state_dict(), tmp_path)
+    server = DiLoCoServer(
+        output_dir=str(tmp_path),
+        from_checkpoint=ckpt,
+        num_workers=1,
+        port=0,
+        heartbeat_timeout=0,
+        auth_token="bearer-fallback",
+        ssl_context=ctx,
+        bulk_port=bulk_port,
+        bulk_ssl_context=None,  # cleartext bulk
+        bulk_auth_enabled=False,  # no bearer on bulk
+    )
+    server.start()
+    time.sleep(0.2)
+    try:
+        # Register over mTLS — uses the cluster client cert; no bearer.
+        client_ctx = urllib_ssl_context()
+        body = json.dumps(
+            {
+                "worker_id": "alpha",
+                "hostname": "test",
+                "param_shapes": {"layer.weight": [4, 4]},
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            f"https://localhost:{server.port}/register",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, context=client_ctx, timeout=5) as resp:
+            assert resp.status == 200
+            advertised = resp.headers.get("X-Forgather-Bulk-Url")
+            assert advertised == server.get_bulk_url()
+            assert advertised.startswith("http://")  # cleartext
+
+        # Fetch global params on the cleartext bulk listener — no auth.
+        bulk_req = urllib.request.Request(
+            f"http://localhost:{bulk_port}/global_params",
+            method="GET",
+        )
+        with urllib.request.urlopen(bulk_req, timeout=5) as resp:
+            assert resp.status == 200
+
+        # And confirm the control port still requires auth — the
+        # bearer fallback should reject anonymous callers even
+        # though mTLS clients get in.
+        import ssl as _ssl
+
+        verify_only = _ssl.create_default_context(cafile=str(cfg.effective_bundle()))
+        verify_only.check_hostname = False
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(
+                f"https://localhost:{server.port}/status",
+                context=verify_only,
+                timeout=5,
+            )
+        assert exc_info.value.code == 401
+    finally:
+        server.stop()
 
 
 def test_peer_cert_authenticated_no_connection():

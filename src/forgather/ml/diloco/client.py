@@ -150,6 +150,12 @@ class DiLoCoClient:
         # instead of the control URL. ``None`` keeps the single-port
         # behavior — bulk endpoints go to the same listener.
         self.bulk_url: Optional[str] = None
+        # Cached SSL context for the bulk URL (built lazily on first
+        # bulk request; invalidated when the URL changes on
+        # reconnect). Explicit None here so the attribute exists from
+        # construction time — keeps ``__slots__`` migrations and static
+        # type checkers happy.
+        self._bulk_ssl_ctx: Optional["ssl.SSLContext"] = None
 
     def _ssl_for(self, url: str) -> Optional["ssl.SSLContext"]:
         """SSL context appropriate for ``url`` — None for ``http://``.
@@ -178,11 +184,9 @@ class DiLoCoClient:
         if self.server_addr and url.startswith(self.server_addr):
             return self._ssl_ctx
         if self.bulk_url and url.startswith(self.bulk_url):
-            cached = getattr(self, "_bulk_ssl_ctx", None)
-            if cached is None:
-                cached = self._ssl_for(self.bulk_url)
-                self._bulk_ssl_ctx = cached
-            return cached
+            if self._bulk_ssl_ctx is None:
+                self._bulk_ssl_ctx = self._ssl_for(self.bulk_url)
+            return self._bulk_ssl_ctx
         return self._ssl_for(url)
 
     # Bulk paths that, when ``self.bulk_url`` is populated, route to
@@ -390,14 +394,50 @@ class DiLoCoClient:
                     # (issue #90). When the server offloads bulk paths
                     # to a separate port, all future submit_pseudograd
                     # / global_params calls route to that URL.
+                    #
+                    # On *reconnect*, the server may have changed its
+                    # bulk-listener configuration (or removed it
+                    # entirely). Always re-read the header — including
+                    # when it's absent — and reset accordingly so a
+                    # client that learned a bulk_url before a server
+                    # restart doesn't keep dialing a dead URL.
                     bulk_url = resp.headers.get("X-Forgather-Bulk-Url")
                     if bulk_url:
-                        bulk_url = bulk_url.strip()
-                    if bulk_url and bulk_url != self.bulk_url:
-                        logger.info(
-                            f"Server advertised bulk listener at {bulk_url}; "
-                            f"bulk endpoints will route there."
-                        )
+                        bulk_url = bulk_url.strip() or None
+                    if bulk_url is not None:
+                        # Defense in depth: only honor http(s) bulk URLs.
+                        # A misconfigured proxy or compromised server
+                        # advertising e.g. ``file://`` or
+                        # ``javascript:`` would otherwise route bulk
+                        # requests somewhere the worker had no
+                        # business going. Bad URLs are dropped with a
+                        # WARNING; the worker falls back to the
+                        # control URL for bulk requests.
+                        try:
+                            from urllib.parse import urlparse as _urlparse
+
+                            scheme = _urlparse(bulk_url).scheme.lower()
+                        except Exception:
+                            scheme = ""
+                        if scheme not in ("http", "https"):
+                            logger.warning(
+                                "Ignoring bulk listener URL with "
+                                "unsupported scheme %r: %r",
+                                scheme,
+                                bulk_url,
+                            )
+                            bulk_url = None
+                    if bulk_url != self.bulk_url:
+                        if bulk_url:
+                            logger.info(
+                                f"Server advertised bulk listener at "
+                                f"{bulk_url}; bulk endpoints will route there."
+                            )
+                        elif self.bulk_url:
+                            logger.info(
+                                "Server no longer advertises a bulk listener; "
+                                "bulk endpoints will use the control URL."
+                            )
                         self.bulk_url = bulk_url
                         # Invalidate any cached bulk SSL context.
                         self._bulk_ssl_ctx = None

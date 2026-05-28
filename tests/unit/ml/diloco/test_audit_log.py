@@ -162,6 +162,61 @@ def test_audit_write_failure_does_not_crash_request(server, monkeypatch):
     client.register("alpha", worker_info={"param_shapes": {"layer.weight": [4, 4]}})
 
 
+def test_control_payload_redacted_to_allowlist(server):
+    """Control-action audit records only allowlisted fields — a future
+    endpoint that accidentally carries a secret won't auto-log it."""
+    s, root = server
+    body = json.dumps(
+        {
+            "worker_id": "alpha",
+            "secret_field": "should-not-land-in-audit",
+            "another_secret": "also-no",
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        f"http://localhost:{s.port}/control/kick_worker",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        urllib.request.urlopen(req, timeout=5)
+    except Exception:
+        pass
+
+    text = (root / "diloco_audit.log").read_text(encoding="utf-8")
+    assert "secret_field" not in text
+    assert "another_secret" not in text
+    # The intent metadata DID land.
+    records = _read_audit(root / "diloco_audit.log")
+    control = [r for r in records if r["event"] == "control"]
+    assert len(control) == 1
+    assert control[0]["data"] == {"worker_id": "alpha"}
+
+
+def test_unknown_control_action_has_empty_data(server):
+    """Unknown ``/control/{action}`` audit-logs an empty ``data`` rather
+    than the raw payload — covers the forward-compat case where a new
+    action ships before the allowlist gets updated."""
+    s, root = server
+    body = json.dumps({"anything": "value"}).encode("utf-8")
+    req = urllib.request.Request(
+        f"http://localhost:{s.port}/control/not_a_real_action",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        urllib.request.urlopen(req, timeout=5)
+    except Exception:
+        pass
+
+    records = _read_audit(root / "diloco_audit.log")
+    control = [r for r in records if r["event"] == "control"]
+    assert len(control) == 1
+    assert control[0]["data"] == {}
+
+
 def test_no_output_dir_silently_skips_audit(tmp_path):
     """Empty output_dir → audit is a no-op (matches the in-process
     test fixture pattern where output_dir is provided but tests don't

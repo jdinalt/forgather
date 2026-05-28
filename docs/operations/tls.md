@@ -461,6 +461,28 @@ control action lands as a JSON line in `<output_dir>/diloco_audit.log`.
 Best-effort — write failures log a warning and don't fail the
 operation. Tokens are never written to this file.
 
+#### Migrating an existing no-auth deployment
+
+If you've been running DiLoCo workers against a pre-#90 server (no
+TLS, no bearer), three paths to bring auth online without a flag day:
+
+1. **Loopback-only setup.** Restart the server with no extra flags:
+   the per-port token is auto-generated and persisted to
+   `~/.config/forgather/diloco_server/<port>.token`. Workers that
+   talk to the server via `localhost` / `127.0.0.1` pick the token
+   up automatically — no worker changes needed.
+2. **Cross-host workers.** Copy the per-port token file to each
+   worker host at the same path, or set
+   `FORGATHER_DILOCO_SERVER_TOKEN=<token>` in the worker process's
+   environment. The webui spawner sets this for managed jobs;
+   bare-metal workers need to wire it through their launch script
+   (the `forgather diloco worker` subcommand propagates it via
+   trainer env vars).
+3. **Stay on no-auth.** Add `--no-auth` to the server command. The
+   audit log + `weights_only=True` torch.load hardening still apply,
+   so an attacker can disrupt training but cannot escalate to RCE.
+   Only do this on a network you fully trust.
+
 ### Adding a node later
 
 The same Step-3 procedure for one more node, no cluster restart

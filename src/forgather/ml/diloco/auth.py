@@ -356,6 +356,21 @@ def authenticate_request(
     return verify_bearer(handler, expected_token)
 
 
+def _log_auth_failure(handler: BaseHTTPRequestHandler, reason: str) -> None:
+    """Log a 401 at INFO so operators can correlate misconfigured peers
+    against the audit-log register events. We don't include the
+    presented token — even partial timing-leak hardening means we
+    treat the wrong token as opaque."""
+    client_addr = getattr(handler, "client_address", ("?", 0))
+    logger.info(
+        "diloco: 401 %s from %s:%s on %s",
+        reason,
+        client_addr[0],
+        client_addr[1],
+        getattr(handler, "path", "?"),
+    )
+
+
 def verify_bearer(
     handler: BaseHTTPRequestHandler, expected_token: Optional[str]
 ) -> bool:
@@ -377,10 +392,12 @@ def verify_bearer(
         return True
     auth_header = handler.headers.get("Authorization") or ""
     if not auth_header.lower().startswith("bearer "):
+        _log_auth_failure(handler, "missing or non-bearer Authorization header")
         _send_401(handler)
         return False
     presented = auth_header.split(" ", 1)[1].strip()
     if not hmac.compare_digest(presented, expected_token):
+        _log_auth_failure(handler, "bearer token mismatch")
         _send_401(handler)
         return False
     return True

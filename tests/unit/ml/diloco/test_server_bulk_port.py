@@ -198,6 +198,22 @@ def test_register_response_advertises_bulk_url(two_port_server):
 # ---------------------------------------------------------------------------
 
 
+def test_bulk_port_ignores_stray_bearer_when_auth_disabled(two_port_server):
+    """With ``bulk_auth_enabled=False`` the bulk listener short-circuits
+    the bearer check (returns True without inspecting headers). A
+    worker that defensively sends Authorization to the bulk port
+    must still be served — we don't reject legitimate requests just
+    because they're over-credentialed."""
+    url = f"http://localhost:{two_port_server.bulk_port}/global_params"
+    req = urllib.request.Request(
+        url,
+        method="GET",
+        headers={"Authorization": "Bearer some-random-token"},
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+
+
 def test_client_routes_bulk_to_bulk_listener(two_port_server):
     """End-to-end: client constructed with the control URL learns
     the bulk URL from /register's response header and routes
