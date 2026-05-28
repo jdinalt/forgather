@@ -98,7 +98,9 @@ def maybe_enable_work_dispatch(
     worker. The two are decoupled; they share ``worker_id`` and the
     server address as common identity but never call into each other.
     """
-    server_addr = os.environ.get("DILOCO_SERVER", "").strip()
+    from forgather.ml.diloco import diloco_server_addr
+
+    server_addr = diloco_server_addr()
     if not server_addr:
         # No DiLoCo server: vanilla single-node run, or eval/test load.
         # Nothing to dispatch.

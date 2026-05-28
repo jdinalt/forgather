@@ -385,7 +385,9 @@ def preprocess_dataset(
     # Resolve the partition method up-front so misconfiguration (e.g.
     # work_units without DILOCO_SERVER) fails at preprocess time
     # rather than mid-training when the dispatch loop fires.
-    has_diloco = bool(os.environ.get("DILOCO_SERVER", "").strip())
+    from ..diloco import diloco_is_enabled
+
+    has_diloco = diloco_is_enabled()
     partition_method, partition_kwargs = _resolve_partition_method(
         shard_dataset,
         has_diloco=has_diloco,

@@ -44,18 +44,21 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_datase
         dataset_type: "iterable"
     dataset_length: {{ dataset_length | default(10000) }}
     dataset: *train_dataset_split
+    partition_purpose: "train"
 
 [eval_dataset]
 eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
     <<: *common_preprocess_args
     dataset: *validation_dataset_split
     dataset_length: {{ eval_length | default(500) }}
+    partition_purpose: "eval"
 
 [test_dataset]
 test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@test_dataset
     <<: *common_preprocess_args
     dataset: *test_dataset_split
     dataset_length: 1000
+    partition_purpose: "eval"
 
 [dynamic_args]
     == super()

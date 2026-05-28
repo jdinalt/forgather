@@ -57,6 +57,7 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_datase
     desc: "Tokenizing train"
     fn_kwargs: !var "preprocess_args"
     to_iterable: True
+    partition_purpose: "train"
 
     [eval_dataset]
 eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
@@ -64,7 +65,14 @@ eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@
     tokenizer: *tokenizer
     desc: "Tokenizing validation"
     fn_kwargs: !var "preprocess_args"
+    partition_purpose: "eval"
 ```
+
+`partition_purpose` declares how each split is partitioned across
+DDP / DiLoCo workers — `"train"` for the parameter-update split,
+`"eval"` for replicated-across-DiLoCo-hosts evaluation. See
+`docs/trainers/diloco.md` for the full validity matrix; it's
+optional outside DiLoCo but doesn't hurt to include it.
 
 ## Sliding Window
 

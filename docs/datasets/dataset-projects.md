@@ -185,7 +185,7 @@ When using multi-GPU training without batch dispatching (i.e., `dispatch_batches
 
 ## The `shard_dataset` Parameter
 
-The `shard_dataset` parameter on `preprocess_dataset` controls how datasets are split for distributed training. It accepts two forms.
+The `shard_dataset` parameter on `preprocess_dataset` controls how datasets are partitioned for distributed training. It accepts three forms.
 
 ### Boolean Form
 
@@ -203,7 +203,7 @@ When `True`, the dataset is automatically sharded using the current distributed 
 
 When `False` or `None`, no sharding is performed.
 
-### Dictionary Form
+### Legacy Dictionary Form
 
 ```python
 train_dataset = dataset_project(
@@ -219,17 +219,51 @@ train_dataset = dataset_project(
 This gives explicit control over the number of shards and which shard the current process receives. This is useful for:
 - Testing a specific shard locally
 - Custom parallelism strategies where the shard count differs from world size
-- DiLoCo distributed training where workers are independent processes (not torch distributed ranks)
+- Manual sharding scenarios where you don't want to use the new `method:` form
+
+### New Method-Tagged Form
+
+```python
+# Conventional DDP shard (same as the bool/dict forms above, with explicit naming):
+shard_dataset = {"method": "conventional"}
+shard_dataset = {"method": "conventional", "num_shards": 4, "index": 1}
+
+# DiLoCo work-unit dispatch (cross-host coordination — train only, requires DILOCO_SERVER):
+shard_dataset = {"method": "work_units"}
+```
+
+The `method` field makes the partitioning strategy explicit. Two methods are accepted:
+
+- `"conventional"` — standard DDP/FSDP sharding via `WORLD_SIZE` / `RANK` (the default; equivalent to `True` or the legacy dict form). Each rank gets a disjoint slice of the dataset.
+- `"work_units"` — DiLoCo work-unit dispatch. All DDP ranks across all DiLoCo hosts compete for units in one shared queue keyed on `(dataset_id, shuffle_seed)`. Requires `DILOCO_SERVER` to be set; only valid for the train dataset. See [`docs/trainers/diloco.md`](../trainers/diloco.md) for full mechanics.
+
+### The `partition_purpose` Parameter
+
+`preprocess_dataset` accepts a `partition_purpose: "train" | "eval"` kwarg (defaults to `"train"`) that distinguishes the train dataset's strict DiLoCo rules from the eval/test datasets' replicated-across-hosts behavior. The base `load_dataset.yaml` template stamps it per-singleton: train splits get `"train"`, eval / test get `"eval"`. Snowflake dataset templates that define their own train/eval/test singletons should do the same.
+
+Validity matrix (enforced at preprocess time with a clear error message):
+
+| `partition_purpose='train'` | `DILOCO_SERVER` unset | set |
+|---|---|---|
+| `False` | OK | OK |
+| `True` / `conventional` | OK | **error** (asymmetric-DDP overlap) |
+| `work_units` | **error** | OK |
+
+| `partition_purpose='eval'` | `DILOCO_SERVER` unset | set |
+|---|---|---|
+| `False` | OK | OK |
+| `True` / `conventional` | OK | OK (within-host DDP shard) |
+| `work_units` | **error** | **error** (eval is replicated; no cross-host queue) |
 
 ### How Sharding Works Internally
 
 The implementation in `preprocess_dataset` (`src/forgather/ml/datasets/preprocess.py`):
 
-1. If `shard_dataset` is `True`, it resolves to `{"num_shards": WORLD_SIZE, "index": RANK}`.
-2. If `shard_dataset` is `False`, it becomes `None` (no sharding).
-3. For HuggingFace `Dataset` or `IterableDataset`, it uses `split_dataset_by_node` from the `datasets` library.
-4. For other dataset types (e.g., `SimpleArrowIterableDataset`), it calls the `.shard()` method.
-5. When sharding is enabled, `main_process_first()` is **not** used, because each rank processes its own independent shard. When sharding is disabled, `main_process_first()` ensures rank 0 preprocesses and caches the dataset before other ranks load the cache.
+1. `_resolve_partition_method(shard_dataset, has_diloco, partition_purpose)` normalizes the input into a `(method, kwargs)` pair and enforces the validity matrix.
+2. If `method == "conventional"`: for HuggingFace `Dataset` / `IterableDataset` it uses `split_dataset_by_node` from the `datasets` library; for `ComposableIterableDataset` (and other iterables with `.shard()`) it calls `dataset.shard(num_shards, index)`.
+3. If `method == "work_units"`: calls `maybe_enable_work_dispatch(dataset)` from `forgather.ml.datasets.work_unit_dispatch`, which wires the composable up to the DiLoCo server's work queue.
+4. If `method is None` (no partitioning): the dataset is processed as a single unit by every rank.
+5. When partitioning is enabled, `main_process_first()` is **not** used, because each rank processes its own independent slice. When partitioning is disabled, `main_process_first()` ensures rank 0 preprocesses and caches the dataset before other ranks load the cache.
 
 ### In YAML Configurations
 

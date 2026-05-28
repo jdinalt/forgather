@@ -14,6 +14,7 @@ Key components:
 """
 
 from .client import DiLoCoClient
+from .env import diloco_is_enabled, diloco_server_addr
 from .fragments import FragmentManager
 from .health import HealthMonitor
 from .server import DiLoCoServer
@@ -25,4 +26,6 @@ __all__ = [
     "DiLoCoWorker",
     "FragmentManager",
     "HealthMonitor",
+    "diloco_is_enabled",
+    "diloco_server_addr",
 ]

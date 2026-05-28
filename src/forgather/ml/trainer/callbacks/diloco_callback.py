@@ -126,8 +126,12 @@ class DiLoCoCallback(TrainerCallback):
         timeout: float = 600,
         max_sync_retries: int = 3,
     ):
-        # Resolve with env var fallbacks
-        self.server_addr = server_addr or os.environ.get("DILOCO_SERVER", "")
+        # Resolve with env var fallbacks. ``diloco_server_addr()`` is
+        # the canonical reader — strips whitespace, treats empty /
+        # whitespace-only as unset (matches ``diloco_is_enabled()``).
+        from forgather.ml.diloco import diloco_server_addr
+
+        self.server_addr = server_addr or diloco_server_addr()
         self.sync_every = (
             sync_every if sync_every is not None else _env_int("DILOCO_SYNC_EVERY", 500)
         )
