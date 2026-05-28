@@ -70,6 +70,39 @@ class WorkerInfo:
 
 
 @dataclass
+class WorkerGroup:
+    """A set of workers that together cover the server's full parameter set.
+
+    Solo workers form a degenerate group of one with ``pp_world_size=1``
+    — the slice they declare must equal the server's full param set,
+    matching the pre-#84 fingerprint contract. Pipeline-parallel workers
+    register with ``pp_world_size > 1``; each member declares only its
+    rank's slice. The group is "sealed" once ``len(members) ==
+    pp_world_size``, at which point the union of all member slices must
+    exactly cover ``self._param_names`` (modulo tied-parameter aliases).
+
+    Sync barrier semantics: a sync round releases only when every member
+    of every group has submitted its slice's pseudo-gradients. The
+    server's outer optimizer then aggregates contributions per-name —
+    only the workers whose slice contained a given name participate in
+    that name's average.
+
+    Worker-death policy (issue #84): on any member's death — heartbeat
+    timeout, deregister, or partial-group rollback — every member of the
+    group is evicted atomically. The remaining members would only hold
+    an incomplete slice of the model and could not produce valid
+    pseudo-gradients.
+    """
+
+    group_id: str
+    pp_world_size: int
+    members: Dict[int, str] = field(default_factory=dict)  # pp_rank -> worker_id
+    member_param_names: Dict[int, set] = field(default_factory=dict)
+    created_at: float = 0.0
+    sealed: bool = False
+
+
+@dataclass
 class WorkQueue:
     """One work-unit queue, keyed by ``(dataset_id, shuffle_seed)``.
 
@@ -383,6 +416,17 @@ class DiLoCoServer:
         self._workers: Dict[str, WorkerInfo] = {}
         self._workers_lock = threading.Lock()
 
+        # Worker-group registry (issue #84). Every registered worker_id
+        # belongs to exactly one group. Solo workers form a degenerate
+        # group of one (group_id == worker_id, pp_world_size=1). Pipeline-
+        # parallel workers form a group of pp_world_size; the group is
+        # sealed when all members have registered. ``_worker_to_group``
+        # is the inverse index used by submit / death paths to find the
+        # owning group from a worker_id. Both dicts are protected by
+        # ``_workers_lock`` (same critical section as ``_workers``).
+        self._groups: Dict[str, WorkerGroup] = {}
+        self._worker_to_group: Dict[str, str] = {}
+
         # Sync state - uses a Condition for proper barrier synchronization.
         # Each round is tracked by number; completed round results are stored
         # so threads that wake up late still get the correct result.
@@ -647,31 +691,73 @@ class DiLoCoServer:
         times out, or during explicit deregistration. It must handle both
         sync and async modes, full-model and fragment barriers.
 
+        **Group eviction (issue #84)**: when the dying worker belongs to a
+        pipeline-parallel group (``pp_world_size > 1``), every member of
+        the group is evicted atomically. The remaining members would hold
+        only a partial slice of the model and could not produce valid
+        pseudo-gradients. Solo workers (``pp_world_size == 1``) are the
+        common case and behave exactly like pre-#84: just the dying
+        worker is removed, and its now-empty group entry is cleaned up.
+
         Lock ordering: _sync_cond -> _workers_lock (same as submit handlers).
         """
         with self._sync_cond:
             with self._workers_lock:
                 if worker_id not in self._workers:
                     return
-                del self._workers[worker_id]
+
+                # Identify the owning group and pick the eviction set.
+                group_id = self._worker_to_group.get(worker_id)
+                group = self._groups.get(group_id) if group_id else None
+                if group is not None and group.pp_world_size > 1:
+                    # Whole-group atomic eviction.
+                    evict = [
+                        wid for wid in group.members.values() if wid in self._workers
+                    ]
+                else:
+                    evict = [worker_id]
+
+                # Clean up the group entry: drop the dying member, remove
+                # the group when the last member is gone.
+                if group is not None:
+                    for wid in evict:
+                        for pr, m_wid in list(group.members.items()):
+                            if m_wid == wid:
+                                del group.members[pr]
+                                group.member_param_names.pop(pr, None)
+                                break
+                    if not group.members:
+                        self._groups.pop(group.group_id, None)
+
+                for wid in evict:
+                    self._workers.pop(wid, None)
+                    self._worker_to_group.pop(wid, None)
                 remaining = len(self._workers)
 
-            self._total_worker_deaths += 1
+            self._total_worker_deaths += len(evict)
 
             # Update num_workers (but respect min_workers floor)
             self.num_workers = max(self.min_workers, remaining)
 
-            logger.warning(
-                f"Worker {worker_id} died. "
-                f"Remaining: {remaining}, num_workers now {self.num_workers}"
-            )
+            if len(evict) > 1:
+                logger.warning(
+                    f"Worker {worker_id} died; evicting whole group "
+                    f"'{group_id}' ({len(evict)} member(s)). "
+                    f"Remaining: {remaining}, num_workers now {self.num_workers}"
+                )
+            else:
+                logger.warning(
+                    f"Worker {worker_id} died. "
+                    f"Remaining: {remaining}, num_workers now {self.num_workers}"
+                )
 
             # --- Full-model sync barrier ---
-            # Remove dead worker's pending submission (if any) and update
+            # Remove every evicted worker's pending submission and update
             # the expected workers set.
-            self._pending_pseudograds.pop(worker_id, None)
-            if self._round_expected_workers is not None:
-                self._round_expected_workers.discard(worker_id)
+            for wid in evict:
+                self._pending_pseudograds.pop(wid, None)
+                if self._round_expected_workers is not None:
+                    self._round_expected_workers.discard(wid)
 
             expected = self._get_expected_worker_count()
             submitted = len(self._pending_pseudograds)
@@ -684,10 +770,11 @@ class DiLoCoServer:
                 self._snapshot_round_expected_workers()
 
             # --- Per-fragment sync barriers ---
-            # For each active fragment, remove the dead worker's pending
+            # For each active fragment, remove every evicted worker's pending
             # submission and check if the barrier should release.
             for frag_id in list(self._fragment_pending.keys()):
-                self._fragment_pending[frag_id].pop(worker_id, None)
+                for wid in evict:
+                    self._fragment_pending[frag_id].pop(wid, None)
 
                 frag_expected = expected  # Same expected count
                 frag_submitted = len(self._fragment_pending[frag_id])
@@ -762,21 +849,31 @@ class DiLoCoServer:
         identity layer is the only honest signal we can act on. Operators
         recovering from a crashed worker either wait for the heartbeat
         eviction (~heartbeat_timeout seconds) or POST /deregister.
+
+        **Group registration (issue #84)**: when the worker sends a ``group``
+        block in the registration payload — ``{"group_id": str, "pp_rank":
+        int, "pp_world_size": int}`` — it joins (or creates) a worker
+        group. The group is sealed when ``pp_world_size`` members have
+        registered, at which point the union of their slices is verified
+        to cover the server's full param set. Workers without a ``group``
+        block form a degenerate group of one (group_id == worker_id,
+        pp_world_size=1), preserving the pre-#84 contract for solo
+        workers. Async mode rejects ``pp_world_size > 1`` — see commit 2.
         """
         body = _read_request_body(handler)
         info = json.loads(body.decode("utf-8"))
         worker_id = info["worker_id"]
 
-        # Structural-fingerprint pre-check: workers that opt in by
-        # sending ``param_shapes`` get their model compared to the
-        # server's _param_list shapes BEFORE any registry mutation.
-        # Mismatch → 422 with a diagnostic. Pre-#51 workers (no
-        # param_shapes in info) skip the check for backward compat;
-        # they still hit the (less helpful) shape-mismatch crash at
-        # first sync if the operator pointed them at the wrong model.
-        worker_shapes = info.get("param_shapes")
-        if worker_shapes is not None:
-            mismatch = self._diff_model_fingerprint(worker_shapes)
+        # Slice-fingerprint pre-check: workers that send ``param_shapes``
+        # have their slice validated against the server's master params
+        # BEFORE any registry mutation. Missing-on-server (worker has a
+        # name the server doesn't) and shape mismatches are hard errors;
+        # missing-on-worker is allowed at this point (sliced workers).
+        # Workers that omit ``param_shapes`` skip the check — used by
+        # test mocks. Production workers always send it.
+        slice_shapes = info.get("param_shapes")
+        if slice_shapes is not None:
+            mismatch = self._diff_slice_fingerprint(slice_shapes)
             if mismatch is not None:
                 _send_json_response(
                     handler,
@@ -785,13 +882,48 @@ class DiLoCoServer:
                 )
                 return
 
+        # Parse group block (issue #84). Absent → solo group of one;
+        # present → join the specified group at the specified rank slot.
+        group_info = info.get("group")
+        if group_info is None:
+            group_id = worker_id
+            pp_rank = 0
+            pp_world_size = 1
+        else:
+            try:
+                group_id = str(group_info["group_id"])
+                pp_rank = int(group_info["pp_rank"])
+                pp_world_size = int(group_info["pp_world_size"])
+            except (KeyError, TypeError, ValueError) as e:
+                _send_json_response(
+                    handler,
+                    {
+                        "error": (
+                            f"invalid 'group' block in registration payload: "
+                            f"{e!r}. Expected "
+                            f"{{group_id: str, pp_rank: int, pp_world_size: int}}."
+                        )
+                    },
+                    400,
+                )
+                return
+            if pp_world_size < 1 or pp_rank < 0 or pp_rank >= pp_world_size:
+                _send_json_response(
+                    handler,
+                    {
+                        "error": (
+                            f"invalid group geometry: pp_rank={pp_rank}, "
+                            f"pp_world_size={pp_world_size}. Required: "
+                            f"pp_world_size >= 1, 0 <= pp_rank < pp_world_size."
+                        )
+                    },
+                    400,
+                )
+                return
+
+        seal_error: Optional[str] = None
         with self._workers_lock:
             if worker_id in self._workers:
-                # 409 with a diagnostic the worker logs into its TTY
-                # pane. The previous "re-register replaces" semantics
-                # were a silent collision masker — two operators using
-                # the same --diloco-worker-id used to invisibly kick
-                # each other out. Now it fails fast.
                 _send_json_response(
                     handler,
                     {
@@ -806,16 +938,101 @@ class DiLoCoServer:
                 )
                 return
 
-            self._workers[worker_id] = WorkerInfo(
-                worker_id=worker_id,
-                hostname=info.get("hostname", "unknown"),
-                registered_at=time.time(),
-                last_heartbeat=time.time(),
-                extra=info.get("extra", {}),
-            )
-            num_registered = len(self._workers)
+            # Find or create the group.
+            group = self._groups.get(group_id)
+            if group is None:
+                group = WorkerGroup(
+                    group_id=group_id,
+                    pp_world_size=pp_world_size,
+                    created_at=time.time(),
+                )
+                self._groups[group_id] = group
+            else:
+                if group.sealed:
+                    _send_json_response(
+                        handler,
+                        {
+                            "error": (
+                                f"group '{group_id}' is sealed "
+                                f"({group.pp_world_size} member(s) registered); "
+                                f"to rejoin, deregister the existing member at "
+                                f"pp_rank first or use a different group_id"
+                            )
+                        },
+                        409,
+                    )
+                    return
+                if group.pp_world_size != pp_world_size:
+                    _send_json_response(
+                        handler,
+                        {
+                            "error": (
+                                f"group '{group_id}' declared pp_world_size="
+                                f"{group.pp_world_size} on first member but "
+                                f"this member declares pp_world_size="
+                                f"{pp_world_size}; all members must agree"
+                            )
+                        },
+                        422,
+                    )
+                    return
+                if pp_rank in group.members:
+                    _send_json_response(
+                        handler,
+                        {
+                            "error": (
+                                f"group '{group_id}' already has a member at "
+                                f"pp_rank={pp_rank}: "
+                                f"'{group.members[pp_rank]}'. Each pp_rank slot "
+                                f"can hold only one worker."
+                            )
+                        },
+                        409,
+                    )
+                    return
 
-        # If more workers than expected, grow the expected count
+            # Register the member.
+            group.members[pp_rank] = worker_id
+            group.member_param_names[pp_rank] = (
+                set(slice_shapes) if slice_shapes is not None else set()
+            )
+
+            # Seal + coverage check when the last rank slot fills.
+            if len(group.members) == group.pp_world_size:
+                # Skip coverage when ANY member omitted param_shapes —
+                # test-only path; production workers always send shapes.
+                have_shapes = all(
+                    bool(names) or group.pp_world_size == 1
+                    for names in group.member_param_names.values()
+                )
+                if slice_shapes is not None and have_shapes:
+                    seal_error = self._check_group_coverage(group)
+                if seal_error is not None:
+                    # Atomic rollback: evict every member already registered.
+                    self._rollback_group(group)
+                else:
+                    group.sealed = True
+
+            if seal_error is None:
+                self._workers[worker_id] = WorkerInfo(
+                    worker_id=worker_id,
+                    hostname=info.get("hostname", "unknown"),
+                    registered_at=time.time(),
+                    last_heartbeat=time.time(),
+                    extra=info.get("extra", {}),
+                )
+                self._worker_to_group[worker_id] = group_id
+                num_registered = len(self._workers)
+
+        if seal_error is not None:
+            _send_json_response(
+                handler,
+                {"error": seal_error, "kind": "group_coverage"},
+                422,
+            )
+            return
+
+        # If more workers than expected, grow the expected count.
         if num_registered > self.num_workers:
             self.num_workers = num_registered
             logger.info(
@@ -823,9 +1040,17 @@ class DiLoCoServer:
                 f"num_workers raised to {self.num_workers}"
             )
 
-        logger.info(
-            f"Worker {worker_id} registered ({num_registered}/{self.num_workers})"
-        )
+        if pp_world_size > 1:
+            logger.info(
+                f"Worker {worker_id} registered "
+                f"(group='{group_id}' pp_rank={pp_rank}/{pp_world_size}, "
+                f"{num_registered}/{self.num_workers} total)"
+            )
+        else:
+            logger.info(
+                f"Worker {worker_id} registered "
+                f"({num_registered}/{self.num_workers})"
+            )
 
         # Return global params
         if self.async_mode:
@@ -834,47 +1059,44 @@ class DiLoCoServer:
         else:
             _send_tensor_response(handler, self.get_global_params())
 
-    def _diff_model_fingerprint(
-        self, worker_shapes: Dict[str, List[int]]
+    def _diff_slice_fingerprint(
+        self, slice_shapes: Dict[str, List[int]]
     ) -> Optional[str]:
-        """Compare a worker's ``{name: shape}`` to the server's params.
+        """Verify a single rank's slice against the server's master params.
 
-        Returns a diagnostic string when the worker's model doesn't
-        match the server's (different param set, or different shape
-        for a shared name). Returns ``None`` on a clean match.
+        Each name in ``slice_shapes`` must appear in the server with
+        matching shape. Extras (names on the worker but not on the
+        server) are a hard error — the operator likely pointed this
+        worker at the wrong model. Returns ``None`` on a clean match,
+        a diagnostic string otherwise.
 
-        The server's ``_param_names`` is whatever was loaded from the
-        checkpoint (state_dict order, potentially including buffers).
-        The worker's ``param_shapes`` comes from
-        ``model.named_parameters()`` (params only). For DiLoCo
-        correctness the param sets must agree exactly — server
-        sync-applies pseudograds against ``_param_list``, and any
-        named-param the worker submits must hit a server slot of the
-        matching shape. Buffers on the server that don't appear in
-        the worker's named_parameters() are also flagged here:
-        they'd silently get random outer-optimizer momentum applied
-        to them with no corresponding pseudograd contribution.
+        Missing names (server names absent from the slice) are
+        intentionally *allowed* here: a pipeline-parallel rank holds
+        only its slice. Full-model coverage is verified at group-seal
+        time by ``_check_group_coverage``. For solo workers (group of
+        one, pp_world_size=1) the coverage check at seal time
+        immediately enforces equality and the contract collapses to
+        the pre-#84 fingerprint check.
         """
         server_shapes: Dict[str, List[int]] = {
             name: list(self._param_list[i].shape)
             for i, name in enumerate(self._param_names)
         }
-        worker_set = set(worker_shapes)
+        worker_set = set(slice_shapes)
         server_set = set(server_shapes)
 
         missing_on_server = worker_set - server_set
-        missing_on_worker = server_set - worker_set
         shape_mismatch = [
-            (name, worker_shapes[name], server_shapes[name])
+            (name, slice_shapes[name], server_shapes[name])
             for name in worker_set & server_set
-            if list(worker_shapes[name]) != server_shapes[name]
+            if list(slice_shapes[name]) != server_shapes[name]
         ]
 
-        if not (missing_on_server or missing_on_worker or shape_mismatch):
+        if not (missing_on_server or shape_mismatch):
             return None
 
         parts = [
-            "Worker model does not match server model. The operator "
+            "Worker slice does not match server model. The operator "
             "likely pointed this worker at the wrong "
             "--model-id-or-path (or built it from a different "
             "model project / config than the server is using)."
@@ -892,13 +1114,56 @@ class DiLoCoServer:
                 f"  {len(missing_on_server)} param(s) on worker but not server: "
                 f"{sample}{'...' if len(missing_on_server) > 5 else ''}"
             )
-        if missing_on_worker:
-            sample = sorted(missing_on_worker)[:5]
-            parts.append(
-                f"  {len(missing_on_worker)} param(s) on server but not worker: "
-                f"{sample}{'...' if len(missing_on_worker) > 5 else ''}"
-            )
         return "\n".join(parts)
+
+    def _check_group_coverage(self, group: WorkerGroup) -> Optional[str]:
+        """Verify a sealed group's slice union exactly covers the server.
+
+        Called at the moment a group becomes sealed (its last member
+        registers). Returns ``None`` on success, a diagnostic string
+        on failure. Duplicate names across slices are allowed —
+        tied-parameter aliases legitimately appear in more than one
+        rank's slice (see e.g. weight-tied embed/lm_head with the
+        embed on stage 0 and the lm_head's transposed view on the
+        final stage); the per-name averaging on the apply path treats
+        same-data alias contributions correctly.
+
+        A non-empty ``missing`` set means at least one server param has
+        no rank holding it — a real correctness bug in the pipeline
+        split or in the operator's model wiring. We refuse to seal the
+        group in that case; the registration handler is responsible for
+        rolling back any partial-group state.
+        """
+        union: set = set()
+        for names in group.member_param_names.values():
+            union |= names
+        missing = set(self._param_names) - union
+        if not missing:
+            return None
+
+        sample = sorted(missing)[:10]
+        return (
+            f"Group '{group.group_id}' slices do not cover the server's "
+            f"full parameter set. {len(missing)} param(s) are not held "
+            f"by any rank: {sample}{'...' if len(missing) > 10 else ''}. "
+            f"Verify the pipeline split across pp_world_size="
+            f"{group.pp_world_size} ranks is consistent with the "
+            f"server's model."
+        )
+
+    def _rollback_group(self, group: WorkerGroup) -> None:
+        """Evict every registered member of a group.
+
+        Used on partial-group registration failures (e.g. coverage
+        check failed at seal-time) and on any member's death (the
+        atomic-eviction policy from issue #84). Caller MUST hold
+        ``_workers_lock``. Does not notify the sync barrier — the
+        caller is responsible for that if needed.
+        """
+        for wid in list(group.members.values()):
+            self._workers.pop(wid, None)
+            self._worker_to_group.pop(wid, None)
+        self._groups.pop(group.group_id, None)
 
     def _validate_pseudograd_params(
         self, worker_id: str, pseudograds: Dict[str, torch.Tensor]
