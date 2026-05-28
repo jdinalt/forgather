@@ -296,6 +296,66 @@ def _send_401(
     handler.wfile.write(body)
 
 
+def peer_cert_authenticated(handler: BaseHTTPRequestHandler) -> bool:
+    """Return True iff the client presented a CA-signed cert at handshake.
+
+    The DiLoCo server (when TLS is enabled with a CA bundle) wraps the
+    listening socket with ``verify_mode = ssl.CERT_OPTIONAL`` and
+    ``load_verify_locations(<bundle>)``. Under those settings:
+
+    * If the client presents *no* cert, ``getpeercert()`` returns ``{}``
+      (empty dict) and we treat the request as unauthenticated-by-cert.
+    * If the client presents a cert that chains to the configured CA,
+      the handshake succeeds and ``getpeercert()`` returns the cert's
+      attribute dict — non-empty.
+    * If the client presents a cert that does NOT chain, the handshake
+      fails outright; this function never sees those requests.
+
+    So a non-empty ``getpeercert()`` is sufficient proof of cluster
+    membership. Mirrors the ``_request_has_client_cert`` /
+    ``_PEER_ALLOWED_PATHS`` model in
+    ``tools/forgather_server/auth.py``.
+
+    Returns False when the underlying socket isn't a TLS socket
+    (cleartext request, or socket already torn down) — those callers
+    fall through to the bearer-token path.
+    """
+    conn = getattr(handler, "connection", None)
+    if conn is None:
+        return False
+    getpeercert = getattr(conn, "getpeercert", None)
+    if getpeercert is None:
+        # Not an SSLSocket (cleartext request).
+        return False
+    try:
+        cert = getpeercert()
+    except (ValueError, OSError):
+        return False
+    return bool(cert)
+
+
+def authenticate_request(
+    handler: BaseHTTPRequestHandler, expected_token: Optional[str]
+) -> bool:
+    """Authenticate a request via either mTLS or a bearer token.
+
+    Resolution order:
+
+    1. If the client presented a CA-signed cert at TLS handshake
+       (:func:`peer_cert_authenticated`), accept the request as
+       cluster-authenticated — no bearer needed. Skipping the bearer
+       check on cert-authenticated requests means cluster peers can
+       talk to each other without sharing the per-server token,
+       which matches how forgather_server handles inter-node calls.
+    2. Otherwise fall back to :func:`verify_bearer`. When auth is
+       disabled (``expected_token`` falsy) this passes silently;
+       otherwise the request must carry a matching bearer header.
+    """
+    if peer_cert_authenticated(handler):
+        return True
+    return verify_bearer(handler, expected_token)
+
+
 def verify_bearer(
     handler: BaseHTTPRequestHandler, expected_token: Optional[str]
 ) -> bool:

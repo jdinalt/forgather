@@ -42,7 +42,7 @@ from urllib.parse import parse_qs, urlparse
 
 import torch
 
-from forgather.ml.diloco.auth import verify_bearer
+from forgather.ml.diloco.auth import authenticate_request
 from forgather.ml.sharded_checkpoint import (
     find_latest_checkpoint,
 )
@@ -2302,15 +2302,19 @@ class DiLoCoServer:
                 logger.debug(format, *args)
 
             def _authenticated(self, path: str) -> bool:
-                """Bearer check; ``/health`` is intentionally exempt.
+                """Request auth: mTLS peer cert OR bearer token.
 
-                Returns True when the request is authorized or auth is
-                disabled. On 401, ``verify_bearer`` has already written
+                ``/health`` is intentionally exempt for liveness probes.
+                Otherwise we accept either:
+                * a CA-signed client cert at TLS handshake (mTLS), or
+                * a matching ``Authorization: Bearer <token>`` header.
+
+                On 401, ``authenticate_request`` has already written
                 the response; the caller should early-return.
                 """
                 if path == "/health":
                     return True
-                return verify_bearer(self, server_ref.auth_token)
+                return authenticate_request(self, server_ref.auth_token)
 
             def do_POST(self):
                 try:
