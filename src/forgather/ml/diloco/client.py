@@ -138,18 +138,71 @@ class DiLoCoClient:
         if token is None:
             token = read_standalone_token(self.server_addr)
         self.token = token
-        # SSL context — only built when the URL is https. Cleartext
-        # URLs pass ``context=None`` to urllib so it's a no-op there.
-        if self.server_addr.lower().startswith("https"):
-            from forgather.tls.runtime import urllib_ssl_context
+        self.verify_tls = verify_tls
+        # SSL context for the control URL is cached. Bulk-port URLs
+        # (learned at /register time) may have a different scheme, so
+        # contexts for those are resolved per-request via ``_ssl_for``.
+        self._ssl_ctx = self._ssl_for(self.server_addr)
+        # ``bulk_url`` is populated from the ``X-Forgather-Bulk-Url``
+        # response header on /register (issue #90). When set, the
+        # three bulk endpoints (submit_pseudograd,
+        # submit_fragment_pseudograd, global_params) route to it
+        # instead of the control URL. ``None`` keeps the single-port
+        # behavior — bulk endpoints go to the same listener.
+        self.bulk_url: Optional[str] = None
 
-            self._ssl_ctx = urllib_ssl_context(verify=verify_tls)
-        else:
-            self._ssl_ctx = None
+    def _ssl_for(self, url: str) -> Optional["ssl.SSLContext"]:
+        """SSL context appropriate for ``url`` — None for ``http://``.
+
+        Built once per scheme; we keep a cached one for the control
+        URL and build a fresh one for the bulk URL the first time we
+        see it. Cheap to build (no network I/O) so caching isn't
+        critical, but it keeps cert-chain parsing off the hot path.
+        """
+        if not url.lower().startswith("https"):
+            return None
+        from forgather.tls.runtime import urllib_ssl_context
+
+        return urllib_ssl_context(verify=self.verify_tls)
+
+    def _ssl_for_request(self, url: str) -> Optional["ssl.SSLContext"]:
+        """Return the cached control-port SSL context when ``url``
+        matches it; otherwise build/cache a fresh one for the URL.
+
+        Cleartext URLs short-circuit to ``None``. The cache is a
+        single-entry slot keyed by the bulk URL, since a worker only
+        ever talks to one bulk listener per server.
+        """
+        if not url.lower().startswith("https"):
+            return None
+        if self.server_addr and url.startswith(self.server_addr):
+            return self._ssl_ctx
+        if self.bulk_url and url.startswith(self.bulk_url):
+            cached = getattr(self, "_bulk_ssl_ctx", None)
+            if cached is None:
+                cached = self._ssl_for(self.bulk_url)
+                self._bulk_ssl_ctx = cached
+            return cached
+        return self._ssl_for(url)
+
+    # Bulk paths that, when ``self.bulk_url`` is populated, route to
+    # the bulk listener instead of the control URL (issue #90).
+    _BULK_PATHS = frozenset(
+        {"/submit_pseudograd", "/submit_fragment_pseudograd", "/global_params"}
+    )
+
+    def _base_for_path(self, path: str) -> str:
+        """Pick the base URL (control vs bulk) for ``path``."""
+        canonical = "/" + path.lstrip("/")
+        if self.bulk_url and canonical in self._BULK_PATHS:
+            return self.bulk_url
+        return self.server_addr
 
     def _url(self, path: str) -> str:
-        """Build full URL for an endpoint."""
-        return f"{self.server_addr}/{path.lstrip('/')}"
+        """Build full URL for an endpoint, routing bulk paths to the
+        bulk listener when one has been advertised."""
+        base = self._base_for_path(path)
+        return f"{base}/{path.lstrip('/')}"
 
     def _headers(self, content_type: Optional[str] = None) -> Dict[str, str]:
         """Build request headers, attaching the bearer token when known.
@@ -201,7 +254,9 @@ class DiLoCoClient:
         for attempt in range(max_retries + 1):
             try:
                 with urllib.request.urlopen(
-                    req, timeout=self.timeout, context=self._ssl_ctx
+                    req,
+                    timeout=self.timeout,
+                    context=self._ssl_for_request(url),
                 ) as resp:
                     return json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
@@ -261,7 +316,9 @@ class DiLoCoClient:
             )
             try:
                 with urllib.request.urlopen(
-                    req, timeout=self.timeout, context=self._ssl_ctx
+                    req,
+                    timeout=self.timeout,
+                    context=self._ssl_for_request(url),
                 ) as resp:
                     data = resp.read()
                     return self._deserialize_state_dict(data)
@@ -324,9 +381,26 @@ class DiLoCoClient:
         for attempt in range(self.max_retries + 1):
             try:
                 with urllib.request.urlopen(
-                    req, timeout=self.timeout, context=self._ssl_ctx
+                    req,
+                    timeout=self.timeout,
+                    context=self._ssl_for_request(url),
                 ) as resp:
                     data = resp.read()
+                    # Bulk-listener URL advertised in a response header
+                    # (issue #90). When the server offloads bulk paths
+                    # to a separate port, all future submit_pseudograd
+                    # / global_params calls route to that URL.
+                    bulk_url = resp.headers.get("X-Forgather-Bulk-Url")
+                    if bulk_url:
+                        bulk_url = bulk_url.strip()
+                    if bulk_url and bulk_url != self.bulk_url:
+                        logger.info(
+                            f"Server advertised bulk listener at {bulk_url}; "
+                            f"bulk endpoints will route there."
+                        )
+                        self.bulk_url = bulk_url
+                        # Invalidate any cached bulk SSL context.
+                        self._bulk_ssl_ctx = None
                     params = self._deserialize_state_dict(data)
                     logger.info(
                         f"Registered with server as {worker_id}, received global params"

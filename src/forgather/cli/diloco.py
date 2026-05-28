@@ -123,6 +123,37 @@ def _server_cmd(args):
     else:
         print("TLS: disabled (cleartext)")
 
+    # Two-port bulk plane (issue #90). Defaults when --bulk-port is set:
+    # cleartext, no auth — matching torch.distributed's posture on a
+    # trusted LAN. Explicit --bulk-tls / --bulk-auth flip those bits.
+    bulk_port = getattr(args, "bulk_port", None)
+    bulk_ssl_context = None
+    bulk_auth_enabled = True  # ignored when bulk_port is None
+    if bulk_port is not None:
+        bulk_tls = getattr(args, "bulk_tls", None)
+        if bulk_tls is True:
+            # Use the same SSL context for the bulk listener — same
+            # cluster identity, same CA bundle. Distinct contexts add
+            # no security here.
+            bulk_ssl_context = ssl_context
+            if bulk_ssl_context is None:
+                _auth_parser.error(
+                    "--bulk-tls requires the control plane to also be on "
+                    "TLS (pass --tls or provision the cluster)."
+                )
+        # else: bulk_tls is False (explicit --no-bulk-tls) or None
+        # (default → cleartext); both leave bulk_ssl_context=None.
+
+        bulk_auth = getattr(args, "bulk_auth", None)
+        # Default when --bulk-port is set: bulk auth OFF (opt-out for
+        # throughput). Explicit --bulk-auth turns it on.
+        bulk_auth_enabled = bool(bulk_auth) if bulk_auth is not None else False
+        print(
+            f"Bulk listener: port={bulk_port} "
+            f"({'TLS' if bulk_ssl_context else 'cleartext'}, "
+            f"{'auth' if bulk_auth_enabled and auth_token else 'no-auth'})"
+        )
+
     # Create server
     server = DiLoCoServer(
         output_dir=args.output_dir,
@@ -142,6 +173,9 @@ def _server_cmd(args):
         default_work_units=default_work_units,
         auth_token=auth_token,
         ssl_context=ssl_context,
+        bulk_port=bulk_port,
+        bulk_ssl_context=bulk_ssl_context,
+        bulk_auth_enabled=bulk_auth_enabled,
     )
 
     print(f"Starting DiLoCo server on {args.host}:{args.port}")
