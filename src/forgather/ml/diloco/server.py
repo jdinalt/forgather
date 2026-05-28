@@ -239,6 +239,17 @@ def _find_lowest_unset(bm: bytearray, total_bits: int) -> int:
     return -1
 
 
+def _utc_iso_now() -> str:
+    """ISO-8601 UTC timestamp suitable for log records.
+
+    Uses ``datetime.now(timezone.utc).isoformat()``; the trailing
+    timezone offset is ``+00:00`` so grep + sort work as expected.
+    """
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _default_outer_optimizer_factory(params):
     """Default outer optimizer: SGD with Nesterov momentum (DiLoCo paper defaults)."""
     return torch.optim.SGD(params, lr=0.7, momentum=0.9, nesterov=True)
@@ -421,6 +432,17 @@ class DiLoCoServer:
         self.bulk_auth_enabled = bulk_auth_enabled
         self._bulk_server = None
         self._bulk_server_thread = None
+        # Audit log (issue #90). Append-only JSONL records for events
+        # worth reconstructing after the fact: registrations, evictions,
+        # outer-optimizer steps, and control actions. Best-effort —
+        # write errors are logged but don't fail the request that
+        # triggered them. Lives next to model checkpoints in the
+        # configured output_dir so a post-mortem operator finds it
+        # alongside the rest of the run state.
+        self._audit_lock = threading.Lock()
+        self._audit_path = (
+            os.path.join(output_dir, "diloco_audit.log") if output_dir else None
+        )
         self._running = False
         self.load_state(from_checkpoint)
 
@@ -610,6 +632,7 @@ class DiLoCoServer:
                 f"check for a stale group registry."
             )
 
+        contributing_workers = list(self._pending_pseudograds.keys())
         self.outer_optimizer.step()
         self.outer_optimizer.zero_grad()
 
@@ -618,6 +641,12 @@ class DiLoCoServer:
         self._dirty = True
 
         logger.info(f"Outer optimizer step complete. Sync round: {self._sync_round}")
+        self._audit(
+            "outer_step",
+            sync_round=self._sync_round,
+            contributors=contributing_workers,
+            missing_contributors=missing_contributors or None,
+        )
 
         # Periodic save
         if (
@@ -838,6 +867,13 @@ class DiLoCoServer:
                     f"Worker {worker_id} died. "
                     f"Remaining: {remaining}, num_workers now {self.num_workers}"
                 )
+            self._audit(
+                "eviction",
+                trigger_worker_id=worker_id,
+                evicted=list(evict),
+                group_id=group_id,
+                remaining=remaining,
+            )
 
             # --- Full-model sync barrier ---
             # Remove every evicted worker's pending submission and update
@@ -1183,6 +1219,15 @@ class DiLoCoServer:
                 f"Worker {worker_id} registered "
                 f"({num_registered}/{self.num_workers})"
             )
+        self._audit(
+            "register",
+            worker_id=worker_id,
+            hostname=info.get("hostname"),
+            group_id=group_id,
+            pp_rank=pp_rank,
+            pp_world_size=pp_world_size,
+            num_registered=num_registered,
+        )
 
         # Return global params. When a bulk listener is configured,
         # advertise its URL via response header so the worker can
@@ -1844,6 +1889,7 @@ class DiLoCoServer:
         worker_id = info["worker_id"]
 
         logger.info(f"Worker {worker_id} deregistering")
+        self._audit("deregister", worker_id=worker_id)
         self._handle_worker_death(worker_id)
 
         _send_json_response(handler, {"status": "ok"})
@@ -2237,6 +2283,13 @@ class DiLoCoServer:
                 _send_json_response(handler, {"error": "Invalid JSON"}, 400)
                 return
 
+            # Audit every control invocation. Phase 1 has no per-caller
+            # identity binding (issue #90 deferred); the bearer that
+            # got past the auth gate is the only identity we have, and
+            # we deliberately don't log tokens. Future PRs that add
+            # per-rank identity should populate ``caller`` here.
+            self._audit("control", action=action, data=data)
+
             if action == "save_state":
                 self._handle_control_save(handler, data)
             elif action == "kick_worker":
@@ -2324,6 +2377,38 @@ class DiLoCoServer:
         _send_json_response(handler, {"status": "ok", "message": "Shutting down"})
         # Stop in a separate thread so the response can be sent first
         threading.Thread(target=self.stop, daemon=True).start()
+
+    def _audit(self, event: str, **fields: Any) -> None:
+        """Append a JSONL event to ``<output_dir>/diloco_audit.log``.
+
+        Best-effort: if the write fails (disk full, permissions, etc.)
+        we log a warning and move on rather than failing the operation
+        that triggered the event. The audit log is a *record*, not a
+        guard — security checks must not depend on it landing on
+        disk. Records carry a UTC timestamp and arbitrary kwargs.
+
+        No-op when ``output_dir`` is empty (in-process tests that
+        construct DiLoCoServer without a real directory).
+        """
+        if not self._audit_path:
+            return
+        record: Dict[str, Any] = {
+            "ts": _utc_iso_now(),
+            "event": event,
+            **fields,
+        }
+        line = json.dumps(record, default=str) + "\n"
+        try:
+            with self._audit_lock:
+                with open(self._audit_path, "a", encoding="utf-8") as f:
+                    f.write(line)
+        except OSError as exc:
+            logger.warning(
+                "audit-log write failed (event=%s, path=%s): %s",
+                event,
+                self._audit_path,
+                exc,
+            )
 
     # Three "bulk" endpoints: large tensor transfers. When a separate
     # bulk port is configured these are removed from the control port
