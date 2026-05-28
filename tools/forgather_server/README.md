@@ -358,10 +358,9 @@ elsewhere, the opt-in is explicit and the auth gate stays in place:
 
 `--demo` turns the server into a public-safe instance: every mutating
 request (`POST` / `PUT` / `DELETE` / `PATCH`) returns
-`403 {"detail":"Server is in read-only demo mode"}` with a
-`X-Forgather-Demo-Blocked: 1` header, and bearer tokens are stripped
-from `/api/jobs`, `/api/queue`, `/api/services` response bodies before
-they reach the browser. The webui surfaces a compact amber **"DEMO
+`403 {"detail":"Server is in read-only demo mode"}`, and bearer tokens
+are stripped from `/api/jobs`, `/api/queue`, `/api/services` response
+bodies before they reach the browser. The webui surfaces a compact amber **"DEMO
 MODE"** chip in the sidebar header next to the Forgather version
 label.
 
@@ -487,8 +486,7 @@ extras); for CLI users the same effect is available via the
 
 Jupyter-Lab-style root restriction. Pass `--fs-root <path>`
 (repeatable) and every path-accepting API will refuse paths that don't
-resolve to a descendant of one of the listed roots, returning a 403
-with `X-Forgather-Fs-Root-Denied: 1`.
+resolve to a descendant of one of the listed roots, returning a 403.
 
 ```bash
 # Limit browsing/editing to a single project tree

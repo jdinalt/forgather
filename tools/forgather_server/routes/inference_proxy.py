@@ -112,10 +112,6 @@ def _validate_base(base: str) -> str:
     via training-job submission — an "SSRF guard" on top of that adds
     friction without security. Pass ``--lock-inference-proxy`` to the
     server to switch to strict-localhost-only mode.
-
-    Rejections are 403s tagged with ``X-Forgather-Proxy-Refused: 1``
-    so the webui renders them inline instead of treating them as
-    session-expired.
     """
     try:
         parsed = urlparse(base)
@@ -125,14 +121,9 @@ def _validate_base(base: str) -> str:
         raise HTTPException(
             status_code=400,
             detail=f"unsupported scheme: {parsed.scheme!r}",
-            headers={"X-Forgather-Proxy-Refused": "1"},
         )
     if not parsed.netloc:
-        raise HTTPException(
-            status_code=400,
-            detail="missing host",
-            headers={"X-Forgather-Proxy-Refused": "1"},
-        )
+        raise HTTPException(status_code=400, detail="missing host")
 
     if LOCK_TO_LOCALHOST:
         # Lowercased for case-insensitive match. parsed.hostname strips
@@ -147,7 +138,6 @@ def _validate_base(base: str) -> str:
                     "without --lock-inference-proxy to allow remote "
                     "upstreams."
                 ),
-                headers={"X-Forgather-Proxy-Refused": "1"},
             )
 
     return base.rstrip("/")
@@ -616,7 +606,6 @@ def get_user_entry_token(entry_id: str):
         raise HTTPException(
             status_code=403,
             detail="token reveal is disabled in read-only demo mode",
-            headers={"X-Forgather-Demo-Blocked": "1"},
         )
     for e in inference_server_registry.list_entries():
         if e.id == entry_id:

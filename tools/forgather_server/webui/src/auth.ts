@@ -37,6 +37,25 @@ let _installed = false;
  *    proxy that bypasses cookies by default);
  *  - notify the shell on 401 so it can swap in the login gate
  *    instead of letting individual queries surface raw errors.
+ *
+ *  Reauth policy: fire ``AUTH_REQUIRED_EVENT`` on 401 by default.
+ *  401 is HTTP's "session needs to authenticate" status and the only
+ *  one the forgather AuthMiddleware emits when a session cookie is
+ *  missing / expired / invalid (see ``auth.py``'s middleware path).
+ *
+ *  403 is "authenticated but not allowed" and in this codebase always
+ *  carries an operational meaning — SSRF allowlist miss, fs-root
+ *  policy refusal, demo-mode mutation block, upstream proxy refusal.
+ *  None of those are recoverable by re-logging-in, so the default is
+ *  to *not* fire reauth on 403. A backend that genuinely needs to
+ *  force a re-login on a 403 can opt in with the response header
+ *  ``X-Forgather-Reauth-Required: 1`` (no current route uses it; the
+ *  hook exists for a future step-up-auth flow).
+ *
+ *  ``X-Upstream-Auth-Failed`` continues to suppress reauth on 401s
+ *  from proxied upstreams (e.g. wrong inference bearer): the
+ *  forgather session is fine, only the upstream rejected its own
+ *  token.
  */
 export function installAuthFetch(): void {
   if (_installed) return;
@@ -47,42 +66,22 @@ export function installAuthFetch(): void {
     // Don't override an explicit ``credentials`` choice from the caller.
     if (init?.credentials === undefined) merged.credentials = "include";
     const r = await original(input, merged);
-    if (r.status === 401 || r.status === 403) {
+    const reauthOptIn = r.headers.get("X-Forgather-Reauth-Required") === "1";
+    const shouldReauth =
+      r.status === 401 || (r.status === 403 && reauthOptIn);
+    if (shouldReauth) {
       // Don't fire for the auth endpoints themselves — login attempts
       // legitimately produce 401, and the LoginGate handles them
       // inline. Nothing else should be calling /api/auth/login.
       const url = typeof input === "string" ? input : input.toString();
-      // Don't fire when an upstream proxy (inference, etc.) tagged the
-      // response: that's the *upstream* server rejecting its own bearer
-      // (e.g. wrong inference auth token in the panel), not the user's
-      // forgather-server session. The middleware would have intercepted
-      // before any proxy code ran if the session were truly expired, so
-      // a 401 with this tag necessarily came from upstream.
-      //
-      // X-Forgather-Proxy-Refused is set when the proxy itself rejects
-      // the upstream URL (SSRF allow-list miss) — same idea: not a
-      // session expiry, just a policy refusal that the panel should
-      // surface inline.
+      // Suppress when an upstream proxy tagged the response: a 401
+      // from an inference / dataset_server upstream means the upstream
+      // rejected its own bearer, not that our session expired. The
+      // middleware would have intercepted before any proxy code ran
+      // if the session were truly expired.
       const upstreamAuthFailed =
         r.headers.get("X-Upstream-Auth-Failed") === "1";
-      const proxyRefused = r.headers.get("X-Forgather-Proxy-Refused") === "1";
-      // Demo-mode policy 403: the user is authenticated, the server
-      // just refuses mutations. Bouncing them back to /login would be
-      // both confusing and pointless — same tag-pattern as the two
-      // headers above.
-      const demoBlocked = r.headers.get("X-Forgather-Demo-Blocked") === "1";
-      // Same logic for fs-root policy refusals: the user is
-      // authenticated, the server just refuses to read a path outside
-      // the configured root.
-      const fsRootDenied =
-        r.headers.get("X-Forgather-Fs-Root-Denied") === "1";
-      if (
-        !url.includes("/api/auth/") &&
-        !upstreamAuthFailed &&
-        !proxyRefused &&
-        !demoBlocked &&
-        !fsRootDenied
-      ) {
+      if (!url.includes("/api/auth/") && !upstreamAuthFailed) {
         window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT));
       }
     }
