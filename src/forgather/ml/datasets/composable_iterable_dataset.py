@@ -741,9 +741,10 @@ class ComposableIterableDataset(TorchIterableDataset):
                 )
                 return
 
+            from .work_unit_dispatch import unit_range
+
             unit_id = int(resp["unit_id"])
-            u_start = (unit_id * L) // K
-            u_end = ((unit_id + 1) * L) // K
+            u_start, u_end = unit_range(unit_id, K, L)
             limit = u_end - u_start
 
             try:
@@ -784,20 +785,29 @@ class ComposableIterableDataset(TorchIterableDataset):
         # Decide whether to reset count state at the start of this pass.
         self._maybe_reset_counts()
 
-        start, end = self._worker_view_bounds()
-
         # Under DiLoCo work-unit dispatch the cursor is driven per-unit
         # by the dispatch loop, not by a window seek. Skip the seek and
-        # use the dispatch generator below.
+        # use the dispatch generator below. Important: dispatch uses
+        # the FULL view bounds (post-slice, pre-DataLoader-subdivision)
+        # — forked DataLoader workers all register the same
+        # (dataset_id, seed) and compete for units in one queue. If we
+        # used _worker_view_bounds() here, each fork would send a
+        # different hint["length"] to the server (409 on register) and
+        # the unit math would be wrong (L for one fork doesn't match
+        # the server's K for the full view). The composable's
+        # state_dict cursor is also ignored under dispatch — request_work
+        # drives the seek per unit, so a saved mid-iter position is moot.
         if self._wud_client is not None:
+            full_start, full_end = self._view_bounds()
             self._restored_from_checkpoint = False
             # Dispatch rows are not assigned stable backend positions, so
             # ``with_indices`` indices start at 0 each iter pass — there
             # isn't a meaningful "row index in source dataset" to expose
             # for server-dispatched ranges.
             first_idx = 0
-            gen = self._wud_iter_window(self._backend, start, end)
+            gen = self._wud_iter_window(self._backend, full_start, full_end)
         else:
+            start, end = self._worker_view_bounds()
             # Position the backend at our window start unless we're resuming
             # mid-window (after load_state_dict or partial iteration that
             # left the cursor inside [start, end)).

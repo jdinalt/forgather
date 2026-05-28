@@ -325,6 +325,60 @@ class TestDatasetIdKeying:
 # ---------------------------------------------------------------------------
 
 
+class TestDataLoaderWorkers:
+    """Regression for the multi-DataLoader-worker case.
+
+    Forked DataLoader workers each fork the composable and call
+    ``__iter__``. Under conventional sharding the composable narrows
+    the per-worker view via ``_worker_view_bounds()``. Under DiLoCo
+    dispatch each fork should see the FULL view (post-slice, no
+    DataLoader subdivision) — they all register the same
+    ``(dataset_id, seed)`` with identical ``hint["length"]`` (server
+    would otherwise return 409 on the second register) and compete
+    for units in one queue. The unit math is over the full L, so K
+    issued by the server matches what every fork uses.
+
+    These tests fake ``torch.utils.data.get_worker_info`` to simulate
+    a DataLoader fork with ``num_workers > 1`` without actually
+    spinning up subprocess workers.
+    """
+
+    def test_dispatch_ignores_worker_subdivision(self, monkeypatch):
+        from forgather.ml.datasets import composable_iterable_dataset as cid
+
+        # Simulate worker 0 of a 2-worker DataLoader. Without the fix,
+        # _worker_view_bounds() would narrow L to 50 (half of 100),
+        # the register call would send hint.length=50, and the unit
+        # math would use the wrong L.
+        class FakeWorkerInfo:
+            id = 0
+            num_workers = 2
+
+        monkeypatch.setattr(
+            cid.torch.utils.data,
+            "get_worker_info",
+            lambda: FakeWorkerInfo(),
+        )
+
+        client = FakeClient(K=4)
+        ds = ComposableIterableDataset(FakeBackend(100), load_args=_load_args())
+        ds.enable_work_dispatch(client, "w0")
+        # Iterate — should drive the dispatch loop over the FULL
+        # length, not the per-DataLoader-worker subwindow.
+        rows = [r["i"] for r in ds]
+        # Verify the register hint reflects the full view, not the
+        # per-worker slice.
+        register = next(c for c in client.calls if c[0] == "register")
+        assert register[4]["length"] == 100, (
+            f"Expected register hint.length=100 (full view), got "
+            f"{register[4]['length']} (worker-subdivided)"
+        )
+        # And every row from 0..99 should be yielded (single worker
+        # in this test; in a real two-worker run each fork would get
+        # roughly half the units atomically from the server).
+        assert rows == list(range(100))
+
+
 class TestMaybeEnableWorkDispatch:
     def test_no_server_returns_unchanged(self, monkeypatch):
         monkeypatch.delenv("DILOCO_SERVER", raising=False)

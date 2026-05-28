@@ -101,3 +101,42 @@ def test_path_whitespace_stripped():
     a = compute_dataset_id("  foo/bar  ")
     b = compute_dataset_id("foo/bar")
     assert a == b
+
+
+# --- Slice bounds (added when dispatch moved into the composable; the hash
+# absorbs slice_start / slice_end so two slices of the same source key
+# distinct work-unit queues).
+
+
+def test_slice_bounds_change_id():
+    base = compute_dataset_id("p", split="train")
+    a = compute_dataset_id("p", split="train", slice_start=100, slice_end=200)
+    b = compute_dataset_id("p", split="train", slice_start=200, slice_end=300)
+    assert base != a
+    assert a != b
+
+
+def test_slice_bounds_none_matches_base():
+    # Explicit None slice args produce the same hash as omitting them entirely.
+    a = compute_dataset_id("p", split="train")
+    b = compute_dataset_id("p", split="train", slice_start=None, slice_end=None)
+    assert a == b
+
+
+def test_open_slice_distinct_from_zero_length():
+    # `None` (open at this end) hashes differently from explicit `0` — the
+    # intent differs and we want it to.
+    open_left = compute_dataset_id("p", split="train", slice_end=1000)
+    explicit_zero = compute_dataset_id(
+        "p", split="train", slice_start=0, slice_end=1000
+    )
+    assert open_left != explicit_zero
+
+
+def test_slice_bounds_integer_coercion():
+    # Bounds passed as numpy-like int or Python int produce identical ids.
+    a = compute_dataset_id("p", split="train", slice_start=10, slice_end=20)
+    b = compute_dataset_id(
+        "p", split="train", slice_start=int(10.0), slice_end=int(20.0)
+    )
+    assert a == b
