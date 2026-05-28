@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import socket
+import ssl
 import struct
 import threading
 import time
@@ -41,6 +42,7 @@ from urllib.parse import parse_qs, urlparse
 
 import torch
 
+from forgather.ml.diloco.auth import verify_bearer
 from forgather.ml.sharded_checkpoint import (
     find_latest_checkpoint,
 )
@@ -352,6 +354,8 @@ class DiLoCoServer:
         dylu_base_sync_every: int = 500,
         heartbeat_timeout: float = 120.0,
         min_workers: int = 1,
+        auth_token: Optional[str] = None,
+        ssl_context: Optional["ssl.SSLContext"] = None,
         default_work_units: int = 1024,
     ):
         if num_workers < 1:
@@ -380,6 +384,15 @@ class DiLoCoServer:
         self.outer_optimizer_factory = (
             outer_optimizer_factory or _default_outer_optimizer_factory
         )
+        # Security (issue #90): bearer token for the control plane and
+        # optional pre-built SSL context for the listening socket.
+        # ``auth_token=None`` keeps backwards-compat for callers that
+        # don't authenticate yet (existing tests, in-process workers
+        # constructed directly without a token); production CLI/spawn
+        # paths always populate it. ``ssl_context=None`` keeps the
+        # listener cleartext.
+        self.auth_token = auth_token
+        self.ssl_context = ssl_context
         self._running = False
         self.load_state(from_checkpoint)
 
@@ -2288,9 +2301,22 @@ class DiLoCoServer:
                 # Route HTTP logs through our logger
                 logger.debug(format, *args)
 
+            def _authenticated(self, path: str) -> bool:
+                """Bearer check; ``/health`` is intentionally exempt.
+
+                Returns True when the request is authorized or auth is
+                disabled. On 401, ``verify_bearer`` has already written
+                the response; the caller should early-return.
+                """
+                if path == "/health":
+                    return True
+                return verify_bearer(self, server_ref.auth_token)
+
             def do_POST(self):
                 try:
                     path = self.path.rstrip("/")
+                    if not self._authenticated(path):
+                        return
                     if path == "/register":
                         server_ref._handle_register(self)
                     elif path == "/submit_pseudograd":
@@ -2325,7 +2351,11 @@ class DiLoCoServer:
                     # apply it after parsing.
                     parsed = urlparse(self.path)
                     path = parsed.path.rstrip("/")
-                    if path == "/global_params":
+                    if not self._authenticated(path):
+                        return
+                    if path == "/health":
+                        _send_json_response(self, {"status": "ok"})
+                    elif path == "/global_params":
                         server_ref._handle_get_global_params(self)
                     elif path == "/status":
                         server_ref._handle_status(self)
@@ -2551,6 +2581,21 @@ class DiLoCoServer:
             self._health_monitor.stop()
             self._health_monitor = None
 
+    def _wrap_tls(self) -> None:
+        """If an SSL context is configured, wrap the listening socket.
+
+        The stdlib pattern: replace ``server.socket`` with the wrapped
+        version *before* serve_forever runs. Each accepted connection
+        then negotiates TLS on accept. ``CERT_OPTIONAL`` on the context
+        means client certs are accepted but not required — bearer-only
+        clients keep working; mTLS callers get cluster-identity proof.
+        """
+        if self.ssl_context is None:
+            return
+        self._server.socket = self.ssl_context.wrap_socket(
+            self._server.socket, server_side=True
+        )
+
     def run(self):
         """Run the server (blocking). Call this from the main process."""
         if self._running:
@@ -2558,11 +2603,17 @@ class DiLoCoServer:
         handler_class = self._create_handler()
         self._server = ThreadingHTTPServer((self.host, self.port), handler_class)
         self._server.daemon_threads = True
+        self._wrap_tls()
         self._running = True
         self._started_at = time.time()
 
         mode = "async" if self.async_mode else "sync"
-        logger.info(f"DiLoCo server starting on {self.host}:{self.port} (mode={mode})")
+        scheme = "https" if self.ssl_context is not None else "http"
+        auth_state = "bearer-required" if self.auth_token else "no-auth"
+        logger.info(
+            f"DiLoCo server starting on {scheme}://{self.host}:{self.port} "
+            f"(mode={mode}, auth={auth_state})"
+        )
         logger.info(
             f"Expecting {self.num_workers} worker(s), min_workers={self.min_workers}"
         )
@@ -2595,6 +2646,7 @@ class DiLoCoServer:
         handler_class = self._create_handler()
         self._server = ThreadingHTTPServer((self.host, self.port), handler_class)
         self._server.daemon_threads = True
+        self._wrap_tls()
         self._running = True
         self._started_at = time.time()
 
@@ -2606,8 +2658,11 @@ class DiLoCoServer:
         self._start_health_monitor()
 
         mode = "async" if self.async_mode else "sync"
+        scheme = "https" if self.ssl_context is not None else "http"
+        auth_state = "bearer-required" if self.auth_token else "no-auth"
         logger.info(
-            f"DiLoCo server started on {self.host}:{self.port} (mode={mode}, background)"
+            f"DiLoCo server started on {scheme}://{self.host}:{self.port} "
+            f"(mode={mode}, auth={auth_state}, background)"
         )
         logger.info(
             f"Expecting {self.num_workers} worker(s), min_workers={self.min_workers}"

@@ -4,6 +4,9 @@ import argparse
 import os
 from argparse import RawTextHelpFormatter
 
+from forgather.ml.diloco.auth import add_auth_args
+from forgather.tls.runtime import add_server_tls_args
+
 
 def create_diloco_parser(global_args):
     """Create parser for diloco command."""
@@ -143,6 +146,12 @@ def create_diloco_parser(global_args):
             "the lifetime of the server. (default: 1024)"
         ),
     )
+
+    # Security (issue #90): bearer-token auth + TLS. Mirrors the
+    # operator-facing flags on dataset_server and inference_server so
+    # the surface is identical across servers.
+    add_auth_args(server_parser)
+    add_server_tls_args(server_parser)
 
     # status subcommand
     status_parser = subparsers.add_parser(

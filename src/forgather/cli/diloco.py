@@ -1,5 +1,6 @@
 """DiLoCo CLI commands - server, status, and worker."""
 
+import argparse
 import json
 import logging
 import os
@@ -13,7 +14,15 @@ def _server_cmd(args):
     """Start DiLoCo parameter server."""
     import torch
 
+    from forgather.ml.diloco.auth import (
+        format_auth_mode,
+        resolve_auth_token,
+        standalone_token_file,
+        write_standalone_token,
+    )
     from forgather.ml.diloco.server import DiLoCoServer
+    from forgather.tls import enforce_non_loopback_policy
+    from forgather.tls.runtime import is_tls_active, stdlib_ssl_context
 
     logging.basicConfig(
         level=logging.INFO,
@@ -74,6 +83,46 @@ def _server_cmd(args):
     save_total_limit = getattr(args, "save_total_limit", 3)
     default_work_units = getattr(args, "default_work_units", 1024)
 
+    # ------------------------------------------------------------------
+    # Security (issue #90): resolve bearer token + TLS context. Both
+    # default to "on" via the persisted per-port file / shared TLS
+    # provisioning, matching dataset_server. ``--no-auth`` / ``--no-tls``
+    # opt out for the trusted-LAN case.
+    # ------------------------------------------------------------------
+    # Need an ArgumentParser handle for resolve_auth_token's parser.error.
+    # We don't have one in scope here; build a thin wrapper.
+    _auth_parser = argparse.ArgumentParser(prog="forgather diloco server")
+    auth_token, token_source = resolve_auth_token(_auth_parser, args)
+    if token_source in ("generated", "regenerated") and auth_token is not None:
+        write_standalone_token(args.port, auth_token)
+    elif token_source == "persisted":
+        # Persisted file already exists — no write needed.
+        pass
+
+    if not getattr(args, "quiet_tokens", False):
+        print(f"Auth: {format_auth_mode(args, token_source)}")
+        if auth_token is not None and token_source in (
+            "generated",
+            "regenerated",
+            "persisted",
+        ):
+            print(f"  token file: {standalone_token_file(args.port)}")
+
+    # TLS: build a stdlib SSLContext (or None for cleartext). Refuse
+    # non-loopback binds without TLS unless --insecure was passed.
+    ssl_context = stdlib_ssl_context(args)
+    tls_on = ssl_context is not None
+    enforce_non_loopback_policy(
+        args.host,
+        tls_enabled=tls_on,
+        insecure=getattr(args, "insecure", False),
+        service="diloco-server",
+    )
+    if tls_on:
+        print(f"TLS: enabled ({'mTLS+bearer' if auth_token else 'mTLS-or-cleartext'})")
+    else:
+        print("TLS: disabled (cleartext)")
+
     # Create server
     server = DiLoCoServer(
         output_dir=args.output_dir,
@@ -91,6 +140,8 @@ def _server_cmd(args):
         heartbeat_timeout=heartbeat_timeout,
         min_workers=min_workers,
         default_work_units=default_work_units,
+        auth_token=auth_token,
+        ssl_context=ssl_context,
     )
 
     print(f"Starting DiLoCo server on {args.host}:{args.port}")
