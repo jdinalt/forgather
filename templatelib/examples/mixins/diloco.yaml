@@ -12,8 +12,8 @@
 ## **Import with context**: callers must use
 ## ``{% from "mixins/diloco.yaml" import … with context %}``. Without
 ## ``with context`` the macro can't see the caller's Jinja variables,
-## so ``-- set diloco_num_fragments = 4`` in a leaf would render as
-## ``num_fragments: null`` instead of ``4``. The current Forgather
+## so ``-- set diloco_worker_id = 'w0'`` in a leaf would render as
+## ``worker_id: null`` instead of ``w0``. The current Forgather
 ## dynamic-args also need the context to flow through.
 ##
 ## Activation: ``DILOCO_SERVER`` env var (set by the scheduler when
@@ -22,60 +22,43 @@
 ## by the leaf and the same config behaves as a vanilla training run.
 
 -- macro callback_entry()
-    ## DiLoCo callback. All DILOCO_* env vars are read by the
-    ## callback constructor when these args are None; the webui
-    ## sets them based on the operator's selections.
+    ## DiLoCo callback. Client-local DILOCO_* env vars are read by the
+    ## callback constructor when these args are None; the webui sets them
+    ## based on the operator's selections.
+    ##
+    ## sync_every / bf16_comm / dylu / num_fragments are intentionally
+    ## absent: they must match across the group, so the server is their
+    ## sole authority and the worker reads them from the server's /info at
+    ## startup (no client override).
     diloco_callback: !singleton:forgather.ml.trainer.callbacks:DiLoCoCallback
         server_addr: {{ diloco_server | toyaml(None) }}
-        sync_every: {{ diloco_sync_every | toyaml(None) }}
         worker_id: {{ diloco_worker_id | toyaml(None) }}
-        bf16_comm: {{ diloco_bf16_comm | toyaml(None) }}
-        dylu: {{ diloco_dylu | toyaml(None) }}
         heartbeat_interval: {{ diloco_heartbeat_interval | toyaml(None) }}
-        num_fragments: {{ diloco_num_fragments | toyaml(None) }}
         timeout: {{ diloco_timeout | toyaml(600) }}
         max_sync_retries: {{ diloco_max_sync_retries | toyaml(3) }}
 -- endmacro
 
 
 -- macro dynamic_args()
-    ## DiLoCo override knobs surfaced on the train submit modal. The
-    ## webui's DiLoCo radio group writes to these when the operator
-    ## picks a server. Optional from the CLI side; unset means
-    ## env-var fallback (or callback default).
+    ## DiLoCo knobs surfaced on the train submit modal. The webui's DiLoCo
+    ## radio group writes to these when the operator picks a server.
+    ## Optional from the CLI side; unset means env-var fallback (or
+    ## callback default).
+    ##
+    ## sync_every / num_fragments / dylu / bf16_comm are NOT exposed: they
+    ## are server-authoritative (read from /info), so there is no operator
+    ## knob — the webui shows the server's values read-only instead.
     diloco_server:
         names: "--diloco-server"
         type: str
         group: "DiLoCo"
         help: "DiLoCo server address host:port. When unset, the DiLoCo callback isn't constructed and the config runs as a vanilla finetune."
-    diloco_sync_every:
-        names: "--diloco-sync-every"
-        type: int
-        group: "DiLoCo"
-        min: 1
-        help: "Local optimizer steps between syncs."
-    diloco_num_fragments:
-        names: "--diloco-fragments"
-        type: int
-        group: "DiLoCo"
-        min: 1
-        help: "Number of streaming-sync fragments (1 = no streaming)."
-    diloco_dylu:
-        names: "--diloco-dylu"
-        action: "store_true"
-        group: "DiLoCo"
-        help: "Enable Dynamic Local Updates (server must support it)."
-    diloco_bf16_comm:
-        names: "--diloco-bf16-comm"
-        type: bool
-        group: "DiLoCo"
-        help: "Cast pseudo-gradients to bf16 before sending."
     diloco_heartbeat_interval:
         names: "--diloco-heartbeat-interval"
         type: float
         group: "DiLoCo"
         min: 0
-        help: "Seconds between heartbeats to the server."
+        help: "Seconds between heartbeats to the server (client-local; validated against the server's heartbeat-timeout)."
     diloco_worker_id:
         names: "--diloco-worker-id"
         type: str

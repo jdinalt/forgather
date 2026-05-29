@@ -53,14 +53,6 @@ def _env_float(name: str, default: float) -> float:
     return float(val)
 
 
-def _env_int(name: str, default: int) -> int:
-    """Read an int from an environment variable."""
-    val = os.environ.get(name, "")
-    if not val:
-        return default
-    return int(val)
-
-
 class DiLoCoCallback(TrainerCallback):
     """
     Trainer callback that manages a DiLoCoWorker for distributed local-SGD training.
@@ -81,33 +73,31 @@ class DiLoCoCallback(TrainerCallback):
     we end up here without a server, we fail loudly.
 
     Likewise, a *configured* but *unreachable* server is fatal at
-    startup — the callback does a ``/status`` round-trip before
+    startup — the callback does a ``/info`` round-trip before
     proceeding so the operator sees the failure in the TTY pane,
     not five hundred steps later when the first sync fails.
+
+    **Server-authoritative settings.** ``sync_every``, ``bf16_comm``,
+    ``dylu`` and ``num_fragments`` must match across the whole group for
+    the sync barrier / outer step / fragment barriers to be coherent, so
+    they are owned by the server: the worker reads them verbatim from the
+    server's ``/info`` at startup (the leader fetches and broadcasts to
+    DDP followers). There is no client override — a divergent value is
+    never useful. Only genuinely client-local knobs remain as constructor
+    args / env vars.
 
     Parameters
     ----------
     server_addr : str, optional
         DiLoCo server address (``"host:port"``). Falls back to
         ``DILOCO_SERVER`` env var.
-    sync_every : int, optional
-        Local optimizer steps between syncs. Falls back to
-        ``DILOCO_SYNC_EVERY`` env var. Default ``500``.
     worker_id : str, optional
         Unique worker ID. Falls back to ``DILOCO_WORKER_ID`` env var.
         Auto-generated if unset.
-    bf16_comm : bool, optional
-        Cast pseudo-gradients to bfloat16. Falls back to
-        ``DILOCO_BF16_COMM`` env var. Default ``True``.
-    dylu : bool, optional
-        Enable Dynamic Local Updates. Falls back to ``DILOCO_DYLU`` env var.
-        Default ``False``.
     heartbeat_interval : float, optional
-        Seconds between heartbeats. Falls back to
+        Seconds between heartbeats (a client-local send cadence, validated
+        against the server's ``heartbeat_timeout``). Falls back to
         ``DILOCO_HEARTBEAT_INTERVAL`` env var. Default ``30.0``.
-    num_fragments : int, optional
-        Number of streaming fragments. Falls back to
-        ``DILOCO_NUM_FRAGMENTS`` env var. Default ``1`` (no streaming).
     timeout : float, optional
         Client timeout in seconds. Default ``600``.
     max_sync_retries : int, optional
@@ -117,12 +107,8 @@ class DiLoCoCallback(TrainerCallback):
     def __init__(
         self,
         server_addr: Optional[str] = None,
-        sync_every: Optional[int] = None,
         worker_id: Optional[str] = None,
-        bf16_comm: Optional[bool] = None,
-        dylu: Optional[bool] = None,
         heartbeat_interval: Optional[float] = None,
-        num_fragments: Optional[int] = None,
         timeout: float = 600,
         max_sync_retries: int = 3,
         auth_token: Optional[str] = None,
@@ -134,24 +120,21 @@ class DiLoCoCallback(TrainerCallback):
         from forgather.ml.diloco import diloco_server_addr
 
         self.server_addr = server_addr or diloco_server_addr()
-        self.sync_every = (
-            sync_every if sync_every is not None else _env_int("DILOCO_SYNC_EVERY", 500)
-        )
         self.worker_id = worker_id or os.environ.get("DILOCO_WORKER_ID", "") or None
-        self.bf16_comm = (
-            bf16_comm if bf16_comm is not None else _env_bool("DILOCO_BF16_COMM", True)
-        )
-        self.dylu = dylu if dylu is not None else _env_bool("DILOCO_DYLU", False)
         self.heartbeat_interval = (
             heartbeat_interval
             if heartbeat_interval is not None
             else _env_float("DILOCO_HEARTBEAT_INTERVAL", 30.0)
         )
-        self.num_fragments = (
-            num_fragments
-            if num_fragments is not None
-            else _env_int("DILOCO_NUM_FRAGMENTS", 1)
-        )
+        # Server-authoritative settings: these MUST match across the group
+        # for the sync barrier / outer step / fragment barriers to be
+        # coherent, so the worker takes them verbatim from the server's
+        # /info (resolved in on_train_begin) with no client override. They
+        # stay None until then.
+        self.sync_every: Optional[int] = None
+        self.bf16_comm: Optional[bool] = None
+        self.dylu: Optional[bool] = None
+        self.num_fragments: Optional[int] = None
         self.timeout = timeout
         self.max_sync_retries = max_sync_retries
         # Security (issue #90): bearer token + TLS verification. ``None``
@@ -175,6 +158,54 @@ class DiLoCoCallback(TrainerCallback):
     def active(self) -> bool:
         """Whether DiLoCo integration is configured (server_addr is set)."""
         return bool(self.server_addr)
+
+    def _resolve_server_settings(self, info: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract the server-authoritative settings from an /info payload.
+
+        These four (sync_every, bf16_comm, dylu, num_fragments) must match
+        across the group, so the server is the sole authority — there is no
+        client override. A server that doesn't advertise them (too old, or
+        ``expected_client_settings.sync_every`` is null) is a fatal
+        misconfiguration, not something to paper over with a client default
+        (no-silent-fallback).
+        """
+        from forgather.ml.diloco.client import DiLoCoServerUnreachable
+
+        ecs = info.get("expected_client_settings") or {}
+        sync_every = ecs.get("sync_every")
+        if sync_every is None:
+            raise DiLoCoServerUnreachable(
+                f"DiLoCoCallback: server at {self.server_addr!r} did not "
+                f"advertise a sync_every in /info "
+                f"(expected_client_settings={ecs!r}). It is likely an "
+                f"older server predating server-authoritative settings; "
+                f"upgrade the diloco server."
+            )
+        return {
+            "sync_every": int(sync_every),
+            "bf16_comm": bool(ecs.get("bf16_comm", True)),
+            "dylu": bool(ecs.get("dylu", False)),
+            "num_fragments": int(ecs.get("num_fragments_default", 1)),
+            "heartbeat_timeout": ecs.get("heartbeat_timeout"),
+        }
+
+    def _validate_heartbeat(self, heartbeat_timeout) -> None:
+        """Fail loud if the client's heartbeat cadence can't beat the
+        server's death timeout. ``heartbeat_interval`` stays a client knob
+        (it's a genuinely local send cadence, not a must-match value), but
+        a cadence at or above the server's timeout guarantees spurious
+        eviction, so reject it up front. ``heartbeat_timeout <= 0`` means
+        death detection is disabled — nothing to validate."""
+        if heartbeat_timeout and heartbeat_timeout > 0:
+            if self.heartbeat_interval >= heartbeat_timeout:
+                raise ValueError(
+                    f"DiLoCoCallback: heartbeat_interval="
+                    f"{self.heartbeat_interval}s is >= the server's "
+                    f"heartbeat_timeout={heartbeat_timeout}s; the worker "
+                    f"would be evicted between heartbeats. Set "
+                    f"--heartbeat-interval (or DILOCO_HEARTBEAT_INTERVAL) "
+                    f"well below {heartbeat_timeout}s."
+                )
 
     def on_train_begin(
         self,
@@ -272,25 +303,28 @@ class DiLoCoCallback(TrainerCallback):
                 f"group '{base_id}' member '{worker_id}'."
             )
 
-        # Reachability pre-check: a /status round-trip before we
-        # bother building the worker. Surfaces "server URL wrong",
-        # "server down", "wrong port", "firewall" while the operator
-        # is still watching the TTY, instead of 500 local steps later
-        # when the first sync fails.
+        # Reachability pre-check + settings negotiation in one /info
+        # round-trip, before we bother building the worker. Surfaces
+        # "server URL wrong", "server down", "wrong port", "firewall"
+        # while the operator is still watching the TTY, instead of 500
+        # local steps later when the first sync fails. /info also carries
+        # the server-authoritative settings (sync_every, bf16_comm, dylu,
+        # num_fragments) the worker must adopt verbatim.
         #
-        # DDP rank 0 only — followers don't talk to the server, so
-        # they shouldn't probe it either. They'll still hit the
-        # broadcast collective inside DiLoCoWorker.start(), so if the
-        # leader fails the probe and aborts, followers will deadlock
-        # waiting for the broadcast — but the leader's exception is
-        # the actionable signal the operator needs, and the worker's
-        # train loop will get torn down by the trainer once the
-        # leader's process exits.
+        # DDP rank 0 only — followers don't talk to the server. The leader
+        # fetches /info and broadcasts the result to followers so every
+        # rank syncs in lockstep. Crucially, the leader broadcasts an
+        # *error sentinel* on failure (server down, too-old server, etc.)
+        # rather than raising before the collective — otherwise followers
+        # would block forever inside broadcast_object_list waiting on a
+        # rank 0 that already exited. With the sentinel, every rank raises
+        # the same actionable error together and the job fails fast.
         import torch.distributed as dist
 
-        is_leader = (
-            not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0
-        )
+        ddp = dist.is_available() and dist.is_initialized()
+        is_leader = not ddp or dist.get_rank() == 0
+        settings: Optional[Dict[str, Any]] = None
+        nego_error: Optional[str] = None
         if is_leader:
             probe = DiLoCoClient(
                 self.server_addr,
@@ -299,14 +333,40 @@ class DiLoCoCallback(TrainerCallback):
                 verify_tls=self.verify_tls,
             )
             try:
-                probe.get_status()
+                info = probe.get_info()
+                settings = self._resolve_server_settings(info)
+            except DiLoCoServerUnreachable as exc:
+                # _resolve_server_settings already produced an actionable
+                # message (e.g. server too old to advertise sync_every).
+                nego_error = str(exc)
             except Exception as exc:
-                raise DiLoCoServerUnreachable(
-                    f"DiLoCoCallback: /status round-trip to "
+                nego_error = (
+                    f"DiLoCoCallback: /info round-trip to "
                     f"{self.server_addr!r} failed at startup: {exc}. "
                     f"The server must be running and reachable before "
                     f"workers can register."
-                ) from exc
+                )
+        if ddp:
+            holder = [(settings, nego_error)]
+            dist.broadcast_object_list(holder, src=0)
+            settings, nego_error = holder[0]
+        if nego_error is not None:
+            # Raised on every rank (leader and followers) — no deadlock.
+            raise DiLoCoServerUnreachable(nego_error)
+
+        self.sync_every = settings["sync_every"]
+        self.bf16_comm = settings["bf16_comm"]
+        self.dylu = settings["dylu"]
+        self.num_fragments = settings["num_fragments"]
+        self._validate_heartbeat(settings["heartbeat_timeout"])
+        logger.info(
+            "DiLoCoCallback: using server settings sync_every=%s bf16_comm=%s "
+            "dylu=%s num_fragments=%s",
+            self.sync_every,
+            self.bf16_comm,
+            self.dylu,
+            self.num_fragments,
+        )
 
         self._worker = DiLoCoWorker(
             model=model,

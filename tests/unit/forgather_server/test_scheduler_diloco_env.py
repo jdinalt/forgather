@@ -15,7 +15,7 @@ def test_empty_dict_emits_nothing():
 def test_missing_server_addr_short_circuits():
     # Server addr is the gate — even if other keys are set, no env
     # vars get emitted when the worker is opting out of DiLoCo entirely.
-    assert _diloco_env_from_job_params({"sync_every": 500}, QID) == {}
+    assert _diloco_env_from_job_params({"heartbeat_interval": 15}, QID) == {}
 
 
 def test_server_addr_alone_yields_minimal_env():
@@ -30,7 +30,10 @@ def test_server_addr_alone_yields_minimal_env():
     }
 
 
-def test_full_payload_translates_all_keys():
+def test_full_payload_forwards_only_client_local_keys():
+    # sync_every / num_fragments / dylu / bf16_comm are server-authoritative
+    # now — the worker reads them from /info, so the scheduler must NOT
+    # forward them even when the (legacy) submission carries them.
     env = _diloco_env_from_job_params(
         {
             "server_addr": "host:8512",
@@ -45,23 +48,21 @@ def test_full_payload_translates_all_keys():
     )
     assert env == {
         "DILOCO_SERVER": "host:8512",
-        "DILOCO_SYNC_EVERY": "500",
-        "DILOCO_NUM_FRAGMENTS": "4",
-        "DILOCO_DYLU": "1",
-        "DILOCO_BF16_COMM": "0",
         "DILOCO_HEARTBEAT_INTERVAL": "15.0",
         "DILOCO_WORKER_ID": "w1",
     }
 
 
-def test_bf16_true_translates_to_1():
-    env = _diloco_env_from_job_params({"server_addr": "h:1", "bf16_comm": True}, QID)
-    assert env["DILOCO_BF16_COMM"] == "1"
-
-
-def test_dylu_false_translates_to_0():
-    env = _diloco_env_from_job_params({"server_addr": "h:1", "dylu": False}, QID)
-    assert env["DILOCO_DYLU"] == "0"
+def test_server_authoritative_keys_never_forwarded():
+    # Even alone, the must-match settings are not translated to env vars.
+    env = _diloco_env_from_job_params(
+        {"server_addr": "h:1", "sync_every": 500, "dylu": True, "bf16_comm": True},
+        QID,
+    )
+    assert "DILOCO_SYNC_EVERY" not in env
+    assert "DILOCO_DYLU" not in env
+    assert "DILOCO_BF16_COMM" not in env
+    assert "DILOCO_NUM_FRAGMENTS" not in env
 
 
 def test_empty_worker_id_falls_back_to_queue_id():
@@ -83,10 +84,9 @@ def test_explicit_worker_id_wins_over_queue_id():
 
 
 def test_none_typed_fields_are_skipped():
-    # None values shouldn't emit env vars — the callback's constructor
-    # then falls back to its own DILOCO_* env reads (which would be
-    # unset), then to its default. ``worker_id`` is the one exception:
-    # it always gets set (queue_id fallback).
+    # None values shouldn't emit env vars. ``worker_id`` is the one
+    # exception: it always gets set (queue_id fallback). The
+    # server-authoritative fields are never forwarded regardless.
     env = _diloco_env_from_job_params(
         {
             "server_addr": "h:1",

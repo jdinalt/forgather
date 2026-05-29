@@ -33,6 +33,9 @@ def build_diloco_server_command(
     dn_buffer_size: int = 0,
     dylu: bool = False,
     dylu_base_sync_every: int = 500,
+    sync_every: int = 500,
+    bf16_comm: bool = True,
+    num_fragments: int = 1,
     from_checkpoint: Optional[str] = None,
     save_every: int = 10,
     save_total_limit: int = 3,
@@ -80,6 +83,15 @@ def build_diloco_server_command(
         # (500) is fine, but surface the explicit value so the spawn
         # argv reflects the operator's intent.
         cmd.extend(["--dylu-base-sync-every", str(int(dylu_base_sync_every))])
+    # Group-wide worker settings the server is authoritative for (issue
+    # #53 follow-up). sync_every is always meaningful (the non-DyLU
+    # cadence); num_fragments/bf16 only when they diverge from the CLI
+    # default, keeping argv readable.
+    cmd.extend(["--sync-every", str(int(sync_every))])
+    if num_fragments and int(num_fragments) > 1:
+        cmd.extend(["--num-fragments", str(int(num_fragments))])
+    if bf16_comm is False:
+        cmd.append("--no-bf16")
     if from_checkpoint:
         cmd.extend(["--from-checkpoint", from_checkpoint])
     # save_every: 0 disables periodic save — the CLI accepts 0, so pass

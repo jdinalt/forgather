@@ -582,6 +582,9 @@ def _build_diloco_server(item, gpu_indices, tty_path):
         dn_buffer_size=int(p.get("dn_buffer_size", 0) or 0),
         dylu=bool(p.get("dylu", False)),
         dylu_base_sync_every=int(p.get("dylu_base_sync_every", 500) or 500),
+        sync_every=int(p.get("sync_every", 500) or 500),
+        bf16_comm=bool(p.get("bf16_comm", True)),
+        num_fragments=int(p.get("num_fragments", 1) or 1),
         from_checkpoint=p.get("from_checkpoint") or None,
         save_every=int(p.get("save_every", 10) or 0),
         save_total_limit=int(p.get("save_total_limit", 3) or 0),
@@ -836,14 +839,10 @@ def _diloco_env_from_job_params(
     token = _diloco_token_for_server_addr(str(server))
     if token:
         env[_DILOCO_TOKEN_ENV_VAR] = token
-    if diloco.get("sync_every") is not None:
-        env["DILOCO_SYNC_EVERY"] = str(int(diloco["sync_every"]))
-    if diloco.get("num_fragments") is not None:
-        env["DILOCO_NUM_FRAGMENTS"] = str(int(diloco["num_fragments"]))
-    if diloco.get("dylu") is not None:
-        env["DILOCO_DYLU"] = "1" if bool(diloco["dylu"]) else "0"
-    if diloco.get("bf16_comm") is not None:
-        env["DILOCO_BF16_COMM"] = "1" if bool(diloco["bf16_comm"]) else "0"
+    # sync_every / num_fragments / dylu / bf16_comm are server-authoritative
+    # (they must match across the group); the worker reads them from the
+    # server's /info at startup, so we no longer forward them from the
+    # submission. Only client-local knobs are forwarded.
     if diloco.get("heartbeat_interval") is not None:
         env["DILOCO_HEARTBEAT_INTERVAL"] = str(float(diloco["heartbeat_interval"]))
     # Always-set: operator-supplied value if present, otherwise the

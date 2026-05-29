@@ -117,6 +117,39 @@ def create_diloco_parser(global_args):
         default=500,
         help="DyLU base sync_every for the fastest worker (default: 500)",
     )
+    # Group-wide worker settings (issue #53 follow-up). These must match
+    # across every worker, so they're owned by the server and the workers
+    # adopt them from /info — there are no corresponding worker flags.
+    server_parser.add_argument(
+        "--sync-every",
+        type=int,
+        default=500,
+        help=(
+            "Local optimizer steps between syncs (H), applied by every\n"
+            "worker. Under --dylu the DyLU base rate is used instead.\n"
+            "(default: 500)"
+        ),
+    )
+    server_parser.add_argument(
+        "--num-fragments",
+        type=int,
+        default=1,
+        help=(
+            "Streaming-sync fragments every worker splits the model into.\n"
+            "1 = no streaming. Must be uniform across the group, so it's\n"
+            "set here, not per worker. (default: 1)"
+        ),
+    )
+    server_parser.add_argument(
+        "--no-bf16",
+        dest="bf16_comm",
+        action="store_false",
+        help=(
+            "Send full-precision pseudo-gradients instead of bfloat16.\n"
+            "Centralized: the group's wire precision is set on the server\n"
+            "and adopted by every worker. (default: bf16 enabled)"
+        ),
+    )
     server_parser.add_argument(
         "--heartbeat-timeout",
         type=float,
@@ -256,27 +289,15 @@ def create_diloco_parser(global_args):
         required=True,
         help="DiLoCo server address as host:port",
     )
-    worker_parser.add_argument(
-        "--sync-every",
-        type=int,
-        default=500,
-        help="Number of local optimizer steps between syncs (default: 500)",
-    )
+    # NOTE: sync_every / bf16_comm / dylu / num_fragments are NOT worker
+    # flags. They must match across the group, so the server is their sole
+    # authority — the worker reads them from /info at startup. See
+    # DiLoCoCallback (server-authoritative settings).
     worker_parser.add_argument(
         "--worker-id",
         type=str,
         default=None,
         help="Worker ID (auto-generated if not provided)",
-    )
-    worker_parser.add_argument(
-        "--no-bf16",
-        action="store_true",
-        help="Disable bfloat16 communication (send full precision pseudo-gradients)",
-    )
-    worker_parser.add_argument(
-        "--dylu",
-        action="store_true",
-        help="Enable Dynamic Local Updates - adapt sync_every based on server recommendations",
     )
     worker_parser.add_argument(
         "--heartbeat-interval",
@@ -285,6 +306,7 @@ def create_diloco_parser(global_args):
         help=(
             "Seconds between heartbeats to server. Enables server-side\n"
             "health monitoring and DyLU speed reporting. 0 = disabled.\n"
+            "Client-local; validated against the server's heartbeat-timeout.\n"
             "(default: 30)"
         ),
     )
@@ -294,16 +316,6 @@ def create_diloco_parser(global_args):
         type=str,
         default=None,
         help='CUDA Visible Devices e.g. "0,1"',
-    )
-    worker_parser.add_argument(
-        "--num-fragments",
-        type=int,
-        default=1,
-        help=(
-            "Number of fragments for streaming sync. When > 1, splits the model\n"
-            "into N fragments that sync at staggered intervals in background\n"
-            "threads, overlapping communication with computation. (default: 1)"
-        ),
     )
     worker_parser.add_argument(
         "--dry-run",

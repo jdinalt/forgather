@@ -169,14 +169,10 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   const [selectedDiLoCoBase, setSelectedDiLoCoBase] = useState<string>(
     persistedDiLoCo.base,
   );
-  // Per-knob form state for the dependent fields. Strings (free form)
-  // so empty == "use config / env default"; coerced on submit.
-  const [diSyncEvery, setDiSyncEvery] = useState<string>(persistedDiLoCo.syncEvery);
-  const [diNumFragments, setDiNumFragments] = useState<string>(
-    persistedDiLoCo.numFragments,
-  );
-  const [diDylu, setDiDylu] = useState<boolean>(persistedDiLoCo.dylu);
-  const [diBf16, setDiBf16] = useState<boolean>(persistedDiLoCo.bf16Comm);
+  // sync_every / num_fragments / dylu / bf16_comm are server-authoritative
+  // (the worker reads them from /info); they have no form state here. Only
+  // client-local knobs remain. Strings (free form) so empty == "use config
+  // / env default"; coerced on submit.
   const [diHeartbeat, setDiHeartbeat] = useState<string>(
     persistedDiLoCo.heartbeatInterval,
   );
@@ -187,22 +183,10 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   useEffect(() => {
     const cur: DiLoCoPersisted = {
       base: selectedDiLoCoBase,
-      syncEvery: diSyncEvery,
-      numFragments: diNumFragments,
-      dylu: diDylu,
-      bf16Comm: diBf16,
       heartbeatInterval: diHeartbeat,
     };
     persistSet(dilocoStorageKey, JSON.stringify(cur));
-  }, [
-    dilocoStorageKey,
-    selectedDiLoCoBase,
-    diSyncEvery,
-    diNumFragments,
-    diDylu,
-    diBf16,
-    diHeartbeat,
-  ]);
+  }, [dilocoStorageKey, selectedDiLoCoBase, diHeartbeat]);
   // If the persisted base isn't currently in the server list (server
   // went offline, was renamed, etc.) fall back to "None" AND surface a
   // warning. The silent fallback was the failure mode that produced
@@ -244,18 +228,9 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   useEffect(() => {
     const info: DiLoCoInfo | undefined = dilocoInfoQ.data;
     if (!selectedDiLoCoBase || !info) return;
-    const exp = info.expected_client_settings ?? {};
-    if (exp.sync_every != null && diSyncEvery === "") {
-      setDiSyncEvery(String(exp.sync_every));
-    }
-    if (typeof exp.dylu === "boolean") {
-      // A DyLU server requires the worker to opt in; otherwise the
-      // server's per-worker recommendations are ignored.
-      setDiDylu(exp.dylu);
-    }
-    if (typeof exp.bf16_comm === "boolean") {
-      setDiBf16(exp.bf16_comm);
-    }
+    // sync_every / dylu / bf16_comm / num_fragments are server-authoritative
+    // and resolved by the worker from /info — nothing to seed into the form.
+    // The picker shows the server's values read-only instead.
     // Seed --model-id-or-path from the server's output_dir so the
     // worker constructs its model against the same checkpoint the
     // server loaded from. Catches the operator-misconfiguration
@@ -642,10 +617,6 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     // picked a server in the radio group ("" = None).
     const diloco = buildDiLoCoPayload({
       base: selectedDiLoCoBase,
-      syncEvery: diSyncEvery,
-      numFragments: diNumFragments,
-      dylu: diDylu,
-      bf16Comm: diBf16,
       heartbeatInterval: diHeartbeat,
       workerId: diWorkerId,
     });
@@ -848,14 +819,6 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
               servers={dilocoServersQ.data}
               selectedBase={selectedDiLoCoBase}
               onSelectBase={setSelectedDiLoCoBase}
-              syncEvery={diSyncEvery}
-              setSyncEvery={setDiSyncEvery}
-              numFragments={diNumFragments}
-              setNumFragments={setDiNumFragments}
-              dylu={diDylu}
-              setDylu={setDiDylu}
-              bf16Comm={diBf16}
-              setBf16Comm={setDiBf16}
               heartbeatInterval={diHeartbeat}
               setHeartbeatInterval={setDiHeartbeat}
               workerId={diWorkerId}
@@ -958,19 +921,11 @@ function formatNproc(v: number | string | null): string {
 
 interface DiLoCoPersisted {
   base: string;
-  syncEvery: string;
-  numFragments: string;
-  dylu: boolean;
-  bf16Comm: boolean;
   heartbeatInterval: string;
 }
 
 const DEFAULT_DILOCO_PERSISTED: DiLoCoPersisted = {
   base: "",
-  syncEvery: "",
-  numFragments: "",
-  dylu: false,
-  bf16Comm: true,
   heartbeatInterval: "",
 };
 
@@ -978,14 +933,6 @@ interface DiLoCoPickerProps {
   servers: DiLoCoServer[];
   selectedBase: string;
   onSelectBase: (base: string) => void;
-  syncEvery: string;
-  setSyncEvery: (v: string) => void;
-  numFragments: string;
-  setNumFragments: (v: string) => void;
-  dylu: boolean;
-  setDylu: (v: boolean) => void;
-  bf16Comm: boolean;
-  setBf16Comm: (v: boolean) => void;
   heartbeatInterval: string;
   setHeartbeatInterval: (v: string) => void;
   workerId: string;
@@ -1006,14 +953,6 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
     servers,
     selectedBase,
     onSelectBase,
-    syncEvery,
-    setSyncEvery,
-    numFragments,
-    setNumFragments,
-    dylu,
-    setDylu,
-    bf16Comm,
-    setBf16Comm,
     heartbeatInterval,
     setHeartbeatInterval,
     workerId,
@@ -1138,14 +1077,65 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
                 {info.num_parameters !== undefined && (
                   <> · {info.num_parameters.toLocaleString()} params</>
                 )}
-                {info.dylu_enabled && (
-                  <>
-                    {" "}
-                    · DyLU base sync_every={" "}
-                    <strong>{info.dylu_base_sync_every}</strong>
-                  </>
-                )}
               </div>
+            )}
+
+            {/* Server-authoritative settings (issue #95 follow-up). These
+                must match across the group, so the server owns them and
+                the worker reads them from /info — there is no operator
+                knob. Shown read-only so the operator can see what the
+                worker will use. */}
+            {info && (
+              <fieldset
+                disabled
+                style={{
+                  border: "1px solid var(--border, #444)",
+                  borderRadius: 4,
+                  padding: "6px 8px",
+                  marginBottom: 8,
+                }}
+              >
+                <legend className="muted" style={{ fontSize: "smaller" }}>
+                  Managed by server (read-only)
+                </legend>
+                <div
+                  className="muted"
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: 4,
+                    fontSize: "smaller",
+                  }}
+                >
+                  <span>
+                    sync_every:{" "}
+                    <strong>
+                      {info.expected_client_settings?.sync_every ?? "—"}
+                    </strong>
+                  </span>
+                  <span>
+                    num_fragments:{" "}
+                    <strong>
+                      {info.expected_client_settings?.num_fragments_default ??
+                        1}
+                    </strong>
+                  </span>
+                  <span>
+                    dylu:{" "}
+                    <strong>
+                      {info.expected_client_settings?.dylu ? "on" : "off"}
+                    </strong>
+                  </span>
+                  <span>
+                    bf16_comm:{" "}
+                    <strong>
+                      {info.expected_client_settings?.bf16_comm === false
+                        ? "off"
+                        : "on"}
+                    </strong>
+                  </span>
+                </div>
+              </fieldset>
             )}
 
             <div
@@ -1155,32 +1145,6 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
                 gap: 8,
               }}
             >
-              <label>
-                sync_every
-                <input
-                  type="number"
-                  min={1}
-                  value={syncEvery}
-                  onChange={(e) => setSyncEvery(e.target.value)}
-                  placeholder={
-                    info?.expected_client_settings?.sync_every != null
-                      ? String(info.expected_client_settings.sync_every)
-                      : "callback default (500)"
-                  }
-                  style={{ width: "100%" }}
-                />
-              </label>
-              <label>
-                num_fragments
-                <input
-                  type="number"
-                  min={1}
-                  value={numFragments}
-                  onChange={(e) => setNumFragments(e.target.value)}
-                  placeholder="1 (no streaming)"
-                  style={{ width: "100%" }}
-                />
-              </label>
               <label>
                 heartbeat_interval (s)
                 <input
@@ -1203,28 +1167,6 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
                   style={{ width: "100%" }}
                 />
               </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={dylu}
-                  onChange={(e) => setDylu(e.target.checked)}
-                />{" "}
-                Enable DyLU{" "}
-                {info?.dylu_enabled && (
-                  <span className="muted">
-                    (server requires this; the dependent fields above are
-                    overridden by the server's heartbeat response)
-                  </span>
-                )}
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={bf16Comm}
-                  onChange={(e) => setBf16Comm(e.target.checked)}
-                />{" "}
-                bf16 pseudo-gradient communication
-              </label>
             </div>
           </>
         )}
@@ -1235,17 +1177,17 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
 
 interface DiLoCoFormSnapshot {
   base: string;
-  syncEvery: string;
-  numFragments: string;
-  dylu: boolean;
-  bf16Comm: boolean;
   heartbeatInterval: string;
   workerId: string;
 }
 
 /** Construct the ``job_params.diloco`` payload from the form snapshot.
  *  Returns null when the operator picked "None" — callers should skip
- *  ``job_params.diloco`` entirely in that case. */
+ *  ``job_params.diloco`` entirely in that case.
+ *
+ *  sync_every / num_fragments / dylu / bf16_comm are intentionally absent:
+ *  they are server-authoritative and the worker reads them from /info, so
+ *  the submission never carries them. */
 function buildDiLoCoPayload(
   s: DiLoCoFormSnapshot,
 ): Record<string, unknown> | null {
@@ -1260,19 +1202,7 @@ function buildDiLoCoPayload(
   const serverAddr = s.base.replace(/\/$/, "");
   const payload: Record<string, unknown> = {
     server_addr: serverAddr,
-    dylu: s.dylu,
-    bf16_comm: s.bf16Comm,
   };
-  const sync = s.syncEvery.trim();
-  if (sync) {
-    const n = Number(sync);
-    if (Number.isFinite(n)) payload.sync_every = Math.max(1, Math.floor(n));
-  }
-  const frags = s.numFragments.trim();
-  if (frags) {
-    const n = Number(frags);
-    if (Number.isFinite(n)) payload.num_fragments = Math.max(1, Math.floor(n));
-  }
   const hb = s.heartbeatInterval.trim();
   if (hb) {
     const n = Number(hb);

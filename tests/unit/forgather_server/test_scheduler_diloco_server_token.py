@@ -126,6 +126,42 @@ def test_build_diloco_command_bulk_port_flags():
     assert "--no-bulk-auth" in cmd
 
 
+def test_build_diloco_command_group_settings():
+    """sync_every/num_fragments/bf16_comm (server-authoritative, adopted by
+    workers from /info) surface on the spawn argv."""
+    from forgather_server.diloco_server_ops import build_diloco_server_command
+
+    cmd = build_diloco_server_command(
+        output_dir="/tmp/out",
+        num_workers=1,
+        port=8512,
+        sync_every=250,
+        num_fragments=4,
+        bf16_comm=False,
+    )
+    assert "--sync-every" in cmd
+    assert cmd[cmd.index("--sync-every") + 1] == "250"
+    assert "--num-fragments" in cmd
+    assert cmd[cmd.index("--num-fragments") + 1] == "4"
+    assert "--no-bf16" in cmd
+
+
+def test_build_diloco_command_group_settings_defaults():
+    """Defaults: --sync-every emitted (always meaningful), but
+    --num-fragments (1) and --no-bf16 (bf16 on) are omitted for a readable
+    argv."""
+    from forgather_server.diloco_server_ops import build_diloco_server_command
+
+    cmd = build_diloco_server_command(
+        output_dir="/tmp/out",
+        num_workers=1,
+        port=8512,
+    )
+    assert "--sync-every" in cmd
+    assert "--num-fragments" not in cmd
+    assert "--no-bf16" not in cmd
+
+
 def test_build_diloco_command_no_bulk_port_omits_flags():
     """No --bulk-port → bulk_tls/bulk_auth are silently dropped."""
     from forgather_server.diloco_server_ops import build_diloco_server_command

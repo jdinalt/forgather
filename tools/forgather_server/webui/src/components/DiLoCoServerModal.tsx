@@ -21,6 +21,12 @@ interface PersistedAdHoc {
   dnBufferSize: number;
   dylu: boolean;
   dyluBase: number;
+  // Group-wide worker settings the server is authoritative for. They
+  // must match across the group, so the operator sets them here and the
+  // workers adopt them from /info (no per-worker knob).
+  syncEvery: number;
+  numFragments: number;
+  bf16Comm: boolean;
   fromCheckpoint: string;
   saveEvery: number;
   saveTotalLimit: number;
@@ -50,6 +56,9 @@ const DEFAULT_AD_HOC: PersistedAdHoc = {
   dnBufferSize: 0,
   dylu: false,
   dyluBase: 500,
+  syncEvery: 500,
+  numFragments: 1,
+  bf16Comm: true,
   fromCheckpoint: "",
   saveEvery: 10,
   saveTotalLimit: 3,
@@ -144,6 +153,9 @@ export function DiLoCoServerModal({
         dnBufferSize: pickNum(editingService.args, "dn_buffer_size", 0),
         dylu: pickBool(editingService.args, "dylu", false),
         dyluBase: pickNum(editingService.args, "dylu_base_sync_every", 500),
+        syncEvery: pickNum(editingService.args, "sync_every", 500),
+        numFragments: pickNum(editingService.args, "num_fragments", 1),
+        bf16Comm: pickBool(editingService.args, "bf16_comm", true),
         fromCheckpoint: pickStr(editingService.args, "from_checkpoint", ""),
         saveEvery: pickNum(editingService.args, "save_every", 10),
         saveTotalLimit: pickNum(editingService.args, "save_total_limit", 3),
@@ -172,6 +184,9 @@ export function DiLoCoServerModal({
   const [dnBufferSize, setDnBufferSize] = useState(seed.dnBufferSize);
   const [dylu, setDylu] = useState(seed.dylu);
   const [dyluBase, setDyluBase] = useState(seed.dyluBase);
+  const [syncEvery, setSyncEvery] = useState(seed.syncEvery);
+  const [numFragments, setNumFragments] = useState(seed.numFragments);
+  const [bf16Comm, setBf16Comm] = useState(seed.bf16Comm);
   const [fromCheckpoint, setFromCheckpoint] = useState(seed.fromCheckpoint);
   const [saveEvery, setSaveEvery] = useState(seed.saveEvery);
   const [saveTotalLimit, setSaveTotalLimit] = useState(seed.saveTotalLimit);
@@ -215,6 +230,10 @@ export function DiLoCoServerModal({
       no_nesterov: noNesterov,
       heartbeat_timeout: heartbeatTimeout,
       min_workers: minWorkers,
+      // Group-wide worker settings (adopted from /info; no worker knob).
+      sync_every: syncEvery,
+      num_fragments: numFragments,
+      bf16_comm: bf16Comm,
     };
     if (dnBufferSize > 0) args.dn_buffer_size = dnBufferSize;
     if (dylu) args.dylu_base_sync_every = dyluBase;
@@ -251,6 +270,9 @@ export function DiLoCoServerModal({
       dnBufferSize,
       dylu,
       dyluBase,
+      syncEvery,
+      numFragments,
+      bf16Comm,
       fromCheckpoint: trimmedFromCheckpoint,
       saveEvery,
       saveTotalLimit,
@@ -431,6 +453,56 @@ export function DiLoCoServerModal({
               </div>
             </label>
           </div>
+
+          <fieldset style={{ gridColumn: "1 / -1", padding: 8 }}>
+            <legend>Worker settings (group-wide)</legend>
+            <div className="muted" style={{ fontSize: "smaller", marginBottom: 6 }}>
+              These must match across every worker, so they're set here and
+              adopted by each worker from <code>/info</code> — there are no
+              per-worker flags.
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 8,
+              }}
+            >
+              <label>
+                sync_every
+                <input
+                  type="number"
+                  min={1}
+                  value={syncEvery}
+                  onChange={(e) => setSyncEvery(Number(e.target.value))}
+                  style={{ width: "100%" }}
+                />
+                {dylu && (
+                  <div className="muted" style={{ fontSize: "smaller" }}>
+                    Superseded by DyLU base sync_every while DyLU is on.
+                  </div>
+                )}
+              </label>
+              <label>
+                num_fragments (1 = no streaming)
+                <input
+                  type="number"
+                  min={1}
+                  value={numFragments}
+                  onChange={(e) => setNumFragments(Number(e.target.value))}
+                  style={{ width: "100%" }}
+                />
+              </label>
+              <label style={{ gridColumn: "1 / -1" }}>
+                <input
+                  type="checkbox"
+                  checked={bf16Comm}
+                  onChange={(e) => setBf16Comm(e.target.checked)}
+                />{" "}
+                bf16 pseudo-gradient communication
+              </label>
+            </div>
+          </fieldset>
 
           <fieldset style={{ gridColumn: "1 / -1", padding: 8 }}>
             <legend>Sync mode</legend>

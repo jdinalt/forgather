@@ -118,6 +118,15 @@ Server arguments:
 - `--dylu-base-sync-every N`: Base sync interval for the fastest worker (default: 500)
 - `--from-checkpoint FROM_CHECKPOINT`: Load model from specified checkpoint path. Overrides loading from newest.
 
+Group-wide worker settings (must match across the group, so they live on the
+server; every worker adopts them from `/info` — there are no worker flags):
+- `--sync-every N`: Local optimizer steps between syncs (H). Default: 500.
+  Under `--dylu`, the DyLU base rate is used instead.
+- `--num-fragments N`: Streaming-sync fragments every worker splits the model
+  into (1 = no streaming). Default: 1.
+- `--no-bf16`: Send full-precision pseudo-gradients instead of bfloat16
+  (centralized: one wire precision for the whole group). Default: bf16 on.
+
 ```bash
 # Load a specific checkpoint and save checkpoints to specified directory.
 forgather diloco server -o path/to/output --from-checkpoint output_models/my_model/checkpoint-1000 -n 2
@@ -133,37 +142,32 @@ explicit `--output-dir` the operator passes, so workers get distinct
 per-worker dirs for free):
 
 ```bash
-# sync mode
 forgather diloco worker \
     --server 192.168.1.100:8512 \
-    --sync-every 500 \
     --worker-id w0 \
     -p my_project -t train.yaml \
     train -d 0
-
-# with DyLU - server adjusts sync frequency dynamically
-forgather diloco worker \
-    --server 192.168.1.100:8512 \
-    --sync-every 500 \
-    --worker-id w1 \
-    --dylu \
-    --heartbeat-interval 30 \
-    -p my_project -t train.yaml \
-    train -d 1
 ```
 
 Worker arguments:
 - `--server`: Server address as `host:port`
-- `--sync-every`: Local steps between syncs (default: 500)
 - `--worker-id`: Unique worker identity. Drives the per-worker output-dir
   suffix the project template appends to `ns.output_dir`, and the
   uniqueness key the server enforces on `/register`. Auto-generated when
   omitted but operators typically set it explicitly so logs / output dirs
   are predictable.
-- `--no-bf16`: Send full-precision pseudo-gradients instead of bfloat16
-- `--dylu`: Enable dynamic sync frequency adjustment from server
-- `--heartbeat-interval`: Seconds between heartbeats for speed reporting (default: 30)
+- `--heartbeat-interval`: Seconds between heartbeats for speed reporting
+  (default: 30). Client-local; validated against the server's
+  `--heartbeat-timeout` at startup.
 - `-d`: CUDA visible devices
+
+**Server-authoritative settings.** `sync_every`, `bf16_comm`, `dylu`, and
+`num_fragments` must match across every worker in the group for the sync
+barrier / outer step / fragment barriers to be coherent. The server is
+their sole authority: the worker fetches them from the server's `/info` at
+startup and logs the values it adopted. There are no `--sync-every` /
+`--no-bf16` / `--dylu` / `--num-fragments` worker flags — set them on the
+**server** instead (`--dylu-base-sync-every`, `--dylu`, etc.).
 
 Dataset partitioning across workers is handled by the server's **work-unit
 dispatch**: each worker registers its train dataset with the DiLoCo server
@@ -373,18 +377,20 @@ updates at approximately the same wall-clock rate.
 
 DyLU requires:
 1. **Server**: `--dylu` flag and `--dylu-base-sync-every` (default: 500)
-2. **Workers**: `--dylu` flag and `--heartbeat-interval` (default: 30s)
+2. **Workers**: `--heartbeat-interval` (default: 30s). DyLU enablement and the
+   base `sync_every` are taken from the server's `/info` — there is no worker
+   `--dylu` flag.
 
 Workers periodically report their training speed via heartbeats. The server
 computes the recommended sync interval and returns it in the heartbeat response.
 Workers adjust their `sync_every` dynamically.
 
 ```bash
-# Server with DyLU
+# Server with DyLU (this is where dylu / sync_every are configured)
 forgather diloco server -o ./model -n 3 --async --dylu --dylu-base-sync-every 500
 
-# Worker with DyLU enabled
-forgather diloco worker --server host:8512 --sync-every 500 --worker-id w0 --dylu -- train
+# Worker — picks up dylu + sync_every from the server's /info
+forgather diloco worker --server host:8512 --worker-id w0 -- train
 ```
 
 ### Staleness Tracking
@@ -432,12 +438,11 @@ communication becomes fully overlapped.
 ### CLI Usage
 
 ```bash
-# Worker with 4 streaming fragments
+# Streaming fragments are configured on the server, not the worker —
+# the worker reads num_fragments (and sync_every) from /info.
 forgather diloco worker \
     --server 192.168.1.100:8512 \
-    --sync-every 500 \
     --worker-id w0 \
-    --num-fragments 4 \
     -p my_project -t train.yaml \
     train
 ```
@@ -649,12 +654,11 @@ configuration works for both DiLoCo and standalone training.
 ```python
 from forgather.ml.trainer.callbacks import DiLoCoCallback
 
-# Explicit configuration
+# Explicit configuration (client-local knobs only)
 callback = DiLoCoCallback(
     server_addr="192.168.1.100:8512",
-    sync_every=500,
-    bf16_comm=True,
-    num_fragments=1,
+    worker_id="w0",
+    heartbeat_interval=30.0,
 )
 
 # Or rely on environment variables (set by `forgather diloco worker`)
@@ -669,17 +673,21 @@ trainer = Trainer(
 trainer.train()
 ```
 
-All constructor parameters fall back to `DILOCO_*` environment variables:
+The callback's client-local constructor parameters fall back to `DILOCO_*`
+environment variables:
 
 | Parameter | Env Var | Default |
 |-----------|---------|---------|
 | `server_addr` | `DILOCO_SERVER` | `""` (no-op) |
-| `sync_every` | `DILOCO_SYNC_EVERY` | `500` |
 | `worker_id` | `DILOCO_WORKER_ID` | auto-generated |
-| `bf16_comm` | `DILOCO_BF16_COMM` | `True` |
-| `dylu` | `DILOCO_DYLU` | `False` |
 | `heartbeat_interval` | `DILOCO_HEARTBEAT_INTERVAL` | `30.0` |
-| `num_fragments` | `DILOCO_NUM_FRAGMENTS` | `1` |
+
+`sync_every`, `bf16_comm`, `dylu`, and `num_fragments` are **not** callback
+parameters or env vars — they must match across the group, so the worker
+reads them from the server's `/info` at startup (set them on the server).
+The `DiLoCoWorker` class still accepts them directly for the low-level
+programmatic API; it's only the callback / CLI surface that defers to the
+server.
 
 ### Configuration Template
 
@@ -696,8 +704,8 @@ Or add the callback directly in your project template:
     == super()
     diloco_callback: !singleton:forgather.ml.trainer.callbacks:DiLoCoCallback
         server_addr: {{ diloco_server | default(None) }}
-        sync_every: {{ diloco_sync_every | default(None) }}
-        num_fragments: {{ diloco_num_fragments | default(None) }}
+        worker_id: {{ diloco_worker_id | default(None) }}
+        heartbeat_interval: {{ diloco_heartbeat_interval | default(None) }}
 ```
 
 See `examples/tiny_experiments/diloco/` for a complete working example.
