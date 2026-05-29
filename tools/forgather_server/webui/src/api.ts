@@ -1149,11 +1149,18 @@ export interface DiLoCoInfo {
   model_size_mb?: number;
   dylu_enabled?: boolean;
   dylu_base_sync_every?: number;
+  // Coarse model fingerprint; the worker validates a cached model
+  // bundle and uses it as an early compatibility gate (issue #53).
+  model_hash?: string;
+  // Marks the four settings below as server-owned (no client override).
+  settings_authority?: string;
   expected_client_settings?: {
     sync_every?: number | null;
     dylu?: boolean;
     bf16_comm?: boolean;
     num_fragments_min?: number;
+    num_fragments_default?: number;
+    heartbeat_timeout?: number;
   };
 }
 

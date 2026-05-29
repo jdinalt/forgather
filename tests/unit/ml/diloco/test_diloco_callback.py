@@ -52,6 +52,36 @@ _WORKER_PATCH = "forgather.ml.diloco.worker.DiLoCoWorker"
 _CLIENT_PATCH = "forgather.ml.diloco.client.DiLoCoClient"
 
 
+def _info(
+    sync_every=500,
+    dylu=False,
+    bf16_comm=True,
+    num_fragments_default=1,
+    heartbeat_timeout=0,
+):
+    """A minimal /info payload as the server would return it. The four
+    server-authoritative settings live under expected_client_settings."""
+    return {
+        "mode": "sync",
+        "num_parameters": 64,
+        "model_hash": "deadbeef",
+        "settings_authority": "server",
+        "expected_client_settings": {
+            "sync_every": sync_every,
+            "dylu": dylu,
+            "bf16_comm": bf16_comm,
+            "num_fragments_min": 1,
+            "num_fragments_default": num_fragments_default,
+            "heartbeat_timeout": heartbeat_timeout,
+        },
+    }
+
+
+def _stub_info(MockClient, **kwargs):
+    """Point the mocked DiLoCoClient's get_info at an _info() payload."""
+    MockClient.return_value.get_info.return_value = _info(**kwargs)
+
+
 class TestFailFastWhenUnconfigured:
     """The callback was reworked from "silent no-op when DILOCO_SERVER
     is unset" to "fail fast on misconfiguration." The previous silent
@@ -117,25 +147,28 @@ class TestFailFastWhenUnconfigured:
         self, MockClient, MockWorker
     ):
         """on_train_begin raises DiLoCoServerUnreachable when the
-        /status probe at startup fails. Surfaces the failure while
+        /info probe at startup fails. Surfaces the failure while
         the operator's still watching the TTY, not 500 steps in."""
         from forgather.ml.diloco.client import DiLoCoServerUnreachable
 
-        MockClient.return_value.get_status.side_effect = ConnectionError("refused")
+        MockClient.return_value.get_info.side_effect = ConnectionError("refused")
 
         cb = DiLoCoCallback(server_addr="unreachable:9999")
         args, state, control = _make_args(), _make_state(), _make_control()
         model = TinyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
-        with pytest.raises(DiLoCoServerUnreachable, match="/status round-trip"):
+        with pytest.raises(DiLoCoServerUnreachable, match="/info round-trip"):
             cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
         # Worker was never started since the probe came first.
         MockWorker.return_value.start.assert_not_called()
 
 
 class TestEnvVarConfiguration:
-    """Environment variable reading and constructor override."""
+    """Environment variable reading for the client-local knobs. The
+    server-authoritative settings (sync_every / bf16_comm / dylu /
+    num_fragments) are no longer constructor args or env vars — the
+    worker reads them from /info (see TestServerAuthoritativeSettings)."""
 
     def test_server_addr_from_env(self):
         """DILOCO_SERVER env var provides server_addr."""
@@ -150,40 +183,11 @@ class TestEnvVarConfiguration:
             cb = DiLoCoCallback(server_addr="explicit:8512")
             assert cb.server_addr == "explicit:8512"
 
-    def test_sync_every_from_env(self):
-        """DILOCO_SYNC_EVERY env var provides sync_every."""
-        with patch.dict(os.environ, {"DILOCO_SYNC_EVERY": "200"}):
-            cb = DiLoCoCallback()
-            assert cb.sync_every == 200
-
-    def test_sync_every_explicit_overrides_env(self):
-        """Explicit sync_every overrides env var."""
-        with patch.dict(os.environ, {"DILOCO_SYNC_EVERY": "200"}):
-            cb = DiLoCoCallback(sync_every=300)
-            assert cb.sync_every == 300
-
     def test_worker_id_from_env(self):
         """DILOCO_WORKER_ID env var provides worker_id."""
         with patch.dict(os.environ, {"DILOCO_WORKER_ID": "w42"}):
             cb = DiLoCoCallback()
             assert cb.worker_id == "w42"
-
-    def test_bf16_comm_from_env(self):
-        """DILOCO_BF16_COMM env var provides bf16_comm."""
-        with patch.dict(os.environ, {"DILOCO_BF16_COMM": "false"}):
-            cb = DiLoCoCallback()
-            assert cb.bf16_comm is False
-
-    def test_bf16_comm_default_true(self):
-        """bf16_comm defaults to True when env var is unset."""
-        cb = DiLoCoCallback()
-        assert cb.bf16_comm is True
-
-    def test_dylu_from_env(self):
-        """DILOCO_DYLU env var provides dylu."""
-        with patch.dict(os.environ, {"DILOCO_DYLU": "1"}):
-            cb = DiLoCoCallback()
-            assert cb.dylu is True
 
     def test_heartbeat_interval_from_env(self):
         """DILOCO_HEARTBEAT_INTERVAL env var provides heartbeat_interval."""
@@ -191,27 +195,109 @@ class TestEnvVarConfiguration:
             cb = DiLoCoCallback()
             assert cb.heartbeat_interval == 15.0
 
-    def test_num_fragments_from_env(self):
-        """DILOCO_NUM_FRAGMENTS env var provides num_fragments."""
-        with patch.dict(os.environ, {"DILOCO_NUM_FRAGMENTS": "4"}):
-            cb = DiLoCoCallback()
-            assert cb.num_fragments == 4
+    def test_server_authoritative_settings_not_constructor_args(self):
+        """The removed must-match settings are not accepted as kwargs."""
+        for kw in ("sync_every", "bf16_comm", "dylu", "num_fragments"):
+            with pytest.raises(TypeError):
+                DiLoCoCallback(server_addr="host:8512", **{kw: 1})
 
     def test_defaults_without_env(self):
-        """Default values when no env vars are set."""
+        """Default values when no env vars are set. The server-authoritative
+        settings stay None until /info is read in on_train_begin."""
         # Clear any DILOCO_* env vars
         env = {k: v for k, v in os.environ.items() if not k.startswith("DILOCO_")}
         with patch.dict(os.environ, env, clear=True):
             cb = DiLoCoCallback()
             assert cb.server_addr == ""
-            assert cb.sync_every == 500
             assert cb.worker_id is None
-            assert cb.bf16_comm is True
-            assert cb.dylu is False
             assert cb.heartbeat_interval == 30.0
-            assert cb.num_fragments == 1
             assert cb.timeout == 600
             assert cb.max_sync_retries == 3
+            # Not resolved until on_train_begin negotiates with the server.
+            assert cb.sync_every is None
+            assert cb.bf16_comm is None
+            assert cb.dylu is None
+            assert cb.num_fragments is None
+
+
+class TestServerAuthoritativeSettings:
+    """sync_every / bf16_comm / dylu / num_fragments are taken verbatim
+    from the server's /info, with no client override."""
+
+    @patch(_CLIENT_PATCH)
+    @patch(_WORKER_PATCH)
+    def test_worker_built_with_server_settings(self, MockWorker, MockClient):
+        mock_instance = MockWorker.return_value
+        mock_instance.sync_metrics = {}
+        _stub_info(
+            MockClient,
+            sync_every=250,
+            dylu=True,
+            bf16_comm=False,
+            num_fragments_default=3,
+        )
+
+        cb = DiLoCoCallback(server_addr="host:8512")
+        args, state, control = _make_args(), _make_state(), _make_control()
+        model = TinyModel()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+        cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+
+        _, kwargs = MockWorker.call_args
+        assert kwargs["sync_every"] == 250
+        assert kwargs["dylu"] is True
+        assert kwargs["bf16_comm"] is False
+        assert kwargs["num_fragments"] == 3
+        # And the callback's own copies were updated.
+        assert cb.sync_every == 250
+        assert cb.dylu is True
+
+    @patch(_CLIENT_PATCH)
+    @patch(_WORKER_PATCH)
+    def test_missing_sync_every_is_fatal(self, MockWorker, MockClient):
+        """A server that doesn't advertise sync_every (too old) is fatal,
+        not silently defaulted."""
+        from forgather.ml.diloco.client import DiLoCoServerUnreachable
+
+        MockClient.return_value.get_info.return_value = _info(sync_every=None)
+        cb = DiLoCoCallback(server_addr="host:8512")
+        args, state, control = _make_args(), _make_state(), _make_control()
+        model = TinyModel()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+        with pytest.raises(DiLoCoServerUnreachable, match="sync_every"):
+            cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+        MockWorker.return_value.start.assert_not_called()
+
+    @patch(_CLIENT_PATCH)
+    @patch(_WORKER_PATCH)
+    def test_heartbeat_interval_at_or_above_timeout_raises(
+        self, MockWorker, MockClient
+    ):
+        """A heartbeat cadence >= the server's death timeout is rejected
+        up front (it guarantees spurious eviction)."""
+        _stub_info(MockClient, heartbeat_timeout=20)
+        cb = DiLoCoCallback(server_addr="host:8512", heartbeat_interval=30.0)
+        args, state, control = _make_args(), _make_state(), _make_control()
+        model = TinyModel()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+        with pytest.raises(ValueError, match="heartbeat_interval"):
+            cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+        MockWorker.return_value.start.assert_not_called()
+
+    @patch(_CLIENT_PATCH)
+    @patch(_WORKER_PATCH)
+    def test_heartbeat_timeout_zero_disables_validation(self, MockWorker, MockClient):
+        """heartbeat_timeout=0 means death detection is off — any cadence
+        is allowed."""
+        mock_instance = MockWorker.return_value
+        mock_instance.sync_metrics = {}
+        _stub_info(MockClient, heartbeat_timeout=0)
+        cb = DiLoCoCallback(server_addr="host:8512", heartbeat_interval=999.0)
+        args, state, control = _make_args(), _make_state(), _make_control()
+        model = TinyModel()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+        cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+        mock_instance.start.assert_called_once()
 
 
 class TestWorkerLifecycle:
@@ -227,8 +313,9 @@ class TestWorkerLifecycle:
         """on_train_begin creates and starts a DiLoCoWorker."""
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {}
+        _stub_info(MockClient)  # server advertises sync_every=500, defaults
 
-        cb = DiLoCoCallback(server_addr="host:8512", sync_every=100)
+        cb = DiLoCoCallback(server_addr="host:8512")
         args, state, control = _make_args(), _make_state(), _make_control()
         model = TinyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
@@ -239,7 +326,7 @@ class TestWorkerLifecycle:
             model=model,
             optimizer=optimizer,
             server_addr="host:8512",
-            sync_every=100,
+            sync_every=500,  # from /info
             worker_id=None,
             bf16_comm=True,
             timeout=600,
@@ -252,8 +339,8 @@ class TestWorkerLifecycle:
             verify_tls=True,
         )
         mock_instance.start.assert_called_once()
-        # Pre-probe should have happened first.
-        MockClient.return_value.get_status.assert_called_once()
+        # Pre-probe (now /info) should have happened first.
+        MockClient.return_value.get_info.assert_called_once()
 
     @patch(_CLIENT_PATCH)
     @patch(_WORKER_PATCH)
@@ -261,6 +348,7 @@ class TestWorkerLifecycle:
         """on_train_end stops the worker."""
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {}
+        _stub_info(MockClient)
 
         cb = DiLoCoCallback(server_addr="host:8512")
         args, state, control = _make_args(), _make_state(), _make_control()
@@ -289,18 +377,22 @@ class TestWorkerLifecycle:
     @patch(_CLIENT_PATCH)
     @patch(_WORKER_PATCH)
     def test_custom_parameters_passed_to_worker(self, MockWorker, MockClient):
-        """All callback parameters are forwarded to DiLoCoWorker."""
+        """Client-local params come from the constructor; the four
+        server-authoritative ones come from /info."""
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {}
+        _stub_info(
+            MockClient,
+            sync_every=200,
+            dylu=True,
+            bf16_comm=False,
+            num_fragments_default=4,
+        )
 
         cb = DiLoCoCallback(
             server_addr="remote:9999",
-            sync_every=200,
             worker_id="test_worker",
-            bf16_comm=False,
-            dylu=True,
             heartbeat_interval=10.0,
-            num_fragments=4,
             timeout=300,
             max_sync_retries=5,
         )
@@ -314,13 +406,13 @@ class TestWorkerLifecycle:
             model=model,
             optimizer=optimizer,
             server_addr="remote:9999",
-            sync_every=200,
+            sync_every=200,  # from /info
             worker_id="test_worker",
-            bf16_comm=False,
+            bf16_comm=False,  # from /info
             timeout=300,
-            dylu=True,
+            dylu=True,  # from /info
             heartbeat_interval=10.0,
-            num_fragments=4,
+            num_fragments=4,  # from /info
             max_sync_retries=5,
             param_view=None,
             auth_token=None,
@@ -340,6 +432,7 @@ class TestPipelineDetection:
     ):
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {}
+        _stub_info(MockClient)
 
         # Fake pipeline trainer: only the attributes the callback reads.
         fake_trainer = MagicMock()
@@ -382,6 +475,7 @@ class TestPipelineDetection:
         group kwargs."""
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {}
+        _stub_info(MockClient)
 
         fake_trainer = MagicMock()
         fake_trainer.pipeline_modules = None  # not a pipeline trainer
@@ -422,6 +516,7 @@ class TestMetricsInjection:
             "diloco/local_step": 42,
             "diloco/total_sync_time": 10.5,
         }
+        _stub_info(MockClient)
 
         cb = DiLoCoCallback(server_addr="host:8512")
         args, state, control = _make_args(), _make_state(), _make_control()
@@ -455,6 +550,7 @@ class TestMetricsInjection:
         """on_log handles None logs gracefully."""
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {"diloco/sync_count": 1}
+        _stub_info(MockClient)
 
         cb = DiLoCoCallback(server_addr="host:8512")
         args, state, control = _make_args(), _make_state(), _make_control()
@@ -484,6 +580,7 @@ class TestStatefulProtocol:
         mock_instance._reconnections = 1
         mock_instance._dylu_adjustments = 3
         mock_instance._fragment_syncs = 8
+        _stub_info(MockClient)
 
         cb = DiLoCoCallback(server_addr="host:8512")
         args, state, control = _make_args(), _make_state(), _make_control()
@@ -527,6 +624,7 @@ class TestStatefulProtocol:
         """Pending state from load_state_dict is applied when worker starts."""
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {}
+        _stub_info(MockClient)
 
         cb = DiLoCoCallback(server_addr="host:8512")
 
@@ -568,6 +666,7 @@ class TestStatefulProtocol:
         """on_train_begin works fine without any pending state."""
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {}
+        _stub_info(MockClient)
 
         cb = DiLoCoCallback(server_addr="host:8512")
         args, state, control = _make_args(), _make_state(), _make_control()
@@ -601,6 +700,7 @@ class TestStatefulProtocol:
         mock_instance._reconnections = 0
         mock_instance._dylu_adjustments = 0
         mock_instance._fragment_syncs = 0
+        _stub_info(MockClient)
 
         cb = DiLoCoCallback(server_addr="host:8512")
         args, state, control = _make_args(), _make_state(), _make_control()

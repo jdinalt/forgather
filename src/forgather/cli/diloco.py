@@ -306,14 +306,13 @@ def _worker_cmd(args):
     This wraps the standard training command, injecting DiLoCo configuration
     via environment variables that the training script picks up.
     """
-    # Set DiLoCo environment variables for the training script
+    # Set DiLoCo environment variables for the training script. Only
+    # client-local knobs are forwarded; sync_every / bf16_comm / dylu /
+    # num_fragments are server-authoritative and resolved from /info by
+    # the worker at startup (no client override).
     env = os.environ.copy()
     env["DILOCO_SERVER"] = args.server
-    env["DILOCO_SYNC_EVERY"] = str(args.sync_every)
-    env["DILOCO_BF16_COMM"] = "0" if args.no_bf16 else "1"
-    env["DILOCO_DYLU"] = "1" if getattr(args, "dylu", False) else "0"
     env["DILOCO_HEARTBEAT_INTERVAL"] = str(getattr(args, "heartbeat_interval", 30.0))
-    env["DILOCO_NUM_FRAGMENTS"] = str(getattr(args, "num_fragments", 1))
 
     if args.worker_id:
         env["DILOCO_WORKER_ID"] = args.worker_id
@@ -351,15 +350,10 @@ def _worker_cmd(args):
     cmd_args.extend(remainder)
 
     cmd_str = " ".join(cmd_args)
-    diloco_info = (
-        f"DiLoCo: server={args.server}, sync_every={args.sync_every}, "
-        f"bf16={'yes' if not args.no_bf16 else 'no'}"
-    )
-    num_frags = getattr(args, "num_fragments", 1)
-    if num_frags > 1:
-        diloco_info += f", fragments={num_frags}"
-    if getattr(args, "dylu", False):
-        diloco_info += ", dylu=yes"
+    # sync_every / bf16 / dylu / num_fragments come from the server's /info
+    # at startup, so they aren't known here — the worker logs them once it
+    # negotiates with the server.
+    diloco_info = f"DiLoCo: server={args.server}"
     if args.worker_id:
         diloco_info += f", worker_id={args.worker_id}"
 

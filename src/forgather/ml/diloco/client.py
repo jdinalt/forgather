@@ -672,6 +672,17 @@ class DiLoCoClient:
         """Get server status."""
         return self._request_json("GET", "/status")
 
+    def get_info(self) -> dict:
+        """Get the server's static-ish configuration.
+
+        Returns the negotiation facts a worker needs before registering:
+        the authoritative ``expected_client_settings`` (sync_every,
+        bf16_comm, dylu, num_fragments_*, heartbeat_timeout), the model
+        fingerprint (``model_hash``), and topology info. Distinct from
+        ``get_status`` which is the live, rapidly-changing snapshot.
+        """
+        return self._request_json("GET", "/info")
+
     # ------------------------------------------------------------------
     # Work-unit dispatch (see docs/design/diloco-work-unit-dispatch.md)
     # ------------------------------------------------------------------

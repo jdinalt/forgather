@@ -25,6 +25,7 @@ Usage:
 """
 
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -537,6 +538,14 @@ class DiLoCoServer:
             ]
         )
 
+        # Coarse model fingerprint advertised via /info. Workers use it to
+        # decide whether a cached model-definition bundle is still valid
+        # (issue #53) and as an early, pre-construction compatibility gate
+        # (the per-parameter /register fingerprint stays the fine-grained
+        # check). Derived from the parameter (name, shape) set the server
+        # holds; deterministic across the server's lifetime.
+        self._model_hash = self._compute_model_hash(model_state_dict)
+
         # Outer optimizer
         self.outer_optimizer = self.outer_optimizer_factory(
             self._param_list.parameters()
@@ -653,6 +662,23 @@ class DiLoCoServer:
         raise RuntimeError(
             f"No available port in range {start_port}-{start_port + max_attempts}"
         )
+
+    @staticmethod
+    def _compute_model_hash(model_state_dict: Dict[str, torch.Tensor]) -> str:
+        """Coarse, deterministic fingerprint of the model's parameter set.
+
+        Hashes the sorted ``(name, shape)`` pairs. Stable across restarts
+        and machines for the same architecture; changes when the parameter
+        topology changes. Advertised via /info so workers can validate a
+        cached model-definition bundle and gate compatibility before
+        constructing the model.
+        """
+        h = hashlib.sha256()
+        for name in sorted(model_state_dict.keys()):
+            shape = tuple(model_state_dict[name].shape)
+            h.update(name.encode("utf-8"))
+            h.update(repr(shape).encode("utf-8"))
+        return h.hexdigest()
 
     def get_global_params(self) -> Dict[str, torch.Tensor]:
         """Get current global parameters as a state dict."""
@@ -2109,16 +2135,30 @@ class DiLoCoServer:
             "model_size_mb": round(self._model_size_mb, 2),
             "dylu_enabled": self.dylu_enabled,
             "dylu_base_sync_every": self.dylu_base_sync_every,
+            # Coarse model fingerprint (issue #53). Workers validate a
+            # cached model-definition bundle against this and use it as an
+            # early compatibility gate before constructing the model.
+            "model_hash": self._model_hash,
+            # The server is the sole authority for these settings: they must
+            # match across the group for the sync barrier / outer step /
+            # fragment barriers to be coherent, so the worker takes them
+            # verbatim (no client override). ``settings_authority`` signals
+            # that intent to clients and tooling.
+            "settings_authority": "server",
             "expected_client_settings": {
-                # DyLU servers want all workers ramped to the base rate so
-                # the per-worker scaling has a known anchor. Non-DyLU
-                # servers leave sync_every up to the worker.
-                "sync_every": (
-                    self.dylu_base_sync_every if self.dylu_enabled else None
-                ),
+                # Every worker ramps to the same inner-step cadence. We
+                # advertise ``dylu_base_sync_every`` as the canonical
+                # ``sync_every`` whether or not DyLU is enabled — it's the
+                # operator-set anchor either way, and a non-null value lets
+                # the worker drop its own --sync-every entirely.
+                "sync_every": self.dylu_base_sync_every,
                 "dylu": self.dylu_enabled,
                 "bf16_comm": True,
                 "num_fragments_min": 1,
+                "num_fragments_default": 1,
+                # Exposed so the worker can validate its (client-local)
+                # heartbeat send cadence against the server's death timeout.
+                "heartbeat_timeout": self.heartbeat_timeout,
             },
         }
         _send_json_response(handler, response)
