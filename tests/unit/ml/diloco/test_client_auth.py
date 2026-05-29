@@ -118,6 +118,41 @@ def test_env_var_token_picked_up(authed_server, tmp_path, monkeypatch):
     assert "status" in status
 
 
+def test_bare_host_picks_scheme_from_tls_config(monkeypatch):
+    """A bare ``host:port`` (no scheme) should pick https vs http via
+    the same ``forgather.tls.client_scheme()`` the scheduler uses to
+    stamp the JobRecord. Without this, the worker dialed http://
+    against a TLS-wrapped server and the connection was reset.
+    Regression test for the post-#90 bug."""
+    # Stub client_scheme to return https — the cluster-provisioned case.
+    import forgather.tls
+    from forgather.ml.diloco.client import DiLoCoClient
+
+    monkeypatch.setattr(forgather.tls, "client_scheme", lambda *a, **k: "https")
+    c = DiLoCoClient("192.168.9.43:8512", timeout=5, max_retries=0)
+    assert c.server_addr == "https://192.168.9.43:8512"
+
+    # And the other way — TLS not provisioned → http.
+    monkeypatch.setattr(forgather.tls, "client_scheme", lambda *a, **k: "http")
+    c2 = DiLoCoClient("192.168.9.43:8512", timeout=5, max_retries=0)
+    assert c2.server_addr == "http://192.168.9.43:8512"
+
+
+def test_explicit_scheme_is_preserved(monkeypatch):
+    """An explicit ``http://`` or ``https://`` URL passes through
+    unchanged — overrides whatever client_scheme would have picked."""
+    import forgather.tls
+    from forgather.ml.diloco.client import DiLoCoClient
+
+    monkeypatch.setattr(forgather.tls, "client_scheme", lambda *a, **k: "https")
+    # Explicit http:// keeps http:// even when TLS is locally provisioned.
+    c = DiLoCoClient("http://10.0.0.5:8512", timeout=5, max_retries=0)
+    assert c.server_addr == "http://10.0.0.5:8512"
+    # Explicit https:// keeps https://.
+    c2 = DiLoCoClient("https://10.0.0.5:8512", timeout=5, max_retries=0)
+    assert c2.server_addr == "https://10.0.0.5:8512"
+
+
 def test_no_token_against_no_auth_server_works(tmp_path):
     """A server with auth disabled lets unauthenticated clients in —
     end-to-end coverage of the backwards-compat surface."""

@@ -118,9 +118,23 @@ class DiLoCoClient:
         token: Optional[str] = None,
         verify_tls: bool = True,
     ):
-        # Normalize address
-        if not server_addr.startswith("http"):
-            server_addr = f"http://{server_addr}"
+        # Normalize address. A bare ``host:port`` is the legacy form
+        # (the ``forgather diloco worker --server host:port`` CLI and
+        # pre-#90 callers all hand off this shape). Pick the scheme
+        # the same way the scheduler does for its JobRecord
+        # ``scheme`` stamp — ``forgather.tls.client_scheme()`` —
+        # which returns ``"https"`` when TLS is provisioned locally,
+        # else ``"http"``. That keeps the worker in sync with the
+        # server's actual posture for the trusted-LAN case where
+        # both ends share the same TLS provisioning.
+        if not server_addr.startswith(("http://", "https://")):
+            try:
+                from forgather.tls import client_scheme as _client_scheme
+
+                scheme = _client_scheme()
+            except Exception:
+                scheme = "http"
+            server_addr = f"{scheme}://{server_addr}"
         self.server_addr = server_addr.rstrip("/")
         self.timeout = timeout
         self.max_retries = max_retries
