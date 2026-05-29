@@ -307,18 +307,69 @@ class TestStatusExtensions:
     def test_info_advertises_authoritative_settings(self, server):
         """/info is the authority for the must-match worker settings, so
         every field is present and non-null (the worker takes them
-        verbatim). A non-DyLU server still advertises a sync_every."""
+        verbatim). A non-DyLU server advertises its own ``sync_every``."""
         _, _, body = _get(f"http://localhost:{server.port}/info")
         data = json.loads(body)
         assert data["settings_authority"] == "server"
         assert isinstance(data["model_hash"], str) and data["model_hash"]
         exp = data["expected_client_settings"]
-        # Non-DyLU server still advertises a concrete sync_every (the
-        # operator-set dylu_base_sync_every), so the worker can drop its
-        # own --sync-every entirely.
-        assert exp["sync_every"] == server.dylu_base_sync_every
+        # Non-DyLU server advertises its dedicated sync_every (not None).
+        assert exp["sync_every"] == server.sync_every
         assert exp["sync_every"] is not None
-        assert exp["bf16_comm"] is True
+        assert exp["bf16_comm"] == server.bf16_comm
         assert exp["dylu"] is False
-        assert exp["num_fragments_default"] == 1
+        assert exp["num_fragments_default"] == server.num_fragments
         assert exp["heartbeat_timeout"] == server.heartbeat_timeout
+
+    def test_info_reflects_configured_group_settings(self, tmp_path):
+        """A server configured with non-default group settings advertises
+        exactly those — the operator's single source of truth for the
+        whole group."""
+        sd = _make_state_dict()
+        ckpt = make_initial_checkpoint(sd, tmp_path / "initial")
+        srv = DiLoCoServer(
+            output_dir=str(tmp_path),
+            from_checkpoint=str(ckpt),
+            num_workers=1,
+            port=0,
+            sync_every=250,
+            num_fragments=4,
+            bf16_comm=False,
+            outer_optimizer_factory=_simple_sgd,
+        )
+        srv.start()
+        time.sleep(0.2)
+        try:
+            _, _, body = _get(f"http://localhost:{srv.port}/info")
+            exp = json.loads(body)["expected_client_settings"]
+            assert exp["sync_every"] == 250
+            assert exp["num_fragments_default"] == 4
+            assert exp["bf16_comm"] is False
+        finally:
+            srv.stop()
+
+    def test_info_sync_every_uses_dylu_base_when_dylu_enabled(self, tmp_path):
+        """Under DyLU the advertised sync_every is the DyLU base rate (the
+        per-worker scaling anchor), not the plain sync_every."""
+        sd = _make_state_dict()
+        ckpt = make_initial_checkpoint(sd, tmp_path / "initial")
+        srv = DiLoCoServer(
+            output_dir=str(tmp_path),
+            from_checkpoint=str(ckpt),
+            num_workers=1,
+            port=0,
+            async_mode=True,
+            dylu_enabled=True,
+            dylu_base_sync_every=128,
+            sync_every=999,  # ignored while DyLU is on
+            outer_optimizer_factory=_simple_sgd,
+        )
+        srv.start()
+        time.sleep(0.2)
+        try:
+            _, _, body = _get(f"http://localhost:{srv.port}/info")
+            exp = json.loads(body)["expected_client_settings"]
+            assert exp["dylu"] is True
+            assert exp["sync_every"] == 128
+        finally:
+            srv.stop()

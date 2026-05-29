@@ -426,6 +426,9 @@ class DiLoCoServer:
         dn_buffer_size: int = 0,
         dylu_enabled: bool = False,
         dylu_base_sync_every: int = 500,
+        sync_every: int = 500,
+        bf16_comm: bool = True,
+        num_fragments: int = 1,
         heartbeat_timeout: float = 120.0,
         min_workers: int = 1,
         auth_token: Optional[str] = None,
@@ -456,6 +459,16 @@ class DiLoCoServer:
         self.dn_buffer_size = dn_buffer_size
         self.dylu_enabled = dylu_enabled
         self.dylu_base_sync_every = dylu_base_sync_every
+        # Group-wide worker settings the server is authoritative for (issue
+        # #53 follow-up). These MUST match across the group for the sync /
+        # fragment barriers to be coherent, so the operator sets them on
+        # the server and workers adopt them verbatim from /info. ``bf16_comm``
+        # is centralized here too (the server doesn't need it to decode an
+        # upload, but a single operator-facing knob keeps the group's wire
+        # format consistent rather than per-worker).
+        self.sync_every = sync_every
+        self.bf16_comm = bf16_comm
+        self.num_fragments = num_fragments
         self.heartbeat_timeout = heartbeat_timeout
         self.default_work_units = default_work_units
         self.outer_optimizer_factory = (
@@ -2146,16 +2159,17 @@ class DiLoCoServer:
             # that intent to clients and tooling.
             "settings_authority": "server",
             "expected_client_settings": {
-                # Every worker ramps to the same inner-step cadence. We
-                # advertise ``dylu_base_sync_every`` as the canonical
-                # ``sync_every`` whether or not DyLU is enabled — it's the
-                # operator-set anchor either way, and a non-null value lets
-                # the worker drop its own --sync-every entirely.
-                "sync_every": self.dylu_base_sync_every,
+                # The group's inner-step cadence. Under DyLU every worker
+                # ramps to the base rate (the per-worker scaling anchor);
+                # otherwise it's the operator-set server ``sync_every``.
+                # Always non-null so the worker can drop its own knob.
+                "sync_every": (
+                    self.dylu_base_sync_every if self.dylu_enabled else self.sync_every
+                ),
                 "dylu": self.dylu_enabled,
-                "bf16_comm": True,
+                "bf16_comm": self.bf16_comm,
                 "num_fragments_min": 1,
-                "num_fragments_default": 1,
+                "num_fragments_default": self.num_fragments,
                 # Exposed so the worker can validate its (client-local)
                 # heartbeat send cadence against the server's death timeout.
                 "heartbeat_timeout": self.heartbeat_timeout,

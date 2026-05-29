@@ -118,6 +118,15 @@ Server arguments:
 - `--dylu-base-sync-every N`: Base sync interval for the fastest worker (default: 500)
 - `--from-checkpoint FROM_CHECKPOINT`: Load model from specified checkpoint path. Overrides loading from newest.
 
+Group-wide worker settings (must match across the group, so they live on the
+server; every worker adopts them from `/info` — there are no worker flags):
+- `--sync-every N`: Local optimizer steps between syncs (H). Default: 500.
+  Under `--dylu`, the DyLU base rate is used instead.
+- `--num-fragments N`: Streaming-sync fragments every worker splits the model
+  into (1 = no streaming). Default: 1.
+- `--no-bf16`: Send full-precision pseudo-gradients instead of bfloat16
+  (centralized: one wire precision for the whole group). Default: bf16 on.
+
 ```bash
 # Load a specific checkpoint and save checkpoints to specified directory.
 forgather diloco server -o path/to/output --from-checkpoint output_models/my_model/checkpoint-1000 -n 2

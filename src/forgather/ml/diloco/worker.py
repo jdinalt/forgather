@@ -221,8 +221,9 @@ class DiLoCoWorker:
                     f"DiLoCo DyLU is not compatible with pipeline "
                     f"groups (pp_world_size={self.pp_world_size}). "
                     "Per-rank sync-every adjustments would desync "
-                    "the group's barrier. Disable --diloco-dylu or "
-                    "use a non-pipeline trainer."
+                    "the group's barrier. DyLU is server-controlled — "
+                    "restart the diloco server without --dylu, or use a "
+                    "non-pipeline trainer."
                 )
         else:
             self._is_leader = self._ddp_rank == 0

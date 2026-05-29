@@ -852,19 +852,24 @@ parameter values.
 **Cause:** BFloat16 has ~3 digits of precision. Very small pseudo-gradients
 (difference between global and local params) may be rounded to zero.
 
-**Mitigation:** Disable bf16 communication with `--no-bf16` or
-`bf16_comm=False`. This doubles bandwidth usage.
+**Mitigation:** Disable bf16 communication by starting the server with
+`--no-bf16`. `bf16_comm` is server-authoritative (the whole group shares one
+wire precision), so every worker adopts it from `/info` — there is no worker
+flag. This doubles bandwidth usage.
 
 ### Fragment sync deadlock
 
-**Symptom:** Workers hang when using `--num-fragments > 1` in sync mode.
+**Symptom:** Workers hang when the server runs with `--num-fragments > 1` in
+sync mode.
 
 **Cause:** Per-fragment barriers require all workers to submit the same fragment
-in the same round. If workers have different `sync_every` values (e.g., from
-DyLU) or different `num_fragments`, their fragment schedules won't align.
+in the same round. Misaligned `sync_every` or `num_fragments` across workers
+would break this.
 
 **Requirement:** All workers in synchronous fragment mode must use the same
-`sync_every` and `num_fragments`.
+`sync_every` and `num_fragments`. This is now guaranteed automatically: both
+are server-authoritative and adopted by every worker from `/info`, so they
+cannot diverge. Set them on the server (`--sync-every`, `--num-fragments`).
 
 ### Async staleness drift
 

@@ -117,6 +117,39 @@ def create_diloco_parser(global_args):
         default=500,
         help="DyLU base sync_every for the fastest worker (default: 500)",
     )
+    # Group-wide worker settings (issue #53 follow-up). These must match
+    # across every worker, so they're owned by the server and the workers
+    # adopt them from /info — there are no corresponding worker flags.
+    server_parser.add_argument(
+        "--sync-every",
+        type=int,
+        default=500,
+        help=(
+            "Local optimizer steps between syncs (H), applied by every\n"
+            "worker. Under --dylu the DyLU base rate is used instead.\n"
+            "(default: 500)"
+        ),
+    )
+    server_parser.add_argument(
+        "--num-fragments",
+        type=int,
+        default=1,
+        help=(
+            "Streaming-sync fragments every worker splits the model into.\n"
+            "1 = no streaming. Must be uniform across the group, so it's\n"
+            "set here, not per worker. (default: 1)"
+        ),
+    )
+    server_parser.add_argument(
+        "--no-bf16",
+        dest="bf16_comm",
+        action="store_false",
+        help=(
+            "Send full-precision pseudo-gradients instead of bfloat16.\n"
+            "Centralized: the group's wire precision is set on the server\n"
+            "and adopted by every worker. (default: bf16 enabled)"
+        ),
+    )
     server_parser.add_argument(
         "--heartbeat-timeout",
         type=float,

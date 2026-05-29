@@ -312,17 +312,19 @@ class DiLoCoCallback(TrainerCallback):
         # num_fragments) the worker must adopt verbatim.
         #
         # DDP rank 0 only — followers don't talk to the server. The leader
-        # fetches /info and broadcasts the resolved settings to followers
-        # so every rank syncs in lockstep. If the leader fails the probe
-        # and aborts, followers deadlock on the broadcast below (or the
-        # one inside DiLoCoWorker.start()) — but the leader's exception is
-        # the actionable signal, and the trainer tears the followers down
-        # once the leader's process exits.
+        # fetches /info and broadcasts the result to followers so every
+        # rank syncs in lockstep. Crucially, the leader broadcasts an
+        # *error sentinel* on failure (server down, too-old server, etc.)
+        # rather than raising before the collective — otherwise followers
+        # would block forever inside broadcast_object_list waiting on a
+        # rank 0 that already exited. With the sentinel, every rank raises
+        # the same actionable error together and the job fails fast.
         import torch.distributed as dist
 
         ddp = dist.is_available() and dist.is_initialized()
         is_leader = not ddp or dist.get_rank() == 0
         settings: Optional[Dict[str, Any]] = None
+        nego_error: Optional[str] = None
         if is_leader:
             probe = DiLoCoClient(
                 self.server_addr,
@@ -332,18 +334,25 @@ class DiLoCoCallback(TrainerCallback):
             )
             try:
                 info = probe.get_info()
+                settings = self._resolve_server_settings(info)
+            except DiLoCoServerUnreachable as exc:
+                # _resolve_server_settings already produced an actionable
+                # message (e.g. server too old to advertise sync_every).
+                nego_error = str(exc)
             except Exception as exc:
-                raise DiLoCoServerUnreachable(
+                nego_error = (
                     f"DiLoCoCallback: /info round-trip to "
                     f"{self.server_addr!r} failed at startup: {exc}. "
                     f"The server must be running and reachable before "
                     f"workers can register."
-                ) from exc
-            settings = self._resolve_server_settings(info)
+                )
         if ddp:
-            holder = [settings]
+            holder = [(settings, nego_error)]
             dist.broadcast_object_list(holder, src=0)
-            settings = holder[0]
+            settings, nego_error = holder[0]
+        if nego_error is not None:
+            # Raised on every rank (leader and followers) — no deadlock.
+            raise DiLoCoServerUnreachable(nego_error)
 
         self.sync_every = settings["sync_every"]
         self.bf16_comm = settings["bf16_comm"]

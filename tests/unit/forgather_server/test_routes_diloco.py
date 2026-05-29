@@ -302,7 +302,7 @@ class TestProxy:
         upstream = {
             "output_dir": "/tmp/m",
             "num_parameters": 1234,
-            "expected_client_settings": {"sync_every": None},
+            "expected_client_settings": {"sync_every": 500},
         }
 
         def fake_handler(request: httpx.Request) -> httpx.Response:
