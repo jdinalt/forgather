@@ -39,6 +39,7 @@ from ...sharded_checkpoint import (
     ShardIndex,
     SharingMetadataT,
     create_sharing_metadata,
+    initialize_missing_weights,
     make_shard_index,
     retie_parameters,
 )
@@ -513,19 +514,19 @@ class PipelineTrainer(
         # Load from checkpoint?
         if self.args.resume_from_checkpoint:
             missing_buffer_set = missing_buffers(model)
-            if len(missing_buffer_set):
-                # Non-persistent buffers are not saved in checkpoints. Initialize
-                # them locally on each rank via reset_parameters(). This is safe
-                # because buffer computation is deterministic and local to each
-                # module (e.g., RotaryEmbedding computes inv_freq from its own
-                # rope_theta and d_head -- no cross-module dependencies).
-                if self.dist.rank == 0:
-                    logger.info(
-                        f"Initializing non-persistent buffers locally on each rank: "
-                        f"{missing_buffer_set}"
-                    )
-                for mod in pipeline_modules:
-                    self._initialize_non_persistent_buffers(mod)
+            if len(missing_buffer_set) and self.dist.rank == 0:
+                logger.info(
+                    f"Initializing tensors not in the checkpoint locally on "
+                    f"each rank: {missing_buffer_set}"
+                )
+            # Unified with the base trainer on the HF v5 contract: initialize
+            # only what the checkpoint didn't fill. Split stage modules have
+            # no HF-style _init_weights, so this uses the safe
+            # non-persistent-buffer reset fallback (e.g. RoPE inv_freq) --
+            # deterministic and local per module, so every rank computes the
+            # same values without cross-module dependencies.
+            for mod in pipeline_modules:
+                initialize_missing_weights(mod)
         else:
             if self.dist.rank == 0:
                 # If this results in OOM (really large model), you will have to initialize the model from a checkpoint

@@ -410,10 +410,21 @@ Key points:
   local state, apply implementation-specific logic, fall back to
   ``reset_parameters()``. Custom init functions should follow the same pattern.
 
-- **`_is_hf_initialized`** is a flag set by HF on parameters loaded from a
-  checkpoint. The `_initialize_weights` wrapper checks this flag and skips
-  modules that were already loaded. The `torch.nn.init.*` functions are also
-  patched to respect this flag as an additional safety net.
+- **`_is_hf_initialized`** is a flag set on tensors loaded from a checkpoint.
+  Init functions check it and skip already-loaded tensors (default: an
+  *unflagged* tensor is treated as freshly materialized and IS initialized —
+  matching HF v5). HF's `from_pretrained` sets it during its own meta-load.
+
+- **Forgather's trainers apply the same contract for their own checkpoint
+  loads.** When `construct_model_on` resolves to `meta` (the default when
+  resuming with a `model_init`), the trainer builds on meta, materializes
+  empty, loads via `forgather.ml.sharded_checkpoint.load_checkpoint` — which
+  calls `flag_loaded_tensors` to mark the loaded keys — then runs
+  `initialize_missing_weights(model)`. That pass applies `model._init_weights`
+  only to modules still owning an unflagged tensor (e.g. a non-persistent
+  RoPE buffer), so loaded weights are preserved and only the missing tensors
+  are (re)computed — uniformly for both forgather and pure-HF models, and for
+  remote checkpoints (DiLoCo).
 
 #### Buffer-Only Modules (e.g., RotaryEmbedding)
 
