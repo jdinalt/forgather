@@ -133,7 +133,12 @@ def _local_servers() -> List[DiLoCoServerModel]:
             continue
         host = params.get("host") or "127.0.0.1"
         routable = params.get("routable_host")
-        base_url = f"http://{_browser_host(host, routable)}:{port}"
+        # Scheme is stamped by the scheduler at dispatch time so the
+        # Job card and DiLoCo view both reflect the actual TLS posture
+        # of the spawned child (issue #90). Falls back to ``http`` for
+        # records spawned before that stamping landed.
+        scheme = params.get("scheme") or "http"
+        base_url = f"{scheme}://{_browser_host(host, routable)}:{port}"
         out.append(
             DiLoCoServerModel(
                 id=f"local:{r.queue_id}",
@@ -187,7 +192,8 @@ def _ever_local_base_urls() -> List[str]:
             continue
         host = params.get("host") or "127.0.0.1"
         routable = params.get("routable_host")
-        seen[f"http://{_browser_host(host, routable)}:{port}"] = None
+        scheme = params.get("scheme") or "http"
+        seen[f"{scheme}://{_browser_host(host, routable)}:{port}"] = None
     return list(seen)
 
 

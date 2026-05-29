@@ -43,6 +43,7 @@ def build_diloco_server_command(
     min_workers: Optional[int] = None,
     auth_token_file: Optional[str] = None,
     no_auth: bool = False,
+    quiet_tokens: bool = False,
     bulk_port: Optional[int] = None,
     bulk_tls: Optional[bool] = None,
     bulk_auth: Optional[bool] = None,
@@ -104,6 +105,12 @@ def build_diloco_server_command(
         cmd.append("--no-auth")
     elif auth_token_file:
         cmd.extend(["--auth-token-file", str(auth_token_file)])
+    if quiet_tokens and not no_auth:
+        # Belt + suspenders: the demo-mode webui sets this so the
+        # spawned server's TTY log doesn't echo the token. The token
+        # is still discoverable via the per-port file for legitimate
+        # peers — only the launch banner is suppressed.
+        cmd.append("--quiet-tokens")
     # Two-port bulk plane. Only emit flags when the operator opted in.
     if bulk_port is not None:
         cmd.extend(["--bulk-port", str(int(bulk_port))])

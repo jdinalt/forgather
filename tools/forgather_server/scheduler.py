@@ -600,6 +600,7 @@ def _build_diloco_server(item, gpu_indices, tty_path):
         ),
         auth_token_file=auth_token_file,
         no_auth=no_auth,
+        quiet_tokens=bool(p.get("quiet_tokens", False)),
         bulk_port=(int(p["bulk_port"]) if p.get("bulk_port") is not None else None),
         bulk_tls=p.get("bulk_tls"),
         bulk_auth=p.get("bulk_auth"),

@@ -29,6 +29,16 @@ interface PersistedAdHoc {
   noNesterov: boolean;
   heartbeatTimeout: number;
   minWorkers: number;
+  // Security (issue #90): control-plane auth knobs.
+  noAuth: boolean;
+  regenToken: boolean;
+  quietTokens: boolean;
+  // Two-port bulk plane. ``bulkPort`` of 0 means "off" (single
+  // listener); any non-zero value spawns the second listener with
+  // the bulk-tls / bulk-auth settings below.
+  bulkPort: number;
+  bulkTls: boolean;
+  bulkAuth: boolean;
 }
 
 const DEFAULT_AD_HOC: PersistedAdHoc = {
@@ -48,6 +58,12 @@ const DEFAULT_AD_HOC: PersistedAdHoc = {
   noNesterov: false,
   heartbeatTimeout: 120,
   minWorkers: 1,
+  noAuth: false,
+  regenToken: false,
+  quietTokens: false,
+  bulkPort: 0,
+  bulkTls: false,
+  bulkAuth: false,
 };
 
 function loadPersisted(): PersistedAdHoc {
@@ -136,6 +152,12 @@ export function DiLoCoServerModal({
         noNesterov: pickBool(editingService.args, "no_nesterov", false),
         heartbeatTimeout: pickNum(editingService.args, "heartbeat_timeout", 120),
         minWorkers: pickNum(editingService.args, "min_workers", 1),
+        noAuth: pickBool(editingService.args, "no_auth", false),
+        regenToken: pickBool(editingService.args, "regen_token", false),
+        quietTokens: pickBool(editingService.args, "quiet_tokens", false),
+        bulkPort: pickNum(editingService.args, "bulk_port", 0),
+        bulkTls: pickBool(editingService.args, "bulk_tls", false),
+        bulkAuth: pickBool(editingService.args, "bulk_auth", false),
       }
     : {
         ...persisted,
@@ -160,6 +182,12 @@ export function DiLoCoServerModal({
     seed.heartbeatTimeout,
   );
   const [minWorkers, setMinWorkers] = useState(seed.minWorkers);
+  const [noAuth, setNoAuth] = useState(seed.noAuth);
+  const [regenToken, setRegenToken] = useState(seed.regenToken);
+  const [quietTokens, setQuietTokens] = useState(seed.quietTokens);
+  const [bulkPort, setBulkPort] = useState(seed.bulkPort);
+  const [bulkTls, setBulkTls] = useState(seed.bulkTls);
+  const [bulkAuth, setBulkAuth] = useState(seed.bulkAuth);
   const [saving, setSaving] = useState(false);
 
   // Light validation — the backend re-checks but flagging in-UI is friendlier.
@@ -191,6 +219,24 @@ export function DiLoCoServerModal({
     if (dnBufferSize > 0) args.dn_buffer_size = dnBufferSize;
     if (dylu) args.dylu_base_sync_every = dyluBase;
     if (trimmedFromCheckpoint) args.from_checkpoint = trimmedFromCheckpoint;
+    // Security (issue #90). The scheduler interprets these:
+    //   no_auth=true        → skip token resolution; pass --no-auth
+    //   regen_token=true    → rotate the persisted per-port token
+    //   quiet_tokens=true   → suppress the token in the launch banner
+    //   bulk_port>0         → spawn a second listener on that port;
+    //                         bulk_tls / bulk_auth configure it
+    // ``regen_token`` and ``quiet_tokens`` are no-ops under --no-auth;
+    // strip them so the spawned argv reflects the operator's intent.
+    args.no_auth = noAuth;
+    if (!noAuth) {
+      args.regen_token = regenToken;
+      args.quiet_tokens = quietTokens;
+    }
+    if (bulkPort > 0) {
+      args.bulk_port = bulkPort;
+      args.bulk_tls = bulkTls;
+      args.bulk_auth = bulkAuth;
+    }
     return args;
   };
 
@@ -213,6 +259,12 @@ export function DiLoCoServerModal({
       noNesterov,
       heartbeatTimeout,
       minWorkers,
+      noAuth,
+      regenToken,
+      quietTokens,
+      bulkPort,
+      bulkTls,
+      bulkAuth,
     };
     persistSet(STORAGE_KEY, JSON.stringify(cur));
   };
@@ -509,6 +561,97 @@ export function DiLoCoServerModal({
                   style={{ width: "100%" }}
                 />
               </label>
+            </div>
+          </fieldset>
+
+          <fieldset style={{ gridColumn: "1 / -1", padding: 8 }}>
+            <legend>Security (auth + bulk plane)</legend>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={noAuth}
+                  onChange={(e) => setNoAuth(e.target.checked)}
+                />{" "}
+                <code>--no-auth</code>{" "}
+                <span className="muted" style={{ fontSize: "smaller" }}>
+                  disable the bearer-token gate (trusted-LAN only — any
+                  reachable host can drive the server)
+                </span>
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={regenToken}
+                  disabled={noAuth}
+                  onChange={(e) => setRegenToken(e.target.checked)}
+                />{" "}
+                <code>--regen-token</code>{" "}
+                <span className="muted" style={{ fontSize: "smaller" }}>
+                  rotate the per-port token; existing workers will 401
+                  until they re-pull it
+                </span>
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={quietTokens}
+                  disabled={noAuth}
+                  onChange={(e) => setQuietTokens(e.target.checked)}
+                />{" "}
+                <code>--quiet-tokens</code>{" "}
+                <span className="muted" style={{ fontSize: "smaller" }}>
+                  suppress the token + file path in the TTY launch
+                  banner (peers still find it via the per-port file)
+                </span>
+              </label>
+
+              <hr style={{ width: "100%", opacity: 0.2 }} />
+
+              <label>
+                Bulk port (0 = single listener)
+                <input
+                  type="number"
+                  min={0}
+                  max={65535}
+                  value={bulkPort}
+                  onChange={(e) => setBulkPort(Number(e.target.value))}
+                  style={{ width: "100%" }}
+                />
+                <div className="muted" style={{ fontSize: "smaller" }}>
+                  Routes /submit_pseudograd, /submit_fragment_pseudograd,
+                  and /global_params to a second listener — the
+                  throughput-vs-security trade-off for trusted LANs.
+                </div>
+              </label>
+              {bulkPort > 0 && (
+                <>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={bulkTls}
+                      onChange={(e) => setBulkTls(e.target.checked)}
+                    />{" "}
+                    <code>--bulk-tls</code>{" "}
+                    <span className="muted" style={{ fontSize: "smaller" }}>
+                      require TLS on the bulk listener (default off when
+                      bulk_port is set — matches torch.distributed)
+                    </span>
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={bulkAuth}
+                      onChange={(e) => setBulkAuth(e.target.checked)}
+                    />{" "}
+                    <code>--bulk-auth</code>{" "}
+                    <span className="muted" style={{ fontSize: "smaller" }}>
+                      require bearer on the bulk listener (default off
+                      when bulk_port is set)
+                    </span>
+                  </label>
+                </>
+              )}
             </div>
           </fieldset>
         </div>
