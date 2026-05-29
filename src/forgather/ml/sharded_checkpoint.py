@@ -299,7 +299,16 @@ def initialize_missing_weights(module: nn.Module) -> None:
     HF ``PreTrainedModel`` subclasses (their guarded ``_init_weights``)
     expose. Fallback for modules without an HF-style ``_init_weights`` (e.g.
     split pipeline-stage modules): ``reset_parameters()`` on any module that
-    still owns an unflagged tensor.
+    still owns a non-persistent buffer.
+
+    Granularity caveat: the gate is per-MODULE, and ``reset_parameters`` /
+    ``simple_weight_init`` are module-wide. A module that co-locates a
+    *loaded* persistent parameter with an *unflagged* (not-in-checkpoint)
+    tensor would have its loaded parameter re-initialized — unless the
+    model's ``_init_weights`` is itself per-tensor flag-aware (HF's is;
+    forgather's ``init_weights_by_regex`` is). Forgather avoids this by
+    keeping derived buffers (RoPE ``inv_freq``) in dedicated buffer-only
+    modules. Keep that pattern for any module on the pipeline fallback path.
     """
     init_fn = getattr(module, "_init_weights", None)
     if callable(init_fn):
@@ -1058,13 +1067,17 @@ def load_sharded_checkpoint(
             logger.debug(f"loading state_dict in '{shard_file_name}'")
 
             module.load_state_dict(state_dict, strict=False, assign=assign)
-            flag_loaded_tensors(module, state_dict.keys())
             for weight_name, p in module.state_dict(keep_vars=True).items():
                 logger.debug(
                     f"{weight_name} : {p.shape=}, {p.dtype=}, {p.requires_grad=}"
                 )
             state_dict = None
             gc.collect()
+
+        # Flag everything this module loaded once, after all its shards
+        # (``intersection`` is the module's full loaded-key set), rather than
+        # re-scanning the whole module per shard.
+        flag_loaded_tensors(module, intersection)
 
         if len(all_module_keys):
             msg = f"The following keys were not found in the shards {all_module_keys}"

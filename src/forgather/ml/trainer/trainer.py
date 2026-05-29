@@ -154,7 +154,10 @@ class TrainingArguments(BaseTrainingArguments):
     #          model_init available, transparently uses the meta path.
     # device:  Force on-device construction even when resuming (wraps the
     #          load in no_init_weights()). Fallback for models that can't be
-    #          built on the meta device.
+    #          built on the meta device. NOTE: this path does NOT run the
+    #          post-load initialize-missing pass, so it suits models whose
+    #          non-persistent buffers (e.g. RoPE) are either in the
+    #          checkpoint or computed in __init__ — otherwise prefer meta.
     # meta:    Force the meta path (construct on meta, materialize empty,
     #          then load + initialize-missing). Requires a checkpoint (or an
     #          external loader such as DiLoCo) to fill the weights.
@@ -322,6 +325,13 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
     do_eval: bool
     use_fused_loss: bool
     gradient_accumulation_step: int
+
+    # Set True in _prepare_model when the model was built on the meta device,
+    # so the post-load step runs the initialize-missing pass. Class-level
+    # default keeps it defined for subclasses that override _prepare_model
+    # (e.g. PipelineTrainer, which does its own materialize/init) but inherit
+    # the base _prepare post-load block.
+    _constructed_on_meta: bool = False
 
     @classmethod
     def default_callbacks(cls):
@@ -922,27 +932,6 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         self._flops_per_token = self._compute_flops_per_token()
         if self.dist.rank == 0:
             logger.info(f"Estimated FLOPs per token: {self._flops_per_token:.2e}")
-
-    @staticmethod
-    def _initialize_non_persistent_buffers(model: torch.nn.Module) -> None:
-        """Initialize non-persistent buffers that were not loaded from checkpoint.
-
-        Non-persistent buffers (registered with ``persistent=False``) are excluded
-        from ``state_dict()`` and therefore not saved in or loaded from checkpoints.
-        When the model is constructed on the meta device and then materialized via
-        ``to_empty()``, these buffers contain uninitialized data.
-
-        This method finds modules with non-persistent buffers and calls their
-        ``reset_parameters()`` method to compute the correct values. For example,
-        ``RotaryEmbedding.reset_parameters()`` computes ``inv_freq`` from the
-        configured ``rope_theta`` and ``d_head``.
-
-        Should be called after checkpoint load when using ``construct_model_on="meta"``.
-        """
-        for module in model.modules():
-            if getattr(module, "_non_persistent_buffers_set", None):
-                if hasattr(module, "reset_parameters"):
-                    module.reset_parameters()
 
     def _apply_fp8_training(self, model: torch.nn.Module) -> torch.nn.Module:
         """Convert nn.Linear layers to Float8Linear for FP8 training via torchao."""

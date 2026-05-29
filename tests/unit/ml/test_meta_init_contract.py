@@ -191,3 +191,18 @@ def test_initialize_missing_weights_fallback_resets_only_buffers():
     initialize_missing_weights(net)  # no _init_weights -> fallback
     assert torch.all(net.lin.weight == 5.0)  # persistent param untouched
     assert torch.all(net.rope.inv_freq == torch.arange(4.0))  # buffer recomputed
+
+
+# ---------------------------------------------------------------------------
+# Trainer post-load gate has a safe class-level default
+# ---------------------------------------------------------------------------
+
+
+def test_trainer_constructed_on_meta_class_default_is_false():
+    """The post-load init-missing gate must be defined at class level so
+    subclasses that override _prepare_model (e.g. PipelineTrainer) but
+    inherit the base _prepare post-load block don't hit AttributeError on
+    resume."""
+    from forgather.ml.trainer.trainer import Trainer
+
+    assert Trainer._constructed_on_meta is False
