@@ -62,6 +62,26 @@ _LOCALHOST_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 # token (which is convenient for one-off "try this server" flows).
 _TOKEN_OVERRIDE_HEADER = "X-Diloco-Auth-Token"
 
+# Tag set on the proxy response when the upstream DiLoCo server
+# returned 401/403. The webui's fetch wrapper (auth.ts) suppresses
+# the auth-required event when this header is present — a 401 from
+# *our* session would have been intercepted by AuthMiddleware before
+# any proxy code ran, so a 401 surfacing through this proxy is
+# always the upstream's auth state, not the operator's. Closes #94.
+_UPSTREAM_AUTH_FAILED_HEADER = "x-upstream-auth-failed"
+
+
+def _upstream_auth_headers(status: int) -> Dict[str, str]:
+    """Tag headers when upstream returned an auth failure.
+
+    Mirrors the existing pattern in ``routes/dataset_server.py`` and
+    ``routes/inference_proxy.py``. The webui consumer is at
+    ``webui/src/auth.ts:82-83``.
+    """
+    if status in (401, 403):
+        return {_UPSTREAM_AUTH_FAILED_HEADER: "1"}
+    return {}
+
 
 # ---------------------------------------------------------------------------
 # Server discovery
@@ -347,6 +367,21 @@ def _token_for_local(base: str) -> Optional[str]:
         # … or the URL hostname equals the record's explicit bind.
         if rec_host == host:
             return r.auth_token
+        # Diagnostic for the LAN-browse case: we found a port-matching
+        # record but couldn't tie the URL back to its host. Logged at
+        # INFO once per call so operators can see exactly what fields
+        # the matcher saw without ever logging the token itself.
+        log.info(
+            "diloco-proxy: port %d matched record %r but host did "
+            "not — url_host=%r rec_host=%r rec_routable=%r "
+            "rec_auth_token_present=%s",
+            parsed.port,
+            r.queue_id,
+            host,
+            rec_host,
+            rec_routable,
+            bool(r.auth_token),
+        )
     return None
 
 
@@ -398,7 +433,22 @@ async def _proxy_get(base: str, path: str, request: Request) -> JSONResponse:
             r = await client.get(target, headers=headers)
         except httpx.RequestError as e:
             raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
-    return JSONResponse(status_code=r.status_code, content=_safe_json(r))
+    if r.status_code in (401, 403):
+        # Diagnostic: a 401/403 here means the bearer we attached (or
+        # didn't) was rejected by upstream. Logging the WHAT (header
+        # presence, base URL) helps the operator correlate against
+        # the JobRecord state without ever logging the token itself.
+        log.info(
+            "diloco-proxy upstream %s for %s (bearer attached: %s)",
+            r.status_code,
+            target,
+            "yes" if "authorization" in {k.lower() for k in headers} else "no",
+        )
+    return JSONResponse(
+        status_code=r.status_code,
+        content=_safe_json(r),
+        headers=_upstream_auth_headers(r.status_code),
+    )
 
 
 @router.get("/diloco/server-status")
@@ -473,7 +523,11 @@ async def proxy_control(
             r = await client.post(target, json=body or {}, headers=headers)
         except httpx.RequestError as e:
             raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
-    return JSONResponse(status_code=r.status_code, content=_safe_json(r))
+    return JSONResponse(
+        status_code=r.status_code,
+        content=_safe_json(r),
+        headers=_upstream_auth_headers(r.status_code),
+    )
 
 
 # ---------------------------------------------------------------------------

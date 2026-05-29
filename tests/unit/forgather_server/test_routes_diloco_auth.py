@@ -186,6 +186,54 @@ def test_verify_tls_true_uses_httpx_verify(client, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_upstream_401_carries_auth_failed_header(client, monkeypatch):
+    """Closes #94 — when the upstream DiLoCo server returns 401, the
+    proxy tags the response with ``X-Upstream-Auth-Failed: 1`` so the
+    webui's fetch wrapper (auth.ts) doesn't bounce the operator to
+    the login screen. Without this tag, every upstream 401 looks like
+    a session-expired event."""
+    real = httpx.AsyncClient
+
+    def _factory(*args, **kwargs):
+        kwargs.pop("verify", None)
+        kwargs.pop("timeout", None)
+        return real(
+            transport=httpx.MockTransport(
+                lambda req: httpx.Response(401, json={"error": "unauthorized"})
+            ),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(diloco_routes.httpx, "AsyncClient", _factory)
+    monkeypatch.setattr(diloco_routes, "_local_servers", lambda: [])
+
+    reg.add_entry(label="r", base_url="http://10.0.0.11:8512", auth_token="wrong")
+
+    resp = client.get(
+        "/api/diloco/server-status",
+        params={"base": "http://10.0.0.11:8512"},
+    )
+    assert resp.status_code == 401
+    assert resp.headers.get("x-upstream-auth-failed") == "1"
+
+
+def test_upstream_200_does_not_carry_auth_failed_header(client, monkeypatch):
+    """The opposite case — a clean 200 must NOT carry the header."""
+    rec = _Recorder()
+    rec.install(monkeypatch)
+    monkeypatch.setattr(diloco_routes, "_local_servers", lambda: [])
+    monkeypatch.setattr(diloco_routes, "_token_for_local", lambda _b: "tok")
+
+    reg.add_entry(label="r", base_url="http://10.0.0.12:8512", auth_token="tok")
+
+    resp = client.get(
+        "/api/diloco/server-status",
+        params={"base": "http://10.0.0.12:8512"},
+    )
+    assert resp.status_code == 200
+    assert resp.headers.get("x-upstream-auth-failed") is None
+
+
 def test_control_endpoint_attaches_bearer(client, monkeypatch):
     """The control POST path follows the same precedence rules as GETs."""
     rec = _Recorder()
