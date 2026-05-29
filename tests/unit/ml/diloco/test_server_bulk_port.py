@@ -101,6 +101,44 @@ def test_get_bulk_url_shape_when_set(two_port_server):
     assert f":{two_port_server.bulk_port}" in url
 
 
+def test_get_bulk_url_wildcard_host_uses_request_host(tmp_path):
+    """A 0.0.0.0-bound server must NOT advertise http://0.0.0.0:<port>
+    (unroutable from a remote worker). When the registering worker's
+    request host is known, the advertised bulk URL uses it; otherwise
+    it falls back to loopback. Regression test for the post-#90
+    cross-host bulk-plane break."""
+    ckpt = make_initial_checkpoint(_state_dict(), tmp_path)
+    s = DiLoCoServer(
+        output_dir=str(tmp_path),
+        from_checkpoint=ckpt,
+        num_workers=1,
+        port=0,
+        host="0.0.0.0",
+        bulk_port=9999,
+        heartbeat_timeout=0,
+    )
+    # Without a request host, never leak the wildcard bind address.
+    assert s.get_bulk_url() == "http://127.0.0.1:9999"
+    # With the worker's view of our host, advertise that (routable).
+    assert s.get_bulk_url("192.168.9.43") == "http://192.168.9.43:9999"
+
+
+def test_get_bulk_url_explicit_host_preserved(tmp_path):
+    """An explicit (non-wildcard) bind host is advertised verbatim even
+    when a request host is available — the operator chose it."""
+    ckpt = make_initial_checkpoint(_state_dict(), tmp_path)
+    s = DiLoCoServer(
+        output_dir=str(tmp_path),
+        from_checkpoint=ckpt,
+        num_workers=1,
+        port=0,
+        host="10.0.0.5",
+        bulk_port=9999,
+        heartbeat_timeout=0,
+    )
+    assert s.get_bulk_url("192.168.9.43") == "http://10.0.0.5:9999"
+
+
 # ---------------------------------------------------------------------------
 # Control port refuses bulk paths with hint header
 # ---------------------------------------------------------------------------

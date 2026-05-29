@@ -169,6 +169,12 @@ def _local_servers() -> List[DiLoCoServerModel]:
                 port=port,
                 queue_id=r.queue_id,
                 alive=True,
+                # Locally-spawned servers default to bearer auth ON
+                # (the scheduler resolves + persists a per-port token
+                # unless --no-auth). Surface the lock indicator so the
+                # webui doesn't show auth'd local servers as open while
+                # showing the lock only on registered remotes.
+                has_auth_token=bool(getattr(r, "auth_token", None)),
             )
         )
     # Newest first — matches the Jobs view's implicit ordering.

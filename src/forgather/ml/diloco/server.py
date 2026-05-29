@@ -303,6 +303,30 @@ def _read_request_body(handler: BaseHTTPRequestHandler) -> bytes:
     return handler.rfile.read(content_length)
 
 
+def _request_host(handler: BaseHTTPRequestHandler) -> Optional[str]:
+    """Hostname the client used to reach us, from the ``Host`` header.
+
+    Returns just the host (port stripped). Used to advertise a bulk
+    listener URL that's routable *from the worker's perspective* when
+    the server bound a wildcard address (``0.0.0.0`` / ``::``) and has
+    no idea what its own routable address is. ``None`` when the header
+    is absent or unparseable.
+    """
+    raw = handler.headers.get("Host")
+    if not raw:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    # Strip the port. IPv6 literals are bracketed: ``[::1]:8512``.
+    if raw.startswith("["):
+        end = raw.find("]")
+        if end != -1:
+            return raw[1:end]
+        return raw
+    return raw.rsplit(":", 1)[0] if ":" in raw else raw
+
+
 def _send_json_response(handler: BaseHTTPRequestHandler, data: dict, status: int = 200):
     """Send a JSON response."""
     body = json.dumps(data).encode("utf-8")
@@ -484,6 +508,11 @@ class DiLoCoServer:
         self._audit_path = (
             os.path.join(output_dir, "diloco_audit.log") if output_dir else None
         )
+        # Persistent append-mode handle, opened lazily on the first
+        # audit record and reused for the server's lifetime (closed in
+        # stop()/run()'s finally). Avoids an open/close syscall pair per
+        # event.
+        self._audit_fh = None
         self._running = False
         self.load_state(from_checkpoint)
 
@@ -604,10 +633,15 @@ class DiLoCoServer:
         self._started_at: Optional[float] = None
         self._dirty = False
 
-    def _find_available_port(
-        self, start_port: int = 8512, max_attempts: int = 100
-    ) -> int:
-        """Find an available port."""
+    @staticmethod
+    def _find_available_port(start_port: int = 8512, max_attempts: int = 100) -> int:
+        """Find an available port.
+
+        Static so callers (e.g. the CLI) can resolve the concrete port
+        an ephemeral ``--port 0`` will land on *before* constructing the
+        server — the per-port token file must be keyed on the real port,
+        not on 0.
+        """
         for i in range(max_attempts):
             port = start_port + i
             try:
@@ -627,8 +661,15 @@ class DiLoCoServer:
             for name, param in zip(self._param_names, self._param_list)
         }
 
-    def _apply_outer_optimizer(self):
+    def _apply_outer_optimizer(self, pending_audit=None):
         """Average pending pseudo-gradients and apply the outer optimizer step.
+
+        ``pending_audit``: when a list is passed, the ``outer_step``
+        audit record is appended to it instead of written immediately —
+        callers hold ``self._sync_cond`` and must flush the batch (via
+        :meth:`_audit_many`) only after releasing it, so the disk write
+        never stalls the barrier. When ``None`` (direct/test callers not
+        under the lock) the record is written inline.
 
         Per-name aggregation is over **the workers whose slice contained
         that name**, not over the whole worker set. For solo groups the
@@ -682,12 +723,18 @@ class DiLoCoServer:
         self._dirty = True
 
         logger.info(f"Outer optimizer step complete. Sync round: {self._sync_round}")
-        self._audit(
+        outer_step_event = (
             "outer_step",
-            sync_round=self._sync_round,
-            contributors=contributing_workers,
-            missing_contributors=missing_contributors or None,
+            {
+                "sync_round": self._sync_round,
+                "contributors": contributing_workers,
+                "missing_contributors": missing_contributors or None,
+            },
         )
+        if pending_audit is not None:
+            pending_audit.append(outer_step_event)
+        else:
+            self._audit(outer_step_event[0], **outer_step_event[1])
 
         # Periodic save
         if (
@@ -859,6 +906,10 @@ class DiLoCoServer:
 
         Lock ordering: _sync_cond -> _workers_lock (same as submit handlers).
         """
+        # Audit records are collected here and flushed *after* the
+        # _sync_cond is released — never do blocking disk I/O while
+        # holding the barrier (it would stall every parked worker).
+        pending_audit: List[Tuple[str, Dict[str, Any]]] = []
         with self._sync_cond:
             with self._workers_lock:
                 if worker_id not in self._workers:
@@ -908,12 +959,16 @@ class DiLoCoServer:
                     f"Worker {worker_id} died. "
                     f"Remaining: {remaining}, num_workers now {self.num_workers}"
                 )
-            self._audit(
-                "eviction",
-                trigger_worker_id=worker_id,
-                evicted=list(evict),
-                group_id=group_id,
-                remaining=remaining,
+            pending_audit.append(
+                (
+                    "eviction",
+                    {
+                        "trigger_worker_id": worker_id,
+                        "evicted": list(evict),
+                        "group_id": group_id,
+                        "remaining": remaining,
+                    },
+                )
             )
 
             # --- Full-model sync barrier ---
@@ -936,7 +991,7 @@ class DiLoCoServer:
             if expected > 0 and self._pending_pseudograds and self._round_complete():
                 # Enough workers have submitted - release the barrier
                 my_round = self._sync_round
-                self._apply_outer_optimizer()
+                self._apply_outer_optimizer(pending_audit)
                 self._completed_rounds[my_round] = self.get_global_params()
                 self._snapshot_round_expected_workers()
 
@@ -967,17 +1022,24 @@ class DiLoCoServer:
                         self._fragment_pending[frag_id].clear()
                         self._fragment_submissions += len(pg_list)
                         self._sync_round += 1
-                        self._audit(
-                            "fragment_outer_step",
-                            fragment_id=frag_id,
-                            fragment_round=my_frag_round,
-                            sync_round=self._sync_round,
-                            contributors=contributing_workers,
-                            triggered_by="eviction",
+                        pending_audit.append(
+                            (
+                                "fragment_outer_step",
+                                {
+                                    "fragment_id": frag_id,
+                                    "fragment_round": my_frag_round,
+                                    "sync_round": self._sync_round,
+                                    "contributors": contributing_workers,
+                                    "triggered_by": "eviction",
+                                },
+                            )
                         )
 
             # Wake all waiting threads so they re-evaluate their conditions
             self._sync_cond.notify_all()
+
+        # _sync_cond released: now it's safe to do the audit disk I/O.
+        self._audit_many(pending_audit)
 
     def _compute_dylu_sync_every(self, worker_id: str) -> Optional[int]:
         """
@@ -1282,8 +1344,9 @@ class DiLoCoServer:
         # Return global params. When a bulk listener is configured,
         # advertise its URL via response header so the worker can
         # route subsequent submit_pseudograd / global_params calls to
-        # it directly (issue #90).
-        bulk_url = self.get_bulk_url()
+        # it directly (issue #90). Pass the worker's own view of our
+        # host so a wildcard-bound server advertises a routable URL.
+        bulk_url = self.get_bulk_url(_request_host(handler))
         extra = {"X-Forgather-Bulk-Url": bulk_url} if bulk_url else None
         if self.async_mode:
             with self._async_lock:
@@ -1581,6 +1644,8 @@ class DiLoCoServer:
         _handle_worker_death removes it from the expected set and may release
         the barrier early.
         """
+        # Collected under the lock, flushed after release (see _audit).
+        pending_audit: List[Tuple[str, Dict[str, Any]]] = []
         with self._sync_cond:
             my_round = self._sync_round
 
@@ -1604,7 +1669,7 @@ class DiLoCoServer:
             )
 
             if self._round_complete():
-                self._apply_outer_optimizer()
+                self._apply_outer_optimizer(pending_audit)
                 self._completed_rounds[my_round] = self.get_global_params()
 
                 # Snapshot expected workers for the next round
@@ -1623,6 +1688,8 @@ class DiLoCoServer:
 
             global_params = self._completed_rounds[my_round]
 
+        # _sync_cond released: flush audit records off the barrier path.
+        self._audit_many(pending_audit)
         _send_tensor_response(handler, global_params)
 
     def _handle_submit_async(self, handler, worker_id, pseudograds):
@@ -1763,6 +1830,9 @@ class DiLoCoServer:
         self, handler, worker_id, fragment_id, pseudograds
     ):
         """Per-fragment synchronous submission with fault-tolerant barrier."""
+        # Collected under the lock, flushed to disk after release so the
+        # audit write never stalls the barrier (see _audit).
+        pending_audit: List[Tuple[str, Dict[str, Any]]] = []
         with self._sync_cond:
             my_round = self._fragment_rounds[fragment_id]
 
@@ -1805,12 +1875,16 @@ class DiLoCoServer:
                 self._fragment_pending[fragment_id].clear()
                 self._fragment_submissions += len(pg_list)
                 self._sync_round += 1
-                self._audit(
-                    "fragment_outer_step",
-                    fragment_id=fragment_id,
-                    fragment_round=my_round,
-                    sync_round=self._sync_round,
-                    contributors=contributing_workers,
+                pending_audit.append(
+                    (
+                        "fragment_outer_step",
+                        {
+                            "fragment_id": fragment_id,
+                            "fragment_round": my_round,
+                            "sync_round": self._sync_round,
+                            "contributors": contributing_workers,
+                        },
+                    )
                 )
 
                 # Clean up old fragment rounds
@@ -1852,6 +1926,8 @@ class DiLoCoServer:
                     )
                     return
 
+        # _sync_cond released: flush audit records off the barrier path.
+        self._audit_many(pending_audit)
         _send_tensor_response(handler, result)
 
     def _handle_submit_fragment_async(
@@ -2454,6 +2530,16 @@ class DiLoCoServer:
         guard — security checks must not depend on it landing on
         disk. Records carry a UTC timestamp and arbitrary kwargs.
 
+        Holds a single append-mode file handle for the server's
+        lifetime (opened lazily on first record) so the common path is
+        one ``write`` + ``flush`` rather than an ``open``/``close`` pair
+        per event. **Never call this while holding ``self._sync_cond``**
+        — a slow disk would otherwise stall the sync barrier and every
+        worker parked on it. The barrier paths accumulate events in a
+        local list and flush via :meth:`_audit` only after releasing the
+        condition (see ``_handle_worker_death`` /
+        ``_handle_submit_fragment_pseudograd``).
+
         No-op when ``output_dir`` is empty (in-process tests that
         construct DiLoCoServer without a real directory).
         """
@@ -2467,8 +2553,10 @@ class DiLoCoServer:
         line = json.dumps(record, default=str) + "\n"
         try:
             with self._audit_lock:
-                with open(self._audit_path, "a", encoding="utf-8") as f:
-                    f.write(line)
+                if self._audit_fh is None:
+                    self._audit_fh = open(self._audit_path, "a", encoding="utf-8")
+                self._audit_fh.write(line)
+                self._audit_fh.flush()
         except OSError as exc:
             logger.warning(
                 "audit-log write failed (event=%s, path=%s): %s",
@@ -2476,6 +2564,23 @@ class DiLoCoServer:
                 self._audit_path,
                 exc,
             )
+
+    def _audit_many(self, events: "List[Tuple[str, Dict[str, Any]]]") -> None:
+        """Flush a batch of ``(event, fields)`` records collected while a
+        lock was held. Call *after* releasing ``self._sync_cond`` so the
+        file I/O never blocks the barrier."""
+        for event, fields in events:
+            self._audit(event, **fields)
+
+    def _close_audit(self) -> None:
+        """Close the persistent audit handle (idempotent)."""
+        with self._audit_lock:
+            if self._audit_fh is not None:
+                try:
+                    self._audit_fh.close()
+                except OSError:
+                    pass
+                self._audit_fh = None
 
     # Three "bulk" endpoints: large tensor transfers. When a separate
     # bulk port is configured these are removed from the control port
@@ -2485,7 +2590,12 @@ class DiLoCoServer:
         {"/submit_pseudograd", "/submit_fragment_pseudograd", "/global_params"}
     )
 
-    def get_bulk_url(self) -> Optional[str]:
+    #: Bind hosts that are not routable as a connect target. When the
+    #: server binds one of these we can't put it in the advertised bulk
+    #: URL — the worker would dial a wildcard / its own loopback.
+    _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", ""})
+
+    def get_bulk_url(self, request_host: Optional[str] = None) -> Optional[str]:
         """Public URL workers should use for the bulk endpoints.
 
         ``None`` when no separate bulk listener is configured (bulk
@@ -2493,11 +2603,22 @@ class DiLoCoServer:
         response includes this string under the
         ``X-Forgather-Bulk-Url`` header so workers learn about it
         without an extra round-trip.
+
+        When the server bound a wildcard address (``0.0.0.0`` / ``::``)
+        it has no reliable view of its own routable address, so
+        advertising ``self.host`` verbatim would hand remote workers an
+        unroutable ``http://0.0.0.0:<port>``. In that case we prefer
+        ``request_host`` — the host the registering worker actually used
+        to reach the control port, which is routable from that worker by
+        construction — and fall back to loopback only as a last resort.
         """
         if self.bulk_port is None:
             return None
         scheme = "https" if self.bulk_ssl_context is not None else "http"
-        return f"{scheme}://{self.host}:{self.bulk_port}"
+        host = self.host
+        if host in self._WILDCARD_HOSTS or host is None:
+            host = request_host or "127.0.0.1"
+        return f"{scheme}://{host}:{self.bulk_port}"
 
     def _create_handler(self, role: str = "control"):
         """Create a request handler bound to this server.
@@ -2552,7 +2673,7 @@ class DiLoCoServer:
                     or path not in DiLoCoServer._BULK_PATHS
                 ):
                     return False
-                bulk_url = server_ref.get_bulk_url() or ""
+                bulk_url = server_ref.get_bulk_url(_request_host(self)) or ""
                 self.send_response(404)
                 self.send_header("X-Forgather-Bulk-Url", bulk_url)
                 self.send_header("Content-Type", "application/json")
@@ -2973,6 +3094,7 @@ class DiLoCoServer:
             self._stop_bulk_listener()
             self._running = False
             self._server.server_close()
+            self._close_audit()
             logger.info("Server stopped")
 
     def start(self):
@@ -3017,6 +3139,7 @@ class DiLoCoServer:
             if self._server_thread:
                 self._server_thread.join(timeout=5)
             self._server.server_close()
+            self._close_audit()
             logger.info("Server stopped")
 
     @property

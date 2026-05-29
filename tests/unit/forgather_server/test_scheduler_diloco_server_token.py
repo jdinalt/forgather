@@ -140,3 +140,112 @@ def test_build_diloco_command_no_bulk_port_omits_flags():
     assert "--bulk-port" not in cmd
     assert "--bulk-tls" not in cmd
     assert "--bulk-auth" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# Token injection into the training worker's env (issue #90 follow-up):
+# a worker pointed at a routable (non-loopback) DiLoCo URL can't use the
+# loopback per-port file, so the scheduler forwards the token via env.
+# ---------------------------------------------------------------------------
+
+
+def _fake_diloco_job(host, port, token, routable_host=None, status="running"):
+    return type(
+        "FakeRec",
+        (),
+        {
+            "queue_id": f"q-{port}",
+            "job_type": "diloco_server",
+            "status": status,
+            "auth_token": token,
+            "job_params": {
+                "host": host,
+                "port": port,
+                **({"routable_host": routable_host} if routable_host else {}),
+            },
+        },
+    )()
+
+
+def test_token_for_server_addr_matches_routable_url(monkeypatch):
+    """Server binds 0.0.0.0, scheduler stamped routable_host; a training
+    worker given the routable URL resolves the token by JobRecord match."""
+    from forgather_server import scheduler
+
+    monkeypatch.setattr(
+        scheduler.job_records,
+        "list_records",
+        lambda: [_fake_diloco_job("0.0.0.0", 8512, "tok-routable", "192.168.9.43")],
+    )
+    assert (
+        scheduler._diloco_token_for_server_addr("https://192.168.9.43:8512")
+        == "tok-routable"
+    )
+    # Bare host:port (no scheme) resolves the same way.
+    assert (
+        scheduler._diloco_token_for_server_addr("192.168.9.43:8512") == "tok-routable"
+    )
+
+
+def test_token_for_server_addr_loopback_url(monkeypatch):
+    from forgather_server import scheduler
+
+    monkeypatch.setattr(
+        scheduler.job_records,
+        "list_records",
+        lambda: [_fake_diloco_job("127.0.0.1", 8512, "tok-loop")],
+    )
+    assert (
+        scheduler._diloco_token_for_server_addr("http://localhost:8512") == "tok-loop"
+    )
+
+
+def test_token_for_server_addr_no_match_returns_none(monkeypatch):
+    """A genuinely remote server (no local record) → None; the worker
+    relies on its own explicit token / env."""
+    from forgather_server import scheduler
+
+    monkeypatch.setattr(
+        scheduler.job_records,
+        "list_records",
+        lambda: [_fake_diloco_job("0.0.0.0", 8512, "tok", "192.168.9.43")],
+    )
+    assert scheduler._diloco_token_for_server_addr("https://10.20.30.40:8512") is None
+
+
+def test_token_for_server_addr_skips_terminal_records(monkeypatch):
+    from forgather_server import scheduler
+
+    monkeypatch.setattr(
+        scheduler.job_records,
+        "list_records",
+        lambda: [_fake_diloco_job("127.0.0.1", 8512, "tok", status="done")],
+    )
+    assert scheduler._diloco_token_for_server_addr("http://localhost:8512") is None
+
+
+def test_env_builder_injects_token(monkeypatch):
+    """_diloco_env_from_job_params forwards FORGATHER_DILOCO_SERVER_TOKEN
+    when a matching local server record exists."""
+    from forgather_server import scheduler
+
+    monkeypatch.setattr(
+        scheduler.job_records,
+        "list_records",
+        lambda: [_fake_diloco_job("0.0.0.0", 8512, "tok-x", "192.168.9.43")],
+    )
+    env = scheduler._diloco_env_from_job_params(
+        {"server_addr": "https://192.168.9.43:8512"}, "queue-1"
+    )
+    assert env["DILOCO_SERVER"] == "https://192.168.9.43:8512"
+    assert env["FORGATHER_DILOCO_SERVER_TOKEN"] == "tok-x"
+
+
+def test_env_builder_no_token_when_no_match(monkeypatch):
+    from forgather_server import scheduler
+
+    monkeypatch.setattr(scheduler.job_records, "list_records", lambda: [])
+    env = scheduler._diloco_env_from_job_params(
+        {"server_addr": "https://10.0.0.9:8512"}, "queue-1"
+    )
+    assert "FORGATHER_DILOCO_SERVER_TOKEN" not in env

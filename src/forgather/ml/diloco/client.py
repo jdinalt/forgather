@@ -127,11 +127,36 @@ class DiLoCoClient:
         # else ``"http"``. That keeps the worker in sync with the
         # server's actual posture for the trusted-LAN case where
         # both ends share the same TLS provisioning.
-        if not server_addr.startswith(("http://", "https://")):
+        # Whether we *guessed* the scheme (bare host:port) vs. it being
+        # explicit in the URL. A guessed scheme is derived from THIS
+        # host's TLS provisioning, which need not match the server's —
+        # a TLS-off worker pointed at a TLS server guesses http:// and
+        # the TLS handshake surfaces as a bare connection reset. We
+        # remember the guess so connection failures can name this as the
+        # likely cause instead of failing silently/cryptically.
+        self._scheme_guessed = not server_addr.startswith(("http://", "https://"))
+        if self._scheme_guessed:
+            # Loopback servers default to http:// (the long-standing
+            # default, and what local dev / test servers actually
+            # speak). Only non-loopback hosts consult client_scheme():
+            # a routable bare host:port — e.g. a worker handed
+            # "192.168.9.43:8512" — picks https when this host has TLS
+            # provisioned, which is the trusted-LAN case commit
+            # 72c3225a fixed. Inferring https for loopback would break
+            # every cleartext localhost server whenever the operator
+            # happens to have a TLS config on disk.
+            bare_host = (
+                server_addr.rsplit(":", 1)[0] if ":" in server_addr else server_addr
+            )
+            bare_host = bare_host.strip("[]")  # ipv6 literal
+            scheme = "http"
             try:
-                from forgather.tls import client_scheme as _client_scheme
+                from forgather.tls.policy import host_is_loopback
 
-                scheme = _client_scheme()
+                if not host_is_loopback(bare_host):
+                    from forgather.tls import client_scheme as _client_scheme
+
+                    scheme = _client_scheme(bare_host)
             except Exception:
                 scheme = "http"
             server_addr = f"{scheme}://{server_addr}"
@@ -171,6 +196,26 @@ class DiLoCoClient:
         # type checkers happy.
         self._bulk_ssl_ctx: Optional["ssl.SSLContext"] = None
 
+    def _scheme_hint(self) -> str:
+        """Diagnostic suffix for connection errors when the URL scheme
+        was inferred rather than explicit.
+
+        A bare ``host:port`` worker derives http vs https from *its own*
+        TLS provisioning, which may not match the server's. When that
+        guess is wrong the failure is a low-level connection reset with
+        no obvious cause; this spells it out and tells the operator how
+        to remove the ambiguity."""
+        if not getattr(self, "_scheme_guessed", False):
+            return ""
+        scheme = self.server_addr.split("://", 1)[0]
+        other = "http" if scheme == "https" else "https"
+        return (
+            f" [scheme {scheme}:// was inferred from this host's local TLS "
+            f"config, not the server's — if the server actually speaks "
+            f"{other}://, this is the expected symptom; pass an explicit "
+            f"{other}://host:port server address]"
+        )
+
     def _ssl_for(self, url: str) -> Optional["ssl.SSLContext"]:
         """SSL context appropriate for ``url`` — None for ``http://``.
 
@@ -195,9 +240,18 @@ class DiLoCoClient:
         """
         if not url.lower().startswith("https"):
             return None
-        if self.server_addr and url.startswith(self.server_addr):
+
+        def _same_base(u: str, base: Optional[str]) -> bool:
+            # Match on the origin boundary, not a bare prefix: ``base``
+            # followed by ``/`` (or exactly equal). Avoids mis-matching
+            # when one base is a string prefix of the other — e.g.
+            # control ``:8512`` vs bulk ``:85120`` — which a plain
+            # ``startswith`` would conflate.
+            return bool(base) and (u == base or u.startswith(base + "/"))
+
+        if _same_base(url, self.server_addr):
             return self._ssl_ctx
-        if self.bulk_url and url.startswith(self.bulk_url):
+        if _same_base(url, self.bulk_url):
             if self._bulk_ssl_ctx is None:
                 self._bulk_ssl_ctx = self._ssl_for(self.bulk_url)
             return self._bulk_ssl_ctx
@@ -304,6 +358,7 @@ class DiLoCoClient:
                 else:
                     raise ConnectionError(
                         f"Failed to connect to DiLoCo server at {url}: {e}"
+                        f"{self._scheme_hint()}"
                     ) from e
 
     def _request_tensor(
@@ -362,6 +417,7 @@ class DiLoCoClient:
                 else:
                     raise ConnectionError(
                         f"Failed to connect to DiLoCo server at {url}: {e}"
+                        f"{self._scheme_hint()}"
                     ) from e
 
     def register(
@@ -507,6 +563,7 @@ class DiLoCoClient:
                 else:
                     raise ConnectionError(
                         f"Failed to register with DiLoCo server at {url}: {e}"
+                        f"{self._scheme_hint()}"
                     ) from e
 
     def submit_pseudogradients(

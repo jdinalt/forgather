@@ -519,6 +519,55 @@ def test_urllib_ssl_context_verify_false_returns_unverified_ctx(tls_root):
     assert ctx.verify_mode == ssl.CERT_NONE
 
 
+def test_urllib_ssl_context_verify_false_still_presents_client_cert(tls_root):
+    """verify=False disables verifying the *peer's* cert — it must NOT
+    drop *our* client cert, or the mTLS skip-bearer path silently breaks
+    and a token-less worker gets a hard 401.
+
+    Regression test for the post-#90 finding: the verify=False early
+    return used to skip load_cert_chain. We prove the client still
+    presents its identity by standing up a CERT_OPTIONAL TLS server and
+    asserting getpeercert() is non-empty for a verify=False client."""
+    import http.server
+    import threading
+    import urllib.request
+
+    _provisioned_cfg(tls_root)
+    server_ctx = stdlib_ssl_context()  # CERT_OPTIONAL + cluster CA bundle
+    assert server_ctx is not None
+
+    seen_peer_cert = {}
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen_peer_cert["cert"] = self.connection.getpeercert()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *args, **kwargs):
+            pass
+
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    httpd.socket = server_ctx.wrap_socket(httpd.socket, server_side=True)
+    port = httpd.server_address[1]
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    try:
+        client_ctx = urllib_ssl_context(verify=False)
+        assert client_ctx.verify_mode == ssl.CERT_NONE
+        with urllib.request.urlopen(
+            f"https://localhost:{port}/", context=client_ctx, timeout=5
+        ) as resp:
+            assert resp.status == 200
+        # The server saw a CA-signed client cert → mTLS identity was
+        # presented despite verify=False on the client side.
+        assert seen_peer_cert.get("cert")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 def test_stdlib_and_urllib_contexts_interoperate(tls_root):
     """End-to-end: spin up an http.server with stdlib_ssl_context,
     hit it with urllib using urllib_ssl_context, verify the

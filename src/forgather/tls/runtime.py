@@ -161,6 +161,16 @@ def urllib_ssl_context(
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
+        # ``verify=False`` disables verifying the *peer's* cert (the
+        # SSH-tunnel escape hatch) — it must NOT also drop *our* client
+        # cert, or the mTLS skip-bearer path silently stops working and
+        # a token-less worker gets a hard 401. Present our identity even
+        # here; the server still validates it against the cluster CA.
+        if cfg.is_provisioned():
+            try:
+                ctx.load_cert_chain(str(cfg.server_cert), str(cfg.server_key))
+            except (OSError, ssl.SSLError) as e:
+                log.debug("urllib_ssl_context: could not load client cert: %s", e)
         return ctx
     bundle = cfg.effective_bundle()
     if bundle is None:

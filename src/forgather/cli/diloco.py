@@ -83,6 +83,18 @@ def _server_cmd(args):
     save_total_limit = getattr(args, "save_total_limit", 3)
     default_work_units = getattr(args, "default_work_units", 1024)
 
+    # Resolve an ephemeral ``--port 0`` to the concrete port the server
+    # will actually bind *now*, before anything keys off the port. The
+    # per-port token file, the startup banner, and the DiLoCoServer
+    # constructor all read ``args.port`` downstream; if we left it at 0
+    # the token would be written to ``0.token`` while the listener bound
+    # a different port, and loopback token auto-discovery would 401.
+    # DiLoCoServer applies the same ``port or _find_available_port()``
+    # rule, so passing the resolved port keeps both ends in sync.
+    if not args.port:
+        args.port = DiLoCoServer._find_available_port()
+        print(f"Resolved ephemeral --port 0 to {args.port}")
+
     # ------------------------------------------------------------------
     # Security (issue #90): resolve bearer token + TLS context. Both
     # default to "on" via the persisted per-port file / shared TLS
@@ -148,6 +160,21 @@ def _server_cmd(args):
         # Default when --bulk-port is set: bulk auth OFF (opt-out for
         # throughput). Explicit --bulk-auth turns it on.
         bulk_auth_enabled = bool(bulk_auth) if bulk_auth is not None else False
+        # Requiring the bearer on a *cleartext* bulk listener would make
+        # every worker POST the control-plane token in plaintext (the
+        # bulk and control listeners share one secret). A LAN sniffer
+        # would then capture full control-plane authority — exactly the
+        # "host takeover" boundary the two-port split is meant to hold.
+        # Refuse the combination: either secure the bulk port with
+        # --bulk-tls, or run it --no-bulk-auth.
+        if bulk_auth_enabled and auth_token and bulk_ssl_context is None:
+            _auth_parser.error(
+                "--bulk-auth requires the bulk listener to be on TLS "
+                "(pass --bulk-tls). Sending the bearer token over a "
+                "cleartext bulk port would leak the control-plane "
+                "credential to anyone on the network. Use --no-bulk-auth "
+                "for an unauthenticated cleartext bulk plane."
+            )
         print(
             f"Bulk listener: port={bulk_port} "
             f"({'TLS' if bulk_ssl_context else 'cleartext'}, "

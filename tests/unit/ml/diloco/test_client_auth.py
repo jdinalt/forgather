@@ -138,6 +138,36 @@ def test_bare_host_picks_scheme_from_tls_config(monkeypatch):
     assert c2.server_addr == "http://192.168.9.43:8512"
 
 
+def test_guessed_scheme_surfaces_hint_on_connection_error(monkeypatch):
+    """A bare host:port worker that can't connect gets a connection
+    error that NAMES the inferred-scheme ambiguity, instead of a bare
+    connection reset with no explanation (fail-loud, post-#90 finding)."""
+    import forgather.tls
+    from forgather.ml.diloco.client import DiLoCoClient
+
+    monkeypatch.setattr(forgather.tls, "client_scheme", lambda *a, **k: "http")
+    # Port 9 (discard) refuses / drops — connection fails fast.
+    c = DiLoCoClient("127.0.0.1:9", timeout=1, max_retries=0)
+    assert c._scheme_guessed is True
+    with pytest.raises(ConnectionError) as exc:
+        c.get_status()
+    msg = str(exc.value)
+    assert "inferred" in msg and "https://" in msg
+
+
+def test_explicit_scheme_no_hint(monkeypatch):
+    """An explicit-scheme URL does not emit the inferred-scheme hint."""
+    import forgather.tls
+    from forgather.ml.diloco.client import DiLoCoClient
+
+    monkeypatch.setattr(forgather.tls, "client_scheme", lambda *a, **k: "http")
+    c = DiLoCoClient("http://127.0.0.1:9", timeout=1, max_retries=0)
+    assert c._scheme_guessed is False
+    with pytest.raises(ConnectionError) as exc:
+        c.get_status()
+    assert "inferred" not in str(exc.value)
+
+
 def test_explicit_scheme_is_preserved(monkeypatch):
     """An explicit ``http://`` or ``https://`` URL passes through
     unchanged — overrides whatever client_scheme would have picked."""
