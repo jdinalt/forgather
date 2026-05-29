@@ -1047,10 +1047,12 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
   }
 
   return (
-    <details
-      className="submit-section"
-      open={!!selectedBase || !!persistError}
-    >
+    // Expanded by default (like the model/dataset sections) so the
+    // current DiLoCo state — including a reset-to-None when a prior
+    // selection couldn't be restored — is always visible at a glance.
+    // Collapsing it on "None" previously hid the reset (issue #95).
+    // Still user-collapsible: this only sets the initial open state.
+    <details className="submit-section" open>
       <summary>
         <h4 className="dyn-heading">
           DiLoCo{" "}
