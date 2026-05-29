@@ -484,14 +484,25 @@ def spawn_diloco_server_process(
     no_nesterov: bool = False,
     heartbeat_timeout: Optional[float] = None,
     min_workers: Optional[int] = None,
+    auth_token_file: Optional[str] = None,
+    no_auth: bool = False,
+    quiet_tokens: bool = False,
+    bulk_port: Optional[int] = None,
+    bulk_tls: Optional[bool] = None,
+    bulk_auth: Optional[bool] = None,
     extra_env: Optional[Dict[str, str]] = None,
 ) -> LaunchResult:
     """Spawn a DiLoCo parameter server.
 
-    CPU-only (no GPUs reserved); long-lived like dataset_server / mkdocs /
-    tensorboard. The DiLoCo server holds global model parameters in
-    memory and applies the outer optimizer when workers submit pseudo-
-    gradients over HTTP. Auth / TLS land in a follow-up.
+    CPU-only (no GPUs reserved); long-lived like dataset_server /
+    mkdocs / tensorboard. The DiLoCo server holds global model
+    parameters in memory and applies the outer optimizer when workers
+    submit pseudo-gradients over HTTP.
+
+    Auth (issue #90): the scheduler resolves a per-port bearer token
+    and writes it to the per-port file before invoking us; we forward
+    that path as ``--auth-token-file`` so the token never lands in
+    ``argv``. ``no_auth=True`` opts the spawn out of bearer enforcement.
     """
     cmd = diloco_server_ops.build_diloco_server_command(
         output_dir=output_dir,
@@ -510,6 +521,12 @@ def spawn_diloco_server_process(
         no_nesterov=no_nesterov,
         heartbeat_timeout=heartbeat_timeout,
         min_workers=min_workers,
+        auth_token_file=auth_token_file,
+        no_auth=no_auth,
+        quiet_tokens=quiet_tokens,
+        bulk_port=bulk_port,
+        bulk_tls=bulk_tls,
+        bulk_auth=bulk_auth,
     )
     return _spawn_subprocess(cmd, [], tty_log_path, extra_env)
 

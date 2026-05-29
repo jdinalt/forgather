@@ -301,3 +301,10 @@ The `trainer` kwarg is already threaded through callbacks by
 - `tests/unit/ml/diloco/test_server_groups.py` — server group
   registration, barrier, eviction tests.
 - `tests/unit/ml/diloco/test_param_view.py` — worker view tests.
+
+## See also
+
+- [`diloco-security.md`](diloco-security.md) — auth, TLS, mTLS, audit
+  log, and the two-port bulk plane (issue #90). The group-membership
+  identity binding deferred there is the natural next step beyond
+  this PR.

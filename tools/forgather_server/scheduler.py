@@ -39,6 +39,12 @@ from dataset_server.auth import (
 )
 
 from forgather import trainer_control
+from forgather.ml.diloco.auth import (
+    standalone_token_file as diloco_server_standalone_token_file,
+)
+from forgather.ml.diloco.auth import (
+    write_standalone_token as diloco_server_write_standalone_token,
+)
 
 from . import _atomic, _gc, gpu_monitor, job_records, launcher, queue_store
 from .job_records import RUNNING_STATUSES, TERMINAL_STATUSES, JobRecord
@@ -559,10 +565,18 @@ def _build_update(item, gpu_indices, tty_path):
 
 def _build_diloco_server(item, gpu_indices, tty_path):
     p = item.job_params
+    # Auth-token file path (per-port). The scheduler's _launch resolves
+    # and persists the token before invoking this builder; here we
+    # just hand the spawn the path to read from.
+    no_auth = bool(p.get("no_auth", False))
+    port = int(p.get("port", 8512))
+    auth_token_file = (
+        None if no_auth else str(diloco_server_standalone_token_file(port))
+    )
     return launcher.spawn_diloco_server_process(
         output_dir=p["output_dir"],
         num_workers=int(p["num_workers"]),
-        port=int(p.get("port", 8512)),
+        port=port,
         host=p.get("host", "127.0.0.1"),
         async_mode=bool(p.get("async_mode", False)),
         dn_buffer_size=int(p.get("dn_buffer_size", 0) or 0),
@@ -584,6 +598,12 @@ def _build_diloco_server(item, gpu_indices, tty_path):
         min_workers=(
             int(p["min_workers"]) if p.get("min_workers") is not None else None
         ),
+        auth_token_file=auth_token_file,
+        no_auth=no_auth,
+        quiet_tokens=bool(p.get("quiet_tokens", False)),
+        bulk_port=(int(p["bulk_port"]) if p.get("bulk_port") is not None else None),
+        bulk_tls=p.get("bulk_tls"),
+        bulk_auth=p.get("bulk_auth"),
         tty_log_path=tty_path,
     )
 
@@ -697,6 +717,81 @@ def _build_construct(item, gpu_indices, tty_path):
     )
 
 
+#: Loopback host aliases for matching a diloco_server JobRecord to a
+#: ``server_addr``. Mirrors ``forgather.ml.diloco.auth._LOCAL_HOSTS``.
+_DILOCO_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+#: Env var the worker's DiLoCoClient consults for its bearer token
+#: (see ``forgather.ml.diloco.client.TOKEN_ENV_VAR``). Hardcoded rather
+#: than imported to keep the scheduler free of the torch-importing
+#: client module at load time.
+_DILOCO_TOKEN_ENV_VAR = "FORGATHER_DILOCO_SERVER_TOKEN"
+
+
+def _diloco_token_for_server_addr(server_addr: str) -> Optional[str]:
+    """Bearer token for a locally-spawned diloco_server at ``server_addr``.
+
+    A training worker discovers its token from the per-port loopback
+    file only when the URL is loopback (see
+    ``forgather.ml.diloco.auth.read_standalone_token``). When the webui
+    spawns a server bound to ``0.0.0.0``, ``server_addr`` carries the
+    stamped *routable* (non-loopback) host, so loopback auto-discovery
+    never fires and the worker would hit a 401. Resolve the token here
+    by matching the URL against running ``diloco_server`` JobRecords —
+    the same host/port logic the webui proxy uses in
+    ``routes/diloco.py:_token_for_local`` — so the scheduler can inject
+    it into the worker's environment.
+
+    Returns ``None`` for genuinely remote servers (no matching local
+    record), in which case the worker relies on an explicitly configured
+    token / env var.
+    """
+    from urllib.parse import urlparse
+
+    addr = str(server_addr).strip()
+    if "://" not in addr:
+        # Bare host:port — give urlparse a scheme to parse against.
+        addr = "http://" + addr
+    try:
+        parsed = urlparse(addr)
+    except Exception:
+        return None
+    host = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is None:
+        return None
+    host_is_loopback = host in _DILOCO_LOOPBACK_HOSTS
+    for r in job_records.list_records():
+        if r.job_type != "diloco_server":
+            continue
+        if r.status not in RUNNING_STATUSES:
+            continue
+        if not r.auth_token:
+            continue
+        params = r.job_params or {}
+        rec_port = params.get("port")
+        try:
+            rec_port = int(rec_port) if rec_port is not None else None
+        except (TypeError, ValueError):
+            continue
+        if rec_port != port:
+            continue
+        rec_host = (params.get("host") or "127.0.0.1").lower()
+        rec_routable = (params.get("routable_host") or "").lower()
+        if host_is_loopback and (
+            rec_host in _DILOCO_LOOPBACK_HOSTS or rec_host == "0.0.0.0"
+        ):
+            return r.auth_token
+        if rec_routable and host == rec_routable:
+            return r.auth_token
+        if rec_host == host:
+            return r.auth_token
+    return None
+
+
 def _diloco_env_from_job_params(
     diloco: Dict[str, Any],
     queue_id: str,
@@ -733,6 +828,14 @@ def _diloco_env_from_job_params(
     if not server:
         return env
     env["DILOCO_SERVER"] = str(server)
+    # Forward the bearer token for a locally-spawned server so the
+    # worker can authenticate even when server_addr is routable
+    # (non-loopback) and the per-port loopback file auto-discovery in
+    # DiLoCoClient wouldn't fire. An explicit token in extra_env / the
+    # worker's own env still wins (we never overwrite a set value).
+    token = _diloco_token_for_server_addr(str(server))
+    if token:
+        env[_DILOCO_TOKEN_ENV_VAR] = token
     if diloco.get("sync_every") is not None:
         env["DILOCO_SYNC_EVERY"] = str(int(diloco["sync_every"]))
     if diloco.get("num_fragments") is not None:
@@ -765,7 +868,15 @@ def _build_training(item, gpu_indices, tty_path):
     # args is needed.
     diloco = item.job_params.get("diloco") or {}
     if isinstance(diloco, dict):
-        extra_env.update(_diloco_env_from_job_params(diloco, item.queue_id))
+        diloco_env = _diloco_env_from_job_params(diloco, item.queue_id)
+        # The derived DILOCO_* values win over any inherited extra_env,
+        # EXCEPT the bearer token: an operator who set it explicitly in
+        # extra_env knows their server better than our JobRecord match,
+        # so that value takes precedence.
+        for k, v in diloco_env.items():
+            if k == _DILOCO_TOKEN_ENV_VAR and k in extra_env:
+                continue
+            extra_env[k] = v
     extra_env = extra_env or None
     # ``nproc`` from job_params is an explicit single-node override
     # (typed into the SubmitModal nproc field, or supplied by other
@@ -922,6 +1033,39 @@ def _resolve_inference_server_token(*, port: int, regen: bool) -> str:
     return token
 
 
+def _resolve_diloco_server_token(*, port: int, regen: bool) -> str:
+    """Return the bearer token a diloco_server spawn should use.
+
+    Mirrors ``_resolve_dataset_server_token``: per-port persisted token
+    file, reused across restarts until the operator passes
+    ``--regen-token``. The same file the standalone ``forgather diloco
+    server`` CLI reads, so a webui-spawned server and a manually-run
+    server are interchangeable from the worker's point of view.
+
+    Persistence may fail (e.g. read-only home); the spawn still gets
+    a valid token in memory and the JobRecord carries it, but the next
+    start won't auto-discover. Logged at WARNING; not raised.
+    """
+    token_path = diloco_server_standalone_token_file(port)
+    if not regen and token_path.is_file():
+        try:
+            existing = token_path.read_text().strip()
+        except OSError:
+            existing = ""
+        if existing:
+            return existing
+    token = secrets.token_hex(32)
+    try:
+        diloco_server_write_standalone_token(port, token)
+    except OSError as e:
+        log.warning(
+            "could not persist diloco_server token at %s: %s",
+            token_path,
+            e,
+        )
+    return token
+
+
 def _resolve_dataset_server_token(*, port: int, regen: bool) -> str:
     """Return the bearer token a dataset_server spawn should use.
 
@@ -1011,6 +1155,16 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
                 port=int(item.job_params.get("port", 8766)),
                 regen=bool(item.job_params.get("regen_token", False)),
             )
+        elif item.job_type == "diloco_server":
+            # Per-port persisted token (matches dataset_server). Worker
+            # plumbing in forgather.ml.diloco.client auto-discovers it
+            # from this same per-port file when the URL is loopback;
+            # the webui proxy reads it from the JobRecord and attaches
+            # the bearer header for cross-host browsers.
+            auth_token = _resolve_diloco_server_token(
+                port=int(item.job_params.get("port", 8512)),
+                regen=bool(item.job_params.get("regen_token", False)),
+            )
 
     # Stamp the actual URL scheme into job_params for inference and
     # dataset_server jobs. The spawned child picks TLS up from the
@@ -1021,7 +1175,7 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
     # TensorBoard and MkDocs are intentionally not stamped: those
     # services don't read forgather's TLS config and always serve HTTP.
     finalized_params = dict(item.job_params)
-    if item.job_type in ("inference", "dataset_server"):
+    if item.job_type in ("inference", "dataset_server", "diloco_server"):
         try:
             from forgather.tls import client_scheme as _client_scheme
 

@@ -2642,6 +2642,33 @@ step is the explicit operator consent. See the module docstring
 for the threat-model details, including the small bearer-
 amplification it acknowledges.
 
+### DiLoCo server
+
+DiLoCo follows the same model as dataset_server: per-port persisted
+bearer token (`~/.config/forgather/diloco_server/<port>.token`,
+mode `0o600`) generated on first run and reused across restarts;
+`--regen-token` rotates. The DiLoCoPanel form for adding an external
+server accepts `auth_token` (masked) and `verify_tls`, and the
+`routes/diloco.py` proxy attaches `Authorization: Bearer …` via the
+standard JobRecord-then-registry precedence.
+
+Two distinct security planes:
+
+* **Control** (`/register`, `/heartbeat`, `/control/*`, `/status`,
+  `/info`, work-queue endpoints) — always TLS + bearer-required.
+* **Bulk** (`/submit_pseudograd`, `/submit_fragment_pseudograd`,
+  `/global_params`) — opt-in second listener via `--bulk-port`
+  with cleartext + no-auth as the default (matching
+  `torch.distributed`'s posture). RCE protection is independent:
+  every inbound tensor blob uses `weights_only=True`.
+
+mTLS works the same as it does for `forgather server`: when TLS is
+enabled with a cluster CA bundle present, a client presenting a
+CA-signed cert at the handshake is treated as cluster-authenticated
+and the bearer check is skipped. Full design notes:
+`docs/design/diloco-security.md`. Operator setup:
+`docs/operations/tls.md` (the "DiLoCo server" subsection).
+
 ### GPUs
 
 - NVML-driven: per-card name, memory, util, temp, power, compute PIDs.

@@ -400,6 +400,89 @@ Nodes tab in the webui on any node (or the sidebar Nodes group)
 and you should see every other node listed and reachable within
 one tick (~5s).
 
+### DiLoCo server
+
+The DiLoCo parameter server picks up the same shared TLS state and
+the same bearer-token pattern as `dataset_server` / `inference_server`.
+Once a node is provisioned (Step 3) you can launch it like any other
+server:
+
+```bash
+forgather diloco server -o /path/to/model -n 2 --port 8512 --tls
+```
+
+`--tls` forces TLS on for the run; the cert/key come from
+`~/.config/forgather/tls/`. The control plane (`/register`, `/status`,
+`/control/*`, `/heartbeat`, etc.) requires a bearer token by default —
+one is auto-generated and persisted to
+`~/.config/forgather/diloco_server/<port>.token` (mode 0600). Clients
+discover the token automatically when they connect to a loopback URL
+(matches the dataset_server model). For cross-host workers, copy the
+token onto the worker host or pass `FORGATHER_DILOCO_SERVER_TOKEN=...`
+to the trainer process.
+
+When TLS is enabled and the cluster CA bundle is present, the server
+also accepts mTLS handshakes: a client that presents a CA-signed cert
+at the TLS handshake is treated as cluster-authenticated and the
+bearer check is skipped (same `_PEER_ALLOWED_PATHS` pattern as
+`forgather server`). This lets webui proxies and CLI tools talk to a
+DiLoCo upstream using only the shared TLS material, with no extra
+token plumbing.
+
+#### Bulk data plane (throughput vs security)
+
+Pseudo-gradient and weight transfer can be moved to a separate
+listener via `--bulk-port`:
+
+```bash
+# Control on 8512 (TLS + bearer); bulk on 8513 (cleartext, no auth)
+forgather diloco server -o /path/to/model -n 2 \
+    --port 8512 --tls \
+    --bulk-port 8513
+```
+
+The defaults when `--bulk-port` is set are cleartext + no-auth —
+matching `torch.distributed`'s posture on a trusted LAN. The control
+port keeps TLS + bearer regardless, so registration / heartbeat /
+control actions stay protected even when the bulk channel is wide
+open. Operators who want both ports fully secured can pass
+`--bulk-tls` and `--bulk-auth`.
+
+**Threat model**: with the bulk plane unauthenticated, an attacker on
+the LAN can disrupt a training job (inject garbage pseudo-gradients,
+slow it down) but cannot take over the host. Every inbound tensor
+blob is loaded with `torch.load(..., weights_only=True)` regardless
+of port, which closes the pickle-RCE vector.
+
+#### Audit log
+
+Every register / deregister / eviction / outer-optimizer step /
+control action lands as a JSON line in `<output_dir>/diloco_audit.log`.
+Best-effort — write failures log a warning and don't fail the
+operation. Tokens are never written to this file.
+
+#### Migrating an existing no-auth deployment
+
+If you've been running DiLoCo workers against a pre-#90 server (no
+TLS, no bearer), three paths to bring auth online without a flag day:
+
+1. **Loopback-only setup.** Restart the server with no extra flags:
+   the per-port token is auto-generated and persisted to
+   `~/.config/forgather/diloco_server/<port>.token`. Workers that
+   talk to the server via `localhost` / `127.0.0.1` pick the token
+   up automatically — no worker changes needed.
+2. **Cross-host workers.** Copy the per-port token file to each
+   worker host at the same path, or set
+   `FORGATHER_DILOCO_SERVER_TOKEN=<token>` in the worker process's
+   environment. The webui spawner sets this for managed jobs;
+   bare-metal workers need to wire it through their launch script
+   (the `forgather diloco worker` subcommand propagates it via
+   trainer env vars).
+3. **Stay on no-auth.** Add `--no-auth` to the server command. The
+   audit log + `weights_only=True` torch.load hardening still apply,
+   so an attacker can disrupt training but cannot escalate to RCE.
+   Only do this on a network you fully trust.
+
 ### Adding a node later
 
 The same Step-3 procedure for one more node, no cluster restart

@@ -1,5 +1,6 @@
 """DiLoCo CLI commands - server, status, and worker."""
 
+import argparse
 import json
 import logging
 import os
@@ -13,7 +14,15 @@ def _server_cmd(args):
     """Start DiLoCo parameter server."""
     import torch
 
+    from forgather.ml.diloco.auth import (
+        format_auth_mode,
+        resolve_auth_token,
+        standalone_token_file,
+        write_standalone_token,
+    )
     from forgather.ml.diloco.server import DiLoCoServer
+    from forgather.tls import enforce_non_loopback_policy
+    from forgather.tls.runtime import is_tls_active, stdlib_ssl_context
 
     logging.basicConfig(
         level=logging.INFO,
@@ -74,6 +83,104 @@ def _server_cmd(args):
     save_total_limit = getattr(args, "save_total_limit", 3)
     default_work_units = getattr(args, "default_work_units", 1024)
 
+    # Resolve an ephemeral ``--port 0`` to the concrete port the server
+    # will actually bind *now*, before anything keys off the port. The
+    # per-port token file, the startup banner, and the DiLoCoServer
+    # constructor all read ``args.port`` downstream; if we left it at 0
+    # the token would be written to ``0.token`` while the listener bound
+    # a different port, and loopback token auto-discovery would 401.
+    # DiLoCoServer applies the same ``port or _find_available_port()``
+    # rule, so passing the resolved port keeps both ends in sync.
+    if not args.port:
+        args.port = DiLoCoServer._find_available_port()
+        print(f"Resolved ephemeral --port 0 to {args.port}")
+
+    # ------------------------------------------------------------------
+    # Security (issue #90): resolve bearer token + TLS context. Both
+    # default to "on" via the persisted per-port file / shared TLS
+    # provisioning, matching dataset_server. ``--no-auth`` / ``--no-tls``
+    # opt out for the trusted-LAN case.
+    # ------------------------------------------------------------------
+    # Need an ArgumentParser handle for resolve_auth_token's parser.error.
+    # We don't have one in scope here; build a thin wrapper.
+    _auth_parser = argparse.ArgumentParser(prog="forgather diloco server")
+    auth_token, token_source = resolve_auth_token(_auth_parser, args)
+    if token_source in ("generated", "regenerated") and auth_token is not None:
+        write_standalone_token(args.port, auth_token)
+    elif token_source == "persisted":
+        # Persisted file already exists — no write needed.
+        pass
+
+    if not getattr(args, "quiet_tokens", False):
+        print(f"Auth: {format_auth_mode(args, token_source)}")
+        if auth_token is not None and token_source in (
+            "generated",
+            "regenerated",
+            "persisted",
+        ):
+            print(f"  token file: {standalone_token_file(args.port)}")
+
+    # TLS: build a stdlib SSLContext (or None for cleartext). Refuse
+    # non-loopback binds without TLS unless --insecure was passed.
+    ssl_context = stdlib_ssl_context(args)
+    tls_on = ssl_context is not None
+    enforce_non_loopback_policy(
+        args.host,
+        tls_enabled=tls_on,
+        insecure=getattr(args, "insecure", False),
+        service="diloco-server",
+    )
+    if tls_on:
+        print(f"TLS: enabled ({'mTLS+bearer' if auth_token else 'mTLS-or-cleartext'})")
+    else:
+        print("TLS: disabled (cleartext)")
+
+    # Two-port bulk plane (issue #90). Defaults when --bulk-port is set:
+    # cleartext, no auth — matching torch.distributed's posture on a
+    # trusted LAN. Explicit --bulk-tls / --bulk-auth flip those bits.
+    bulk_port = getattr(args, "bulk_port", None)
+    bulk_ssl_context = None
+    bulk_auth_enabled = True  # ignored when bulk_port is None
+    if bulk_port is not None:
+        bulk_tls = getattr(args, "bulk_tls", None)
+        if bulk_tls is True:
+            # Use the same SSL context for the bulk listener — same
+            # cluster identity, same CA bundle. Distinct contexts add
+            # no security here.
+            bulk_ssl_context = ssl_context
+            if bulk_ssl_context is None:
+                _auth_parser.error(
+                    "--bulk-tls requires the control plane to also be on "
+                    "TLS (pass --tls or provision the cluster)."
+                )
+        # else: bulk_tls is False (explicit --no-bulk-tls) or None
+        # (default → cleartext); both leave bulk_ssl_context=None.
+
+        bulk_auth = getattr(args, "bulk_auth", None)
+        # Default when --bulk-port is set: bulk auth OFF (opt-out for
+        # throughput). Explicit --bulk-auth turns it on.
+        bulk_auth_enabled = bool(bulk_auth) if bulk_auth is not None else False
+        # Requiring the bearer on a *cleartext* bulk listener would make
+        # every worker POST the control-plane token in plaintext (the
+        # bulk and control listeners share one secret). A LAN sniffer
+        # would then capture full control-plane authority — exactly the
+        # "host takeover" boundary the two-port split is meant to hold.
+        # Refuse the combination: either secure the bulk port with
+        # --bulk-tls, or run it --no-bulk-auth.
+        if bulk_auth_enabled and auth_token and bulk_ssl_context is None:
+            _auth_parser.error(
+                "--bulk-auth requires the bulk listener to be on TLS "
+                "(pass --bulk-tls). Sending the bearer token over a "
+                "cleartext bulk port would leak the control-plane "
+                "credential to anyone on the network. Use --no-bulk-auth "
+                "for an unauthenticated cleartext bulk plane."
+            )
+        print(
+            f"Bulk listener: port={bulk_port} "
+            f"({'TLS' if bulk_ssl_context else 'cleartext'}, "
+            f"{'auth' if bulk_auth_enabled and auth_token else 'no-auth'})"
+        )
+
     # Create server
     server = DiLoCoServer(
         output_dir=args.output_dir,
@@ -91,6 +198,11 @@ def _server_cmd(args):
         heartbeat_timeout=heartbeat_timeout,
         min_workers=min_workers,
         default_work_units=default_work_units,
+        auth_token=auth_token,
+        ssl_context=ssl_context,
+        bulk_port=bulk_port,
+        bulk_ssl_context=bulk_ssl_context,
+        bulk_auth_enabled=bulk_auth_enabled,
     )
 
     print(f"Starting DiLoCo server on {args.host}:{args.port}")
@@ -112,7 +224,14 @@ def _status_cmd(args):
     """Get DiLoCo server status."""
     from forgather.ml.diloco.client import DiLoCoClient
 
-    client = DiLoCoClient(args.server, timeout=10)
+    # Token + verify_tls are picked up from explicit args / env /
+    # loopback per-port file by DiLoCoClient automatically.
+    client = DiLoCoClient(
+        args.server,
+        timeout=10,
+        token=getattr(args, "auth_token", None),
+        verify_tls=not getattr(args, "no_verify_tls", False),
+    )
 
     try:
         status = client.get_status()

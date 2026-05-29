@@ -146,6 +146,26 @@ class TestServersList:
         assert body[0]["base_url"] == "http://127.0.0.1:8512"
         assert body[0]["alive"] is True
 
+    def test_local_server_reports_has_auth_token(self, client, monkeypatch):
+        """Locally-spawned servers default to bearer auth ON, so the
+        lock indicator must reflect the JobRecord's token (post-#90
+        finding: it was previously always None for local servers,
+        inverting the lock vs registered remotes)."""
+
+        class FakeRec:
+            queue_id = "q1"
+            job_type = "diloco_server"
+            config = "diloco:8512"
+            status = "running"
+            auth_token = "secret-token"
+            job_params = {"host": "127.0.0.1", "port": 8512}
+
+        monkeypatch.setattr(
+            diloco_routes.job_records, "list_records", lambda: [FakeRec()]
+        )
+        body = client.get("/api/diloco/servers").json()
+        assert body[0]["has_auth_token"] is True
+
     def test_terminal_status_records_are_filtered(self, client, monkeypatch):
         """Dead servers (done / failed / aborted) shouldn't appear in the
         unified list — they can't be inspected or selected for training,
@@ -183,6 +203,49 @@ class TestServersList:
         )
         body = client.get("/api/diloco/servers").json()
         assert body[0]["base_url"] == "http://localhost:8512"
+
+    def test_https_scheme_stamped_by_scheduler_is_respected(self, client, monkeypatch):
+        """When the scheduler stamps ``scheme=https`` on the JobRecord
+        (because TLS was provisioned), the base_url surfaced to the
+        webui must use https://. Regression test for the bug where
+        the Job card showed ``http://...`` for an actual TLS server,
+        causing the proxy to hit ReadError speaking HTTP at a TLS
+        socket."""
+
+        class FakeRec:
+            queue_id = "q1"
+            job_type = "diloco_server"
+            config = "diloco:8512"
+            status = "running"
+            job_params = {
+                "host": "127.0.0.1",
+                "port": 8512,
+                "scheme": "https",
+            }
+
+        monkeypatch.setattr(
+            diloco_routes.job_records, "list_records", lambda: [FakeRec()]
+        )
+        body = client.get("/api/diloco/servers").json()
+        assert body[0]["base_url"] == "https://127.0.0.1:8512"
+
+    def test_missing_scheme_falls_back_to_http(self, client, monkeypatch):
+        """Records spawned before scheme-stamping landed (or services
+        that never get the stamp) fall back to http — backwards
+        compat for the pre-#90 wire shape."""
+
+        class FakeRec:
+            queue_id = "q1"
+            job_type = "diloco_server"
+            config = "diloco:8512"
+            status = "running"
+            job_params = {"host": "127.0.0.1", "port": 8512}
+
+        monkeypatch.setattr(
+            diloco_routes.job_records, "list_records", lambda: [FakeRec()]
+        )
+        body = client.get("/api/diloco/servers").json()
+        assert body[0]["base_url"] == "http://127.0.0.1:8512"
 
 
 # ---------------------------------------------------------------------------

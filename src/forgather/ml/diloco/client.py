@@ -15,6 +15,7 @@ Usage:
 import io
 import json
 import logging
+import os
 import struct
 import time
 import urllib.error
@@ -23,7 +24,12 @@ from typing import Any, Dict, Optional
 
 import torch
 
+from forgather.ml.diloco.auth import read_standalone_token
+
 logger = logging.getLogger(__name__)
+
+#: Env var consulted as a fallback when no explicit token is passed.
+TOKEN_ENV_VAR = "FORGATHER_DILOCO_SERVER_TOKEN"
 
 
 class DiLoCoModelMismatchError(ConnectionError):
@@ -109,18 +115,181 @@ class DiLoCoClient:
         timeout: float = 600,
         max_retries: int = 3,
         retry_delay: float = 1.0,
+        token: Optional[str] = None,
+        verify_tls: bool = True,
     ):
-        # Normalize address
-        if not server_addr.startswith("http"):
-            server_addr = f"http://{server_addr}"
+        # Normalize address. A bare ``host:port`` is the legacy form
+        # (the ``forgather diloco worker --server host:port`` CLI and
+        # pre-#90 callers all hand off this shape). Pick the scheme
+        # the same way the scheduler does for its JobRecord
+        # ``scheme`` stamp — ``forgather.tls.client_scheme()`` —
+        # which returns ``"https"`` when TLS is provisioned locally,
+        # else ``"http"``. That keeps the worker in sync with the
+        # server's actual posture for the trusted-LAN case where
+        # both ends share the same TLS provisioning.
+        # Whether we *guessed* the scheme (bare host:port) vs. it being
+        # explicit in the URL. A guessed scheme is derived from THIS
+        # host's TLS provisioning, which need not match the server's —
+        # a TLS-off worker pointed at a TLS server guesses http:// and
+        # the TLS handshake surfaces as a bare connection reset. We
+        # remember the guess so connection failures can name this as the
+        # likely cause instead of failing silently/cryptically.
+        self._scheme_guessed = not server_addr.startswith(("http://", "https://"))
+        if self._scheme_guessed:
+            # Loopback servers default to http:// (the long-standing
+            # default, and what local dev / test servers actually
+            # speak). Only non-loopback hosts consult client_scheme():
+            # a routable bare host:port — e.g. a worker handed
+            # "192.168.9.43:8512" — picks https when this host has TLS
+            # provisioned, which is the trusted-LAN case commit
+            # 72c3225a fixed. Inferring https for loopback would break
+            # every cleartext localhost server whenever the operator
+            # happens to have a TLS config on disk.
+            bare_host = (
+                server_addr.rsplit(":", 1)[0] if ":" in server_addr else server_addr
+            )
+            bare_host = bare_host.strip("[]")  # ipv6 literal
+            scheme = "http"
+            try:
+                from forgather.tls.policy import host_is_loopback
+
+                if not host_is_loopback(bare_host):
+                    from forgather.tls import client_scheme as _client_scheme
+
+                    scheme = _client_scheme(bare_host)
+            except Exception:
+                scheme = "http"
+            server_addr = f"{scheme}://{server_addr}"
         self.server_addr = server_addr.rstrip("/")
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        # Security (issue #90): bearer token + TLS verification.
+        # Token resolution precedence (mirrors dataset_server's
+        # RemoteBackend): explicit ``token=`` arg → env var
+        # ``FORGATHER_DILOCO_SERVER_TOKEN`` → per-port loopback file.
+        # Returns ``None`` for remote URLs without an explicit token,
+        # in which case requests go unauthenticated (and will 401 if
+        # the server has auth enabled — the caller sees a clean
+        # ``ConnectionError`` describing the 401).
+        if token is None:
+            token = os.environ.get(TOKEN_ENV_VAR) or None
+        if token is None:
+            token = read_standalone_token(self.server_addr)
+        self.token = token
+        self.verify_tls = verify_tls
+        # SSL context for the control URL is cached. Bulk-port URLs
+        # (learned at /register time) may have a different scheme, so
+        # contexts for those are resolved per-request via ``_ssl_for``.
+        self._ssl_ctx = self._ssl_for(self.server_addr)
+        # ``bulk_url`` is populated from the ``X-Forgather-Bulk-Url``
+        # response header on /register (issue #90). When set, the
+        # three bulk endpoints (submit_pseudograd,
+        # submit_fragment_pseudograd, global_params) route to it
+        # instead of the control URL. ``None`` keeps the single-port
+        # behavior — bulk endpoints go to the same listener.
+        self.bulk_url: Optional[str] = None
+        # Cached SSL context for the bulk URL (built lazily on first
+        # bulk request; invalidated when the URL changes on
+        # reconnect). Explicit None here so the attribute exists from
+        # construction time — keeps ``__slots__`` migrations and static
+        # type checkers happy.
+        self._bulk_ssl_ctx: Optional["ssl.SSLContext"] = None
+
+    def _scheme_hint(self) -> str:
+        """Diagnostic suffix for connection errors when the URL scheme
+        was inferred rather than explicit.
+
+        A bare ``host:port`` worker derives http vs https from *its own*
+        TLS provisioning, which may not match the server's. When that
+        guess is wrong the failure is a low-level connection reset with
+        no obvious cause; this spells it out and tells the operator how
+        to remove the ambiguity."""
+        if not getattr(self, "_scheme_guessed", False):
+            return ""
+        scheme = self.server_addr.split("://", 1)[0]
+        other = "http" if scheme == "https" else "https"
+        return (
+            f" [scheme {scheme}:// was inferred from this host's local TLS "
+            f"config, not the server's — if the server actually speaks "
+            f"{other}://, this is the expected symptom; pass an explicit "
+            f"{other}://host:port server address]"
+        )
+
+    def _ssl_for(self, url: str) -> Optional["ssl.SSLContext"]:
+        """SSL context appropriate for ``url`` — None for ``http://``.
+
+        Built once per scheme; we keep a cached one for the control
+        URL and build a fresh one for the bulk URL the first time we
+        see it. Cheap to build (no network I/O) so caching isn't
+        critical, but it keeps cert-chain parsing off the hot path.
+        """
+        if not url.lower().startswith("https"):
+            return None
+        from forgather.tls.runtime import urllib_ssl_context
+
+        return urllib_ssl_context(verify=self.verify_tls)
+
+    def _ssl_for_request(self, url: str) -> Optional["ssl.SSLContext"]:
+        """Return the cached control-port SSL context when ``url``
+        matches it; otherwise build/cache a fresh one for the URL.
+
+        Cleartext URLs short-circuit to ``None``. The cache is a
+        single-entry slot keyed by the bulk URL, since a worker only
+        ever talks to one bulk listener per server.
+        """
+        if not url.lower().startswith("https"):
+            return None
+
+        def _same_base(u: str, base: Optional[str]) -> bool:
+            # Match on the origin boundary, not a bare prefix: ``base``
+            # followed by ``/`` (or exactly equal). Avoids mis-matching
+            # when one base is a string prefix of the other — e.g.
+            # control ``:8512`` vs bulk ``:85120`` — which a plain
+            # ``startswith`` would conflate.
+            return bool(base) and (u == base or u.startswith(base + "/"))
+
+        if _same_base(url, self.server_addr):
+            return self._ssl_ctx
+        if _same_base(url, self.bulk_url):
+            if self._bulk_ssl_ctx is None:
+                self._bulk_ssl_ctx = self._ssl_for(self.bulk_url)
+            return self._bulk_ssl_ctx
+        return self._ssl_for(url)
+
+    # Bulk paths that, when ``self.bulk_url`` is populated, route to
+    # the bulk listener instead of the control URL (issue #90).
+    _BULK_PATHS = frozenset(
+        {"/submit_pseudograd", "/submit_fragment_pseudograd", "/global_params"}
+    )
+
+    def _base_for_path(self, path: str) -> str:
+        """Pick the base URL (control vs bulk) for ``path``."""
+        canonical = "/" + path.lstrip("/")
+        if self.bulk_url and canonical in self._BULK_PATHS:
+            return self.bulk_url
+        return self.server_addr
 
     def _url(self, path: str) -> str:
-        """Build full URL for an endpoint."""
-        return f"{self.server_addr}/{path.lstrip('/')}"
+        """Build full URL for an endpoint, routing bulk paths to the
+        bulk listener when one has been advertised."""
+        base = self._base_for_path(path)
+        return f"{base}/{path.lstrip('/')}"
+
+    def _headers(self, content_type: Optional[str] = None) -> Dict[str, str]:
+        """Build request headers, attaching the bearer token when known.
+
+        ``Authorization: Bearer <token>`` is sent on every request when
+        a token is configured. The server's request handler verifies it
+        via constant-time compare (see ``ml/diloco/auth.py``); the
+        client doesn't need to discover whether auth is on or off.
+        """
+        headers: Dict[str, str] = {}
+        if content_type is not None:
+            headers["Content-Type"] = content_type
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
 
     def _serialize_state_dict(self, state_dict: Dict[str, torch.Tensor]) -> bytes:
         """Serialize a state dict to bytes."""
@@ -148,7 +317,7 @@ class DiLoCoClient:
             url,
             data=body,
             method=method,
-            headers={"Content-Type": "application/json"} if body else {},
+            headers=self._headers("application/json" if body else None),
         )
 
         max_retries = retries if retries is not None else self.max_retries
@@ -156,7 +325,11 @@ class DiLoCoClient:
 
         for attempt in range(max_retries + 1):
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with urllib.request.urlopen(
+                    req,
+                    timeout=self.timeout,
+                    context=self._ssl_for_request(url),
+                ) as resp:
                     return json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
                 # Server-side 4xx/5xx — the response is the server's
@@ -185,6 +358,7 @@ class DiLoCoClient:
                 else:
                     raise ConnectionError(
                         f"Failed to connect to DiLoCo server at {url}: {e}"
+                        f"{self._scheme_hint()}"
                     ) from e
 
     def _request_tensor(
@@ -211,10 +385,14 @@ class DiLoCoClient:
                 url,
                 data=body,
                 method=method,
-                headers={"Content-Type": content_type} if body else {},
+                headers=self._headers(content_type if body else None),
             )
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with urllib.request.urlopen(
+                    req,
+                    timeout=self.timeout,
+                    context=self._ssl_for_request(url),
+                ) as resp:
                     data = resp.read()
                     return self._deserialize_state_dict(data)
             except urllib.error.HTTPError as e:
@@ -239,6 +417,7 @@ class DiLoCoClient:
                 else:
                     raise ConnectionError(
                         f"Failed to connect to DiLoCo server at {url}: {e}"
+                        f"{self._scheme_hint()}"
                     ) from e
 
     def register(
@@ -269,14 +448,69 @@ class DiLoCoClient:
             url,
             data=body,
             method="POST",
-            headers={"Content-Type": "application/json"},
+            headers=self._headers("application/json"),
         )
 
         delay = self.retry_delay
         for attempt in range(self.max_retries + 1):
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with urllib.request.urlopen(
+                    req,
+                    timeout=self.timeout,
+                    context=self._ssl_for_request(url),
+                ) as resp:
                     data = resp.read()
+                    # Bulk-listener URL advertised in a response header
+                    # (issue #90). When the server offloads bulk paths
+                    # to a separate port, all future submit_pseudograd
+                    # / global_params calls route to that URL.
+                    #
+                    # On *reconnect*, the server may have changed its
+                    # bulk-listener configuration (or removed it
+                    # entirely). Always re-read the header — including
+                    # when it's absent — and reset accordingly so a
+                    # client that learned a bulk_url before a server
+                    # restart doesn't keep dialing a dead URL.
+                    bulk_url = resp.headers.get("X-Forgather-Bulk-Url")
+                    if bulk_url:
+                        bulk_url = bulk_url.strip() or None
+                    if bulk_url is not None:
+                        # Defense in depth: only honor http(s) bulk URLs.
+                        # A misconfigured proxy or compromised server
+                        # advertising e.g. ``file://`` or
+                        # ``javascript:`` would otherwise route bulk
+                        # requests somewhere the worker had no
+                        # business going. Bad URLs are dropped with a
+                        # WARNING; the worker falls back to the
+                        # control URL for bulk requests.
+                        try:
+                            from urllib.parse import urlparse as _urlparse
+
+                            scheme = _urlparse(bulk_url).scheme.lower()
+                        except Exception:
+                            scheme = ""
+                        if scheme not in ("http", "https"):
+                            logger.warning(
+                                "Ignoring bulk listener URL with "
+                                "unsupported scheme %r: %r",
+                                scheme,
+                                bulk_url,
+                            )
+                            bulk_url = None
+                    if bulk_url != self.bulk_url:
+                        if bulk_url:
+                            logger.info(
+                                f"Server advertised bulk listener at "
+                                f"{bulk_url}; bulk endpoints will route there."
+                            )
+                        elif self.bulk_url:
+                            logger.info(
+                                "Server no longer advertises a bulk listener; "
+                                "bulk endpoints will use the control URL."
+                            )
+                        self.bulk_url = bulk_url
+                        # Invalidate any cached bulk SSL context.
+                        self._bulk_ssl_ctx = None
                     params = self._deserialize_state_dict(data)
                     logger.info(
                         f"Registered with server as {worker_id}, received global params"
@@ -329,6 +563,7 @@ class DiLoCoClient:
                 else:
                     raise ConnectionError(
                         f"Failed to register with DiLoCo server at {url}: {e}"
+                        f"{self._scheme_hint()}"
                     ) from e
 
     def submit_pseudogradients(

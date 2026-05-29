@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import socket
+import ssl
 import struct
 import threading
 import time
@@ -41,6 +42,7 @@ from urllib.parse import parse_qs, urlparse
 
 import torch
 
+from forgather.ml.diloco.auth import authenticate_request
 from forgather.ml.sharded_checkpoint import (
     find_latest_checkpoint,
 )
@@ -237,6 +239,46 @@ def _find_lowest_unset(bm: bytearray, total_bits: int) -> int:
     return -1
 
 
+# Per-control-action allowlist of fields that are safe to audit-log.
+# Today's actions only carry intent metadata (no secrets); the allowlist
+# guards against a future control endpoint that accepts credential
+# material silently landing it in the audit log. Unknown actions log
+# no data fields.
+_CONTROL_AUDIT_FIELDS: Dict[str, frozenset] = {
+    "save_state": frozenset(),
+    "kick_worker": frozenset({"worker_id"}),
+    "update_optimizer": frozenset({"lr", "momentum", "nesterov"}),
+    "update_num_workers": frozenset({"num_workers"}),
+    "shutdown": frozenset(),
+}
+
+
+def _audit_control_data(action: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    """Redact a ``/control/{action}`` payload to its allowlisted fields.
+
+    Unknown actions return an empty dict — surfacing that a payload was
+    received without exposing its contents. Unknown fields under a
+    known action are silently dropped (logged at DEBUG via the audit
+    record's absence of those keys, not as a warning, to keep audit
+    output deterministic).
+    """
+    allowed = _CONTROL_AUDIT_FIELDS.get(action, frozenset())
+    if not isinstance(data, dict) or not allowed:
+        return {}
+    return {k: v for k, v in data.items() if k in allowed}
+
+
+def _utc_iso_now() -> str:
+    """ISO-8601 UTC timestamp suitable for log records.
+
+    Uses ``datetime.now(timezone.utc).isoformat()``; the trailing
+    timezone offset is ``+00:00`` so grep + sort work as expected.
+    """
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _default_outer_optimizer_factory(params):
     """Default outer optimizer: SGD with Nesterov momentum (DiLoCo paper defaults)."""
     return torch.optim.SGD(params, lr=0.7, momentum=0.9, nesterov=True)
@@ -261,6 +303,30 @@ def _read_request_body(handler: BaseHTTPRequestHandler) -> bytes:
     return handler.rfile.read(content_length)
 
 
+def _request_host(handler: BaseHTTPRequestHandler) -> Optional[str]:
+    """Hostname the client used to reach us, from the ``Host`` header.
+
+    Returns just the host (port stripped). Used to advertise a bulk
+    listener URL that's routable *from the worker's perspective* when
+    the server bound a wildcard address (``0.0.0.0`` / ``::``) and has
+    no idea what its own routable address is. ``None`` when the header
+    is absent or unparseable.
+    """
+    raw = handler.headers.get("Host")
+    if not raw:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    # Strip the port. IPv6 literals are bracketed: ``[::1]:8512``.
+    if raw.startswith("["):
+        end = raw.find("]")
+        if end != -1:
+            return raw[1:end]
+        return raw
+    return raw.rsplit(":", 1)[0] if ":" in raw else raw
+
+
 def _send_json_response(handler: BaseHTTPRequestHandler, data: dict, status: int = 200):
     """Send a JSON response."""
     body = json.dumps(data).encode("utf-8")
@@ -272,13 +338,22 @@ def _send_json_response(handler: BaseHTTPRequestHandler, data: dict, status: int
 
 
 def _send_tensor_response(
-    handler: BaseHTTPRequestHandler, state_dict: Dict[str, torch.Tensor]
+    handler: BaseHTTPRequestHandler,
+    state_dict: Dict[str, torch.Tensor],
+    extra_headers: Optional[Dict[str, str]] = None,
 ):
-    """Send a state dict as an octet-stream response."""
+    """Send a state dict as an octet-stream response.
+
+    ``extra_headers`` (e.g. ``{"X-Forgather-Bulk-Url": "..."}``) ride
+    along on the same response so worker registration can learn the
+    bulk-listener URL without an extra round-trip.
+    """
     data = _serialize_state_dict(state_dict)
     handler.send_response(200)
     handler.send_header("Content-Type", "application/octet-stream")
     handler.send_header("Content-Length", str(len(data)))
+    for k, v in (extra_headers or {}).items():
+        handler.send_header(k, v)
     handler.end_headers()
     handler.wfile.write(data)
 
@@ -352,6 +427,11 @@ class DiLoCoServer:
         dylu_base_sync_every: int = 500,
         heartbeat_timeout: float = 120.0,
         min_workers: int = 1,
+        auth_token: Optional[str] = None,
+        ssl_context: Optional["ssl.SSLContext"] = None,
+        bulk_port: Optional[int] = None,
+        bulk_ssl_context: Optional["ssl.SSLContext"] = None,
+        bulk_auth_enabled: bool = True,
         default_work_units: int = 1024,
     ):
         if num_workers < 1:
@@ -380,6 +460,59 @@ class DiLoCoServer:
         self.outer_optimizer_factory = (
             outer_optimizer_factory or _default_outer_optimizer_factory
         )
+        # Security (issue #90): bearer token for the control plane and
+        # optional pre-built SSL context for the listening socket.
+        # ``auth_token=None`` keeps backwards-compat for callers that
+        # don't authenticate yet (existing tests, in-process workers
+        # constructed directly without a token); production CLI/spawn
+        # paths always populate it. ``ssl_context=None`` keeps the
+        # listener cleartext.
+        if auth_token is not None and not auth_token:
+            # Empty-string token is treated as "auth disabled" by
+            # ``verify_bearer``. That's intentional for the
+            # ``auth_token=None`` path, but an explicit empty string
+            # is almost always a misconfiguration (e.g. a token file
+            # that's whitespace-only). Surface it loudly so the
+            # operator notices.
+            logger.warning(
+                "DiLoCoServer constructed with auth_token='' (empty); "
+                "auth is effectively disabled. Pass auth_token=None to "
+                "do this intentionally, or supply a real token."
+            )
+        self.auth_token = auth_token
+        self.ssl_context = ssl_context
+        # Optional second listener for bulk data transport (pseudo-
+        # gradients + global-params). When ``bulk_port`` is set the
+        # three bulk endpoints are served *only* on that port; the
+        # control port returns 404 with an ``X-Forgather-Bulk-Url``
+        # hint header. Operators opt into the second listener for
+        # throughput; on a trusted LAN they typically also disable
+        # TLS+auth there (``bulk_ssl_context=None``,
+        # ``bulk_auth_enabled=False``) — matching torch.distributed's
+        # posture. Even with auth off, the per-request torch.load uses
+        # ``weights_only=True`` so a malicious peer can only disrupt
+        # training, not RCE the host.
+        self.bulk_port = bulk_port
+        self.bulk_ssl_context = bulk_ssl_context
+        self.bulk_auth_enabled = bulk_auth_enabled
+        self._bulk_server = None
+        self._bulk_server_thread = None
+        # Audit log (issue #90). Append-only JSONL records for events
+        # worth reconstructing after the fact: registrations, evictions,
+        # outer-optimizer steps, and control actions. Best-effort —
+        # write errors are logged but don't fail the request that
+        # triggered them. Lives next to model checkpoints in the
+        # configured output_dir so a post-mortem operator finds it
+        # alongside the rest of the run state.
+        self._audit_lock = threading.Lock()
+        self._audit_path = (
+            os.path.join(output_dir, "diloco_audit.log") if output_dir else None
+        )
+        # Persistent append-mode handle, opened lazily on the first
+        # audit record and reused for the server's lifetime (closed in
+        # stop()/run()'s finally). Avoids an open/close syscall pair per
+        # event.
+        self._audit_fh = None
         self._running = False
         self.load_state(from_checkpoint)
 
@@ -500,10 +633,15 @@ class DiLoCoServer:
         self._started_at: Optional[float] = None
         self._dirty = False
 
-    def _find_available_port(
-        self, start_port: int = 8512, max_attempts: int = 100
-    ) -> int:
-        """Find an available port."""
+    @staticmethod
+    def _find_available_port(start_port: int = 8512, max_attempts: int = 100) -> int:
+        """Find an available port.
+
+        Static so callers (e.g. the CLI) can resolve the concrete port
+        an ephemeral ``--port 0`` will land on *before* constructing the
+        server — the per-port token file must be keyed on the real port,
+        not on 0.
+        """
         for i in range(max_attempts):
             port = start_port + i
             try:
@@ -523,8 +661,15 @@ class DiLoCoServer:
             for name, param in zip(self._param_names, self._param_list)
         }
 
-    def _apply_outer_optimizer(self):
+    def _apply_outer_optimizer(self, pending_audit=None):
         """Average pending pseudo-gradients and apply the outer optimizer step.
+
+        ``pending_audit``: when a list is passed, the ``outer_step``
+        audit record is appended to it instead of written immediately —
+        callers hold ``self._sync_cond`` and must flush the batch (via
+        :meth:`_audit_many`) only after releasing it, so the disk write
+        never stalls the barrier. When ``None`` (direct/test callers not
+        under the lock) the record is written inline.
 
         Per-name aggregation is over **the workers whose slice contained
         that name**, not over the whole worker set. For solo groups the
@@ -569,6 +714,7 @@ class DiLoCoServer:
                 f"check for a stale group registry."
             )
 
+        contributing_workers = list(self._pending_pseudograds.keys())
         self.outer_optimizer.step()
         self.outer_optimizer.zero_grad()
 
@@ -577,6 +723,18 @@ class DiLoCoServer:
         self._dirty = True
 
         logger.info(f"Outer optimizer step complete. Sync round: {self._sync_round}")
+        outer_step_event = (
+            "outer_step",
+            {
+                "sync_round": self._sync_round,
+                "contributors": contributing_workers,
+                "missing_contributors": missing_contributors or None,
+            },
+        )
+        if pending_audit is not None:
+            pending_audit.append(outer_step_event)
+        else:
+            self._audit(outer_step_event[0], **outer_step_event[1])
 
         # Periodic save
         if (
@@ -748,6 +906,10 @@ class DiLoCoServer:
 
         Lock ordering: _sync_cond -> _workers_lock (same as submit handlers).
         """
+        # Audit records are collected here and flushed *after* the
+        # _sync_cond is released — never do blocking disk I/O while
+        # holding the barrier (it would stall every parked worker).
+        pending_audit: List[Tuple[str, Dict[str, Any]]] = []
         with self._sync_cond:
             with self._workers_lock:
                 if worker_id not in self._workers:
@@ -797,6 +959,17 @@ class DiLoCoServer:
                     f"Worker {worker_id} died. "
                     f"Remaining: {remaining}, num_workers now {self.num_workers}"
                 )
+            pending_audit.append(
+                (
+                    "eviction",
+                    {
+                        "trigger_worker_id": worker_id,
+                        "evicted": list(evict),
+                        "group_id": group_id,
+                        "remaining": remaining,
+                    },
+                )
+            )
 
             # --- Full-model sync barrier ---
             # Remove every evicted worker's pending submission and update
@@ -818,7 +991,7 @@ class DiLoCoServer:
             if expected > 0 and self._pending_pseudograds and self._round_complete():
                 # Enough workers have submitted - release the barrier
                 my_round = self._sync_round
-                self._apply_outer_optimizer()
+                self._apply_outer_optimizer(pending_audit)
                 self._completed_rounds[my_round] = self.get_global_params()
                 self._snapshot_round_expected_workers()
 
@@ -833,6 +1006,7 @@ class DiLoCoServer:
                     my_frag_round = self._fragment_rounds[frag_id]
                     pending = self._fragment_pending[frag_id]
                     pg_list = list(pending.values())
+                    contributing_workers = list(pending.keys())
                     if pg_list:
                         self._apply_fragment_outer_optimizer(pg_list)
 
@@ -848,9 +1022,24 @@ class DiLoCoServer:
                         self._fragment_pending[frag_id].clear()
                         self._fragment_submissions += len(pg_list)
                         self._sync_round += 1
+                        pending_audit.append(
+                            (
+                                "fragment_outer_step",
+                                {
+                                    "fragment_id": frag_id,
+                                    "fragment_round": my_frag_round,
+                                    "sync_round": self._sync_round,
+                                    "contributors": contributing_workers,
+                                    "triggered_by": "eviction",
+                                },
+                            )
+                        )
 
             # Wake all waiting threads so they re-evaluate their conditions
             self._sync_cond.notify_all()
+
+        # _sync_cond released: now it's safe to do the audit disk I/O.
+        self._audit_many(pending_audit)
 
     def _compute_dylu_sync_every(self, worker_id: str) -> Optional[int]:
         """
@@ -1142,13 +1331,28 @@ class DiLoCoServer:
                 f"Worker {worker_id} registered "
                 f"({num_registered}/{self.num_workers})"
             )
+        self._audit(
+            "register",
+            worker_id=worker_id,
+            hostname=info.get("hostname"),
+            group_id=group_id,
+            pp_rank=pp_rank,
+            pp_world_size=pp_world_size,
+            num_registered=num_registered,
+        )
 
-        # Return global params
+        # Return global params. When a bulk listener is configured,
+        # advertise its URL via response header so the worker can
+        # route subsequent submit_pseudograd / global_params calls to
+        # it directly (issue #90). Pass the worker's own view of our
+        # host so a wildcard-bound server advertises a routable URL.
+        bulk_url = self.get_bulk_url(_request_host(handler))
+        extra = {"X-Forgather-Bulk-Url": bulk_url} if bulk_url else None
         if self.async_mode:
             with self._async_lock:
-                _send_tensor_response(handler, self.get_global_params())
+                _send_tensor_response(handler, self.get_global_params(), extra)
         else:
-            _send_tensor_response(handler, self.get_global_params())
+            _send_tensor_response(handler, self.get_global_params(), extra)
 
     def _diff_slice_fingerprint(
         self, slice_shapes: Dict[str, List[int]]
@@ -1440,6 +1644,8 @@ class DiLoCoServer:
         _handle_worker_death removes it from the expected set and may release
         the barrier early.
         """
+        # Collected under the lock, flushed after release (see _audit).
+        pending_audit: List[Tuple[str, Dict[str, Any]]] = []
         with self._sync_cond:
             my_round = self._sync_round
 
@@ -1463,7 +1669,7 @@ class DiLoCoServer:
             )
 
             if self._round_complete():
-                self._apply_outer_optimizer()
+                self._apply_outer_optimizer(pending_audit)
                 self._completed_rounds[my_round] = self.get_global_params()
 
                 # Snapshot expected workers for the next round
@@ -1482,6 +1688,8 @@ class DiLoCoServer:
 
             global_params = self._completed_rounds[my_round]
 
+        # _sync_cond released: flush audit records off the barrier path.
+        self._audit_many(pending_audit)
         _send_tensor_response(handler, global_params)
 
     def _handle_submit_async(self, handler, worker_id, pseudograds):
@@ -1622,6 +1830,9 @@ class DiLoCoServer:
         self, handler, worker_id, fragment_id, pseudograds
     ):
         """Per-fragment synchronous submission with fault-tolerant barrier."""
+        # Collected under the lock, flushed to disk after release so the
+        # audit write never stalls the barrier (see _audit).
+        pending_audit: List[Tuple[str, Dict[str, Any]]] = []
         with self._sync_cond:
             my_round = self._fragment_rounds[fragment_id]
 
@@ -1651,6 +1862,7 @@ class DiLoCoServer:
                 # different name subsets).
                 pending = self._fragment_pending[fragment_id]
                 pg_list = list(pending.values())
+                contributing_workers = list(pending.keys())
                 self._apply_fragment_outer_optimizer(pg_list)
 
                 per_worker: Dict[str, Dict[str, torch.Tensor]] = {
@@ -1663,6 +1875,17 @@ class DiLoCoServer:
                 self._fragment_pending[fragment_id].clear()
                 self._fragment_submissions += len(pg_list)
                 self._sync_round += 1
+                pending_audit.append(
+                    (
+                        "fragment_outer_step",
+                        {
+                            "fragment_id": fragment_id,
+                            "fragment_round": my_round,
+                            "sync_round": self._sync_round,
+                            "contributors": contributing_workers,
+                        },
+                    )
+                )
 
                 # Clean up old fragment rounds
                 old = [
@@ -1703,6 +1926,8 @@ class DiLoCoServer:
                     )
                     return
 
+        # _sync_cond released: flush audit records off the barrier path.
+        self._audit_many(pending_audit)
         _send_tensor_response(handler, result)
 
     def _handle_submit_fragment_async(
@@ -1798,6 +2023,7 @@ class DiLoCoServer:
         worker_id = info["worker_id"]
 
         logger.info(f"Worker {worker_id} deregistering")
+        self._audit("deregister", worker_id=worker_id)
         self._handle_worker_death(worker_id)
 
         _send_json_response(handler, {"status": "ok"})
@@ -2191,6 +2417,22 @@ class DiLoCoServer:
                 _send_json_response(handler, {"error": "Invalid JSON"}, 400)
                 return
 
+            # Audit every control invocation. Phase 1 has no per-caller
+            # identity binding (issue #90 deferred); the bearer that
+            # got past the auth gate is the only identity we have.
+            #
+            # Per-action allowlist for ``data`` fields so the audit log
+            # captures the *intent* of the action without becoming a
+            # future-compat hazard for new control endpoints that may
+            # accept secret material (tokens, credentials, etc.).
+            # Unknown actions log no data; unknown fields under a known
+            # action are dropped.
+            self._audit(
+                "control",
+                action=action,
+                data=_audit_control_data(action, data),
+            )
+
             if action == "save_state":
                 self._handle_control_save(handler, data)
             elif action == "kick_worker":
@@ -2279,8 +2521,118 @@ class DiLoCoServer:
         # Stop in a separate thread so the response can be sent first
         threading.Thread(target=self.stop, daemon=True).start()
 
-    def _create_handler(self):
-        """Create a request handler class bound to this server instance."""
+    def _audit(self, event: str, **fields: Any) -> None:
+        """Append a JSONL event to ``<output_dir>/diloco_audit.log``.
+
+        Best-effort: if the write fails (disk full, permissions, etc.)
+        we log a warning and move on rather than failing the operation
+        that triggered the event. The audit log is a *record*, not a
+        guard — security checks must not depend on it landing on
+        disk. Records carry a UTC timestamp and arbitrary kwargs.
+
+        Holds a single append-mode file handle for the server's
+        lifetime (opened lazily on first record) so the common path is
+        one ``write`` + ``flush`` rather than an ``open``/``close`` pair
+        per event. **Never call this while holding ``self._sync_cond``**
+        — a slow disk would otherwise stall the sync barrier and every
+        worker parked on it. The barrier paths accumulate events in a
+        local list and flush via :meth:`_audit` only after releasing the
+        condition (see ``_handle_worker_death`` /
+        ``_handle_submit_fragment_pseudograd``).
+
+        No-op when ``output_dir`` is empty (in-process tests that
+        construct DiLoCoServer without a real directory).
+        """
+        if not self._audit_path:
+            return
+        record: Dict[str, Any] = {
+            "ts": _utc_iso_now(),
+            "event": event,
+            **fields,
+        }
+        line = json.dumps(record, default=str) + "\n"
+        try:
+            with self._audit_lock:
+                if self._audit_fh is None:
+                    self._audit_fh = open(self._audit_path, "a", encoding="utf-8")
+                self._audit_fh.write(line)
+                self._audit_fh.flush()
+        except OSError as exc:
+            logger.warning(
+                "audit-log write failed (event=%s, path=%s): %s",
+                event,
+                self._audit_path,
+                exc,
+            )
+
+    def _audit_many(self, events: "List[Tuple[str, Dict[str, Any]]]") -> None:
+        """Flush a batch of ``(event, fields)`` records collected while a
+        lock was held. Call *after* releasing ``self._sync_cond`` so the
+        file I/O never blocks the barrier."""
+        for event, fields in events:
+            self._audit(event, **fields)
+
+    def _close_audit(self) -> None:
+        """Close the persistent audit handle (idempotent)."""
+        with self._audit_lock:
+            if self._audit_fh is not None:
+                try:
+                    self._audit_fh.close()
+                except OSError:
+                    pass
+                self._audit_fh = None
+
+    # Three "bulk" endpoints: large tensor transfers. When a separate
+    # bulk port is configured these are removed from the control port
+    # and only served on the bulk listener. Centralized here so the
+    # routing tables and the off-port 404 hint stay in sync.
+    _BULK_PATHS = frozenset(
+        {"/submit_pseudograd", "/submit_fragment_pseudograd", "/global_params"}
+    )
+
+    #: Bind hosts that are not routable as a connect target. When the
+    #: server binds one of these we can't put it in the advertised bulk
+    #: URL — the worker would dial a wildcard / its own loopback.
+    _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", ""})
+
+    def get_bulk_url(self, request_host: Optional[str] = None) -> Optional[str]:
+        """Public URL workers should use for the bulk endpoints.
+
+        ``None`` when no separate bulk listener is configured (bulk
+        endpoints are served on the control port). The ``/register``
+        response includes this string under the
+        ``X-Forgather-Bulk-Url`` header so workers learn about it
+        without an extra round-trip.
+
+        When the server bound a wildcard address (``0.0.0.0`` / ``::``)
+        it has no reliable view of its own routable address, so
+        advertising ``self.host`` verbatim would hand remote workers an
+        unroutable ``http://0.0.0.0:<port>``. In that case we prefer
+        ``request_host`` — the host the registering worker actually used
+        to reach the control port, which is routable from that worker by
+        construction — and fall back to loopback only as a last resort.
+        """
+        if self.bulk_port is None:
+            return None
+        scheme = "https" if self.bulk_ssl_context is not None else "http"
+        host = self.host
+        if host in self._WILDCARD_HOSTS or host is None:
+            host = request_host or "127.0.0.1"
+        return f"{scheme}://{host}:{self.bulk_port}"
+
+    def _create_handler(self, role: str = "control"):
+        """Create a request handler bound to this server.
+
+        ``role`` selects which set of endpoints + which auth token the
+        handler enforces:
+
+        * ``"control"`` — full route table. When ``bulk_port`` is set
+          the three bulk paths are intentionally absent (a 404 with an
+          ``X-Forgather-Bulk-Url`` hint is returned instead).
+        * ``"bulk"`` — only the three bulk paths plus ``/health``;
+          auth check uses ``bulk_auth_enabled`` + the bearer
+          (defaults to the control token when ``bulk_auth_enabled``).
+        """
         server_ref = self
 
         class DiLoCoRequestHandler(BaseHTTPRequestHandler):
@@ -2288,9 +2640,82 @@ class DiLoCoServer:
                 # Route HTTP logs through our logger
                 logger.debug(format, *args)
 
+            def _expected_token(self) -> Optional[str]:
+                """Token this listener checks against. The bulk
+                listener can opt out entirely via
+                ``bulk_auth_enabled=False`` — in that case bulk
+                endpoints are unauthenticated."""
+                if role == "bulk" and not server_ref.bulk_auth_enabled:
+                    return None
+                # Both roles share the same bearer when auth is on —
+                # there's one secret per server, two listeners.
+                return server_ref.auth_token
+
+            def _authenticated(self, path: str) -> bool:
+                """Request auth: mTLS peer cert OR bearer token.
+
+                ``/health`` is intentionally exempt for liveness probes.
+                """
+                if path == "/health":
+                    return True
+                return authenticate_request(self, self._expected_token())
+
+            def _bulk_offloaded(self, path: str) -> bool:
+                """If this is a bulk endpoint and we have a separate
+                bulk listener, return 404 + hint and tell the caller
+                to stop. Avoids two ways into the bulk plane (a
+                slow-but-secure path on the control listener and a
+                fast-but-cleartext path on the bulk listener) which
+                would let an attacker pick whichever is convenient."""
+                if (
+                    role != "control"
+                    or server_ref.bulk_port is None
+                    or path not in DiLoCoServer._BULK_PATHS
+                ):
+                    return False
+                bulk_url = server_ref.get_bulk_url(_request_host(self)) or ""
+                self.send_response(404)
+                self.send_header("X-Forgather-Bulk-Url", bulk_url)
+                self.send_header("Content-Type", "application/json")
+                msg = json.dumps(
+                    {
+                        "error": (
+                            f"Bulk endpoint {path} is served on the "
+                            f"bulk listener at {bulk_url}; control "
+                            f"port refuses it to keep the security "
+                            f"profile unambiguous."
+                        ),
+                        "bulk_url": bulk_url,
+                    }
+                ).encode("utf-8")
+                self.send_header("Content-Length", str(len(msg)))
+                self.end_headers()
+                self.wfile.write(msg)
+                return True
+
+            def _allowed_in_role(self, path: str) -> bool:
+                """Bulk listener only serves bulk endpoints + /health."""
+                if role == "control":
+                    return True
+                return path in DiLoCoServer._BULK_PATHS or path == "/health"
+
             def do_POST(self):
                 try:
                     path = self.path.rstrip("/")
+                    if not self._allowed_in_role(path):
+                        _send_json_response(
+                            self,
+                            {"error": f"Endpoint {path} not served on this port"},
+                            404,
+                        )
+                        return
+                    # Auth check before the bulk-URL hint (issue #90
+                    # review L1): an unauthenticated caller doesn't get
+                    # to learn the bulk-listener topology.
+                    if not self._authenticated(path):
+                        return
+                    if self._bulk_offloaded(path):
+                        return
                     if path == "/register":
                         server_ref._handle_register(self)
                     elif path == "/submit_pseudograd":
@@ -2325,7 +2750,23 @@ class DiLoCoServer:
                     # apply it after parsing.
                     parsed = urlparse(self.path)
                     path = parsed.path.rstrip("/")
-                    if path == "/global_params":
+                    if not self._allowed_in_role(path):
+                        _send_json_response(
+                            self,
+                            {"error": f"Endpoint {path} not served on this port"},
+                            404,
+                        )
+                        return
+                    # Auth check before the bulk-URL hint (issue #90
+                    # review L1): unauthenticated callers don't learn
+                    # the bulk-listener topology.
+                    if not self._authenticated(path):
+                        return
+                    if self._bulk_offloaded(path):
+                        return
+                    if path == "/health":
+                        _send_json_response(self, {"status": "ok"})
+                    elif path == "/global_params":
                         server_ref._handle_get_global_params(self)
                     elif path == "/status":
                         server_ref._handle_status(self)
@@ -2551,6 +2992,65 @@ class DiLoCoServer:
             self._health_monitor.stop()
             self._health_monitor = None
 
+    def _wrap_tls(self) -> None:
+        """If an SSL context is configured, wrap the listening socket.
+
+        The stdlib pattern: replace ``server.socket`` with the wrapped
+        version *before* serve_forever runs. Each accepted connection
+        then negotiates TLS on accept. ``CERT_OPTIONAL`` on the context
+        means client certs are accepted but not required — bearer-only
+        clients keep working; mTLS callers get cluster-identity proof.
+        """
+        if self.ssl_context is None:
+            return
+        self._server.socket = self.ssl_context.wrap_socket(
+            self._server.socket, server_side=True
+        )
+
+    def _start_bulk_listener(self) -> None:
+        """Spawn the bulk-port listener when configured.
+
+        Runs in its own daemon thread with its own handler class
+        (``role="bulk"``). The bulk handler enforces the bulk-port's
+        own auth-token / TLS settings; cleartext + unauthenticated is
+        explicitly allowed for trusted-LAN throughput.
+        """
+        if self.bulk_port is None:
+            return
+        bulk_handler_class = self._create_handler(role="bulk")
+        self._bulk_server = ThreadingHTTPServer(
+            (self.host, self.bulk_port), bulk_handler_class
+        )
+        self._bulk_server.daemon_threads = True
+        if self.bulk_ssl_context is not None:
+            self._bulk_server.socket = self.bulk_ssl_context.wrap_socket(
+                self._bulk_server.socket, server_side=True
+            )
+        self._bulk_server_thread = threading.Thread(
+            target=self._bulk_server.serve_forever, daemon=True
+        )
+        self._bulk_server_thread.start()
+        bulk_scheme = "https" if self.bulk_ssl_context is not None else "http"
+        bulk_auth = (
+            "bearer-required"
+            if self.bulk_auth_enabled and self.auth_token
+            else "no-auth"
+        )
+        logger.info(
+            f"DiLoCo bulk listener on {bulk_scheme}://{self.host}:{self.bulk_port} "
+            f"(auth={bulk_auth})"
+        )
+
+    def _stop_bulk_listener(self) -> None:
+        """Counterpart to ``_start_bulk_listener``."""
+        if self._bulk_server is not None:
+            self._bulk_server.shutdown()
+            if self._bulk_server_thread is not None:
+                self._bulk_server_thread.join(timeout=5)
+            self._bulk_server.server_close()
+            self._bulk_server = None
+            self._bulk_server_thread = None
+
     def run(self):
         """Run the server (blocking). Call this from the main process."""
         if self._running:
@@ -2558,11 +3058,17 @@ class DiLoCoServer:
         handler_class = self._create_handler()
         self._server = ThreadingHTTPServer((self.host, self.port), handler_class)
         self._server.daemon_threads = True
+        self._wrap_tls()
         self._running = True
         self._started_at = time.time()
 
         mode = "async" if self.async_mode else "sync"
-        logger.info(f"DiLoCo server starting on {self.host}:{self.port} (mode={mode})")
+        scheme = "https" if self.ssl_context is not None else "http"
+        auth_state = "bearer-required" if self.auth_token else "no-auth"
+        logger.info(
+            f"DiLoCo server starting on {scheme}://{self.host}:{self.port} "
+            f"(mode={mode}, auth={auth_state})"
+        )
         logger.info(
             f"Expecting {self.num_workers} worker(s), min_workers={self.min_workers}"
         )
@@ -2574,6 +3080,7 @@ class DiLoCoServer:
             logger.info(f"DyLU enabled: base_sync_every={self.dylu_base_sync_every}")
 
         self._start_health_monitor()
+        self._start_bulk_listener()
 
         try:
             self._server.serve_forever()
@@ -2584,8 +3091,10 @@ class DiLoCoServer:
                 self.save_state()
         finally:
             self._stop_health_monitor()
+            self._stop_bulk_listener()
             self._running = False
             self._server.server_close()
+            self._close_audit()
             logger.info("Server stopped")
 
     def start(self):
@@ -2595,6 +3104,7 @@ class DiLoCoServer:
         handler_class = self._create_handler()
         self._server = ThreadingHTTPServer((self.host, self.port), handler_class)
         self._server.daemon_threads = True
+        self._wrap_tls()
         self._running = True
         self._started_at = time.time()
 
@@ -2604,10 +3114,14 @@ class DiLoCoServer:
         self._server_thread.start()
 
         self._start_health_monitor()
+        self._start_bulk_listener()
 
         mode = "async" if self.async_mode else "sync"
+        scheme = "https" if self.ssl_context is not None else "http"
+        auth_state = "bearer-required" if self.auth_token else "no-auth"
         logger.info(
-            f"DiLoCo server started on {self.host}:{self.port} (mode={mode}, background)"
+            f"DiLoCo server started on {scheme}://{self.host}:{self.port} "
+            f"(mode={mode}, auth={auth_state}, background)"
         )
         logger.info(
             f"Expecting {self.num_workers} worker(s), min_workers={self.min_workers}"
@@ -2618,12 +3132,14 @@ class DiLoCoServer:
         if not self._running:
             raise RuntimeError("Stop cannot be called, unless we are already running.")
         self._stop_health_monitor()
+        self._stop_bulk_listener()
         if self._server:
             self._server.shutdown()
             self._running = False
             if self._server_thread:
                 self._server_thread.join(timeout=5)
             self._server.server_close()
+            self._close_audit()
             logger.info("Server stopped")
 
     @property

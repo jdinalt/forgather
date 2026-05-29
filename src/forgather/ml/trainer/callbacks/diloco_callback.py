@@ -125,6 +125,8 @@ class DiLoCoCallback(TrainerCallback):
         num_fragments: Optional[int] = None,
         timeout: float = 600,
         max_sync_retries: int = 3,
+        auth_token: Optional[str] = None,
+        verify_tls: Optional[bool] = None,
     ):
         # Resolve with env var fallbacks. ``diloco_server_addr()`` is
         # the canonical reader — strips whitespace, treats empty /
@@ -152,6 +154,16 @@ class DiLoCoCallback(TrainerCallback):
         )
         self.timeout = timeout
         self.max_sync_retries = max_sync_retries
+        # Security (issue #90): bearer token + TLS verification. ``None``
+        # delegates token discovery to ``DiLoCoClient`` (explicit arg →
+        # env var → loopback per-port file), which covers the
+        # locally-spawned case without requiring template changes.
+        # ``verify_tls`` defaults to True so misconfigured remotes
+        # fail closed.
+        self.auth_token = auth_token or os.environ.get("FORGATHER_DILOCO_SERVER_TOKEN")
+        if verify_tls is None:
+            verify_tls = _env_bool("DILOCO_VERIFY_TLS", True)
+        self.verify_tls = verify_tls
 
         # Worker instance (created in on_train_begin)
         self._worker = None
@@ -280,7 +292,12 @@ class DiLoCoCallback(TrainerCallback):
             not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0
         )
         if is_leader:
-            probe = DiLoCoClient(self.server_addr, timeout=min(self.timeout, 10.0))
+            probe = DiLoCoClient(
+                self.server_addr,
+                timeout=min(self.timeout, 10.0),
+                token=self.auth_token,
+                verify_tls=self.verify_tls,
+            )
             try:
                 probe.get_status()
             except Exception as exc:
@@ -304,6 +321,8 @@ class DiLoCoCallback(TrainerCallback):
             num_fragments=self.num_fragments,
             max_sync_retries=self.max_sync_retries,
             param_view=param_view,
+            auth_token=self.auth_token,
+            verify_tls=self.verify_tls,
             **group_kwargs,
         )
         try:

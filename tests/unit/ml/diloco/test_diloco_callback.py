@@ -248,6 +248,8 @@ class TestWorkerLifecycle:
             num_fragments=1,
             max_sync_retries=3,
             param_view=None,
+            auth_token=None,
+            verify_tls=True,
         )
         mock_instance.start.assert_called_once()
         # Pre-probe should have happened first.
@@ -321,6 +323,8 @@ class TestWorkerLifecycle:
             num_fragments=4,
             max_sync_retries=5,
             param_view=None,
+            auth_token=None,
+            verify_tls=True,
         )
 
 

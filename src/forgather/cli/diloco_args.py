@@ -4,6 +4,9 @@ import argparse
 import os
 from argparse import RawTextHelpFormatter
 
+from forgather.ml.diloco.auth import add_auth_args
+from forgather.tls.runtime import add_server_tls_args
+
 
 def create_diloco_parser(global_args):
     """Create parser for diloco command."""
@@ -144,6 +147,71 @@ def create_diloco_parser(global_args):
         ),
     )
 
+    # Security (issue #90): bearer-token auth + TLS. Mirrors the
+    # operator-facing flags on dataset_server and inference_server so
+    # the surface is identical across servers.
+    add_auth_args(server_parser)
+    add_server_tls_args(server_parser)
+
+    # Two-port bulk plane (issue #90). When ``--bulk-port`` is set the
+    # large pseudo-gradient / global-params endpoints move to a
+    # separate listener. The defaults for that listener are
+    # opt-out-everything (no TLS, no auth) — matching torch.distributed
+    # on a trusted LAN. Operators who want both ports fully secured
+    # can pass ``--bulk-tls`` and (implicitly via the control auth
+    # token) ``--bulk-auth``. RCE protection is independent: every
+    # inbound tensor blob is loaded with ``weights_only=True``.
+    server_parser.add_argument(
+        "--bulk-port",
+        type=int,
+        default=None,
+        help=(
+            "Run /submit_pseudograd, /submit_fragment_pseudograd, and\n"
+            "/global_params on a separate listener at this port. Workers\n"
+            "learn the URL from the X-Forgather-Bulk-Url header on\n"
+            "/register. Leaves the control port for the small JSON wire."
+        ),
+    )
+    bulk_tls_group = server_parser.add_mutually_exclusive_group()
+    bulk_tls_group.add_argument(
+        "--bulk-tls",
+        dest="bulk_tls",
+        action="store_const",
+        const=True,
+        default=None,
+        help=(
+            "Force TLS on the bulk listener. Default with --bulk-port "
+            "is cleartext (matching torch.distributed)."
+        ),
+    )
+    bulk_tls_group.add_argument(
+        "--no-bulk-tls",
+        dest="bulk_tls",
+        action="store_const",
+        const=False,
+        help="Force TLS off on the bulk listener (the default when --bulk-port is set).",
+    )
+    bulk_auth_group = server_parser.add_mutually_exclusive_group()
+    bulk_auth_group.add_argument(
+        "--bulk-auth",
+        dest="bulk_auth",
+        action="store_const",
+        const=True,
+        default=None,
+        help=(
+            "Require the same bearer token on the bulk listener. "
+            "Default with --bulk-port is no-auth — the opt-out for "
+            "throughput on a trusted LAN."
+        ),
+    )
+    bulk_auth_group.add_argument(
+        "--no-bulk-auth",
+        dest="bulk_auth",
+        action="store_const",
+        const=False,
+        help="Run the bulk listener without bearer auth (the default when --bulk-port is set).",
+    )
+
     # status subcommand
     status_parser = subparsers.add_parser(
         "status",
@@ -155,6 +223,25 @@ def create_diloco_parser(global_args):
         type=str,
         default="localhost:8512",
         help="Server address as host:port (default: localhost:8512)",
+    )
+    status_parser.add_argument(
+        "--auth-token",
+        default=None,
+        help=(
+            "Bearer token for authenticated servers. When omitted, the "
+            "client falls back to the FORGATHER_DILOCO_SERVER_TOKEN env "
+            "var, then to the per-port loopback file. Remote servers "
+            "without one of those configured will see 401."
+        ),
+    )
+    status_parser.add_argument(
+        "--no-verify-tls",
+        action="store_true",
+        help=(
+            "Skip TLS certificate verification on the upstream server. "
+            "Intended for SSH-tunneled remotes where the trust boundary "
+            "is external."
+        ),
     )
 
     # worker subcommand

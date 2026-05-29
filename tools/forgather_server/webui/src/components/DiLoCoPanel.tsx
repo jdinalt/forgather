@@ -446,6 +446,15 @@ function ServerRow({
         <strong style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
           {server.label}
         </strong>
+        {server.has_auth_token && (
+          <span
+            title="Bearer-token auth configured for this server"
+            aria-label="bearer auth"
+            style={{ fontSize: "smaller" }}
+          >
+            🔒
+          </span>
+        )}
         {server.source === "registered" && (
           <button
             onClick={(e) => {
@@ -476,11 +485,15 @@ function AddExternalServerForm({
 }) {
   const [label, setLabel] = useState("");
   const [baseUrl, setBaseUrl] = useState("http://");
+  const [authToken, setAuthToken] = useState("");
+  const [verifyTls, setVerifyTls] = useState(true);
   const addMutation = useMutation({
     mutationFn: () =>
       api.addDiLoCoRegistryEntry({
         label: label.trim() || undefined,
         base_url: baseUrl.trim(),
+        auth_token: authToken,
+        verify_tls: verifyTls,
       }),
     onSuccess: () => {
       onAdded();
@@ -520,6 +533,28 @@ function AddExternalServerForm({
           required
           style={{ width: "100%" }}
         />
+      </label>
+      <label>
+        Bearer token (optional)
+        <input
+          type="password"
+          value={authToken}
+          onChange={(e) => setAuthToken(e.target.value)}
+          placeholder="Leave blank for --no-auth servers"
+          autoComplete="off"
+          style={{ width: "100%" }}
+        />
+      </label>
+      <label
+        style={{ display: "flex", alignItems: "center", gap: 6 }}
+        title="Disable when the upstream cert won't validate (e.g. SSH-tunneled remotes)."
+      >
+        <input
+          type="checkbox"
+          checked={verifyTls}
+          onChange={(e) => setVerifyTls(e.target.checked)}
+        />
+        Verify TLS certificate
       </label>
       {addMutation.error && (
         <div className="muted" style={{ color: "tomato" }}>

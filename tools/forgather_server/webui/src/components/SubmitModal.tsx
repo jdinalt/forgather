@@ -1047,10 +1047,12 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
   }
 
   return (
-    <details
-      className="submit-section"
-      open={!!selectedBase || !!persistError}
-    >
+    // Expanded by default (like the model/dataset sections) so the
+    // current DiLoCo state — including a reset-to-None when a prior
+    // selection couldn't be restored — is always visible at a glance.
+    // Collapsing it on "None" previously hid the reset (issue #95).
+    // Still user-collapsible: this only sets the initial open state.
+    <details className="submit-section" open>
       <summary>
         <h4 className="dyn-heading">
           DiLoCo{" "}
@@ -1248,10 +1250,14 @@ function buildDiLoCoPayload(
   s: DiLoCoFormSnapshot,
 ): Record<string, unknown> | null {
   if (!s.base) return null;
-  // The base URL is what the proxy + UI use; the DiLoCoCallback
-  // expects ``host:port``. Strip scheme + trailing slash here so the
-  // callback can use the value verbatim.
-  const serverAddr = s.base.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  // Pass the full URL with scheme through — the worker's
+  // DiLoCoClient routes ``http://`` cleartext and ``https://``
+  // through urllib_ssl_context, but cannot tell which the upstream
+  // wants from a bare ``host:port``. Stripping the scheme (as we
+  // did pre-#90) caused the worker to dial HTTP at a TLS-wrapped
+  // server, which slams the connection with RST. Only the trailing
+  // slash gets trimmed.
+  const serverAddr = s.base.replace(/\/$/, "");
   const payload: Record<string, unknown> = {
     server_addr: serverAddr,
     dylu: s.dylu,

@@ -1,6 +1,6 @@
 """DiLoCo server discovery + status / control proxy.
 
-Backs the (in-flight) DiLoCo view in the webui. Surface:
+Backs the DiLoCo view in the webui. Surface:
 
   GET    /api/diloco/servers          Unified list (local + registered).
   GET    /api/diloco/server-status    Proxy to an upstream DiLoCo /status.
@@ -18,11 +18,15 @@ allowed, registered URLs are allowed (the act of registering is the
 authorization), running locally-spawned diloco_server jobs are allowed
 (their URL is derived from job_params), everything else is refused.
 
-Auth / TLS are deliberately out of scope for the initial cut — we
-neither send bearer headers nor validate certificates. ``auth_token``
-and ``verify_tls`` live on the registry schema so the wire format
-doesn't need to change when TLS lands; this proxy layer is the single
-chokepoint that will need to learn to honor them.
+Auth / TLS (issue #90): the proxy now attaches an ``Authorization:
+Bearer <token>`` header (resolved per the precedence below) and honors
+each registry entry's ``verify_tls`` opt-out:
+
+  1. Explicit ``X-Diloco-Auth-Token`` request header (operator override).
+  2. JobRecord auto-lookup for locally-spawned servers — the scheduler
+     persisted the token on the record when spawning.
+  3. ``diloco_server_registry.find_token(base)`` for user-added remotes.
+  4. Empty (server is running ``--no-auth``).
 
 Cluster aggregation is deferred to a follow-up slice: the unified list
 sources are local + registered for now.
@@ -35,7 +39,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -49,6 +53,34 @@ router = APIRouter(tags=["diloco"])
 _PROXY_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
 
 _DILOCO_JOB_TYPE = "diloco_server"
+
+_LOCALHOST_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+# Operator-supplied override header. Mirrors dataset_server's
+# ``X-Dataset-Auth-Token`` — lets the webui pass through a per-row
+# user-managed token without depending on the registry's stored
+# token (which is convenient for one-off "try this server" flows).
+_TOKEN_OVERRIDE_HEADER = "X-Diloco-Auth-Token"
+
+# Tag set on the proxy response when the upstream DiLoCo server
+# returned 401/403. The webui's fetch wrapper (auth.ts) suppresses
+# the auth-required event when this header is present — a 401 from
+# *our* session would have been intercepted by AuthMiddleware before
+# any proxy code ran, so a 401 surfacing through this proxy is
+# always the upstream's auth state, not the operator's. Closes #94.
+_UPSTREAM_AUTH_FAILED_HEADER = "x-upstream-auth-failed"
+
+
+def _upstream_auth_headers(status: int) -> Dict[str, str]:
+    """Tag headers when upstream returned an auth failure.
+
+    Mirrors the existing pattern in ``routes/dataset_server.py`` and
+    ``routes/inference_proxy.py``. The webui consumer is at
+    ``webui/src/auth.ts:82-83``.
+    """
+    if status in (401, 403):
+        return {_UPSTREAM_AUTH_FAILED_HEADER: "1"}
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +153,12 @@ def _local_servers() -> List[DiLoCoServerModel]:
             continue
         host = params.get("host") or "127.0.0.1"
         routable = params.get("routable_host")
-        base_url = f"http://{_browser_host(host, routable)}:{port}"
+        # Scheme is stamped by the scheduler at dispatch time so the
+        # Job card and DiLoCo view both reflect the actual TLS posture
+        # of the spawned child (issue #90). Falls back to ``http`` for
+        # records spawned before that stamping landed.
+        scheme = params.get("scheme") or "http"
+        base_url = f"{scheme}://{_browser_host(host, routable)}:{port}"
         out.append(
             DiLoCoServerModel(
                 id=f"local:{r.queue_id}",
@@ -132,6 +169,12 @@ def _local_servers() -> List[DiLoCoServerModel]:
                 port=port,
                 queue_id=r.queue_id,
                 alive=True,
+                # Locally-spawned servers default to bearer auth ON
+                # (the scheduler resolves + persists a per-port token
+                # unless --no-auth). Surface the lock indicator so the
+                # webui doesn't show auth'd local servers as open while
+                # showing the lock only on registered remotes.
+                has_auth_token=bool(getattr(r, "auth_token", None)),
             )
         )
     # Newest first — matches the Jobs view's implicit ordering.
@@ -175,7 +218,8 @@ def _ever_local_base_urls() -> List[str]:
             continue
         host = params.get("host") or "127.0.0.1"
         routable = params.get("routable_host")
-        seen[f"http://{_browser_host(host, routable)}:{port}"] = None
+        scheme = params.get("scheme") or "http"
+        seen[f"{scheme}://{_browser_host(host, routable)}:{port}"] = None
     return list(seen)
 
 
@@ -271,39 +315,169 @@ def _safe_json(resp: httpx.Response) -> Any:
         return {"error": f"upstream returned non-JSON: {type(e).__name__}: {e}"}
 
 
-async def _proxy_get(base: str, path: str) -> JSONResponse:
+def _token_for_local(base: str) -> Optional[str]:
+    """Auto-lookup auth token from JobRecords for locally-spawned servers.
+
+    Walks running ``diloco_server`` JobRecords looking for one whose
+    bind port matches ``base``'s port AND whose host translates to
+    ``base``'s hostname. A record matches when *any* of these hold:
+
+    * The URL is loopback and the record's bind is loopback or
+      ``0.0.0.0`` (the original case).
+    * The URL hostname equals the record's stamped ``routable_host``
+      — i.e. we synthesized the URL ourselves from the JobRecord, so
+      a webui pointing at it via the LAN address is talking to our
+      own spawn.
+    * The URL hostname equals the record's bind ``host`` (explicit
+      LAN bind that the operator chose).
+
+    The webui builds URLs from ``_local_servers``'s synthesis, so the
+    middle case is the one that matters when the operator spawns
+    DiLoCo on a non-loopback host (binding ``0.0.0.0`` or a specific
+    LAN IP). Without it, the proxy can't tie the URL back to the
+    JobRecord and can't attach the bearer — the operator sees a 401.
+
+    Returns the persisted bearer token from the matching record, or
+    ``None`` when no match is found (server hasn't started, or the
+    URL belongs to an external server).
+    """
+    try:
+        parsed = urlparse(base)
+    except Exception:
+        return None
+    host = (parsed.hostname or "").lower()
+    if parsed.port is None:
+        return None
+    host_is_loopback = host in _LOCALHOST_HOSTS
+    for r in job_records.list_records():
+        if r.job_type != _DILOCO_JOB_TYPE:
+            continue
+        if r.status not in {"starting", "running"}:
+            continue
+        params = r.job_params or {}
+        rec_port = params.get("port")
+        try:
+            rec_port = int(rec_port) if rec_port is not None else None
+        except (TypeError, ValueError):
+            continue
+        if rec_port != parsed.port:
+            continue
+        rec_host = (params.get("host") or "127.0.0.1").lower()
+        rec_routable = (params.get("routable_host") or "").lower()
+        # Match: loopback URL against a loopback / 0.0.0.0 bind …
+        if host_is_loopback and (rec_host in _LOCALHOST_HOSTS or rec_host == "0.0.0.0"):
+            return r.auth_token
+        # … or the URL hostname equals the synthesized routable host …
+        if rec_routable and host == rec_routable:
+            return r.auth_token
+        # … or the URL hostname equals the record's explicit bind.
+        if rec_host == host:
+            return r.auth_token
+        # Diagnostic for the LAN-browse case: we found a port-matching
+        # record but couldn't tie the URL back to its host. Logged at
+        # INFO once per call so operators can see exactly what fields
+        # the matcher saw without ever logging the token itself.
+        log.info(
+            "diloco-proxy: port %d matched record %r but host did "
+            "not — url_host=%r rec_host=%r rec_routable=%r "
+            "rec_auth_token_present=%s",
+            parsed.port,
+            r.queue_id,
+            host,
+            rec_host,
+            rec_routable,
+            bool(r.auth_token),
+        )
+    return None
+
+
+def _auth_headers_for(base: str, request: Request) -> Dict[str, str]:
+    """Build the upstream Authorization header dict.
+
+    Precedence: explicit ``X-Diloco-Auth-Token`` (operator override),
+    JobRecord auto-lookup, registry lookup, empty.
+    """
+    override = request.headers.get(_TOKEN_OVERRIDE_HEADER)
+    if override:
+        return {"authorization": f"Bearer {override}"}
+    token = _token_for_local(base)
+    if token:
+        return {"authorization": f"Bearer {token}"}
+    saved = diloco_server_registry.find_token(base)
+    if saved:
+        return {"authorization": f"Bearer {saved}"}
+    return {}
+
+
+def _verify_for(target: str, base: Optional[str] = None) -> object:
+    """Pick the right ``verify=`` for an upstream URL.
+
+    Registry entries with ``verify_tls=False`` short-circuit chain
+    validation (used for SSH-tunneled remotes where the upstream cert
+    doesn't match the tunnel hostname). Otherwise we defer to
+    ``httpx_verify_for_url`` which builds an SSLContext from the
+    cluster's CA bundle.
+    """
+    if base is not None and not diloco_server_registry.find_verify_tls(base):
+        return False
+    try:
+        from forgather.tls import httpx_verify_for_url
+
+        return httpx_verify_for_url(target)
+    except ImportError:
+        return True
+
+
+async def _proxy_get(base: str, path: str, request: Request) -> JSONResponse:
     base = _validate_base(base)
     _check_ssrf(base)
     target = base + path
-    async with httpx.AsyncClient(timeout=_PROXY_TIMEOUT, verify=True) as client:
+    headers = _auth_headers_for(base, request)
+    verify = _verify_for(target, base)
+    async with httpx.AsyncClient(timeout=_PROXY_TIMEOUT, verify=verify) as client:
         try:
-            r = await client.get(target)
+            r = await client.get(target, headers=headers)
         except httpx.RequestError as e:
             raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
-    return JSONResponse(status_code=r.status_code, content=_safe_json(r))
+    if r.status_code in (401, 403):
+        # Diagnostic: a 401/403 here means the bearer we attached (or
+        # didn't) was rejected by upstream. Logging the WHAT (header
+        # presence, base URL) helps the operator correlate against
+        # the JobRecord state without ever logging the token itself.
+        log.info(
+            "diloco-proxy upstream %s for %s (bearer attached: %s)",
+            r.status_code,
+            target,
+            "yes" if "authorization" in {k.lower() for k in headers} else "no",
+        )
+    return JSONResponse(
+        status_code=r.status_code,
+        content=_safe_json(r),
+        headers=_upstream_auth_headers(r.status_code),
+    )
 
 
 @router.get("/diloco/server-status")
-async def proxy_status(base: str) -> JSONResponse:
+async def proxy_status(base: str, request: Request) -> JSONResponse:
     """Forward ``GET <base>/status`` and return the upstream JSON verbatim."""
-    return await _proxy_get(base, "/status")
+    return await _proxy_get(base, "/status", request)
 
 
 @router.get("/diloco/server-info")
-async def proxy_info(base: str) -> JSONResponse:
+async def proxy_info(base: str, request: Request) -> JSONResponse:
     """Forward ``GET <base>/info`` for client-settings negotiation."""
-    return await _proxy_get(base, "/info")
+    return await _proxy_get(base, "/info", request)
 
 
 @router.get("/diloco/work-queues")
-async def proxy_work_queues(base: str) -> JSONResponse:
+async def proxy_work_queues(base: str, request: Request) -> JSONResponse:
     """Forward ``GET <base>/work/queues`` — summary list of active queues."""
-    return await _proxy_get(base, "/work/queues")
+    return await _proxy_get(base, "/work/queues", request)
 
 
 @router.get("/diloco/work-queue")
 async def proxy_work_queue(
-    base: str, dataset_id: str, shuffle_seed: int
+    base: str, dataset_id: str, shuffle_seed: int, request: Request
 ) -> JSONResponse:
     """Forward ``GET <base>/work/queue?dataset_id=&shuffle_seed=`` —
     single-queue detail with base64 bitmaps and per-worker counts.
@@ -317,7 +491,7 @@ async def proxy_work_queue(
         {"dataset_id": dataset_id, "shuffle_seed": int(shuffle_seed)},
         quote_via=quote,
     )
-    return await _proxy_get(base, f"/work/queue?{qs}")
+    return await _proxy_get(base, f"/work/queue?{qs}", request)
 
 
 # Set of control actions the DiLoCo server itself recognises. Kept here
@@ -330,7 +504,10 @@ _CONTROL_ACTIONS = frozenset(
 
 @router.post("/diloco/server-control/{action}")
 async def proxy_control(
-    action: str, base: str, body: Dict[str, Any] = None
+    action: str,
+    base: str,
+    request: Request,
+    body: Dict[str, Any] = None,
 ) -> JSONResponse:
     """Forward a control action to the upstream DiLoCo server.
 
@@ -345,12 +522,18 @@ async def proxy_control(
     base = _validate_base(base)
     _check_ssrf(base)
     target = f"{base}/control/{action}"
-    async with httpx.AsyncClient(timeout=_PROXY_TIMEOUT, verify=True) as client:
+    headers = _auth_headers_for(base, request)
+    verify = _verify_for(target, base)
+    async with httpx.AsyncClient(timeout=_PROXY_TIMEOUT, verify=verify) as client:
         try:
-            r = await client.post(target, json=body or {})
+            r = await client.post(target, json=body or {}, headers=headers)
         except httpx.RequestError as e:
             raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
-    return JSONResponse(status_code=r.status_code, content=_safe_json(r))
+    return JSONResponse(
+        status_code=r.status_code,
+        content=_safe_json(r),
+        headers=_upstream_auth_headers(r.status_code),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -369,8 +552,12 @@ class RegistryEntryModel(BaseModel):
 class AddRegistryEntryRequest(BaseModel):
     label: str = ""
     base_url: str
-    # Reserved for the TLS / auth follow-up; the proxy ignores them today.
+    # Bearer token used by the proxy when forwarding requests upstream.
+    # Empty string == server is running --no-auth.
     auth_token: str = ""
+    # When False, the proxy skips TLS chain validation for this entry —
+    # the escape hatch for SSH-tunneled remotes where the upstream cert
+    # doesn't match the tunnel hostname.
     verify_tls: bool = True
 
 
