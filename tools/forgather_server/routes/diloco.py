@@ -293,17 +293,36 @@ def _token_for_local(base: str) -> Optional[str]:
     """Auto-lookup auth token from JobRecords for locally-spawned servers.
 
     Walks running ``diloco_server`` JobRecords looking for one whose
-    bind port matches ``base``'s port. Returns the persisted bearer
-    token from that record, or ``None`` when no match is found
-    (server hasn't started, or it's not local).
+    bind port matches ``base``'s port AND whose host translates to
+    ``base``'s hostname. A record matches when *any* of these hold:
+
+    * The URL is loopback and the record's bind is loopback or
+      ``0.0.0.0`` (the original case).
+    * The URL hostname equals the record's stamped ``routable_host``
+      — i.e. we synthesized the URL ourselves from the JobRecord, so
+      a webui pointing at it via the LAN address is talking to our
+      own spawn.
+    * The URL hostname equals the record's bind ``host`` (explicit
+      LAN bind that the operator chose).
+
+    The webui builds URLs from ``_local_servers``'s synthesis, so the
+    middle case is the one that matters when the operator spawns
+    DiLoCo on a non-loopback host (binding ``0.0.0.0`` or a specific
+    LAN IP). Without it, the proxy can't tie the URL back to the
+    JobRecord and can't attach the bearer — the operator sees a 401.
+
+    Returns the persisted bearer token from the matching record, or
+    ``None`` when no match is found (server hasn't started, or the
+    URL belongs to an external server).
     """
     try:
         parsed = urlparse(base)
     except Exception:
         return None
     host = (parsed.hostname or "").lower()
-    if host not in _LOCALHOST_HOSTS or parsed.port is None:
+    if parsed.port is None:
         return None
+    host_is_loopback = host in _LOCALHOST_HOSTS
     for r in job_records.list_records():
         if r.job_type != _DILOCO_JOB_TYPE:
             continue
@@ -318,11 +337,16 @@ def _token_for_local(base: str) -> Optional[str]:
         if rec_port != parsed.port:
             continue
         rec_host = (params.get("host") or "127.0.0.1").lower()
-        # 0.0.0.0-bound servers match loopback queries (same translation
-        # as ``_browser_host`` uses for display).
-        if rec_host not in _LOCALHOST_HOSTS and rec_host != "0.0.0.0":
-            continue
-        return r.auth_token
+        rec_routable = (params.get("routable_host") or "").lower()
+        # Match: loopback URL against a loopback / 0.0.0.0 bind …
+        if host_is_loopback and (rec_host in _LOCALHOST_HOSTS or rec_host == "0.0.0.0"):
+            return r.auth_token
+        # … or the URL hostname equals the synthesized routable host …
+        if rec_routable and host == rec_routable:
+            return r.auth_token
+        # … or the URL hostname equals the record's explicit bind.
+        if rec_host == host:
+            return r.auth_token
     return None
 
 

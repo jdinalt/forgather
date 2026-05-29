@@ -206,3 +206,118 @@ def test_control_endpoint_attaches_bearer(client, monkeypatch):
     assert resp.status_code == 200
     _, headers = rec.requests[-1]
     assert headers["authorization"] == "Bearer ctl-bearer"
+
+
+# ---------------------------------------------------------------------------
+# _token_for_local matches LAN-routable URLs against local JobRecords
+# ---------------------------------------------------------------------------
+
+
+def _fake_job(host, port, token, routable_host=None, status="running"):
+    """Build a JobRecord stand-in good enough for _token_for_local's filters."""
+    return type(
+        "FakeRec",
+        (),
+        {
+            "queue_id": f"q-{port}",
+            "job_type": "diloco_server",
+            "status": status,
+            "auth_token": token,
+            "job_params": {
+                "host": host,
+                "port": port,
+                **({"routable_host": routable_host} if routable_host else {}),
+            },
+        },
+    )()
+
+
+def test_token_for_local_matches_loopback_url_against_loopback_bind(monkeypatch):
+    """Original case: loopback URL, loopback bind."""
+    monkeypatch.setattr(
+        diloco_routes.job_records,
+        "list_records",
+        lambda: [_fake_job("127.0.0.1", 8512, "tok-loop")],
+    )
+    assert diloco_routes._token_for_local("http://localhost:8512") == "tok-loop"
+    assert diloco_routes._token_for_local("http://127.0.0.1:8512") == "tok-loop"
+
+
+def test_token_for_local_matches_loopback_url_against_0000_bind(monkeypatch):
+    """A 0.0.0.0-bound server is reachable via loopback — the local
+    operator browsing on the same host should still get the token."""
+    monkeypatch.setattr(
+        diloco_routes.job_records,
+        "list_records",
+        lambda: [_fake_job("0.0.0.0", 8512, "tok-any")],
+    )
+    assert diloco_routes._token_for_local("http://localhost:8512") == "tok-any"
+
+
+def test_token_for_local_matches_lan_url_against_routable_host(monkeypatch):
+    """Regression test for the cross-host LAN browse case (the bug
+    the user hit): server binds 0.0.0.0, scheduler stamps
+    ``routable_host=192.168.9.43`` on the JobRecord, webui synthesizes
+    the URL ``https://192.168.9.43:8512`` for the Job card, and the
+    proxy needs to tie that back to the record to attach the
+    bearer."""
+    monkeypatch.setattr(
+        diloco_routes.job_records,
+        "list_records",
+        lambda: [
+            _fake_job(
+                "0.0.0.0",
+                8512,
+                "tok-routable",
+                routable_host="192.168.9.43",
+            )
+        ],
+    )
+    assert diloco_routes._token_for_local("https://192.168.9.43:8512") == "tok-routable"
+
+
+def test_token_for_local_matches_lan_url_against_explicit_bind(monkeypatch):
+    """The operator who explicitly typed ``--host 10.0.0.5`` should
+    get the same match — no routable_host needed."""
+    monkeypatch.setattr(
+        diloco_routes.job_records,
+        "list_records",
+        lambda: [_fake_job("10.0.0.5", 8512, "tok-explicit")],
+    )
+    assert diloco_routes._token_for_local("https://10.0.0.5:8512") == "tok-explicit"
+
+
+def test_token_for_local_returns_none_for_unrelated_lan_host(monkeypatch):
+    """A LAN URL that doesn't match any record's host *or*
+    routable_host returns None — the proxy falls through to the
+    registry path."""
+    monkeypatch.setattr(
+        diloco_routes.job_records,
+        "list_records",
+        lambda: [
+            _fake_job("0.0.0.0", 8512, "tok", routable_host="192.168.9.43"),
+        ],
+    )
+    # Different host on the LAN — doesn't match.
+    assert diloco_routes._token_for_local("https://192.168.9.99:8512") is None
+    # Right host, different port — doesn't match.
+    assert diloco_routes._token_for_local("https://192.168.9.43:9999") is None
+
+
+def test_token_for_local_ignores_terminated_records(monkeypatch):
+    """A just-died JobRecord shouldn't keep handing out its token —
+    we filter on ``status in {starting, running}``."""
+    monkeypatch.setattr(
+        diloco_routes.job_records,
+        "list_records",
+        lambda: [
+            _fake_job(
+                "0.0.0.0",
+                8512,
+                "tok",
+                routable_host="192.168.9.43",
+                status="done",
+            )
+        ],
+    )
+    assert diloco_routes._token_for_local("https://192.168.9.43:8512") is None
