@@ -362,16 +362,13 @@
         -- set ns.diloco_server_addr = getenv("DILOCO_SERVER") or ""
     -- endif
 
-    ## Model load path (non-DiLoCo only). Operators override via
-    ## --model-id-or-path (typical for finetune from an external
-    ## checkpoint); otherwise default to this project's main model dir.
-    ## Under DiLoCo the path is ignored — the definition comes from the
-    ## server — so this is only consulted on the non-DiLoCo branch below.
-    -- if model_id_or_path is defined and model_id_or_path
-        -- set ns.model_id_or_path = model_id_or_path
-    -- else
-        -- set ns.model_id_or_path = joinpath(ns.models_dir, ns.model_name)
-    -- endif
+    ## NB: this base project does not define ``model_id_or_path``. The
+    ## non-DiLoCo path constructs the model from ``model_project`` (a
+    ## from_project build), and under DiLoCo the definition is fetched
+    ## from the server (issue #53) — neither consults a model path. The
+    ## finetune projects (``finetune_v2.yaml``) define their own
+    ## ``model_id_or_path`` arg and ``ns.model_id_or_path`` where it is
+    ## actually load-bearing.
 
     ## DiLoCo: per-worker output dir. When DILOCO_WORKER_ID is set
     ## (the scheduler emits it whenever DiLoCo is enabled, with a
@@ -468,7 +465,7 @@
 # ns.trainer_class: {{ ns.trainer_class }}
 # ns.enable_diloco: {{ ns.enable_diloco }}
 # ns.diloco_is_enabled: {{ ns.diloco_is_enabled }}
-# ns.model_id_or_path: {{ ns.model_id_or_path }}
+# ns.diloco_server_addr: {{ ns.diloco_server_addr }}
 -- if ns.trainer_type == "pipeline"
 # Pipeline Parallel:
 # ns.stages_per_rank: {{ ns.stages_per_rank }}
@@ -709,11 +706,6 @@ optimizer_groups: &optimizer_groups
         type: bool
         group: "DiLoCo"
         help: "Render-time only: force the template to render as if DiLoCo were active. Useful for `forgather pp`/`ls` diagnostics. Actual runs still require DILOCO_SERVER to be set in the worker env (preprocess_dataset's validity check enforces it)."
-    model_id_or_path:
-        names: ["--model-id-or-path", "-M"]
-        type: path
-        group: "Model"
-        help: "HF model ID or local path to load the model FROM (non-DiLoCo runs only; defaults to the project's main model dir). Ignored under DiLoCo: the worker fetches the model definition from the server and pulls weights via the parameter sync."
     model_project:
         names: "--model-project"
         type: path
