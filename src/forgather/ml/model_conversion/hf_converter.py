@@ -24,6 +24,7 @@ from forgather.ml.no_init_weights import no_init_weights
 from forgather.ml.remap_params import remap_state_dict
 from forgather.ml.sharded_checkpoint import (
     find_latest_checkpoint,
+    initialize_missing_weights,
     load_checkpoint,
     save_checkpoint,
 )
@@ -522,6 +523,12 @@ class HFConverter(ModelConverter):
             )
 
         load_checkpoint(checkpoint_path, src_model, device="cpu", strict=True)
+        # The model was built under no_init_weights(), so its non-persistent
+        # buffers (e.g. RotaryEmbedding.inv_freq, never in the checkpoint) are
+        # still uninitialized. Recompute them now — before the logit-comparison
+        # forward pass below — so the source logits are valid. Loaded tensors
+        # are flagged by load_checkpoint and left untouched.
+        initialize_missing_weights(src_model)
 
         if kwargs.get("debug_params"):
             self._print_params(src_model, "Source Forgather model")

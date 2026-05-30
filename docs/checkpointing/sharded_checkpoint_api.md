@@ -143,13 +143,34 @@ def load_checkpoint(
 | `device` | Target device for loaded tensors |
 | `keys` | When `module=None`, restrict which keys to load |
 
-**Module mode:**
+**Module mode** (meta construct → materialize → load → initialize-missing):
 
 ```python
-model = MyModel()
-model.to_empty(device="cuda")
-load_checkpoint("output/my_model", model, device="cuda")
+import torch
+from forgather.ml.sharded_checkpoint import (
+    create_sharing_metadata,
+    retie_parameters,
+    load_checkpoint,
+    initialize_missing_weights,
+)
+
+with torch.device("meta"):
+    model = MyModel()
+sharing = create_sharing_metadata(model)   # capture tied weights before to_empty
+model.to_empty(device="cuda")               # allocate empty tensors on device
+retie_parameters(model, sharing)            # restore tying broken by to_empty
+load_checkpoint("output/my_model", model, device="cuda")  # flags loaded tensors
+initialize_missing_weights(model)           # REQUIRED: recompute what the
+                                            # checkpoint didn't contain — chiefly
+                                            # non-persistent buffers (RoPE inv_freq)
 ```
+
+> **Important:** `load_checkpoint` does not initialize tensors that aren't in
+> the checkpoint. Non-persistent buffers (e.g. `RotaryEmbedding.inv_freq`) are
+> never saved, so after a meta-construct load you **must** call
+> `initialize_missing_weights(model)` (it flags-and-skips loaded tensors, so it
+> only recomputes the missing ones). The trainers do this automatically;
+> standalone load code must do it explicitly.
 
 **Dict mode:**
 
@@ -218,6 +239,38 @@ Restore parameter tying after loading from a checkpoint where sharing was broken
 ```python
 def retie_parameters(module, sharing_metadata: List[List[str]]) -> None
 ```
+
+## Post-load initialization (HF v5 contract)
+
+### `flag_loaded_tensors`
+
+```python
+def flag_loaded_tensors(module: nn.Module, loaded_keys) -> None
+```
+
+Mark the params/buffers a checkpoint load filled with `_is_hf_initialized =
+True`. Called automatically by `load_checkpoint` / `load_sharded_checkpoint`
+after `load_state_dict`, for the keys actually present in the checkpoint. This
+is what lets the follow-up init pass skip loaded tensors.
+
+### `initialize_missing_weights`
+
+```python
+def initialize_missing_weights(module: nn.Module) -> None
+```
+
+Initialize only the tensors a checkpoint load did **not** fill — chiefly
+non-persistent buffers (e.g. `RotaryEmbedding.inv_freq`, never saved), plus any
+params absent from the checkpoint — leaving loaded weights untouched. Preferred
+path is `module.apply(module._init_weights)` gated to modules that still own an
+unflagged tensor (so both forgather and pure-HF models work); modules without an
+HF-style `_init_weights` (e.g. split pipeline stages) fall back to
+`reset_parameters()` on non-persistent-buffer modules.
+
+**Call this after `load_checkpoint` whenever the model was constructed on the
+meta device.** The trainers do it for you (`Trainer._restore_from_checkpoint`);
+standalone load code must call it explicitly. Order matters — running it before
+the load would re-initialize the whole model (the slow path meta avoids).
 
 ## Checkpoint Management Utilities
 
@@ -294,16 +347,23 @@ def create_pretrained_symlinks(
 ### Module-based save and load
 
 ```python
-from forgather.ml.sharded_checkpoint import save_checkpoint, load_checkpoint
+import torch
+from forgather.ml.sharded_checkpoint import (
+    save_checkpoint,
+    load_checkpoint,
+    initialize_missing_weights,
+)
 
 # Save
 model = build_model()
 save_checkpoint("output/my_model", model, safetensors=True)
 
-# Load
-model = build_model()
+# Load (meta-construct path: materialize empty, load, then init the rest)
+with torch.device("meta"):
+    model = build_model()
 model.to_empty(device="cuda:0")
 load_checkpoint("output/my_model", model, device="cuda:0")
+initialize_missing_weights(model)   # recompute non-persistent buffers (RoPE, ...)
 ```
 
 ### Dict-based save and load
@@ -352,6 +412,7 @@ shard_index = load_shard_index(output_dir, index_file_name(True))
 # Load into module
 model_shard.to_empty(device=device)
 load_sharded_checkpoint(output_dir, shard_index, model_shard, device=device, safetensors=True)
+initialize_missing_weights(model_shard)   # recompute non-persistent buffers per shard
 
 # Or load as dict (e.g., for parameter server aggregation)
 state_dict = load_sharded_checkpoint(

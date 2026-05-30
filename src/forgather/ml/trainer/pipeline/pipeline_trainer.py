@@ -39,6 +39,7 @@ from ...sharded_checkpoint import (
     ShardIndex,
     SharingMetadataT,
     create_sharing_metadata,
+    initialize_missing_weights,
     make_shard_index,
     retie_parameters,
 )
@@ -54,7 +55,6 @@ from ._torch_patches import (  # noqa: F401  -- import also applies the stage_ba
 from .model_splitter import ModelSplitter
 from .pipeline_utils import (
     assert_no_duplicate_fqns,
-    missing_buffers,
     pipeline_stage_indices,
 )
 
@@ -471,6 +471,10 @@ class PipelineTrainer(
         self.optimizer = None
         self.lr_scheduler = None
         self.sharing_metadata = None
+        # The pipeline trainer always constructs on the meta device, so the
+        # base _prepare post-load step runs _initialize_missing_after_load()
+        # (overridden below to init the materialized stages) after the load.
+        self._constructed_on_meta = True
 
         assert self.train_dataloader or self.eval_dataloader
 
@@ -510,23 +514,13 @@ class PipelineTrainer(
             mod.to_empty(device=self.dist.device)
             retie_parameters(mod, self.sharing_metadata)
 
-        # Load from checkpoint?
-        if self.args.resume_from_checkpoint:
-            missing_buffer_set = missing_buffers(model)
-            if len(missing_buffer_set):
-                # Non-persistent buffers are not saved in checkpoints. Initialize
-                # them locally on each rank via reset_parameters(). This is safe
-                # because buffer computation is deterministic and local to each
-                # module (e.g., RotaryEmbedding computes inv_freq from its own
-                # rope_theta and d_head -- no cross-module dependencies).
-                if self.dist.rank == 0:
-                    logger.info(
-                        f"Initializing non-persistent buffers locally on each rank: "
-                        f"{missing_buffer_set}"
-                    )
-                for mod in pipeline_modules:
-                    self._initialize_non_persistent_buffers(mod)
-        else:
+        # Initialize from scratch only when NOT resuming. When resuming, the
+        # stages stay materialized-empty here; the weights are loaded later
+        # by the base _prepare (load_checkpoint over model_parts) and
+        # initialize_missing_weights runs AFTER that load via
+        # _initialize_missing_after_load() — initializing here would init
+        # before the load, the slow full-init the meta route avoids.
+        if not self.args.resume_from_checkpoint:
             if self.dist.rank == 0:
                 # If this results in OOM (really large model), you will have to initialize the model from a checkpoint
                 # which will likely entail some amount of work.
@@ -1327,6 +1321,25 @@ class PipelineTrainer(
         }
 
     @override
+    def _initialize_missing_after_load(self) -> None:
+        """Initialize what the checkpoint didn't fill, AFTER the load.
+
+        The materialized model lives in ``self.pipeline_modules`` (``self.model``
+        is the meta skeleton kept only for shape/config queries), so the
+        base implementation (which inits ``self.model``) doesn't apply.
+
+        Split stage modules don't expose an HF-style ``_init_weights``, so
+        ``initialize_missing_weights`` takes its fallback path: reset only
+        modules that own a non-persistent buffer (e.g. RoPE ``inv_freq``,
+        never in the checkpoint). That recompute is local and deterministic
+        per module, so every rank produces the same values. (The load — base
+        ``_prepare`` -> ``load_checkpoint`` over the stage ``model_parts`` —
+        also flags loaded tensors via ``flag_loaded_tensors``, which would
+        protect the apply path too, but the fallback is what runs here.)
+        """
+        for mod in self.pipeline_modules:
+            initialize_missing_weights(mod)
+
     def _init_checkpoint_manager(self) -> CheckpointManager:
         """
         Initialize checkpoint manager for distributed pipeline parallel model.

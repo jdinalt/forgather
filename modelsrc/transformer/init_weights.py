@@ -16,6 +16,25 @@ def has_local_state(module: nn.Module) -> bool:
     return bool(has_params or has_buffers)
 
 
+def module_is_initialized(module: nn.Module) -> bool:
+    """True iff the module has direct state and every direct parameter and
+    buffer is flagged ``_is_hf_initialized`` (e.g. filled by a checkpoint
+    loader).
+
+    Used to skip re-initializing modules whose tensors were already
+    populated, matching the HF v5 "initialize only the missing tensors"
+    contract. A module with any unflagged tensor (e.g. a non-persistent
+    RoPE buffer that was never in the checkpoint) returns False so it still
+    gets (re)initialized. Modules with no local state return False (nothing
+    to decide; the caller's ``has_local_state`` guard handles them)."""
+    tensors = list(module.parameters(recurse=False)) + list(
+        module.buffers(recurse=False)
+    )
+    if not tensors:
+        return False
+    return all(getattr(t, "_is_hf_initialized", False) for t in tensors)
+
+
 def _get_callable_name(fn: Callable) -> str:
     """Extract function name from callable for debug output."""
     if isinstance(fn, partial):
@@ -34,6 +53,12 @@ def simple_weight_init(
     nn.Embedding lacks a ways to specify the initialization std, which we need, if scaling by the rsqrt(d_model)
     """
     if not has_local_state(module):
+        return
+
+    # Skip modules whose tensors were already filled by a loader (HF v5
+    # init-only-the-missing contract). Non-persistent buffers (e.g. RoPE
+    # inv_freq) stay unflagged, so a module owning one still resets.
+    if module_is_initialized(module):
         return
 
     if scale_rsqrt_d_model and isinstance(module, nn.Embedding):
@@ -171,8 +196,10 @@ def init_weights_by_regex(
             for regex, init_fn in regex_list:
                 m = re.search(regex, name)
                 if m is not None:
-                    # Skip parameters which were loaded from checkpoint
-                    if not getattr(param, "_is_hf_initialized", True):
+                    # Skip parameters already filled by a loader. Default
+                    # False (HF v5 contract): an unflagged tensor is freshly
+                    # materialized and DOES need initialization.
+                    if not getattr(param, "_is_hf_initialized", False):
                         if debug:
                             print(f"Init: {_get_callable_name(init_fn)}({name})")
                         init_fn(param)
@@ -190,6 +217,13 @@ def init_weights_by_regex(
             else:
                 return
         # Try next init method
+
+    # Skip modules whose tensors were already filled by a loader (HF v5
+    # init-only-the-missing contract). A module owning an unflagged tensor
+    # (e.g. a non-persistent RoPE buffer absent from the checkpoint) still
+    # resets so the buffer is recomputed.
+    if module_is_initialized(module):
+        return
 
     if hasattr(module, "reset_parameters"):
         module.reset_parameters()  # type: ignore[operator]

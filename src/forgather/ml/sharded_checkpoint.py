@@ -1,5 +1,6 @@
 import gc
 import glob
+import itertools
 import json
 import logging
 import os
@@ -81,11 +82,24 @@ The primary use-case looks something like this:
     # Optionally, change weight dtype
     model_shard.to(dtype=dtype)
 
+    # Record tied-parameter groups BEFORE to_empty() breaks the aliasing,
+    # so they can be re-tied on the real device afterwards.
+    sharing = create_sharing_metadata(model_shard)
+
     # Move model to target device and allocate uninitialized memory for weights.
     model_shard.to_empty(device=device)
 
-    # Load weights from checkpoint into model on device.
+    # Restore the parameter sharing that to_empty() severed.
+    retie_parameters(model_shard, sharing)
+
+    # Load weights from checkpoint into model on device. Loaded tensors are
+    # flagged _is_hf_initialized so the step below leaves them untouched.
     load_checkpoint(checkpoint_dir, model_shard, device)
+
+    # Recompute anything the checkpoint did NOT contain -- chiefly
+    # non-persistent buffers such as RotaryEmbedding.inv_freq (never saved),
+    # plus any genuinely missing parameters. Skips loaded tensors.
+    initialize_missing_weights(model_shard)
 
 
 Basic sharded checkpoint creation:
@@ -256,6 +270,88 @@ def retie_parameters(module, sharing_metadata: List[List[str]]) -> None:
             sub_module = getattr(sub_module, atom)
 
         setattr(sub_module, fqn_atoms[-1], canonical_tensor)
+
+
+def flag_loaded_tensors(module: nn.Module, loaded_keys) -> None:
+    """Mark params/buffers filled by a checkpoint load with
+    ``_is_hf_initialized = True``.
+
+    This drives the HF v5 "initialize only the missing tensors" contract:
+    after the trainer materializes a meta-constructed model and loads the
+    checkpoint, a follow-up ``model.apply(model._init_weights)`` pass
+    initializes only the *unflagged* tensors (e.g. non-persistent RoPE
+    buffers, or params absent from a partial checkpoint) and leaves the
+    loaded weights untouched. ``loaded_keys`` are the state-dict keys that
+    were actually present in the checkpoint.
+    """
+    loaded = set(loaded_keys)
+    for name, tensor in itertools.chain(
+        module.named_parameters(), module.named_buffers()
+    ):
+        if name in loaded:
+            # Attribute set on the underlying tensor; survives the
+            # load (copy_ keeps the Parameter object; assign= rebinds but
+            # we re-flag from the loaded key set either way).
+            tensor._is_hf_initialized = True
+
+
+@torch.no_grad()
+def initialize_missing_weights(module: nn.Module) -> None:
+    """Initialize the tensors a checkpoint load did NOT fill, skipping the
+    ones it did (flagged ``_is_hf_initialized`` by ``flag_loaded_tensors``).
+
+    This is the shared, HF-v5-standard "initialize only the missing
+    tensors" pass used after constructing a model on meta and materializing
+    it: it recomputes non-persistent derived buffers (e.g. RoPE
+    ``inv_freq``) and initializes any params absent from the checkpoint,
+    while leaving loaded weights untouched.
+
+    Preferred path: ``module.apply(module._init_weights)`` — the model's own
+    init, which both forgather models (``DynamicCasualLM._init_weights`` →
+    flag-aware ``init_weights_by_regex`` / ``simple_weight_init``) and pure
+    HF ``PreTrainedModel`` subclasses (their guarded ``_init_weights``)
+    expose. Fallback for modules without an HF-style ``_init_weights`` (e.g.
+    split pipeline-stage modules): ``reset_parameters()`` on any module that
+    still owns a non-persistent buffer.
+
+    Granularity caveat: the gate is per-MODULE, and ``reset_parameters`` /
+    ``simple_weight_init`` are module-wide. A module that co-locates a
+    *loaded* persistent parameter with an *unflagged* (not-in-checkpoint)
+    tensor would have its loaded parameter re-initialized — unless the
+    model's ``_init_weights`` is itself per-tensor flag-aware (HF's is;
+    forgather's ``init_weights_by_regex`` is). Forgather avoids this by
+    keeping derived buffers (RoPE ``inv_freq``) in dedicated buffer-only
+    modules. Keep that pattern for any module on the pipeline fallback path.
+    """
+    init_fn = getattr(module, "_init_weights", None)
+    if callable(init_fn):
+        # HF-style models (forgather + pure HF): apply the model's own
+        # init, but only to modules that still own an unflagged tensor.
+        # Gating here (rather than trusting the model's _init_weights to be
+        # flag-aware) keeps loaded weights safe even for models whose
+        # bundled init code predates the _is_hf_initialized contract — a
+        # fully-loaded module is never re-initialized, while a module with
+        # an unflagged (e.g. non-persistent RoPE) tensor is recomputed.
+        def _init_if_missing(m: nn.Module) -> None:
+            tensors = list(m.parameters(recurse=False)) + list(m.buffers(recurse=False))
+            if tensors and not all(
+                getattr(t, "_is_hf_initialized", False) for t in tensors
+            ):
+                init_fn(m)
+
+        module.apply(_init_if_missing)
+        return
+    # Fallback for modules without an HF-style _init_weights (e.g. split
+    # pipeline-stage modules). Reset only modules that own a non-persistent
+    # buffer — those are excluded from the state_dict, so they're never in a
+    # checkpoint and always need recomputation (e.g. RoPE inv_freq). This is
+    # safe without relying on _is_hf_initialized flagging: it never touches
+    # ordinary (persistent, loaded) parameters.
+    for m in module.modules():
+        if getattr(m, "_non_persistent_buffers_set", None) and hasattr(
+            m, "reset_parameters"
+        ):
+            m.reset_parameters()
 
 
 def _tied_aliases_in_module(module: nn.Module, checkpoint_keys: Set[str]) -> Set[str]:
@@ -764,6 +860,7 @@ def load_checkpoint(
     # TODO: Properly handle strict, in this case?
     # We wish to ensure that all model weights were loaded, but ignore any other weights, like we do in load_sharded_checkpoint()
     module.load_state_dict(state_dict, strict=strict, assign=assign)
+    flag_loaded_tensors(module, state_dict.keys())
     return None
 
 
@@ -989,6 +1086,11 @@ def load_sharded_checkpoint(
                 )
             state_dict = None
             gc.collect()
+
+        # Flag everything this module loaded once, after all its shards
+        # (``intersection`` is the module's full loaded-key set), rather than
+        # re-scanning the whole module per shard.
+        flag_loaded_tensors(module, intersection)
 
         if len(all_module_keys):
             msg = f"The following keys were not found in the shards {all_module_keys}"

@@ -44,6 +44,7 @@ from ..optim.opt_utils import OptimGroupMap, build_optimizer_buckets
 from ..sharded_checkpoint import (
     create_sharing_metadata,
     find_latest_checkpoint,
+    initialize_missing_weights,
     next_checkpoint_path,
     retie_parameters,
     save_checkpoint_metrics,
@@ -144,15 +145,22 @@ class TrainingArguments(BaseTrainingArguments):
     # If OOM from fragmentation, lower ratio
     gc_threshold: float = 0.5
 
-    # Construct model on meta-device and materialize directly on device
-    # default: Construct model on CPU and move to device. Safest option, works in all cases.
-    #          Uses no_init_weights() context when loading checkpoint to skip initialization.
-    # device:  Construct model directly on device with initialization. Faster than default
-    #          but may fail when model needs sharding across devices. Use when checkpoint
-    #          doesn't save all buffers (e.g., RoPE).
-    # meta:    Construct on meta device (no memory backing) and materialize as empty tensors
-    #          on target device. Fastest option but requires loading checkpoint since model
-    #          is uninitialized. May have issues with buffers not saved in checkpoint.
+    # Where to construct the model. Note: checkpoint loading is standardized
+    # on the meta path regardless of this setting (HF v5 contract — construct
+    # on meta, materialize, load, initialize only the missing tensors), so
+    # this primarily selects the FROM-SCRATCH construction strategy.
+    # default: From scratch, construct on the target device (the model's own
+    #          init runs in __init__). When resuming from a checkpoint with a
+    #          model_init available, transparently uses the meta path.
+    # device:  Force on-device construction even when resuming (wraps the
+    #          load in no_init_weights()). Fallback for models that can't be
+    #          built on the meta device. NOTE: this path does NOT run the
+    #          post-load initialize-missing pass, so it suits models whose
+    #          non-persistent buffers (e.g. RoPE) are either in the
+    #          checkpoint or computed in __init__ — otherwise prefer meta.
+    # meta:    Force the meta path (construct on meta, materialize empty,
+    #          then load + initialize-missing). Requires a checkpoint (or an
+    #          external loader such as DiLoCo) to fill the weights.
     construct_model_on: str = "default"  # "default" | "meta" | "device"
 
     # https://pytorch.org/blog/activation-checkpointing-techniques/
@@ -317,6 +325,13 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
     do_eval: bool
     use_fused_loss: bool
     gradient_accumulation_step: int
+
+    # Set True in _prepare_model when the model was built on the meta device,
+    # so the post-load step runs the initialize-missing pass. Class-level
+    # default keeps it defined for subclasses that override _prepare_model
+    # (e.g. PipelineTrainer, which does its own materialize/init) but inherit
+    # the base _prepare post-load block.
+    _constructed_on_meta: bool = False
 
     @classmethod
     def default_callbacks(cls):
@@ -629,12 +644,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
 
         # Restore from checkpoint (path already resolved by _resolve_checkpoint)
         if self.args.resume_from_checkpoint:
-            self.load_checkpoint(self.args.resume_from_checkpoint)
-            # Non-persistent buffers (e.g., RotaryEmbedding's inv_freq) are not
-            # saved in checkpoints. When the model was constructed on meta device,
-            # these buffers were never initialized. Compute them now.
-            if self.args.construct_model_on == "meta" and self.model is not None:
-                self._initialize_non_persistent_buffers(self.model)
+            self._restore_from_checkpoint()
 
         self._dispatch_event("on_init_end")
 
@@ -778,32 +788,61 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         """
         Construct/initialize model and move to device (_prepare() sub-step 2).
 
-        Handles three model construction strategies based on construct_model_on:
-        - default: Safe, works everywhere. Constructs on CPU (with no_init_weights if loading
-                  checkpoint), then moves to device.
-        - meta: Fastest. Constructs on meta device (no memory), materializes empty on device.
-                Requires loading checkpoint. May have issues with non-persistent buffers.
-        - device: Middle ground. Constructs directly on device with initialization. Faster
-                 than default but may fail with model sharding. Good for models with buffers
-                 not saved in checkpoint (e.g., RoPE).
+        Checkpoint loading follows the HF v5 contract: construct on meta,
+        materialize empty on the device, load the checkpoint (flagging the
+        tensors it fills), then ``initialize_missing_weights`` to fill only
+        the rest (e.g. non-persistent RoPE buffers). So when resuming with a
+        ``model_init``, the ``default`` strategy routes to ``meta``.
+
+        Strategies (``construct_model_on``):
+        - default: From-scratch on the target device (model's own init runs
+                  in __init__). Resume → meta (above).
+        - meta:   Force the meta path. Needs a checkpoint / external loader.
+        - device: Force on-device, wrapping a resume load in no_init_weights()
+                 — the fallback for models that can't build on meta.
 
         Also sets up gradient checkpointing if enabled and initializes fused loss if available.
         """
         # _prepare() sub-step 2
-        # Meta device construction requires a checkpoint. If none is available,
-        # fall back to the default strategy.
+        #
+        # Checkpoint loading is standardized on the HF v5 meta contract:
+        # construct on meta, materialize empty on the target device, load
+        # the checkpoint (which flags loaded tensors via
+        # ``flag_loaded_tensors``), then run ``initialize_missing_weights``
+        # to fill only what the checkpoint didn't (non-persistent buffers
+        # like RoPE, plus any missing params). So when resuming, the
+        # ``default`` strategy routes to ``meta`` — replacing the older
+        # construct-on-device + ``no_init_weights`` approach. The explicit
+        # ``device`` strategy stays as a fallback for models that can't be
+        # built on meta.
+        effective_strategy = self.args.construct_model_on
         if (
-            self.args.construct_model_on == "meta"
-            and not self.args.resume_from_checkpoint
+            effective_strategy == "default"
+            and self.args.resume_from_checkpoint
+            and self.model_init
         ):
+            # Meta construction needs a model_init to (re)build the skeleton.
+            # A pre-built model passed without model_init stays on the
+            # default (move-and-load) path.
+            effective_strategy = "meta"
+        # Meta needs weights to come from somewhere (a checkpoint). With no
+        # checkpoint there is nothing to fill the materialized tensors, so
+        # from-scratch construction stays on-device (its init path runs in
+        # the model's __init__). DiLoCo, which loads weights from a remote
+        # server, is handled as a checkpoint load by its own wiring.
+        if effective_strategy == "meta" and not self.args.resume_from_checkpoint:
             logger.warning(
                 "No checkpoint available for meta device construction. "
-                "Falling back to 'default' strategy (construct on CPU, "
-                "initialize, move to device)."
+                "Falling back to 'default' strategy (construct on device, "
+                "initialize in-place)."
             )
-            self.args.construct_model_on = "default"
+            effective_strategy = "default"
+        # Recorded so the post-load step (_prepare) runs the standard
+        # initialize-missing pass whenever we actually built on meta, even
+        # when the operator left construct_model_on at its "default".
+        self._constructed_on_meta = effective_strategy == "meta"
 
-        match self.args.construct_model_on:
+        match effective_strategy:
             case "default":
                 if self.model_init:
                     logger.info(
@@ -886,26 +925,33 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         if self.dist.rank == 0:
             logger.info(f"Estimated FLOPs per token: {self._flops_per_token:.2e}")
 
-    @staticmethod
-    def _initialize_non_persistent_buffers(model: torch.nn.Module) -> None:
-        """Initialize non-persistent buffers that were not loaded from checkpoint.
+    def _restore_from_checkpoint(self) -> None:
+        """Load the resume checkpoint, THEN initialize what it didn't fill.
 
-        Non-persistent buffers (registered with ``persistent=False``) are excluded
-        from ``state_dict()`` and therefore not saved in or loaded from checkpoints.
-        When the model is constructed on the meta device and then materialized via
-        ``to_empty()``, these buffers contain uninitialized data.
-
-        This method finds modules with non-persistent buffers and calls their
-        ``reset_parameters()`` method to compute the correct values. For example,
-        ``RotaryEmbedding.reset_parameters()`` computes ``inv_freq`` from the
-        configured ``rope_theta`` and ``d_head``.
-
-        Should be called after checkpoint load when using ``construct_model_on="meta"``.
+        Order is load-then-init and must stay that way: ``load_checkpoint``
+        flags the tensors it fills (``flag_loaded_tensors``), so the
+        subsequent ``_initialize_missing_after_load`` only touches the rest
+        (non-persistent buffers like RoPE ``inv_freq``, plus any params
+        absent from the checkpoint). Running the init first would leave
+        everything unflagged and re-initialize the whole model — the slow
+        full-init the meta route exists to avoid — only to immediately
+        overwrite it with the loaded weights.
         """
-        for module in model.modules():
-            if getattr(module, "_non_persistent_buffers_set", None):
-                if hasattr(module, "reset_parameters"):
-                    module.reset_parameters()
+        self.load_checkpoint(self.args.resume_from_checkpoint)
+        if self._constructed_on_meta:
+            self._initialize_missing_after_load()
+
+    def _initialize_missing_after_load(self) -> None:
+        """Initialize the tensors a checkpoint load did NOT fill.
+
+        Called from ``_prepare`` AFTER ``load_checkpoint`` (so loaded tensors
+        are already flagged ``_is_hf_initialized`` and get skipped) when the
+        model was constructed on meta. Overridden by trainers whose
+        materialized model isn't ``self.model`` (e.g. PipelineTrainer, which
+        holds the materialized stages in ``self.pipeline_modules``).
+        """
+        if self.model is not None:
+            initialize_missing_weights(self.model)
 
     def _apply_fp8_training(self, model: torch.nn.Module) -> torch.nn.Module:
         """Convert nn.Linear layers to Float8Linear for FP8 training via torchao."""
