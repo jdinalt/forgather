@@ -514,15 +514,13 @@ class PipelineTrainer(
             mod.to_empty(device=self.dist.device)
             retie_parameters(mod, self.sharing_metadata)
 
-        # Load from checkpoint?
-        if self.args.resume_from_checkpoint:
-            # Stages are materialized empty here; the weights are loaded
-            # later by the base _prepare (load_checkpoint over model_parts),
-            # and initialize_missing_weights runs AFTER that load via
-            # _initialize_missing_after_load(). Doing it here would init
-            # before the load — the slow full-init the meta route avoids.
-            pass
-        else:
+        # Initialize from scratch only when NOT resuming. When resuming, the
+        # stages stay materialized-empty here; the weights are loaded later
+        # by the base _prepare (load_checkpoint over model_parts) and
+        # initialize_missing_weights runs AFTER that load via
+        # _initialize_missing_after_load() — initializing here would init
+        # before the load, the slow full-init the meta route avoids.
+        if not self.args.resume_from_checkpoint:
             if self.dist.rank == 0:
                 # If this results in OOM (really large model), you will have to initialize the model from a checkpoint
                 # which will likely entail some amount of work.
