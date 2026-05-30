@@ -82,11 +82,24 @@ The primary use-case looks something like this:
     # Optionally, change weight dtype
     model_shard.to(dtype=dtype)
 
+    # Record tied-parameter groups BEFORE to_empty() breaks the aliasing,
+    # so they can be re-tied on the real device afterwards.
+    sharing = create_sharing_metadata(model_shard)
+
     # Move model to target device and allocate uninitialized memory for weights.
     model_shard.to_empty(device=device)
 
-    # Load weights from checkpoint into model on device.
+    # Restore the parameter sharing that to_empty() severed.
+    retie_parameters(model_shard, sharing)
+
+    # Load weights from checkpoint into model on device. Loaded tensors are
+    # flagged _is_hf_initialized so the step below leaves them untouched.
     load_checkpoint(checkpoint_dir, model_shard, device)
+
+    # Recompute anything the checkpoint did NOT contain -- chiefly
+    # non-persistent buffers such as RotaryEmbedding.inv_freq (never saved),
+    # plus any genuinely missing parameters. Skips loaded tensors.
+    initialize_missing_weights(model_shard)
 
 
 Basic sharded checkpoint creation:
