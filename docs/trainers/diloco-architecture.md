@@ -24,6 +24,7 @@ For user-facing documentation (CLI usage, quick start, API examples), see
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
 - [Extension Points](#extension-points)
+- [Planned: configurable checkpoint state + empty-meta construction (PR 4)](#planned-configurable-checkpoint-state--empty-meta-construction-pr-4)
 - [Known Limitations](#known-limitations)
 
 ---
@@ -79,6 +80,10 @@ src/forgather/ml/diloco/
   worker.py          Optimizer hook, pseudo-gradient computation, streaming, reconnection
   fragments.py       FragmentManager: parameter splitting, scheduling
   health.py          HealthMonitor: background worker liveness detection
+  model_def.py       Model-definition bundle: include/exclude policy, deterministic
+                     tar packing, content hashing, traversal-safe extraction (issue #53)
+  model_stage.py     stage_model_def(): worker-side fetch+cache of the bundle into
+                     <output_dir>/diloco_model_def, with stamp reuse + file-lock
 
 src/forgather/cli/
   diloco.py          CLI command handlers (_server_cmd, _status_cmd, _worker_cmd)
@@ -217,6 +222,17 @@ All communication uses HTTP/1.1 over TCP. The server runs a
 | POST | `/heartbeat` | JSON: `{worker_id, steps_per_second}` | JSON: `{status, sync_round, recommended_sync_every?}` |
 | POST | `/deregister` | JSON: `{worker_id}` | JSON: `{status: "ok"}` |
 | GET | `/status` | (none) | JSON: server state |
+| GET | `/info` | (none) | JSON: negotiation facts + `model_hash` |
+| GET | `/model_def` | (none) | tar: model definition (config + code + tokenizer, no weights); `X-Forgather-Model-Hash` header |
+
+`/model_def` is served from the checkpoint directory the server was started
+from (captured as `self._loaded_checkpoint_dir` in `load_state`). The
+include/exclude policy, deterministic packing, and traversal-safe extraction
+live in `forgather.ml.diloco.model_def`; the worker-side staging into
+`<output_dir>/diloco_model_def/` lives in
+`forgather.ml.diloco.model_stage`. Both `/info` and `/model_def` are
+control-plane endpoints (bearer-required, never served on the bulk
+listener).
 
 ### Binary tensor format (submit endpoints)
 
@@ -544,6 +560,106 @@ Worker                                  Server
   |    |<-- frag 2 updated params -------|
   | ...                                   |
 ```
+
+### Model-definition staging (issue #53)
+
+Under DiLoCo a worker takes **no model path**. It obtains the model
+*definition* — `config.json`, the custom modeling/configuration `.py`
+closure, and the tokenizer (never weights) — from the server, builds the
+model **empty** (from that config, with no weights), and fills it from the
+parameter sync. This removes the shared-filesystem requirement and makes it
+impossible for a worker to build a different model than the rest of the
+group. (Constructing that empty skeleton on the meta device, allocation-
+free, is deferred to PR 4 — see [Planned](#planned-configurable-checkpoint-state--empty-meta-construction-pr-4)
+below; today it builds on the operator's `construct_model_on` strategy.)
+
+This happens **before** `DiLoCoWorker.start()` — it is part of trainer
+*construction* (materializing the model/tokenizer), not the worker
+lifecycle. The two stages are independent: staging supplies the *skeleton
+and tokenizer*; `start()`'s register/`_apply_global_params` supplies the
+*weights*.
+
+#### Components
+
+| Piece | Role |
+|-------|------|
+| `model_def.py` | The include/exclude policy (every `.py` + config + tokenizer; never weights/`server_state.pt`/indices/audit), deterministic `pack_model_def`, `compute_bundle_hash`, and traversal-safe `extract_model_def`. Shared by server and client. |
+| Server `GET /model_def` | Streams the packed tar with an `X-Forgather-Model-Hash` header. Bearer-required, control-plane only. |
+| `DiLoCoClient.fetch_model_def(dest)` | GET + validate header against `/info` + traversal-safe extract. |
+| `model_stage.stage_model_def(addr, output_dir)` | Worker-side fetch-and-cache into `<output_dir>/diloco_model_def/`; returns the local dir. |
+| Template `models/from_diloco_server.yaml` | Wires `stage_model_def` as a cached `!singleton` consumed by the tokenizer, the model config, and the model factory. |
+
+#### Sequence — what happens when the config loads the model
+
+The training config materializes the model assets in the worker's `train`
+process (where `DILOCO_SERVER` and the worker-suffixed `output_dir` are
+both known). The staging singleton closes over `output_dir` (a render-time
+Jinja literal) and the server address, and is referenced by three nodes:
+
+```
+[render time]  output_dir, server_addr baked into the !singleton node
+                     │
+[train process: materialize trainer → model assets]
+                     │
+   FIRST consumer to resolve  (usually the TOKENIZER, at dataset
+   preprocessing — it resolves into a real object before the model)
+                     │
+                     ▼
+   stage_model_def(server_addr, output_dir):
+     1. client.get_info()  ── want_hash = /info model_hash
+     2. fast path: <output_dir>/diloco_model_def/.forgather_model_hash
+        == want_hash?  ── yes → return dir (no lock, no tar fetch)
+     3. file_lock_build(dir, force_lock=True):        # serialize ranks
+          re-check stamp under lock → maybe return
+          tmp = mkdtemp(dir=output_dir)
+          client.fetch_model_def(tmp)                 # GET /model_def
+            → validate X-Forgather-Model-Hash vs /info → extract tar
+          write tmp/.forgather_model_hash (stamp LAST)
+          rmtree(dir); os.replace(tmp, dir)           # atomic swap
+        return dir
+                     │
+   AutoTokenizer.from_pretrained(dir, trust_remote_code=True)
+                     │
+   SECOND/THIRD consumers (model config, model factory) resolve the SAME
+   cached singleton → no second fetch; AutoConfig.from_pretrained(dir),
+   then the model !partial builds the empty structure (no weights)
+                     │
+[DiLoCoWorker.start()]  register → _apply_global_params overwrites the
+   freshly-initialized persistent weights with the server's global params
+```
+
+The shared-singleton design is load-bearing: the tokenizer is needed at
+dataset preprocessing, **earlier** than model construction, so staging
+cannot live inside the model factory alone. The first of {tokenizer,
+config, model} to materialize triggers exactly one fetch; the rest reuse
+the cache.
+
+#### Caching and invalidation
+
+* **Worker-side stamp.** `<output_dir>/diloco_model_def/.forgather_model_hash`
+  records the bundle identity. The fast path compares it to a fresh `/info`
+  `model_hash`: a match short-circuits the network tar fetch entirely
+  (cheap one `/info` round-trip), a mismatch — the server was restarted on
+  a *different* model — forces a clean re-fetch. There is no offline
+  fallback; an unreachable server fails loud.
+* **Atomic, crash-safe writes.** The bundle is fetched into a sibling temp
+  dir and `os.replace`'d into place, with the stamp written *last*, so an
+  interrupted fetch never leaves a match-looking directory behind (the next
+  run re-fetches).
+* **DDP / multi-worker.** `file_lock_build(..., force_lock=True)` serializes
+  ranks/workers sharing one host: one fetches under the lock, the rest
+  re-check the stamp on acquiring it and reuse.
+* **Server-side bundle cache.** `_loaded_checkpoint_dir` is content-stable
+  for the server's lifetime, so the server packs the tar once (lazily, under
+  `_model_def_lock`) and caches `self._model_def_bundle`. Concurrent worker
+  fetches don't each re-walk the dir or hold separate in-memory copies.
+* **Hash semantics.** `_model_hash` is the parameter `(name, shape)`
+  topology folded with the definition-file *contents* (`compute_bundle_hash`,
+  applied in `load_state`). So a config tweak or an edited modeling `.py`
+  — not just a shape change — changes the advertised `model_hash` and
+  invalidates worker stamps. The same value is returned by `/info` and the
+  `/model_def` header, and is complementary to the fine-grained
+  per-parameter `param_shapes` check at `/register`.
 
 ### Worker startup (`start()` / `__enter__`)
 
@@ -960,6 +1076,95 @@ The current architecture is client-server. To add peer-to-peer allreduce:
    same average pseudo-gradient, so they'd arrive at the same global params)
 
 ---
+
+## Planned: configurable checkpoint state + empty-meta construction (PR 4)
+
+This is a **design record** for follow-up work, not yet implemented. The
+DiLoCo model-bundle PR (#102) is scoped to "workers don't save/restore
+checkpoints": a worker stages the definition, builds the model from it on
+the operator's default construction strategy, and pulls weights from the
+server. Two refinements are deferred here.
+
+### Motivation
+
+1. **Never checkpoint model weights.** The server is the sole weight
+   authority (workers pull global params at register). A worker saving
+   weights wastes disk and risks loading a *stale* local copy from a
+   different sync round. But a worker may legitimately want to checkpoint
+   **other** state — trainer progress (step / LR position / RNG) is the
+   strongest case, inner-optimizer state a weaker second.
+2. **Empty-meta construction.** Building the empty skeleton on the meta
+   device is allocation-free (faster, lower peak memory) versus the current
+   on-device build that is immediately overwritten by the parameter sync.
+
+### The interaction that blocks a naive fix
+
+`_prepare()` calls `_resolve_checkpoint()` (`trainer.py:651`), which, when a
+local checkpoint exists, sets `self.args.resume_from_checkpoint` to its
+*path*. `_prepare_model` (`trainer.py:818`) then takes the meta path and
+`_restore_from_checkpoint` (`trainer.py:928`) calls `load_checkpoint`, which
+**loads model weights** from that checkpoint — exactly what DiLoCo must not
+do. And on a *fresh* run (no checkpoint) the meta strategy is downgraded to
+`default` (`trainer.py:833`), so even an explicit `construct_model_on=meta`
+never builds empty-on-meta. So both "skip weight load" and "build empty on
+meta" need first-class support.
+
+### Design
+
+The unifying invariant: *under DiLoCo the server owns the model weights.*
+That single fact drives both refinements, expressed through one **general,
+configurable** mechanism (restoring the fine-grained save/load control that
+predated the CheckpointManager refactor):
+
+1. **Configurable checkpoint components.** Add `get_active_state_components()`
+   on `BaseTrainer` that calls the subclass's `get_state_components()` and
+   filters it by a new `TrainingArguments` field (e.g.
+   `checkpoint_components: list[str] | None`, `None` = all → today's
+   behavior). The **two** consumers — `checkpoint_manager.py:133` and
+   `checkpoint_coordinator.py:33` — call `get_active_state_components()`
+   instead. This covers all **five** `get_state_components()` implementations
+   (`base`, `ddp`, `fsdp2`, `accel`, `pipeline`) **without editing any of
+   them**. The `required=True` flag on the `"model"` component must be
+   relaxed so the filter may drop it (the operator takes responsibility).
+2. **Construction derives from the component set.** When `"model"` is not in
+   the active set, weights are externally supplied: `_prepare_model` builds
+   empty on meta, runs the initialize-missing pass to initialize the
+   skeleton in place, and skips the downgrade — no second knob, because
+   "model not checkpointed" *is* the "weights come from elsewhere" signal.
+   The parameter sync then overwrites the persistent weights at register.
+3. **DiLoCo defaults in config, overridable.** A DiLoCo project sets
+   `checkpoint_components: [optimizer, scheduler, trainer, dataset, rng]`
+   (everything but `model`) in a shared place (the DiLoCo mixin /
+   `base_lm_project.yaml`); sub-configs override freely. The inner-optimizer
+   keep/skip question becomes a config choice (include `"optimizer"` or not),
+   not a hard-coded policy.
+4. **Pipeline trainer.** It already always constructs on meta and
+   initializes from scratch when not resuming, so the *construction* side
+   needs no change; only the `get_active_state_components()` filter applies
+   (its `get_state_components` also emits a `"model"` component, at
+   `pipeline_trainer.py:1604`).
+
+### Touch-points
+
+- `TrainingArguments`: new `checkpoint_components` field.
+- `BaseTrainer.get_active_state_components()` (new); relax `required` on the
+  `"model"` component (`base_trainer.py:868`, `pipeline_trainer.py:1604`).
+- `checkpoint_manager.py:133`, `checkpoint_coordinator.py:33`: call the
+  filtered accessor.
+- `trainer.py` `_prepare_model` (`:833`) + `_restore_from_checkpoint`: honor
+  external-weights construction; run initialize-missing on the empty model.
+- Config: DiLoCo `checkpoint_components` default; flip DiLoCo to
+  `construct_model_on=meta` once the above lands.
+- Tests across `base`/`ddp`/`fsdp2`/`pipeline`: the filter (save/load subset)
+  and the empty-meta build (skeleton fully initialized; weights arrive via
+  register).
+
+### Scope
+
+This is a **general trainer feature** (configurable checkpoint state +
+external-weight construction), not DiLoCo-bundle plumbing, and touches
+sensitive shared checkpoint infrastructure. It warrants its own PR and
+review rather than being folded into #102.
 
 ## Known Limitations
 

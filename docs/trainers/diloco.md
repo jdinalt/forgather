@@ -624,8 +624,19 @@ The server exposes these HTTP endpoints:
 | POST | `/heartbeat` | Worker heartbeat with training speed; returns DyLU recommendation if enabled |
 | POST | `/deregister` | Worker departure |
 | GET | `/status` | Server status (mode, workers, sync round, fragment/async fields) |
-| GET | `/info` | Static facts a client needs to negotiate settings (output_dir, num_parameters, expected_client_settings) |
+| GET | `/info` | Static facts a client needs to negotiate settings (output_dir, num_parameters, expected_client_settings, `model_hash`) |
+| GET | `/model_def` | Model-definition bundle: a tar of config + custom code + tokenizer (no weights), used by workers to construct the model. Bearer-required; control-plane only. |
 | POST | `/control/{action}` | Control endpoints: `save_state`, `kick_worker`, `update_optimizer`, `update_num_workers`, `shutdown` |
+
+The `/model_def` response is an uncompressed tar (deterministic member
+order) carrying only the non-weight files from the server's checkpoint
+directory — `config.json`, every custom modeling/configuration `.py`
+(the full `trust_remote_code` closure, including split two-file
+definitions), and the tokenizer. Weights, shard indices, `server_state.pt`,
+and the audit log are excluded. The `X-Forgather-Model-Hash` header carries
+the bundle identity, which equals the `model_hash` advertised by `/info`
+(parameter topology folded together with the definition-file contents) so a
+worker never pairs a bundle with a mismatched parameter set.
 
 Tensor data is serialized using `torch.save` to `BytesIO` and sent as
 `application/octet-stream`. The pseudo-gradient submission uses a
@@ -724,17 +735,32 @@ On checkpoint resume, the callback's `load_state_dict` is called during
 `_prepare()` (before the worker exists). The state is deferred and applied
 in `on_train_begin` after the worker is created and registered with the server.
 
+### Model definition comes from the server
+
+A DiLoCo worker takes **no model path**. On startup the trainer stages the
+model-definition bundle from the server's `GET /model_def` endpoint into
+`<output_dir>/diloco_model_def/` (config + the custom modeling/configuration
+`.py` closure + tokenizer; never weights), builds the model **empty** (from
+that config, with no weights), and fills it from the parameter sync at
+register. Every worker therefore builds the *same* model the server holds —
+there is no `--model-id-or-path` to get wrong and no shared filesystem
+requirement. See [Model-definition staging](#model-definition-staging) below.
+(Constructing the empty skeleton on the meta device, allocation-free, and
+skipping model-weight checkpoint save/load are planned trainer changes — see
+[Planned: configurable checkpoint state + empty-meta construction](diloco-architecture.md)
+in the architecture doc.)
+
 ### Model fingerprint check
 
-The callback also runs a `/status` round-trip in `on_train_begin` before
-constructing the worker, and the worker's `/register` call ships a
+As defense-in-depth, the worker's `/register` call still ships a
 `{name: shape}` map of every named parameter (the `param_shapes` field in
 the register body). The server compares against its own `_param_list`
 shapes and rejects mismatched models with HTTP 422 + a diagnostic naming
-the divergent param. This catches the operator-misconfiguration case —
-pointing a worker at the wrong `--model-id-or-path` — at register time
-rather than letting it surface hundreds of steps later in the first
-sync's optimizer step.
+the divergent param. With the bundle the worker builds from the server's
+*own* config, so this should never fire — it stays as a backstop against
+a stale staged definition. The coarse `/info` `model_hash` (parameter
+topology folded with the definition-file contents) is the complementary
+pre-construction gate the staging cache validates against.
 
 The check only fires when the worker actually ships `param_shapes`
 (post-#51 builds; on by default in this codebase). Workers from an
@@ -743,9 +769,32 @@ crash later in sync if the model is wrong — there's no server-side
 way to detect a missing fingerprint as suspicious without breaking
 those callers.
 
-The webui's Submit-training-job modal pre-fills `--model-id-or-path`
-from the selected DiLoCo server's `/info.output_dir` to keep the easy
-path easy.
+### Model-definition staging
+
+Staging is wired in the training config as a cached `!singleton`
+(`forgather.ml.diloco.model_stage:stage_model_def`) that closes over the
+worker's computed `output_dir` and the server address. It is referenced by
+the tokenizer, the model config, and the model factory, so the **first**
+consumer to materialize — typically the tokenizer at dataset preprocessing,
+which resolves into a real object well before the model is built — triggers
+a single fetch; the rest reuse the cache. A `.forgather_model_hash` stamp
+records the bundle identity: a later run (or DDP rank) with a matching
+stamp short-circuits the network fetch, while a mismatch — the server was
+restarted on a different model — forces a clean re-fetch. `file_lock_build`
+serializes concurrent ranks/workers on one host. There is no offline
+fallback: a worker that cannot reach the server fails loud rather than
+build a divergent model.
+
+> **Operator notes.** The worker loads the staged code with
+> `trust_remote_code=True`, so the DiLoCo server is a *trusted code-
+> distribution authority* for its workers — only register workers against
+> servers you control (the same trust the worker already extends by pulling
+> weights and authoritative settings from it). The bundle ships **every
+> `.py`** found in the server's checkpoint directory (the full
+> `trust_remote_code` closure, including split two-file definitions), so
+> that directory should contain only model-definition files — don't stash
+> unrelated scripts or secrets next to the model. Weights, optimizer state
+> (`server_state.pt`), shard indices, and the audit log are always excluded.
 
 ## Work-unit dispatch
 

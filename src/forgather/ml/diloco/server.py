@@ -44,6 +44,11 @@ from urllib.parse import parse_qs, urlparse
 import torch
 
 from forgather.ml.diloco.auth import authenticate_request
+from forgather.ml.diloco.model_def import (
+    MODEL_HASH_HEADER,
+    compute_bundle_hash,
+    pack_model_def,
+)
 from forgather.ml.sharded_checkpoint import (
     find_latest_checkpoint,
 )
@@ -528,6 +533,17 @@ class DiLoCoServer:
         # event.
         self._audit_fh = None
         self._running = False
+        # Directory the model was loaded from, captured by load_state. The
+        # /model_def endpoint serves the non-weight definition files (config,
+        # custom code, tokenizer) from here so DiLoCo workers can construct
+        # the model without a shared filesystem (issue #53).
+        self._loaded_checkpoint_dir: Optional[str] = None
+        # Packed bundle is content-stable for the server's lifetime
+        # (_loaded_checkpoint_dir never changes), so build it once on first
+        # request and cache it — avoids re-walking + re-reading the dir, and
+        # holding N in-memory copies when many workers fetch concurrently.
+        self._model_def_bundle: Optional[bytes] = None
+        self._model_def_lock = threading.Lock()
         self.load_state(from_checkpoint)
 
     def _initialize(self, model_state_dict: Dict[str, torch.Tensor]):
@@ -2177,6 +2193,49 @@ class DiLoCoServer:
         }
         _send_json_response(handler, response)
 
+    def _handle_model_def(self, handler: BaseHTTPRequestHandler):
+        """Serve the model-definition bundle (issue #53).
+
+        Streams an uncompressed tar of the non-weight files from the
+        checkpoint dir the server was started from — ``config.json``, the
+        custom modeling/configuration ``.py`` closure, and the tokenizer —
+        so a DiLoCo worker can construct the model without a shared
+        filesystem and without ever fetching weights (those arrive via the
+        parameter sync). Weights, shard indices, server state, and the
+        audit log are excluded by ``model_def`` policy.
+
+        Control-plane only and bearer-required: ``do_GET`` runs the auth
+        check before routing here, and the endpoint is never added to the
+        bulk listener's allow-set — the custom model code is not
+        world-readable. The ``X-Forgather-Model-Hash`` header lets the
+        worker pair the bundle with the server's advertised ``model_hash``.
+        """
+        if not self._loaded_checkpoint_dir or not os.path.isdir(
+            self._loaded_checkpoint_dir
+        ):
+            _send_json_response(
+                handler,
+                {"error": "server has no model-definition directory to serve"},
+                503,
+            )
+            return
+        try:
+            with self._model_def_lock:
+                if self._model_def_bundle is None:
+                    self._model_def_bundle = pack_model_def(self._loaded_checkpoint_dir)
+                payload = self._model_def_bundle
+        except OSError as exc:
+            _send_json_response(
+                handler, {"error": f"could not read model definition: {exc}"}, 500
+            )
+            return
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/x-tar")
+        handler.send_header("Content-Length", str(len(payload)))
+        handler.send_header(MODEL_HASH_HEADER, self._model_hash)
+        handler.end_headers()
+        handler.wfile.write(payload)
+
     # ------------------------------------------------------------------
     # Work-unit dispatch (see docs/design/diloco-work-unit-dispatch.md)
     # ------------------------------------------------------------------
@@ -2826,6 +2885,8 @@ class DiLoCoServer:
                         server_ref._handle_status(self)
                     elif path == "/info":
                         server_ref._handle_info(self)
+                    elif path == "/model_def":
+                        server_ref._handle_model_def(self)
                     elif path == "/work/queues":
                         server_ref._handle_get_queues(self)
                     elif path == "/work/queue":
@@ -2997,6 +3058,25 @@ class DiLoCoServer:
 
         # Initialize from state-dictionary
         self._initialize(state_dict)
+
+        # Remember where we loaded from so /model_def can serve the
+        # definition bundle, and fold the bundle's content hash into the
+        # advertised model_hash. _initialize() set model_hash from the
+        # parameter (name, shape) set alone; folding in the on-disk config /
+        # custom-code / tokenizer contents means a worker's cached bundle
+        # stamp invalidates on *any* definition change (a config tweak or an
+        # edited modeling .py), not only a parameter-shape change.
+        self._loaded_checkpoint_dir = os.path.realpath(checkpoint_path)
+        try:
+            bundle_hash = compute_bundle_hash(self._loaded_checkpoint_dir)
+            self._model_hash = hashlib.sha256(
+                (self._model_hash + ":" + bundle_hash).encode("utf-8")
+            ).hexdigest()
+        except OSError as exc:
+            # A hash over the definition files is best-effort: if the dir is
+            # unreadable we keep the parameter-only hash rather than fail the
+            # load. /model_def will surface the real error if hit.
+            logger.warning("Could not hash model-definition bundle: %s", exc)
 
         # Load server state if present
         if server_state is not None:

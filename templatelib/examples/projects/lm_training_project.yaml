@@ -348,15 +348,18 @@
     ##      ``DILOCO_SERVER`` is unset at runtime.
     -- set ns.diloco_is_enabled = getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server) or ns.enable_diloco
 
-    ## Model load path. Operators override via --model-id-or-path
-    ## (typical for finetune from an external checkpoint); otherwise
-    ## default to this project's main model dir. Computed BEFORE the
-    ## worker-id suffix below so all DiLoCo workers default to
-    ## loading from the same shared checkpoint.
-    -- if model_id_or_path is defined and model_id_or_path
-        -- set ns.model_id_or_path = model_id_or_path
+    ## DiLoCo server address for the model-definition fetch. The worker
+    ## stages config + custom code + tokenizer from this server (issue
+    ## #53) — there is no model path under DiLoCo. Resolved the same way
+    ## as ``ns.diloco_is_enabled``: the ``--diloco-server`` Jinja var when
+    ## set, else the ``DILOCO_SERVER`` env var the scheduler emits at
+    ## worker spawn. Empty under the render-time ``enable_diloco``
+    ## diagnostic (no live server); harmless because the staging singleton
+    ## is only materialized at train time.
+    -- if diloco_server is defined and diloco_server
+        -- set ns.diloco_server_addr = diloco_server
     -- else
-        -- set ns.model_id_or_path = joinpath(ns.models_dir, ns.model_name)
+        -- set ns.diloco_server_addr = getenv("DILOCO_SERVER") or ""
     -- endif
 
     ## DiLoCo: per-worker output dir. When DILOCO_WORKER_ID is set
@@ -365,11 +368,9 @@
     ## worker gets a distinct on-disk directory. No-op for non-DiLoCo
     ## runs. The suffix operates on ``ns.output_dir`` (not
     ## ``ns.model_name``) so any child template that overrides
-    ## ``ns.output_dir`` in its own ``[globals]`` (e.g.
-    ## ``finetune_v2.yaml`` derives it from ``ns.model_id_or_path``)
-    ## can re-apply this same two-line block at the end of its block
-    ## and get correct per-worker semantics without double-suffix
-    ## bugs.
+    ## ``ns.output_dir`` in its own ``[globals]`` can re-apply this same
+    ## two-line block at the end of its block and get correct per-worker
+    ## semantics without double-suffix bugs.
     -- if getenv("DILOCO_WORKER_ID")
         -- set ns.output_dir = ns.output_dir + "_" + getenv("DILOCO_WORKER_ID")
         -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
@@ -454,7 +455,7 @@
 # ns.trainer_class: {{ ns.trainer_class }}
 # ns.enable_diloco: {{ ns.enable_diloco }}
 # ns.diloco_is_enabled: {{ ns.diloco_is_enabled }}
-# ns.model_id_or_path: {{ ns.model_id_or_path }}
+# ns.diloco_server_addr: {{ ns.diloco_server_addr }}
 -- if ns.trainer_type == "pipeline"
 # Pipeline Parallel:
 # ns.stages_per_rank: {{ ns.stages_per_rank }}
@@ -531,16 +532,16 @@ eval_dataset: &eval_dataset !call:getitem [ *eval_dataset_dict, 'eval_dataset' ]
     attn_implementation: "{{ ns.attn_implementation }}"
 
 [construct_new_model]
-    ## Under DiLoCo, the include emits ``&tokenizer`` and ``&model``
-    ## directly from a pretrained checkpoint (every worker must start
-    ## from the same initial weights — newly-constructed models would
-    ## have different random initializations and DiLoCo's parameter
-    ## sync averages divergent states). The ``--model-id-or-path``
-    ## arg (or ``ns.model_id_or_path`` default) points at the
-    ## checkpoint. The sub-blocks below then emit nothing under DiLoCo
-    ## so the non-DiLoCo construct-via-model_project path is skipped.
+    ## Under DiLoCo, the include emits ``&tokenizer`` and ``&model`` from
+    ## the server's model-definition bundle (issue #53): it stages config +
+    ## custom code + tokenizer into the worker's output dir and builds the
+    ## model empty on meta. Every worker therefore builds the *same* model
+    ## the server holds (no shared filesystem, no mismatched-architecture
+    ## foot-gun), and the parameter sync supplies the shared weights. The
+    ## sub-blocks below emit nothing under DiLoCo so the non-DiLoCo
+    ## construct-via-model_project path is skipped.
     -- if ns.diloco_is_enabled
-    -- include 'models/causal_lm/from_pretrained_config.yaml'
+    -- include 'models/from_diloco_server.yaml'
     -- endif
 
     [model_project_pp_args]
@@ -595,6 +596,12 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     fuse_optim_with_backward: {{ fuse_optim_with_backward | default(False) }}
     enable_activation_offloading: {{ activation_offloading | default(False) }}
     dataloader_drop_last: True
+    ## Under DiLoCo the model is built empty (from the staged config, no
+    ## weights) and filled from the server's parameter sync at register.
+    ## Construction strategy is left at the operator default here; building
+    ## the empty skeleton on the meta device (allocation-free) and skipping
+    ## model-weight checkpoint save/load is a planned trainer change tracked
+    ## as PR 4 (see docs/trainers/diloco-architecture.md).
     construct_model_on: {{ construct_model_on | toyaml("default") }}
     activation_memory_budget: {{ activation_memory_budget | toyaml(None) }}
     gc_threshold: {{ gc_threshold | default(0.9) }}
@@ -689,11 +696,6 @@ optimizer_groups: &optimizer_groups
         type: bool
         group: "DiLoCo"
         help: "Render-time only: force the template to render as if DiLoCo were active. Useful for `forgather pp`/`ls` diagnostics. Actual runs still require DILOCO_SERVER to be set in the worker env (preprocess_dataset's validity check enforces it)."
-    model_id_or_path:
-        names: ["--model-id-or-path", "-M"]
-        type: path
-        group: "Model"
-        help: "HF model ID or local path to load the model FROM. Required under DiLoCo (every worker must start from the same checkpoint). For non-DiLoCo runs, defaults to the project's main model dir."
     model_project:
         names: "--model-project"
         type: path

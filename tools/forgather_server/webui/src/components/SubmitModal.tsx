@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   api,
   ClusterJobSubmitRequest,
@@ -218,52 +218,15 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     enabled: !!selectedDiLoCoBase,
     staleTime: 60_000,
   });
-  // Tracks the last value the DiLoCo pre-fill wrote into
-  // model_id_or_path. Lets the seeding effect distinguish "operator
-  // typed something different" from "still the value we put there"
-  // when picking a new server.
-  const modelPathSeededRef = useRef<string | null>(null);
-  // Seed defaults whenever /info loads for a fresh selection. Operator
-  // edits aren't overwritten — we only seed empty fields.
-  useEffect(() => {
-    const info: DiLoCoInfo | undefined = dilocoInfoQ.data;
-    if (!selectedDiLoCoBase || !info) return;
-    // sync_every / dylu / bf16_comm / num_fragments are server-authoritative
-    // and resolved by the worker from /info — nothing to seed into the form.
-    // The picker shows the server's values read-only instead.
-    // Seed --model-id-or-path from the server's output_dir so the
-    // worker constructs its model against the same checkpoint the
-    // server loaded from. Catches the operator-misconfiguration
-    // class of bug paired with the server-side fingerprint check
-    // (#51 / DiLoCoModelMismatchError).
-    //
-    // Behavior: each time a server is freshly picked (or its info
-    // changes), overwrite the field with the server's output_dir
-    // — UNLESS the operator has manually edited the field since the
-    // last seed, in which case their value wins. modelPathSeededRef
-    // tracks the value we last wrote so we can tell "operator-typed"
-    // from "still-our-seed" without an explicit dirty flag.
-    if (info.output_dir) {
-      const hasDest = (argsQ.data ?? []).some(
-        (a) => a.dest === "model_id_or_path",
-      );
-      if (hasDest) {
-        const next = info.output_dir;
-        setValues((prev) => {
-          const cur = prev.model_id_or_path ?? "";
-          // First seed (cur empty / matches a cached server pre-fill)
-          // OR cur still equals what we last wrote: replace.
-          const operatorEdited =
-            cur.trim() !== "" &&
-            cur !== modelPathSeededRef.current;
-          if (operatorEdited) return prev;
-          modelPathSeededRef.current = next;
-          return { ...prev, model_id_or_path: next };
-        });
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dilocoInfoQ.data, selectedDiLoCoBase, argsQ.data]);
+  // Under DiLoCo the worker no longer takes a model path: it fetches the
+  // model definition (config + custom code + tokenizer) from the server's
+  // /model_def endpoint, builds the model empty on meta, and pulls weights
+  // via the parameter sync (issue #53). So there is nothing to seed into
+  // --model-id-or-path here — the field is ignored on DiLoCo submissions
+  // (its help text says so) and the server-side fingerprint check stays as
+  // defense-in-depth. sync_every / dylu / bf16_comm / num_fragments are
+  // server-authoritative too; the picker shows the server's values
+  // read-only rather than seeding the form.
 
   // Dataset-source selector — state + queries + seeding live in the
   // shared hook. ``null`` = local (in-process loader). The hook waits
