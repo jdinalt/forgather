@@ -1121,19 +1121,24 @@ One config knob expresses it and drives both behaviors:
    checkpoints remain discoverable for resume while a model-less *normal*
    checkpoint (missing weights, no marker — a partial/corrupt save) stays
    invalid and discovery falls back to an older complete one.
-3. **Construction derives from the component set.** `_model_weights_external()`
-   is true when `"model"` is excluded. `_prepare_model` then forces the meta
-   path, skips the meta→default downgrade, and runs the initialize-missing
-   pass to fill the empty skeleton in place — no second knob, because "model
-   not checkpointed" *is* the "weights come from elsewhere" signal.
-   `_restore_from_checkpoint` skips its own initialize-missing in this case
-   (the skeleton is already initialized) and the parameter sync overwrites
-   the persistent weights at register. The pipeline trainer (which always
-   constructs on meta) runs the per-stage initialize-missing pass when
-   weights are external — recomputing only the non-persistent buffers (e.g.
-   RoPE `inv_freq`) the sync doesn't carry, and deliberately **not** the
-   rank-0 full-CPU build/distribute (`_initialize_params`), which is the
-   expensive last-resort path that loading weights exists to avoid.
+3. **Construction derives from the component set; external load is a hook.**
+   `_model_weights_external()` is true when `"model"` is excluded. The model
+   is then built empty on meta (forced meta, no downgrade — no second knob,
+   because "model not checkpointed" *is* the "weights come from elsewhere"
+   signal), and `_restore_from_checkpoint` runs the **uniform load → init**
+   sequence: it loads any resume checkpoint's non-model components, dispatches
+   the **`on_load_model_weights`** callback event for the external weights,
+   then runs initialize-missing. DiLoCo implements that event — its worker
+   registers and applies the server's global params, **flagging** them
+   `_is_hf_initialized`, exactly as a checkpoint load flags loaded tensors —
+   so initialize-missing fills only what neither source provided (the
+   non-persistent buffers, e.g. RoPE `inv_freq`). This is why DiLoCo
+   registration moved from `on_train_begin` to the hook: it now happens where
+   weights are loaded, before the init pass, so there is no full-init-then-
+   overwrite. The pipeline trainer (always meta) skips its rank-0 full-CPU
+   build/distribute (`_initialize_params`) in the external case — that
+   expensive last-resort path is exactly what loading weights exists to avoid;
+   the per-stage initialize-missing recomputes the buffers.
 4. **DiLoCo defaults, overridable.** `lm_training_project.yaml` sets, under
    DiLoCo, `construct_model_on: meta` and `checkpoint_components: [optimizer,
    scheduler, trainer, rng]`; a child template / leaf overrides via the
@@ -1153,7 +1158,11 @@ One config knob expresses it and drives both behaviors:
   `MODEL_EXCLUDED_MARKER` written when the model is excluded.
 - `validate_checkpoint` + `MODEL_EXCLUDED_MARKER` (`sharded_checkpoint.py`).
 - `Trainer._model_weights_external()` + `_prepare_model` /
-  `_restore_from_checkpoint`; `PipelineTrainer._prepare_model` init condition.
+  `_restore_from_checkpoint` (dispatches `on_load_model_weights`);
+  `PipelineTrainer._prepare_model` init condition.
+- `on_load_model_weights` event (documented in `TrainerCallback`);
+  `DiLoCoCallback._start_worker` (register + apply + flag), invoked from
+  `on_load_model_weights` with `on_train_begin` as the idempotent fallback.
 - Tests: `tests/unit/ml/test_checkpoint_components.py` and the empty-meta
   build in `test_meta_checkpoint_load.py`.
 

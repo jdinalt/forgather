@@ -207,14 +207,20 @@ class DiLoCoCallback(TrainerCallback):
                     f"well below {heartbeat_timeout}s."
                 )
 
-    def on_train_begin(
+    def _start_worker(
         self,
         args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
     ):
-        """Create and start the DiLoCoWorker.
+        """Create and start the DiLoCoWorker (idempotent).
+
+        Invoked from :meth:`on_load_model_weights` (the trainer's
+        weight-load hook, firing during ``_prepare`` where a checkpoint would
+        load) and, as a fallback, from :meth:`on_train_begin`. Returns
+        immediately if the worker is already started, so whichever fires
+        first wins and the other is a no-op.
 
         Raises
         ------
@@ -243,6 +249,11 @@ class DiLoCoCallback(TrainerCallback):
             DiLoCoServerUnreachable,
         )
         from forgather.ml.diloco.worker import DiLoCoWorker
+
+        if self._worker is not None:
+            # Already started (the on_load_model_weights hook ran, or a prior
+            # call). Idempotent so on_train_begin's fallback is a no-op.
+            return
 
         if not self.active:
             # Fail-fast: the callback being in the trainer's enabled
@@ -413,6 +424,20 @@ class DiLoCoCallback(TrainerCallback):
             self._worker = None
             raise
 
+        # Flag the server-provided tensors so the trainer's subsequent
+        # initialize-missing pass fills only what the server did NOT send
+        # (non-persistent buffers like RoPE inv_freq). The server holds the
+        # full persistent state-dict (params + persistent buffers), so flag
+        # exactly those keys; without it the apply-path init would re-randomize
+        # and clobber the just-applied global params. Flag the materialized
+        # module(s): the pipeline trainer's stages live in pipeline_modules
+        # (trainer.model is the meta skeleton), otherwise the model itself.
+        from forgather.ml.sharded_checkpoint import flag_loaded_tensors
+
+        pp_modules = getattr(trainer, "pipeline_modules", None) if trainer else None
+        for mod in pp_modules or [model]:
+            flag_loaded_tensors(mod, set(mod.state_dict().keys()))
+
         # Apply deferred checkpoint state
         if self._pending_state is not None:
             self._apply_pending_state()
@@ -422,6 +447,41 @@ class DiLoCoCallback(TrainerCallback):
             f"DiLoCoCallback: worker started "
             f"(server={self.server_addr}, sync_every={self.sync_every})"
         )
+
+    def on_load_model_weights(
+        self,
+        args: MinimalTrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
+        """Trainer hook: load model weights from the DiLoCo server.
+
+        Fires during ``_prepare`` at the point a checkpoint would load (when
+        ``checkpoint_components`` excludes ``"model"``). Registers the worker
+        and applies the server's global params, flagging them so the trainer's
+        following initialize-missing pass fills only the rest (e.g. RoPE
+        buffers). The weights arrive *via* register, so this is the whole
+        worker bring-up — ``on_train_begin`` then no-ops.
+        """
+        self._start_worker(args, state, control, **kwargs)
+
+    def on_train_begin(
+        self,
+        args: MinimalTrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
+        """Fallback worker start.
+
+        Normally the worker is already started by ``on_load_model_weights``
+        (the weights-external path); this is a no-op then. It still does the
+        start when that hook never fired — e.g. a DiLoCo run whose config did
+        not exclude ``"model"`` from ``checkpoint_components`` — so the
+        parameter-sync lifecycle is never silently skipped.
+        """
+        self._start_worker(args, state, control, **kwargs)
 
     def _apply_pending_state(self):
         """Apply deferred state from load_state_dict to the active worker."""

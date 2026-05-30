@@ -658,8 +658,11 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         self.state = self._init_state()
         self.checkpoint_manager = self._init_checkpoint_manager()
 
-        # Restore from checkpoint (path already resolved by _resolve_checkpoint)
-        if self.args.resume_from_checkpoint:
+        # Restore weights/state, then initialize what wasn't filled. Runs when
+        # there's a resume checkpoint OR when weights are supplied externally
+        # (checkpoint_components excludes "model" — e.g. DiLoCo, where the
+        # on_load_model_weights hook pulls them from the server).
+        if self.args.resume_from_checkpoint or self._model_weights_external():
             self._restore_from_checkpoint()
 
         self._dispatch_event("on_init_end")
@@ -942,14 +945,10 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             case _:
                 raise ValueError("Requires one of: default|meta|device")
         assert self.model is not None
-        # External-weights (e.g. DiLoCo): the model was built empty on meta
-        # and no checkpoint will fill it (the manager skips model load), so
-        # initialize the skeleton now — before fp8/qat swaps and wrapping,
-        # mirroring the from-scratch path. The parameter sync overwrites the
-        # persistent weights at register. _restore_from_checkpoint skips its
-        # own initialize-missing in this case so we never double-init.
-        if model_external:
-            self._initialize_missing_after_load()
+        # External-weights (e.g. DiLoCo): the model is built empty on meta
+        # here; the weights are loaded later in _restore_from_checkpoint (via
+        # the on_load_model_weights hook) followed by initialize-missing, so
+        # there is nothing to initialize at construction time.
         # Linear-swap recipes (fp8 / qat) are mutually exclusive — see the
         # _LINEAR_SWAP_RECIPES check in BaseTrainingArguments.__post_init__.
         # The if-chain is sequential rather than elif so a future relaxed
@@ -978,22 +977,35 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             logger.info(f"Estimated FLOPs per token: {self._flops_per_token:.2e}")
 
     def _restore_from_checkpoint(self) -> None:
-        """Load the resume checkpoint, THEN initialize what it didn't fill.
+        """Load model/training state, THEN initialize what wasn't filled.
 
-        Order is load-then-init and must stay that way: ``load_checkpoint``
-        flags the tensors it fills (``flag_loaded_tensors``), so the
-        subsequent ``_initialize_missing_after_load`` only touches the rest
-        (non-persistent buffers like RoPE ``inv_freq``, plus any params
-        absent from the checkpoint). Running the init first would leave
-        everything unflagged and re-initialize the whole model — the slow
-        full-init the meta route exists to avoid — only to immediately
-        overwrite it with the loaded weights.
+        Uniform "load → init-missing" path with two possible weight sources:
+
+        * **Checkpoint** — ``load_checkpoint`` loads the active components and
+          flags the tensors it fills (``flag_loaded_tensors``).
+        * **External** (``checkpoint_components`` excludes ``"model"``, e.g.
+          DiLoCo) — the ``on_load_model_weights`` callback loads the weights
+          from the external authority (the parameter server) and flags them.
+          The two compose: with a resume checkpoint present, it restores the
+          non-model components (optimizer / scheduler / trainer / RNG) and the
+          hook supplies the weights.
+
+        Order is load-then-init and must stay that way: the load flags the
+        tensors it fills, so the subsequent ``_initialize_missing_after_load``
+        only touches the rest (non-persistent buffers like RoPE ``inv_freq``,
+        plus any params neither source provided). Running the init first would
+        leave everything unflagged and re-initialize the whole model — the
+        slow full-init the meta route exists to avoid — only to overwrite it.
         """
-        self.load_checkpoint(self.args.resume_from_checkpoint)
-        # When model weights are external (model excluded from the checkpoint),
-        # the skeleton was already initialized in _prepare_model — don't re-run
-        # the init here (it would re-randomize before the sync overwrites).
-        if self._constructed_on_meta and not self._model_weights_external():
+        if self.args.resume_from_checkpoint:
+            self.load_checkpoint(self.args.resume_from_checkpoint)
+        if self._model_weights_external():
+            # Hand off to whatever provides the weights externally (DiLoCo's
+            # worker registers and applies the server's global params, flagging
+            # them so the init pass below skips them). No-op if no callback
+            # implements the event.
+            self._dispatch_event("on_load_model_weights")
+        if self._constructed_on_meta:
             self._initialize_missing_after_load()
 
     def _initialize_missing_after_load(self) -> None:
