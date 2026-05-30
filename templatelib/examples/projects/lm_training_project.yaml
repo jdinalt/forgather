@@ -362,25 +362,15 @@
         -- set ns.diloco_server_addr = getenv("DILOCO_SERVER") or ""
     -- endif
 
-    ## NB: this base project does not define ``model_id_or_path``. The
-    ## non-DiLoCo path constructs the model from ``model_project`` (a
-    ## from_project build), and under DiLoCo the definition is fetched
-    ## from the server (issue #53) — neither consults a model path. The
-    ## finetune projects (``finetune_v2.yaml``) define their own
-    ## ``model_id_or_path`` arg and ``ns.model_id_or_path`` where it is
-    ## actually load-bearing.
-
     ## DiLoCo: per-worker output dir. When DILOCO_WORKER_ID is set
     ## (the scheduler emits it whenever DiLoCo is enabled, with a
     ## queue_id fallback), append it to ``ns.output_dir`` so each
     ## worker gets a distinct on-disk directory. No-op for non-DiLoCo
     ## runs. The suffix operates on ``ns.output_dir`` (not
     ## ``ns.model_name``) so any child template that overrides
-    ## ``ns.output_dir`` in its own ``[globals]`` (e.g.
-    ## ``finetune_v2.yaml`` derives it from ``ns.model_id_or_path``)
-    ## can re-apply this same two-line block at the end of its block
-    ## and get correct per-worker semantics without double-suffix
-    ## bugs.
+    ## ``ns.output_dir`` in its own ``[globals]`` can re-apply this same
+    ## two-line block at the end of its block and get correct per-worker
+    ## semantics without double-suffix bugs.
     -- if getenv("DILOCO_WORKER_ID")
         -- set ns.output_dir = ns.output_dir + "_" + getenv("DILOCO_WORKER_ID")
         -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
