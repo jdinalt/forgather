@@ -655,6 +655,16 @@ class BaseTrainer(
         else:
             raise ValueError("sdpa-backend must be a List[str] or str")
 
+    def _has_event_handler(self, event: str) -> bool:
+        """True if any registered callback implements ``event``.
+
+        Lets a caller distinguish "dispatched and handled" from "no handler
+        exists" so it can fail loud when an action it relies on (e.g.
+        ``on_load_model_weights`` loading external weights) has no implementer,
+        rather than silently doing nothing.
+        """
+        return any(callable(getattr(cb, event, None)) for cb in self.callbacks)
+
     def _dispatch_event(self, event: str, **kwargs):
         """Dispatch a trainer event to all registered callbacks.
 

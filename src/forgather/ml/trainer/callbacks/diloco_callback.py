@@ -207,20 +207,24 @@ class DiLoCoCallback(TrainerCallback):
                     f"well below {heartbeat_timeout}s."
                 )
 
-    def _start_worker(
+    def on_load_model_weights(
         self,
         args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
     ):
-        """Create and start the DiLoCoWorker (idempotent).
+        """Load the model weights from the DiLoCo server (trainer hook).
 
-        Invoked from :meth:`on_load_model_weights` (the trainer's
-        weight-load hook, firing during ``_prepare`` where a checkpoint would
-        load) and, as a fallback, from :meth:`on_train_begin`. Returns
-        immediately if the worker is already started, so whichever fires
-        first wins and the other is a no-op.
+        Dispatched by the trainer during ``_prepare`` at the point a
+        checkpoint would load — i.e. when ``checkpoint_components`` excludes
+        ``"model"`` (the DiLoCo default). Builds the ``DiLoCoWorker``,
+        registers (which returns the server's global params), applies them,
+        and flags them ``_is_hf_initialized`` so the trainer's following
+        initialize-missing pass fills only the rest (non-persistent buffers
+        like RoPE ``inv_freq``). The weights arrive *via* register, so this is
+        the whole worker bring-up; the parameter-sync optimizer hook and
+        heartbeat it installs then run during training.
 
         Raises
         ------
@@ -249,11 +253,6 @@ class DiLoCoCallback(TrainerCallback):
             DiLoCoServerUnreachable,
         )
         from forgather.ml.diloco.worker import DiLoCoWorker
-
-        if self._worker is not None:
-            # Already started (the on_load_model_weights hook ran, or a prior
-            # call). Idempotent so on_train_begin's fallback is a no-op.
-            return
 
         if not self.active:
             # Fail-fast: the callback being in the trainer's enabled
@@ -448,24 +447,6 @@ class DiLoCoCallback(TrainerCallback):
             f"(server={self.server_addr}, sync_every={self.sync_every})"
         )
 
-    def on_load_model_weights(
-        self,
-        args: MinimalTrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ):
-        """Trainer hook: load model weights from the DiLoCo server.
-
-        Fires during ``_prepare`` at the point a checkpoint would load (when
-        ``checkpoint_components`` excludes ``"model"``). Registers the worker
-        and applies the server's global params, flagging them so the trainer's
-        following initialize-missing pass fills only the rest (e.g. RoPE
-        buffers). The weights arrive *via* register, so this is the whole
-        worker bring-up — ``on_train_begin`` then no-ops.
-        """
-        self._start_worker(args, state, control, **kwargs)
-
     def on_train_begin(
         self,
         args: MinimalTrainingArguments,
@@ -473,15 +454,25 @@ class DiLoCoCallback(TrainerCallback):
         control: TrainerControl,
         **kwargs,
     ):
-        """Fallback worker start.
+        """Defensive check that the worker was started.
 
-        Normally the worker is already started by ``on_load_model_weights``
-        (the weights-external path); this is a no-op then. It still does the
-        start when that hook never fired — e.g. a DiLoCo run whose config did
-        not exclude ``"model"`` from ``checkpoint_components`` — so the
-        parameter-sync lifecycle is never silently skipped.
+        The worker is brought up earlier, in :meth:`on_load_model_weights`
+        (dispatched during ``_prepare`` when model weights are external). This
+        callback is forgather-specific, so that hook always fires for a
+        correctly configured DiLoCo run. If the worker is still ``None`` here,
+        the run is misconfigured — the callback is active but
+        ``checkpoint_components`` didn't exclude ``"model"``, so the trainer
+        never asked us to load the server's weights. Fail loud rather than
+        train a model the server never filled.
         """
-        self._start_worker(args, state, control, **kwargs)
+        if self._worker is None:
+            raise RuntimeError(
+                "DiLoCoCallback: worker was not started by on_load_model_weights. "
+                "The DiLoCo callback is active but the trainer never dispatched "
+                "the weight-load hook — exclude 'model' from checkpoint_components "
+                "so the worker loads weights from the server (the DiLoCo template "
+                "sets this)."
+            )
 
     def _apply_pending_state(self):
         """Apply deferred state from load_state_dict to the active worker."""

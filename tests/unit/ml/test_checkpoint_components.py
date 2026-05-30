@@ -90,6 +90,71 @@ class TestGetActiveStateComponents(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# _has_event_handler — external-load handler presence
+# ---------------------------------------------------------------------------
+
+
+class TestHasEventHandler(unittest.TestCase):
+    def _has(self, callbacks):
+        stub = SimpleNamespace(callbacks=callbacks)
+        return BaseTrainer._has_event_handler(stub, "on_load_model_weights")
+
+    def test_true_when_a_callback_implements_it(self):
+        class _Loader:
+            def on_load_model_weights(self, *a, **k):
+                pass
+
+        self.assertTrue(self._has([_Loader()]))
+
+    def test_false_when_none_implement_it(self):
+        class _Other:
+            def on_train_begin(self, *a, **k):
+                pass
+
+        self.assertFalse(self._has([_Other()]))
+        self.assertFalse(self._has([]))
+
+
+# ---------------------------------------------------------------------------
+# _verify_external_weights_loaded — the persistent weights were actually loaded
+# ---------------------------------------------------------------------------
+
+
+class _ModelWithBuffer(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear = nn.Linear(4, 4)
+        # Non-persistent buffer (RoPE-like): excluded from state_dict, so the
+        # verification must NOT require it to be flagged.
+        self.register_buffer("rope", torch.zeros(4), persistent=False)
+
+
+class TestVerifyExternalWeightsLoaded(unittest.TestCase):
+    def _verify(self, model):
+        stub = SimpleNamespace(_materialized_modules=lambda: [model])
+        Trainer._verify_external_weights_loaded(stub)
+
+    def test_raises_when_persistent_weights_unflagged(self):
+        # Nothing flagged -> the external source loaded nothing -> raise.
+        with self.assertRaises(RuntimeError):
+            self._verify(_ModelWithBuffer())
+
+    def test_passes_when_persistent_weights_flagged(self):
+        model = _ModelWithBuffer()
+        # Flag the persistent params (what the server would supply); leave the
+        # non-persistent 'rope' buffer unflagged (init recomputes it).
+        for p in model.linear.parameters():
+            p._is_hf_initialized = True
+        self._verify(model)  # no raise
+
+    def test_raises_when_only_some_flagged(self):
+        model = _ModelWithBuffer()
+        model.linear.weight._is_hf_initialized = True  # bias left unflagged
+        with self.assertRaises(RuntimeError):
+            self._verify(model)
+
+
+# ---------------------------------------------------------------------------
 # _model_weights_external — derived signal
 # ---------------------------------------------------------------------------
 

@@ -1158,12 +1158,18 @@ One config knob expresses it and drives both behaviors:
   `MODEL_EXCLUDED_MARKER` written when the model is excluded.
 - `validate_checkpoint` + `MODEL_EXCLUDED_MARKER` (`sharded_checkpoint.py`).
 - `Trainer._model_weights_external()` + `_prepare_model` /
-  `_restore_from_checkpoint` (dispatches `on_load_model_weights`);
-  `PipelineTrainer._prepare_model` init condition.
-- `on_load_model_weights` event (documented in `TrainerCallback`);
-  `DiLoCoCallback._start_worker` (register + apply + flag), invoked from
-  `on_load_model_weights` with `on_train_begin` as the idempotent fallback.
-- Tests: `tests/unit/ml/test_checkpoint_components.py` and the empty-meta
+  `_restore_from_checkpoint`; the latter dispatches `on_load_model_weights`
+  (guarded by `BaseTrainer._has_event_handler`, fail-loud if no loader) and
+  then `_verify_external_weights_loaded()` before initialize-missing.
+  `_materialized_modules()` enumerates the on-device module(s) (overridden by
+  `PipelineTrainer` → `pipeline_modules`); `PipelineTrainer._prepare_model`
+  init condition.
+- `on_load_model_weights` event (documented in `TrainerCallback`).
+  `DiLoCoCallback.on_load_model_weights` registers the worker, applies the
+  server's global params, and flags them; `on_train_begin` is a defensive
+  assert that the hook ran (forgather-only callback, so it always should).
+- Tests: `tests/unit/ml/test_checkpoint_components.py` (filter, external
+  signal, handler-presence, weights-loaded verification) and the empty-meta
   build in `test_meta_checkpoint_load.py`.
 
 ## Known Limitations
