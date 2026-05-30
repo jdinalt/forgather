@@ -1079,102 +1079,79 @@ The current architecture is client-server. To add peer-to-peer allreduce:
 
 ## Checkpoint state selection + empty-meta construction
 
-The DiLoCo model-bundle PR (#102) was scoped to "workers don't save/restore
-checkpoints": a worker stages the definition, built the model on the
-operator's default construction strategy, and pulled weights from the
-server. This section documents the follow-up that made two refinements
-real: DiLoCo workers now build the model **empty on meta** and checkpoint
-their **non-model** training state (never weights).
+A run selects which checkpoint state components it saves/loads via
+`TrainingArguments.checkpoint_components`, and a trainer can build the model
+**empty on the meta device** when the weights are supplied by an external
+authority rather than a checkpoint. DiLoCo uses both: the parameter server
+owns the weights, so a worker builds empty-on-meta and checkpoints its
+**non-model** training state only.
 
-### Motivation
+Why a worker must not checkpoint model weights: the server is the sole
+weight authority (workers pull global params at register), so a saved local
+copy wastes disk and risks loading a *stale* one from a different sync
+round. Trainer progress (step / LR position / RNG) is the state worth
+keeping; inner-optimizer state is optional. And building the empty skeleton
+on meta is allocation-free versus an on-device build that the sync
+immediately overwrites.
 
-1. **Never checkpoint model weights.** The server is the sole weight
-   authority (workers pull global params at register). A worker saving
-   weights wastes disk and risks loading a *stale* local copy from a
-   different sync round. But a worker may legitimately want to checkpoint
-   **other** state — trainer progress (step / LR position / RNG) is the
-   strongest case, inner-optimizer state a weaker second.
-2. **Empty-meta construction.** Building the empty skeleton on the meta
-   device is allocation-free (faster, lower peak memory) versus the current
-   on-device build that is immediately overwritten by the parameter sync.
-
-### The interaction that blocks a naive fix
-
-`_prepare()` calls `_resolve_checkpoint()` (`trainer.py:651`), which, when a
-local checkpoint exists, sets `self.args.resume_from_checkpoint` to its
-*path*. `_prepare_model` (`trainer.py:818`) then takes the meta path and
-`_restore_from_checkpoint` (`trainer.py:928`) calls `load_checkpoint`, which
-**loads model weights** from that checkpoint — exactly what DiLoCo must not
-do. And on a *fresh* run (no checkpoint) the meta strategy is downgraded to
-`default` (`trainer.py:833`), so even an explicit `construct_model_on=meta`
-never builds empty-on-meta. So both "skip weight load" and "build empty on
-meta" need first-class support.
-
-### Design
+### Mechanism
 
 The unifying invariant: *under DiLoCo the server owns the model weights.*
-That single fact drives both refinements through one **general, configurable**
-mechanism (restoring the fine-grained save/load control that predated the
-CheckpointManager refactor):
+One config knob expresses it and drives both behaviors:
 
-1. **Configurable checkpoint components.** `TrainingArguments.checkpoint_components`
-   (`list[str] | None`, `None` = all → unchanged behavior) selects which
-   components a run saves/loads. `BaseTrainer.get_active_state_components()`
-   calls the subclass's `get_state_components()` and filters it by that
-   field. The live consumer — `CheckpointManager.__init__` — calls the
-   filtered accessor (via `getattr`, so a provider predating it still works;
-   the `checkpoint_coordinator.py` "usage example" is only a docstring). This
-   covers all **five** `get_state_components()` implementations (`base`,
-   `ddp`, `fsdp2`, `accel`, `pipeline`) **without editing any of them**. No
-   `required`-flag change is needed: filtering removes the `"model"`
-   component entirely, so `model_state_component` is simply `None`.
-2. **Model save/load gated on the component.** With `"model"` filtered out,
+1. **Configurable checkpoint components.** `checkpoint_components`
+   (`list[str] | None`, `None` = all) selects which components a run
+   saves/loads. `BaseTrainer.get_active_state_components()` calls the
+   subclass's `get_state_components()` and filters it by that field. The live
+   consumer — `CheckpointManager.__init__` — calls the filtered accessor (via
+   `getattr`, so a provider lacking it falls back to the unfiltered set; the
+   `checkpoint_coordinator.py` "usage example" is only a docstring). This
+   covers all five `get_state_components()` implementations (`base`, `ddp`,
+   `fsdp2`, `accel`, `pipeline`) without editing any of them: filtering
+   removes the `"model"` component entirely, so `model_state_component` is
+   simply `None`. A key outside the known vocabulary
+   (`KNOWN_CHECKPOINT_COMPONENTS`) raises — a misspelled `"model"` must not
+   quietly convert a normal run into a weights-external one — while a known
+   key a given run doesn't produce is allowed and ignored.
+2. **Model save/load gated on the component.** With `"model"` excluded,
    `model_state_component is None`, and the CheckpointManager skips both
-   `_save_model` and `_load_model_from_checkpoint`. It instead drops a
-   `MODEL_EXCLUDED_MARKER` sentinel; `validate_checkpoint` accepts a
+   `_save_model` and `_load_model_from_checkpoint`, instead dropping a
+   `MODEL_EXCLUDED_MARKER` sentinel. `validate_checkpoint` accepts a
    model-less checkpoint **only** when that marker is present, so such
    checkpoints remain discoverable for resume while a model-less *normal*
-   checkpoint (missing weights, no marker — a partial/corrupt save) is still
-   rejected and discovery falls back to an older complete one.
-   A typo in `checkpoint_components` (a key outside the known vocabulary)
-   raises rather than silently dropping a component (e.g. a misspelled
-   `"model"` must not quietly convert a normal run into a weights-external
-   one); a *known* key the run doesn't produce is allowed and ignored.
+   checkpoint (missing weights, no marker — a partial/corrupt save) stays
+   invalid and discovery falls back to an older complete one.
 3. **Construction derives from the component set.** `_model_weights_external()`
-   is true when `"model"` is excluded. `_prepare_model` then forces meta,
-   skips the meta→default downgrade, and runs the initialize-missing pass to
-   fill the empty skeleton in place — no second knob, because "model not
-   checkpointed" *is* the "weights come from elsewhere" signal.
+   is true when `"model"` is excluded. `_prepare_model` then forces the meta
+   path, skips the meta→default downgrade, and runs the initialize-missing
+   pass to fill the empty skeleton in place — no second knob, because "model
+   not checkpointed" *is* the "weights come from elsewhere" signal.
    `_restore_from_checkpoint` skips its own initialize-missing in this case
-   (the skeleton was already initialized) and the parameter sync overwrites
-   the persistent weights at register.
-4. **DiLoCo defaults in config, overridable.** `lm_training_project.yaml`
-   sets, under DiLoCo, `construct_model_on: meta` and
-   `checkpoint_components: [optimizer, scheduler, trainer, dataset, rng]`
-   (everything but `model`); a child template / leaf overrides via the
-   `checkpoint_components` var. The inner-optimizer keep/skip question is thus
-   a config choice (include `"optimizer"` or not), not a hard-coded policy.
-5. **Pipeline trainer.** It already always constructs on meta; its
-   `_prepare_model` now also runs `_initialize_params` when weights are
-   external (so a model-excluded *resume* still initializes the stages rather
-   than waiting for a model load that never comes). Otherwise only the
-   `get_active_state_components()` filter applies.
+   (the skeleton is already initialized) and the parameter sync overwrites
+   the persistent weights at register. The pipeline trainer (which always
+   constructs on meta) runs `_initialize_params` whenever weights are
+   external, so a model-excluded resume still initializes the stages rather
+   than waiting for a model load that never comes.
+4. **DiLoCo defaults, overridable.** `lm_training_project.yaml` sets, under
+   DiLoCo, `construct_model_on: meta` and `checkpoint_components: [optimizer,
+   scheduler, trainer, dataset, rng]` (everything but `model`); a child
+   template / leaf overrides via the `checkpoint_components` var. The
+   inner-optimizer keep/skip question is therefore a config choice (include
+   `"optimizer"` or not), not a hard-coded policy.
 
-### Touch-points (as implemented)
+### Code map
 
-- `TrainingArguments.checkpoint_components` (`trainer.py`).
-- `BaseTrainer.get_active_state_components()` (`base_trainer.py`).
+- `TrainingArguments.checkpoint_components` (`trainer.py`);
+  `BaseTrainer.get_active_state_components()` + `KNOWN_CHECKPOINT_COMPONENTS`
+  (`base_trainer.py`).
 - `CheckpointManager`: filtered accessor at construction; `_save_model` /
-  `_load_model_from_checkpoint` gated on `model_state_component is not None`.
-- `validate_checkpoint` (`sharded_checkpoint.py`): manifest-only checkpoints
-  are valid.
+  `_load_model_from_checkpoint` gated on `model_state_component is not None`;
+  `MODEL_EXCLUDED_MARKER` written when the model is excluded.
+- `validate_checkpoint` + `MODEL_EXCLUDED_MARKER` (`sharded_checkpoint.py`).
 - `Trainer._model_weights_external()` + `_prepare_model` /
   `_restore_from_checkpoint`; `PipelineTrainer._prepare_model` init condition.
-- Config: DiLoCo `construct_model_on=meta` + `checkpoint_components` default
-  in `lm_training_project.yaml`.
-- Tests: `tests/unit/ml/test_checkpoint_components.py` (filter, external
-  signal, manager skip save/load) and the empty-meta build in
-  `test_meta_checkpoint_load.py`.
+- Tests: `tests/unit/ml/test_checkpoint_components.py` and the empty-meta
+  build in `test_meta_checkpoint_load.py`.
 
 ## Known Limitations
 
