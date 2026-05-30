@@ -1190,12 +1190,15 @@ def validate_checkpoint(checkpoint_path: str) -> bool:
     )
 
     if not has_checkpoint:
-        # A checkpoint with no model weights is still valid if it carries
-        # non-model training state — identified by the coordinator manifest.
-        # This is the model-weights-external case (e.g. DiLoCo: the parameter
-        # server owns the weights, so the worker checkpoints only optimizer /
-        # scheduler / trainer / RNG). See TrainingArguments.checkpoint_components.
-        if os.path.exists(os.path.join(checkpoint_path, CHECKPOINT_MANIFEST_FILENAME)):
+        # A checkpoint with no model weights is valid ONLY when it is
+        # explicitly marked model-less (the model-weights-external case, e.g.
+        # DiLoCo: the parameter server owns the weights, so the worker
+        # checkpoints only optimizer / scheduler / trainer / RNG). The marker
+        # is written by the CheckpointManager when "model" is excluded. A
+        # checkpoint missing model files WITHOUT the marker is a partial /
+        # corrupt normal checkpoint and stays invalid, so discovery falls back
+        # to an older complete one. See TrainingArguments.checkpoint_components.
+        if os.path.exists(os.path.join(checkpoint_path, MODEL_EXCLUDED_MARKER)):
             return True
         return False
 
@@ -1203,6 +1206,14 @@ def validate_checkpoint(checkpoint_path: str) -> bool:
 
 
 CHECKPOINT_MANIFEST_FILENAME = "checkpoint_manifest.json"
+
+#: Sentinel file marking a checkpoint that intentionally carries no model
+#: weights (model weights are supplied by an external authority, e.g. a DiLoCo
+#: parameter server). Written by the CheckpointManager when "model" is
+#: excluded from the active state components; consulted by validate_checkpoint
+#: so such a checkpoint is still discoverable for resume while a model-less
+#: *normal* checkpoint (missing weights, no marker) remains invalid.
+MODEL_EXCLUDED_MARKER = ".forgather_no_model_weights"
 
 
 def _get_checkpoint_timestamp(checkpoint_path: str) -> float:

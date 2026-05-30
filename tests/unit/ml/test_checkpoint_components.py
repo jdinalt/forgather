@@ -44,6 +44,7 @@ def _filter(components, checkpoint_components):
     stub = SimpleNamespace(
         get_state_components=lambda: components,
         args=SimpleNamespace(checkpoint_components=checkpoint_components),
+        KNOWN_CHECKPOINT_COMPONENTS=BaseTrainer.KNOWN_CHECKPOINT_COMPONENTS,
     )
     return [c.key for c in BaseTrainer.get_active_state_components(stub)]
 
@@ -70,10 +71,18 @@ class TestGetActiveStateComponents(unittest.TestCase):
             ["optimizer", "scheduler", "trainer", "rng"],
         )
 
-    def test_unknown_key_ignored(self):
-        # 'bogus' isn't produced -> silently has no effect (warns).
+    def test_unknown_key_raises(self):
+        # A key outside the known vocabulary is a typo -> fail loud, so a
+        # misspelled "model" can't silently turn a normal run into a
+        # weights-external one (no-silent-fallback).
+        with self.assertRaises(ValueError):
+            _filter(self.components, ["optimizer", "modle"])
+
+    def test_known_but_unproduced_key_is_ignored(self):
+        # "dataset" is a valid key but absent from this component set (e.g. a
+        # non-stateful loader) -> allowed, simply no effect.
         self.assertEqual(
-            _filter(self.components, ["optimizer", "bogus"]), ["optimizer"]
+            _filter(self.components, ["optimizer", "dataset"]), ["optimizer"]
         )
 
     def test_order_preserved_from_get_state_components(self):
@@ -219,6 +228,11 @@ class TestCheckpointManagerModelSkip(unittest.TestCase):
         )
 
     def test_model_excluded_skips_weight_save(self):
+        from forgather.ml.sharded_checkpoint import (
+            MODEL_EXCLUDED_MARKER,
+            validate_checkpoint,
+        )
+
         t = self._trainer(["optimizer", "scheduler", "trainer", "dataset", "rng"])
         # Model component filtered out -> manager has no model component.
         self.assertIsNone(t.checkpoint_manager.model_state_component)
@@ -229,6 +243,13 @@ class TestCheckpointManagerModelSkip(unittest.TestCase):
         )
         # Non-model state IS persisted (the checkpoint dir is non-empty).
         self.assertTrue(os.listdir(ckpt), "non-model state should still be written")
+        # The model-less marker is present, so the checkpoint validates...
+        self.assertTrue(os.path.exists(os.path.join(ckpt, MODEL_EXCLUDED_MARKER)))
+        self.assertTrue(validate_checkpoint(ckpt))
+        # ...but a model-less checkpoint WITHOUT the marker (a partial/corrupt
+        # normal checkpoint) is rejected.
+        os.remove(os.path.join(ckpt, MODEL_EXCLUDED_MARKER))
+        self.assertFalse(validate_checkpoint(ckpt))
 
     def test_model_excluded_load_does_not_touch_weights(self):
         # Save without model weights, then mutate live weights and load — the

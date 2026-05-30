@@ -346,6 +346,14 @@ class BaseTrainer(
     * ``_eval_loop()`` — the evaluation loop, returning a metrics dict.
     """
 
+    #: The full vocabulary of checkpoint state-component keys any trainer may
+    #: produce. Used to fail loud on a typo in ``checkpoint_components`` (a
+    #: key outside this set) while still allowing a known key that a given run
+    #: happens not to produce. See ``get_active_state_components``.
+    KNOWN_CHECKPOINT_COMPONENTS: frozenset = frozenset(
+        {"model", "optimizer", "scheduler", "trainer", "dataset", "rng"}
+    )
+
     args: TBaseTrainingArguments
     model: torch.nn.Module | None
     data_collator: DataCollatorT | None
@@ -950,14 +958,25 @@ class BaseTrainer(
         if selected is None:
             return components
         selected_set = set(selected)
-        produced = {c.key for c in components}
-        unknown = selected_set - produced
+        # Fail loud on a key outside the known vocabulary — a typo like
+        # "modle" must NOT silently drop "model" and convert a normal run
+        # into a weights-external one (no-silent-fallback). A *known* key that
+        # this particular run doesn't produce (e.g. "dataset" with a
+        # non-stateful loader, or "optimizer" in an eval-only run) is allowed
+        # and simply has no effect.
+        unknown = selected_set - self.KNOWN_CHECKPOINT_COMPONENTS
         if unknown:
-            logger.warning(
-                "checkpoint_components lists unknown key(s) %s; this trainer "
-                "produces %s — they will have no effect.",
-                sorted(unknown),
-                sorted(produced),
+            raise ValueError(
+                f"checkpoint_components has unknown key(s) {sorted(unknown)}; "
+                f"valid keys are {sorted(self.KNOWN_CHECKPOINT_COMPONENTS)}."
+            )
+        produced = {c.key for c in components}
+        absent = selected_set - produced
+        if absent:
+            logger.info(
+                "checkpoint_components requests %s which this run does not "
+                "produce; ignored.",
+                sorted(absent),
             )
         dropped = produced - selected_set
         if dropped:

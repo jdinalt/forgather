@@ -1130,9 +1130,16 @@ CheckpointManager refactor):
    component entirely, so `model_state_component` is simply `None`.
 2. **Model save/load gated on the component.** With `"model"` filtered out,
    `model_state_component is None`, and the CheckpointManager skips both
-   `_save_model` and `_load_model_from_checkpoint`. `validate_checkpoint`
-   also accepts a model-less checkpoint (one with the coordinator manifest),
-   so such checkpoints are still discoverable for resume.
+   `_save_model` and `_load_model_from_checkpoint`. It instead drops a
+   `MODEL_EXCLUDED_MARKER` sentinel; `validate_checkpoint` accepts a
+   model-less checkpoint **only** when that marker is present, so such
+   checkpoints remain discoverable for resume while a model-less *normal*
+   checkpoint (missing weights, no marker — a partial/corrupt save) is still
+   rejected and discovery falls back to an older complete one.
+   A typo in `checkpoint_components` (a key outside the known vocabulary)
+   raises rather than silently dropping a component (e.g. a misspelled
+   `"model"` must not quietly convert a normal run into a weights-external
+   one); a *known* key the run doesn't produce is allowed and ignored.
 3. **Construction derives from the component set.** `_model_weights_external()`
    is true when `"model"` is excluded. `_prepare_model` then forces meta,
    skips the meta→default downgrade, and runs the initialize-missing pass to

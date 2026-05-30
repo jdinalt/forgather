@@ -15,6 +15,7 @@ from forgather.ml.distributed import (
     prefix_logger_rank,
 )
 from forgather.ml.sharded_checkpoint import (
+    MODEL_EXCLUDED_MARKER,
     create_sharing_metadata,
     find_latest_checkpoint,
     index_file_name,
@@ -208,8 +209,18 @@ class CheckpointManager(CheckpointInterface):
         # active components (model_state_component is None) — e.g. DiLoCo, where
         # the parameter server owns the weights. All ranks evaluate the same
         # config, so the model_save_fn collective is consistently skipped.
+        # Drop a marker so validate_checkpoint accepts this model-less
+        # checkpoint while still rejecting a partial/corrupt normal one.
         if self.model_state_component is None:
-            pass
+            if self._should_save_common():
+                with open(
+                    os.path.join(checkpoint_path, MODEL_EXCLUDED_MARKER), "w"
+                ) as fh:
+                    fh.write(
+                        "Model weights are supplied externally (e.g. a DiLoCo "
+                        "parameter server) and are intentionally not "
+                        "checkpointed.\n"
+                    )
         elif self.model_save_fn is not None:
             self._save_model(checkpoint_path)
         elif self._should_save_common():
