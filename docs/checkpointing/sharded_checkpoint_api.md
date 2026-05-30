@@ -146,6 +146,7 @@ def load_checkpoint(
 **Module mode** (meta construct → materialize → load → initialize-missing):
 
 ```python
+import torch
 from forgather.ml.sharded_checkpoint import (
     create_sharing_metadata,
     retie_parameters,
@@ -346,6 +347,7 @@ def create_pretrained_symlinks(
 ### Module-based save and load
 
 ```python
+import torch
 from forgather.ml.sharded_checkpoint import (
     save_checkpoint,
     load_checkpoint,

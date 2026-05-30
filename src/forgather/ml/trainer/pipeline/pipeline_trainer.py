@@ -1326,11 +1326,16 @@ class PipelineTrainer(
 
         The materialized model lives in ``self.pipeline_modules`` (``self.model``
         is the meta skeleton kept only for shape/config queries), so the
-        base implementation (which inits ``self.model``) doesn't apply. The
-        checkpoint load (base ``_prepare`` -> ``load_checkpoint`` over the
-        stage ``model_parts``) flags the tensors it filled, so this only
-        recomputes non-persistent buffers (e.g. RoPE ``inv_freq``) — local
-        and deterministic per module, so every rank computes the same values.
+        base implementation (which inits ``self.model``) doesn't apply.
+
+        Split stage modules don't expose an HF-style ``_init_weights``, so
+        ``initialize_missing_weights`` takes its fallback path: reset only
+        modules that own a non-persistent buffer (e.g. RoPE ``inv_freq``,
+        never in the checkpoint). That recompute is local and deterministic
+        per module, so every rank produces the same values. (The load — base
+        ``_prepare`` -> ``load_checkpoint`` over the stage ``model_parts`` —
+        also flags loaded tensors via ``flag_loaded_tensors``, which would
+        protect the apply path too, but the fallback is what runs here.)
         """
         for mod in self.pipeline_modules:
             initialize_missing_weights(mod)
