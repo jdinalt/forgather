@@ -79,6 +79,10 @@ src/forgather/ml/diloco/
   worker.py          Optimizer hook, pseudo-gradient computation, streaming, reconnection
   fragments.py       FragmentManager: parameter splitting, scheduling
   health.py          HealthMonitor: background worker liveness detection
+  model_def.py       Model-definition bundle: include/exclude policy, deterministic
+                     tar packing, content hashing, traversal-safe extraction (issue #53)
+  model_stage.py     stage_model_def(): worker-side fetch+cache of the bundle into
+                     <output_dir>/diloco_model_def, with stamp reuse + file-lock
 
 src/forgather/cli/
   diloco.py          CLI command handlers (_server_cmd, _status_cmd, _worker_cmd)
@@ -555,6 +559,103 @@ Worker                                  Server
   |    |<-- frag 2 updated params -------|
   | ...                                   |
 ```
+
+### Model-definition staging (issue #53)
+
+Under DiLoCo a worker takes **no model path**. It obtains the model
+*definition* — `config.json`, the custom modeling/configuration `.py`
+closure, and the tokenizer (never weights) — from the server, builds the
+model **empty on the meta device**, and fills it from the parameter sync.
+This removes the shared-filesystem requirement and makes it impossible for
+a worker to build a different model than the rest of the group.
+
+This happens **before** `DiLoCoWorker.start()` — it is part of trainer
+*construction* (materializing the model/tokenizer), not the worker
+lifecycle. The two stages are independent: staging supplies the *skeleton
+and tokenizer*; `start()`'s register/`_apply_global_params` supplies the
+*weights*.
+
+#### Components
+
+| Piece | Role |
+|-------|------|
+| `model_def.py` | The include/exclude policy (every `.py` + config + tokenizer; never weights/`server_state.pt`/indices/audit), deterministic `pack_model_def`, `compute_bundle_hash`, and traversal-safe `extract_model_def`. Shared by server and client. |
+| Server `GET /model_def` | Streams the packed tar with an `X-Forgather-Model-Hash` header. Bearer-required, control-plane only. |
+| `DiLoCoClient.fetch_model_def(dest)` | GET + validate header against `/info` + traversal-safe extract. |
+| `model_stage.stage_model_def(addr, output_dir)` | Worker-side fetch-and-cache into `<output_dir>/diloco_model_def/`; returns the local dir. |
+| Template `models/from_diloco_server.yaml` | Wires `stage_model_def` as a cached `!singleton` consumed by the tokenizer, the model config, and the model factory. |
+
+#### Sequence — what happens when the config loads the model
+
+The training config materializes the model assets in the worker's `train`
+process (where `DILOCO_SERVER` and the worker-suffixed `output_dir` are
+both known). The staging singleton closes over `output_dir` (a render-time
+Jinja literal) and the server address, and is referenced by three nodes:
+
+```
+[render time]  output_dir, server_addr baked into the !singleton node
+                     │
+[train process: materialize trainer → model assets]
+                     │
+   FIRST consumer to resolve  (usually the TOKENIZER, at dataset
+   preprocessing — it resolves into a real object before the model)
+                     │
+                     ▼
+   stage_model_def(server_addr, output_dir):
+     1. client.get_info()  ── want_hash = /info model_hash
+     2. fast path: <output_dir>/diloco_model_def/.forgather_model_hash
+        == want_hash?  ── yes → return dir (no lock, no tar fetch)
+     3. file_lock_build(dir, force_lock=True):        # serialize ranks
+          re-check stamp under lock → maybe return
+          tmp = mkdtemp(dir=output_dir)
+          client.fetch_model_def(tmp)                 # GET /model_def
+            → validate X-Forgather-Model-Hash vs /info → extract tar
+          write tmp/.forgather_model_hash (stamp LAST)
+          rmtree(dir); os.replace(tmp, dir)           # atomic swap
+        return dir
+                     │
+   AutoTokenizer.from_pretrained(dir, trust_remote_code=True)
+                     │
+   SECOND/THIRD consumers (model config, model factory) resolve the SAME
+   cached singleton → no second fetch; AutoConfig.from_pretrained(dir),
+   then the model !partial builds on meta (construct_model_on=meta)
+                     │
+[DiLoCoWorker.start()]  register → _apply_global_params overwrites the
+   freshly-initialized persistent weights with the server's global params
+```
+
+The shared-singleton design is load-bearing: the tokenizer is needed at
+dataset preprocessing, **earlier** than model construction, so staging
+cannot live inside the model factory alone. The first of {tokenizer,
+config, model} to materialize triggers exactly one fetch; the rest reuse
+the cache.
+
+#### Caching and invalidation
+
+* **Worker-side stamp.** `<output_dir>/diloco_model_def/.forgather_model_hash`
+  records the bundle identity. The fast path compares it to a fresh `/info`
+  `model_hash`: a match short-circuits the network tar fetch entirely
+  (cheap one `/info` round-trip), a mismatch — the server was restarted on
+  a *different* model — forces a clean re-fetch. There is no offline
+  fallback; an unreachable server fails loud.
+* **Atomic, crash-safe writes.** The bundle is fetched into a sibling temp
+  dir and `os.replace`'d into place, with the stamp written *last*, so an
+  interrupted fetch never leaves a match-looking directory behind (the next
+  run re-fetches).
+* **DDP / multi-worker.** `file_lock_build(..., force_lock=True)` serializes
+  ranks/workers sharing one host: one fetches under the lock, the rest
+  re-check the stamp on acquiring it and reuse.
+* **Server-side bundle cache.** `_loaded_checkpoint_dir` is content-stable
+  for the server's lifetime, so the server packs the tar once (lazily, under
+  `_model_def_lock`) and caches `self._model_def_bundle`. Concurrent worker
+  fetches don't each re-walk the dir or hold separate in-memory copies.
+* **Hash semantics.** `_model_hash` is the parameter `(name, shape)`
+  topology folded with the definition-file *contents* (`compute_bundle_hash`,
+  applied in `load_state`). So a config tweak or an edited modeling `.py`
+  — not just a shape change — changes the advertised `model_hash` and
+  invalidates worker stamps. The same value is returned by `/info` and the
+  `/model_def` header, and is complementary to the fine-grained
+  per-parameter `param_shapes` check at `/register`.
 
 ### Worker startup (`start()` / `__enter__`)
 
