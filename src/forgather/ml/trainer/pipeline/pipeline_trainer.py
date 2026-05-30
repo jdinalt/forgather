@@ -514,25 +514,35 @@ class PipelineTrainer(
             mod.to_empty(device=self.dist.device)
             retie_parameters(mod, self.sharing_metadata)
 
-        # Initialize from scratch when NOT resuming, OR when model weights are
-        # external (DiLoCo): in the external case no checkpoint ever carries
-        # the model, so the stages must be initialized here and the parameter
-        # sync overwrites them at register. When resuming a normal run the
-        # stages stay materialized-empty here; the weights are loaded later by
-        # the base _prepare (load_checkpoint over model_parts) and
-        # initialize_missing_weights runs AFTER that load via
-        # _initialize_missing_after_load() — initializing here would init
-        # before the load, the slow full-init the meta route avoids.
-        if not self.args.resume_from_checkpoint or self._model_weights_external():
+        # Populate the materialized stages. Three cases:
+        if self._model_weights_external():
+            # DiLoCo: the parameter server owns the persistent weights and
+            # supplies them via the sync at register, so we must NOT do the
+            # rank-0 full-CPU build/distribute below (it's the expensive
+            # last-resort path and can OOM rank-0 — exactly what loading
+            # pre-initialized weights exists to avoid). The only state the
+            # sync does not carry is the non-persistent buffers (e.g. RoPE
+            # inv_freq); recompute those per-stage, cheaply and locally. The
+            # garbage persistent weights from to_empty() are overwritten by
+            # _apply_global_params before the first forward.
+            self._initialize_missing_after_load()
+        elif not self.args.resume_from_checkpoint:
+            # From scratch with no checkpoint: rank-0 builds the full model on
+            # CPU just long enough to initialize weights, then distributes
+            # each rank's stage parameters. If this OOMs (very large model),
+            # initialize from a checkpoint instead.
             if self.dist.rank == 0:
-                # If this results in OOM (really large model), you will have to initialize the model from a checkpoint
-                # which will likely entail some amount of work.
                 logger.info(
                     "Constructing full model on CPU and distributing initialized parameters from rank0."
                 )
             self._initialize_params(
                 all_pipeline_modules, pipeline_modules, stage_indices, False
             )
+        # else: resuming a normal run — stages stay materialized-empty here;
+        # the weights are loaded later by the base _prepare (load_checkpoint
+        # over model_parts) and initialize_missing_weights runs AFTER that
+        # load via _initialize_missing_after_load(). Initializing here would
+        # init before the load, the slow full-init the meta route avoids.
 
         self._print_modules(pipeline_modules)
 

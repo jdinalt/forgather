@@ -1129,9 +1129,11 @@ One config knob expresses it and drives both behaviors:
    `_restore_from_checkpoint` skips its own initialize-missing in this case
    (the skeleton is already initialized) and the parameter sync overwrites
    the persistent weights at register. The pipeline trainer (which always
-   constructs on meta) runs `_initialize_params` whenever weights are
-   external, so a model-excluded resume still initializes the stages rather
-   than waiting for a model load that never comes.
+   constructs on meta) runs the per-stage initialize-missing pass when
+   weights are external — recomputing only the non-persistent buffers (e.g.
+   RoPE `inv_freq`) the sync doesn't carry, and deliberately **not** the
+   rank-0 full-CPU build/distribute (`_initialize_params`), which is the
+   expensive last-resort path that loading weights exists to avoid.
 4. **DiLoCo defaults, overridable.** `lm_training_project.yaml` sets, under
    DiLoCo, `construct_model_on: meta` and `checkpoint_components: [optimizer,
    scheduler, trainer, rng]`; a child template / leaf overrides via the
