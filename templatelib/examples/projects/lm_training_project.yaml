@@ -359,7 +359,7 @@
     -- if diloco_server is defined and diloco_server
         -- set ns.diloco_server_addr = diloco_server
     -- else
-        -- set ns.diloco_server_addr = getenv("DILOCO_SERVER")
+        -- set ns.diloco_server_addr = getenv("DILOCO_SERVER") or ""
     -- endif
 
     ## Model load path (non-DiLoCo only). Operators override via

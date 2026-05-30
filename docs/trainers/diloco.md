@@ -781,6 +781,17 @@ serializes concurrent ranks/workers on one host. There is no offline
 fallback: a worker that cannot reach the server fails loud rather than
 build a divergent model.
 
+> **Operator notes.** The worker loads the staged code with
+> `trust_remote_code=True`, so the DiLoCo server is a *trusted code-
+> distribution authority* for its workers — only register workers against
+> servers you control (the same trust the worker already extends by pulling
+> weights and authoritative settings from it). The bundle ships **every
+> `.py`** found in the server's checkpoint directory (the full
+> `trust_remote_code` closure, including split two-file definitions), so
+> that directory should contain only model-definition files — don't stash
+> unrelated scripts or secrets next to the model. Weights, optimizer state
+> (`server_state.pt`), shard indices, and the audit log are always excluded.
+
 ## Work-unit dispatch
 
 Workers in a DiLoCo run partition the training dataset through a

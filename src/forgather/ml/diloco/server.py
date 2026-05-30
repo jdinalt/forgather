@@ -538,6 +538,12 @@ class DiLoCoServer:
         # custom code, tokenizer) from here so DiLoCo workers can construct
         # the model without a shared filesystem (issue #53).
         self._loaded_checkpoint_dir: Optional[str] = None
+        # Packed bundle is content-stable for the server's lifetime
+        # (_loaded_checkpoint_dir never changes), so build it once on first
+        # request and cache it — avoids re-walking + re-reading the dir, and
+        # holding N in-memory copies when many workers fetch concurrently.
+        self._model_def_bundle: Optional[bytes] = None
+        self._model_def_lock = threading.Lock()
         self.load_state(from_checkpoint)
 
     def _initialize(self, model_state_dict: Dict[str, torch.Tensor]):
@@ -2214,7 +2220,10 @@ class DiLoCoServer:
             )
             return
         try:
-            payload = pack_model_def(self._loaded_checkpoint_dir)
+            with self._model_def_lock:
+                if self._model_def_bundle is None:
+                    self._model_def_bundle = pack_model_def(self._loaded_checkpoint_dir)
+                payload = self._model_def_bundle
         except OSError as exc:
             _send_json_response(
                 handler, {"error": f"could not read model definition: {exc}"}, 500
