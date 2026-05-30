@@ -128,9 +128,18 @@ class CheckpointManager(CheckpointInterface):
         self.trainer: "BaseTrainer | None" = None  # Set by trainer for callback access
         self.barrier_fn = get_barrier_fn(get_global_process_group())
 
-        # Initialize CheckpointCoordinator for state component handling
-        # Try new API first, fall back to old API if not implemented
-        state_components = stateful_provider.get_state_components()
+        # Initialize CheckpointCoordinator for state component handling.
+        # Prefer the filtered accessor (honors args.checkpoint_components) so
+        # a run can exclude components — notably "model", which makes the
+        # model-weight save/load below a no-op (DiLoCo: the server owns the
+        # weights). Falls back to the raw accessor for providers that predate
+        # the filter. Try new API first, fall back to old API if not implemented.
+        get_components = getattr(
+            stateful_provider,
+            "get_active_state_components",
+            stateful_provider.get_state_components,
+        )
+        state_components = get_components()
         if state_components is not None:
             # Extract model component - CheckpointManager handles model saving
             # separately via sharded checkpoint, but we still need the
@@ -195,7 +204,13 @@ class CheckpointManager(CheckpointInterface):
         # runs a collective op; the hook itself handles rank gating for the
         # actual file write. In the legacy shard-index path, only the "save
         # common" rank writes.
-        if self.model_save_fn is not None:
+        # Skip model-weight save entirely when "model" was filtered out of the
+        # active components (model_state_component is None) — e.g. DiLoCo, where
+        # the parameter server owns the weights. All ranks evaluate the same
+        # config, so the model_save_fn collective is consistently skipped.
+        if self.model_state_component is None:
+            pass
+        elif self.model_save_fn is not None:
             self._save_model(checkpoint_path)
         elif self._should_save_common():
             self._save_model(checkpoint_path)
@@ -377,7 +392,11 @@ class CheckpointManager(CheckpointInterface):
         if checkpoint_path is None:
             raise RuntimeError("Could not load checkpoint")
         logger.info(f"Resuming training from checkpoint: {checkpoint_path}")
-        self._load_model_from_checkpoint(checkpoint_path)
+        # Skip model-weight load when "model" was filtered out of the active
+        # components (DiLoCo supplies weights from the server). The non-model
+        # training state (optimizer/scheduler/trainer/rng) still restores.
+        if self.model_state_component is not None:
+            self._load_model_from_checkpoint(checkpoint_path)
         self._load_training_state(checkpoint_path)
 
         # Load checkpoint metadata (best checkpoints list + callback states)

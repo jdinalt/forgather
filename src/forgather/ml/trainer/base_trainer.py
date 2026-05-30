@@ -931,6 +931,42 @@ class BaseTrainer(
 
         return components
 
+    def get_active_state_components(self) -> List[StateComponent]:
+        """The checkpoint components actually saved/loaded for this run.
+
+        Calls the subclass's :meth:`get_state_components` (which declares the
+        FULL set the trainer is capable of) and filters it by
+        ``args.checkpoint_components``. ``None`` (default) returns the full
+        set — today's behavior. A list restricts the checkpoint to those keys.
+
+        This is the single chokepoint the ``CheckpointManager`` consults, so
+        every trainer's ``get_state_components()`` implementation stays intact
+        regardless of the per-run selection. Dropping ``"model"`` makes the
+        manager skip model-weight save/load (the model component is what
+        populates ``model_state_component``); see ``CheckpointManager``.
+        """
+        components = self.get_state_components()
+        selected = getattr(self.args, "checkpoint_components", None)
+        if selected is None:
+            return components
+        selected_set = set(selected)
+        produced = {c.key for c in components}
+        unknown = selected_set - produced
+        if unknown:
+            logger.warning(
+                "checkpoint_components lists unknown key(s) %s; this trainer "
+                "produces %s — they will have no effect.",
+                sorted(unknown),
+                sorted(produced),
+            )
+        dropped = produced - selected_set
+        if dropped:
+            logger.info(
+                "checkpoint_components excludes %s from checkpoints.",
+                sorted(dropped),
+            )
+        return [c for c in components if c.key in selected_set]
+
     def _get_dataset_sharing_pattern(self) -> SharingPattern:
         """Return the dataset state sharing pattern for this trainer.
 

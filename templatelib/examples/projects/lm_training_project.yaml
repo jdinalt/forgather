@@ -596,13 +596,21 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     fuse_optim_with_backward: {{ fuse_optim_with_backward | default(False) }}
     enable_activation_offloading: {{ activation_offloading | default(False) }}
     dataloader_drop_last: True
-    ## Under DiLoCo the model is built empty (from the staged config, no
-    ## weights) and filled from the server's parameter sync at register.
-    ## Construction strategy is left at the operator default here; building
-    ## the empty skeleton on the meta device (allocation-free) and skipping
-    ## model-weight checkpoint save/load is a planned trainer change tracked
-    ## as PR 4 (see docs/trainers/diloco-architecture.md).
+    ## Under DiLoCo the parameter server owns the model weights: the worker
+    ## builds the model empty on meta (allocation-free) and fills it from the
+    ## sync at register, and its checkpoints carry training state but NOT
+    ## model weights. ``checkpoint_components`` excluding "model" drives both
+    ## (the trainer reads it as "weights are external"); it is overridable by
+    ## a child template / leaf that sets ``checkpoint_components``.
+    -- if ns.diloco_is_enabled
+    construct_model_on: meta
+    checkpoint_components: {{ checkpoint_components | toyaml(["optimizer", "scheduler", "trainer", "dataset", "rng"]) }}
+    -- else
     construct_model_on: {{ construct_model_on | toyaml("default") }}
+    -- if checkpoint_components is defined and checkpoint_components
+    checkpoint_components: {{ checkpoint_components | toyaml }}
+    -- endif
+    -- endif
     activation_memory_budget: {{ activation_memory_budget | toyaml(None) }}
     gc_threshold: {{ gc_threshold | default(0.9) }}
     save_safetensors: {{ save_safetensors | default(False) }}

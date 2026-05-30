@@ -14,6 +14,7 @@ from typing import (
     Dict,
     Generic,
     Iterator,
+    List,
     Optional,
     Protocol,
     Tuple,
@@ -162,6 +163,21 @@ class TrainingArguments(BaseTrainingArguments):
     #          then load + initialize-missing). Requires a checkpoint (or an
     #          external loader such as DiLoCo) to fill the weights.
     construct_model_on: str = "default"  # "default" | "meta" | "device"
+
+    # Which checkpoint state components to save AND load. ``None`` (default)
+    # means every component the trainer produces (today's behavior). A list
+    # restricts checkpoints to those keys — a subset of "model", "optimizer",
+    # "scheduler", "trainer", "dataset", "rng". Filtered at a single chokepoint
+    # (``get_active_state_components``) so each trainer's full
+    # ``get_state_components()`` declaration is untouched.
+    #
+    # Excluding "model" means model weights are NOT persisted: the
+    # CheckpointManager skips model save/load, and _prepare_model treats the
+    # weights as externally supplied (build empty on meta, initialize the
+    # skeleton in place). This is the DiLoCo case — the parameter server owns
+    # the weights, so a worker checkpoints only training progress / optimizer /
+    # RNG and pulls weights from the sync at register.
+    checkpoint_components: Optional[List[str]] = None
 
     # https://pytorch.org/blog/activation-checkpointing-techniques/
     # Requires "torch_compile = True" option
@@ -784,6 +800,19 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                 eval_dataset, self.args.per_device_eval_batch_size
             )
 
+    def _model_weights_external(self) -> bool:
+        """True when model weights are supplied by an external authority and
+        must not be loaded from (or saved to) a checkpoint.
+
+        Signalled by excluding ``"model"`` from ``checkpoint_components``: the
+        same config that makes the CheckpointManager skip model save/load also
+        tells construction to build the model empty on meta and initialize the
+        skeleton in place (the weights arrive later — e.g. DiLoCo's parameter
+        sync). One knob, no separate flag.
+        """
+        cc = getattr(self.args, "checkpoint_components", None)
+        return cc is not None and "model" not in cc
+
     def _prepare_model(self) -> None:
         """
         Construct/initialize model and move to device (_prepare() sub-step 2).
@@ -816,7 +845,20 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         # ``device`` strategy stays as a fallback for models that can't be
         # built on meta.
         effective_strategy = self.args.construct_model_on
-        if (
+        model_external = self._model_weights_external()
+        if model_external:
+            # Model weights are supplied by an external authority (e.g. a
+            # DiLoCo parameter server), not a checkpoint: build the model
+            # empty on meta and initialize the skeleton in place; the sync
+            # overwrites the persistent weights before the first forward.
+            # Requires model_init to (re)build the skeleton.
+            assert self.model_init, (
+                "checkpoint_components excludes 'model' (weights supplied "
+                "externally), which requires model_init to build the empty "
+                "model on the meta device."
+            )
+            effective_strategy = "meta"
+        elif (
             effective_strategy == "default"
             and self.args.resume_from_checkpoint
             and self.model_init
@@ -825,12 +867,14 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             # A pre-built model passed without model_init stays on the
             # default (move-and-load) path.
             effective_strategy = "meta"
-        # Meta needs weights to come from somewhere (a checkpoint). With no
-        # checkpoint there is nothing to fill the materialized tensors, so
-        # from-scratch construction stays on-device (its init path runs in
-        # the model's __init__). DiLoCo, which loads weights from a remote
-        # server, is handled as a checkpoint load by its own wiring.
-        if effective_strategy == "meta" and not self.args.resume_from_checkpoint:
+        # Meta needs weights to come from somewhere (a checkpoint OR an
+        # external source). With neither, from-scratch construction stays
+        # on-device (its init path runs in the model's __init__).
+        if (
+            effective_strategy == "meta"
+            and not self.args.resume_from_checkpoint
+            and not model_external
+        ):
             logger.warning(
                 "No checkpoint available for meta device construction. "
                 "Falling back to 'default' strategy (construct on device, "
@@ -898,6 +942,14 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             case _:
                 raise ValueError("Requires one of: default|meta|device")
         assert self.model is not None
+        # External-weights (e.g. DiLoCo): the model was built empty on meta
+        # and no checkpoint will fill it (the manager skips model load), so
+        # initialize the skeleton now — before fp8/qat swaps and wrapping,
+        # mirroring the from-scratch path. The parameter sync overwrites the
+        # persistent weights at register. _restore_from_checkpoint skips its
+        # own initialize-missing in this case so we never double-init.
+        if model_external:
+            self._initialize_missing_after_load()
         # Linear-swap recipes (fp8 / qat) are mutually exclusive — see the
         # _LINEAR_SWAP_RECIPES check in BaseTrainingArguments.__post_init__.
         # The if-chain is sequential rather than elif so a future relaxed
@@ -938,7 +990,10 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         overwrite it with the loaded weights.
         """
         self.load_checkpoint(self.args.resume_from_checkpoint)
-        if self._constructed_on_meta:
+        # When model weights are external (model excluded from the checkpoint),
+        # the skeleton was already initialized in _prepare_model — don't re-run
+        # the init here (it would re-randomize before the sync overwrites).
+        if self._constructed_on_meta and not self._model_weights_external():
             self._initialize_missing_after_load()
 
     def _initialize_missing_after_load(self) -> None:

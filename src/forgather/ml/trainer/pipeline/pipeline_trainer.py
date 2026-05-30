@@ -514,13 +514,16 @@ class PipelineTrainer(
             mod.to_empty(device=self.dist.device)
             retie_parameters(mod, self.sharing_metadata)
 
-        # Initialize from scratch only when NOT resuming. When resuming, the
-        # stages stay materialized-empty here; the weights are loaded later
-        # by the base _prepare (load_checkpoint over model_parts) and
+        # Initialize from scratch when NOT resuming, OR when model weights are
+        # external (DiLoCo): in the external case no checkpoint ever carries
+        # the model, so the stages must be initialized here and the parameter
+        # sync overwrites them at register. When resuming a normal run the
+        # stages stay materialized-empty here; the weights are loaded later by
+        # the base _prepare (load_checkpoint over model_parts) and
         # initialize_missing_weights runs AFTER that load via
         # _initialize_missing_after_load() — initializing here would init
         # before the load, the slow full-init the meta route avoids.
-        if not self.args.resume_from_checkpoint:
+        if not self.args.resume_from_checkpoint or self._model_weights_external():
             if self.dist.rank == 0:
                 # If this results in OOM (really large model), you will have to initialize the model from a checkpoint
                 # which will likely entail some amount of work.

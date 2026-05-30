@@ -1190,6 +1190,13 @@ def validate_checkpoint(checkpoint_path: str) -> bool:
     )
 
     if not has_checkpoint:
+        # A checkpoint with no model weights is still valid if it carries
+        # non-model training state — identified by the coordinator manifest.
+        # This is the model-weights-external case (e.g. DiLoCo: the parameter
+        # server owns the weights, so the worker checkpoints only optimizer /
+        # scheduler / trainer / RNG). See TrainingArguments.checkpoint_components.
+        if os.path.exists(os.path.join(checkpoint_path, CHECKPOINT_MANIFEST_FILENAME)):
+            return True
         return False
 
     return True
