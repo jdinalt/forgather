@@ -683,6 +683,62 @@ class DiLoCoClient:
         """
         return self._request_json("GET", "/info")
 
+    def fetch_model_def(self, dest_dir: str) -> str:
+        """Fetch the model-definition bundle and extract it into ``dest_dir``.
+
+        GETs ``/model_def`` (control-plane, bearer-authenticated), validates
+        the ``X-Forgather-Model-Hash`` header against the server's
+        ``/info`` ``model_hash`` so the definition is never silently paired
+        with a mismatched parameter set, and extracts the tar traversal-safe
+        (see ``model_def.extract_model_def``). Weights are never in the
+        bundle — they arrive via the parameter sync.
+
+        Returns the server's model hash (the validated bundle identity), so
+        the caller can stamp the staging dir for later cache reuse.
+        """
+        from forgather.ml.diloco.model_def import MODEL_HASH_HEADER, extract_model_def
+
+        url = self._url("/model_def")
+        req = urllib.request.Request(url, method="GET", headers=self._headers())
+        try:
+            with urllib.request.urlopen(
+                req, timeout=self.timeout, context=self._ssl_for_request(url)
+            ) as resp:
+                bundle_hash = resp.headers.get(MODEL_HASH_HEADER)
+                data = resp.read()
+        except urllib.error.HTTPError as e:
+            try:
+                error_body = e.read().decode("utf-8", errors="replace")
+                error_detail = json.loads(error_body).get("error", error_body)
+            except Exception:
+                error_detail = str(e)
+            raise ConnectionError(
+                f"Server returned HTTP {e.code} for {url}: {error_detail}"
+            ) from e
+        except urllib.error.URLError as e:
+            raise ConnectionError(
+                f"Failed to fetch model definition from {url}: {e}"
+                f"{self._scheme_hint()}"
+            ) from e
+
+        # Cross-check the bundle against the advertised model_hash. A
+        # mismatch means the server's definition and parameter set have
+        # drifted (e.g. a restart on a different model mid-fetch) — fail
+        # loud rather than build the wrong model.
+        info_hash = self.get_info().get("model_hash")
+        if bundle_hash and info_hash and bundle_hash != info_hash:
+            raise DiLoCoModelMismatchError(
+                f"model_def bundle hash {bundle_hash[:12]} does not match "
+                f"server /info model_hash {info_hash[:12]}",
+                diagnostic=(
+                    "The server's model definition and parameter set "
+                    "disagree; it may have been restarted on a different "
+                    "model. Retry once the server has settled."
+                ),
+            )
+        extract_model_def(data, dest_dir)
+        return bundle_hash or info_hash or ""
+
     # ------------------------------------------------------------------
     # Work-unit dispatch (see docs/design/diloco-work-unit-dispatch.md)
     # ------------------------------------------------------------------

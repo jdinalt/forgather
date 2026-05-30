@@ -348,11 +348,25 @@
     ##      ``DILOCO_SERVER`` is unset at runtime.
     -- set ns.diloco_is_enabled = getenv("DILOCO_SERVER") or (diloco_server is defined and diloco_server) or ns.enable_diloco
 
-    ## Model load path. Operators override via --model-id-or-path
-    ## (typical for finetune from an external checkpoint); otherwise
-    ## default to this project's main model dir. Computed BEFORE the
-    ## worker-id suffix below so all DiLoCo workers default to
-    ## loading from the same shared checkpoint.
+    ## DiLoCo server address for the model-definition fetch. The worker
+    ## stages config + custom code + tokenizer from this server (issue
+    ## #53) — there is no model path under DiLoCo. Resolved the same way
+    ## as ``ns.diloco_is_enabled``: the ``--diloco-server`` Jinja var when
+    ## set, else the ``DILOCO_SERVER`` env var the scheduler emits at
+    ## worker spawn. Empty under the render-time ``enable_diloco``
+    ## diagnostic (no live server); harmless because the staging singleton
+    ## is only materialized at train time.
+    -- if diloco_server is defined and diloco_server
+        -- set ns.diloco_server_addr = diloco_server
+    -- else
+        -- set ns.diloco_server_addr = getenv("DILOCO_SERVER")
+    -- endif
+
+    ## Model load path (non-DiLoCo only). Operators override via
+    ## --model-id-or-path (typical for finetune from an external
+    ## checkpoint); otherwise default to this project's main model dir.
+    ## Under DiLoCo the path is ignored — the definition comes from the
+    ## server — so this is only consulted on the non-DiLoCo branch below.
     -- if model_id_or_path is defined and model_id_or_path
         -- set ns.model_id_or_path = model_id_or_path
     -- else
@@ -531,16 +545,16 @@ eval_dataset: &eval_dataset !call:getitem [ *eval_dataset_dict, 'eval_dataset' ]
     attn_implementation: "{{ ns.attn_implementation }}"
 
 [construct_new_model]
-    ## Under DiLoCo, the include emits ``&tokenizer`` and ``&model``
-    ## directly from a pretrained checkpoint (every worker must start
-    ## from the same initial weights — newly-constructed models would
-    ## have different random initializations and DiLoCo's parameter
-    ## sync averages divergent states). The ``--model-id-or-path``
-    ## arg (or ``ns.model_id_or_path`` default) points at the
-    ## checkpoint. The sub-blocks below then emit nothing under DiLoCo
-    ## so the non-DiLoCo construct-via-model_project path is skipped.
+    ## Under DiLoCo, the include emits ``&tokenizer`` and ``&model`` from
+    ## the server's model-definition bundle (issue #53): it stages config +
+    ## custom code + tokenizer into the worker's output dir and builds the
+    ## model empty on meta. Every worker therefore builds the *same* model
+    ## the server holds (no shared filesystem, no mismatched-architecture
+    ## foot-gun), and the parameter sync supplies the shared weights. The
+    ## sub-blocks below emit nothing under DiLoCo so the non-DiLoCo
+    ## construct-via-model_project path is skipped.
     -- if ns.diloco_is_enabled
-    -- include 'models/causal_lm/from_pretrained_config.yaml'
+    -- include 'models/from_diloco_server.yaml'
     -- endif
 
     [model_project_pp_args]
@@ -595,7 +609,15 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     fuse_optim_with_backward: {{ fuse_optim_with_backward | default(False) }}
     enable_activation_offloading: {{ activation_offloading | default(False) }}
     dataloader_drop_last: True
+    ## Under DiLoCo the model is built empty and filled from the server's
+    ## parameter sync, so construct on meta: allocation-free skeleton →
+    ## to_empty → initialize_missing (RoPE etc.) → weights overwritten at
+    ## register. Non-DiLoCo runs keep the operator-selected strategy.
+    -- if ns.diloco_is_enabled
+    construct_model_on: meta
+    -- else
     construct_model_on: {{ construct_model_on | toyaml("default") }}
+    -- endif
     activation_memory_budget: {{ activation_memory_budget | toyaml(None) }}
     gc_threshold: {{ gc_threshold | default(0.9) }}
     save_safetensors: {{ save_safetensors | default(False) }}
@@ -693,7 +715,7 @@ optimizer_groups: &optimizer_groups
         names: ["--model-id-or-path", "-M"]
         type: path
         group: "Model"
-        help: "HF model ID or local path to load the model FROM. Required under DiLoCo (every worker must start from the same checkpoint). For non-DiLoCo runs, defaults to the project's main model dir."
+        help: "HF model ID or local path to load the model FROM (non-DiLoCo runs only; defaults to the project's main model dir). Ignored under DiLoCo: the worker fetches the model definition from the server and pulls weights via the parameter sync."
     model_project:
         names: "--model-project"
         type: path

@@ -217,6 +217,17 @@ All communication uses HTTP/1.1 over TCP. The server runs a
 | POST | `/heartbeat` | JSON: `{worker_id, steps_per_second}` | JSON: `{status, sync_round, recommended_sync_every?}` |
 | POST | `/deregister` | JSON: `{worker_id}` | JSON: `{status: "ok"}` |
 | GET | `/status` | (none) | JSON: server state |
+| GET | `/info` | (none) | JSON: negotiation facts + `model_hash` |
+| GET | `/model_def` | (none) | tar: model definition (config + code + tokenizer, no weights); `X-Forgather-Model-Hash` header |
+
+`/model_def` is served from the checkpoint directory the server was started
+from (captured as `self._loaded_checkpoint_dir` in `load_state`). The
+include/exclude policy, deterministic packing, and traversal-safe extraction
+live in `forgather.ml.diloco.model_def`; the worker-side staging into
+`<output_dir>/diloco_model_def/` lives in
+`forgather.ml.diloco.model_stage`. Both `/info` and `/model_def` are
+control-plane endpoints (bearer-required, never served on the bulk
+listener).
 
 ### Binary tensor format (submit endpoints)
 

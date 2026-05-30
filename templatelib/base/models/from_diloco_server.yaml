@@ -1,0 +1,51 @@
+## Construct an empty model from a DiLoCo server's model-definition bundle.
+##
+## A DiLoCo worker takes no model path. Instead it stages the model
+## *definition* (config + custom modeling/configuration .py + tokenizer,
+## never weights) from the server into its own output directory, builds an
+## empty model on the meta device, and fills it from the server's parameter
+## sync at register time. This works with no shared filesystem and makes it
+## impossible for a worker to build a different model than the rest of the
+## group.
+##
+## The staging is a cached singleton anchored by both the tokenizer and the
+## model config, so the fetch happens exactly once on first reference. The
+## model itself is a !partial (the trainer's model_init); the trainer builds
+## it on meta (construct_model_on: meta) and the parameter sync overwrites
+## the freshly-initialized persistent weights before the first forward pass.
+-- extends 'models/base_language_model.yaml'
+
+[model_meta_config]
+    == super()
+    -- set ns.model_name = "Causal Language Model from DiLoCo Server"
+    -- set ns.model_description = "An empty model built from the DiLoCo server's model-definition bundle; weights are pulled from the server."
+    -- set ns.model_source = ""
+
+[model_header]
+    == super()
+# diloco_server_addr = "{{ ns.diloco_server_addr }}"
+# staged into        = "{{ ns.output_dir }}/diloco_model_def"
+
+[model_tokenizer]
+## Lazily fetch the definition bundle from the server into the worker's
+## output dir; the !singleton caches it so the model config below reuses
+## the same staging without a second fetch.
+diloco_model_dir: &diloco_model_dir !singleton:forgather.ml.diloco.model_stage:stage_model_def@diloco_model_dir
+    arg0: "{{ ns.diloco_server_addr }}"
+    arg1: "{{ ns.output_dir }}"
+
+tokenizer: &tokenizer !call:transformers:AutoTokenizer.from_pretrained@tokenizer
+    arg0: *diloco_model_dir
+    trust_remote_code: True
+
+[model_config]
+model_config: &model_config !call:transformers:AutoConfig.from_pretrained@model_config
+    arg0: *diloco_model_dir
+    trust_remote_code: True
+
+[model_constructor]
+# Custom transformer model built empty from the staged config; weights
+# arrive via the DiLoCo parameter sync, not from disk.
+model: &model !partial:transformers:AutoModelForCausalLM.from_config@model
+    arg0: *model_config
+    <<: *model_constructor_args
