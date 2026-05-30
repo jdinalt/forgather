@@ -73,6 +73,48 @@ def test_meta_load_preserves_weights_and_inits_buffers():
         assert t.abs().sum() > 0, f"{n} left at zero (not recomputed)"
 
 
+def test_init_missing_skips_loaded_modules_after_load():
+    """After load-then-init, the model's _init_weights is invoked ONLY on
+    modules that still own an unflagged tensor (RoPE's inv_freq buffer) —
+    never on loaded weight modules. This is the ordering guarantee: if init
+    ran BEFORE the load, nothing would be flagged and every module
+    (Linear/Embedding included) would be re-initialized."""
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    from forgather.ml.sharded_checkpoint import (
+        create_sharing_metadata,
+        initialize_missing_weights,
+        load_checkpoint,
+        retie_parameters,
+    )
+
+    config = AutoConfig.from_pretrained(MODEL_DIR, trust_remote_code=True)
+    with torch.device("meta"):
+        model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+    sharing = create_sharing_metadata(model)
+    model.to_empty(device="cpu")
+    retie_parameters(model, sharing)
+    # Load FIRST (flags loaded tensors), then spy on _init_weights.
+    load_checkpoint(MODEL_DIR, model, device="cpu", strict=True)
+
+    seen = []
+    orig_init = model._init_weights
+
+    def spy(m):
+        seen.append(type(m).__name__)
+        return orig_init(m)
+
+    model._init_weights = spy
+    initialize_missing_weights(model)
+
+    # RoPE (unflagged non-persistent buffer) was (re)initialized...
+    assert any("Rotary" in n for n in seen), f"RoPE not reinitialized: {seen}"
+    # ...but loaded weight-bearing modules were skipped (not re-initialized).
+    assert not any(
+        n in ("Linear", "Embedding") for n in seen
+    ), f"loaded modules were re-initialized (init ran before load?): {seen}"
+
+
 def test_meta_loaded_model_runs_forward():
     model = _load_on_meta().eval()
     vocab = model.config.vocab_size

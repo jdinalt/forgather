@@ -55,7 +55,6 @@ from ._torch_patches import (  # noqa: F401  -- import also applies the stage_ba
 from .model_splitter import ModelSplitter
 from .pipeline_utils import (
     assert_no_duplicate_fqns,
-    missing_buffers,
     pipeline_stage_indices,
 )
 
@@ -472,6 +471,10 @@ class PipelineTrainer(
         self.optimizer = None
         self.lr_scheduler = None
         self.sharing_metadata = None
+        # The pipeline trainer always constructs on the meta device, so the
+        # base _prepare post-load step runs _initialize_missing_after_load()
+        # (overridden below to init the materialized stages) after the load.
+        self._constructed_on_meta = True
 
         assert self.train_dataloader or self.eval_dataloader
 
@@ -513,20 +516,12 @@ class PipelineTrainer(
 
         # Load from checkpoint?
         if self.args.resume_from_checkpoint:
-            missing_buffer_set = missing_buffers(model)
-            if len(missing_buffer_set) and self.dist.rank == 0:
-                logger.info(
-                    f"Initializing tensors not in the checkpoint locally on "
-                    f"each rank: {missing_buffer_set}"
-                )
-            # Unified with the base trainer on the HF v5 contract: initialize
-            # only what the checkpoint didn't fill. Split stage modules have
-            # no HF-style _init_weights, so this uses the safe
-            # non-persistent-buffer reset fallback (e.g. RoPE inv_freq) --
-            # deterministic and local per module, so every rank computes the
-            # same values without cross-module dependencies.
-            for mod in pipeline_modules:
-                initialize_missing_weights(mod)
+            # Stages are materialized empty here; the weights are loaded
+            # later by the base _prepare (load_checkpoint over model_parts),
+            # and initialize_missing_weights runs AFTER that load via
+            # _initialize_missing_after_load(). Doing it here would init
+            # before the load — the slow full-init the meta route avoids.
+            pass
         else:
             if self.dist.rank == 0:
                 # If this results in OOM (really large model), you will have to initialize the model from a checkpoint
@@ -1328,6 +1323,20 @@ class PipelineTrainer(
         }
 
     @override
+    def _initialize_missing_after_load(self) -> None:
+        """Initialize what the checkpoint didn't fill, AFTER the load.
+
+        The materialized model lives in ``self.pipeline_modules`` (``self.model``
+        is the meta skeleton kept only for shape/config queries), so the
+        base implementation (which inits ``self.model``) doesn't apply. The
+        checkpoint load (base ``_prepare`` -> ``load_checkpoint`` over the
+        stage ``model_parts``) flags the tensors it filled, so this only
+        recomputes non-persistent buffers (e.g. RoPE ``inv_freq``) — local
+        and deterministic per module, so every rank computes the same values.
+        """
+        for mod in self.pipeline_modules:
+            initialize_missing_weights(mod)
+
     def _init_checkpoint_manager(self) -> CheckpointManager:
         """
         Initialize checkpoint manager for distributed pipeline parallel model.

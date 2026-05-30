@@ -206,3 +206,40 @@ def test_trainer_constructed_on_meta_class_default_is_false():
     from forgather.ml.trainer.trainer import Trainer
 
     assert Trainer._constructed_on_meta is False
+
+
+def test_restore_from_checkpoint_loads_before_initializing():
+    """Ordering guard: _restore_from_checkpoint must load FIRST, then run
+    initialize-missing. The reverse would re-init the whole model (slow)
+    before the load overwrites it — the bug the meta route exists to avoid."""
+    from types import SimpleNamespace
+
+    from forgather.ml.trainer.trainer import Trainer
+
+    t = Trainer.__new__(Trainer)  # bypass heavy __init__
+    t._constructed_on_meta = True
+    t.args = SimpleNamespace(resume_from_checkpoint="ckpt")
+    order = []
+    t.load_checkpoint = lambda p: order.append("load")
+    t._initialize_missing_after_load = lambda: order.append("init")
+
+    t._restore_from_checkpoint()
+    assert order == ["load", "init"]
+
+
+def test_restore_from_checkpoint_skips_init_when_not_meta():
+    """When the model wasn't built on meta, the post-load init-missing pass
+    is skipped (the on-device/no_init paths don't need it)."""
+    from types import SimpleNamespace
+
+    from forgather.ml.trainer.trainer import Trainer
+
+    t = Trainer.__new__(Trainer)
+    t._constructed_on_meta = False
+    t.args = SimpleNamespace(resume_from_checkpoint="ckpt")
+    order = []
+    t.load_checkpoint = lambda p: order.append("load")
+    t._initialize_missing_after_load = lambda: order.append("init")
+
+    t._restore_from_checkpoint()
+    assert order == ["load"]

@@ -644,15 +644,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
 
         # Restore from checkpoint (path already resolved by _resolve_checkpoint)
         if self.args.resume_from_checkpoint:
-            self.load_checkpoint(self.args.resume_from_checkpoint)
-            # HF v5 contract: when the model was built on meta and
-            # materialized empty, the load (flag_loaded_tensors) marked the
-            # tensors it filled. Initialize only the rest — non-persistent
-            # buffers (e.g. RotaryEmbedding's inv_freq, never in the
-            # checkpoint) and any missing params — leaving loaded weights
-            # untouched. Replaces the old non-persistent-buffer-only walk.
-            if self._constructed_on_meta and self.model is not None:
-                initialize_missing_weights(self.model)
+            self._restore_from_checkpoint()
 
         self._dispatch_event("on_init_end")
 
@@ -932,6 +924,34 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         self._flops_per_token = self._compute_flops_per_token()
         if self.dist.rank == 0:
             logger.info(f"Estimated FLOPs per token: {self._flops_per_token:.2e}")
+
+    def _restore_from_checkpoint(self) -> None:
+        """Load the resume checkpoint, THEN initialize what it didn't fill.
+
+        Order is load-then-init and must stay that way: ``load_checkpoint``
+        flags the tensors it fills (``flag_loaded_tensors``), so the
+        subsequent ``_initialize_missing_after_load`` only touches the rest
+        (non-persistent buffers like RoPE ``inv_freq``, plus any params
+        absent from the checkpoint). Running the init first would leave
+        everything unflagged and re-initialize the whole model — the slow
+        full-init the meta route exists to avoid — only to immediately
+        overwrite it with the loaded weights.
+        """
+        self.load_checkpoint(self.args.resume_from_checkpoint)
+        if self._constructed_on_meta:
+            self._initialize_missing_after_load()
+
+    def _initialize_missing_after_load(self) -> None:
+        """Initialize the tensors a checkpoint load did NOT fill.
+
+        Called from ``_prepare`` AFTER ``load_checkpoint`` (so loaded tensors
+        are already flagged ``_is_hf_initialized`` and get skipped) when the
+        model was constructed on meta. Overridden by trainers whose
+        materialized model isn't ``self.model`` (e.g. PipelineTrainer, which
+        holds the materialized stages in ``self.pipeline_modules``).
+        """
+        if self.model is not None:
+            initialize_missing_weights(self.model)
 
     def _apply_fp8_training(self, model: torch.nn.Module) -> torch.nn.Module:
         """Convert nn.Linear layers to Float8Linear for FP8 training via torchao."""
