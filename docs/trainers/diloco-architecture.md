@@ -24,6 +24,7 @@ For user-facing documentation (CLI usage, quick start, API examples), see
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
 - [Extension Points](#extension-points)
+- [Planned: configurable checkpoint state + empty-meta construction (PR 4)](#planned-configurable-checkpoint-state--empty-meta-construction-pr-4)
 - [Known Limitations](#known-limitations)
 
 ---
@@ -565,9 +566,12 @@ Worker                                  Server
 Under DiLoCo a worker takes **no model path**. It obtains the model
 *definition* — `config.json`, the custom modeling/configuration `.py`
 closure, and the tokenizer (never weights) — from the server, builds the
-model **empty on the meta device**, and fills it from the parameter sync.
-This removes the shared-filesystem requirement and makes it impossible for
-a worker to build a different model than the rest of the group.
+model **empty** (from that config, with no weights), and fills it from the
+parameter sync. This removes the shared-filesystem requirement and makes it
+impossible for a worker to build a different model than the rest of the
+group. (Constructing that empty skeleton on the meta device, allocation-
+free, is deferred to PR 4 — see [Planned](#planned-configurable-checkpoint-state--empty-meta-construction-pr-4)
+below; today it builds on the operator's `construct_model_on` strategy.)
 
 This happens **before** `DiLoCoWorker.start()` — it is part of trainer
 *construction* (materializing the model/tokenizer), not the worker
@@ -618,7 +622,7 @@ Jinja literal) and the server address, and is referenced by three nodes:
                      │
    SECOND/THIRD consumers (model config, model factory) resolve the SAME
    cached singleton → no second fetch; AutoConfig.from_pretrained(dir),
-   then the model !partial builds on meta (construct_model_on=meta)
+   then the model !partial builds the empty structure (no weights)
                      │
 [DiLoCoWorker.start()]  register → _apply_global_params overwrites the
    freshly-initialized persistent weights with the server's global params
@@ -1072,6 +1076,95 @@ The current architecture is client-server. To add peer-to-peer allreduce:
    same average pseudo-gradient, so they'd arrive at the same global params)
 
 ---
+
+## Planned: configurable checkpoint state + empty-meta construction (PR 4)
+
+This is a **design record** for follow-up work, not yet implemented. The
+DiLoCo model-bundle PR (#102) is scoped to "workers don't save/restore
+checkpoints": a worker stages the definition, builds the model from it on
+the operator's default construction strategy, and pulls weights from the
+server. Two refinements are deferred here.
+
+### Motivation
+
+1. **Never checkpoint model weights.** The server is the sole weight
+   authority (workers pull global params at register). A worker saving
+   weights wastes disk and risks loading a *stale* local copy from a
+   different sync round. But a worker may legitimately want to checkpoint
+   **other** state — trainer progress (step / LR position / RNG) is the
+   strongest case, inner-optimizer state a weaker second.
+2. **Empty-meta construction.** Building the empty skeleton on the meta
+   device is allocation-free (faster, lower peak memory) versus the current
+   on-device build that is immediately overwritten by the parameter sync.
+
+### The interaction that blocks a naive fix
+
+`_prepare()` calls `_resolve_checkpoint()` (`trainer.py:651`), which, when a
+local checkpoint exists, sets `self.args.resume_from_checkpoint` to its
+*path*. `_prepare_model` (`trainer.py:818`) then takes the meta path and
+`_restore_from_checkpoint` (`trainer.py:928`) calls `load_checkpoint`, which
+**loads model weights** from that checkpoint — exactly what DiLoCo must not
+do. And on a *fresh* run (no checkpoint) the meta strategy is downgraded to
+`default` (`trainer.py:833`), so even an explicit `construct_model_on=meta`
+never builds empty-on-meta. So both "skip weight load" and "build empty on
+meta" need first-class support.
+
+### Design
+
+The unifying invariant: *under DiLoCo the server owns the model weights.*
+That single fact drives both refinements, expressed through one **general,
+configurable** mechanism (restoring the fine-grained save/load control that
+predated the CheckpointManager refactor):
+
+1. **Configurable checkpoint components.** Add `get_active_state_components()`
+   on `BaseTrainer` that calls the subclass's `get_state_components()` and
+   filters it by a new `TrainingArguments` field (e.g.
+   `checkpoint_components: list[str] | None`, `None` = all → today's
+   behavior). The **two** consumers — `checkpoint_manager.py:133` and
+   `checkpoint_coordinator.py:33` — call `get_active_state_components()`
+   instead. This covers all **five** `get_state_components()` implementations
+   (`base`, `ddp`, `fsdp2`, `accel`, `pipeline`) **without editing any of
+   them**. The `required=True` flag on the `"model"` component must be
+   relaxed so the filter may drop it (the operator takes responsibility).
+2. **Construction derives from the component set.** When `"model"` is not in
+   the active set, weights are externally supplied: `_prepare_model` builds
+   empty on meta, runs the initialize-missing pass to initialize the
+   skeleton in place, and skips the downgrade — no second knob, because
+   "model not checkpointed" *is* the "weights come from elsewhere" signal.
+   The parameter sync then overwrites the persistent weights at register.
+3. **DiLoCo defaults in config, overridable.** A DiLoCo project sets
+   `checkpoint_components: [optimizer, scheduler, trainer, dataset, rng]`
+   (everything but `model`) in a shared place (the DiLoCo mixin /
+   `base_lm_project.yaml`); sub-configs override freely. The inner-optimizer
+   keep/skip question becomes a config choice (include `"optimizer"` or not),
+   not a hard-coded policy.
+4. **Pipeline trainer.** It already always constructs on meta and
+   initializes from scratch when not resuming, so the *construction* side
+   needs no change; only the `get_active_state_components()` filter applies
+   (its `get_state_components` also emits a `"model"` component, at
+   `pipeline_trainer.py:1604`).
+
+### Touch-points
+
+- `TrainingArguments`: new `checkpoint_components` field.
+- `BaseTrainer.get_active_state_components()` (new); relax `required` on the
+  `"model"` component (`base_trainer.py:868`, `pipeline_trainer.py:1604`).
+- `checkpoint_manager.py:133`, `checkpoint_coordinator.py:33`: call the
+  filtered accessor.
+- `trainer.py` `_prepare_model` (`:833`) + `_restore_from_checkpoint`: honor
+  external-weights construction; run initialize-missing on the empty model.
+- Config: DiLoCo `checkpoint_components` default; flip DiLoCo to
+  `construct_model_on=meta` once the above lands.
+- Tests across `base`/`ddp`/`fsdp2`/`pipeline`: the filter (save/load subset)
+  and the empty-meta build (skeleton fully initialized; weights arrive via
+  register).
+
+### Scope
+
+This is a **general trainer feature** (configurable checkpoint state +
+external-weight construction), not DiLoCo-bundle plumbing, and touches
+sensitive shared checkpoint infrastructure. It warrants its own PR and
+review rather than being folded into #102.
 
 ## Known Limitations
 

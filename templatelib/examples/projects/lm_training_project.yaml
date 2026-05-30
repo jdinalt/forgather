@@ -609,15 +609,13 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     fuse_optim_with_backward: {{ fuse_optim_with_backward | default(False) }}
     enable_activation_offloading: {{ activation_offloading | default(False) }}
     dataloader_drop_last: True
-    ## Under DiLoCo the model is built empty and filled from the server's
-    ## parameter sync, so construct on meta: allocation-free skeleton →
-    ## to_empty → initialize_missing (RoPE etc.) → weights overwritten at
-    ## register. Non-DiLoCo runs keep the operator-selected strategy.
-    -- if ns.diloco_is_enabled
-    construct_model_on: meta
-    -- else
+    ## Under DiLoCo the model is built empty (from the staged config, no
+    ## weights) and filled from the server's parameter sync at register.
+    ## Construction strategy is left at the operator default here; building
+    ## the empty skeleton on the meta device (allocation-free) and skipping
+    ## model-weight checkpoint save/load is a planned trainer change tracked
+    ## as PR 4 (see docs/trainers/diloco-architecture.md).
     construct_model_on: {{ construct_model_on | toyaml("default") }}
-    -- endif
     activation_memory_budget: {{ activation_memory_budget | toyaml(None) }}
     gc_threshold: {{ gc_threshold | default(0.9) }}
     save_safetensors: {{ save_safetensors | default(False) }}

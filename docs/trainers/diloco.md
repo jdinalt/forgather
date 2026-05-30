@@ -740,11 +740,15 @@ in `on_train_begin` after the worker is created and registered with the server.
 A DiLoCo worker takes **no model path**. On startup the trainer stages the
 model-definition bundle from the server's `GET /model_def` endpoint into
 `<output_dir>/diloco_model_def/` (config + the custom modeling/configuration
-`.py` closure + tokenizer; never weights), builds the model empty on the
-meta device, and fills it from the parameter sync at register. Every worker
-therefore builds the *same* model the server holds — there is no
-`--model-id-or-path` to get wrong and no shared filesystem requirement. See
-[Model-definition staging](#model-definition-staging) below.
+`.py` closure + tokenizer; never weights), builds the model **empty** (from
+that config, with no weights), and fills it from the parameter sync at
+register. Every worker therefore builds the *same* model the server holds —
+there is no `--model-id-or-path` to get wrong and no shared filesystem
+requirement. See [Model-definition staging](#model-definition-staging) below.
+(Constructing the empty skeleton on the meta device, allocation-free, and
+skipping model-weight checkpoint save/load are planned trainer changes — see
+[Planned: configurable checkpoint state + empty-meta construction](diloco-architecture.md)
+in the architecture doc.)
 
 ### Model fingerprint check
 

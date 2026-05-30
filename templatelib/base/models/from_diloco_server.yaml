@@ -3,16 +3,18 @@
 ## A DiLoCo worker takes no model path. Instead it stages the model
 ## *definition* (config + custom modeling/configuration .py + tokenizer,
 ## never weights) from the server into its own output directory, builds an
-## empty model on the meta device, and fills it from the server's parameter
-## sync at register time. This works with no shared filesystem and makes it
-## impossible for a worker to build a different model than the rest of the
-## group.
+## empty model (from that config, with no weights), and fills it from the
+## server's parameter sync at register time. This works with no shared
+## filesystem and makes it impossible for a worker to build a different
+## model than the rest of the group.
 ##
 ## The staging is a cached singleton anchored by both the tokenizer and the
 ## model config, so the fetch happens exactly once on first reference. The
-## model itself is a !partial (the trainer's model_init); the trainer builds
-## it on meta (construct_model_on: meta) and the parameter sync overwrites
-## the freshly-initialized persistent weights before the first forward pass.
+## model itself is a !partial (the trainer's model_init): from_config builds
+## the structure without weights, and the parameter sync overwrites the
+## freshly-initialized persistent weights before the first forward pass.
+## (Building the empty skeleton on the meta device, allocation-free, is a
+## planned trainer optimization — PR 4; see diloco-architecture.md.)
 -- extends 'models/base_language_model.yaml'
 
 [model_meta_config]
