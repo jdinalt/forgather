@@ -1134,10 +1134,12 @@ One config knob expresses it and drives both behaviors:
    than waiting for a model load that never comes.
 4. **DiLoCo defaults, overridable.** `lm_training_project.yaml` sets, under
    DiLoCo, `construct_model_on: meta` and `checkpoint_components: [optimizer,
-   scheduler, trainer, dataset, rng]` (everything but `model`); a child
-   template / leaf overrides via the `checkpoint_components` var. The
-   inner-optimizer keep/skip question is therefore a config choice (include
-   `"optimizer"` or not), not a hard-coded policy.
+   scheduler, trainer, rng]`; a child template / leaf overrides via the
+   `checkpoint_components` var. `"model"` is excluded (server-owned weights)
+   and so is `"dataset"` — dataset position is tracked by the server via
+   work-units, not the local dataloader, so a local dataset checkpoint would
+   be stale on resume. The inner-optimizer keep/skip question is therefore a
+   config choice (include `"optimizer"` or not), not a hard-coded policy.
 
 ### Code map
 

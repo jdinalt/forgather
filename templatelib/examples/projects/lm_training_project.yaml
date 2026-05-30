@@ -602,9 +602,13 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     ## model weights. ``checkpoint_components`` excluding "model" drives both
     ## (the trainer reads it as "weights are external"); it is overridable by
     ## a child template / leaf that sets ``checkpoint_components``.
+    ##
+    ## "dataset" is also excluded: dataset position is tracked by the DiLoCo
+    ## server via work-units, not the local dataloader, so a local dataset
+    ## checkpoint would be stale/misleading on resume.
     -- if ns.diloco_is_enabled
     construct_model_on: meta
-    checkpoint_components: {{ checkpoint_components | toyaml(["optimizer", "scheduler", "trainer", "dataset", "rng"]) }}
+    checkpoint_components: {{ checkpoint_components | toyaml(["optimizer", "scheduler", "trainer", "rng"]) }}
     -- else
     construct_model_on: {{ construct_model_on | toyaml("default") }}
     -- if checkpoint_components is defined and checkpoint_components
