@@ -289,6 +289,25 @@ class TestUnifiedStats:
         assert agg["total_tokens"] == 0
         assert agg["train_loss"] is None
 
+    def test_nonfinite_stats_do_not_break_status(self, server_and_client):
+        # A buggy/hostile worker reporting NaN/Inf must not poison the
+        # aggregate or produce a /status body the JSON client can't parse.
+        server, client, sd = server_and_client
+        client.register("worker_0")
+        client.heartbeat(
+            "worker_0",
+            stats={
+                "loss": float("nan"),
+                "tok_per_sec": float("inf"),
+                "tokens_total": 1000,
+                "tokens_window": 100,
+            },
+        )
+        agg = client.get_status()["aggregate_stats"]
+        assert agg["train_loss"] is None  # NaN dropped, EMA stays clean
+        assert agg["tok_per_sec"] == 0.0  # Inf dropped
+        assert agg["total_tokens"] == 1000  # the valid field still counted
+
     def test_eval_loss_reported(self, server_and_client):
         server, client, sd = server_and_client
         client.register("worker_0")

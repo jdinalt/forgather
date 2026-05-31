@@ -2125,9 +2125,15 @@ class DiLoCoServer:
             if "steps_per_second" in info:
                 self._workers[worker_id].steps_per_second = info["steps_per_second"]
             # Unified-stats snapshot (optional): store the latest per-worker
-            # view and fold it into the aggregate. Done under the workers lock
-            # so a concurrent status read sees a consistent worker record.
-            worker_stats = info.get("stats")
+            # view and fold it into the aggregate. Sanitized to the known
+            # numeric schema first — the body is worker-supplied, so this
+            # bounds the retained footprint and what /status echoes, and keeps
+            # non-finite / non-numeric values out of the aggregate and the
+            # wire JSON. Done under the workers lock so a concurrent status
+            # read sees a consistent worker record.
+            from .stats import sanitize_stats
+
+            worker_stats = sanitize_stats(info.get("stats"))
             if worker_stats:
                 self._workers[worker_id].stats = worker_stats
             # Read (don't yet clear) any queued trainer-control command. We
@@ -3396,7 +3402,10 @@ class DiLoCoServer:
             # Absent on pre-feature checkpoints → start fresh.
             self._stats.load_state_dict(server_state.get("stats") or {})
             self._stats_log_state = server_state.get("stats_log")
-            self._stats_log_step = -1
+            # Resume the log throttle at the restored total step so the next
+            # record advances past it, rather than re-writing a duplicate
+            # record at the step the log was already truncated to.
+            self._stats_log_step = self._stats.total_steps
 
             # Restore work-unit dispatch state (#105): the per-(dataset_id,
             # shuffle_seed) issued/completed bitmaps and the per-dataset

@@ -1,8 +1,10 @@
 """Unit tests for the DiLoCo server StatsAggregator."""
 
+import math
+
 import pytest
 
-from forgather.ml.diloco.stats import StatsAggregator
+from forgather.ml.diloco.stats import StatsAggregator, sanitize_stats
 
 
 class TestDeltaAccumulation:
@@ -171,6 +173,64 @@ class TestPersistence:
         assert s["total_tokens"] == 42
         assert s["total_flos"] == 0.0
         assert s["train_loss"] is None
+
+
+class TestSanitization:
+    def test_drops_unknown_keys(self):
+        out = sanitize_stats({"loss": 1.0, "evil": "rm -rf", "nested": {"a": 1}})
+        assert out == {"loss": 1.0}
+
+    def test_drops_nonfinite(self):
+        out = sanitize_stats(
+            {"loss": float("nan"), "eval_loss": float("inf"), "tokens_total": 5}
+        )
+        assert out == {"tokens_total": 5}
+
+    def test_drops_non_numeric_and_bool(self):
+        out = sanitize_stats(
+            {"tok_per_sec": "fast", "mfu": True, "grad_norm": None, "loss": 2.0}
+        )
+        assert out == {"loss": 2.0}
+
+    def test_non_dict_returns_empty(self):
+        assert sanitize_stats(None) == {}
+        assert sanitize_stats("oops") == {}
+        assert sanitize_stats(42) == {}
+
+    def test_nan_loss_does_not_poison_ema(self):
+        agg = StatsAggregator()
+        agg.update("w0", {"loss": float("nan"), "tokens_window": 100})
+        # NaN dropped → no loss reported → EMA stays clean (None), not NaN.
+        assert agg.snapshot()["train_loss"] is None
+        agg.update("w0", {"loss": 3.0, "tokens_window": 100})
+        assert agg.snapshot()["train_loss"] == pytest.approx(3.0)
+
+    def test_inf_throughput_dropped_from_gauge(self):
+        agg = StatsAggregator()
+        agg.update("w0", {"tok_per_sec": float("inf")})
+        assert math.isfinite(agg.snapshot()["tok_per_sec"])
+        assert agg.snapshot()["tok_per_sec"] == 0.0
+
+    def test_non_numeric_cumulative_does_not_crash(self):
+        agg = StatsAggregator()
+        agg.update("w0", {"tokens_total": "lots", "step_total": 10})
+        # bad field dropped; the good one still accumulates.
+        assert agg.snapshot()["total_tokens"] == 0
+        assert agg.snapshot()["total_steps"] == 10
+
+
+class TestTrackingCap:
+    def test_last_seen_bounded(self, monkeypatch):
+        import forgather.ml.diloco.stats as stats_mod
+
+        monkeypatch.setattr(stats_mod, "_MAX_TRACKED", 5)
+        agg = StatsAggregator()
+        for i in range(20):
+            agg.update(f"w{i}", {"tokens_total": 10})
+        assert len(agg._last_seen) <= 5
+        # The currently-reporting worker is never evicted mid-update.
+        agg.update("w19", {"tokens_total": 20})
+        assert "w19" in agg._last_seen
 
 
 class TestRobustness:

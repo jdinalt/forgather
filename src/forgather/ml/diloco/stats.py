@@ -45,6 +45,7 @@ just not updated by this report):
     eval_step    : int    step at which eval_loss was computed
 """
 
+import math
 import threading
 from typing import Any, Dict, Optional
 
@@ -58,6 +59,61 @@ _DELTA_FIELDS = {
 
 # Keys carried forward as the worker's latest live-gauge values.
 _GAUGE_FIELDS = ("tok_per_sec", "mfu", "peak_mem", "grad_norm", "tokens_window")
+
+# The complete normalized schema — every key the aggregator will accept from a
+# worker. Anything else in a heartbeat's ``stats`` dict is dropped.
+_STAT_FIELDS = (
+    "tokens_total",
+    "flos_total",
+    "step_total",
+    "tokens_window",
+    "loss",
+    "grad_norm",
+    "tok_per_sec",
+    "mfu",
+    "peak_mem",
+    "eval_loss",
+    "eval_step",
+)
+
+# Cap on distinct worker_ids tracked for delta baselines, so a run that cycles
+# through many worker identities can't grow the (persisted) state without
+# bound. Far above any real worker count; a pure safety valve.
+_MAX_TRACKED = 10000
+
+
+def _finite_number(v: Any) -> Optional[float]:
+    """Return ``v`` if it is a finite real number, else ``None``.
+
+    Rejects bool (an int subclass — a stray flag is not a metric), non-numeric
+    types, and NaN/inf. The ``stats`` dict arrives from a worker heartbeat
+    (untrusted), and a non-finite value would otherwise poison the loss EMA,
+    serialize as an invalid ``NaN``/``Infinity`` token in the ``/status`` JSON
+    (which the webui's ``JSON.parse`` rejects), and persist into the checkpoint.
+    """
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    if not math.isfinite(v):
+        return None
+    return v
+
+
+def sanitize_stats(raw: Any) -> Dict[str, Any]:
+    """Whitelist a worker-reported stats dict to the known numeric schema.
+
+    Keeps only the recognized keys whose value is a finite number; drops
+    everything else. Bounds both the retained per-worker footprint and the
+    inputs to the aggregate math, since the dict is attacker-influencable.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for key in _STAT_FIELDS:
+        if key in raw:
+            num = _finite_number(raw[key])
+            if num is not None:
+                out[key] = num
+    return out
 
 
 class StatsAggregator:
@@ -96,12 +152,21 @@ class StatsAggregator:
     # -- ingest ---------------------------------------------------------------
 
     def update(self, worker_id: str, snap: Dict[str, Any]) -> None:
-        """Fold one worker's normalized snapshot into the aggregate."""
-        if not worker_id or not snap:
+        """Fold one worker's normalized snapshot into the aggregate.
+
+        Defensively sanitizes ``snap`` (drops unknown keys and non-finite /
+        non-numeric values) so the aggregate, the persisted state, and the
+        ``/status`` JSON can never be corrupted by a bad heartbeat payload.
+        """
+        if not worker_id:
+            return
+        snap = sanitize_stats(snap)
+        if not snap:
             return
         with self._lock:
             # Lifetime delta accumulators.
             seen = self._last_seen.setdefault(worker_id, {})
+            self._evict_if_over_cap(worker_id)
             for key, attr in _DELTA_FIELDS.items():
                 if key not in snap or snap[key] is None:
                     continue
@@ -141,6 +206,19 @@ class StatsAggregator:
                 step = snap.get("eval_step")
                 if step is not None:
                     self._eval_step = int(step)
+
+    def _evict_if_over_cap(self, keep: str) -> None:
+        """Drop oldest delta baselines when over the tracking cap (caller holds
+        the lock). Never evicts ``keep`` (the worker reporting now). Eviction
+        is only reachable in pathological id-churn; an evicted id that later
+        returns would re-add its cumulative once — acceptable at this scale."""
+        while len(self._last_seen) > _MAX_TRACKED:
+            for wid in self._last_seen:
+                if wid != keep:
+                    del self._last_seen[wid]
+                    break
+            else:
+                break
 
     @staticmethod
     def _weight(snap: Dict[str, Any]) -> float:
