@@ -13,6 +13,7 @@ and shell pipelines can consume them.
 """
 
 import json
+import re
 import sys
 
 
@@ -600,50 +601,24 @@ def parse_dataset_source(spec):
     )
 
 
-def launch_workers(args, dynamic_args):
-    """Enqueue N DiLoCo worker (training) jobs with auto-named workers.
-
-    Mirrors the webui SubmitModal worker-pool path: resolve the server to a
-    routable base_url when the forgather server knows it, generate unique
-    worker names (unless a single explicit --worker-id is given), and
-    enqueue one training job per worker with the shared dynamic args +
-    dataset source.
-    """
+def _resolve_worker_server(client, args):
+    """Resolve the DiLoCo server the worker(s) connect to (a routable
+    base_url when the forgather server knows it, else the verbatim
+    ``--server``). Auto-picks the single running server when ``--server`` is
+    omitted. Returns the server string, or ``None`` after printing an error
+    (ambiguous / none running)."""
     from .server_client import AuthRequired, ServerUnreachable
 
-    config = getattr(args, "config_template", None)
-    if not config:
-        print(
-            "error: launching a worker needs a config — pass -t <config> "
-            "(e.g. forgather -p <project> -t <config> diloco worker …).",
-            file=sys.stderr,
-        )
-        return 1
-
-    try:
-        dataset_source = parse_dataset_source(getattr(args, "dataset", None))
-    except ValueError as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-
-    client = _orchestrator(args)
-
-    # Resolve the server the worker(s) connect to. With --server omitted,
-    # auto-pick the single running DiLoCo server (the common case); >1 is
-    # ambiguous (resolve_one raises). With --server set, resolve it to a
-    # routable base_url when the forgather server knows it, else pass it
-    # through verbatim (the worker dials it directly; DiLoCoClient
-    # normalizes it).
     explicit = getattr(args, "server", None)
     try:
         servers = client.list_diloco_servers()
     except (ServerUnreachable, AuthRequired, RuntimeError):
         servers = []
     try:
-        resolved = resolve_one(servers, explicit)
-    except ServerUnreachable as e:  # ambiguous: >1 server, no --server
+        resolved = resolve_one(servers, explicit)  # may raise on ambiguity
+    except ServerUnreachable as e:
         print(str(e), file=sys.stderr)
-        return 1
+        return None
     server = resolved or explicit
     if not server:
         print(
@@ -651,27 +626,19 @@ def launch_workers(args, dynamic_args):
             "start one ('forgather diloco server …') or pass --server.",
             file=sys.stderr,
         )
-        return 1
+        return None
+    return server
 
-    count = getattr(args, "count", 1) or 1
-    explicit = (getattr(args, "worker_id", None) or "").strip() or None
-    if explicit and count == 1:
-        names = [explicit]
-    else:
-        # Server-side generation guarantees uniqueness + exclusion (matches
-        # the webui). Exclude an explicit id so it isn't regenerated.
-        try:
-            resp = client.generate_diloco_worker_names(
-                count, exclude=[explicit] if explicit else []
-            )
-        except (ServerUnreachable, AuthRequired, RuntimeError) as e:
-            print(str(e), file=sys.stderr)
-            return 1
-        names = resp.get("names", [])
-        if not names:
-            print("error: could not generate worker names", file=sys.stderr)
-            return 1
 
+def _enqueue_worker_jobs(client, names, server, args, dynamic_args, dataset_source):
+    """Enqueue one training job per worker name (shared by launch + resume).
+
+    All jobs share the resolved ``server`` address, the config/project, the
+    dynamic args, the dataset source, and the per-worker GPU/priority knobs.
+    """
+    from .server_client import AuthRequired, ServerUnreachable
+
+    config = getattr(args, "config_template", None)
     hb = getattr(args, "heartbeat_interval", None)
     gpus = getattr(args, "gpus_per_worker", 1)
     priority = getattr(args, "priority", 0)
@@ -709,6 +676,135 @@ def launch_workers(args, dynamic_args):
         print(f"  {r['worker_id']:<28} {r['queue_id']}")
     print("The scheduler will start them on idle GPUs.")
     return 0
+
+
+def launch_workers(args, dynamic_args):
+    """Enqueue N DiLoCo worker (training) jobs with auto-named workers.
+
+    Mirrors the webui SubmitModal worker-pool path: resolve the server,
+    generate unique worker names (unless a single explicit --worker-id is
+    given), and enqueue one training job per worker with the shared dynamic
+    args + dataset source.
+    """
+    config = getattr(args, "config_template", None)
+    if not config:
+        print(
+            "error: launching a worker needs a config — pass -t <config> "
+            "(e.g. forgather -p <project> -t <config> diloco worker …).",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        dataset_source = parse_dataset_source(getattr(args, "dataset", None))
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    from .server_client import AuthRequired, ServerUnreachable
+
+    client = _orchestrator(args)
+    server = _resolve_worker_server(client, args)
+    if server is None:
+        return 1
+
+    count = getattr(args, "count", 1) or 1
+    explicit_wid = (getattr(args, "worker_id", None) or "").strip() or None
+    if explicit_wid and count == 1:
+        names = [explicit_wid]
+    else:
+        # Server-side generation guarantees uniqueness + exclusion (matches
+        # the webui). Exclude an explicit id so it isn't regenerated.
+        try:
+            resp = client.generate_diloco_worker_names(
+                count, exclude=[explicit_wid] if explicit_wid else []
+            )
+        except (ServerUnreachable, AuthRequired, RuntimeError) as e:
+            print(str(e), file=sys.stderr)
+            return 1
+        names = resp.get("names", [])
+        if not names:
+            print("error: could not generate worker names", file=sys.stderr)
+            return 1
+
+    return _enqueue_worker_jobs(
+        client, names, server, args, dynamic_args, dataset_source
+    )
+
+
+_PP_SUFFIX = re.compile(r"_pp\d+$")
+
+
+def _stopped_base_workers(known):
+    """Base worker-ids (pipeline ``_pp<N>`` suffix stripped, deduped) with no
+    currently-running rank — the resumable set. Mirrors the webui's
+    resumable-worker derivation."""
+    running_bases, all_bases, seen = set(), [], set()
+    for w in known.get("workers", []) or []:
+        wid = (w.get("worker_id") or "").strip()
+        if not wid:
+            continue
+        base = _PP_SUFFIX.sub("", wid)
+        if w.get("running"):
+            running_bases.add(base)
+        if base not in seen:
+            seen.add(base)
+            all_bases.append(base)
+    return [b for b in all_bases if b not in running_bases]
+
+
+def launch_resume(args, dynamic_args):
+    """Re-enqueue every stopped known worker (reusing its id), so a worker
+    set comes back after a server shutdown / manual stop with one command.
+
+    The worker-id is reused verbatim, so each resumed worker lands on its
+    existing per-worker output dir and resumes from its checkpoint.
+    """
+    from .server_client import AuthRequired, ServerUnreachable
+
+    config = getattr(args, "config_template", None)
+    if not config:
+        print(
+            "error: resuming workers needs a config — pass -t <config>.",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        dataset_source = parse_dataset_source(getattr(args, "dataset", None))
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    client = _orchestrator(args)
+    # Resume needs a server the forgather server knows — that's where the
+    # known-worker roster comes from.
+    explicit = getattr(args, "server", None)
+    try:
+        servers = client.list_diloco_servers()
+    except (ServerUnreachable, AuthRequired, RuntimeError):
+        servers = []
+    try:
+        base = resolve_one(servers, explicit)
+    except ServerUnreachable as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    if not base:
+        print(
+            "error: no DiLoCo server found to resume workers from; start one "
+            "or pass --server.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        known = client.diloco_known_workers(base)
+    except (ServerUnreachable, AuthRequired, RuntimeError) as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    names = _stopped_base_workers(known)
+    if not names:
+        print(f"No stopped workers to resume on {base}.")
+        return 0
+    return _enqueue_worker_jobs(client, names, base, args, dynamic_args, dataset_source)
 
 
 # ---------------------------------------------------------------------------

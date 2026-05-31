@@ -137,15 +137,26 @@ def test_assemble_status_partial():
 
 class FakeClient:
     def __init__(
-        self, *, servers=None, jobs=None, reachable=True, dump=b"", tty_path=None
+        self,
+        *,
+        servers=None,
+        jobs=None,
+        reachable=True,
+        dump=b"",
+        tty_path=None,
+        known=None,
     ):
         self._servers = servers or []
         self._jobs = jobs or []
         self._reachable = reachable
         self._dump = dump
         self._tty_path = tty_path
+        self._known = known or {"workers": []}
         self.enqueued = []
         self.base = "http://fake-orch:8765"
+
+    def diloco_known_workers(self, base):
+        return self._known
 
     def enqueue_job(self, **kw):
         self.enqueued.append(kw)
@@ -554,6 +565,112 @@ class TestLaunchWorkers:
         patch_orchestrator(FakeClient(servers=SERVERS))
         rc = orch.launch_workers(_worker_args(server=None, worker_id="w0", count=1), {})
         assert rc == 1
+
+
+class TestStoppedBaseWorkers:
+    def test_filters_running_and_dedups_pp(self):
+        known = {
+            "workers": [
+                {"worker_id": "alpha", "running": False},
+                {"worker_id": "beta", "running": True},
+                # pipeline ranks of one stopped worker → one base, deduped
+                {"worker_id": "gamma_pp0", "running": False},
+                {"worker_id": "gamma_pp1", "running": False},
+                # any running rank → base excluded
+                {"worker_id": "delta_pp0", "running": True},
+                {"worker_id": "delta_pp1", "running": False},
+            ]
+        }
+        assert orch._stopped_base_workers(known) == ["alpha", "gamma"]
+
+    def test_empty(self):
+        assert orch._stopped_base_workers({"workers": []}) == []
+
+
+ONE_SERVER = [{"id": "local:q1", "base_url": "http://127.0.0.1:8512"}]
+
+
+def _resume_args(**over):
+    base = dict(
+        server=None,
+        via_server=None,
+        config_template="cfg",
+        project_dir="/p",
+        dataset=None,
+        heartbeat_interval=None,
+        gpus_per_worker=1,
+        priority=0,
+        json=False,
+    )
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+class TestLaunchResume:
+    def test_resumes_stopped_workers(self, patch_orchestrator):
+        known = {
+            "workers": [
+                {"worker_id": "alpha", "running": False},
+                {"worker_id": "beta", "running": True},
+                {"worker_id": "gamma", "running": False},
+            ]
+        }
+        client = patch_orchestrator(FakeClient(servers=ONE_SERVER, known=known))
+        rc = orch.launch_resume(_resume_args(), {})
+        assert rc == 0
+        # Only the stopped workers, reusing their ids, against the server.
+        got = {
+            (kw["job_params"]["diloco"]["worker_id"], kw["job_type"])
+            for kw in client.enqueued
+        }
+        assert got == {("alpha", "training"), ("gamma", "training")}
+        assert all(
+            kw["job_params"]["diloco"]["server_addr"] == "http://127.0.0.1:8512"
+            for kw in client.enqueued
+        )
+
+    def test_nothing_to_resume(self, patch_orchestrator, capsys):
+        known = {"workers": [{"worker_id": "alpha", "running": True}]}
+        client = patch_orchestrator(FakeClient(servers=ONE_SERVER, known=known))
+        rc = orch.launch_resume(_resume_args(), {})
+        assert rc == 0
+        assert client.enqueued == []
+        assert "No stopped workers" in capsys.readouterr().out
+
+    def test_ambiguous_server_errors(self, patch_orchestrator, capsys):
+        patch_orchestrator(FakeClient(servers=SERVERS, known={"workers": []}))
+        rc = orch.launch_resume(_resume_args(server=None), {})
+        assert rc == 1
+
+
+class TestWorkerResumeMode:
+    """The --resume mode gating in diloco._worker_cmd."""
+
+    def _args(self, **over):
+        base = dict(
+            resume=True,
+            worker_id=None,
+            count=1,
+            project_dir=".",
+            config_template=None,
+        )
+        base.update(over)
+        return argparse.Namespace(**base)
+
+    def test_resume_with_worker_id_errors(self, capsys):
+        from forgather.cli import diloco
+
+        rc = diloco._worker_cmd(self._args(worker_id="x"))
+        assert rc == 1
+        assert "can't be combined" in capsys.readouterr().err
+
+    def test_resume_local_only_errors(self, monkeypatch, capsys):
+        from forgather.cli import diloco
+
+        monkeypatch.setattr(orch, "use_orchestrator", lambda args: None)
+        rc = diloco._worker_cmd(self._args())
+        assert rc == 1
+        assert "requires the forgather server" in capsys.readouterr().err
 
 
 class TestUseOrchestrator:

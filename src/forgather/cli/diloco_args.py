@@ -544,6 +544,17 @@ def create_diloco_parser(global_args):
         ),
     )
     worker_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Re-launch every stopped worker the server knows (reusing each\n"
+            "id, so it resumes its checkpoint) — the way to bring a worker set\n"
+            "back after a shutdown/stop. Requires the forgather server; can't\n"
+            "be combined with --worker-id / --count. Honors --dataset and\n"
+            "dynamic args for the relaunched jobs."
+        ),
+    )
+    worker_parser.add_argument(
         "--dataset",
         type=str,
         default=None,
