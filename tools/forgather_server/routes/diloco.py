@@ -491,6 +491,19 @@ async def proxy_work_queues(base: str, request: Request) -> JSONResponse:
     return await _proxy_get(base, "/work/queues", request)
 
 
+@router.get("/diloco/stats-history")
+async def proxy_stats_history(
+    base: str, request: Request, max_points: int = 2000
+) -> JSONResponse:
+    """Forward ``GET <base>/stats_history`` — the aggregate-stats history the
+    server logs, for the webui's loss-curve plot. ``max_points`` is passed
+    straight through (the upstream downsamples, keeping the latest point)."""
+    from urllib.parse import quote, urlencode
+
+    qs = urlencode({"max_points": int(max_points)}, quote_via=quote)
+    return await _proxy_get(base, f"/stats_history?{qs}", request)
+
+
 @router.get("/diloco/work-queue")
 async def proxy_work_queue(
     base: str, dataset_id: str, shuffle_seed: int, request: Request

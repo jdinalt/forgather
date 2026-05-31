@@ -29,6 +29,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import socket
 import ssl
@@ -2202,16 +2203,69 @@ class DiLoCoServer:
                     JsonLogWriter,
                 )
 
-                self._stats_writer = JsonLogWriter("diloco_server_stats.json")
+                self._stats_writer = JsonLogWriter(self._STATS_LOG_FILENAME)
                 if self._stats_log_state:
                     self._stats_writer.load_state_dict(self._stats_log_state)
-                self._stats_writer.open(os.path.join(self.output_dir, "logs"))
+                self._stats_writer.open(os.path.dirname(self._stats_log_path()))
             data = {k: v for k, v in snap.items() if k != "total_steps"}
             data["sync_round"] = self._sync_round
             self._stats_writer.write_record(global_step=steps, epoch=0.0, data=data)
             self._stats_log_step = steps
         except Exception as e:  # pragma: no cover - logging must not break HB
             logger.warning("Failed to write server stats log: %s", e)
+
+    def _stats_log_path(self) -> Optional[str]:
+        """Path to the aggregate-stats JSON log, or None when there's no
+        ``output_dir`` to write under."""
+        if not self.output_dir:
+            return None
+        return os.path.join(self.output_dir, "logs", self._STATS_LOG_FILENAME)
+
+    def _handle_stats_history(self, handler: BaseHTTPRequestHandler):
+        """Serve the aggregate-stats history (the JSON log the server writes)
+        for the webui's loss-curve plot.
+
+        Reads the on-disk log (it parses cleanly mid-run — the writer keeps the
+        array unclosed while appending) and returns the records, optionally
+        downsampled to ``max_points`` (the latest point is always kept). Empty
+        when no ``output_dir`` / nothing logged yet. Control-plane, bearer-
+        authenticated like ``/status`` (do_GET runs the auth gate first).
+        """
+        from urllib.parse import parse_qs, urlparse
+
+        qs = parse_qs(urlparse(handler.path).query)
+        try:
+            max_points = int(qs.get("max_points", ["2000"])[0])
+        except (ValueError, TypeError, IndexError):
+            max_points = 2000
+        max_points = max(1, min(max_points, 20000))
+
+        records: List[dict] = []
+        path = self._stats_log_path()
+        if path and os.path.isfile(path):
+            try:
+                from forgather.ml.trainer.callbacks.json_logger import _parse_json_log
+
+                with open(path) as f:
+                    records = _parse_json_log(f.read())
+            except Exception as e:
+                logger.warning("stats_history: failed to read %s: %s", path, e)
+                records = []
+
+        total = len(records)
+        downsampled = False
+        if total > max_points:
+            stride = math.ceil(total / max_points)
+            sampled = records[::stride]
+            if sampled[-1] is not records[-1]:
+                sampled.append(records[-1])
+            records = sampled
+            downsampled = True
+
+        _send_json_response(
+            handler,
+            {"records": records, "count": total, "downsampled": downsampled},
+        )
 
     def _handle_deregister(self, handler: BaseHTTPRequestHandler):
         """Handle worker deregistration.
@@ -2958,6 +3012,9 @@ class DiLoCoServer:
         {"/submit_pseudograd", "/submit_fragment_pseudograd", "/global_params"}
     )
 
+    #: Filename of the aggregate-stats JSON log, under ``<output_dir>/logs/``.
+    _STATS_LOG_FILENAME = "diloco_server_stats.json"
+
     #: Bind hosts that are not routable as a connect target. When the
     #: server binds one of these we can't put it in the advertised bulk
     #: URL — the worker would dial a wildcard / its own loopback.
@@ -3147,6 +3204,8 @@ class DiLoCoServer:
                         server_ref._handle_get_queues(self)
                     elif path == "/work/queue":
                         server_ref._handle_get_queue(self)
+                    elif path == "/stats_history":
+                        server_ref._handle_stats_history(self)
                     else:
                         _send_json_response(
                             self, {"error": f"Unknown endpoint: {path}"}, 404

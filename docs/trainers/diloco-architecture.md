@@ -867,10 +867,12 @@ Aggregation rules:
   a `worker_id` on resume continues the count; a counter reset clamps to a
   non-negative delta. These persist in the checkpoint (`stats` key), as does the
   per-worker last-seen baseline needed to keep deltas correct across a restart.
-- **Live gauges** (`tok_per_sec`, `mfu`, `peak_memory` summed; `grad_norm`
-  token-weighted mean) are computed on demand from the latest snapshot of each
-  currently-reporting worker; not persisted, and `drop_worker` removes an
-  evicted worker from them (its delta baseline is kept).
+- **Live gauges** are computed on demand from the latest snapshot of each
+  currently-reporting worker: `tok_per_sec` and `peak_memory` sum (extensive);
+  `mfu` and `grad_norm` are weighted means (intensive — summing MFU would
+  exceed 100%), MFU weighted by each worker's per-report FLOPs increment
+  (falling back to tokens), grad_norm by tokens. Not persisted, and
+  `drop_worker` removes an evicted worker from them (its delta baseline is kept).
 - **Loss** is a token-weighted EMA (`S = decay·S + w·loss`, `Z = decay·Z + w`,
   `loss = S/Z`); `S`/`Z` persist so smoothing survives a resume. `train_loss`
   uses a stronger decay than the weak-EMA `eval_loss`.

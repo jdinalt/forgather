@@ -76,6 +76,15 @@ def test_work_queue_encodes_all_params():
     assert "shuffle_seed=1234" in url
 
 
+def test_stats_history_encodes_base_and_max_points():
+    c = _client()
+    c.diloco_stats_history("https://h:8512", max_points=500)
+    method, url, _, _ = _last(c)
+    assert method == "GET"
+    assert "/api/diloco/stats-history?base=https%3A%2F%2Fh%3A8512" in url
+    assert "max_points=500" in url
+
+
 def test_generate_worker_names_body():
     c = _client()
     c.generate_diloco_worker_names(3, exclude=["a", "b"])

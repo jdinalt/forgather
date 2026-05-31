@@ -274,7 +274,8 @@ class TestUnifiedStats:
         assert agg["total_tokens"] == 1500
         assert agg["total_steps"] == 15
         assert agg["tok_per_sec"] == pytest.approx(250.0)
-        assert agg["mfu"] == pytest.approx(0.5)
+        # MFU is a token-weighted mean (equal tokens_window here): (0.2+0.3)/2.
+        assert agg["mfu"] == pytest.approx(0.25)
         assert agg["train_loss"] == pytest.approx(3.0)
         assert agg["num_reporting"] == 2
 
@@ -342,6 +343,27 @@ class TestUnifiedStats:
                 time.sleep(0.05)
         # At least one record carrying the aggregate total step.
         assert '"global_step": 10' in content
+
+    def test_stats_history_endpoint(self, server_and_client):
+        server, client, sd = server_and_client
+        client.register("worker_0")
+        # Empty before anything is logged.
+        assert client.get_stats_history()["records"] == []
+
+        client.heartbeat(
+            "worker_0",
+            stats={"tokens_total": 1000, "step_total": 10, "loss": 3.0},
+        )
+        # The record is written after the heartbeat response — poll for it.
+        deadline = time.time() + 5.0
+        hist = client.get_stats_history()
+        while not hist["records"] and time.time() < deadline:
+            time.sleep(0.05)
+            hist = client.get_stats_history()
+        assert hist["count"] >= 1
+        rec = hist["records"][-1]
+        assert rec["global_step"] == 10
+        assert rec["total_tokens"] == 1000
 
     def test_evicted_worker_drops_from_throughput(self, two_worker_server):
         server, c0, c1, sd = two_worker_server

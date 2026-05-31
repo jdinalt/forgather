@@ -506,7 +506,7 @@ Collected metrics:
 | `total_flos` | sum of per-worker increments | yes |
 | `total_steps` | sum of per-worker increments | yes |
 | `tok_per_sec` | sum over currently-reporting workers | no (live) |
-| `mfu` | sum over currently-reporting workers | no (live) |
+| `mfu` | FLOPs-weighted mean (falls back to tokens) | no (live) |
 | `peak_memory` | sum over currently-reporting workers | no (live) |
 | `grad_norm` | token-weighted mean | no (live) |
 | `train_loss` | token-weighted EMA | yes (EMA state) |

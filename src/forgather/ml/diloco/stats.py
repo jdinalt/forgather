@@ -14,11 +14,13 @@ Design (see .claude_notes/DILOCO_UNIFIED_STATS_DESIGN.md):
   last report. Reusing a worker_id on resume (the way ``diloco worker
   --resume-workers`` does) therefore continues the count instead of
   double-adding the resumed history. These persist in the server checkpoint.
-- **Live gauges** (``tok_per_sec``, ``mfu``, ``peak_memory``, ``grad_norm``) are
-  computed on demand from the latest snapshot of each *currently-reporting*
-  worker. They are not persisted — they repopulate as workers heartbeat after a
-  restart, and a worker the server evicts is dropped from the gauge via
-  :meth:`drop_worker`.
+- **Live gauges** are computed on demand from the latest snapshot of each
+  *currently-reporting* worker: ``tok_per_sec`` and ``peak_memory`` sum
+  (extensive), while ``mfu`` and ``grad_norm`` are weighted means (intensive —
+  summing MFU would exceed 100%). MFU is weighted by each worker's FLOPs
+  contribution (the natural proxy for a FLOPs-utilization fraction), grad_norm
+  by tokens. None are persisted — they repopulate as workers heartbeat after a
+  restart, and a worker the server evicts is dropped via :meth:`drop_worker`.
 - **Loss** is a token-weighted EMA: ``S = decay*S + w*loss``, ``Z = decay*Z + w``,
   ``loss = S/Z``. Recent, high-token reports dominate; old ones decay. ``S`` and
   ``Z`` persist so smoothing survives a checkpoint resume. ``train_loss`` uses a
@@ -170,6 +172,7 @@ class StatsAggregator:
         with self._lock:
             # Lifetime delta accumulators.
             seen = self._last_seen.setdefault(worker_id, {})
+            live = self._live.setdefault(worker_id, {})  # latest gauges
             self._evict_if_over_cap(worker_id)
             for key, attr in _DELTA_FIELDS.items():
                 if key not in snap or snap[key] is None:
@@ -183,13 +186,17 @@ class StatsAggregator:
                 seen[key] = cur
                 if attr == "total_flos":
                     self.total_flos += float(delta)
+                    # Stash the per-report FLOPs increment as the MFU weight
+                    # (FLOPs is the natural proxy for a FLOPs-utilization
+                    # fraction). Only on a true increment — the first report's
+                    # delta is the whole cumulative history, not a window.
+                    if prev is not None:
+                        live["flos_window"] = float(delta)
                 elif attr == "total_tokens":
                     self.total_tokens += int(delta)
                 else:  # total_steps
                     self.total_steps += int(delta)
 
-            # Latest live-gauge values for this worker.
-            live = self._live.setdefault(worker_id, {})
             for key in _GAUGE_FIELDS:
                 if key in snap and snap[key] is not None:
                     live[key] = snap[key]
@@ -251,9 +258,15 @@ class StatsAggregator:
         workers; loss values are the smoothed EMAs (None until first report)."""
         with self._lock:
             tok_per_sec = sum(v.get("tok_per_sec", 0.0) for v in self._live.values())
-            mfu = sum(v.get("mfu", 0.0) for v in self._live.values())
             peak_memory = sum(v.get("peak_mem", 0.0) for v in self._live.values())
-            grad_norm = self._weighted_grad_norm()
+            # MFU and grad_norm are intensive quantities (a per-device
+            # utilization fraction / a norm), so they're weighted *means* over
+            # reporting workers — summing MFU would exceed 100%. MFU is weighted
+            # by each worker's FLOPs contribution (the natural proxy for a
+            # FLOPs-utilization fraction), falling back to tokens then equal
+            # weight; grad_norm is token-weighted.
+            mfu = self._weighted_mean("mfu", ("flos_window", "tokens_window"))
+            grad_norm = self._weighted_mean("grad_norm", ("tokens_window",))
             return {
                 "total_tokens": self.total_tokens,
                 "total_flos": self.total_flos,
@@ -272,19 +285,26 @@ class StatsAggregator:
                 "num_reporting": len(self._live),
             }
 
-    def _weighted_grad_norm(self) -> Optional[float]:
-        """Token-weighted mean of the latest per-worker grad norms (caller
-        holds the lock). Falls back to an equal-weight mean when no worker
-        reported a window-token count."""
+    def _weighted_mean(
+        self, key: str, weight_keys: tuple = ("tokens_window",)
+    ) -> Optional[float]:
+        """Weighted mean of the latest per-worker value for ``key`` (caller
+        holds the lock). For each worker the weight is the first positive value
+        found among ``weight_keys`` (a priority list), else equal weight 1.0.
+        Returns None when no reporting worker has the metric."""
         num = 0.0
         den = 0.0
         for v in self._live.values():
-            gn = v.get("grad_norm")
-            if gn is None:
+            val = v.get(key)
+            if val is None:
                 continue
-            w = v.get("tokens_window")
-            w = float(w) if isinstance(w, (int, float)) and w > 0 else 1.0
-            num += w * float(gn)
+            w = 1.0
+            for wk in weight_keys:
+                cand = v.get(wk)
+                if isinstance(cand, (int, float)) and cand > 0:
+                    w = float(cand)
+                    break
+            num += w * float(val)
             den += w
         return (num / den) if den > 0 else None
 
