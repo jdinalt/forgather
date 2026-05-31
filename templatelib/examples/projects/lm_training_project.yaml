@@ -363,17 +363,32 @@
         -- set ns.diloco_server_addr = getenv("DILOCO_SERVER") or ""
     -- endif
 
-    ## DiLoCo: per-worker output dir. When DILOCO_WORKER_ID is set
-    ## (the scheduler emits it whenever DiLoCo is enabled, with a
-    ## queue_id fallback), append it to ``ns.output_dir`` so each
-    ## worker gets a distinct on-disk directory. No-op for non-DiLoCo
-    ## runs. The suffix operates on ``ns.output_dir`` (not
-    ## ``ns.model_name``) so any child template that overrides
-    ## ``ns.output_dir`` in its own ``[globals]`` can re-apply this same
-    ## two-line block at the end of its block and get correct per-worker
-    ## semantics without double-suffix bugs.
-    -- if getenv("DILOCO_WORKER_ID")
-        -- set ns.output_dir = ns.output_dir + "_" + getenv("DILOCO_WORKER_ID")
+    ## DiLoCo worker identity. Resolved with the SAME precedence the
+    ## callback uses at registration (diloco_callback.py: ``worker_id or
+    ## DILOCO_WORKER_ID``): the ``--diloco-worker-id`` Jinja dynamic-arg
+    ## wins, else the ``DILOCO_WORKER_ID`` env var the scheduler emits at
+    ## worker spawn (queue_id fallback). Resolving it here, once, keeps
+    ## the output-dir suffix and the registered worker-id from ever
+    ## disagreeing (issue #103: a dynamic-arg worker-id used to leave the
+    ## dir suffixed with the env value, or unsuffixed, breaking the
+    ## DiLoCo view's job correlation).
+    -- set ns.diloco_worker_id = ""
+    -- if diloco_worker_id is defined and diloco_worker_id
+        -- set ns.diloco_worker_id = diloco_worker_id
+    -- elif getenv("DILOCO_WORKER_ID")
+        -- set ns.diloco_worker_id = getenv("DILOCO_WORKER_ID")
+    -- endif
+
+    ## DiLoCo: per-worker output dir. When a worker-id is resolved,
+    ## append it to ``ns.output_dir`` so each worker gets a distinct
+    ## on-disk directory. No-op for non-DiLoCo runs. The suffix operates
+    ## on ``ns.output_dir`` (not ``ns.model_name``) so any child template
+    ## that overrides ``ns.output_dir`` in its own ``[globals]`` can
+    ## re-apply the same suffix (guarding on ``ns.diloco_worker_id``) at
+    ## the end of its block and get correct per-worker semantics without
+    ## double-suffix bugs.
+    -- if ns.diloco_worker_id
+        -- set ns.output_dir = ns.output_dir + "_" + ns.diloco_worker_id
         -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
     -- endif
 

@@ -844,17 +844,7 @@ function WorkersSection({
               group={group}
               workers={workers}
               heartbeatTimeout={status.heartbeat_timeout}
-              // Match by queue_id. The scheduler defaults
-              // DILOCO_WORKER_ID = queue_id for webui-spawned jobs.
-              // Pipeline ranks register as "<queue_id>_pp<N>"; the
-              // group's id strips that suffix, so this match works
-              // for both solo and pipeline jobs.
-              job={
-                jobs?.find(
-                  (j) =>
-                    j.queue_id === group.groupId || j.job_id === group.groupId,
-                ) ?? null
-              }
+              job={correlateJob(group, workers, jobs)}
               refreshSeconds={refreshSeconds}
             />
           ))}
@@ -876,6 +866,55 @@ interface GroupView {
    *  suffix. Solo workers form a group of one with this flag false
    *  and render as a plain ``WorkerCard`` (pre-#84 behavior). */
   isPipelineGroup: boolean;
+}
+
+/** Correlate a worker group to its forgather job (issue #103).
+ *
+ *  Two keys identify a candidate job:
+ *   - ``queue_id``/``job_id`` == the group id. The scheduler defaults
+ *     ``DILOCO_WORKER_ID = queue_id`` for webui-spawned jobs, and pipeline
+ *     ranks register as ``<queue_id>_pp<N>`` (the group id strips that
+ *     suffix), so this matches both solo and pipeline jobs.
+ *   - the worker's reported ``output_dir``. A run that reuses a stable
+ *     custom worker-id (e.g. to resume from its checkpoint) registers under
+ *     an id != queue_id, so the id key misses; the per-worker output-dir
+ *     suffix is kept in lockstep with the job's resolved ``output_dir``, so
+ *     this re-links it. Pipeline ranks of one job share a local output_dir,
+ *     so any member's value identifies the group.
+ *
+ *  We gather candidates by BOTH keys and rank live-first (then most
+ *  recently started) rather than short-circuiting on the id key. This is
+ *  essential because a worker is often named after a PRIOR run's queue_id
+ *  (picked from the restart menu): the old job with that exact queue_id
+ *  still lingers in the list, dead, and an id-key-first match would bind
+ *  the worker to that corpse — hiding the live job's stats/controls. The
+ *  same ranking lets a fresh respawn outrank the stopped job that still
+ *  shares its output_dir. */
+function correlateJob(
+  group: GroupView,
+  workers: Record<string, DiLoCoWorkerStatus>,
+  jobs: Job[] | null,
+): Job | null {
+  if (!jobs) return null;
+  const groupOutputDir = group.members
+    .map((m) => workers[m.workerId]?.output_dir)
+    .find((d) => d);
+  const candidates = jobs.filter(
+    (j) =>
+      j.queue_id === group.groupId ||
+      j.job_id === group.groupId ||
+      (!!groupOutputDir && j.output_dir === groupOutputDir),
+  );
+  if (candidates.length === 0) return null;
+  // Live first, then most recently started — a running respawn outranks a
+  // dead job that shares its queue_id (old name reuse) or output_dir.
+  candidates.sort(
+    (a, b) =>
+      Number(b.alive) - Number(a.alive) ||
+      (b.started_at ?? b.submitted_at ?? 0) -
+        (a.started_at ?? a.submitted_at ?? 0),
+  );
+  return candidates[0];
 }
 
 /** Group workers by stripping the ``_pp<N>`` suffix from ``worker_id``.
@@ -1082,9 +1121,9 @@ function GroupCard({
       {!job && (
         <div className="muted" style={{ fontSize: 11 }}>
           No correlated forgather job — training-side stats and controls
-          unavailable. (Worker may have been spawned outside the webui;
-          set --diloco-worker-id = the job's queue_id to enable
-          correlation.)
+          unavailable. (Workers correlate by queue_id or by matching
+          output_dir; this one likely ran outside the webui or under a
+          different output_dir.)
         </div>
       )}
 
@@ -1299,9 +1338,9 @@ function WorkerCard({
       {!compact && !job && (
         <div className="muted" style={{ fontSize: 11 }}>
           No correlated forgather job — training-side stats and controls
-          unavailable. (Worker may have been spawned outside the webui;
-          set --diloco-worker-id = the job's queue_id to enable
-          correlation.)
+          unavailable. (Workers correlate by queue_id or by matching
+          output_dir; this one likely ran outside the webui or under a
+          different output_dir.)
         </div>
       )}
 

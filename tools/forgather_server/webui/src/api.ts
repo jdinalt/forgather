@@ -1109,6 +1109,11 @@ export interface DiLoCoWorkerStatus {
   sync_round?: number;
   last_sync_server_round?: number;
   steps_per_second?: number;
+  /** Worker's local output dir, reported at registration. Lets the
+   *  DiLoCo view correlate a worker to its forgather job by output_dir
+   *  when the worker-id was renamed away from the job's queue_id (e.g. a
+   *  resumable run reusing a stable worker name). See issue #103. */
+  output_dir?: string | null;
 }
 
 /** Upstream ``/status`` response. Field set tracks DiLoCoServer._handle_status. */
@@ -1136,6 +1141,24 @@ export interface DiLoCoStatus {
   save_dir?: string;
   model_params?: number;
   model_size_mb?: number;
+}
+
+/** One entry in the upstream ``/known_workers`` roster. */
+export interface DiLoCoKnownWorker {
+  worker_id: string;
+  /** Last-reported local output dir (the worker-id-suffixed dir whose
+   *  checkpoint a relaunch under this id would resume from). */
+  output_dir?: string | null;
+  last_registered?: number | null;
+  /** True iff currently registered — such names can't be relaunched. */
+  running: boolean;
+}
+
+/** Upstream ``/known_workers`` response: every worker_id the server has
+ *  ever seen, persisted with its checkpoints. The submit UI offers the
+ *  not-running entries for checkpoint-resuming relaunch (issue #103). */
+export interface DiLoCoKnownWorkers {
+  workers: DiLoCoKnownWorker[];
 }
 
 /** Upstream ``/info`` response — additive to /status, captures the
@@ -2307,6 +2330,14 @@ export const api = {
   diLoCoServerInfo: (base: string) =>
     fetchJson<DiLoCoInfo>(
       `/api/diloco/server-info?base=${encodeURIComponent(base)}`,
+    ),
+  /** Roster of every worker the server has ever seen, with a per-worker
+   *  ``running`` flag. The submit modal offers the not-running names so an
+   *  operator can relaunch a worker under its old id and resume from that
+   *  worker's checkpoint (issue #103). */
+  diLoCoKnownWorkers: (base: string) =>
+    fetchJson<DiLoCoKnownWorkers>(
+      `/api/diloco/known-workers?base=${encodeURIComponent(base)}`,
     ),
   /** Summaries of all work-unit dispatch queues on the upstream
    *  DiLoCo server. Empty list when work-dispatch isn't being used. */

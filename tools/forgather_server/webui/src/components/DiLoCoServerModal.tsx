@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { api } from "../api";
@@ -212,6 +212,40 @@ export function DiLoCoServerModal({
   const formValid =
     trimmedOutputDir !== "" && numWorkers >= 1 && portValid && minWorkers >= 1;
 
+  // Maintenance: delete the server's rotated-checkpoint dir
+  // (``<model dir>/checkpoints``) so a fresh run starts clean without
+  // leaving the modal. The button is gated on the dir actually existing
+  // (probed via /fs/path-exists) and always confirms with the full path
+  // first. Deletion goes through /fs/delete-dir, which independently
+  // re-validates (traversal / depth / denylist guards).
+  const checkpointsDir = trimmedOutputDir
+    ? trimmedOutputDir.replace(/\/+$/, "") + "/checkpoints"
+    : "";
+  const checkpointsProbe = useQuery({
+    queryKey: ["fs", "path-exists", checkpointsDir],
+    queryFn: () => api.fsPathExists(checkpointsDir),
+    enabled: !!checkpointsDir,
+    staleTime: 2000,
+  });
+  const checkpointsExist = !!checkpointsProbe.data?.is_dir;
+  const deleteCheckpoints = useMutation({
+    mutationFn: (p: string) => api.deleteDir(p),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["fs", "path-exists", checkpointsDir] });
+      qc.invalidateQueries({ queryKey: ["diloco"] });
+    },
+  });
+  const onDeleteCheckpoints = () => {
+    if (!checkpointsExist || deleteCheckpoints.isPending) return;
+    if (
+      !confirm(
+        `Delete this directory and everything in it?\n\n${checkpointsDir}`,
+      )
+    )
+      return;
+    deleteCheckpoints.mutate(checkpointsDir);
+  };
+
   /** Build the args dict shared by both submit paths. Matches the
    *  shape the scheduler's _build_diloco_server expects from
    *  ``job_params`` (and what the services config persists). */
@@ -389,6 +423,47 @@ export function DiLoCoServerModal({
               The shared init checkpoint dir. Workers must point at this
               same dir.
             </div>
+            <div
+              style={{
+                marginTop: 6,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                flexWrap: "wrap",
+              }}
+            >
+              <button
+                type="button"
+                onClick={onDeleteCheckpoints}
+                disabled={!checkpointsExist || deleteCheckpoints.isPending}
+                title={
+                  !trimmedOutputDir
+                    ? "Set the model / output dir first"
+                    : !checkpointsExist
+                      ? `No checkpoints directory at ${checkpointsDir}`
+                      : `Delete ${checkpointsDir}`
+                }
+              >
+                {deleteCheckpoints.isPending
+                  ? "Deleting…"
+                  : "Delete Checkpoints…"}
+              </button>
+              {checkpointsDir && (
+                <span className="muted" style={{ fontSize: "smaller" }}>
+                  {checkpointsExist
+                    ? checkpointsDir
+                    : "no checkpoints dir to delete"}
+                </span>
+              )}
+            </div>
+            {deleteCheckpoints.isError && (
+              <div
+                role="alert"
+                style={{ color: "tomato", fontSize: "smaller", marginTop: 4 }}
+              >
+                {(deleteCheckpoints.error as Error).message}
+              </div>
+            )}
           </div>
 
           <label>

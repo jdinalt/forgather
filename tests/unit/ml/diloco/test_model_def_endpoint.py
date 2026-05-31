@@ -145,6 +145,129 @@ def test_stage_model_def_miss_then_hit(server, tmp_path):
         assert fh.read() == "REUSED"  # not re-fetched
 
 
+def _make_home_dir(home, sd, *, code="class Model: pass"):
+    """A self-contained model dir AT a directory's top level (config + code
+    + tokenizer + weights), mirroring a real forgather model home where the
+    server's ``checkpoints/`` subtree sits alongside the definition."""
+    os.makedirs(home, exist_ok=True)
+    _save_checkpoint(home, sd, safetensors=True)
+    with open(os.path.join(home, "config.json"), "w") as fh:
+        fh.write('{"hidden_size": 8, "model_type": "demo"}')
+    with open(os.path.join(home, "modeling_demo.py"), "w") as fh:
+        fh.write(code)
+    with open(os.path.join(home, "tokenizer_config.json"), "w") as fh:
+        fh.write("{}")
+
+
+def _simple_sgd(params):
+    return torch.optim.SGD(params, lr=1.0, momentum=0.0)
+
+
+def test_model_def_served_after_restart_from_weights_only_checkpoint(tmp_path):
+    """Regression for #103: a rotated server checkpoint holds only weights +
+    server_state.pt — no definition. After a restart that loads such a
+    checkpoint, /model_def must fall back to output_dir (the model's home)
+    instead of serving an empty bundle that breaks the worker's config load.
+    """
+    sd = _make_state_dict()
+    home = str(tmp_path / "model_home")
+    _make_home_dir(home, sd)
+
+    # First server: started from the self-contained home; save a checkpoint
+    # (weights + server_state only) under <home>/checkpoints/checkpoint-N.
+    srv = DiLoCoServer(
+        output_dir=home,
+        from_checkpoint=home,
+        num_workers=1,
+        port=0,
+        save_every_n_rounds=0,
+        outer_optimizer_factory=_simple_sgd,
+    )
+    srv.start()
+    srv._pending_pseudograds["w0"] = {k: torch.zeros_like(v) for k, v in sd.items()}
+    srv._apply_outer_optimizer()
+    srv.save_state()
+    ckpt_dir = os.path.join(home, "checkpoints", f"checkpoint-{srv._sync_round}")
+    hash_before = srv._model_hash
+    srv.stop()
+
+    # The saved checkpoint genuinely lacks the definition.
+    assert os.path.exists(os.path.join(ckpt_dir, "server_state.pt"))
+    assert not os.path.exists(os.path.join(ckpt_dir, "config.json"))
+
+    # Restart loading from the weights-only checkpoint.
+    srv2 = DiLoCoServer(
+        output_dir=home,
+        from_checkpoint=ckpt_dir,
+        num_workers=1,
+        port=0,
+        outer_optimizer_factory=_simple_sgd,
+    )
+    srv2.start()
+    try:
+        # Loaded from the bare checkpoint, but the definition is resolved
+        # from the home dir, and the folded model_hash is unchanged.
+        assert srv2._loaded_checkpoint_dir == os.path.realpath(ckpt_dir)
+        assert srv2._model_def_dir == os.path.realpath(home)
+        assert srv2._model_hash == hash_before
+        # And a worker can actually stage a non-empty definition.
+        out = tmp_path / "worker_out"
+        staged = stage_model_def(f"localhost:{srv2.port}", str(out))
+        assert os.path.exists(os.path.join(staged, "config.json"))
+        assert os.path.exists(os.path.join(staged, "modeling_demo.py"))
+    finally:
+        srv2.stop()
+
+
+def test_model_def_503_when_no_definition_anywhere(tmp_path):
+    """When neither the loaded checkpoint nor output_dir carries a
+    definition, /model_def fails loudly (no empty bundle)."""
+    sd = _make_state_dict()
+    # Weights-only checkpoint, and an output_dir with nothing else in it.
+    bare = str(tmp_path / "bare_ckpt")
+    _save_checkpoint(bare, sd, safetensors=True)
+    srv = DiLoCoServer(
+        output_dir=str(tmp_path / "empty_out"),
+        from_checkpoint=bare,
+        num_workers=1,
+        port=0,
+        outer_optimizer_factory=_simple_sgd,
+    )
+    srv.start()
+    try:
+        assert srv._model_def_dir is None
+        client = DiLoCoClient(f"localhost:{srv.port}", timeout=10)
+        with pytest.raises(Exception):
+            client.fetch_model_def(os.path.join(str(tmp_path), "nope"))
+    finally:
+        srv.stop()
+
+
+def test_stage_refuses_definitionless_bundle(tmp_path, monkeypatch):
+    """Defense-in-depth: even if a server served an empty bundle, staging
+    must refuse to stamp a config-less directory (which would poison the
+    cache and resurface as a cryptic config-load error)."""
+    import forgather.ml.diloco.client as client_mod
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def get_info(self):
+            return {"model_hash": "deadbeef"}
+
+        def fetch_model_def(self, dest):
+            os.makedirs(dest, exist_ok=True)  # extracts nothing — no config.json
+            return "deadbeef"
+
+    monkeypatch.setattr(client_mod, "DiLoCoClient", FakeClient)
+    out = tmp_path / "worker_out"
+    with pytest.raises(RuntimeError, match="config.json"):
+        stage_model_def("localhost:9999", str(out))
+    # And nothing was left stamped behind.
+    assert not os.path.exists(os.path.join(str(out), STAGE_SUBDIR, STAMP_NAME))
+
+
 @pytest.mark.skipif(
     not os.path.isdir("models/tiny") or not os.path.exists("models/tiny/config.json"),
     reason="models/tiny generated model dir not present",

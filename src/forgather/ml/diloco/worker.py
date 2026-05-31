@@ -108,10 +108,17 @@ class DiLoCoWorker:
         pp_world_size: int = 1,
         auth_token: Optional[str] = None,
         verify_tls: bool = True,
+        output_dir: Optional[str] = None,
     ):
         self.model = model
         self.optimizer = optimizer
         self.sync_every = sync_every
+        # Local on-disk output dir (logs/checkpoints). Reported to the
+        # server purely so the webui's DiLoCo view can correlate a worker
+        # back to its forgather job by output_dir when the worker-id was
+        # renamed away from the job's queue_id (issue #103). Not used by
+        # the sync protocol.
+        self.output_dir = output_dir
         self._initial_sync_every = sync_every
         self.bf16_comm = bf16_comm
         self.worker_id = worker_id or self._generate_worker_id()
@@ -467,6 +474,9 @@ class DiLoCoWorker:
             "sync_every": self.sync_every,
             "bf16_comm": self.bf16_comm,
             "dylu": self.dylu,
+            # Optional local output dir, for webui job correlation only
+            # (issue #103); omitted when unknown.
+            **({"output_dir": self.output_dir} if self.output_dir else {}),
             # Structural slice fingerprint. Server validates per-slice
             # shape consistency at register time and verifies group
             # coverage at seal time. For solo workers the slice IS the

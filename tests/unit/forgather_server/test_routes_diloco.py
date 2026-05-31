@@ -280,6 +280,40 @@ class TestProxy:
         assert r.status_code == 403
         assert "registry" in r.json()["detail"].lower()
 
+    def test_known_workers_passes_through(self, client, no_local_servers, monkeypatch):
+        """The known-workers proxy forwards GET <base>/known_workers and
+        returns the upstream roster verbatim (#103)."""
+        upstream_payload = {
+            "workers": [
+                {
+                    "worker_id": "w0",
+                    "output_dir": "/runs/m_w0",
+                    "last_registered": 1.0,
+                    "running": False,
+                }
+            ]
+        }
+
+        def fake_handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/known_workers"
+            return httpx.Response(200, json=upstream_payload)
+
+        _patch_async_client(monkeypatch, fake_handler)
+        r = client.get(
+            "/api/diloco/known-workers",
+            params={"base": "http://127.0.0.1:8512"},
+        )
+        assert r.status_code == 200
+        assert r.json() == upstream_payload
+
+    def test_known_workers_refused_for_unknown_remote(self, client, no_local_servers):
+        r = client.get(
+            "/api/diloco/known-workers",
+            params={"base": "http://10.0.0.99:8512"},
+        )
+        assert r.status_code == 403
+        assert "registry" in r.json()["detail"].lower()
+
     def test_status_allowed_after_registering(
         self, client, no_local_servers, monkeypatch
     ):

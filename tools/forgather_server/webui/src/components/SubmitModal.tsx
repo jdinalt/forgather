@@ -927,6 +927,33 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
     clusterFanout,
   } = props;
 
+  // Roster of workers the server has ever seen (issue #103). Workers that
+  // are NOT currently running can be relaunched under their old id to
+  // resume from that worker's checkpoint — we surface them as a datalist
+  // menu on the worker_id field below. Hooks must run unconditionally, so
+  // this precedes the cluster-fanout early return.
+  const knownWorkersQ = useQuery({
+    queryKey: ["diloco", "known-workers", selectedBase],
+    queryFn: () => api.diLoCoKnownWorkers(selectedBase),
+    enabled: !!selectedBase,
+    staleTime: 10_000,
+  });
+  const resumableWorkers = useMemo(() => {
+    // Dedupe to the base worker-id the operator actually passes as
+    // --diloco-worker-id; pipeline ranks register as ``<base>_pp<N>`` and
+    // share one local output_dir, so the base is the resumable identity.
+    const seen = new Map<string, string | null | undefined>();
+    for (const w of knownWorkersQ.data?.workers ?? []) {
+      if (w.running) continue;
+      const base = w.worker_id.replace(/_pp\d+$/, "");
+      if (!seen.has(base)) seen.set(base, w.output_dir);
+    }
+    return [...seen.entries()].map(([name, output_dir]) => ({
+      name,
+      output_dir,
+    }));
+  }, [knownWorkersQ.data]);
+
   // Multi-node fanout + DiLoCo together needs per-peer worker IDs and
   // dataset sharding that isn't wired yet. Hide the picker (preserving
   // any in-flight None selection) so the operator can't accidentally
@@ -1127,10 +1154,60 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
                   value={workerId}
                   onChange={(e) => setWorkerId(e.target.value)}
                   placeholder="auto"
+                  list="diloco-known-workers"
                   style={{ width: "100%" }}
                 />
+                {/* Name-only autocomplete; the full path is shown (and not
+                    clipped) by the chip menu below, so the datalist option
+                    carries no path label. */}
+                <datalist id="diloco-known-workers">
+                  {resumableWorkers.map((w) => (
+                    <option key={w.name} value={w.name} />
+                  ))}
+                </datalist>
               </label>
             </div>
+            {resumableWorkers.length > 0 && (
+              <div className="muted" style={{ fontSize: "smaller", marginTop: 6 }}>
+                Resume a stopped worker from its checkpoint:
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 6,
+                    marginTop: 4,
+                  }}
+                >
+                  {resumableWorkers.map((w) => {
+                    const dir = (w.output_dir ?? "").replace(/\/+$/, "");
+                    const leaf = dir.split("/").pop() || "";
+                    return (
+                      <button
+                        type="button"
+                        key={w.name}
+                        onClick={() => setWorkerId(w.name)}
+                        title={w.output_dir ?? undefined}
+                        style={{
+                          fontSize: "smaller",
+                          padding: "2px 8px",
+                          borderRadius: 10,
+                          cursor: "pointer",
+                          border:
+                            workerId === w.name
+                              ? "1px solid var(--accent, #7aa2f7)"
+                              : "1px solid var(--border, #3b4261)",
+                        }}
+                      >
+                        {w.name}
+                        {leaf && leaf !== w.name && (
+                          <span className="muted"> · {leaf}</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>

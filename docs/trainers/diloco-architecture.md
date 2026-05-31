@@ -130,7 +130,18 @@ _workers_lock: threading.Lock        # Protects _workers dict
 
 `WorkerInfo` is a dataclass with: `worker_id`, `hostname`, `registered_at`,
 `last_heartbeat`, `sync_round` (worker's count), `last_sync_server_round`
-(server round at last sync), `steps_per_second`, `extra`.
+(server round at last sync), `steps_per_second`, `output_dir`, `extra`.
+
+`output_dir` is the worker's local output directory, reported at
+registration and surfaced per-worker in `/status`. It is used only by the
+webui to correlate a worker back to its forgather job: the primary key is
+`queue_id == worker_id`, but a run that reuses a stable custom worker-id
+(e.g. to resume from its own checkpoint) registers under an id that no
+longer equals the job's `queue_id`, so the panel falls back to matching the
+worker's `output_dir` against the job's resolved `output_dir`. The
+per-worker output-dir suffix and the registered worker-id share a single
+resolved source (the `--diloco-worker-id` Jinja arg, else `DILOCO_WORKER_ID`
+env), so the two stay in lockstep.
 
 **Synchronous state:**
 
@@ -222,14 +233,45 @@ All communication uses HTTP/1.1 over TCP. The server runs a
 | POST | `/heartbeat` | JSON: `{worker_id, steps_per_second}` | JSON: `{status, sync_round, recommended_sync_every?}` |
 | POST | `/deregister` | JSON: `{worker_id}` | JSON: `{status: "ok"}` |
 | GET | `/status` | (none) | JSON: server state |
+| GET | `/known_workers` | (none) | JSON: `{workers: [{worker_id, output_dir, last_registered, running}]}` |
 | GET | `/info` | (none) | JSON: negotiation facts + `model_hash` |
 | GET | `/model_def` | (none) | tar: model definition (config + code + tokenizer, no weights); `X-Forgather-Model-Hash` header |
 
-`/model_def` is served from the checkpoint directory the server was started
-from (captured as `self._loaded_checkpoint_dir` in `load_state`). The
-include/exclude policy, deterministic packing, and traversal-safe extraction
-live in `forgather.ml.diloco.model_def`; the worker-side staging into
-`<output_dir>/diloco_model_def/` lives in
+`/known_workers` returns every `worker_id` the server has ever seen — the
+roster `self._known_workers`, persisted with the server's checkpoints (see
+"Server state persistence" below). Each entry carries the worker's
+last-reported `output_dir`, its last registration time, and a `running`
+flag (true iff currently registered). The webui's submit modal offers the
+not-running entries as a menu so an operator can relaunch a worker under
+its old id and thereby resume from that worker's own checkpoint — the
+checkpoint path is the worker-id-suffixed `output_dir`, so reusing the id
+is the only way to find it. Routed on the control port only and bearer-
+authenticated, like `/status`.
+
+`/model_def` is served from `self._model_def_dir`, resolved in `load_state`
+by `_resolve_model_def_dir`: the loaded checkpoint when it carries the
+definition (a self-contained `--from-checkpoint` model dir), else
+`output_dir` — the model's home. This fallback matters because a *rotated*
+server checkpoint (`checkpoints/checkpoint-N/`) holds only weights +
+`server_state.pt`; the definition (`config.json` + custom modeling/config
+`.py` + tokenizer) lives at the `output_dir` top level. Without the
+fallback, a server restarted off a rotated checkpoint would serve an empty
+bundle and every worker's config load would fail with "Unrecognized model"
+(issue #103). When neither dir carries a definition, `_model_def_dir` is
+`None` and `/model_def` returns 503 (loud failure, no empty bundle); the
+worker's `stage_model_def` independently refuses to stamp a bundle that has
+no `config.json`, so a definition-less fetch can never poison the staging
+cache. The folded `model_hash` is computed over `_model_def_dir`, so in the
+common case — the definition lives at `output_dir` — it is stable across a
+restart even though the loaded checkpoint dir changes. It shifts only if the
+server was first started from a *separate* self-contained `--from-checkpoint`
+dir that also carried the definition (first run resolves to that dir, a
+restart-from-rotated-checkpoint falls back to `output_dir`); the worst case
+there is a one-time bundle re-fetch by each worker, not an incorrect bundle.
+
+The include/exclude policy, deterministic packing, and traversal-safe
+extraction live in `forgather.ml.diloco.model_def`; the worker-side staging
+into `<output_dir>/diloco_model_def/` lives in
 `forgather.ml.diloco.model_stage`. Both `/info` and `/model_def` are
 control-plane endpoints (bearer-required, never served on the bulk
 listener).
@@ -649,8 +691,8 @@ the cache.
 * **DDP / multi-worker.** `file_lock_build(..., force_lock=True)` serializes
   ranks/workers sharing one host: one fetches under the lock, the rest
   re-check the stamp on acquiring it and reuse.
-* **Server-side bundle cache.** `_loaded_checkpoint_dir` is content-stable
-  for the server's lifetime, so the server packs the tar once (lazily, under
+* **Server-side bundle cache.** `_model_def_dir` is content-stable for the
+  server's lifetime, so the server packs the tar once (lazily, under
   `_model_def_lock`) and caches `self._model_def_bundle`. Concurrent worker
   fetches don't each re-walk the dir or hold separate in-memory copies.
 * **Hash semantics.** `_model_hash` is the parameter `(name, shape)`
@@ -817,12 +859,20 @@ Worker `sync_metrics` include `sync_retries` and `reconnections` counters.
     "param_names": List[str],
     "async_mode": bool,
     "total_submissions": int,
+    "known_workers": Dict[str, {output_dir, last_registered}],
 }
 ```
 
 `load_state(path)` restores parameters and optimizer state. Note that
 `weights_only=False` is used for loading because the optimizer state dict
 contains non-tensor values.
+
+`known_workers` is the roster of every `worker_id` that has ever
+registered (see `/known_workers` above). Persisting it here is what lets a
+restarted server still offer the previous run's workers for
+checkpoint-resuming relaunch; it is snapshotted under `_workers_lock` at
+save time and restored on load (absent on pre-feature checkpoints, where it
+simply starts empty).
 
 Automatic save: when `save_dir` is set, the server saves every
 `save_every_n_rounds` sync rounds. Two files are written: a versioned file

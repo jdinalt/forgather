@@ -128,6 +128,19 @@ def stage_model_def(
         tmp_dir = tempfile.mkdtemp(prefix=".diloco_model_def.", dir=output_dir)
         try:
             fetched_hash = client.fetch_model_def(tmp_dir)
+            # Fail loud on a definition-less bundle rather than stamping an
+            # empty dir as valid (which poisons the cache and resurfaces as a
+            # cryptic "Unrecognized model … no model_type key" at config
+            # load). A server restarted off a weights-only checkpoint used to
+            # serve an empty bundle; the server now refuses that, but validate
+            # here too so no future empty fetch is ever cached.
+            if not os.path.exists(os.path.join(tmp_dir, "config.json")):
+                raise RuntimeError(
+                    f"DiLoCo: model-definition bundle from {server_addr} has "
+                    "no config.json — the server has no model definition to "
+                    "serve (it may have been started from a weights-only "
+                    "checkpoint). Refusing to stage an empty definition."
+                )
             with open(os.path.join(tmp_dir, STAMP_NAME), "w", encoding="utf-8") as fh:
                 fh.write(fetched_hash or want_hash)
             if os.path.exists(local_dir):

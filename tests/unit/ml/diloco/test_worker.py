@@ -78,6 +78,33 @@ def two_worker_server_with_model(tmp_path):
     server.stop()
 
 
+class TestWorkerInfoOutputDir:
+    """The worker reports its local output_dir at registration purely so
+    the webui can correlate it to its forgather job by output_dir when the
+    worker-id was renamed away from the job's queue_id (issue #103)."""
+
+    def test_output_dir_included_when_set(self):
+        model = TinyModel(dim=4)
+        worker = DiLoCoWorker(
+            model,
+            torch.optim.SGD(model.parameters(), lr=0.01),
+            server_addr="dummy:8512",
+            output_dir="/runs/tinyv2_w0",
+        )
+        assert worker._get_worker_info()["output_dir"] == "/runs/tinyv2_w0"
+
+    def test_output_dir_omitted_when_unset(self):
+        model = TinyModel(dim=4)
+        worker = DiLoCoWorker(
+            model,
+            torch.optim.SGD(model.parameters(), lr=0.01),
+            server_addr="dummy:8512",
+        )
+        # Omitted entirely (not a null) so the server stores None and old
+        # workers that never report it behave identically.
+        assert "output_dir" not in worker._get_worker_info()
+
+
 class TestPseudoGradientComputation:
     def test_pseudograd_is_global_minus_local(self):
         """Verify pseudo-gradient = global_params - local_params."""

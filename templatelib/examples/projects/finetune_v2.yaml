@@ -41,9 +41,11 @@
     ## Re-apply the DiLoCo per-worker suffix that the parent set on
     ## its own ns.output_dir (which we just overwrote). Each worker
     ## needs a distinct on-disk dir for local logs/checkpoints;
-    ## the server owns the un-suffixed model_id_or_path. See #83.
-    -- if getenv("DILOCO_WORKER_ID")
-        -- set ns.output_dir = ns.output_dir + "_" + getenv("DILOCO_WORKER_ID")
+    ## the server owns the un-suffixed model_id_or_path. Reuse the
+    ## worker-id the parent already resolved (Jinja arg or env) so the
+    ## two channels can never disagree. See #83, #103.
+    -- if ns.diloco_worker_id
+        -- set ns.output_dir = ns.output_dir + "_" + ns.diloco_worker_id
     -- endif
     -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
 

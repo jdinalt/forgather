@@ -375,6 +375,47 @@ class TestDiLoCoServer:
         for key in params_before:
             assert torch.allclose(params_before[key], params_after[key])
 
+    def test_known_workers_persist_across_restart(self, tmp_path):
+        """The known-worker roster is saved into server_state.pt and
+        restored on a fresh load, so a restarted server still offers the
+        previous run's workers for checkpoint-resuming relaunch (#103)."""
+        sd = _make_state_dict(dim=4)
+        ckpt = make_initial_checkpoint(sd, tmp_path / "initial")
+        server = DiLoCoServer(
+            output_dir=str(tmp_path),
+            from_checkpoint=str(ckpt),
+            num_workers=1,
+            save_every_n_rounds=0,
+        )
+        server.start()
+        # Simulate two workers having registered over the run's lifetime.
+        server._known_workers["w0"] = {
+            "output_dir": "/runs/model_w0",
+            "last_registered": 100.0,
+        }
+        server._known_workers["w1"] = {
+            "output_dir": "/runs/model_w1",
+            "last_registered": 200.0,
+        }
+        # A round dirties state so save_state actually writes.
+        server._pending_pseudograds["w0"] = {
+            k: torch.randn_like(v) for k, v in sd.items()
+        }
+        server._apply_outer_optimizer()
+        server.save_state()
+        checkpoint_dir = tmp_path / "checkpoints" / f"checkpoint-{server._sync_round}"
+        server.stop()
+
+        server2 = DiLoCoServer(
+            output_dir=str(tmp_path / "server2_output"),
+            from_checkpoint=str(checkpoint_dir),
+            num_workers=1,
+        )
+        assert set(server2._known_workers) == {"w0", "w1"}
+        assert server2._known_workers["w0"]["output_dir"] == "/runs/model_w0"
+        # None are live after a fresh load — they're resumable, not running.
+        assert "w0" not in server2._workers
+
     def test_auto_load_from_output_dir(self, tmp_path):
         """Server auto-loads the latest checkpoint from output_dir when no from_checkpoint."""
         sd = _make_state_dict(dim=4)
