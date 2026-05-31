@@ -181,6 +181,45 @@ class TestResolveOrchestratorBase:
         assert orch.resolve_orchestrator_base(args) == (None, None)
 
 
+class TestStatusExitCode:
+    def test_orchestrator_upstream_down_exits_nonzero(self, monkeypatch, capsys):
+        """A dead upstream reached through the orchestrator must exit
+        non-zero (scriptability), not print a healthy-looking 'unknown'."""
+        from forgather.cli import diloco
+
+        class DeadClient:
+            def diloco_server_status(self, base):
+                raise RuntimeError("server: 502 upstream unreachable")
+
+            def diloco_server_info(self, base):
+                return {}
+
+            def diloco_known_workers(self, base):
+                return {}
+
+            def diloco_work_queues(self, base):
+                return []
+
+        monkeypatch.setattr(
+            orch,
+            "resolve_orchestrator_base",
+            lambda args: (DeadClient(), "http://h:8512"),
+        )
+        args = argparse.Namespace(
+            queues=False,
+            json=True,
+            direct=False,
+            server="local:q1",
+            via_server=None,
+            auth_token=None,
+            no_verify_tls=False,
+        )
+        rc = diloco._status_cmd(args)
+        assert rc == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert "error" in payload
+
+
 class TestLogsCmd:
     def test_dump(self, patch_orchestrator, capsysbinary):
         client = patch_orchestrator(

@@ -281,15 +281,12 @@ def _status_cmd(args):
 
     client, base = orch.resolve_orchestrator_base(args)
     if base is not None:
-        merged = orch.assemble_status(
-            get_status=lambda: client.diloco_server_status(base),
-            get_info=lambda: client.diloco_server_info(base),
-            get_known_workers=lambda: client.diloco_known_workers(base),
-            get_work_queues=(
-                (lambda: client.diloco_work_queues(base)) if want_queues else None
-            ),
-        )
+        get_status = lambda: client.diloco_server_status(base)  # noqa: E731
+        get_info = lambda: client.diloco_server_info(base)  # noqa: E731
+        get_known = lambda: client.diloco_known_workers(base)  # noqa: E731
+        get_queues = (lambda: client.diloco_work_queues(base)) if want_queues else None
         source = {"via": "orchestrator", "base": base}
+        target = base
     else:
         from forgather.ml.diloco.client import DiLoCoClient
 
@@ -302,21 +299,33 @@ def _status_cmd(args):
             token=getattr(args, "auth_token", None),
             verify_tls=not getattr(args, "no_verify_tls", False),
         )
-        try:
-            first = c.get_status()
-        except Exception as e:
-            if as_json:
-                print(json.dumps({"error": str(e), "server": args.server}))
-            else:
-                print(f"Error connecting to server at {args.server}: {e}")
-            return 1
-        merged = orch.assemble_status(
-            get_status=lambda: first,
-            get_info=c.get_info,
-            get_known_workers=c.get_known_workers,
-            get_work_queues=c.get_work_queues if want_queues else None,
-        )
+        get_status = c.get_status
+        get_info = c.get_info
+        get_known = c.get_known_workers
+        get_queues = c.get_work_queues if want_queues else None
         source = {"via": "direct", "server": args.server}
+        target = args.server
+
+    # The core /status read is REQUIRED — a failure here means the server
+    # is down / unreachable (directly or through the proxy), so we report
+    # it and exit non-zero rather than printing a healthy-looking "unknown"
+    # snapshot. The remaining reads (info / workers / queues) stay
+    # best-effort via assemble_status so a partial server still renders.
+    try:
+        status = get_status()
+    except Exception as e:
+        if as_json:
+            print(json.dumps({"error": str(e), "source": source}))
+        else:
+            print(f"Error reading DiLoCo status for {target}: {e}")
+        return 1
+
+    merged = orch.assemble_status(
+        get_status=lambda: status,
+        get_info=get_info,
+        get_known_workers=get_known,
+        get_work_queues=get_queues,
+    )
 
     if as_json:
         print(json.dumps({"source": source, **merged}, default=str, indent=2))
