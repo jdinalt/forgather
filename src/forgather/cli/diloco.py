@@ -291,7 +291,9 @@ def _status_cmd(args):
     roster and (with ``--queues``) the work-unit queues. When the forgather
     server is reachable AND knows this target, the read goes through its
     proxy (which resolves the upstream token + TLS for us); otherwise we
-    talk to the parameter server directly. ``--direct`` forces the latter.
+    talk to the parameter server directly. ``--local-only`` forces the
+    direct path; ``--local-fallback`` uses it only when the server is down;
+    the default errors if the server is unreachable.
     """
     from . import diloco_orch as orch
     from .server_client import ServerUnreachable
@@ -396,10 +398,10 @@ def _control_cmd(args):
 def _shutdown_cmd(args):
     """Stop the DiLoCo server — cleanly (default) or immediately (--force).
 
-    Orchestrator-first with direct fallback (see make_control_ops): when
-    the forgather server is up and knows this target, the control actions
-    route through its proxy; otherwise they go straight to the parameter
-    server. ``--direct`` forces the latter.
+    Routes the control actions through the forgather server by default (see
+    make_control_ops); ``--local-only`` goes straight to the parameter
+    server, ``--local-fallback`` does so only when the server is down, and
+    the default errors if the server is unreachable.
     """
     import time
 
@@ -564,11 +566,12 @@ def _worker_cmd(args):
     """
     Launch training as a DiLoCo worker.
 
-    Orchestrator-first: when the forgather server is running, enqueue the
-    worker(s) as scheduled training jobs — this is the path that supports
-    ``--count N`` (auto-named), ``--dataset auto|server:<id>``, and central
-    auth. ``--direct`` (or the server being down) runs a single worker in
-    the foreground by wrapping ``forgather train`` with DiLoCo env vars.
+    By default the worker(s) are enqueued as scheduled training jobs through
+    the forgather server — the path that supports ``--count N`` (auto-named),
+    ``--dataset auto|server:<id>``, and central auth. ``--local-only`` (or
+    ``--local-fallback`` when the server is down) instead runs a single
+    worker in the foreground by wrapping ``forgather train`` with DiLoCo env
+    vars; the default errors if the server is unreachable.
 
     Dynamic/template args are accepted the standard way (built from the
     config's ``dynamic_args`` metadata, like ``forgather train``) and are

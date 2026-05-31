@@ -644,11 +644,12 @@ class _OrchestratorOps:
 
 
 def make_control_ops(args, *, timeout=30):
-    """Build a control surface, orchestrator-first with direct fallback.
+    """Build a control surface (orchestrator proxy or direct DiLoCoClient).
 
-    Returns ``(ops, label)`` where ``label`` describes the target for
-    human messages. Honors ``--direct`` / ``--via-server`` via
-    :func:`resolve_orchestrator_base`.
+    Returns ``(ops, label)`` where ``label`` describes the target for human
+    messages. Honors ``--local-only`` / ``--local-fallback`` / ``--via-server``
+    via :func:`resolve_orchestrator_base` (which raises ServerUnreachable when
+    the server is required but down — the caller catches and exits non-zero).
     """
     client, base = resolve_orchestrator_base(args)
     if base is not None:
