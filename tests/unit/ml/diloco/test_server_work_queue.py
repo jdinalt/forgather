@@ -474,6 +474,59 @@ class TestPersistence:
         )
         assert s2._work_queues == {}  # malformed entry skipped, no crash
 
+    def test_corrupt_work_queue_value_does_not_brick_startup(self, tmp_path):
+        """A work_queues entry with a valid key but a missing field, or a
+        bitmap whose length disagrees with total_units, is skipped (logged)
+        — one bad/partial entry must not abort the whole load and prevent a
+        restart. Good entries in the same map still load."""
+        import torch as _torch
+
+        sd = _state_dict()
+        ckpt = make_initial_checkpoint(sd, tmp_path)
+        s = DiLoCoServer(
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=1,
+            port=0,
+            default_work_units=8,
+        )
+        s.start()
+        time.sleep(0.2)
+        try:
+            c = DiLoCoClient(f"localhost:{s.port}", timeout=10)
+            c.register_dataset("w0", "good-ds", 1, {"length": 100})
+            c.request_work("w0", "good-ds", 1)
+            save_dir = str(tmp_path / "saved")
+            s._dirty = True
+            s.save_state(save_dir)
+        finally:
+            s.stop()
+
+        sp = os.path.join(save_dir, "server_state.pt")
+        ss = _torch.load(sp, map_location="cpu", weights_only=False)
+        # Valid key, missing 'total_units'/'issued'.
+        ss["work_queues"]["partial-ds|0"] = {"hint_length": 5000}
+        # Valid key, bitmap length inconsistent with total_units.
+        ss["work_queues"]["badbitmap-ds|0"] = {
+            "total_units": 1024,  # expects 128 bytes
+            "issued": bytes(1),  # but only 1
+            "completed": bytes(1),
+            "hint_length": 1,
+        }
+        _torch.save(ss, sp)
+
+        s2 = DiLoCoServer(
+            output_dir=str(tmp_path),
+            from_checkpoint=save_dir,
+            num_workers=1,
+            port=0,
+            default_work_units=8,
+        )
+        # The two bad entries are skipped; the good one survives.
+        assert ("good-ds", 1) in s2._work_queues
+        assert ("partial-ds", 0) not in s2._work_queues
+        assert ("badbitmap-ds", 0) not in s2._work_queues
+
     def test_legacy_checkpoint_loads_with_empty_queue_map(self, tmp_path):
         """Checkpoints written before this feature landed have no
         ``work_queues`` key in server_state.pt. They must load cleanly

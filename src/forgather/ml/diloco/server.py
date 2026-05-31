@@ -3234,30 +3234,46 @@ class DiLoCoServer:
             restored = server_state.get("work_queues") or {}
             self._work_queues = {}
             for qkey, d in restored.items():
+                # Skip-and-warn on ANY bad entry (malformed key, missing/typed
+                # field, or a bitmap whose length disagrees with total_units)
+                # rather than letting one corrupt/partial entry abort the whole
+                # load and brick a restart. A length mismatch would otherwise
+                # surface much later as an IndexError during issuance.
                 try:
                     ds, seed_str = qkey.rsplit("|", 1)
                     seed = int(seed_str)
-                except (ValueError, AttributeError):
+                    total_units = int(d["total_units"])
+                    nbytes = (total_units + 7) // 8
+                    issued = bytearray(d["issued"])
+                    completed = bytearray(d.get("completed") or bytes(nbytes))
+                    if len(issued) != nbytes or len(completed) != nbytes:
+                        raise ValueError(
+                            f"bitmap length {len(issued)}/{len(completed)} "
+                            f"!= expected {nbytes} for total_units={total_units}"
+                        )
+                    queue = WorkQueue(
+                        total_units=total_units,
+                        issued=issued,
+                        completed=completed,
+                        hint_length=int(d["hint_length"]),
+                        issued_count=int(d.get("issued_count", 0)),
+                        completed_count=int(d.get("completed_count", 0)),
+                        by_worker=d.get("by_worker") or {},
+                        dataset_path=d.get("dataset_path"),
+                        dataset_name=d.get("dataset_name"),
+                        dataset_split=d.get("dataset_split"),
+                        dataset_revision=d.get("dataset_revision"),
+                        dataset_data_files=d.get("dataset_data_files"),
+                    )
+                except (ValueError, AttributeError, KeyError, TypeError) as exc:
                     logger.warning(
-                        "Skipping malformed work-queue key %r in server_state.pt",
+                        "Skipping malformed work-queue entry %r in "
+                        "server_state.pt: %s",
                         qkey,
+                        exc,
                     )
                     continue
-                nbytes = (int(d["total_units"]) + 7) // 8
-                self._work_queues[(ds, seed)] = WorkQueue(
-                    total_units=int(d["total_units"]),
-                    issued=bytearray(d["issued"]),
-                    completed=bytearray(d.get("completed") or bytes(nbytes)),
-                    hint_length=int(d["hint_length"]),
-                    issued_count=int(d.get("issued_count", 0)),
-                    completed_count=int(d.get("completed_count", 0)),
-                    by_worker=d.get("by_worker") or {},
-                    dataset_path=d.get("dataset_path"),
-                    dataset_name=d.get("dataset_name"),
-                    dataset_split=d.get("dataset_split"),
-                    dataset_revision=d.get("dataset_revision"),
-                    dataset_data_files=d.get("dataset_data_files"),
-                )
+                self._work_queues[(ds, seed)] = queue
 
             if self._work_queues:
                 issued_total = sum(q.issued_count for q in self._work_queues.values())
