@@ -107,6 +107,16 @@ def test_build_diloco_command_no_auth():
     assert "--auth-token-file" not in cmd
 
 
+def test_build_diloco_command_is_local_only():
+    """The scheduler-spawned server MUST run foreground (--local-only), or it
+    would hit its own orchestrator auto-detect and re-enqueue itself — a
+    self-enqueue loop of dead jobs. Regression guard."""
+    from forgather_server.diloco_server_ops import build_diloco_server_command
+
+    cmd = build_diloco_server_command(output_dir="/tmp/out", num_workers=1, port=8512)
+    assert "--local-only" in cmd
+
+
 def test_build_diloco_command_bulk_cleartext_flag():
     """The cleartext-bulk flag surfaces on the spawn argv when enabled."""
     from forgather_server.diloco_server_ops import build_diloco_server_command

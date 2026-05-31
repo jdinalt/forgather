@@ -59,28 +59,79 @@ def match_server(servers, target):
     return None
 
 
-def resolve_orchestrator_base(args):
-    """Auto-detect: return ``(client, base_url)`` when the target server is
-    reachable through the orchestrator, else ``(None, None)``.
+def _local_only(args):
+    return getattr(args, "local_only", False)
 
-    Honors ``--direct`` (skip the orchestrator entirely) and falls back to
-    ``(None, None)`` when the orchestrator is down or doesn't know the
-    target — the caller then uses the direct-to-param-server path.
+
+def _local_fallback(args):
+    return getattr(args, "local_fallback", False)
+
+
+def _server_required_error(base):
+    """The forgather server is the default, required path — fail loud rather
+    than silently degrade to a local action that a server-coordinated
+    workflow didn't ask for."""
+    from .server_client import ServerUnreachable
+
+    return ServerUnreachable(
+        f"the forgather server at {base} isn't reachable. Start it "
+        f"('forgather server'), or pass --local-fallback to fall back to a "
+        f"direct/foreground action, or --local-only to skip the server."
+    )
+
+
+def use_orchestrator(args):
+    """Launch-command locality decision.
+
+    Returns a :class:`ServerClient` to enqueue through, or ``None`` to act
+    locally (foreground). ``--local-only`` → local; ``--local-fallback`` →
+    server when up else local; default → server **required** (raises
+    ServerUnreachable when it's down).
     """
-    if getattr(args, "direct", False):
-        return None, None
+    if _local_only(args):
+        return None
+    client = _orchestrator(args)
+    if client.ping():
+        return client
+    if _local_fallback(args):
+        return None
+    raise _server_required_error(client.base)
+
+
+def resolve_orchestrator_base(args):
+    """status/control/shutdown locality decision.
+
+    Returns ``(client, base_url)`` to route through the server, or
+    ``(None, None)`` to act directly on the parameter server. ``--local-only``
+    → direct; ``--local-fallback`` → direct when the server is down or
+    doesn't know the target; default → server **required** (raises
+    ServerUnreachable when down, or when up but the target is unknown — so a
+    server-coordinated workflow doesn't silently bypass it).
+    """
     from .server_client import AuthRequired, ServerUnreachable
 
+    if _local_only(args):
+        return None, None
     client = _orchestrator(args)
     if not client.ping():
-        return None, None
+        if _local_fallback(args):
+            return None, None
+        raise _server_required_error(client.base)
     try:
         servers = client.list_diloco_servers()
-    except (ServerUnreachable, AuthRequired, RuntimeError):
-        return None, None
+    except (AuthRequired, ServerUnreachable, RuntimeError):
+        if _local_fallback(args):
+            return None, None
+        raise
     base = match_server(servers, getattr(args, "server", None))
     if base is None:
-        return None, None
+        if _local_fallback(args):
+            return None, None
+        raise ServerUnreachable(
+            f"the forgather server doesn't know '{getattr(args, 'server', '')}'. "
+            f"Register it ('forgather diloco register <url>'), or pass "
+            f"--local-fallback / --local-only to use a direct connection."
+        )
     return client, base
 
 
@@ -366,19 +417,6 @@ def unregister_cmd(args):
 # lives in diloco.py). The decision here is simply "is the forgather server
 # up?" — when it is, server/worker launches become scheduled jobs.
 # ---------------------------------------------------------------------------
-
-
-def orchestrator_if_up(args):
-    """Return a ServerClient when the forgather server is reachable and the
-    operator hasn't forced the direct/foreground path, else ``None``.
-
-    Used by the launch commands (server / worker) to decide between
-    enqueuing a scheduled job and running in the foreground.
-    """
-    if getattr(args, "direct", False) or getattr(args, "foreground", False):
-        return None
-    client = _orchestrator(args)
-    return client if client.ping() else None
 
 
 def _server_job_params(args):

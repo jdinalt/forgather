@@ -231,14 +231,21 @@ single JSON object for scripting / agents.
 
 ## Interacting through the forgather server
 
-When a forgather server (`forgather server`) is running, the DiLoCo CLI
-prefers it automatically — it gives richer, centrally-authenticated access
-without needing each parameter server's token on the local machine. The
-server's proxy resolves every upstream server's bearer token and TLS
-verification on your behalf (the same path the webui uses), so these commands
-only need the server's own auth (`~/.config/forgather/server/auth_token`, or
+These commands route through the forgather server (`forgather server`) by
+default — it gives richer, centrally-authenticated access without needing
+each parameter server's token on the local machine. The server's proxy
+resolves every upstream server's bearer token and TLS verification on your
+behalf (the same path the webui uses), so these commands only need the
+server's own auth (`~/.config/forgather/server/auth_token`, or
 `$FORGATHER_SERVER_TOKEN`). Point at a non-default server with
-`--via-server URL`; force the direct-to-parameter-server path with `--direct`.
+`--via-server URL`.
+
+**Locality.** The server is the default, required path: if it isn't
+reachable these commands **error** rather than silently doing something
+local (a server-coordinated workflow shouldn't be bypassed without asking).
+Two opt-outs: `--local-fallback` falls back to a direct/foreground action
+when the server is down, and `--local-only` skips the server entirely. There
+are only a few corner cases where you want local.
 
 ```bash
 # Discover every DiLoCo server the forgather server knows
@@ -269,20 +276,21 @@ forgather diloco register https://gpu-box:8512 --label prod --auth-token <tok>
 forgather diloco unregister registered:<id>     # id shown by `diloco servers`
 ```
 
-`control` and `shutdown` are also orchestrator-first: when the forgather
-server is up and knows the target, the relay / save-state / stop actions
-route through it (so you don't need the parameter server's token locally);
-otherwise they go direct. `--direct` forces the direct path on any of these
-commands.
+`control` and `shutdown` also route through the forgather server by default
+(the relay / save-state / stop actions go through its proxy, so you don't
+need the parameter server's token locally). Same locality rules: an
+unreachable server errors unless you pass `--local-fallback` / `--local-only`.
 
 ### Launching as scheduled jobs
 
-When the forgather server is running, `diloco server` and `diloco worker`
-**enqueue scheduled jobs** instead of running in the foreground — the
+By default `diloco server` and `diloco worker` **enqueue scheduled jobs**
+through the forgather server instead of running in the foreground — the
 scheduler picks idle GPUs, captures the TTY, and the jobs show up in the
-webui. `--foreground` (server) / `--direct` (worker) forces the legacy
-in-process behavior; if the server isn't running, they fall back to it
-automatically.
+webui. As above, an unreachable server errors; `--local-fallback` runs
+in-process when the server is down, and `--local-only` always runs
+in-process (a single foreground worker / server). `--local-only` is also how
+the scheduler spawns the actual parameter server, so it doesn't re-enqueue
+itself.
 
 ```bash
 # Enqueue a parameter server (CPU-only); the scheduler starts it.

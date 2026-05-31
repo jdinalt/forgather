@@ -86,6 +86,7 @@ class FakeClient:
         self._reachable = reachable
         self._dump = dump
         self.enqueued = []
+        self.base = "http://fake-orch:8765"
 
     def enqueue_job(self, **kw):
         self.enqueued.append(kw)
@@ -191,30 +192,54 @@ class TestResolveJobId:
         assert orch._resolve_job_id(c, "whatever") == "whatever"
 
 
-class TestResolveOrchestratorBase:
-    def test_direct_flag_skips(self, patch_orchestrator):
-        patch_orchestrator(FakeClient(servers=SERVERS))
-        args = argparse.Namespace(direct=True, server="local:q1", via_server=None)
-        assert orch.resolve_orchestrator_base(args) == (None, None)
+def _loc_args(**over):
+    base = dict(
+        server="local:q1", via_server=None, local_only=False, local_fallback=False
+    )
+    base.update(over)
+    return argparse.Namespace(**base)
 
-    def test_unreachable_falls_back(self, patch_orchestrator):
+
+class TestResolveOrchestratorBase:
+    def test_local_only_skips(self, patch_orchestrator):
+        patch_orchestrator(FakeClient(servers=SERVERS))
+        assert orch.resolve_orchestrator_base(_loc_args(local_only=True)) == (
+            None,
+            None,
+        )
+
+    def test_down_default_raises(self, patch_orchestrator):
+        from forgather.cli.server_client import ServerUnreachable
+
         patch_orchestrator(FakeClient(servers=SERVERS, reachable=False))
-        args = argparse.Namespace(direct=False, server="local:q1", via_server=None)
-        assert orch.resolve_orchestrator_base(args) == (None, None)
+        with pytest.raises(ServerUnreachable):
+            orch.resolve_orchestrator_base(_loc_args())
+
+    def test_down_with_fallback_goes_direct(self, patch_orchestrator):
+        patch_orchestrator(FakeClient(servers=SERVERS, reachable=False))
+        assert orch.resolve_orchestrator_base(_loc_args(local_fallback=True)) == (
+            None,
+            None,
+        )
 
     def test_reachable_known_target(self, patch_orchestrator):
         client = patch_orchestrator(FakeClient(servers=SERVERS))
-        args = argparse.Namespace(direct=False, server="local:q1", via_server=None)
-        c, base = orch.resolve_orchestrator_base(args)
+        c, base = orch.resolve_orchestrator_base(_loc_args())
         assert c is client
         assert base == "http://192.168.9.43:8512"
 
-    def test_reachable_unknown_target_falls_back(self, patch_orchestrator):
+    def test_up_unknown_target_default_raises(self, patch_orchestrator):
+        from forgather.cli.server_client import ServerUnreachable
+
         patch_orchestrator(FakeClient(servers=SERVERS))
-        args = argparse.Namespace(
-            direct=False, server="localhost:8512", via_server=None
-        )
-        assert orch.resolve_orchestrator_base(args) == (None, None)
+        with pytest.raises(ServerUnreachable):
+            orch.resolve_orchestrator_base(_loc_args(server="localhost:8512"))
+
+    def test_up_unknown_target_with_fallback_goes_direct(self, patch_orchestrator):
+        patch_orchestrator(FakeClient(servers=SERVERS))
+        assert orch.resolve_orchestrator_base(
+            _loc_args(server="localhost:8512", local_fallback=True)
+        ) == (None, None)
 
 
 class TestRegistry:
@@ -424,20 +449,27 @@ class TestLaunchWorkers:
         assert rc == 1
 
 
-class TestOrchestratorIfUp:
-    def test_direct_flag(self):
-        assert orch.orchestrator_if_up(argparse.Namespace(direct=True)) is None
+class TestUseOrchestrator:
+    def test_local_only(self):
+        assert orch.use_orchestrator(_loc_args(local_only=True)) is None
 
-    def test_foreground_flag(self):
-        assert orch.orchestrator_if_up(argparse.Namespace(foreground=True)) is None
-
-    def test_ping(self, monkeypatch):
+    def test_up_returns_client(self, monkeypatch):
         up = FakeClient(reachable=True)
         monkeypatch.setattr(orch, "_orchestrator", lambda args: up)
-        assert orch.orchestrator_if_up(argparse.Namespace()) is up
+        assert orch.use_orchestrator(_loc_args()) is up
+
+    def test_down_default_raises(self, monkeypatch):
+        from forgather.cli.server_client import ServerUnreachable
+
         down = FakeClient(reachable=False)
         monkeypatch.setattr(orch, "_orchestrator", lambda args: down)
-        assert orch.orchestrator_if_up(argparse.Namespace()) is None
+        with pytest.raises(ServerUnreachable):
+            orch.use_orchestrator(_loc_args())
+
+    def test_down_with_fallback_returns_none(self, monkeypatch):
+        down = FakeClient(reachable=False)
+        monkeypatch.setattr(orch, "_orchestrator", lambda args: down)
+        assert orch.use_orchestrator(_loc_args(local_fallback=True)) is None
 
 
 class TestDynamicCliReconstruction:
