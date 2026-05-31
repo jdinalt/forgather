@@ -74,6 +74,11 @@ class WorkerInfo:
     sync_round: int = 0
     last_sync_server_round: int = 0  # Server round when this worker last synced
     steps_per_second: float = 0.0
+    # Worker's local output dir, reported at registration. Used only by
+    # the webui to correlate a worker to its forgather job by output_dir
+    # when the worker-id was renamed away from the job's queue_id — e.g. a
+    # resumable run that must reuse a stable worker name (issue #103).
+    output_dir: Optional[str] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -1354,6 +1359,7 @@ class DiLoCoServer:
                     hostname=info.get("hostname", "unknown"),
                     registered_at=time.time(),
                     last_heartbeat=time.time(),
+                    output_dir=info.get("output_dir"),
                     extra=info.get("extra", {}),
                 )
                 self._worker_to_group[worker_id] = group_id
@@ -2094,6 +2100,7 @@ class DiLoCoServer:
                     "sync_round": w.sync_round,
                     "last_sync_server_round": w.last_sync_server_round,
                     "steps_per_second": w.steps_per_second,
+                    "output_dir": w.output_dir,
                 }
                 for wid, w in self._workers.items()
             }

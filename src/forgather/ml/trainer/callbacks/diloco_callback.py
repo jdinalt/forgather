@@ -393,6 +393,10 @@ class DiLoCoCallback(TrainerCallback):
             param_view=param_view,
             auth_token=self.auth_token,
             verify_tls=self.verify_tls,
+            # Reported to the server only so the webui can correlate this
+            # worker to its forgather job by output_dir when the worker-id
+            # was renamed away from the job's queue_id (issue #103).
+            output_dir=getattr(args, "output_dir", None),
             **group_kwargs,
         )
         try:

@@ -1109,6 +1109,11 @@ export interface DiLoCoWorkerStatus {
   sync_round?: number;
   last_sync_server_round?: number;
   steps_per_second?: number;
+  /** Worker's local output dir, reported at registration. Lets the
+   *  DiLoCo view correlate a worker to its forgather job by output_dir
+   *  when the worker-id was renamed away from the job's queue_id (e.g. a
+   *  resumable run reusing a stable worker name). See issue #103. */
+  output_dir?: string | null;
 }
 
 /** Upstream ``/status`` response. Field set tracks DiLoCoServer._handle_status. */

@@ -91,6 +91,28 @@ class TestRegistration:
         assert "worker_0" in server._workers
         assert server._workers["worker_0"].hostname == "test-host"
 
+    def test_output_dir_stored_and_exposed_in_status(self, server_and_client):
+        """A reported output_dir is stored on the WorkerInfo and surfaced
+        per-worker in /status, so the webui can correlate a renamed worker
+        to its job by output_dir (issue #103)."""
+        server, client, sd = server_and_client
+
+        client.register("worker_0", {"output_dir": "/runs/tinyv2_w0"})
+        assert server._workers["worker_0"].output_dir == "/runs/tinyv2_w0"
+
+        status = client.get_status()
+        assert status["workers"]["worker_0"]["output_dir"] == "/runs/tinyv2_w0"
+
+    def test_output_dir_none_when_not_reported(self, server_and_client):
+        """Workers that don't report output_dir (older clients) store None
+        and /status carries null — no correlation, but no error."""
+        server, client, sd = server_and_client
+
+        client.register("worker_0", {"hostname": "test-host"})
+        assert server._workers["worker_0"].output_dir is None
+        status = client.get_status()
+        assert status["workers"]["worker_0"]["output_dir"] is None
+
 
 class TestPseudogradientSubmission:
     def test_single_worker_sync(self, server_and_client):

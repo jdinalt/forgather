@@ -844,17 +844,7 @@ function WorkersSection({
               group={group}
               workers={workers}
               heartbeatTimeout={status.heartbeat_timeout}
-              // Match by queue_id. The scheduler defaults
-              // DILOCO_WORKER_ID = queue_id for webui-spawned jobs.
-              // Pipeline ranks register as "<queue_id>_pp<N>"; the
-              // group's id strips that suffix, so this match works
-              // for both solo and pipeline jobs.
-              job={
-                jobs?.find(
-                  (j) =>
-                    j.queue_id === group.groupId || j.job_id === group.groupId,
-                ) ?? null
-              }
+              job={correlateJob(group, workers, jobs)}
               refreshSeconds={refreshSeconds}
             />
           ))}
@@ -876,6 +866,37 @@ interface GroupView {
    *  suffix. Solo workers form a group of one with this flag false
    *  and render as a plain ``WorkerCard`` (pre-#84 behavior). */
   isPipelineGroup: boolean;
+}
+
+/** Correlate a worker group to its forgather job (issue #103).
+ *
+ *  Primary key: ``queue_id``/``job_id`` == the group id. The scheduler
+ *  defaults ``DILOCO_WORKER_ID = queue_id`` for webui-spawned jobs, and
+ *  pipeline ranks register as ``<queue_id>_pp<N>`` (the group id strips
+ *  that suffix), so this matches both solo and pipeline jobs.
+ *
+ *  Fallback key: the worker's reported ``output_dir``. A run that must
+ *  reuse a stable custom worker-id (e.g. to resume from its checkpoint)
+ *  registers under an id != queue_id, so the primary key misses. The
+ *  per-worker output-dir suffix is kept in lockstep with the job's
+ *  resolved ``output_dir`` (same worker-id, same suffix), so matching on
+ *  it re-links the worker to its job. Pipeline ranks of one job share a
+ *  local output_dir, so any member's value identifies the group. */
+function correlateJob(
+  group: GroupView,
+  workers: Record<string, DiLoCoWorkerStatus>,
+  jobs: Job[] | null,
+): Job | null {
+  if (!jobs) return null;
+  const byId = jobs.find(
+    (j) => j.queue_id === group.groupId || j.job_id === group.groupId,
+  );
+  if (byId) return byId;
+  const groupOutputDir = group.members
+    .map((m) => workers[m.workerId]?.output_dir)
+    .find((d) => d);
+  if (!groupOutputDir) return null;
+  return jobs.find((j) => j.output_dir === groupOutputDir) ?? null;
 }
 
 /** Group workers by stripping the ``_pp<N>`` suffix from ``worker_id``.
@@ -1082,9 +1103,9 @@ function GroupCard({
       {!job && (
         <div className="muted" style={{ fontSize: 11 }}>
           No correlated forgather job — training-side stats and controls
-          unavailable. (Worker may have been spawned outside the webui;
-          set --diloco-worker-id = the job's queue_id to enable
-          correlation.)
+          unavailable. (Workers correlate by queue_id or by matching
+          output_dir; this one likely ran outside the webui or under a
+          different output_dir.)
         </div>
       )}
 
@@ -1299,9 +1320,9 @@ function WorkerCard({
       {!compact && !job && (
         <div className="muted" style={{ fontSize: 11 }}>
           No correlated forgather job — training-side stats and controls
-          unavailable. (Worker may have been spawned outside the webui;
-          set --diloco-worker-id = the job's queue_id to enable
-          correlation.)
+          unavailable. (Workers correlate by queue_id or by matching
+          output_dir; this one likely ran outside the webui or under a
+          different output_dir.)
         </div>
       )}
 

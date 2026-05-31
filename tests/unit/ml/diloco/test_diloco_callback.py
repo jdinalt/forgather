@@ -345,6 +345,7 @@ class TestWorkerLifecycle:
             param_view=None,
             auth_token=None,
             verify_tls=True,
+            output_dir="/tmp/test_diloco",
         )
         mock_instance.start.assert_called_once()
         # Pre-probe (now /info) should have happened first.
@@ -451,6 +452,7 @@ class TestWorkerLifecycle:
             param_view=None,
             auth_token=None,
             verify_tls=True,
+            output_dir="/tmp/test_diloco",
         )
 
 

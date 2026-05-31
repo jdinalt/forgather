@@ -130,7 +130,18 @@ _workers_lock: threading.Lock        # Protects _workers dict
 
 `WorkerInfo` is a dataclass with: `worker_id`, `hostname`, `registered_at`,
 `last_heartbeat`, `sync_round` (worker's count), `last_sync_server_round`
-(server round at last sync), `steps_per_second`, `extra`.
+(server round at last sync), `steps_per_second`, `output_dir`, `extra`.
+
+`output_dir` is the worker's local output directory, reported at
+registration and surfaced per-worker in `/status`. It is used only by the
+webui to correlate a worker back to its forgather job: the primary key is
+`queue_id == worker_id`, but a run that reuses a stable custom worker-id
+(e.g. to resume from its own checkpoint) registers under an id that no
+longer equals the job's `queue_id`, so the panel falls back to matching the
+worker's `output_dir` against the job's resolved `output_dir`. The
+per-worker output-dir suffix and the registered worker-id share a single
+resolved source (the `--diloco-worker-id` Jinja arg, else `DILOCO_WORKER_ID`
+env), so the two stay in lockstep.
 
 **Synchronous state:**
 
