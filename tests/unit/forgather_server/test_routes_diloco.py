@@ -493,6 +493,26 @@ class TestProxy:
         assert captured["method"] == "POST"
         assert captured["body"] == {"worker_id": "w1"}
 
+    def test_control_proxies_command_relay(self, client, no_local_servers, monkeypatch):
+        # The webui's collective/per-worker controls + clean shutdown all
+        # proxy through /control/command — it must be in the allowlist.
+        captured = {}
+
+        def fake_handler(request: httpx.Request) -> httpx.Response:
+            captured["path"] = request.url.path
+            captured["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"status": "ok", "workers": ["w0"]})
+
+        _patch_async_client(monkeypatch, fake_handler)
+        r = client.post(
+            "/api/diloco/server-control/command",
+            params={"base": "http://127.0.0.1:8512"},
+            json={"command": "save_and_stop"},
+        )
+        assert r.status_code == 200
+        assert captured["path"] == "/control/command"
+        assert captured["body"] == {"command": "save_and_stop"}
+
     def test_upstream_unreachable_returns_502(
         self, client, no_local_servers, monkeypatch
     ):

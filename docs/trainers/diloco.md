@@ -1018,10 +1018,12 @@ on the right:
 2. **Workers table**: per-worker health dot (green/yellow/red by
    heartbeat age), ID (hover for full id), hostname, sync round,
    steps/s, relative heartbeat age, and a per-row **Kick** button.
-   Workers running the trainer control-callback also get per-row
-   **Save checkpoint** / **Save & Stop** / **Abort** controls, and the
-   section header carries **All:** buttons that fan the same action out
-   to every controllable worker at once.
+   Each row also has **Save checkpoint** / **Save & Stop** / **Abort**
+   controls, and the section header carries **All:** buttons that apply
+   the same action to every registered worker at once. All of these go
+   through the server's command relay (`/control/command`), so they work
+   for every registered worker — including remote ones — without the
+   webui needing to reach each worker's trainer-control endpoint.
 3. **Server metrics**: outer LR / momentum, worker-death count,
    heartbeat timeout. Sync mode adds a pending-submissions progress
    bar; async mode adds total-submissions, DN buffer status, and DyLU
@@ -1031,19 +1033,20 @@ on the right:
    **Workers** expected-count adjustment.
 
    **Shutdown** is the main path for stopping everything and offers two
-   modes:
-   - **Clean shutdown** (the recommended default): issues **Save & Stop**
-     to every controllable worker, waits until they have actually exited,
-     saves a server checkpoint, then stops the server. No data loss. The
-     overlay streams progress (a live worker-stop count) and, if a worker
-     never stops within the timeout, reports it and leaves the server
-     running rather than stranding still-live workers. While it is
-     waiting, a **Cancel** button aborts the sequence and hands control
-     back immediately (the server is left running) so the operator can
-     troubleshoot a worker that won't stop, then retry or force-kill.
-   - **Force kill everything**: force-kills the worker process groups and
-     stops the server without waiting. For "kill it all now, don't care
-     about data loss".
+   modes (both via the relay, mirroring `forgather diloco shutdown`):
+   - **Clean shutdown** (the recommended default): relays **save_and_stop**
+     to every worker, waits until they have actually exited (polling the
+     server's worker roster), saves a server checkpoint, then stops the
+     server. No data loss. The overlay streams progress (a live
+     worker-stop count) and, if a worker never stops within the timeout,
+     reports it and leaves the server running rather than stranding
+     still-live workers. While it is waiting, a **Cancel** button aborts
+     the sequence and hands control back immediately (the server is left
+     running) so the operator can troubleshoot a worker that won't stop,
+     then retry or force.
+   - **Force stop**: relays **abort** to all workers (they stop without
+     saving) and stops the server without waiting. For "stop it all now,
+     don't care about data loss".
 5. **Work-unit dispatch**: per-queue heatmap (K cells, three states:
    available / issued / completed), with per-worker counters.
 

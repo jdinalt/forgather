@@ -514,7 +514,14 @@ async def proxy_work_queue(
 # so the proxy refuses unknown actions up-front instead of bouncing them
 # off the upstream with a confusing 404.
 _CONTROL_ACTIONS = frozenset(
-    {"save_state", "kick_worker", "update_optimizer", "update_num_workers", "shutdown"}
+    {
+        "save_state",
+        "kick_worker",
+        "update_optimizer",
+        "update_num_workers",
+        "command",
+        "shutdown",
+    }
 )
 
 
