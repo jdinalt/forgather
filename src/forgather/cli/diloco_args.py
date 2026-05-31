@@ -211,6 +211,39 @@ def create_diloco_parser(global_args):
         ),
     )
 
+    # Launch-as-scheduled-job knobs. When the forgather server is up, `server`
+    # enqueues a diloco_server job instead of running in the foreground;
+    # --foreground/--direct forces the legacy in-process server.
+    server_parser.add_argument(
+        "--foreground",
+        "--direct",
+        dest="foreground",
+        action="store_true",
+        help=(
+            "Run the parameter server in the foreground (legacy) instead of\n"
+            "enqueuing it as a scheduled job, even when the forgather server\n"
+            "is reachable."
+        ),
+    )
+    server_parser.add_argument(
+        "--via-server",
+        type=str,
+        default=None,
+        metavar="URL",
+        help="forgather-server base URL to enqueue on (default: env / http://127.0.0.1:8765).",
+    )
+    server_parser.add_argument(
+        "--priority",
+        type=int,
+        default=0,
+        help="Scheduler priority for the enqueued server job (default: 0).",
+    )
+    server_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="When enqueuing, emit the created queue item as JSON.",
+    )
+
     # status subcommand
     status_parser = subparsers.add_parser(
         "status",
@@ -454,13 +487,83 @@ def create_diloco_parser(global_args):
     worker_parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show the generated command without executing",
+        help="Show the generated command without executing (direct path only)",
+    )
+    # Launch-as-scheduled-job knobs (orchestrator path). When the forgather
+    # server is up, the worker is enqueued as a training job; these control
+    # how many, how they're named, and where data comes from.
+    worker_parser.add_argument(
+        "--count",
+        type=int,
+        default=1,
+        help=(
+            "Launch N identical workers as scheduled jobs with auto-generated\n"
+            "names (requires the forgather server). Default: 1."
+        ),
+    )
+    worker_parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        metavar="SOURCE",
+        help=(
+            "Dataset source for the worker job(s): 'auto' (cluster routing),\n"
+            "'local' (in-process loader, the default), or 'server:<id>' for a\n"
+            "specific dataset server (id from 'forgather diloco servers' or the\n"
+            "dataset-server registry)."
+        ),
+    )
+    worker_parser.add_argument(
+        "--gpus-per-worker",
+        type=int,
+        default=1,
+        help="GPUs the scheduler reserves per worker job (default: 1).",
+    )
+    worker_parser.add_argument(
+        "--priority",
+        type=int,
+        default=0,
+        help="Scheduler priority for the enqueued worker job(s) (default: 0).",
+    )
+    worker_parser.add_argument(
+        "--via-server",
+        type=str,
+        default=None,
+        metavar="URL",
+        help="forgather-server base URL to enqueue on (default: env / http://127.0.0.1:8765).",
+    )
+    worker_parser.add_argument(
+        "--direct",
+        action="store_true",
+        help=(
+            "Run a single worker in the foreground (wrap 'forgather train')\n"
+            "instead of enqueuing, even when the forgather server is up."
+        ),
+    )
+    worker_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="When enqueuing, emit the launched worker/queue-id list as JSON.",
     )
     worker_parser.add_argument(
         "remainder",
         nargs=argparse.REMAINDER,
-        help="Remaining arguments forwarded to the training script",
+        help="Remaining arguments forwarded to the training script (direct path)",
     )
+
+    # Dynamic/template args: build argparse options + help from the config's
+    # ``dynamic_args`` metadata (the established pattern — see train_args.py).
+    # Only when a config is selected (-t) and dynamic args aren't disabled,
+    # so plain `diloco <other-subcommand>` invocations don't pay a config
+    # load. Propagate the discovered names to the top-level diloco parser so
+    # main.py's partition routes them into ``args._dynamic_args``.
+    if getattr(global_args, "config_template", None) and not getattr(
+        global_args, "no_dyn", False
+    ):
+        from .dynamic_args import parse_dynamic_args
+
+        parse_dynamic_args(worker_parser, global_args)
+        parser._dynamic_arg_names = getattr(worker_parser, "_dynamic_arg_names", [])
 
     # register / unregister — manage external DiLoCo servers in the
     # forgather server's registry (orchestrator-only).

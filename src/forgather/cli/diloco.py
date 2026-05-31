@@ -11,7 +11,18 @@ logger = logging.getLogger(__name__)
 
 
 def _server_cmd(args):
-    """Start DiLoCo parameter server."""
+    """Start DiLoCo parameter server.
+
+    Orchestrator-first: when the forgather server is running, enqueue this
+    as a scheduled ``diloco_server`` job (background, GPU-scheduled,
+    TTY-captured). ``--foreground`` / ``--direct`` forces the legacy
+    in-process server instead.
+    """
+    from . import diloco_orch as orch
+
+    if orch.orchestrator_if_up(args) is not None:
+        return orch.launch_server(args)
+
     import torch
 
     from forgather.ml.diloco.auth import (
@@ -438,13 +449,97 @@ def _shutdown_cmd(args):
     return 0
 
 
+def _reconstruct_dynamic_cli(project_dir, config_template, dynamic_args):
+    """Rebuild first-class CLI flags for ``forgather train`` from the parsed
+    dynamic-arg dict, using the config's ``dynamic_args`` schema to emit the
+    correct form per arg: a bare flag for store_true/store_false (only when
+    it differs from the action's implied default), else ``--flag value``.
+
+    Falls back to ``--flag value`` for any arg missing from the schema.
+    """
+    schema = []
+    try:
+        from forgather import MetaConfig, Project
+
+        pdir = MetaConfig.find_project_dir(project_dir)
+        proj = Project(config_name=config_template, project_dir=pdir)
+        if "dynamic_args" in proj.config:
+            schema = proj("dynamic_args") or []
+    except Exception:
+        schema = []
+    return _dynamic_cli_from_schema(schema, dynamic_args)
+
+
+def _dynamic_cli_from_schema(schema, dynamic_args):
+    """Pure schema→CLI-tokens reconstruction (testable without a Project).
+
+    ``schema`` is the config's ``dynamic_args`` list of entry dicts
+    (``{names, type, action, …}``). For each parsed ``(dest, value)``:
+    store_true/store_false args emit a bare flag only when the value differs
+    from the action's implied default; everything else emits ``--flag value``.
+    Args absent from the schema fall back to ``--flag value``.
+    """
+    by_dest = {}
+    for entry in schema or []:
+        if not isinstance(entry, dict):
+            continue
+        names = entry.get("names")
+        if isinstance(names, str):
+            names = [names]
+        if not names:
+            continue
+        long = next((n for n in names if str(n).startswith("--")), names[0])
+        dest = long.lstrip("-").replace("-", "_")
+        by_dest[dest] = (long, entry)
+
+    toks = []
+    for dest, val in dynamic_args.items():
+        meta = by_dest.get(dest)
+        flag = meta[0] if meta else "--" + dest.replace("_", "-")
+        action = meta[1].get("action") if meta else None
+        if action in ("store_true", "store_false"):
+            implied_default = action == "store_false"
+            if bool(val) != implied_default:
+                toks.append(flag)
+        else:
+            toks.extend([flag, str(val)])
+    return toks
+
+
 def _worker_cmd(args):
     """
     Launch training as a DiLoCo worker.
 
-    This wraps the standard training command, injecting DiLoCo configuration
-    via environment variables that the training script picks up.
+    Orchestrator-first: when the forgather server is running, enqueue the
+    worker(s) as scheduled training jobs — this is the path that supports
+    ``--count N`` (auto-named), ``--dataset auto|server:<id>``, and central
+    auth. ``--direct`` (or the server being down) runs a single worker in
+    the foreground by wrapping ``forgather train`` with DiLoCo env vars.
+
+    Dynamic/template args are accepted the standard way (built from the
+    config's ``dynamic_args`` metadata, like ``forgather train``) and are
+    forwarded — as ``EnqueueRequest.dynamic_args`` on the orchestrator path,
+    or as ``--dynamic-args <json>`` to the spawned trainer on the direct path.
     """
+    from . import diloco_orch as orch
+    from .dynamic_args import get_dynamic_args
+
+    dynamic_args = get_dynamic_args(args)
+    count = getattr(args, "count", 1) or 1
+
+    if orch.orchestrator_if_up(args) is not None:
+        return orch.launch_workers(args, dynamic_args)
+
+    # --- Direct / foreground path (forgather server not reachable) ---
+    if count > 1:
+        print(
+            "error: --count > 1 launches multiple background jobs and "
+            "requires the forgather server (start it with 'forgather "
+            "server', or run one worker at a time directly).",
+            file=sys.stderr,
+        )
+        return 1
+
     # Set DiLoCo environment variables for the training script. Only
     # client-local knobs are forwarded; sync_every / bf16_comm / dylu /
     # num_fragments are server-authoritative and resolved from /info by
@@ -478,6 +573,24 @@ def _worker_cmd(args):
         cmd_args.extend(["-t", args.config_template])
 
     cmd_args.append("train")
+
+    # Forward dynamic/template args to the spawned `forgather train` as its
+    # own first-class flags (`--max-steps 500`). `forgather train` does NOT
+    # accept `--dynamic-args` (that's a flag on the generated training
+    # *script*, which train re-derives from first-class flags), so we
+    # reconstruct the flags from the parsed dict using the config's
+    # dynamic_args schema to emit the right form (store_true flag vs valued
+    # option). This is what lets `forgather -t cfg diloco worker --max-steps
+    # 500` reach the training job. The orchestrator path forwards the dict
+    # directly as EnqueueRequest.dynamic_args instead.
+    if dynamic_args:
+        cmd_args.extend(
+            _reconstruct_dynamic_cli(
+                getattr(args, "project_dir", "."),
+                getattr(args, "config_template", None),
+                dynamic_args,
+            )
+        )
 
     # Forward remaining arguments
     remainder = args.remainder

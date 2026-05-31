@@ -362,6 +362,202 @@ def unregister_cmd(args):
 
 
 # ---------------------------------------------------------------------------
+# Launch as scheduled jobs (orchestrator-first; the direct/foreground path
+# lives in diloco.py). The decision here is simply "is the forgather server
+# up?" — when it is, server/worker launches become scheduled jobs.
+# ---------------------------------------------------------------------------
+
+
+def orchestrator_if_up(args):
+    """Return a ServerClient when the forgather server is reachable and the
+    operator hasn't forced the direct/foreground path, else ``None``.
+
+    Used by the launch commands (server / worker) to decide between
+    enqueuing a scheduled job and running in the foreground.
+    """
+    if getattr(args, "direct", False) or getattr(args, "foreground", False):
+        return None
+    client = _orchestrator(args)
+    return client if client.ping() else None
+
+
+def _server_job_params(args):
+    """Build the ``diloco_server`` job_params from the `server` subparser
+    args — the same shape the webui's DiLoCoServerModal submits."""
+    p = {
+        "output_dir": args.output_dir,
+        "port": args.port,
+        "num_workers": args.num_workers,
+        "host": args.host,
+        "async_mode": getattr(args, "async_mode", False),
+        "dylu": getattr(args, "dylu", False),
+        "save_every": args.save_every,
+        "save_total_limit": args.save_total_limit,
+        "outer_lr": args.outer_lr,
+        "outer_momentum": args.outer_momentum,
+        "no_nesterov": args.no_nesterov,
+        "heartbeat_timeout": args.heartbeat_timeout,
+        "min_workers": args.min_workers,
+        "sync_every": args.sync_every,
+        "num_fragments": args.num_fragments,
+        "bf16_comm": args.bf16_comm,
+        "no_auth": getattr(args, "no_auth", False),
+        "bulk_cleartext": getattr(args, "bulk_cleartext", False),
+    }
+    if getattr(args, "dn_buffer_size", 0):
+        p["dn_buffer_size"] = args.dn_buffer_size
+    if p["dylu"]:
+        p["dylu_base_sync_every"] = args.dylu_base_sync_every
+    if getattr(args, "from_checkpoint", None):
+        p["from_checkpoint"] = args.from_checkpoint
+    if not p["no_auth"] and getattr(args, "regen_token", False):
+        p["regen_token"] = True
+    return p
+
+
+def launch_server(args):
+    """Enqueue a diloco_server job; the scheduler starts it on idle GPUs (0)."""
+    from .server_client import AuthRequired, ServerUnreachable
+
+    client = _orchestrator(args)
+    try:
+        item = client.enqueue_job(
+            project_dir=args.output_dir,
+            config=f"diloco:{args.port}",
+            job_type="diloco_server",
+            job_params=_server_job_params(args),
+            requested_gpus=0,
+            priority=getattr(args, "priority", 0),
+        )
+    except (ServerUnreachable, AuthRequired, RuntimeError) as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(item, indent=2))
+        return 0
+    qid = item.get("queue_id")
+    print(f"Enqueued DiLoCo server job {qid} (the scheduler will start it).")
+    print(f"  status:  forgather diloco servers")
+    print(f"  logs:    forgather diloco logs {qid} -f")
+    return 0
+
+
+def parse_dataset_source(spec):
+    """``--dataset`` value → an EnqueueRequest.dataset_source dict (or None).
+
+    ``None``/``local`` → None (in-process loader). ``auto`` → cluster
+    auto-routing. ``server:<id>`` → a specific registered/local server.
+    Raises ValueError on anything else.
+    """
+    if not spec or spec == "local":
+        return None
+    if spec == "auto":
+        return {"kind": "auto"}
+    if spec.startswith("server:"):
+        return {"kind": "server", "server_id": spec[len("server:") :]}
+    raise ValueError(
+        f"invalid --dataset {spec!r}; expected 'auto', 'local', or 'server:<id>'"
+    )
+
+
+def launch_workers(args, dynamic_args):
+    """Enqueue N DiLoCo worker (training) jobs with auto-named workers.
+
+    Mirrors the webui SubmitModal worker-pool path: resolve the server to a
+    routable base_url when the forgather server knows it, generate unique
+    worker names (unless a single explicit --worker-id is given), and
+    enqueue one training job per worker with the shared dynamic args +
+    dataset source.
+    """
+    from .server_client import AuthRequired, ServerUnreachable
+
+    config = getattr(args, "config_template", None)
+    if not config:
+        print(
+            "error: launching a worker needs a config — pass -t <config> "
+            "(e.g. forgather -p <project> -t <config> diloco worker …).",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        dataset_source = parse_dataset_source(getattr(args, "dataset", None))
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    client = _orchestrator(args)
+
+    # Resolve --server to a routable base_url when the forgather server
+    # knows it (so a worker on another host gets a dialable address);
+    # otherwise pass it through verbatim (DiLoCoClient normalizes it).
+    server = args.server
+    try:
+        base = match_server(client.list_diloco_servers(), server)
+        if base:
+            server = base
+    except (ServerUnreachable, AuthRequired, RuntimeError):
+        pass
+
+    count = getattr(args, "count", 1) or 1
+    explicit = (getattr(args, "worker_id", None) or "").strip() or None
+    if explicit and count == 1:
+        names = [explicit]
+    else:
+        # Server-side generation guarantees uniqueness + exclusion (matches
+        # the webui). Exclude an explicit id so it isn't regenerated.
+        try:
+            resp = client.generate_diloco_worker_names(
+                count, exclude=[explicit] if explicit else []
+            )
+        except (ServerUnreachable, AuthRequired, RuntimeError) as e:
+            print(str(e), file=sys.stderr)
+            return 1
+        names = resp.get("names", [])
+        if not names:
+            print("error: could not generate worker names", file=sys.stderr)
+            return 1
+
+    hb = getattr(args, "heartbeat_interval", None)
+    gpus = getattr(args, "gpus_per_worker", 1)
+    priority = getattr(args, "priority", 0)
+    project_dir = getattr(args, "project_dir", ".")
+
+    results = []
+    for name in names:
+        diloco = {"server_addr": server, "worker_id": name}
+        if hb is not None:
+            diloco["heartbeat_interval"] = hb
+        try:
+            item = client.enqueue_job(
+                project_dir=project_dir,
+                config=config,
+                job_type="training",
+                job_params={"diloco": diloco},
+                requested_gpus=gpus,
+                priority=priority,
+                dynamic_args=dynamic_args or None,
+                dataset_source=dataset_source,
+            )
+        except (ServerUnreachable, AuthRequired, RuntimeError) as e:
+            # Report what already enqueued so the operator can cancel/retry.
+            for r in results:
+                print(f"  enqueued {r['worker_id']} as {r['queue_id']}")
+            print(f"error: failed to enqueue worker '{name}': {e}", file=sys.stderr)
+            return 1
+        results.append({"worker_id": name, "queue_id": item.get("queue_id")})
+
+    if getattr(args, "json", False):
+        print(json.dumps(results, indent=2))
+        return 0
+    print(f"Enqueued {len(results)} worker(s) against {server}:")
+    for r in results:
+        print(f"  {r['worker_id']:<28} {r['queue_id']}")
+    print("The scheduler will start them on idle GPUs.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Control surface — a uniform adapter over the direct DiLoCoClient and the
 # orchestrator proxy, so the multi-step shutdown flow is written once.
 # ---------------------------------------------------------------------------

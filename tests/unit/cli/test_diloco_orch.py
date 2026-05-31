@@ -85,6 +85,15 @@ class FakeClient:
         self._jobs = jobs or []
         self._reachable = reachable
         self._dump = dump
+        self.enqueued = []
+
+    def enqueue_job(self, **kw):
+        self.enqueued.append(kw)
+        return {"queue_id": f"q{len(self.enqueued)}"}
+
+    def generate_diloco_worker_names(self, count, exclude=None):
+        self.gen_call = (count, list(exclude or []))
+        return {"names": [f"name{i}" for i in range(count)]}
 
     def ping(self):
         return self._reachable
@@ -282,6 +291,187 @@ class TestControlOps:
         ops, label = orch.make_control_ops(args)
         assert isinstance(ops, orch._DirectOps)
         assert label == "localhost:8512"
+
+
+class TestDatasetSource:
+    def test_none_and_local(self):
+        assert orch.parse_dataset_source(None) is None
+        assert orch.parse_dataset_source("local") is None
+
+    def test_auto(self):
+        assert orch.parse_dataset_source("auto") == {"kind": "auto"}
+
+    def test_server(self):
+        assert orch.parse_dataset_source("server:user:abc") == {
+            "kind": "server",
+            "server_id": "user:abc",
+        }
+
+    def test_invalid(self):
+        with pytest.raises(ValueError):
+            orch.parse_dataset_source("bogus")
+
+
+def _server_args(**over):
+    base = dict(
+        output_dir="/m",
+        port=8512,
+        num_workers=2,
+        host="127.0.0.1",
+        async_mode=False,
+        dylu=False,
+        save_every=10,
+        save_total_limit=3,
+        outer_lr=0.7,
+        outer_momentum=0.9,
+        no_nesterov=False,
+        heartbeat_timeout=120.0,
+        min_workers=1,
+        sync_every=500,
+        num_fragments=1,
+        bf16_comm=True,
+        no_auth=False,
+        bulk_cleartext=True,
+        dn_buffer_size=0,
+        from_checkpoint=None,
+        regen_token=False,
+        priority=0,
+        json=False,
+        via_server=None,
+    )
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+class TestLaunchServer:
+    def test_enqueue_shape(self, patch_orchestrator, capsys):
+        client = patch_orchestrator(FakeClient())
+        rc = orch.launch_server(_server_args())
+        assert rc == 0
+        kw = client.enqueued[0]
+        assert kw["job_type"] == "diloco_server"
+        assert kw["config"] == "diloco:8512"
+        assert kw["project_dir"] == "/m"
+        assert kw["requested_gpus"] == 0
+        jp = kw["job_params"]
+        assert jp["num_workers"] == 2
+        assert jp["bulk_cleartext"] is True
+        # dylu off → no dylu_base_sync_every; auth on but regen off → no regen_token
+        assert "dylu_base_sync_every" not in jp
+        assert "regen_token" not in jp
+
+
+def _worker_args(**over):
+    base = dict(
+        server="local:q1",
+        worker_id=None,
+        heartbeat_interval=30.0,
+        devices=None,
+        dry_run=False,
+        count=1,
+        dataset=None,
+        gpus_per_worker=1,
+        priority=0,
+        via_server=None,
+        direct=False,
+        json=False,
+        config_template="cfg",
+        project_dir="/p",
+    )
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+class TestLaunchWorkers:
+    def test_count_two_autonames_and_resolves_server(self, patch_orchestrator):
+        client = patch_orchestrator(FakeClient(servers=SERVERS))
+        rc = orch.launch_workers(
+            _worker_args(count=2, dataset="auto"), {"max_steps": 5}
+        )
+        assert rc == 0
+        assert client.gen_call == (2, [])
+        assert len(client.enqueued) == 2
+        kw = client.enqueued[0]
+        assert kw["job_type"] == "training"
+        assert kw["config"] == "cfg"
+        # server resolved local:q1 -> its base_url
+        assert kw["job_params"]["diloco"]["server_addr"] == "http://192.168.9.43:8512"
+        assert kw["job_params"]["diloco"]["worker_id"] == "name0"
+        assert kw["dataset_source"] == {"kind": "auto"}
+        assert kw["dynamic_args"] == {"max_steps": 5}
+        assert kw["requested_gpus"] == 1
+
+    def test_explicit_single_worker_no_generate(self, patch_orchestrator):
+        client = patch_orchestrator(FakeClient(servers=[]))
+        rc = orch.launch_workers(
+            _worker_args(worker_id="w0", count=1, server="h:8512"), {}
+        )
+        assert rc == 0
+        assert not hasattr(client, "gen_call")  # explicit id, count 1 → no generation
+        assert client.enqueued[0]["job_params"]["diloco"]["worker_id"] == "w0"
+        # unknown server passed through verbatim
+        assert client.enqueued[0]["job_params"]["diloco"]["server_addr"] == "h:8512"
+
+    def test_missing_config_errors(self, patch_orchestrator, capsys):
+        patch_orchestrator(FakeClient())
+        rc = orch.launch_workers(_worker_args(config_template=None), {})
+        assert rc == 1
+        assert "needs a config" in capsys.readouterr().err
+
+    def test_bad_dataset_errors(self, patch_orchestrator, capsys):
+        patch_orchestrator(FakeClient())
+        rc = orch.launch_workers(_worker_args(dataset="nope"), {})
+        assert rc == 1
+
+
+class TestOrchestratorIfUp:
+    def test_direct_flag(self):
+        assert orch.orchestrator_if_up(argparse.Namespace(direct=True)) is None
+
+    def test_foreground_flag(self):
+        assert orch.orchestrator_if_up(argparse.Namespace(foreground=True)) is None
+
+    def test_ping(self, monkeypatch):
+        up = FakeClient(reachable=True)
+        monkeypatch.setattr(orch, "_orchestrator", lambda args: up)
+        assert orch.orchestrator_if_up(argparse.Namespace()) is up
+        down = FakeClient(reachable=False)
+        monkeypatch.setattr(orch, "_orchestrator", lambda args: down)
+        assert orch.orchestrator_if_up(argparse.Namespace()) is None
+
+
+class TestDynamicCliReconstruction:
+    """Direct-path forwarding rebuilds first-class `forgather train` flags
+    from the parsed dynamic-arg dict (forgather train rejects --dynamic-args)."""
+
+    SCHEMA = [
+        {"names": ["--max-steps"], "type": "int"},
+        {"names": ["--compile"], "action": "store_true"},
+        {"names": ["--no-accelerator"], "action": "store_true"},
+        {"names": "--keep-fp32", "action": "store_false"},
+    ]
+
+    def _recon(self, dynamic_args):
+        from forgather.cli.diloco import _dynamic_cli_from_schema
+
+        return _dynamic_cli_from_schema(self.SCHEMA, dynamic_args)
+
+    def test_valued_arg(self):
+        assert self._recon({"max_steps": 5}) == ["--max-steps", "5"]
+
+    def test_store_true_set(self):
+        assert self._recon({"compile": True}) == ["--compile"]
+
+    def test_store_true_default_false_omitted(self):
+        # Unset store_true bools show up as False in the dict; don't forward.
+        assert self._recon({"no_accelerator": False}) == []
+
+    def test_store_false_emits_only_when_false(self):
+        assert self._recon({"keep_fp32": False}) == ["--keep-fp32"]
+        assert self._recon({"keep_fp32": True}) == []
+
+    def test_unknown_arg_falls_back_to_valued(self):
+        assert self._recon({"some_path": "/x"}) == ["--some-path", "/x"]
 
 
 class TestStatusExitCode:

@@ -275,6 +275,33 @@ route through it (so you don't need the parameter server's token locally);
 otherwise they go direct. `--direct` forces the direct path on any of these
 commands.
 
+### Launching as scheduled jobs
+
+When the forgather server is running, `diloco server` and `diloco worker`
+**enqueue scheduled jobs** instead of running in the foreground — the
+scheduler picks idle GPUs, captures the TTY, and the jobs show up in the
+webui. `--foreground` (server) / `--direct` (worker) forces the legacy
+in-process behavior; if the server isn't running, they fall back to it
+automatically.
+
+```bash
+# Enqueue a parameter server (CPU-only); the scheduler starts it.
+forgather diloco server -o path/to/model -n 2 --bulk-cleartext
+
+# Launch 4 auto-named workers in one command, each a scheduled training
+# job, wired to the cluster's dataset routing. Dynamic/template args work
+# exactly like `forgather train` (built from the config's metadata, shown
+# in `diloco worker --help`).
+forgather -p my_project -t train.yaml diloco worker \
+    --server local:<queue_id> --count 4 --dataset auto --max-steps 5000
+```
+
+Worker launch options (orchestrator path): `--count N` (auto-named via the
+server, guaranteed unique), `--dataset auto|local|server:<id>`,
+`--gpus-per-worker`, `--priority`. A single explicit `--worker-id` is
+honored; `--count > 1` requires the server (you can't foreground N). Add
+`--json` to `server` / `worker` to get the queue ids back for scripting.
+
 ## Programmatic API
 
 The DiLoCo system can also be used directly in Python, independent of the CLI.
