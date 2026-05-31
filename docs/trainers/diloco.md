@@ -230,6 +230,11 @@ queues (issued / completed / total per `(dataset_id, shuffle_seed)`), and
 `--json` to emit the whole snapshot (status + info + workers [+ queues]) as a
 single JSON object for scripting / agents.
 
+It also shows **unified training statistics** — a server-level view aggregated
+from every worker (see [Unified statistics](#unified-statistics)): total tokens
+/ steps / FLOPs, aggregate throughput / MFU / peak memory, and smoothed
+train / eval loss. The same block appears in the webui's DiLoCo server view.
+
 `--watch` (`-w`) refreshes the status in place every `--interval` seconds
 (default 2.0) until Ctrl-C — like `watch`, but in-process: it reuses the same
 connection across ticks (no per-tick subprocess) and works inside the
@@ -482,6 +487,45 @@ To resume from a specific checkpoint:
 ```bash
 forgather diloco server -o ./model -n 2 --from-checkpoint ./model/checkpoints/checkpoint-25
 ```
+
+## Unified statistics
+
+The DiLoCo server has no training loop of its own, so the run-level picture of
+"how is training going" lives in the workers. The server aggregates it into a
+single view: each worker reports its training metrics on the heartbeat
+(sourced from the **DiLoCo callback**, in parallel to the control callback —
+server stats do not depend on it), and the server folds them into an aggregate
+exposed on `/status` (and so in `forgather diloco status` and the webui DiLoCo
+view).
+
+Collected metrics:
+
+| Metric | Aggregation | Persisted in checkpoints |
+|---|---|---|
+| `total_tokens` | sum of per-worker increments (keyed by worker_id) | yes |
+| `total_flos` | sum of per-worker increments | yes |
+| `total_steps` | sum of per-worker increments | yes |
+| `tok_per_sec` | sum over currently-reporting workers | no (live) |
+| `mfu` | sum over currently-reporting workers | no (live) |
+| `peak_memory` | sum over currently-reporting workers | no (live) |
+| `grad_norm` | token-weighted mean | no (live) |
+| `train_loss` | token-weighted EMA | yes (EMA state) |
+| `eval_loss` | token-weighted weak EMA (with the step it was computed at) | yes (EMA state) |
+
+Lifetime counters and the loss EMAs persist in `server_state.pt`, so they
+survive a restart; because the per-worker token/step/FLOP increments are keyed
+by `worker_id`, relaunching a worker under the same id (`diloco worker
+--resume-workers`) continues the totals rather than double-counting the resumed
+history. Live gauges are recomputed from the workers currently reporting and a
+worker the server evicts drops out of them.
+
+When the server has an `output_dir`, it also writes the aggregate stream to
+`<output_dir>/logs/diloco_server_stats.json` (the same JSON-log format a
+worker uses), truncating to the checkpoint step and continuing on resume.
+
+Per-worker eval curves don't track precisely between syncs — for that detail,
+point TensorBoard at an individual worker's `output_dir`. The server's
+`eval_loss` is intentionally a lightly-smoothed cross-worker summary.
 
 ## Async Mode
 

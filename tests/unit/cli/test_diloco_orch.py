@@ -130,6 +130,47 @@ def test_assemble_status_partial():
     assert merged["work_queues"] is None  # no getter supplied
 
 
+def test_render_status_shows_aggregate_stats(capsys):
+    merged = orch.assemble_status(
+        get_status=lambda: {
+            "status": "running",
+            "aggregate_stats": {
+                "total_tokens": 14547721,
+                "total_steps": 464,
+                "tok_per_sec": 172215.0,
+                "mfu": 0.17,
+                "train_loss": 7.4327,
+                "eval_loss": 6.5,
+                "eval_step": 400,
+                "num_reporting": 2,
+            },
+        },
+        get_info=lambda: {},
+        get_known_workers=lambda: {},
+        get_work_queues=None,
+    )
+    orch.render_status(merged, want_queues=False)
+    out = capsys.readouterr().out
+    assert "Training stats (aggregate)" in out
+    assert "14,547,721" in out
+    assert "172,215 tok/s" in out
+    assert "17.0%" in out
+    assert "7.4327" in out
+    assert "@ step 400" in out
+
+
+def test_render_status_skips_empty_aggregate(capsys):
+    # A fresh server with no worker stats yet → no stats block, no zero-wall.
+    merged = orch.assemble_status(
+        get_status=lambda: {"status": "running", "aggregate_stats": {}},
+        get_info=lambda: {},
+        get_known_workers=lambda: {},
+        get_work_queues=None,
+    )
+    orch.render_status(merged, want_queues=False)
+    assert "Training stats" not in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------------------
 # Fake ServerClient for handler tests
 # ---------------------------------------------------------------------------

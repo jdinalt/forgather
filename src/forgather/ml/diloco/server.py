@@ -81,6 +81,10 @@ class WorkerInfo:
     # resumable run that must reuse a stable worker name (issue #103).
     output_dir: Optional[str] = None
     extra: Dict[str, Any] = field(default_factory=dict)
+    # Latest unified-stats snapshot this worker reported on its heartbeat
+    # (normalized schema, see diloco/stats.py). Surfaced per-worker in
+    # /status; folded into the server's StatsAggregator for the aggregate view.
+    stats: Dict[str, Any] = field(default_factory=dict)
     # Trainer-control command queued for this worker, delivered on its next
     # heartbeat and cleared on delivery (the relay channel for collective
     # save / save-and-stop / abort issued via /control/command). One of
@@ -707,6 +711,18 @@ class DiLoCoServer:
         # (different row count) is caught with a 409 at register time.
         self._dataset_lengths: Dict[str, int] = {}
 
+        # Unified statistics: aggregate per-worker training metrics reported
+        # on heartbeats into a server-level view (total tokens/flos/steps,
+        # aggregate throughput/mfu/memory, smoothed train/eval loss). Lifetime
+        # counters + EMA state persist in the server checkpoint; the JSON log
+        # stream (when output_dir is set) resumes like a worker's logger.
+        from .stats import StatsAggregator
+
+        self._stats = StatsAggregator()
+        self._stats_writer = None  # JsonLogWriter, opened lazily once running
+        self._stats_log_state = None  # pending writer resume state (from load_state)
+        self._stats_log_step = -1  # last total_steps a stats record was logged at
+
         # Server state
         self._server: Optional[HTTPServer] = None
         self._server_thread: Optional[threading.Thread] = None
@@ -1039,6 +1055,12 @@ class DiLoCoServer:
                     self._workers.pop(wid, None)
                     self._worker_to_group.pop(wid, None)
                 remaining = len(self._workers)
+
+            # Drop evicted workers from the live-gauge contributions (their
+            # delta baselines are kept, so a resumed worker reusing the id
+            # continues its accounting rather than re-adding from zero).
+            for wid in evict:
+                self._stats.drop_worker(wid)
 
             self._total_worker_deaths += len(evict)
 
@@ -2102,6 +2124,18 @@ class DiLoCoServer:
             self._workers[worker_id].last_heartbeat = time.time()
             if "steps_per_second" in info:
                 self._workers[worker_id].steps_per_second = info["steps_per_second"]
+            # Unified-stats snapshot (optional): store the latest per-worker
+            # view and fold it into the aggregate. Sanitized to the known
+            # numeric schema first — the body is worker-supplied, so this
+            # bounds the retained footprint and what /status echoes, and keeps
+            # non-finite / non-numeric values out of the aggregate and the
+            # wire JSON. Done under the workers lock so a concurrent status
+            # read sees a consistent worker record.
+            from .stats import sanitize_stats
+
+            worker_stats = sanitize_stats(info.get("stats"))
+            if worker_stats:
+                self._workers[worker_id].stats = worker_stats
             # Read (don't yet clear) any queued trainer-control command. We
             # clear it only *after* the response is successfully sent below,
             # so a dropped/failed heartbeat response doesn't silently lose the
@@ -2109,6 +2143,12 @@ class DiLoCoServer:
             # serial per worker (only the leader sends them), so there's no
             # concurrent-delivery race for the same worker_id.
             command = self._workers[worker_id].pending_command
+
+        # Fold the worker's snapshot into the aggregate (StatsAggregator has
+        # its own lock; kept out of the workers lock to avoid holding it over
+        # the EMA math).
+        if worker_stats:
+            self._stats.update(worker_id, worker_stats)
 
         # Compute DyLU recommendation if enabled
         recommended_sync_every = self._compute_dylu_sync_every(worker_id)
@@ -2134,6 +2174,44 @@ class DiLoCoServer:
                 w = self._workers.get(worker_id)
                 if w is not None and w.pending_command == command:
                     w.pending_command = None
+
+        # Append an aggregate-stats record (throttled to one per sync round) —
+        # done after the response so heartbeat latency isn't tied to file IO.
+        if worker_stats:
+            self._maybe_log_stats()
+
+    def _maybe_log_stats(self):
+        """Append one aggregate-stats record to the server's JSON log stream
+        when training has advanced (keyed by total optimizer steps).
+
+        Mirrors a worker's JSON logger: the file is opened lazily (only when
+        ``output_dir`` is set), and on a checkpoint resume it truncates to the
+        restored step and continues appending — the resume state is loaded
+        from the server checkpoint in :meth:`load_state`. Best-effort: a
+        logging failure must never break the heartbeat path.
+        """
+        if not self.output_dir:
+            return
+        snap = self._stats.snapshot()
+        steps = int(snap.get("total_steps", 0) or 0)
+        if steps <= self._stats_log_step:
+            return
+        try:
+            if self._stats_writer is None:
+                from forgather.ml.trainer.callbacks.json_log_writer import (
+                    JsonLogWriter,
+                )
+
+                self._stats_writer = JsonLogWriter("diloco_server_stats.json")
+                if self._stats_log_state:
+                    self._stats_writer.load_state_dict(self._stats_log_state)
+                self._stats_writer.open(os.path.join(self.output_dir, "logs"))
+            data = {k: v for k, v in snap.items() if k != "total_steps"}
+            data["sync_round"] = self._sync_round
+            self._stats_writer.write_record(global_step=steps, epoch=0.0, data=data)
+            self._stats_log_step = steps
+        except Exception as e:  # pragma: no cover - logging must not break HB
+            logger.warning("Failed to write server stats log: %s", e)
 
     def _handle_deregister(self, handler: BaseHTTPRequestHandler):
         """Handle worker deregistration.
@@ -2163,6 +2241,7 @@ class DiLoCoServer:
                     "last_sync_server_round": w.last_sync_server_round,
                     "steps_per_second": w.steps_per_second,
                     "output_dir": w.output_dir,
+                    "stats": w.stats,
                 }
                 for wid, w in self._workers.items()
             }
@@ -2212,6 +2291,10 @@ class DiLoCoServer:
         response["save_dir"] = self.output_dir
         response["model_params"] = self._model_params
         response["model_size_mb"] = round(self._model_size_mb, 2)
+
+        # Unified aggregate training statistics (total tokens/flos/steps,
+        # aggregate throughput/mfu/memory, smoothed train/eval loss).
+        response["aggregate_stats"] = self._stats.snapshot()
 
         _send_json_response(handler, response)
 
@@ -3155,6 +3238,15 @@ class DiLoCoServer:
             "known_workers": known_workers,
             "work_queues": work_queues,
             "dataset_lengths": dataset_lengths,
+            # Unified-stats lifetime counters + EMA state, and the stats log
+            # writer's resume position, so total tokens/flos/steps and the
+            # smoothed loss survive a restart and the log stream continues.
+            "stats": self._stats.state_dict(),
+            "stats_log": (
+                self._stats_writer.state_dict()
+                if self._stats_writer is not None
+                else self._stats_log_state
+            ),
         }
         torch.save(server_state, os.path.join(checkpoint_path, "server_state.pt"))
 
@@ -3304,6 +3396,16 @@ class DiLoCoServer:
             # checkpoints, in which case the roster simply starts empty and
             # repopulates as workers register.
             self._known_workers = server_state.get("known_workers", {}) or {}
+
+            # Restore unified-stats lifetime state (counters, per-worker
+            # last-seen baselines, loss EMA) and the stats-log resume position.
+            # Absent on pre-feature checkpoints → start fresh.
+            self._stats.load_state_dict(server_state.get("stats") or {})
+            self._stats_log_state = server_state.get("stats_log")
+            # Resume the log throttle at the restored total step so the next
+            # record advances past it, rather than re-writing a duplicate
+            # record at the step the log was already truncated to.
+            self._stats_log_step = self._stats.total_steps
 
             # Restore work-unit dispatch state (#105): the per-(dataset_id,
             # shuffle_seed) issued/completed bitmaps and the per-dataset
@@ -3563,6 +3665,8 @@ class DiLoCoServer:
                 logger.error("Failed to save server state on stop: %s", exc)
         self._stop_health_monitor()
         self._stop_bulk_listener()
+        if self._stats_writer is not None:
+            self._stats_writer.close()
         if self._server:
             self._server.shutdown()
             self._running = False

@@ -624,9 +624,88 @@ class DiLoCoCallback(TrainerCallback):
         logs: Optional[dict] = None,
         **kwargs,
     ):
-        """Inject DiLoCo sync metrics into the logs dict."""
-        if self._worker is not None and logs is not None:
+        """Inject DiLoCo sync metrics into the logs dict, and snapshot the
+        run's training metrics for the server's unified-stats aggregator."""
+        if self._worker is None:
+            return
+        if logs is not None:
             logs.update(self._worker.sync_metrics)
+        # Hand the server a normalized snapshot of this worker's metrics to
+        # aggregate. Sourced here (the DiLoCo callback) in parallel to the
+        # control callback's relay, so server stats don't depend on it.
+        self._worker.set_stats(self._build_stats_snapshot(state, logs))
+
+    def on_evaluate(
+        self,
+        args: MinimalTrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        metrics: Optional[dict] = None,
+        **kwargs,
+    ):
+        """Report eval results to the server's aggregator.
+
+        The control callback only instruments ``on_log`` (no eval), so eval
+        loss would otherwise never reach the server. Carries the eval loss
+        plus the step it was computed at; the server smooths it with a weak
+        EMA across workers (post-sync evals reflect the same global model).
+        """
+        if self._worker is None or not metrics:
+            return
+        eval_loss = metrics.get("eval_loss")
+        if eval_loss is None:
+            return
+        self._worker.set_stats(
+            self._build_stats_snapshot(state, None, eval_loss=eval_loss)
+        )
+
+    @staticmethod
+    def _build_stats_snapshot(
+        state: TrainerState,
+        logs: Optional[dict],
+        eval_loss: Optional[float] = None,
+    ) -> dict:
+        """Map trainer state + log dict onto the normalized stats schema the
+        server aggregator consumes (see ``diloco/stats.py``).
+
+        Cumulative counters come from ``TrainerState`` (authoritative and
+        checkpoint-persisted); transient gauges come from the log dict. Keeps
+        the schema mapping on the trainer side so the server stays decoupled
+        from trainer-specific log-key names.
+        """
+
+        def _sum_mem(v):
+            if isinstance(v, (list, tuple)):
+                return float(sum(x for x in v if isinstance(x, (int, float))))
+            return float(v) if isinstance(v, (int, float)) else None
+
+        snap: dict = {}
+        tokens = getattr(state, "num_input_tokens_seen", None)
+        if tokens is not None:
+            snap["tokens_total"] = int(tokens)
+        flos = getattr(state, "total_flos", None)
+        if flos:
+            snap["flos_total"] = float(flos)
+        step = getattr(state, "global_step", None)
+        if step is not None:
+            snap["step_total"] = int(step)
+
+        if logs:
+            if logs.get("tokens") is not None:
+                snap["tokens_window"] = logs["tokens"]
+            for key in ("loss", "grad_norm", "tok_per_sec", "mfu"):
+                if logs.get(key) is not None:
+                    snap[key] = logs[key]
+            pm = logs.get("peak_mem", logs.get("peak_mem_allocated"))
+            mem = _sum_mem(pm) if pm is not None else None
+            if mem is not None:
+                snap["peak_mem"] = mem
+
+        if eval_loss is not None:
+            snap["eval_loss"] = float(eval_loss)
+            if step is not None:
+                snap["eval_step"] = int(step)
+        return snap
 
     def on_train_end(
         self,

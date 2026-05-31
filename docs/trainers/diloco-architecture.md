@@ -130,7 +130,9 @@ _workers_lock: threading.Lock        # Protects _workers dict
 
 `WorkerInfo` is a dataclass with: `worker_id`, `hostname`, `registered_at`,
 `last_heartbeat`, `sync_round` (worker's count), `last_sync_server_round`
-(server round at last sync), `steps_per_second`, `output_dir`, `extra`.
+(server round at last sync), `steps_per_second`, `output_dir`, `extra`, and
+`stats` (the worker's latest unified-stats snapshot — see
+[Unified statistics](#unified-statistics)).
 
 `output_dir` is the worker's local output directory, reported at
 registration and surfaced per-worker in `/status`. It is used only by the
@@ -230,7 +232,7 @@ All communication uses HTTP/1.1 over TCP. The server runs a
 | POST | `/submit_pseudograd` | Binary: header + tensors | Tensor: updated global params |
 | POST | `/submit_fragment_pseudograd` | Binary: header + tensors | Tensor: updated fragment params |
 | GET | `/global_params` | (none) | Tensor: global params |
-| POST | `/heartbeat` | JSON: `{worker_id, steps_per_second}` | JSON: `{status, sync_round, recommended_sync_every?}` |
+| POST | `/heartbeat` | JSON: `{worker_id, steps_per_second, stats?}` | JSON: `{status, sync_round, recommended_sync_every?, command?}` |
 | POST | `/deregister` | JSON: `{worker_id}` | JSON: `{status: "ok"}` |
 | GET | `/status` | (none) | JSON: server state |
 | GET | `/known_workers` | (none) | JSON: `{workers: [{worker_id, output_dir, last_registered, running}]}` |
@@ -846,6 +848,40 @@ Worker `sync_metrics` include `sync_retries` and `reconnections` counters.
 
 ---
 
+## Unified statistics
+
+`StatsAggregator` (`diloco/stats.py`) gives the server a run-level training
+view it otherwise lacks (it has no training loop). Each worker's
+`DiLoCoCallback` snapshots the trainer's metrics in `on_log` / `on_evaluate`
+onto a normalized schema, stashes it on the `DiLoCoWorker`, and the worker
+ships it as the optional `stats` field on its next heartbeat (consume-once, so
+the loss EMA isn't re-fed the same sample). `_handle_heartbeat` stores the
+snapshot on `WorkerInfo.stats` and folds it into the aggregator; `/status`
+returns the result under `aggregate_stats`.
+
+Aggregation rules:
+
+- **Lifetime counters** (`total_tokens`, `total_flos`, `total_steps`) accumulate
+  per-worker *deltas* keyed by `worker_id` — a worker reports its own cumulative
+  value, the server adds the increment since that worker's last report. Reusing
+  a `worker_id` on resume continues the count; a counter reset clamps to a
+  non-negative delta. These persist in the checkpoint (`stats` key), as does the
+  per-worker last-seen baseline needed to keep deltas correct across a restart.
+- **Live gauges** (`tok_per_sec`, `mfu`, `peak_memory` summed; `grad_norm`
+  token-weighted mean) are computed on demand from the latest snapshot of each
+  currently-reporting worker; not persisted, and `drop_worker` removes an
+  evicted worker from them (its delta baseline is kept).
+- **Loss** is a token-weighted EMA (`S = decay·S + w·loss`, `Z = decay·Z + w`,
+  `loss = S/Z`); `S`/`Z` persist so smoothing survives a resume. `train_loss`
+  uses a stronger decay than the weak-EMA `eval_loss`.
+
+When `output_dir` is set the server also appends each aggregate snapshot to
+`<output_dir>/logs/diloco_server_stats.json` via the trainer's `JsonLogWriter`
+(throttled to one record per advance in total steps), which truncates to the
+checkpoint step and resumes — its position is the persisted `stats_log` key.
+
+---
+
 ## Server State Persistence
 
 `save_state(path)` saves a dict via `torch.save`:
@@ -860,6 +896,8 @@ Worker `sync_metrics` include `sync_retries` and `reconnections` counters.
     "async_mode": bool,
     "total_submissions": int,
     "known_workers": Dict[str, {output_dir, last_registered}],
+    "stats": StatsAggregator.state_dict(),   # lifetime counters + loss EMA
+    "stats_log": JsonLogWriter.state_dict(),  # stats-log resume position
 }
 ```
 
