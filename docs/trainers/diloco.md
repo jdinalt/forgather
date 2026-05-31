@@ -339,6 +339,12 @@ requires the forgather server and can't be combined with `--worker-id` /
 jobs. (The flag is named `--resume-workers`, not `--resume`, to avoid
 clashing with a config's own `--resume` dynamic arg.)
 
+Worker launch and `--resume-workers` currently assume the workers run on the
+**same host** as the orchestrator: relaunched jobs are enqueued locally, so a
+worker's per-worker checkpoint resume is only correct when it lands back on
+the host that holds that checkpoint. Cross-host launch and resume are tracked
+in [issue #118](https://github.com/jdinalt/forgather/issues/118).
+
 ## Programmatic API
 
 The DiLoCo system can also be used directly in Python, independent of the CLI.
