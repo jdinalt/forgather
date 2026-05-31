@@ -518,7 +518,10 @@ def main():
             case "diloco":
                 from .diloco import diloco_cmd
 
-                diloco_cmd(args)
+                # Propagate the subcommand's exit code so the new
+                # read/diagnostic verbs (status / servers / logs) are
+                # scriptable (non-zero on error).
+                sys.exit(diloco_cmd(args) or 0)
             case "eval":
                 from .eval import eval_cmd
 

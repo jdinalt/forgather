@@ -1,0 +1,135 @@
+"""ServerClient DiLoCo methods: URL + request-body construction.
+
+Constructs a real ServerClient (offline — no token file, http base so the
+TLS branch is skipped) and swaps in a recording session, so we assert the
+exact path/query/body each method sends without a live server.
+"""
+
+from forgather.cli.server_client import ServerClient
+
+
+class _Resp:
+    ok = True
+    status_code = 200
+
+    def __init__(self, payload=None, content=b""):
+        self._payload = payload if payload is not None else {}
+        self.content = content
+
+    def json(self):
+        return self._payload
+
+    @property
+    def text(self):
+        return ""
+
+
+class _RecordingSession:
+    def __init__(self):
+        self.headers = {}
+        self.calls = []
+
+    def get(self, url, timeout=None, **kwargs):
+        self.calls.append(("GET", url, kwargs.get("params"), None))
+        return _Resp()
+
+    def post(self, url, json=None, timeout=None):
+        self.calls.append(("POST", url, None, json))
+        return _Resp()
+
+    def delete(self, url, timeout=None):
+        self.calls.append(("DELETE", url, None, None))
+        return _Resp()
+
+
+def _client():
+    c = ServerClient("http://127.0.0.1:8765")
+    c.session = _RecordingSession()
+    return c
+
+
+def _last(c):
+    return c.session.calls[-1]
+
+
+def test_server_status_encodes_base():
+    c = _client()
+    c.diloco_server_status("http://192.168.9.43:8512")
+    method, url, _, _ = _last(c)
+    assert method == "GET"
+    assert url == (
+        "http://127.0.0.1:8765/api/diloco/server-status"
+        "?base=http%3A%2F%2F192.168.9.43%3A8512"
+    )
+
+
+def test_work_queue_encodes_all_params():
+    c = _client()
+    c.diloco_work_queue("https://h:8512", "c4/en", 1234)
+    _, url, _, _ = _last(c)
+    assert "/api/diloco/work-queue?base=https%3A%2F%2Fh%3A8512" in url
+    assert "dataset_id=c4%2Fen" in url
+    assert "shuffle_seed=1234" in url
+
+
+def test_generate_worker_names_body():
+    c = _client()
+    c.generate_diloco_worker_names(3, exclude=["a", "b"])
+    method, url, _, body = _last(c)
+    assert method == "POST"
+    assert url.endswith("/api/diloco/generate-worker-names")
+    assert body == {"count": 3, "exclude": ["a", "b"]}
+
+
+def test_add_registry_body():
+    c = _client()
+    c.add_diloco_registry(
+        base_url="https://h:8512", label="L", auth_token="t", verify_tls=False
+    )
+    _, url, _, body = _last(c)
+    assert url.endswith("/api/diloco/registry")
+    assert body == {
+        "base_url": "https://h:8512",
+        "verify_tls": False,
+        "label": "L",
+        "auth_token": "t",
+    }
+
+
+def test_server_control_body_and_query():
+    c = _client()
+    c.diloco_server_control(
+        "command", "http://h:8512", command="save_and_stop", worker_id="w0"
+    )
+    method, url, _, body = _last(c)
+    assert method == "POST"
+    assert url == (
+        "http://127.0.0.1:8765/api/diloco/server-control/command"
+        "?base=http%3A%2F%2Fh%3A8512"
+    )
+    assert body == {"command": "save_and_stop", "worker_id": "w0"}
+
+
+def test_enqueue_job_includes_dataset_source_only_when_set():
+    c = _client()
+    c.enqueue_job(
+        project_dir="/p",
+        config="cfg",
+        job_type="training",
+        job_params={"diloco": {"server_addr": "https://h:8512"}},
+        dataset_source={"kind": "auto"},
+    )
+    _, _, _, body = _last(c)
+    assert body["dataset_source"] == {"kind": "auto"}
+
+    c2 = _client()
+    c2.enqueue_job(project_dir="/p", config="cfg", job_type="training", job_params={})
+    _, _, _, body2 = _last(c2)
+    assert "dataset_source" not in body2
+
+
+def test_ping_true_on_ok(monkeypatch):
+    c = _client()
+    assert c.ping() is True
+    method, url, _, _ = _last(c)
+    assert method == "GET" and url.endswith("/api/health")

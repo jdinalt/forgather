@@ -266,82 +266,71 @@ def _server_cmd(args):
 
 
 def _status_cmd(args):
-    """Get DiLoCo server status."""
-    from forgather.ml.diloco.client import DiLoCoClient
+    """Get DiLoCo server status — rich, orchestrator-first with direct fallback.
 
-    # Token + verify_tls are picked up from explicit args / env /
-    # loopback per-port file by DiLoCoClient automatically.
-    client = DiLoCoClient(
-        args.server,
-        timeout=10,
-        token=getattr(args, "auth_token", None),
-        verify_tls=not getattr(args, "no_verify_tls", False),
-    )
+    The status pulls the live ``/status`` snapshot plus the known-worker
+    roster and (with ``--queues``) the work-unit queues. When the forgather
+    server is reachable AND knows this target, the read goes through its
+    proxy (which resolves the upstream token + TLS for us); otherwise we
+    talk to the parameter server directly. ``--direct`` forces the latter.
+    """
+    from . import diloco_orch as orch
 
+    want_queues = getattr(args, "queues", False)
+    as_json = getattr(args, "json", False)
+
+    client, base = orch.resolve_orchestrator_base(args)
+    if base is not None:
+        get_status = lambda: client.diloco_server_status(base)  # noqa: E731
+        get_info = lambda: client.diloco_server_info(base)  # noqa: E731
+        get_known = lambda: client.diloco_known_workers(base)  # noqa: E731
+        get_queues = (lambda: client.diloco_work_queues(base)) if want_queues else None
+        source = {"via": "orchestrator", "base": base}
+        target = base
+    else:
+        from forgather.ml.diloco.client import DiLoCoClient
+
+        # Token + verify_tls are picked up from explicit args / env /
+        # loopback per-port file by DiLoCoClient automatically.
+        c = DiLoCoClient(
+            args.server,
+            timeout=10,
+            max_retries=0,  # status is a probe — fail fast, no backoff storm
+            token=getattr(args, "auth_token", None),
+            verify_tls=not getattr(args, "no_verify_tls", False),
+        )
+        get_status = c.get_status
+        get_info = c.get_info
+        get_known = c.get_known_workers
+        get_queues = c.get_work_queues if want_queues else None
+        source = {"via": "direct", "server": args.server}
+        target = args.server
+
+    # The core /status read is REQUIRED — a failure here means the server
+    # is down / unreachable (directly or through the proxy), so we report
+    # it and exit non-zero rather than printing a healthy-looking "unknown"
+    # snapshot. The remaining reads (info / workers / queues) stay
+    # best-effort via assemble_status so a partial server still renders.
     try:
-        status = client.get_status()
+        status = get_status()
     except Exception as e:
-        print(f"Error connecting to server at {args.server}: {e}")
+        if as_json:
+            print(json.dumps({"error": str(e), "source": source}))
+        else:
+            print(f"Error reading DiLoCo status for {target}: {e}")
         return 1
 
-    print("DiLoCo Server Status")
-    print("=" * 50)
-    print(f"  Status:        {status.get('status', 'unknown')}")
-    print(f"  Mode:          {status.get('mode', 'sync')}")
-    print(f"  Sync round:    {status.get('sync_round', 0)}")
-    print(
-        f"  Workers:       {status.get('num_registered', 0)}/{status.get('num_workers', '?')}"
+    merged = orch.assemble_status(
+        get_status=lambda: status,
+        get_info=get_info,
+        get_known_workers=get_known,
+        get_work_queues=get_queues,
     )
 
-    if status.get("uptime_seconds"):
-        uptime = status["uptime_seconds"]
-        hours = int(uptime // 3600)
-        minutes = int((uptime % 3600) // 60)
-        print(f"  Uptime:        {hours}h {minutes}m")
-
-    # Async-specific fields
-    if status.get("mode") == "async":
-        print(f"  Submissions:   {status.get('total_submissions', 0)}")
-        dn_buf = status.get("dn_buffer_size", 0)
-        if dn_buf > 0:
-            print(f"  DN buffer:     {status.get('dn_buffered', 0)}/{dn_buf}")
-        if status.get("dylu_enabled"):
-            print(f"  DyLU base H:   {status.get('dylu_base_sync_every', '?')}")
-
-    # Fault tolerance
-    deaths = status.get("total_worker_deaths", 0)
-    if deaths > 0:
-        print(f"  Worker deaths: {deaths}")
-    hb_timeout = status.get("heartbeat_timeout", 0)
-    if hb_timeout > 0:
-        print(f"  HB timeout:    {hb_timeout}s")
-
-    pending = status.get("pending_submissions", [])
-    if pending:
-        print(f"  Pending sync:  {', '.join(pending)}")
-
-    workers = status.get("workers", {})
-    if workers:
-        print()
-        print("Workers:")
-        print(f"  {'ID':<30} {'Host':<15} {'Round':<8} {'Steps/s':<10} {'Last HB'}")
-        print("  " + "-" * 75)
-
-        import datetime
-
-        for wid, winfo in workers.items():
-            last_hb = datetime.datetime.fromtimestamp(
-                winfo.get("last_heartbeat", 0)
-            ).strftime("%H:%M:%S")
-            print(
-                f"  {wid:<30} "
-                f"{winfo.get('hostname', '?'):<15} "
-                f"{winfo.get('sync_round', 0):<8} "
-                f"{winfo.get('steps_per_second', 0):<10.2f} "
-                f"{last_hb}"
-            )
-
-    return 0
+    if as_json:
+        print(json.dumps({"source": source, **merged}, default=str, indent=2))
+        return 0
+    return orch.render_status(merged, want_queues=want_queues)
 
 
 def _make_client(args, timeout=10):
@@ -531,7 +520,18 @@ def diloco_cmd(args):
         return _shutdown_cmd(args)
     elif subcmd == "worker":
         return _worker_cmd(args)
+    elif subcmd == "servers":
+        from .diloco_orch import servers_cmd
+
+        return servers_cmd(args)
+    elif subcmd == "logs":
+        from .diloco_orch import logs_cmd
+
+        return logs_cmd(args)
     else:
-        print("Usage: forgather diloco {server|status|control|shutdown|worker}")
+        print(
+            "Usage: forgather diloco "
+            "{server|worker|status|servers|logs|control|shutdown}"
+        )
         print("Run 'forgather diloco --help' for details.")
         return 1

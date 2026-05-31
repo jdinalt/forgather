@@ -224,7 +224,42 @@ watch -n 1 forgather diloco status --server localhost:8512
 
 Shows sync round, registered workers, their hostnames, training speeds, and
 pending sync submissions. In async mode, also shows total submissions, DN buffer
-status, and DyLU configuration.
+status, and DyLU configuration. Add `--queues` to also list the work-unit
+queues (issued / completed / total per `(dataset_id, shuffle_seed)`), and
+`--json` to emit the whole snapshot (status + info + workers [+ queues]) as a
+single JSON object for scripting / agents.
+
+## Interacting through the forgather server
+
+When a forgather server (`forgather server`) is running, the DiLoCo CLI
+prefers it automatically — it gives richer, centrally-authenticated access
+without needing each parameter server's token on the local machine. The
+server's proxy resolves every upstream server's bearer token and TLS
+verification on your behalf (the same path the webui uses), so these commands
+only need the server's own auth (`~/.config/forgather/server/auth_token`, or
+`$FORGATHER_SERVER_TOKEN`). Point at a non-default server with
+`--via-server URL`; force the direct-to-parameter-server path with `--direct`.
+
+```bash
+# Discover every DiLoCo server the forgather server knows
+# (locally-spawned + externally-registered). --json for scripting.
+forgather diloco servers
+forgather diloco servers --json
+
+# Rich status routed through the server (resolves the upstream token for
+# you). Falls back to a direct connection if the server isn't running or
+# doesn't know this target.
+forgather diloco status --server local:<queue_id> --queues
+
+# Dump or follow the captured TTY of any worker/server job. JOB may be a
+# queue_id, a local DiLoCo server id/label, or a worker_id — resolved to
+# the underlying job for you.
+forgather diloco logs spectacular-fox            # dump
+forgather diloco logs spectacular-fox --follow   # live tail
+```
+
+`forgather diloco logs <queue_id>` is a convenience wrapper; the generic
+`forgather job tail <queue_id>` / `forgather job dump <queue_id>` work too.
 
 ## Programmatic API
 
