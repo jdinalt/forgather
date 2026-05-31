@@ -123,7 +123,11 @@ class StatsAggregator:
     :meth:`snapshot` is read from the status handler on another thread.
     """
 
-    def __init__(self, train_loss_decay: float = 0.9, eval_loss_decay: float = 0.5):
+    def __init__(self, train_loss_decay: float = 0.7, eval_loss_decay: float = 0.5):
+        # ``*_decay`` is the EMA memory factor (S = decay*S + w*loss): higher →
+        # smoother but laggier, ~1/(1-decay) reports of memory. Train uses a
+        # light 0.7 (~3 reports) so the reported loss tracks close to a worker's
+        # own TensorBoard rather than lagging behind it; eval is weaker still.
         # Lifetime accumulators (persisted).
         self.total_tokens: int = 0
         self.total_flos: float = 0.0
