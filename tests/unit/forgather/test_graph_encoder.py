@@ -210,7 +210,7 @@ class TestNodeNameDictNameAssignment:
     def test_integer_identity_gets_autoname(self):
         """
         Nodes with an integer (default) identity that require a name receive an
-        AutoName-generated string (e.g., 'alpha_', 'beta_', ...).
+        AutoName-generated string (e.g., 'abundant_acouchi_', ...).
         """
         node = SingletonNode("list")
         graph = {"a": node, "b": node}
