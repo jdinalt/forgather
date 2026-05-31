@@ -301,6 +301,14 @@ def _status_cmd(args):
     want_queues = getattr(args, "queues", False)
     as_json = getattr(args, "json", False)
 
+    if as_json and getattr(args, "watch", False):
+        print(
+            "error: --watch and --json are mutually exclusive "
+            "(watch is an interactive refreshing view).",
+            file=sys.stderr,
+        )
+        return 1
+
     try:
         client, base = orch.resolve_orchestrator_base(args)
     except ServerUnreachable as e:
@@ -319,10 +327,12 @@ def _status_cmd(args):
     else:
         from forgather.ml.diloco.client import DiLoCoClient
 
-        # Token + verify_tls are picked up from explicit args / env /
-        # loopback per-port file by DiLoCoClient automatically.
+        # Direct path: no discovery possible, so fall back to the loopback
+        # default when --server is omitted. Token + verify_tls are picked up
+        # from explicit args / env / loopback per-port file automatically.
+        direct_server = args.server or orch.DEFAULT_DIRECT_SERVER
         c = DiLoCoClient(
-            args.server,
+            direct_server,
             timeout=10,
             max_retries=0,  # status is a probe — fail fast, no backoff storm
             token=getattr(args, "auth_token", None),
@@ -332,34 +342,64 @@ def _status_cmd(args):
         get_info = c.get_info
         get_known = c.get_known_workers
         get_queues = c.get_work_queues if want_queues else None
-        source = {"via": "direct", "server": args.server}
-        target = args.server
+        source = {"via": "direct", "server": direct_server}
+        target = direct_server
 
-    # The core /status read is REQUIRED — a failure here means the server
-    # is down / unreachable (directly or through the proxy), so we report
-    # it and exit non-zero rather than printing a healthy-looking "unknown"
-    # snapshot. The remaining reads (info / workers / queues) stay
-    # best-effort via assemble_status so a partial server still renders.
-    try:
-        status = get_status()
-    except Exception as e:
+    def _render_once():
+        # The core /status read is REQUIRED — a failure here means the
+        # server is down / unreachable (directly or through the proxy), so
+        # we report it and return non-zero rather than printing a
+        # healthy-looking "unknown" snapshot. The remaining reads (info /
+        # workers / queues) stay best-effort via assemble_status so a
+        # partial server still renders.
+        try:
+            status = get_status()
+        except Exception as e:
+            if as_json:
+                print(json.dumps({"error": str(e), "source": source}))
+            else:
+                print(f"Error reading DiLoCo status for {target}: {e}")
+            return 1
+        merged = orch.assemble_status(
+            get_status=lambda: status,
+            get_info=get_info,
+            get_known_workers=get_known,
+            get_work_queues=get_queues,
+        )
         if as_json:
-            print(json.dumps({"error": str(e), "source": source}))
-        else:
-            print(f"Error reading DiLoCo status for {target}: {e}")
-        return 1
+            print(json.dumps({"source": source, **merged}, default=str, indent=2))
+            return 0
+        return orch.render_status(merged, want_queues=want_queues)
 
-    merged = orch.assemble_status(
-        get_status=lambda: status,
-        get_info=get_info,
-        get_known_workers=get_known,
-        get_work_queues=get_queues,
-    )
+    if not getattr(args, "watch", False):
+        return _render_once()
 
-    if as_json:
-        print(json.dumps({"source": source, **merged}, default=str, indent=2))
+    # Watch mode: poll in-process, reusing the same client/connection across
+    # ticks (no per-tick subprocess, unlike `watch -n N forgather …`). Ctrl-C
+    # exits cleanly — in the interactive CLI it returns to the prompt.
+    import time
+
+    interval = max(0.1, float(getattr(args, "interval", 2.0)))
+    use_clear = sys.stdout.isatty()
+    try:
+        while True:
+            if use_clear:
+                # Clear screen + home cursor (ANSI); falls back to a rule
+                # for non-TTY sinks.
+                print("\033[2J\033[H", end="")
+            else:
+                print("\n" + "=" * 50)
+            print(
+                f"forgather diloco status — {target} — "
+                f"{time.strftime('%H:%M:%S')} "
+                f"(every {interval:g}s, Ctrl-C to stop)\n"
+            )
+            _render_once()
+            sys.stdout.flush()
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()
         return 0
-    return orch.render_status(merged, want_queues=want_queues)
 
 
 # CLI action name -> trainer-control command the server relays.
@@ -586,12 +626,36 @@ def _worker_cmd(args):
     )
     dynamic_args = _worker_dynamic_args(args, schema)
     count = getattr(args, "count", 1) or 1
+    resume = getattr(args, "resume_workers", False)
+
+    # --resume-workers is its own mode: re-launch the stopped workers the
+    # server already knows. It doesn't select/create new workers, so it can't
+    # be combined with --worker-id / --count.
+    if resume and (getattr(args, "worker_id", None) or count > 1):
+        print(
+            "error: --resume-workers restarts the stopped workers the server "
+            "already knows; it can't be combined with --worker-id or --count.",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         client = orch.use_orchestrator(args)
     except ServerUnreachable as e:
         print(str(e), file=sys.stderr)
         return 1
+
+    if resume:
+        if client is None:
+            print(
+                "error: --resume-workers requires the forgather server (it "
+                "provides the known-worker roster); not available with "
+                "--local-only.",
+                file=sys.stderr,
+            )
+            return 1
+        return orch.launch_resume(args, dynamic_args)
+
     if client is not None:
         return orch.launch_workers(args, dynamic_args)
 
@@ -610,7 +674,9 @@ def _worker_cmd(args):
     # num_fragments are server-authoritative and resolved from /info by
     # the worker at startup (no client override).
     env = os.environ.copy()
-    env["DILOCO_SERVER"] = args.server
+    # Direct/foreground: no discovery here, so default to loopback when
+    # --server is omitted.
+    env["DILOCO_SERVER"] = args.server or orch.DEFAULT_DIRECT_SERVER
     env["DILOCO_HEARTBEAT_INTERVAL"] = str(getattr(args, "heartbeat_interval", 30.0))
 
     if args.worker_id:
@@ -664,7 +730,7 @@ def _worker_cmd(args):
     # sync_every / bf16 / dylu / num_fragments come from the server's /info
     # at startup, so they aren't known here — the worker logs them once it
     # negotiates with the server.
-    diloco_info = f"DiLoCo: server={args.server}"
+    diloco_info = f"DiLoCo: server={env['DILOCO_SERVER']}"
     if args.worker_id:
         diloco_info += f", worker_id={args.worker_id}"
 

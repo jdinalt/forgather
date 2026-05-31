@@ -5,7 +5,11 @@ TLS branch is skipped) and swaps in a recording session, so we assert the
 exact path/query/body each method sends without a live server.
 """
 
-from forgather.cli.server_client import ServerClient
+import asyncio
+
+import pytest
+
+from forgather.cli.server_client import ServerClient, ServerUnreachable
 
 
 class _Resp:
@@ -128,8 +132,85 @@ def test_enqueue_job_includes_dataset_source_only_when_set():
     assert "dataset_source" not in body2
 
 
+def test_job_tty_path_url():
+    c = _client()
+    c.job_tty_path("qZ")
+    method, url, _, _ = _last(c)
+    assert method == "GET" and url.endswith("/api/jobs/qZ/tty-path")
+
+
 def test_ping_true_on_ok(monkeypatch):
     c = _client()
     assert c.ping() is True
     method, url, _, _ = _last(c)
     assert method == "GET" and url.endswith("/api/health")
+
+
+# --- WebSocket TLS (the --follow / stream_tty fix) ---
+
+
+def test_ws_ssl_context_no_hostname():
+    c = _client()
+    c._tls_bundle = None  # system trust; we only assert the hostname policy
+    c._verify_hostname = False
+    ctx = c._ws_ssl_context()
+    assert ctx.check_hostname is False
+
+
+def test_ws_ssl_context_verifies_hostname_by_default():
+    c = _client()
+    c._tls_bundle = None
+    c._verify_hostname = True
+    ctx = c._ws_ssl_context()
+    assert ctx.check_hostname is True
+
+
+def _drive_stream_tty(client):
+    """Pull the first item from stream_tty so the websockets.connect call
+    happens (then the fake connect aborts it)."""
+
+    async def _run():
+        agen = client.stream_tty("job1", follow=True)
+        with pytest.raises(ServerUnreachable):
+            await agen.__anext__()
+
+    asyncio.run(_run())
+
+
+def test_stream_tty_passes_ssl_for_wss(monkeypatch):
+    """wss:// must get an SSL context built from the cluster trust material;
+    without it the handshake hits the system store and rejects the
+    self-signed cert (the --follow 'could not reach' bug)."""
+    import websockets
+
+    captured = {}
+
+    async def fake_connect(url, **kw):
+        captured["url"] = url
+        captured["kw"] = kw
+        raise OSError("stop after capture")
+
+    monkeypatch.setattr(websockets, "connect", fake_connect)
+    c = ServerClient("https://127.0.0.1:8765")  # wss
+    c.session = _RecordingSession()
+    _drive_stream_tty(c)
+    assert captured["url"].startswith("wss://")
+    assert "ssl" in captured["kw"] and captured["kw"]["ssl"] is not None
+
+
+def test_stream_tty_no_ssl_for_ws(monkeypatch):
+    import websockets
+
+    captured = {}
+
+    async def fake_connect(url, **kw):
+        captured["url"] = url
+        captured["kw"] = kw
+        raise OSError("stop after capture")
+
+    monkeypatch.setattr(websockets, "connect", fake_connect)
+    c = ServerClient("http://127.0.0.1:8765")  # ws
+    c.session = _RecordingSession()
+    _drive_stream_tty(c)
+    assert captured["url"].startswith("ws://")
+    assert "ssl" not in captured["kw"]

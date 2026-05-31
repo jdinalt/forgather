@@ -406,6 +406,19 @@ def _is_terminal(job_id: str) -> bool:
     return rec is not None and rec.status in job_records.TERMINAL_STATUSES
 
 
+@router.get("/jobs/{job_id}/tty-path")
+def tty_path(job_id: str):
+    """Just the on-disk path of the captured TTY (no contents).
+
+    Resolves via the same ``get_record`` path as the dump/stream endpoints,
+    so callers (e.g. ``forgather diloco logs --path``) get a path that's
+    consistent with what ``/tty`` would read — useful for pointing local
+    tooling (``tail -f``) at the file. 404s when the job isn't
+    server-launched or has no TTY yet.
+    """
+    return {"tty_log_path": _tty_path_for(job_id)}
+
+
 @router.get("/jobs/{job_id}/tty", response_class=PlainTextResponse)
 def tty_dump(job_id: str):
     """Captured stdout/stderr (tail; no follow).

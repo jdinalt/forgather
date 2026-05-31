@@ -73,8 +73,8 @@ class TestStatusEnrichment:
         assert ns.local_only is False
         assert ns.local_fallback is False
         assert ns.via_server is None
-        # existing direct-path defaults preserved
-        assert ns.server == "localhost:8512"
+        # --server is now optional (auto-discovered / loopback-default).
+        assert ns.server is None
 
     def test_new_flags_parse(self, parser):
         ns = parser.parse_args(

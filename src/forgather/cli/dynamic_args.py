@@ -1,7 +1,9 @@
 def parse_dynamic_args(parser, global_args):
     if global_args.no_dyn:
         return
+    import argparse
     import os
+    import sys
     import traceback
 
     from forgather import MetaConfig, Project
@@ -84,10 +86,26 @@ def parse_dynamic_args(parser, global_args):
                 if "type" in dynamic_arg and isinstance(dynamic_arg["type"], str):
                     dynamic_arg["type"] = _convert_type_string(dynamic_arg["type"])
 
-                parser.add_argument(
-                    *names,
-                    **dynamic_arg,
-                )
+                try:
+                    parser.add_argument(
+                        *names,
+                        **dynamic_arg,
+                    )
+                except argparse.ArgumentError as exc:
+                    # A config dynamic arg whose option string collides with a
+                    # built-in flag of this subcommand (e.g. `forgather diloco
+                    # worker` defines --resume-workers / --count / --server,
+                    # which a config's dynamic_args might also use), or a
+                    # genuinely malformed option string. Skip just that arg —
+                    # the built-in takes precedence — instead of aborting the
+                    # whole dynamic-arg load. Don't add it to dynamic_arg_names
+                    # either (it's not a dynamic dest here). Note it so a
+                    # malformed config isn't dropped completely silently.
+                    print(
+                        f"Note: skipping dynamic arg {names}: {exc}",
+                        file=sys.stderr,
+                    )
+                    continue
                 # Track the dynamic argument name (use the long form if available)
                 for name in names:
                     if name.startswith("--"):
@@ -96,8 +114,8 @@ def parse_dynamic_args(parser, global_args):
                         break
                 else:
                     # No long form, use short form
-                    if arg_names and arg_names[0].startswith("-"):
-                        dynamic_arg_names.append(arg_names[0][1:])
+                    if names and names[0].startswith("-"):
+                        dynamic_arg_names.append(names[0][1:])
     except:
         print("Loading dynamic args failed!")
         traceback.print_exc()

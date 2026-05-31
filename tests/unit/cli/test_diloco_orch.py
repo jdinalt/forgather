@@ -88,6 +88,30 @@ class TestMatchServer:
         assert orch.match_server(self.LOOPBACK, "localhost:9999") is None
 
 
+class TestResolveOne:
+    """Implicit single-server selection when --server is omitted."""
+
+    ONE = [{"id": "local:q1", "base_url": "http://127.0.0.1:8512"}]
+
+    def test_explicit_matches(self):
+        assert orch.resolve_one(SERVERS, "local:q1") == "http://192.168.9.43:8512"
+
+    def test_explicit_unknown_is_none(self):
+        assert orch.resolve_one(self.ONE, "nope:1") is None
+
+    def test_implicit_single(self):
+        assert orch.resolve_one(self.ONE, None) == "http://127.0.0.1:8512"
+
+    def test_implicit_none_when_zero(self):
+        assert orch.resolve_one([], None) is None
+
+    def test_implicit_ambiguous_raises(self):
+        from forgather.cli.server_client import ServerUnreachable
+
+        with pytest.raises(ServerUnreachable):
+            orch.resolve_one(SERVERS, None)  # 2 servers, no --server
+
+
 # ---------------------------------------------------------------------------
 # assemble_status — a getter that raises is recorded as None
 # ---------------------------------------------------------------------------
@@ -112,13 +136,27 @@ def test_assemble_status_partial():
 
 
 class FakeClient:
-    def __init__(self, *, servers=None, jobs=None, reachable=True, dump=b""):
+    def __init__(
+        self,
+        *,
+        servers=None,
+        jobs=None,
+        reachable=True,
+        dump=b"",
+        tty_path=None,
+        known=None,
+    ):
         self._servers = servers or []
         self._jobs = jobs or []
         self._reachable = reachable
         self._dump = dump
+        self._tty_path = tty_path
+        self._known = known or {"workers": []}
         self.enqueued = []
         self.base = "http://fake-orch:8765"
+
+    def diloco_known_workers(self, base):
+        return self._known
 
     def enqueue_job(self, **kw):
         self.enqueued.append(kw)
@@ -140,6 +178,13 @@ class FakeClient:
     def job_dump(self, job_id):
         self.dumped = job_id
         return self._dump
+
+    def job_tty_path(self, job_id):
+        # Mirrors the server: raises (like a 404 → RuntimeError) when no
+        # path was configured for this fake.
+        if self._tty_path is None:
+            raise RuntimeError("server: no TTY log recorded yet")
+        return self._tty_path
 
     def add_diloco_registry(
         self, *, base_url, label=None, auth_token=None, verify_tls=True
@@ -272,6 +317,26 @@ class TestResolveOrchestratorBase:
         assert orch.resolve_orchestrator_base(
             _loc_args(server="localhost:8512", local_fallback=True)
         ) == (None, None)
+
+    def test_implicit_single_server(self, patch_orchestrator):
+        one = [{"id": "local:q1", "base_url": "http://127.0.0.1:8512"}]
+        client = patch_orchestrator(FakeClient(servers=one))
+        c, base = orch.resolve_orchestrator_base(_loc_args(server=None))
+        assert c is client and base == "http://127.0.0.1:8512"
+
+    def test_implicit_ambiguous_raises(self, patch_orchestrator):
+        from forgather.cli.server_client import ServerUnreachable
+
+        patch_orchestrator(FakeClient(servers=SERVERS))
+        with pytest.raises(ServerUnreachable):
+            orch.resolve_orchestrator_base(_loc_args(server=None))
+
+    def test_implicit_zero_servers_raises(self, patch_orchestrator):
+        from forgather.cli.server_client import ServerUnreachable
+
+        patch_orchestrator(FakeClient(servers=[]))
+        with pytest.raises(ServerUnreachable):
+            orch.resolve_orchestrator_base(_loc_args(server=None))
 
 
 class TestRegistry:
@@ -480,6 +545,133 @@ class TestLaunchWorkers:
         rc = orch.launch_workers(_worker_args(dataset="nope"), {})
         assert rc == 1
 
+    def test_implicit_single_server(self, patch_orchestrator):
+        one = [{"id": "local:q1", "base_url": "http://127.0.0.1:8512"}]
+        client = patch_orchestrator(FakeClient(servers=one))
+        rc = orch.launch_workers(_worker_args(server=None, worker_id="w0", count=1), {})
+        assert rc == 0
+        assert (
+            client.enqueued[0]["job_params"]["diloco"]["server_addr"]
+            == "http://127.0.0.1:8512"
+        )
+
+    def test_implicit_no_servers_errors(self, patch_orchestrator, capsys):
+        patch_orchestrator(FakeClient(servers=[]))
+        rc = orch.launch_workers(_worker_args(server=None, worker_id="w0", count=1), {})
+        assert rc == 1
+        assert "no DiLoCo server" in capsys.readouterr().err
+
+    def test_implicit_ambiguous_errors(self, patch_orchestrator, capsys):
+        patch_orchestrator(FakeClient(servers=SERVERS))
+        rc = orch.launch_workers(_worker_args(server=None, worker_id="w0", count=1), {})
+        assert rc == 1
+
+
+class TestStoppedBaseWorkers:
+    def test_filters_running_and_dedups_pp(self):
+        known = {
+            "workers": [
+                {"worker_id": "alpha", "running": False},
+                {"worker_id": "beta", "running": True},
+                # pipeline ranks of one stopped worker → one base, deduped
+                {"worker_id": "gamma_pp0", "running": False},
+                {"worker_id": "gamma_pp1", "running": False},
+                # any running rank → base excluded
+                {"worker_id": "delta_pp0", "running": True},
+                {"worker_id": "delta_pp1", "running": False},
+            ]
+        }
+        assert orch._stopped_base_workers(known) == ["alpha", "gamma"]
+
+    def test_empty(self):
+        assert orch._stopped_base_workers({"workers": []}) == []
+
+
+ONE_SERVER = [{"id": "local:q1", "base_url": "http://127.0.0.1:8512"}]
+
+
+def _resume_args(**over):
+    base = dict(
+        server=None,
+        via_server=None,
+        config_template="cfg",
+        project_dir="/p",
+        dataset=None,
+        heartbeat_interval=None,
+        gpus_per_worker=1,
+        priority=0,
+        json=False,
+    )
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+class TestLaunchResume:
+    def test_resumes_stopped_workers(self, patch_orchestrator):
+        known = {
+            "workers": [
+                {"worker_id": "alpha", "running": False},
+                {"worker_id": "beta", "running": True},
+                {"worker_id": "gamma", "running": False},
+            ]
+        }
+        client = patch_orchestrator(FakeClient(servers=ONE_SERVER, known=known))
+        rc = orch.launch_resume(_resume_args(), {})
+        assert rc == 0
+        # Only the stopped workers, reusing their ids, against the server.
+        got = {
+            (kw["job_params"]["diloco"]["worker_id"], kw["job_type"])
+            for kw in client.enqueued
+        }
+        assert got == {("alpha", "training"), ("gamma", "training")}
+        assert all(
+            kw["job_params"]["diloco"]["server_addr"] == "http://127.0.0.1:8512"
+            for kw in client.enqueued
+        )
+
+    def test_nothing_to_resume(self, patch_orchestrator, capsys):
+        known = {"workers": [{"worker_id": "alpha", "running": True}]}
+        client = patch_orchestrator(FakeClient(servers=ONE_SERVER, known=known))
+        rc = orch.launch_resume(_resume_args(), {})
+        assert rc == 0
+        assert client.enqueued == []
+        assert "No stopped workers" in capsys.readouterr().out
+
+    def test_ambiguous_server_errors(self, patch_orchestrator, capsys):
+        patch_orchestrator(FakeClient(servers=SERVERS, known={"workers": []}))
+        rc = orch.launch_resume(_resume_args(server=None), {})
+        assert rc == 1
+
+
+class TestWorkerResumeMode:
+    """The --resume mode gating in diloco._worker_cmd."""
+
+    def _args(self, **over):
+        base = dict(
+            resume_workers=True,
+            worker_id=None,
+            count=1,
+            project_dir=".",
+            config_template=None,
+        )
+        base.update(over)
+        return argparse.Namespace(**base)
+
+    def test_resume_with_worker_id_errors(self, capsys):
+        from forgather.cli import diloco
+
+        rc = diloco._worker_cmd(self._args(worker_id="x"))
+        assert rc == 1
+        assert "can't be combined" in capsys.readouterr().err
+
+    def test_resume_local_only_errors(self, monkeypatch, capsys):
+        from forgather.cli import diloco
+
+        monkeypatch.setattr(orch, "use_orchestrator", lambda args: None)
+        rc = diloco._worker_cmd(self._args())
+        assert rc == 1
+        assert "requires the forgather server" in capsys.readouterr().err
+
 
 class TestUseOrchestrator:
     def test_local_only(self):
@@ -538,6 +730,66 @@ class TestDynamicCliReconstruction:
         assert self._recon({"some_path": "/x"}) == ["--some-path", "/x"]
 
 
+class TestStatusWatch:
+    class _C:
+        base = "http://h:8512"
+
+        def diloco_server_status(self, b):
+            return {"status": "running", "sync_round": 2, "num_registered": 1}
+
+        def diloco_server_info(self, b):
+            return {}
+
+        def diloco_known_workers(self, b):
+            return {}
+
+        def diloco_work_queues(self, b):
+            return []
+
+    def _args(self, **over):
+        base = dict(
+            queues=False,
+            json=False,
+            watch=True,
+            interval=1.0,
+            local_only=False,
+            local_fallback=False,
+            server="local:q1",
+            via_server=None,
+            auth_token=None,
+            no_verify_tls=False,
+        )
+        base.update(over)
+        return argparse.Namespace(**base)
+
+    def test_watch_renders_then_interrupt_exits_zero(self, monkeypatch, capsys):
+        import time
+
+        from forgather.cli import diloco
+
+        monkeypatch.setattr(
+            orch, "resolve_orchestrator_base", lambda args: (self._C(), "http://h:8512")
+        )
+
+        # Break the loop on the first sleep, as Ctrl-C would.
+        def _boom(*a, **k):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(time, "sleep", _boom)
+        rc = diloco._status_cmd(self._args())
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "running" in out  # a tick rendered
+        assert "every 1s" in out  # the watch header
+
+    def test_watch_json_mutually_exclusive(self, capsys):
+        from forgather.cli import diloco
+
+        rc = diloco._status_cmd(self._args(json=True))
+        assert rc == 1
+        assert "mutually exclusive" in capsys.readouterr().err
+
+
 class TestStatusExitCode:
     def test_orchestrator_upstream_down_exits_nonzero(self, monkeypatch, capsys):
         """A dead upstream reached through the orchestrator must exit
@@ -582,7 +834,33 @@ class TestLogsCmd:
         client = patch_orchestrator(
             FakeClient(servers=[], jobs=[{"id": "qZ", "queue_id": "qZ"}], dump=b"hi\n")
         )
-        rc = orch.logs_cmd(argparse.Namespace(via_server=None, job="qZ", follow=False))
+        rc = orch.logs_cmd(
+            argparse.Namespace(via_server=None, job="qZ", follow=False, path=False)
+        )
         assert rc == 0
         assert client.dumped == "qZ"
         assert capsysbinary.readouterr().out == b"hi\n"
+
+    def test_path_prints_tty_path(self, patch_orchestrator, capsys):
+        # Resolved server-side (job_tty_path), so it works even when the job
+        # isn't surfaced by /api/jobs — like the real endpoint-discovered
+        # worker. No jobs list needed.
+        patch_orchestrator(
+            FakeClient(servers=[], jobs=[], tty_path="/cfg/jobs/q_qZ.tty")
+        )
+        rc = orch.logs_cmd(
+            argparse.Namespace(
+                via_server=None, job="nebulous-dingo", follow=False, path=True
+            )
+        )
+        assert rc == 0
+        assert capsys.readouterr().out.strip() == "/cfg/jobs/q_qZ.tty"
+
+    def test_path_missing_errors(self, patch_orchestrator, capsys):
+        # job_tty_path raises (404 → RuntimeError) → exit 1.
+        patch_orchestrator(FakeClient(servers=[], jobs=[], tty_path=None))
+        rc = orch.logs_cmd(
+            argparse.Namespace(via_server=None, job="qZ", follow=False, path=True)
+        )
+        assert rc == 1
+        assert "no TTY log recorded" in capsys.readouterr().err

@@ -219,7 +219,8 @@ See the *Work-unit dispatch* section below.
 ### 3. Monitor
 
 ```bash
-watch -n 1 forgather diloco status --server localhost:8512
+forgather diloco status --server localhost:8512            # one-shot
+forgather diloco status --server localhost:8512 --watch    # refresh in place
 ```
 
 Shows sync round, registered workers, their hostnames, training speeds, and
@@ -229,6 +230,12 @@ queues (issued / completed / total per `(dataset_id, shuffle_seed)`), and
 `--json` to emit the whole snapshot (status + info + workers [+ queues]) as a
 single JSON object for scripting / agents.
 
+`--watch` (`-w`) refreshes the status in place every `--interval` seconds
+(default 2.0) until Ctrl-C — like `watch`, but in-process: it reuses the same
+connection across ticks (no per-tick subprocess) and works inside the
+interactive CLI, where Ctrl-C returns you to the prompt. Not compatible with
+`--json`.
+
 ## Interacting through the forgather server
 
 These commands route through the forgather server (`forgather server`) by
@@ -237,8 +244,15 @@ each parameter server's token on the local machine. The server's proxy
 resolves every upstream server's bearer token and TLS verification on your
 behalf (the same path the webui uses), so these commands only need the
 server's own auth (`~/.config/forgather/server/auth_token`, or
-`$FORGATHER_SERVER_TOKEN`). Point at a non-default server with
+`$FORGATHER_SERVER_TOKEN`). Point at a non-default forgather server with
 `--via-server URL`.
+
+**Picking the DiLoCo server.** The commands that target a DiLoCo server
+(`status`, `control`, `shutdown`, `worker`) take `--server <id|label|host:port>`,
+but it's optional: with exactly one DiLoCo server running it's selected
+automatically (the common case). With more than one, you must pass
+`--server` (the error lists the choices). When the forgather server can't be
+consulted (e.g. `--local-only`), `--server` defaults to `localhost:8512`.
 
 **Locality.** The server is the default, required path: if it isn't
 reachable these commands **error** rather than silently doing something
@@ -263,6 +277,8 @@ forgather diloco status --server local:<queue_id> --queues
 # the underlying job for you.
 forgather diloco logs spectacular-fox            # dump
 forgather diloco logs spectacular-fox --follow   # live tail
+forgather diloco logs spectacular-fox --path     # print the TTY file path
+tail -f "$(forgather diloco logs spectacular-fox --path)"  # …or tail it yourself
 ```
 
 `forgather diloco logs <queue_id>` is a convenience wrapper; the generic
@@ -302,6 +318,11 @@ forgather diloco server -o path/to/model -n 2 --bulk-cleartext
 # in `diloco worker --help`).
 forgather -p my_project -t train.yaml diloco worker \
     --server local:<queue_id> --count 4 --dataset auto --max-steps 5000
+
+# Bring a worker set back after a server shutdown / manual stop: re-launch
+# every stopped worker the server knows, reusing each id (so each resumes
+# from its own checkpoint).
+forgather -p my_project -t train.yaml diloco worker --resume-workers --dataset auto
 ```
 
 Worker launch options (orchestrator path): `--count N` (auto-named via the
@@ -309,6 +330,20 @@ server, guaranteed unique), `--dataset auto|local|server:<id>`,
 `--gpus-per-worker`, `--priority`. A single explicit `--worker-id` is
 honored; `--count > 1` requires the server (you can't foreground N). Add
 `--json` to `server` / `worker` to get the queue ids back for scripting.
+
+`--resume-workers` is a distinct mode: it re-launches every *stopped*
+worker the server's known-worker roster reports (deduped on the pipeline
+`_pp<N>` suffix), reusing each worker id so it resumes its checkpoint. It
+requires the forgather server and can't be combined with `--worker-id` /
+`--count`; it still honors `--dataset` and dynamic args for the relaunched
+jobs. (The flag is named `--resume-workers`, not `--resume`, to avoid
+clashing with a config's own `--resume` dynamic arg.)
+
+Worker launch and `--resume-workers` currently assume the workers run on the
+**same host** as the orchestrator: relaunched jobs are enqueued locally, so a
+worker's per-worker checkpoint resume is only correct when it lands back on
+the host that holds that checkpoint. Cross-host launch and resume are tracked
+in [issue #118](https://github.com/jdinalt/forgather/issues/118).
 
 ## Programmatic API
 

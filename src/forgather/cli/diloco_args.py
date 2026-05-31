@@ -264,8 +264,13 @@ def create_diloco_parser(global_args):
     status_parser.add_argument(
         "--server",
         type=str,
-        default="localhost:8512",
-        help="Server address as host:port (default: localhost:8512)",
+        default=None,
+        help=(
+            "DiLoCo server: a server id/label/host:port. When omitted, the\n"
+            "single running server is used automatically (ambiguous if more\n"
+            "than one); falls back to localhost:8512 when the forgather\n"
+            "server can't be consulted."
+        ),
     )
     status_parser.add_argument(
         "--auth-token",
@@ -290,6 +295,23 @@ def create_diloco_parser(global_args):
         "--queues",
         action="store_true",
         help="Also show the work-unit queues (issued / completed / total).",
+    )
+    status_parser.add_argument(
+        "--watch",
+        "-w",
+        action="store_true",
+        help=(
+            "Refresh the status in place every --interval seconds until\n"
+            "Ctrl-C (like `watch`, but in-process — reuses the connection\n"
+            "and works in the interactive CLI). Not compatible with --json."
+        ),
+    )
+    status_parser.add_argument(
+        "--interval",
+        type=float,
+        default=2.0,
+        metavar="SECONDS",
+        help="Refresh interval for --watch (default: 2.0).",
     )
     status_parser.add_argument(
         "--json",
@@ -351,6 +373,16 @@ def create_diloco_parser(global_args):
         help="Stream new output until the job exits or Ctrl-C.",
     )
     logs_parser.add_argument(
+        "--path",
+        action="store_true",
+        help=(
+            "Instead of printing the log, print the path to the captured TTY\n"
+            "file (on the forgather server's host) and exit — e.g. for\n"
+            '`tail -f "$(forgather diloco logs <job> --path)"`. Takes\n'
+            "precedence over --follow."
+        ),
+    )
+    logs_parser.add_argument(
         "--via-server",
         type=str,
         default=None,
@@ -363,8 +395,13 @@ def create_diloco_parser(global_args):
         p.add_argument(
             "--server",
             type=str,
-            default="localhost:8512",
-            help="Server address as host:port (default: localhost:8512)",
+            default=None,
+            help=(
+                "DiLoCo server: a server id/label/host:port. When omitted,\n"
+                "the single running server is used automatically (ambiguous\n"
+                "if more than one); falls back to localhost:8512 when the\n"
+                "forgather server can't be consulted."
+            ),
         )
         p.add_argument(
             "--auth-token",
@@ -453,8 +490,13 @@ def create_diloco_parser(global_args):
     worker_parser.add_argument(
         "--server",
         type=str,
-        required=True,
-        help="DiLoCo server address as host:port",
+        default=None,
+        help=(
+            "DiLoCo server the worker connects to: a server id/label/host:port.\n"
+            "When omitted, the single running server is used automatically\n"
+            "(ambiguous if more than one); the direct/foreground path falls\n"
+            "back to localhost:8512."
+        ),
     )
     # NOTE: sync_every / bf16_comm / dylu / num_fragments are NOT worker
     # flags. They must match across the group, so the server is their sole
@@ -499,6 +541,19 @@ def create_diloco_parser(global_args):
         help=(
             "Launch N identical workers as scheduled jobs with auto-generated\n"
             "names (requires the forgather server). Default: 1."
+        ),
+    )
+    worker_parser.add_argument(
+        "--resume-workers",
+        dest="resume_workers",
+        action="store_true",
+        help=(
+            "Re-launch every stopped worker the server knows (reusing each\n"
+            "id, so it resumes its checkpoint) — the way to bring a worker set\n"
+            "back after a shutdown/stop. Requires the forgather server; can't\n"
+            "be combined with --worker-id / --count. Honors --dataset and\n"
+            "dynamic args for the relaunched jobs. (Named to avoid clashing\n"
+            "with configs' own --resume dynamic arg.)"
         ),
     )
     worker_parser.add_argument(
