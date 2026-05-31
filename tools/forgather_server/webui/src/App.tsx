@@ -26,7 +26,6 @@ import { DiLoCoServerModal } from "./components/DiLoCoServerModal";
 import type { SelectedLeaf } from "./components/DatasetsExploreTab";
 import { JobsPanel } from "./components/JobsPanel";
 import { ServicesPanel } from "./components/ServicesPanel";
-import { QueuePanel } from "./components/QueuePanel";
 import { LogDetailPanel } from "./components/LogDetailPanel";
 import { CheckpointDetailPanel } from "./components/CheckpointDetailPanel";
 import { EvalDetailPanel } from "./components/EvalDetailPanel";
@@ -49,7 +48,6 @@ type View =
   | "gpus"
   | "cluster"
   | "jobs"
-  | "queue"
   | "inference"
   | "datasets"
   | "diloco";
@@ -68,7 +66,6 @@ const VIEWS: { id: View; label: string; icon: string; clusterOnly?: boolean }[] 
     { id: "edit", label: "Edit", icon: "✎" },
     { id: "docs", label: "Docs", icon: "📚" },
     { id: "gpus", label: "GPUs", icon: "🖥" },
-    { id: "queue", label: "Queue", icon: "📋" },
     { id: "jobs", label: "Jobs", icon: "⚙" },
     { id: "inference", label: "Inference", icon: "🔮" },
     { id: "datasets", label: "Datasets", icon: "🗂" },
@@ -523,10 +520,10 @@ export default function App() {
     queryFn: api.schedulerStatus,
     refetchInterval: 3000,
   });
-  // Sidebar count pills for the Queue and Jobs view entries. Share the
-  // same query keys as QueuePanel / JobsPanel so the data is deduped:
-  // when those views are open the polling already pays for itself,
-  // and when they're closed we still want a heartbeat so the pills
+  // Sidebar count pills for the Jobs view entry (which now also hosts the
+  // queue). Share the same query keys as QueueSection / JobsPanel so the
+  // data is deduped: when the view is open the polling already pays for
+  // itself, and when it's closed we still want a heartbeat so the pills
   // stay current. Refetch cadence here matches the panels' own.
   const queueCountQ = useQuery({
     queryKey: ["queue"],
@@ -576,13 +573,11 @@ export default function App() {
   const queuedCount = queueCountQ.data?.length ?? 0;
   const runningCount = (jobsCountQ.data ?? []).filter((j) => j.alive).length;
   const nodesCount = clusterMembersQ.data?.members.length ?? 0;
-  const viewCounts: Partial<Record<View, number>> = {
-    queue: queuedCount,
-    jobs: runningCount,
-    // The peer count belongs on the "Nodes" sidebar group (see
-    // below) rather than on the "Cluster" view — the group is the
-    // list of nodes, so it's the natural place to surface the count.
-  };
+  // The Jobs entry shows two distinct pills — queued (neutral) and running
+  // (accent) — rather than one number, since the merged view now holds
+  // both states and conflating them into a sum would be misleading. The
+  // peer count belongs on the "Nodes" sidebar group (see below) rather
+  // than on the "Cluster" view — the group is the list of nodes.
   // Cluster-only views (currently just "cluster") are filtered out of
   // the sidebar in standalone mode.
   const visibleViews = VIEWS.filter((v) => clusterActive || !v.clusterOnly);
@@ -1094,7 +1089,6 @@ export default function App() {
             <summary>Views</summary>
             <nav className="sidebar-views">
               {visibleViews.map((v) => {
-                const count = viewCounts[v.id];
                 return (
                   <button
                     key={v.id}
@@ -1103,49 +1097,26 @@ export default function App() {
                   >
                     <span className="view-icon">{v.icon}</span>
                     <span className="view-label">{v.label}</span>
-                    {count != null && count > 0 && (
-                      <span className="badge">{count}</span>
+                    {v.id === "jobs" && queuedCount > 0 && (
+                      <span
+                        className="badge"
+                        title={`${queuedCount} queued`}
+                      >
+                        {queuedCount}
+                      </span>
+                    )}
+                    {v.id === "jobs" && runningCount > 0 && (
+                      <span
+                        className="badge badge-running"
+                        title={`${runningCount} running`}
+                      >
+                        {runningCount}
+                      </span>
                     )}
                   </button>
                 );
               })}
             </nav>
-          </details>
-
-          <details
-            className="sidebar-tools"
-            open={toolsOpen}
-            onToggle={(e) =>
-              setToolsOpen((e.target as HTMLDetailsElement).open)
-            }
-          >
-            <summary>Tools</summary>
-            <div className="sidebar-tools-body">
-              {TOOLS.map((tool) => (
-                <button
-                  key={tool.label}
-                  className="sidebar-tool-btn"
-                  onClick={tool.onOpen}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    setToolHelpMenu({
-                      x: e.clientX,
-                      y: e.clientY,
-                      docRelpath: tool.docRelpath,
-                      mkdocsSlug: tool.mkdocsSlug,
-                      label: tool.label,
-                      extraItems: tool.extraItems,
-                    });
-                  }}
-                  title={tool.title}
-                >
-                  {tool.icon} {tool.label}
-                </button>
-              ))}
-              <div className="sidebar-tools-hint muted">
-                Right-click any tool for help.
-              </div>
-            </div>
           </details>
 
           <details
@@ -1230,6 +1201,42 @@ export default function App() {
               })}
               <div className="sidebar-tools-hint muted">
                 Right-click any service for help.
+              </div>
+            </div>
+          </details>
+
+          <details
+            className="sidebar-tools"
+            open={toolsOpen}
+            onToggle={(e) =>
+              setToolsOpen((e.target as HTMLDetailsElement).open)
+            }
+          >
+            <summary>Tools</summary>
+            <div className="sidebar-tools-body">
+              {TOOLS.map((tool) => (
+                <button
+                  key={tool.label}
+                  className="sidebar-tool-btn"
+                  onClick={tool.onOpen}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setToolHelpMenu({
+                      x: e.clientX,
+                      y: e.clientY,
+                      docRelpath: tool.docRelpath,
+                      mkdocsSlug: tool.mkdocsSlug,
+                      label: tool.label,
+                      extraItems: tool.extraItems,
+                    });
+                  }}
+                  title={tool.title}
+                >
+                  {tool.icon} {tool.label}
+                </button>
+              ))}
+              <div className="sidebar-tools-hint muted">
+                Right-click any tool for help.
               </div>
             </div>
           </details>
@@ -1475,12 +1482,6 @@ export default function App() {
             onOpenDatasetServer={openDatasetServer}
             onOpenDiLoCoServer={openDiLoCoServer}
           />
-        </div>
-        <div
-          className="view-panel"
-          style={view === "queue" ? undefined : { display: "none" }}
-        >
-          <QueuePanel />
         </div>
         <div
           className="view-panel"

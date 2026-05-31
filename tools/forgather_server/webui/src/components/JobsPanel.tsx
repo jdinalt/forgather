@@ -9,6 +9,7 @@ import { api, ControlAction, Job } from "../api";
 import { useDemoMode } from "../demoMode";
 import { persistGet, persistSet } from "../persist";
 import { ContextMenu } from "./ContextMenu";
+import { QueueSection } from "./QueueSection";
 import { TtyViewer } from "./TtyViewer";
 
 interface JobMenuTarget {
@@ -379,6 +380,7 @@ export function JobsPanel({
         ref={listPaneRef}
         style={showTty ? { flex: `0 0 ${splitPct}%` } : undefined}
       >
+        <QueueSection />
         {jobs.length === 0 && (
           <div className="pane-state muted">
             No jobs yet. Submit one from a config's ▶ button or launch

@@ -266,20 +266,25 @@ without DDP). Leave the other fields at their defaults and submit.
 
 ![Submit modal with v2.yaml's dynamic args and GPU=2](screenshots/09-submit-modal.png)
 
-Switch to the **Queue** view (📋 in the sidebar's Views group). The
-job appears at the top of the list with status `pending`, waiting
-for the dispatcher.
+Switch to the **Jobs** view (⚙ in the sidebar's Views group). The
+queue section at the top of the view shows your job with status
+`pending`, waiting for the dispatcher — queued and running work now
+share one view, with a compact scheduler status line above the queued
+items.
 
-![Queue panel showing the queued tiny_llama job](screenshots/10-queue-pending.png)
+<!-- TODO(screenshot): regenerate against the merged Jobs view — the
+     queue is now a section at the top of Jobs, not a standalone Queue
+     view, and the sidebar no longer has a Queue entry. -->
+![The queued tiny_llama job at the top of the Jobs view](screenshots/10-queue-pending.png)
 
 Now click the **⏸/▶** button in the sidebar footer to resume
 dispatch. Within a tick or two the scheduler picks GPUs, marks the
 job `starting`, and then `running`. The job moves out of the queue
-and into the **Jobs** panel.
+section and into the jobs list below it.
 
 ## 7. Watch the run
 
-Switch to **Jobs** (⚙ in Views). Your training job is the first card,
+Your training job is now the first card in the jobs list,
 showing live status pills (loss, lr, grad_norm, epoch, tok/s, peak
 memory) plus a progress bar.
 

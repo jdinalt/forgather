@@ -2199,8 +2199,9 @@ sets/clears them.
 - The scheduler holds a JSON-backed queue + an in-memory dispatcher
   loop. **Enabled by default** so a freshly-restarted server resumes
   dispatch immediately. Pause anytime with the `▶`/`⏸` button in the
-  sidebar header. The Queue view shows the current `running` /
-  `paused` state.
+  sidebar header. The queue section at the top of the **Jobs** view
+  shows the current `running` / `paused` state alongside the queued
+  items (queued and running work share one view).
 - Dispatch picks idle GPU indices that aren't excluded via
   `CUDA_VISIBLE_DEVICES`, sets the child's `CUDA_VISIBLE_DEVICES` to
   the assignment, and invokes `torchrun` directly (mirrors what
