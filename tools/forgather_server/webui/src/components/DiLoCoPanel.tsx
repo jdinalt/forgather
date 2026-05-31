@@ -881,7 +881,13 @@ interface GroupView {
  *  per-worker output-dir suffix is kept in lockstep with the job's
  *  resolved ``output_dir`` (same worker-id, same suffix), so matching on
  *  it re-links the worker to its job. Pipeline ranks of one job share a
- *  local output_dir, so any member's value identifies the group. */
+ *  local output_dir, so any member's value identifies the group.
+ *
+ *  Resuming a worker spawns a NEW job at the SAME output_dir while the
+ *  previous (now finished) job still lingers in the list with that dir, so
+ *  an exact-match find could return the dead job. Prefer a live job among
+ *  the output_dir matches, then the most-recently-started, so the running
+ *  respawn wins its own stats/controls. */
 function correlateJob(
   group: GroupView,
   workers: Record<string, DiLoCoWorkerStatus>,
@@ -896,7 +902,17 @@ function correlateJob(
     .map((m) => workers[m.workerId]?.output_dir)
     .find((d) => d);
   if (!groupOutputDir) return null;
-  return jobs.find((j) => j.output_dir === groupOutputDir) ?? null;
+  const matches = jobs.filter((j) => j.output_dir === groupOutputDir);
+  if (matches.length === 0) return null;
+  // Live first, then most recently started — the fresh respawn outranks
+  // the stopped job that shares its output_dir.
+  matches.sort(
+    (a, b) =>
+      Number(b.alive) - Number(a.alive) ||
+      (b.started_at ?? b.submitted_at ?? 0) -
+        (a.started_at ?? a.submitted_at ?? 0),
+  );
+  return matches[0];
 }
 
 /** Group workers by stripping the ``_pp<N>`` suffix from ``worker_id``.

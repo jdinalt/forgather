@@ -395,8 +395,17 @@ class DiLoCoCallback(TrainerCallback):
             verify_tls=self.verify_tls,
             # Reported to the server only so the webui can correlate this
             # worker to its forgather job by output_dir when the worker-id
-            # was renamed away from the job's queue_id (issue #103).
-            output_dir=getattr(args, "output_dir", None),
+            # was renamed away from the job's queue_id (issue #103). MUST
+            # match the job's recorded output_dir byte-for-byte: the control
+            # callback writes os.path.abspath(args.output_dir) to its
+            # endpoint file (control_callback.py), which becomes the job's
+            # output_dir, so apply the identical transform here — a raw
+            # (possibly relative) args.output_dir would never string-match.
+            output_dir=(
+                os.path.abspath(args.output_dir)
+                if getattr(args, "output_dir", None)
+                else None
+            ),
             **group_kwargs,
         )
         try:

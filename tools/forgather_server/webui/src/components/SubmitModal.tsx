@@ -1157,22 +1157,55 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
                   list="diloco-known-workers"
                   style={{ width: "100%" }}
                 />
+                {/* Name-only autocomplete; the full path is shown (and not
+                    clipped) by the chip menu below, so the datalist option
+                    carries no path label. */}
                 <datalist id="diloco-known-workers">
                   {resumableWorkers.map((w) => (
-                    <option
-                      key={w.name}
-                      value={w.name}
-                      label={w.output_dir ?? undefined}
-                    />
+                    <option key={w.name} value={w.name} />
                   ))}
                 </datalist>
               </label>
             </div>
             {resumableWorkers.length > 0 && (
-              <div className="muted" style={{ fontSize: "smaller", marginTop: 4 }}>
-                Reuse a previous worker_id (
-                {resumableWorkers.map((w) => w.name).join(", ")}) to resume
-                that worker from its own checkpoint. A new id starts fresh.
+              <div className="muted" style={{ fontSize: "smaller", marginTop: 6 }}>
+                Resume a stopped worker from its checkpoint:
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 6,
+                    marginTop: 4,
+                  }}
+                >
+                  {resumableWorkers.map((w) => {
+                    const dir = (w.output_dir ?? "").replace(/\/+$/, "");
+                    const leaf = dir.split("/").pop() || "";
+                    return (
+                      <button
+                        type="button"
+                        key={w.name}
+                        onClick={() => setWorkerId(w.name)}
+                        title={w.output_dir ?? undefined}
+                        style={{
+                          fontSize: "smaller",
+                          padding: "2px 8px",
+                          borderRadius: 10,
+                          cursor: "pointer",
+                          border:
+                            workerId === w.name
+                              ? "1px solid var(--accent, #7aa2f7)"
+                              : "1px solid var(--border, #3b4261)",
+                        }}
+                      >
+                        {w.name}
+                        {leaf && leaf !== w.name && (
+                          <span className="muted"> · {leaf}</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </>

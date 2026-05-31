@@ -353,6 +353,32 @@ class TestWorkerLifecycle:
 
     @patch(_CLIENT_PATCH)
     @patch(_WORKER_PATCH)
+    def test_worker_output_dir_reported_absolute(self, MockWorker, MockClient):
+        """The worker's reported output_dir must be os.path.abspath(...) of
+        args.output_dir — byte-identical to what the control callback writes
+        to its endpoint (and thus the job's output_dir), so the webui's
+        output_dir-based job correlation string-matches (issue #103). A raw
+        relative output_dir would never match the abspath'd job value."""
+        import os
+
+        mock_instance = MockWorker.return_value
+        mock_instance.sync_metrics = {}
+        _stub_info(MockClient)
+
+        cb = DiLoCoCallback(server_addr="host:8512")
+        args, state, control = _make_args(), _make_state(), _make_control()
+        args.output_dir = "output_models/tinyv2_w0"  # relative
+        model = TinyModel()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+        cb.on_load_model_weights(args, state, control, model=model, optimizer=optimizer)
+
+        _, kwargs = MockWorker.call_args
+        assert kwargs["output_dir"] == os.path.abspath("output_models/tinyv2_w0")
+        assert os.path.isabs(kwargs["output_dir"])
+
+    @patch(_CLIENT_PATCH)
+    @patch(_WORKER_PATCH)
     def test_worker_stopped_on_train_end(self, MockWorker, MockClient):
         """on_train_end stops the worker."""
         mock_instance = MockWorker.return_value
