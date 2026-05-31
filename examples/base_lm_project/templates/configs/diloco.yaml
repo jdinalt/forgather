@@ -22,3 +22,10 @@
     -- set ns.model_name = model_name | default("diloco")
 
     -- set ns.enable_diloco = enable_diloco | default(True)
+
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_scheduler
+    warmup_steps: {{ ns.warmup_steps }}
+    min_lr: {{ ns.min_lr | toyaml }}
+    decay_steps: {{ ns.annealing_steps }}
+    decay_start_step: {{ ns.decay_start_step }}

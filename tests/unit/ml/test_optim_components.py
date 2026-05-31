@@ -2088,11 +2088,19 @@ class TestWSDScheduler:
         with pytest.raises(AssertionError):
             WSDScheduler(opt, warmup_steps=-1)
 
-    def test_zero_decay_steps_raises(self):
-        """decay_steps=0 should raise."""
+    def test_zero_decay_steps_ok_when_decay_disabled(self):
+        """decay_steps=0 is valid when the decay phase is disabled
+        (decay_start_step < 0 and not start_decay) — the warmup-stable-only
+        schedule used by DiLoCo."""
+        opt = self._make_optimizer(lr=1.0)
+        WSDScheduler(opt, decay_steps=0, decay_start_step=-1, start_decay=False)
+
+    def test_zero_decay_steps_raises_when_decay_enabled(self):
+        """decay_steps=0 with decay requested (start_decay=True) should raise:
+        you can't run a decay phase with no decay window."""
         opt = self._make_optimizer(lr=1.0)
         with pytest.raises(AssertionError):
-            WSDScheduler(opt, decay_steps=0)
+            WSDScheduler(opt, decay_steps=0, decay_start_step=-1, start_decay=True)
 
 
 # ===========================================================================

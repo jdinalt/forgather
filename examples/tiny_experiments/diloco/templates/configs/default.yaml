@@ -21,4 +21,13 @@
     -- set ns.config_description = "Tiny model with DiLoCo distributed local-SGD"
     -- set ns.log_name = "diloco"
 
-    -- set ns.enable_diloco = Trenable_dilocoue | default(True)
+    -- set ns.enable_diloco = enable_diloco | default(True)
+
+    -- set ns.base_save_tokens = 100
+
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_scheduler
+    warmup_steps: {{ ns.warmup_steps }}
+    min_lr: {{ ns.min_lr | toyaml }}
+    decay_steps: {{ ns.annealing_steps }}
+    decay_start_step: {{ ns.decay_start_step }}

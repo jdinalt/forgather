@@ -19,10 +19,6 @@
     -- set ns.base_lr = lr | default(1.0e-4)
     -- set ns.base_batch_size = base_batch_size | default(16384)
     -- set ns.lr_alpha = lr_alpha | default(0.5)
-
-    ## LR Scheduler
-    -- set ns.warmup_tokens = warmup_tokens | default(0)
-    -- set ns.annealing_tokens = annealing_tokens | default(300)
     
     ## Attention
     -- set ns.attn_implementation = attn_implementation | default("flex_attention")
@@ -33,8 +29,6 @@
 
 [globals]
     == super()
-    -- set ns.annealing_tokens = ns.annealing_tokens * 1000 * 1000
-    -- set ns.annealing_steps = ns.annealing_tokens // ns.tokens_per_step
     ## If not specified, default to model-dir and model-name
 	-- set ns.model_id_or_path = model_id_or_path | default(joinpath(ns.models_dir, ns.model_name))
 
@@ -56,7 +50,6 @@
 [variable_listing]
     == super()
 # ns.model_id_or_path: {{ ns.model_id_or_path }}
-# ns.annealing_steps: {{ ns.annealing_steps }}
 
 [construct_new_model]
     -- include 'models/causal_lm/from_pretrained_config.yaml'
@@ -98,6 +91,7 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_schedule
     warmup_steps: {{ ns.warmup_steps }}
     min_lr: {{ ns.min_lr | toyaml }}
     decay_steps: {{ ns.annealing_steps }}
+    decay_start_step: {{ ns.decay_start_step }}
     start_decay: {{ start_annealing | toyaml(False) }}
 
 [datacollator]
@@ -116,12 +110,6 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_schedule
 
 [dynamic_args]
     == super()
-    annealing_tokens:
-        names: "--annealing-tokens"
-        type: int
-        group: "Trainer:Schedule"
-        min: 0
-        help: "Number of tokens in annealing phase."
     start_annealing:
         names: "--start-annealing"
         action: "store_true"

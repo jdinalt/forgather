@@ -44,9 +44,6 @@
     == super()
     -- set ns.constant_lr = ns.global_lr * ns.constant_lr_ratio
     -- set ns.cooldown_steps = [ns.min_cooldown_steps, ns.total_steps * ns.cooldown_p] | max | int
-    -- set ns.annealing_tokens = ns.annealing_tokens * 1000 * 1000
-    -- set ns.annealing_steps = ns.annealing_tokens // ns.tokens_per_step
-    -- set ns.decay_start_step = (ns.total_steps - ns.annealing_steps) | int
 
 [variable_listing]
     == super()
@@ -54,7 +51,6 @@
 # ns.constant_lr: {{ ns.constant_lr }}
 # ns.cooldown_p: {{ ns.cooldown_p }}
 # ns.cooldown_steps: {{ ns.cooldown_steps }}
-# ns.annealing_steps: {{ ns.annealing_steps }}
 
 [trainer_args]
     == super()
@@ -111,12 +107,6 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:InfiniteLRScheduler@lr_s
 
 [dynamic_args]
     == super()
-    annealing_tokens:
-        names: "--annealing-tokens"
-        type: int
-        group: "Trainer:Schedule"
-        min: 1
-        help: "Number of tokens in annealing phase."
     start_annealing:
         names: "--start-annealing"
         action: "store_true"
