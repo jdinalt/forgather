@@ -56,6 +56,13 @@ When `--bulk-cleartext` is set:
   captures the bulk URL from `/register` and routes the three bulk
   endpoints there automatically. The control URL still hosts every
   small endpoint plus the bearer-protected register.
+* The client **omits** `Authorization: Bearer` on bulk-routed requests.
+  The bulk plane is unauthenticated by design, so the bearer is never
+  needed there — and sending the control-plane token over the cleartext
+  bulk socket would hand a LAN sniffer full control-plane authority,
+  defeating the entire two-plane split. Bearer redaction is therefore a
+  client-side invariant, not just a server-side "don't check" (see
+  `DiLoCoClient._headers` / `_routes_to_bulk`).
 
 ## Authentication
 

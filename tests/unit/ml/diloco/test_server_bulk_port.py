@@ -280,3 +280,29 @@ def test_client_routes_bulk_to_bulk_listener(two_port_server):
     assert client._url("/global_params").startswith(client.bulk_url)
     # And control endpoints stay on the control URL.
     assert client._url("/status").startswith(client.server_addr)
+
+
+def test_client_omits_bearer_on_cleartext_bulk_requests():
+    """SECURITY: the control-plane bearer must NOT ride the cleartext bulk
+    plane. The server doesn't check it there, and a LAN sniffer capturing
+    it would gain full control-plane authority — the exact host-takeover
+    boundary the two-plane split exists to hold. Regression guard."""
+    client = DiLoCoClient(
+        "http://localhost:9",  # never dialed; we only inspect header construction
+        token="control-bearer",
+        timeout=1,
+        max_retries=0,
+    )
+    client.bulk_url = "http://localhost:10"
+    # Bulk paths route to the (cleartext) bulk listener → no Authorization.
+    for p in ("/submit_pseudograd", "/submit_fragment_pseudograd", "/global_params"):
+        assert "Authorization" not in client._headers(path=p), p
+    # Control-plane paths keep the bearer.
+    assert client._headers(path="/status")["Authorization"] == "Bearer control-bearer"
+    # Before a bulk listener is advertised, bulk paths fall back to the
+    # control plane and DO carry the bearer (TLS-protected control port).
+    client.bulk_url = None
+    assert (
+        client._headers(path="/global_params")["Authorization"]
+        == "Bearer control-bearer"
+    )

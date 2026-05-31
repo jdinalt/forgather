@@ -35,12 +35,31 @@ def _server_cmd(args):
     # Echo the resolved configuration up-front so the TTY log contains
     # exactly what we were asked to do — useful for diagnosing webui /
     # autostart issues where the launching command isn't otherwise
-    # visible. argv first (verbatim from the caller), then the parsed
-    # namespace (post-defaults).
-    print(f"argv: {sys.argv}")
+    # visible. argv first (from the caller), then the parsed namespace
+    # (post-defaults). A bearer passed inline (``--auth-token <secret>``)
+    # is redacted from both so it can't leak into a captured/public TTY;
+    # the webui/demo spawn path uses ``--auth-token-file`` (a path, not the
+    # secret) so it's unaffected.
+    def _redact_argv(argv):
+        out, skip = [], False
+        for tok in argv:
+            if skip:
+                out.append("<redacted>")
+                skip = False
+            elif tok == "--auth-token":
+                out.append(tok)
+                skip = True
+            elif tok.startswith("--auth-token="):
+                out.append("--auth-token=<redacted>")
+            else:
+                out.append(tok)
+        return out
+
+    print(f"argv: {_redact_argv(sys.argv)}")
     print("parsed args:")
     for k, v in sorted(vars(args).items()):
-        print(f"  {k} = {v!r}")
+        shown = "<redacted>" if (k == "auth_token" and v) else v
+        print(f"  {k} = {shown!r}")
 
     # Build outer optimizer factory
     nesterov = not args.no_nesterov

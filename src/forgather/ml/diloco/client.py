@@ -270,24 +270,39 @@ class DiLoCoClient:
             return self.bulk_url
         return self.server_addr
 
+    def _routes_to_bulk(self, path: str) -> bool:
+        """True when ``path`` is served on the (cleartext, unauthenticated)
+        bulk listener rather than the control plane."""
+        canonical = "/" + path.lstrip("/")
+        return bool(self.bulk_url) and canonical in self._BULK_PATHS
+
     def _url(self, path: str) -> str:
         """Build full URL for an endpoint, routing bulk paths to the
         bulk listener when one has been advertised."""
         base = self._base_for_path(path)
         return f"{base}/{path.lstrip('/')}"
 
-    def _headers(self, content_type: Optional[str] = None) -> Dict[str, str]:
+    def _headers(
+        self, content_type: Optional[str] = None, *, path: Optional[str] = None
+    ) -> Dict[str, str]:
         """Build request headers, attaching the bearer token when known.
 
-        ``Authorization: Bearer <token>`` is sent on every request when
-        a token is configured. The server's request handler verifies it
-        via constant-time compare (see ``ml/diloco/auth.py``); the
-        client doesn't need to discover whether auth is on or off.
+        ``Authorization: Bearer <token>`` is sent on control-plane
+        requests when a token is configured. The server verifies it via
+        constant-time compare (see ``ml/diloco/auth.py``).
+
+        It is deliberately **omitted** for requests routed to the bulk
+        listener (``path`` in ``_BULK_PATHS`` with ``bulk_url`` set): that
+        plane is cleartext and unauthenticated by design, and the server
+        never checks the bearer there. Sending the control-plane token
+        over the unencrypted bulk socket would leak full control-plane
+        authority to any LAN sniffer — the exact "host takeover" boundary
+        the two-plane split exists to hold.
         """
         headers: Dict[str, str] = {}
         if content_type is not None:
             headers["Content-Type"] = content_type
-        if self.token:
+        if self.token and not (path is not None and self._routes_to_bulk(path)):
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
 
@@ -317,7 +332,7 @@ class DiLoCoClient:
             url,
             data=body,
             method=method,
-            headers=self._headers("application/json" if body else None),
+            headers=self._headers("application/json" if body else None, path=path),
         )
 
         max_retries = retries if retries is not None else self.max_retries
@@ -385,7 +400,7 @@ class DiLoCoClient:
                 url,
                 data=body,
                 method=method,
-                headers=self._headers(content_type if body else None),
+                headers=self._headers(content_type if body else None, path=path),
             )
             try:
                 with urllib.request.urlopen(
