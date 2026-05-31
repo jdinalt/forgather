@@ -70,16 +70,17 @@ class TestStatusEnrichment:
         ns = parser.parse_args(["status"])
         assert ns.queues is False
         assert ns.json is False
-        assert ns.direct is False
+        assert ns.local_only is False
+        assert ns.local_fallback is False
         assert ns.via_server is None
         # existing direct-path defaults preserved
         assert ns.server == "localhost:8512"
 
     def test_new_flags_parse(self, parser):
         ns = parser.parse_args(
-            ["status", "--server", "h:9000", "--queues", "--json", "--direct"]
+            ["status", "--server", "h:9000", "--queues", "--json", "--local-only"]
         )
         assert ns.server == "h:9000"
         assert ns.queues is True
         assert ns.json is True
-        assert ns.direct is True
+        assert ns.local_only is True

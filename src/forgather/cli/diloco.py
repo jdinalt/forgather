@@ -13,14 +13,22 @@ logger = logging.getLogger(__name__)
 def _server_cmd(args):
     """Start DiLoCo parameter server.
 
-    Orchestrator-first: when the forgather server is running, enqueue this
-    as a scheduled ``diloco_server`` job (background, GPU-scheduled,
-    TTY-captured). ``--foreground`` / ``--direct`` forces the legacy
-    in-process server instead.
+    By default this enqueues a scheduled ``diloco_server`` job through the
+    forgather server (background, GPU-scheduled, TTY-captured), and errors
+    if the server isn't reachable. ``--local-fallback`` runs it in the
+    foreground when the server is down; ``--local-only`` always runs it in
+    the foreground (this is also how the scheduler spawns the actual
+    server, so it never re-enqueues itself).
     """
     from . import diloco_orch as orch
+    from .server_client import ServerUnreachable
 
-    if orch.orchestrator_if_up(args) is not None:
+    try:
+        client = orch.use_orchestrator(args)
+    except ServerUnreachable as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    if client is not None:
         return orch.launch_server(args)
 
     import torch
@@ -283,14 +291,24 @@ def _status_cmd(args):
     roster and (with ``--queues``) the work-unit queues. When the forgather
     server is reachable AND knows this target, the read goes through its
     proxy (which resolves the upstream token + TLS for us); otherwise we
-    talk to the parameter server directly. ``--direct`` forces the latter.
+    talk to the parameter server directly. ``--local-only`` forces the
+    direct path; ``--local-fallback`` uses it only when the server is down;
+    the default errors if the server is unreachable.
     """
     from . import diloco_orch as orch
+    from .server_client import ServerUnreachable
 
     want_queues = getattr(args, "queues", False)
     as_json = getattr(args, "json", False)
 
-    client, base = orch.resolve_orchestrator_base(args)
+    try:
+        client, base = orch.resolve_orchestrator_base(args)
+    except ServerUnreachable as e:
+        if as_json:
+            print(json.dumps({"error": str(e)}))
+        else:
+            print(str(e), file=sys.stderr)
+        return 1
     if base is not None:
         get_status = lambda: client.diloco_server_status(base)  # noqa: E731
         get_info = lambda: client.diloco_server_info(base)  # noqa: E731
@@ -355,9 +373,14 @@ _CONTROL_ACTION_MAP = {
 def _control_cmd(args):
     """Relay a trainer-control command to one or all workers."""
     from . import diloco_orch as orch
+    from .server_client import ServerUnreachable
 
     command = _CONTROL_ACTION_MAP[args.action]
-    ops, label = orch.make_control_ops(args)
+    try:
+        ops, label = orch.make_control_ops(args)
+    except ServerUnreachable as e:
+        print(str(e), file=sys.stderr)
+        return 1
     try:
         resp = ops.relay(command, worker_id=args.worker_id)
     except Exception as e:
@@ -375,16 +398,21 @@ def _control_cmd(args):
 def _shutdown_cmd(args):
     """Stop the DiLoCo server — cleanly (default) or immediately (--force).
 
-    Orchestrator-first with direct fallback (see make_control_ops): when
-    the forgather server is up and knows this target, the control actions
-    route through its proxy; otherwise they go straight to the parameter
-    server. ``--direct`` forces the latter.
+    Routes the control actions through the forgather server by default (see
+    make_control_ops); ``--local-only`` goes straight to the parameter
+    server, ``--local-fallback`` does so only when the server is down, and
+    the default errors if the server is unreachable.
     """
     import time
 
     from . import diloco_orch as orch
+    from .server_client import ServerUnreachable
 
-    ops, label = orch.make_control_ops(args)
+    try:
+        ops, label = orch.make_control_ops(args)
+    except ServerUnreachable as e:
+        print(str(e), file=sys.stderr)
+        return 1
 
     if args.force:
         print("Force shutdown: stopping server now (workers will lose sync).")
@@ -538,11 +566,12 @@ def _worker_cmd(args):
     """
     Launch training as a DiLoCo worker.
 
-    Orchestrator-first: when the forgather server is running, enqueue the
-    worker(s) as scheduled training jobs — this is the path that supports
-    ``--count N`` (auto-named), ``--dataset auto|server:<id>``, and central
-    auth. ``--direct`` (or the server being down) runs a single worker in
-    the foreground by wrapping ``forgather train`` with DiLoCo env vars.
+    By default the worker(s) are enqueued as scheduled training jobs through
+    the forgather server — the path that supports ``--count N`` (auto-named),
+    ``--dataset auto|server:<id>``, and central auth. ``--local-only`` (or
+    ``--local-fallback`` when the server is down) instead runs a single
+    worker in the foreground by wrapping ``forgather train`` with DiLoCo env
+    vars; the default errors if the server is unreachable.
 
     Dynamic/template args are accepted the standard way (built from the
     config's ``dynamic_args`` metadata, like ``forgather train``) and are
@@ -550,6 +579,7 @@ def _worker_cmd(args):
     or as ``--dynamic-args <json>`` to the spawned trainer on the direct path.
     """
     from . import diloco_orch as orch
+    from .server_client import ServerUnreachable
 
     schema = _load_dynamic_schema(
         getattr(args, "project_dir", "."), getattr(args, "config_template", None)
@@ -557,7 +587,12 @@ def _worker_cmd(args):
     dynamic_args = _worker_dynamic_args(args, schema)
     count = getattr(args, "count", 1) or 1
 
-    if orch.orchestrator_if_up(args) is not None:
+    try:
+        client = orch.use_orchestrator(args)
+    except ServerUnreachable as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    if client is not None:
         return orch.launch_workers(args, dynamic_args)
 
     # --- Direct / foreground path (forgather server not reachable) ---

@@ -62,6 +62,13 @@ def build_diloco_server_command(
         "forgather.cli",
         "diloco",
         "server",
+        # CRITICAL: run the parameter server in-process. Without this the
+        # spawned `forgather diloco server` would hit its own orchestrator
+        # auto-detect, see the forgather server is up, and enqueue ANOTHER
+        # diloco_server job — a self-enqueue loop of dead jobs. --local-only
+        # makes it run foreground (which is exactly what the scheduler wants
+        # from the process it spawned).
+        "--local-only",
         "-o",
         output_dir,
         "-n",

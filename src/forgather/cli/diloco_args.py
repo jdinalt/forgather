@@ -19,6 +19,25 @@ def create_diloco_parser(global_args):
         dest="diloco_subcommand", help="DiLoCo subcommands"
     )
 
+    # Locality flags: the forgather server is the default, required path.
+    # --local-fallback degrades to a direct/foreground action only when the
+    # server is unreachable; --local-only skips the server entirely. Without
+    # either, an unreachable server is an error (no silent local degrade).
+    def _add_locality_args(p):
+        p.add_argument(
+            "--local-fallback",
+            action="store_true",
+            help=(
+                "If the forgather server isn't reachable, fall back to a\n"
+                "direct/foreground action instead of erroring."
+            ),
+        )
+        p.add_argument(
+            "--local-only",
+            action="store_true",
+            help="Never contact the forgather server; act directly/foreground.",
+        )
+
     # server subcommand
     server_parser = subparsers.add_parser(
         "server",
@@ -211,20 +230,12 @@ def create_diloco_parser(global_args):
         ),
     )
 
-    # Launch-as-scheduled-job knobs. When the forgather server is up, `server`
-    # enqueues a diloco_server job instead of running in the foreground;
-    # --foreground/--direct forces the legacy in-process server.
-    server_parser.add_argument(
-        "--foreground",
-        "--direct",
-        dest="foreground",
-        action="store_true",
-        help=(
-            "Run the parameter server in the foreground (legacy) instead of\n"
-            "enqueuing it as a scheduled job, even when the forgather server\n"
-            "is reachable."
-        ),
-    )
+    # Launch-as-scheduled-job knobs. By default `server` enqueues a
+    # diloco_server job through the forgather server; --local-only runs it in
+    # the foreground (also how the scheduler spawns the real server, so it
+    # doesn't re-enqueue), --local-fallback runs foreground only if the
+    # server is down.
+    _add_locality_args(server_parser)
     server_parser.add_argument(
         "--via-server",
         type=str,
@@ -297,14 +308,7 @@ def create_diloco_parser(global_args):
             "through it (central token/TLS handling)."
         ),
     )
-    status_parser.add_argument(
-        "--direct",
-        action="store_true",
-        help=(
-            "Skip the forgather server and query the parameter server "
-            "directly (the legacy path)."
-        ),
-    )
+    _add_locality_args(status_parser)
 
     # servers subcommand — discovery via the forgather server.
     servers_parser = subparsers.add_parser(
@@ -387,11 +391,7 @@ def create_diloco_parser(global_args):
                 "target, the action goes through it (central token/TLS)."
             ),
         )
-        p.add_argument(
-            "--direct",
-            action="store_true",
-            help="Skip the forgather server; act on the parameter server directly.",
-        )
+        _add_locality_args(p)
 
     # control subcommand — relay a trainer-control command to workers.
     control_parser = subparsers.add_parser(
@@ -532,14 +532,7 @@ def create_diloco_parser(global_args):
         metavar="URL",
         help="forgather-server base URL to enqueue on (default: env / http://127.0.0.1:8765).",
     )
-    worker_parser.add_argument(
-        "--direct",
-        action="store_true",
-        help=(
-            "Run a single worker in the foreground (wrap 'forgather train')\n"
-            "instead of enqueuing, even when the forgather server is up."
-        ),
-    )
+    _add_locality_args(worker_parser)
     worker_parser.add_argument(
         "--json",
         action="store_true",
