@@ -1,5 +1,6 @@
 """Tests for DiLoCo server-client communication."""
 
+import os
 import threading
 import time
 
@@ -232,6 +233,108 @@ class TestStatusAndHeartbeat:
 
         # Check server recorded the speed
         assert server._workers["worker_0"].steps_per_second == 3.5
+
+
+class TestUnifiedStats:
+    """End-to-end: worker reports stats on the heartbeat, server aggregates
+    them and exposes them via /status (and logs the stream)."""
+
+    def test_heartbeat_stats_folded_into_status(self, two_worker_server):
+        server, c0, c1, sd = two_worker_server
+        c0.register("worker_0")
+        c1.register("worker_1")
+
+        c0.heartbeat(
+            "worker_0",
+            steps_per_second=2.0,
+            stats={
+                "tokens_total": 1000,
+                "step_total": 10,
+                "tok_per_sec": 100.0,
+                "mfu": 0.2,
+                "loss": 3.0,
+                "tokens_window": 100,
+            },
+        )
+        c1.heartbeat(
+            "worker_1",
+            steps_per_second=2.0,
+            stats={
+                "tokens_total": 500,
+                "step_total": 5,
+                "tok_per_sec": 150.0,
+                "mfu": 0.3,
+                "loss": 3.0,
+                "tokens_window": 100,
+            },
+        )
+
+        status = c0.get_status()
+        agg = status["aggregate_stats"]
+        assert agg["total_tokens"] == 1500
+        assert agg["total_steps"] == 15
+        assert agg["tok_per_sec"] == pytest.approx(250.0)
+        assert agg["mfu"] == pytest.approx(0.5)
+        assert agg["train_loss"] == pytest.approx(3.0)
+        assert agg["num_reporting"] == 2
+
+        # Per-worker snapshot is exposed too.
+        assert status["workers"]["worker_0"]["stats"]["tokens_total"] == 1000
+
+    def test_heartbeat_without_stats_is_fine(self, server_and_client):
+        server, client, sd = server_and_client
+        client.register("worker_0")
+        client.heartbeat("worker_0", steps_per_second=1.0)
+        agg = client.get_status()["aggregate_stats"]
+        assert agg["total_tokens"] == 0
+        assert agg["train_loss"] is None
+
+    def test_eval_loss_reported(self, server_and_client):
+        server, client, sd = server_and_client
+        client.register("worker_0")
+        client.heartbeat(
+            "worker_0",
+            stats={"eval_loss": 2.5, "eval_step": 42, "tokens_window": 100},
+        )
+        agg = client.get_status()["aggregate_stats"]
+        assert agg["eval_loss"] == pytest.approx(2.5)
+        assert agg["eval_step"] == 42
+
+    def test_stats_log_written(self, server_and_client):
+        server, client, sd = server_and_client
+        client.register("worker_0")
+        client.heartbeat(
+            "worker_0",
+            stats={"tokens_total": 1000, "step_total": 10, "loss": 3.0},
+        )
+        log_path = os.path.join(server.output_dir, "logs", "diloco_server_stats.json")
+        # The log record is written after the heartbeat response is sent (file
+        # IO is kept off the heartbeat latency path), so poll briefly for it.
+        deadline = time.time() + 5.0
+        while not os.path.isfile(log_path) and time.time() < deadline:
+            time.sleep(0.05)
+        assert os.path.isfile(log_path)
+        deadline = time.time() + 5.0
+        content = ""
+        while '"global_step": 10' not in content and time.time() < deadline:
+            with open(log_path) as f:
+                content = f.read()
+            if '"global_step": 10' not in content:
+                time.sleep(0.05)
+        # At least one record carrying the aggregate total step.
+        assert '"global_step": 10' in content
+
+    def test_evicted_worker_drops_from_throughput(self, two_worker_server):
+        server, c0, c1, sd = two_worker_server
+        c0.register("worker_0")
+        c1.register("worker_1")
+        c0.heartbeat("worker_0", stats={"tok_per_sec": 100.0})
+        c1.heartbeat("worker_1", stats={"tok_per_sec": 150.0})
+        assert c0.get_status()["aggregate_stats"]["tok_per_sec"] == pytest.approx(250.0)
+
+        # Evict worker_1; its live-gauge contribution drops out.
+        server._handle_worker_death("worker_1")
+        assert c0.get_status()["aggregate_stats"]["tok_per_sec"] == pytest.approx(100.0)
 
 
 class TestGetGlobalParams:

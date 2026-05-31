@@ -291,6 +291,12 @@ class DiLoCoWorker:
         # delivered on the heartbeat response and drained by the callback.
         self._pending_command: Optional[str] = None
         self._pending_command_lock = threading.Lock()
+        # Latest unified-stats snapshot, set by the DiLoCo callback from the
+        # trainer's log dict and shipped on the next heartbeat (consume-once,
+        # so the server's loss EMA isn't re-fed the same sample if a log
+        # didn't advance between heartbeats). See diloco/stats.py.
+        self._pending_stats: Optional[dict] = None
+        self._pending_stats_lock = threading.Lock()
 
         # Streaming state: at most one fragment in-flight at a time.
         # The background thread submits pseudo-gradients and stores the
@@ -760,7 +766,11 @@ class DiLoCoWorker:
                 break
             try:
                 speed = self.get_steps_per_second()
-                response = self.client.heartbeat(self.worker_id, steps_per_second=speed)
+                response = self.client.heartbeat(
+                    self.worker_id,
+                    steps_per_second=speed,
+                    stats=self._consume_stats(),
+                )
 
                 # Apply DyLU recommendation if present
                 if self.dylu and "recommended_sync_every" in response:
@@ -800,6 +810,25 @@ class DiLoCoWorker:
             cmd = self._pending_command
             self._pending_command = None
             return cmd
+
+    def set_stats(self, snap: Optional[dict]) -> None:
+        """Stash the latest unified-stats snapshot for the next heartbeat.
+
+        Called by the DiLoCo callback (leader rank) from ``on_log`` /
+        ``on_evaluate``. Last-one-wins: if several logs fire between
+        heartbeats only the most recent snapshot ships, which is fine — the
+        cumulative counters it carries are absolute, so the server's deltas
+        stay correct even when intermediate snapshots are coalesced away.
+        """
+        with self._pending_stats_lock:
+            self._pending_stats = snap
+
+    def _consume_stats(self) -> Optional[dict]:
+        """Return and clear the pending stats snapshot (consume-once)."""
+        with self._pending_stats_lock:
+            snap = self._pending_stats
+            self._pending_stats = None
+            return snap
 
     def get_steps_per_second(self) -> float:
         """Compute current training speed from step timestamps."""

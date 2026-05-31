@@ -653,25 +653,32 @@ class DiLoCoClient:
         """Fetch current global parameters (for late joiners or recovery)."""
         return self._request_tensor("GET", "/global_params")
 
-    def heartbeat(self, worker_id: str, steps_per_second: float = 0.0) -> dict:
+    def heartbeat(
+        self,
+        worker_id: str,
+        steps_per_second: float = 0.0,
+        stats: Optional[dict] = None,
+    ) -> dict:
         """
         Send heartbeat to server.
 
         Args:
             worker_id: Worker identifier.
             steps_per_second: Current training speed.
+            stats: Optional unified-stats snapshot (normalized schema, see
+                ``diloco/stats.py``) the server folds into its aggregate view.
+                Omitted from the request when ``None``.
 
         Returns:
             Server status dict with sync_round, num_workers, etc.
         """
-        return self._request_json(
-            "POST",
-            "/heartbeat",
-            {
-                "worker_id": worker_id,
-                "steps_per_second": steps_per_second,
-            },
-        )
+        body = {
+            "worker_id": worker_id,
+            "steps_per_second": steps_per_second,
+        }
+        if stats:
+            body["stats"] = stats
+        return self._request_json("POST", "/heartbeat", body)
 
     def deregister(self, worker_id: str):
         """Deregister from the server."""
