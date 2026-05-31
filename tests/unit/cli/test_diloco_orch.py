@@ -538,6 +538,66 @@ class TestDynamicCliReconstruction:
         assert self._recon({"some_path": "/x"}) == ["--some-path", "/x"]
 
 
+class TestStatusWatch:
+    class _C:
+        base = "http://h:8512"
+
+        def diloco_server_status(self, b):
+            return {"status": "running", "sync_round": 2, "num_registered": 1}
+
+        def diloco_server_info(self, b):
+            return {}
+
+        def diloco_known_workers(self, b):
+            return {}
+
+        def diloco_work_queues(self, b):
+            return []
+
+    def _args(self, **over):
+        base = dict(
+            queues=False,
+            json=False,
+            watch=True,
+            interval=1.0,
+            local_only=False,
+            local_fallback=False,
+            server="local:q1",
+            via_server=None,
+            auth_token=None,
+            no_verify_tls=False,
+        )
+        base.update(over)
+        return argparse.Namespace(**base)
+
+    def test_watch_renders_then_interrupt_exits_zero(self, monkeypatch, capsys):
+        import time
+
+        from forgather.cli import diloco
+
+        monkeypatch.setattr(
+            orch, "resolve_orchestrator_base", lambda args: (self._C(), "http://h:8512")
+        )
+
+        # Break the loop on the first sleep, as Ctrl-C would.
+        def _boom(*a, **k):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(time, "sleep", _boom)
+        rc = diloco._status_cmd(self._args())
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "running" in out  # a tick rendered
+        assert "every 1s" in out  # the watch header
+
+    def test_watch_json_mutually_exclusive(self, capsys):
+        from forgather.cli import diloco
+
+        rc = diloco._status_cmd(self._args(json=True))
+        assert rc == 1
+        assert "mutually exclusive" in capsys.readouterr().err
+
+
 class TestStatusExitCode:
     def test_orchestrator_upstream_down_exits_nonzero(self, monkeypatch, capsys):
         """A dead upstream reached through the orchestrator must exit

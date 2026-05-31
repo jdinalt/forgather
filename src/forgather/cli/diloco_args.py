@@ -292,6 +292,23 @@ def create_diloco_parser(global_args):
         help="Also show the work-unit queues (issued / completed / total).",
     )
     status_parser.add_argument(
+        "--watch",
+        "-w",
+        action="store_true",
+        help=(
+            "Refresh the status in place every --interval seconds until\n"
+            "Ctrl-C (like `watch`, but in-process — reuses the connection\n"
+            "and works in the interactive CLI). Not compatible with --json."
+        ),
+    )
+    status_parser.add_argument(
+        "--interval",
+        type=float,
+        default=2.0,
+        metavar="SECONDS",
+        help="Refresh interval for --watch (default: 2.0).",
+    )
+    status_parser.add_argument(
         "--json",
         action="store_true",
         help="Emit the merged status (status + info + workers [+ queues]) as JSON.",

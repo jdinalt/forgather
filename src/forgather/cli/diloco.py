@@ -301,6 +301,14 @@ def _status_cmd(args):
     want_queues = getattr(args, "queues", False)
     as_json = getattr(args, "json", False)
 
+    if as_json and getattr(args, "watch", False):
+        print(
+            "error: --watch and --json are mutually exclusive "
+            "(watch is an interactive refreshing view).",
+            file=sys.stderr,
+        )
+        return 1
+
     try:
         client, base = orch.resolve_orchestrator_base(args)
     except ServerUnreachable as e:
@@ -335,31 +343,61 @@ def _status_cmd(args):
         source = {"via": "direct", "server": args.server}
         target = args.server
 
-    # The core /status read is REQUIRED — a failure here means the server
-    # is down / unreachable (directly or through the proxy), so we report
-    # it and exit non-zero rather than printing a healthy-looking "unknown"
-    # snapshot. The remaining reads (info / workers / queues) stay
-    # best-effort via assemble_status so a partial server still renders.
-    try:
-        status = get_status()
-    except Exception as e:
+    def _render_once():
+        # The core /status read is REQUIRED — a failure here means the
+        # server is down / unreachable (directly or through the proxy), so
+        # we report it and return non-zero rather than printing a
+        # healthy-looking "unknown" snapshot. The remaining reads (info /
+        # workers / queues) stay best-effort via assemble_status so a
+        # partial server still renders.
+        try:
+            status = get_status()
+        except Exception as e:
+            if as_json:
+                print(json.dumps({"error": str(e), "source": source}))
+            else:
+                print(f"Error reading DiLoCo status for {target}: {e}")
+            return 1
+        merged = orch.assemble_status(
+            get_status=lambda: status,
+            get_info=get_info,
+            get_known_workers=get_known,
+            get_work_queues=get_queues,
+        )
         if as_json:
-            print(json.dumps({"error": str(e), "source": source}))
-        else:
-            print(f"Error reading DiLoCo status for {target}: {e}")
-        return 1
+            print(json.dumps({"source": source, **merged}, default=str, indent=2))
+            return 0
+        return orch.render_status(merged, want_queues=want_queues)
 
-    merged = orch.assemble_status(
-        get_status=lambda: status,
-        get_info=get_info,
-        get_known_workers=get_known,
-        get_work_queues=get_queues,
-    )
+    if not getattr(args, "watch", False):
+        return _render_once()
 
-    if as_json:
-        print(json.dumps({"source": source, **merged}, default=str, indent=2))
+    # Watch mode: poll in-process, reusing the same client/connection across
+    # ticks (no per-tick subprocess, unlike `watch -n N forgather …`). Ctrl-C
+    # exits cleanly — in the interactive CLI it returns to the prompt.
+    import time
+
+    interval = max(0.1, float(getattr(args, "interval", 2.0)))
+    use_clear = sys.stdout.isatty()
+    try:
+        while True:
+            if use_clear:
+                # Clear screen + home cursor (ANSI); falls back to a rule
+                # for non-TTY sinks.
+                print("\033[2J\033[H", end="")
+            else:
+                print("\n" + "=" * 50)
+            print(
+                f"forgather diloco status — {target} — "
+                f"{time.strftime('%H:%M:%S')} "
+                f"(every {interval:g}s, Ctrl-C to stop)\n"
+            )
+            _render_once()
+            sys.stdout.flush()
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()
         return 0
-    return orch.render_status(merged, want_queues=want_queues)
 
 
 # CLI action name -> trainer-control command the server relays.

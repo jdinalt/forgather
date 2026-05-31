@@ -219,7 +219,8 @@ See the *Work-unit dispatch* section below.
 ### 3. Monitor
 
 ```bash
-watch -n 1 forgather diloco status --server localhost:8512
+forgather diloco status --server localhost:8512            # one-shot
+forgather diloco status --server localhost:8512 --watch    # refresh in place
 ```
 
 Shows sync round, registered workers, their hostnames, training speeds, and
@@ -228,6 +229,12 @@ status, and DyLU configuration. Add `--queues` to also list the work-unit
 queues (issued / completed / total per `(dataset_id, shuffle_seed)`), and
 `--json` to emit the whole snapshot (status + info + workers [+ queues]) as a
 single JSON object for scripting / agents.
+
+`--watch` (`-w`) refreshes the status in place every `--interval` seconds
+(default 2.0) until Ctrl-C — like `watch`, but in-process: it reuses the same
+connection across ticks (no per-tick subprocess) and works inside the
+interactive CLI, where Ctrl-C returns you to the prompt. Not compatible with
+`--json`.
 
 ## Interacting through the forgather server
 
