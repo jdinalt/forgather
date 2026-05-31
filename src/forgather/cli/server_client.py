@@ -100,6 +100,12 @@ class ServerClient:
         #      urllib3's hostname-SAN check. The chain check is the
         #      actual security boundary on a private CA — see
         #      docs/operations/tls.md.
+        # Captured so the WebSocket path (stream_tty → wss://) can build an
+        # SSL context with the same trust material the requests session uses;
+        # otherwise the `wss` handshake falls back to the system trust store
+        # and rejects the self-signed cluster cert ("could not reach").
+        self._tls_bundle = None
+        self._verify_hostname = True
         if self.base.lower().startswith("https://"):
             try:
                 from forgather.tls import load_config
@@ -108,6 +114,8 @@ class ServerClient:
                 bundle = cfg.effective_bundle()
                 if bundle is not None:
                     self.session.verify = str(bundle)
+                    self._tls_bundle = str(bundle)
+                self._verify_hostname = cfg.verify_hostname
                 if not cfg.verify_hostname:
                     self.session.mount("https://", _NoHostnameHTTPSAdapter.build())
             except Exception:
@@ -309,6 +317,19 @@ class ServerClient:
     def gc_jobs(self):
         return self._post("/jobs/gc").json()
 
+    def _ws_ssl_context(self):
+        """SSL context for wss:// matching the requests session's trust:
+        the shared CA bundle (so self-signed cluster certs validate), with
+        the hostname-SAN check disabled when the config sets
+        verify_hostname=False (the LAN default) — chain validation is the
+        real boundary on a private CA."""
+        import ssl
+
+        ctx = ssl.create_default_context(cafile=self._tls_bundle)
+        if not self._verify_hostname:
+            ctx.check_hostname = False
+        return ctx
+
     async def stream_tty(self, job_id, follow=True):
         import websockets
         import websockets.exceptions
@@ -320,8 +341,17 @@ class ServerClient:
         if self._token:
             qs += f"&token={quote(self._token)}"
         ws_url = self._ws_url(f"/jobs/{job_id}/tty") + qs
+        # For wss:// give websockets the same trust material the requests
+        # session uses — the shared CA bundle, hostname-SAN check disabled on
+        # the LAN default. Without this the handshake hits the system trust
+        # store and rejects the self-signed cluster cert (the `--follow`
+        # "could not reach" bug, while non-follow job_dump over requests
+        # works). ws:// needs no context.
+        connect_kwargs = {}
+        if ws_url.startswith("wss://"):
+            connect_kwargs["ssl"] = self._ws_ssl_context()
         try:
-            ws = await websockets.connect(ws_url)
+            ws = await websockets.connect(ws_url, **connect_kwargs)
         except OSError:
             raise ServerUnreachable(
                 f"could not reach forgather-server at {self.base}; is it running? (start with: forgather server)"
