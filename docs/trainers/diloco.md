@@ -967,11 +967,13 @@ under DiLoCo unless you have a measured reason otherwise.
 
 If a worker dies holding an issued unit, that unit is lost (the
 server's one-way issuance design — at most `N_workers` units lost per
-epoch). The DiLoCo server's `_work_queues` is **not** persisted across
-server restarts (pre-#46 it was, but cross-experiment state-bleed from
-a stale checkpoint outweighed crash-recovery utility). On server
-restart, workers re-register their datasets on first contact and the
-queue map is reconstructed fresh.
+epoch). The DiLoCo server's `_work_queues` **is** persisted with its
+checkpoint and restored on restart, so a server bounce does not re-issue
+already-consumed rows within the epoch: a re-registering worker resumes
+at the next un-issued unit. A changed dataset hashes to a new
+`dataset_id`, so stale queues from a prior dataset are never matched
+(no cross-experiment bleed); the queue is flushed on graceful shutdown
+as well as the periodic save cadence.
 
 Design details: `docs/design/diloco-work-unit-dispatch.md`.
 

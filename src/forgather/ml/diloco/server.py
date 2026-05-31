@@ -3021,22 +3021,40 @@ class DiLoCoServer:
             checkpoint_path, self.get_global_params(), safetensors=self.safetensors
         )
 
-        # Work-queue state is intentionally NOT persisted (#46). Earlier
-        # versions rode the per-queue bitmap into server_state.pt so a
-        # server restart preserved issuance — the rationale was crash
-        # recovery within a run. In practice the more common pattern
-        # was "operator changed the dataset, output_dir stayed the
-        # same" → workers register a fresh dataset_id, but the old
-        # queue lingers in /work/queues with a stale hint.length and
-        # an unrecognized dataset_id key. The 2026-05-26 bringup
-        # chased exactly this confusion.
-        #
-        # Trade: on a server crash, in-flight units (≤ N_workers, one
-        # per worker) become re-issuable. That matches the design's
-        # accepted worker-death budget. Workers re-register their
-        # datasets on startup anyway, so the server reconstructs the
-        # queue map on demand. Operators who really want mid-epoch
-        # resume can keep their own queue snapshot.
+        # Work-unit dispatch state IS persisted: the server is the authority
+        # for which rows each worker has consumed, so a restart must not
+        # re-issue already-trained units within an epoch (#105). Snapshot the
+        # per-(dataset_id, shuffle_seed) issued/completed bitmaps under the
+        # lock (concurrent issuance must not mutate them mid-serialization),
+        # plus the per-dataset length snapshot used for the registration
+        # integrity check. Disk form keys queues by a "dataset_id|seed"
+        # string (tuple keys don't round-trip cleanly) and stores bytes, not
+        # bytearray. A dataset change hashes to a different dataset_id → a
+        # fresh key → any stale queue is simply never matched and sits inert
+        # (an operator wanting a hard reset restarts from the model weights
+        # and purges the rest).
+        with self._work_queues_lock:
+            work_queues = {
+                f"{ds}|{seed}": {
+                    "total_units": q.total_units,
+                    "issued": bytes(q.issued),
+                    "completed": bytes(q.completed),
+                    "hint_length": q.hint_length,
+                    "issued_count": q.issued_count,
+                    "completed_count": q.completed_count,
+                    "by_worker": {w: dict(c) for w, c in q.by_worker.items()},
+                    "dataset_path": q.dataset_path,
+                    "dataset_name": q.dataset_name,
+                    "dataset_split": q.dataset_split,
+                    "dataset_revision": q.dataset_revision,
+                    "dataset_data_files": (
+                        list(q.dataset_data_files) if q.dataset_data_files else None
+                    ),
+                }
+                for (ds, seed), q in self._work_queues.items()
+            }
+            dataset_lengths = dict(self._dataset_lengths)
+
         # Snapshot the known-worker roster under the lock so a concurrent
         # registration can't mutate the dict mid-serialization (issue #103
         # follow-up). Persisting it here lets a restarted server offer the
@@ -3052,6 +3070,8 @@ class DiLoCoServer:
             "async_mode": self.async_mode,
             "total_submissions": self._total_submissions,
             "known_workers": known_workers,
+            "work_queues": work_queues,
+            "dataset_lengths": dataset_lengths,
         }
         torch.save(server_state, os.path.join(checkpoint_path, "server_state.pt"))
 
@@ -3202,21 +3222,50 @@ class DiLoCoServer:
             # repopulates as workers register.
             self._known_workers = server_state.get("known_workers", {}) or {}
 
-            # Work-queue state is no longer persisted (#46). For
-            # backward-compat with pre-#46 checkpoints, surface a
-            # warning if any work-queue entries are present — they're
-            # being silently ignored, and the operator should know in
-            # case they were expecting mid-epoch resume from this
-            # checkpoint.
-            legacy_queues = server_state.get("work_queues") or {}
-            if legacy_queues:
-                logger.warning(
-                    "Ignoring %d work-queue entr%s in legacy server_state.pt — "
-                    "work-queue persistence was removed in #46. Workers will "
-                    "re-register their datasets on connect; any in-flight "
-                    "units from the prior run will be re-issued.",
-                    len(legacy_queues),
-                    "y" if len(legacy_queues) == 1 else "ies",
+            # Restore work-unit dispatch state (#105): the per-(dataset_id,
+            # shuffle_seed) issued/completed bitmaps and the per-dataset
+            # length snapshot. A worker re-registering its dataset hits the
+            # restored queue (``_handle_register_dataset`` reuses any existing
+            # queue for the key), so already-issued units stay issued and are
+            # not re-handed-out — the server is the authority for consumed
+            # rows. Absent on pre-feature checkpoints → start empty (today's
+            # rebuild-on-reregister behavior, which re-issues from unit 0).
+            self._dataset_lengths = server_state.get("dataset_lengths", {}) or {}
+            restored = server_state.get("work_queues") or {}
+            self._work_queues = {}
+            for qkey, d in restored.items():
+                try:
+                    ds, seed_str = qkey.rsplit("|", 1)
+                    seed = int(seed_str)
+                except (ValueError, AttributeError):
+                    logger.warning(
+                        "Skipping malformed work-queue key %r in server_state.pt",
+                        qkey,
+                    )
+                    continue
+                nbytes = (int(d["total_units"]) + 7) // 8
+                self._work_queues[(ds, seed)] = WorkQueue(
+                    total_units=int(d["total_units"]),
+                    issued=bytearray(d["issued"]),
+                    completed=bytearray(d.get("completed") or bytes(nbytes)),
+                    hint_length=int(d["hint_length"]),
+                    issued_count=int(d.get("issued_count", 0)),
+                    completed_count=int(d.get("completed_count", 0)),
+                    by_worker=d.get("by_worker") or {},
+                    dataset_path=d.get("dataset_path"),
+                    dataset_name=d.get("dataset_name"),
+                    dataset_split=d.get("dataset_split"),
+                    dataset_revision=d.get("dataset_revision"),
+                    dataset_data_files=d.get("dataset_data_files"),
+                )
+
+            if self._work_queues:
+                issued_total = sum(q.issued_count for q in self._work_queues.values())
+                logger.info(
+                    "Restored %d work queue(s) from checkpoint (%d unit(s) "
+                    "already issued); re-registering workers resume mid-epoch.",
+                    len(self._work_queues),
+                    issued_total,
                 )
 
             logger.info(
@@ -3334,14 +3383,37 @@ class DiLoCoServer:
         self._start_health_monitor()
         self._start_bulk_listener()
 
+        # Flush state on SIGTERM (how the forgather_server scheduler stops a
+        # server job) as well as SIGINT (Ctrl-C), so a webui-triggered stop
+        # doesn't lose rounds / issued work-units since the last autosave
+        # (#105). The handler just raises KeyboardInterrupt to break
+        # serve_forever; the single save below in `finally` then covers every
+        # exit path. signal.signal only works on the main thread (run() is
+        # the blocking CLI entrypoint); fall back gracefully otherwise.
+        import signal as _signal
+
+        def _raise_interrupt(signum, frame):
+            raise KeyboardInterrupt
+
+        prev_sigterm = None
+        try:
+            prev_sigterm = _signal.signal(_signal.SIGTERM, _raise_interrupt)
+        except (ValueError, OSError):
+            pass  # not on the main thread — SIGTERM stays default
+
         try:
             self._server.serve_forever()
         except KeyboardInterrupt:
-            logger.info("Server interrupted by Ctrl-C")
-            if self.save_every_n_rounds > 0:
-                logger.info("Saving server state before shutdown...")
-                self.save_state()
+            logger.info("Server interrupted (signal) — shutting down")
         finally:
+            if self.save_every_n_rounds > 0:
+                try:
+                    logger.info("Saving server state before shutdown...")
+                    self.save_state()
+                except Exception as exc:
+                    logger.error("Failed to save server state on shutdown: %s", exc)
+            if prev_sigterm is not None:
+                _signal.signal(_signal.SIGTERM, prev_sigterm)
             self._stop_health_monitor()
             self._stop_bulk_listener()
             self._running = False
@@ -3383,6 +3455,16 @@ class DiLoCoServer:
         """Stop the background server."""
         if not self._running:
             raise RuntimeError("Stop cannot be called, unless we are already running.")
+        # Flush state before teardown so a graceful stop doesn't lose the
+        # rounds / issued work-units accumulated since the last autosave
+        # (#105). save_state no-ops when clean; never let a save failure
+        # block shutdown. Mirrors the run() Ctrl-C path.
+        if self.save_every_n_rounds > 0:
+            try:
+                logger.info("Saving server state before shutdown...")
+                self.save_state()
+            except Exception as exc:
+                logger.error("Failed to save server state on stop: %s", exc)
         self._stop_health_monitor()
         self._stop_bulk_listener()
         if self._server:

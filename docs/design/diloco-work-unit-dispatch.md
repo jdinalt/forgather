@@ -543,30 +543,31 @@ either:
 
 ### DiLoCo server restart
 
-_Implementation note: the proposal here described persisted queue
-state across server restarts. The first live bringup uncovered a
-cross-experiment hazard with that design — stale queues from a
-previous run lingered in the persisted state and surfaced as
-ghost queues on `/work/queues` after the operator switched
-datasets. The implementation reverses the proposal: `_work_queues`
-is **not** written to `server_state.pt`, and a pre-#46 file
-containing them is loaded with a warning + dropped. The trade is
-broader: on a server restart **all** in-flight + already-completed
-units in the live epoch return to "available" and workers re-issue
-from scratch on first contact. Justifies the cost as: server
-restarts are rare; the cross-experiment ghost-queue surface was a
-weekly footgun. The 409-on-length-mismatch guard described in the
-next section still protects against the worst form of dataset
-mismatch._
+The server is the authority for which rows have been consumed, so queue
+state is persisted with its checkpoint and restored on restart (#105) —
+the worker deliberately keeps **no** dataset-progress state of its own,
+relying on the server to track and persist it.
 
-- ~~Queue state persisted in the server's checkpoint~~ — dropped
-  (see note above). The server doesn't checkpoint queues at all
-  now.
-- On restart: bitmaps are reset. Workers re-register their datasets
-  on first contact (the wrap calls `/datasets/register` lazily on
-  the iterator's first request). The queue map is reconstructed
-  fresh; previously-trained rows within the epoch may be re-issued.
-  Crash recovery beyond "the queue resets" is out of scope.
+- **Persisted in `server_state.pt`:** the per-`(dataset_id, shuffle_seed)`
+  `issued`/`completed` bitmaps + counters, and `_dataset_lengths` (the
+  first-registered row count per `dataset_id`). Queues are keyed on disk by
+  a `"dataset_id|seed"` string (tuple keys don't round-trip) and bitmaps
+  are stored as `bytes`.
+- **On restart:** `load_state` rehydrates `_work_queues`. A worker
+  re-registering its dataset (the wrap calls `/datasets/register` lazily on
+  the iterator's first request) hits the *restored* queue —
+  `_handle_register_dataset` reuses any existing queue for the key — so
+  already-issued units stay issued and issuance resumes at the next
+  un-issued unit, not from 0.
+- **Cross-experiment safety (the original ghost-queue worry):** a changed
+  dataset hashes to a different `dataset_id` → a fresh `(dataset_id, seed)`
+  key → any stale queue from a prior dataset is simply never matched and
+  sits inert. The 409-on-length-mismatch guard catches a same-id/different-
+  length config. An operator wanting a hard reset restarts from the model
+  weights and purges the rest of `output_dir`.
+- **Save cadence:** queues are written on the normal `save_every_n_rounds`
+  cadence and flushed once more on graceful shutdown (SIGINT/SIGTERM), so a
+  clean stop doesn't lose units issued since the last autosave.
 
 ### Worker dataset mismatch
 
