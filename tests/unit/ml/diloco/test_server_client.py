@@ -113,6 +113,24 @@ class TestRegistration:
         status = client.get_status()
         assert status["workers"]["worker_0"]["output_dir"] is None
 
+    def test_known_workers_endpoint_tracks_running(self, server_and_client):
+        """A registered worker appears in /known_workers as running; after
+        it deregisters it stays in the roster but flips to not-running, so
+        the webui can offer it for checkpoint-resuming relaunch (#103)."""
+        server, client, sd = server_and_client
+
+        client.register("worker_0", {"output_dir": "/runs/model_worker_0"})
+        by_id = {w["worker_id"]: w for w in client.get_known_workers()["workers"]}
+        assert by_id["worker_0"]["running"] is True
+        assert by_id["worker_0"]["output_dir"] == "/runs/model_worker_0"
+
+        client.deregister("worker_0")
+        by_id = {w["worker_id"]: w for w in client.get_known_workers()["workers"]}
+        assert "worker_0" in by_id, "deregistered worker dropped from roster"
+        assert by_id["worker_0"]["running"] is False
+        # output_dir is retained so a relaunch knows which checkpoint dir.
+        assert by_id["worker_0"]["output_dir"] == "/runs/model_worker_0"
+
 
 class TestPseudogradientSubmission:
     def test_single_worker_sync(self, server_and_client):

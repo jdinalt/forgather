@@ -927,6 +927,33 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
     clusterFanout,
   } = props;
 
+  // Roster of workers the server has ever seen (issue #103). Workers that
+  // are NOT currently running can be relaunched under their old id to
+  // resume from that worker's checkpoint — we surface them as a datalist
+  // menu on the worker_id field below. Hooks must run unconditionally, so
+  // this precedes the cluster-fanout early return.
+  const knownWorkersQ = useQuery({
+    queryKey: ["diloco", "known-workers", selectedBase],
+    queryFn: () => api.diLoCoKnownWorkers(selectedBase),
+    enabled: !!selectedBase,
+    staleTime: 10_000,
+  });
+  const resumableWorkers = useMemo(() => {
+    // Dedupe to the base worker-id the operator actually passes as
+    // --diloco-worker-id; pipeline ranks register as ``<base>_pp<N>`` and
+    // share one local output_dir, so the base is the resumable identity.
+    const seen = new Map<string, string | null | undefined>();
+    for (const w of knownWorkersQ.data?.workers ?? []) {
+      if (w.running) continue;
+      const base = w.worker_id.replace(/_pp\d+$/, "");
+      if (!seen.has(base)) seen.set(base, w.output_dir);
+    }
+    return [...seen.entries()].map(([name, output_dir]) => ({
+      name,
+      output_dir,
+    }));
+  }, [knownWorkersQ.data]);
+
   // Multi-node fanout + DiLoCo together needs per-peer worker IDs and
   // dataset sharding that isn't wired yet. Hide the picker (preserving
   // any in-flight None selection) so the operator can't accidentally
@@ -1127,10 +1154,27 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
                   value={workerId}
                   onChange={(e) => setWorkerId(e.target.value)}
                   placeholder="auto"
+                  list="diloco-known-workers"
                   style={{ width: "100%" }}
                 />
+                <datalist id="diloco-known-workers">
+                  {resumableWorkers.map((w) => (
+                    <option
+                      key={w.name}
+                      value={w.name}
+                      label={w.output_dir ?? undefined}
+                    />
+                  ))}
+                </datalist>
               </label>
             </div>
+            {resumableWorkers.length > 0 && (
+              <div className="muted" style={{ fontSize: "smaller", marginTop: 4 }}>
+                Reuse a previous worker_id (
+                {resumableWorkers.map((w) => w.name).join(", ")}) to resume
+                that worker from its own checkpoint. A new id starts fresh.
+              </div>
+            )}
           </>
         )}
       </div>

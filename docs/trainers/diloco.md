@@ -161,6 +161,17 @@ Worker arguments:
   `--heartbeat-timeout` at startup.
 - `-d`: CUDA visible devices
 
+**Resuming a worker from its own checkpoint.** A worker's checkpoints live
+under its worker-id-suffixed `output_dir` (`ns.output_dir + "_" +
+worker_id`). To resume a stopped worker, relaunch it with the **same**
+`--worker-id`: the suffix resolves to the same directory and the trainer
+picks up that worker's latest checkpoint. The server remembers the names of
+every worker that has registered — persisted with its checkpoints, so the
+roster survives a server restart — and the webui's submit modal offers the
+not-currently-running names as a menu on the `worker_id` field (the
+`output_dir` each would resume from is shown alongside). Pick one to resume,
+or type a new name to start fresh.
+
 **Server-authoritative settings.** `sync_every`, `bf16_comm`, `dylu`, and
 `num_fragments` must match across every worker in the group for the sync
 barrier / outer step / fragment barriers to be coherent. The server is

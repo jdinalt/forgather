@@ -233,8 +233,20 @@ All communication uses HTTP/1.1 over TCP. The server runs a
 | POST | `/heartbeat` | JSON: `{worker_id, steps_per_second}` | JSON: `{status, sync_round, recommended_sync_every?}` |
 | POST | `/deregister` | JSON: `{worker_id}` | JSON: `{status: "ok"}` |
 | GET | `/status` | (none) | JSON: server state |
+| GET | `/known_workers` | (none) | JSON: `{workers: [{worker_id, output_dir, last_registered, running}]}` |
 | GET | `/info` | (none) | JSON: negotiation facts + `model_hash` |
 | GET | `/model_def` | (none) | tar: model definition (config + code + tokenizer, no weights); `X-Forgather-Model-Hash` header |
+
+`/known_workers` returns every `worker_id` the server has ever seen — the
+roster `self._known_workers`, persisted with the server's checkpoints (see
+"Server state persistence" below). Each entry carries the worker's
+last-reported `output_dir`, its last registration time, and a `running`
+flag (true iff currently registered). The webui's submit modal offers the
+not-running entries as a menu so an operator can relaunch a worker under
+its old id and thereby resume from that worker's own checkpoint — the
+checkpoint path is the worker-id-suffixed `output_dir`, so reusing the id
+is the only way to find it. Routed on the control port only and bearer-
+authenticated, like `/status`.
 
 `/model_def` is served from the checkpoint directory the server was started
 from (captured as `self._loaded_checkpoint_dir` in `load_state`). The
@@ -828,12 +840,20 @@ Worker `sync_metrics` include `sync_retries` and `reconnections` counters.
     "param_names": List[str],
     "async_mode": bool,
     "total_submissions": int,
+    "known_workers": Dict[str, {output_dir, last_registered}],
 }
 ```
 
 `load_state(path)` restores parameters and optimizer state. Note that
 `weights_only=False` is used for loading because the optimizer state dict
 contains non-tensor values.
+
+`known_workers` is the roster of every `worker_id` that has ever
+registered (see `/known_workers` above). Persisting it here is what lets a
+restarted server still offer the previous run's workers for
+checkpoint-resuming relaunch; it is snapshotted under `_workers_lock` at
+save time and restored on load (absent on pre-feature checkpoints, where it
+simply starts empty).
 
 Automatic save: when `save_dir` is set, the server saves every
 `save_every_n_rounds` sync rounds. Two files are written: a versioned file

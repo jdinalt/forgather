@@ -592,6 +592,18 @@ class DiLoCoServer:
         self._workers: Dict[str, WorkerInfo] = {}
         self._workers_lock = threading.Lock()
 
+        # Known-worker roster (issue #103 follow-up). Every worker_id that
+        # has ever registered, mapped to its last-reported output_dir and
+        # registration time. Unlike ``_workers`` (live registrations) this
+        # is NOT cleared on deregistration/death and IS persisted with the
+        # server's checkpoints (server_state.pt), so a server restart
+        # remembers the names. The webui offers the not-currently-running
+        # entries as a menu so an operator can relaunch a worker under its
+        # old id — the only way to resume that worker from its own
+        # checkpoint, since the checkpoint path is the worker-id-suffixed
+        # output_dir. Guarded by ``_workers_lock``.
+        self._known_workers: Dict[str, Dict[str, Any]] = {}
+
         # Worker-group registry (issue #84). Every registered worker_id
         # belongs to exactly one group. Solo workers form a degenerate
         # group of one (group_id == worker_id, pp_world_size=1). Pipeline-
@@ -1362,6 +1374,13 @@ class DiLoCoServer:
                     output_dir=info.get("output_dir"),
                     extra=info.get("extra", {}),
                 )
+                # Remember this worker for the webui's restart menu, even
+                # after it later deregisters (issue #103 follow-up). Upsert
+                # so a re-registration refreshes the output_dir / timestamp.
+                self._known_workers[worker_id] = {
+                    "output_dir": info.get("output_dir"),
+                    "last_registered": time.time(),
+                }
                 self._worker_to_group[worker_id] = group_id
                 num_registered = len(self._workers)
 
@@ -2153,6 +2172,32 @@ class DiLoCoServer:
 
         _send_json_response(handler, response)
 
+    def _handle_known_workers(self, handler: BaseHTTPRequestHandler):
+        """Return the roster of every worker_id the server has ever seen.
+
+        Each entry carries the worker's last-reported ``output_dir``, its
+        last registration time, and a ``running`` flag (true iff it's
+        currently registered). The webui offers the not-running entries as
+        a menu so an operator can relaunch a worker under its old id and
+        thereby resume from that worker's own checkpoint (issue #103
+        follow-up). The roster is persisted with the server's checkpoints,
+        so it survives a server restart.
+        """
+        with self._workers_lock:
+            live = set(self._workers.keys())
+            workers = [
+                {
+                    "worker_id": wid,
+                    "output_dir": rec.get("output_dir"),
+                    "last_registered": rec.get("last_registered"),
+                    "running": wid in live,
+                }
+                for wid, rec in self._known_workers.items()
+            ]
+        # Stable order: running first, then most-recently-registered.
+        workers.sort(key=lambda w: (not w["running"], -(w["last_registered"] or 0)))
+        _send_json_response(handler, {"workers": workers})
+
     def _handle_info(self, handler: BaseHTTPRequestHandler):
         """Handle info request.
 
@@ -2890,6 +2935,8 @@ class DiLoCoServer:
                         server_ref._handle_get_global_params(self)
                     elif path == "/status":
                         server_ref._handle_status(self)
+                    elif path == "/known_workers":
+                        server_ref._handle_known_workers(self)
                     elif path == "/info":
                         server_ref._handle_info(self)
                     elif path == "/model_def":
@@ -2954,6 +3001,13 @@ class DiLoCoServer:
         # datasets on startup anyway, so the server reconstructs the
         # queue map on demand. Operators who really want mid-epoch
         # resume can keep their own queue snapshot.
+        # Snapshot the known-worker roster under the lock so a concurrent
+        # registration can't mutate the dict mid-serialization (issue #103
+        # follow-up). Persisting it here lets a restarted server offer the
+        # previous workers' names for checkpoint-resuming relaunch.
+        with self._workers_lock:
+            known_workers = {k: dict(v) for k, v in self._known_workers.items()}
+
         server_state = {
             "outer_optimizer": self.outer_optimizer.state_dict(),
             "sync_round": self._sync_round,
@@ -2961,6 +3015,7 @@ class DiLoCoServer:
             "param_names": self._param_names,
             "async_mode": self.async_mode,
             "total_submissions": self._total_submissions,
+            "known_workers": known_workers,
         }
         torch.save(server_state, os.path.join(checkpoint_path, "server_state.pt"))
 
@@ -3090,6 +3145,12 @@ class DiLoCoServer:
             self.outer_optimizer.load_state_dict(server_state["outer_optimizer"])
             self._sync_round = server_state["sync_round"]
             self._total_submissions = server_state.get("total_submissions", 0)
+            # Restore the known-worker roster so the webui can offer the
+            # previous run's workers for checkpoint-resuming relaunch after
+            # a server restart (issue #103 follow-up). Absent on pre-feature
+            # checkpoints, in which case the roster simply starts empty and
+            # repopulates as workers register.
+            self._known_workers = server_state.get("known_workers", {}) or {}
 
             # Work-queue state is no longer persisted (#46). For
             # backward-compat with pre-#46 checkpoints, surface a

@@ -672,6 +672,17 @@ class DiLoCoClient:
         """Get server status."""
         return self._request_json("GET", "/status")
 
+    def get_known_workers(self) -> dict:
+        """Get the roster of every worker_id the server has ever seen.
+
+        Returns ``{"workers": [{worker_id, output_dir, last_registered,
+        running}, ...]}``. The webui offers the not-running entries so an
+        operator can relaunch a worker under its old id and resume from
+        that worker's checkpoint (issue #103). Persisted with the server's
+        checkpoints, so it survives a server restart.
+        """
+        return self._request_json("GET", "/known_workers")
+
     def get_info(self) -> dict:
         """Get the server's static-ish configuration.
 

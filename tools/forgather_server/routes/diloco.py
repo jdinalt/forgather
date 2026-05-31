@@ -5,6 +5,7 @@ Backs the DiLoCo view in the webui. Surface:
   GET    /api/diloco/servers          Unified list (local + registered).
   GET    /api/diloco/server-status    Proxy to an upstream DiLoCo /status.
   GET    /api/diloco/server-info      Proxy to an upstream DiLoCo /info.
+  GET    /api/diloco/known-workers    Proxy to upstream /known_workers.
   GET    /api/diloco/work-queues      Proxy to upstream /work/queues.
   GET    /api/diloco/work-queue       Proxy to upstream /work/queue.
   POST   /api/diloco/server-control/{action}
@@ -467,6 +468,15 @@ async def proxy_status(base: str, request: Request) -> JSONResponse:
 async def proxy_info(base: str, request: Request) -> JSONResponse:
     """Forward ``GET <base>/info`` for client-settings negotiation."""
     return await _proxy_get(base, "/info", request)
+
+
+@router.get("/diloco/known-workers")
+async def proxy_known_workers(base: str, request: Request) -> JSONResponse:
+    """Forward ``GET <base>/known_workers`` — the roster of every worker
+    the server has ever seen (with a per-worker ``running`` flag), so the
+    submit UI can offer not-running names for checkpoint-resuming relaunch
+    (issue #103)."""
+    return await _proxy_get(base, "/known_workers", request)
 
 
 @router.get("/diloco/work-queues")
