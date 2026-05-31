@@ -270,6 +270,8 @@ forgather diloco status --server local:<queue_id> --queues
 # the underlying job for you.
 forgather diloco logs spectacular-fox            # dump
 forgather diloco logs spectacular-fox --follow   # live tail
+forgather diloco logs spectacular-fox --path     # print the TTY file path
+tail -f "$(forgather diloco logs spectacular-fox --path)"  # …or tail it yourself
 ```
 
 `forgather diloco logs <queue_id>` is a convenience wrapper; the generic

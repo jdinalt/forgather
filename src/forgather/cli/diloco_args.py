@@ -368,6 +368,16 @@ def create_diloco_parser(global_args):
         help="Stream new output until the job exits or Ctrl-C.",
     )
     logs_parser.add_argument(
+        "--path",
+        action="store_true",
+        help=(
+            "Instead of printing the log, print the path to the captured TTY\n"
+            "file (on the forgather server's host) and exit — e.g. for\n"
+            '`tail -f "$(forgather diloco logs <job> --path)"`. Takes\n'
+            "precedence over --follow."
+        ),
+    )
+    logs_parser.add_argument(
         "--via-server",
         type=str,
         default=None,

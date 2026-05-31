@@ -112,11 +112,14 @@ def test_assemble_status_partial():
 
 
 class FakeClient:
-    def __init__(self, *, servers=None, jobs=None, reachable=True, dump=b""):
+    def __init__(
+        self, *, servers=None, jobs=None, reachable=True, dump=b"", tty_path=None
+    ):
         self._servers = servers or []
         self._jobs = jobs or []
         self._reachable = reachable
         self._dump = dump
+        self._tty_path = tty_path
         self.enqueued = []
         self.base = "http://fake-orch:8765"
 
@@ -140,6 +143,13 @@ class FakeClient:
     def job_dump(self, job_id):
         self.dumped = job_id
         return self._dump
+
+    def job_tty_path(self, job_id):
+        # Mirrors the server: raises (like a 404 → RuntimeError) when no
+        # path was configured for this fake.
+        if self._tty_path is None:
+            raise RuntimeError("server: no TTY log recorded yet")
+        return self._tty_path
 
     def add_diloco_registry(
         self, *, base_url, label=None, auth_token=None, verify_tls=True
@@ -642,7 +652,33 @@ class TestLogsCmd:
         client = patch_orchestrator(
             FakeClient(servers=[], jobs=[{"id": "qZ", "queue_id": "qZ"}], dump=b"hi\n")
         )
-        rc = orch.logs_cmd(argparse.Namespace(via_server=None, job="qZ", follow=False))
+        rc = orch.logs_cmd(
+            argparse.Namespace(via_server=None, job="qZ", follow=False, path=False)
+        )
         assert rc == 0
         assert client.dumped == "qZ"
         assert capsysbinary.readouterr().out == b"hi\n"
+
+    def test_path_prints_tty_path(self, patch_orchestrator, capsys):
+        # Resolved server-side (job_tty_path), so it works even when the job
+        # isn't surfaced by /api/jobs — like the real endpoint-discovered
+        # worker. No jobs list needed.
+        patch_orchestrator(
+            FakeClient(servers=[], jobs=[], tty_path="/cfg/jobs/q_qZ.tty")
+        )
+        rc = orch.logs_cmd(
+            argparse.Namespace(
+                via_server=None, job="nebulous-dingo", follow=False, path=True
+            )
+        )
+        assert rc == 0
+        assert capsys.readouterr().out.strip() == "/cfg/jobs/q_qZ.tty"
+
+    def test_path_missing_errors(self, patch_orchestrator, capsys):
+        # job_tty_path raises (404 → RuntimeError) → exit 1.
+        patch_orchestrator(FakeClient(servers=[], jobs=[], tty_path=None))
+        rc = orch.logs_cmd(
+            argparse.Namespace(via_server=None, job="qZ", follow=False, path=True)
+        )
+        assert rc == 1
+        assert "no TTY log recorded" in capsys.readouterr().err

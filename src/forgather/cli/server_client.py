@@ -308,6 +308,12 @@ class ServerClient:
     def job_dump(self, job_id):
         return self._get(f"/jobs/{job_id}/tty").content
 
+    def job_tty_path(self, job_id):
+        """On-disk path of the job's captured TTY (server host), resolved by
+        the same get_record path as job_dump. Raises on 404 (no such job /
+        no TTY yet)."""
+        return self._get(f"/jobs/{job_id}/tty-path").json().get("tty_log_path")
+
     def job_delete(self, job_id):
         return self._delete(f"/jobs/{job_id}").json()
 

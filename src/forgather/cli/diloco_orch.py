@@ -364,6 +364,26 @@ def logs_cmd(args):
         print(str(e), file=sys.stderr)
         return 1
 
+    if getattr(args, "path", False):
+        # Print the on-disk TTY path (on the forgather server's host) and
+        # exit — for piping into the user's own tail/cat tooling. Resolved
+        # server-side via the same get_record path as the dump/stream
+        # endpoints, so it works for any job they can read (not just ones
+        # surfaced by /api/jobs).
+        try:
+            tty_path = client.job_tty_path(job_id)
+        except (ServerUnreachable, AuthRequired, RuntimeError) as e:
+            print(str(e), file=sys.stderr)
+            return 1
+        if not tty_path:
+            print(
+                f"no captured TTY path for '{args.job}' (job {job_id}).",
+                file=sys.stderr,
+            )
+            return 1
+        print(tty_path)
+        return 0
+
     if getattr(args, "follow", False):
         return _follow_tty(client, job_id)
     try:

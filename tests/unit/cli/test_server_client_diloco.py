@@ -132,6 +132,13 @@ def test_enqueue_job_includes_dataset_source_only_when_set():
     assert "dataset_source" not in body2
 
 
+def test_job_tty_path_url():
+    c = _client()
+    c.job_tty_path("qZ")
+    method, url, _, _ = _last(c)
+    assert method == "GET" and url.endswith("/api/jobs/qZ/tty-path")
+
+
 def test_ping_true_on_ok(monkeypatch):
     c = _client()
     assert c.ping() is True
