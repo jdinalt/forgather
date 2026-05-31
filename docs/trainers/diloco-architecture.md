@@ -261,9 +261,13 @@ bundle and every worker's config load would fail with "Unrecognized model"
 `None` and `/model_def` returns 503 (loud failure, no empty bundle); the
 worker's `stage_model_def` independently refuses to stamp a bundle that has
 no `config.json`, so a definition-less fetch can never poison the staging
-cache. The folded `model_hash` is computed over `_model_def_dir`, so it is
-stable across a restart (the definition dir doesn't change even when the
-loaded checkpoint does).
+cache. The folded `model_hash` is computed over `_model_def_dir`, so in the
+common case — the definition lives at `output_dir` — it is stable across a
+restart even though the loaded checkpoint dir changes. It shifts only if the
+server was first started from a *separate* self-contained `--from-checkpoint`
+dir that also carried the definition (first run resolves to that dir, a
+restart-from-rotated-checkpoint falls back to `output_dir`); the worst case
+there is a one-time bundle re-fetch by each worker, not an incorrect bundle.
 
 The include/exclude policy, deterministic packing, and traversal-safe
 extraction live in `forgather.ml.diloco.model_def`; the worker-side staging
