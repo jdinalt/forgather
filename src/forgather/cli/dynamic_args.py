@@ -1,6 +1,7 @@
 def parse_dynamic_args(parser, global_args):
     if global_args.no_dyn:
         return
+    import argparse
     import os
     import traceback
 
@@ -84,10 +85,20 @@ def parse_dynamic_args(parser, global_args):
                 if "type" in dynamic_arg and isinstance(dynamic_arg["type"], str):
                     dynamic_arg["type"] = _convert_type_string(dynamic_arg["type"])
 
-                parser.add_argument(
-                    *names,
-                    **dynamic_arg,
-                )
+                try:
+                    parser.add_argument(
+                        *names,
+                        **dynamic_arg,
+                    )
+                except argparse.ArgumentError:
+                    # A config dynamic arg whose option string collides with a
+                    # built-in flag of this subcommand (e.g. `forgather diloco
+                    # worker` defines --resume-workers / --count / --server,
+                    # which a config's dynamic_args might also use). Skip just
+                    # that arg — the built-in takes precedence — instead of
+                    # aborting the whole dynamic-arg load. Don't add it to
+                    # dynamic_arg_names either (it's not a dynamic dest here).
+                    continue
                 # Track the dynamic argument name (use the long form if available)
                 for name in names:
                     if name.startswith("--"):

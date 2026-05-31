@@ -648,7 +648,7 @@ class TestWorkerResumeMode:
 
     def _args(self, **over):
         base = dict(
-            resume=True,
+            resume_workers=True,
             worker_id=None,
             count=1,
             project_dir=".",

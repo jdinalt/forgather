@@ -322,7 +322,7 @@ forgather -p my_project -t train.yaml diloco worker \
 # Bring a worker set back after a server shutdown / manual stop: re-launch
 # every stopped worker the server knows, reusing each id (so each resumes
 # from its own checkpoint).
-forgather -p my_project -t train.yaml diloco worker --resume --dataset auto
+forgather -p my_project -t train.yaml diloco worker --resume-workers --dataset auto
 ```
 
 Worker launch options (orchestrator path): `--count N` (auto-named via the
@@ -331,11 +331,13 @@ server, guaranteed unique), `--dataset auto|local|server:<id>`,
 honored; `--count > 1` requires the server (you can't foreground N). Add
 `--json` to `server` / `worker` to get the queue ids back for scripting.
 
-`--resume` is a distinct mode: it re-launches every *stopped* worker the
-server's known-worker roster reports (deduped on the pipeline `_pp<N>`
-suffix), reusing each worker id so it resumes its checkpoint. It requires
-the forgather server and can't be combined with `--worker-id` / `--count`;
-it still honors `--dataset` and dynamic args for the relaunched jobs.
+`--resume-workers` is a distinct mode: it re-launches every *stopped*
+worker the server's known-worker roster reports (deduped on the pipeline
+`_pp<N>` suffix), reusing each worker id so it resumes its checkpoint. It
+requires the forgather server and can't be combined with `--worker-id` /
+`--count`; it still honors `--dataset` and dynamic args for the relaunched
+jobs. (The flag is named `--resume-workers`, not `--resume`, to avoid
+clashing with a config's own `--resume` dynamic arg.)
 
 ## Programmatic API
 

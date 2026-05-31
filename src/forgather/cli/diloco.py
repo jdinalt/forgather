@@ -626,15 +626,15 @@ def _worker_cmd(args):
     )
     dynamic_args = _worker_dynamic_args(args, schema)
     count = getattr(args, "count", 1) or 1
-    resume = getattr(args, "resume", False)
+    resume = getattr(args, "resume_workers", False)
 
-    # --resume is its own mode: re-launch the stopped workers the server
-    # already knows. It doesn't select/create new workers, so it can't be
-    # combined with --worker-id / --count.
+    # --resume-workers is its own mode: re-launch the stopped workers the
+    # server already knows. It doesn't select/create new workers, so it can't
+    # be combined with --worker-id / --count.
     if resume and (getattr(args, "worker_id", None) or count > 1):
         print(
-            "error: --resume restarts the stopped workers the server already "
-            "knows; it can't be combined with --worker-id or --count.",
+            "error: --resume-workers restarts the stopped workers the server "
+            "already knows; it can't be combined with --worker-id or --count.",
             file=sys.stderr,
         )
         return 1
@@ -648,8 +648,9 @@ def _worker_cmd(args):
     if resume:
         if client is None:
             print(
-                "error: --resume requires the forgather server (it provides "
-                "the known-worker roster); not available with --local-only.",
+                "error: --resume-workers requires the forgather server (it "
+                "provides the known-worker roster); not available with "
+                "--local-only.",
                 file=sys.stderr,
             )
             return 1
