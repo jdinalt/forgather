@@ -105,6 +105,36 @@ def match_server(servers, target):
     return None
 
 
+#: Loopback default for the direct path when no server is specified and the
+#: forgather server can't be consulted for discovery. (The DiLoCo parameter
+#: server's default port — distinct from the orchestrator's 8765.)
+DEFAULT_DIRECT_SERVER = "localhost:8512"
+
+
+def resolve_one(servers, explicit):
+    """Resolve the DiLoCo param-server target, with implicit single-server
+    selection.
+
+    * ``explicit`` set → match it against ``servers`` (``None`` if unknown).
+    * ``explicit`` unset → the common case is exactly one server: return its
+      ``base_url``. Zero → ``None`` (caller decides the fallback). More than
+      one → raise (ambiguous; the operator must pick).
+    """
+    if explicit:
+        return match_server(servers, explicit)
+    if len(servers) == 1:
+        return servers[0].get("base_url")
+    if len(servers) > 1:
+        from .server_client import ServerUnreachable
+
+        choices = ", ".join((s.get("id") or s.get("base_url") or "?") for s in servers)
+        raise ServerUnreachable(
+            f"{len(servers)} DiLoCo servers are running — pass --server to "
+            f"pick one (e.g. {choices})."
+        )
+    return None
+
+
 def _local_only(args):
     return getattr(args, "local_only", False)
 
@@ -169,14 +199,20 @@ def resolve_orchestrator_base(args):
         if _local_fallback(args):
             return None, None
         raise
-    base = match_server(servers, getattr(args, "server", None))
+    explicit = getattr(args, "server", None)
+    base = resolve_one(servers, explicit)  # may raise on ambiguity
     if base is None:
         if _local_fallback(args):
             return None, None
+        if explicit:
+            raise ServerUnreachable(
+                f"the forgather server doesn't know '{explicit}'. Register it "
+                f"('forgather diloco register <url>'), or pass --local-fallback "
+                f"/ --local-only to use a direct connection."
+            )
         raise ServerUnreachable(
-            f"the forgather server doesn't know '{getattr(args, 'server', '')}'. "
-            f"Register it ('forgather diloco register <url>'), or pass "
-            f"--local-fallback / --local-only to use a direct connection."
+            "no DiLoCo servers are running — start one "
+            "('forgather diloco server …') or pass --server."
         )
     return client, base
 
@@ -592,16 +628,30 @@ def launch_workers(args, dynamic_args):
 
     client = _orchestrator(args)
 
-    # Resolve --server to a routable base_url when the forgather server
-    # knows it (so a worker on another host gets a dialable address);
-    # otherwise pass it through verbatim (DiLoCoClient normalizes it).
-    server = args.server
+    # Resolve the server the worker(s) connect to. With --server omitted,
+    # auto-pick the single running DiLoCo server (the common case); >1 is
+    # ambiguous (resolve_one raises). With --server set, resolve it to a
+    # routable base_url when the forgather server knows it, else pass it
+    # through verbatim (the worker dials it directly; DiLoCoClient
+    # normalizes it).
+    explicit = getattr(args, "server", None)
     try:
-        base = match_server(client.list_diloco_servers(), server)
-        if base:
-            server = base
+        servers = client.list_diloco_servers()
     except (ServerUnreachable, AuthRequired, RuntimeError):
-        pass
+        servers = []
+    try:
+        resolved = resolve_one(servers, explicit)
+    except ServerUnreachable as e:  # ambiguous: >1 server, no --server
+        print(str(e), file=sys.stderr)
+        return 1
+    server = resolved or explicit
+    if not server:
+        print(
+            "error: no DiLoCo server is running to connect the worker(s) to; "
+            "start one ('forgather diloco server …') or pass --server.",
+            file=sys.stderr,
+        )
+        return 1
 
     count = getattr(args, "count", 1) or 1
     explicit = (getattr(args, "worker_id", None) or "").strip() or None
@@ -722,13 +772,17 @@ def make_control_ops(args, *, timeout=30):
         return _OrchestratorOps(client, base), f"{base} (via forgather server)"
     from forgather.ml.diloco.client import DiLoCoClient
 
+    # Direct path (--local-only / --local-fallback when down): no discovery
+    # is possible, so fall back to the loopback default when --server is
+    # omitted.
+    server = getattr(args, "server", None) or DEFAULT_DIRECT_SERVER
     c = DiLoCoClient(
-        args.server,
+        server,
         timeout=timeout,
         token=getattr(args, "auth_token", None),
         verify_tls=not getattr(args, "no_verify_tls", False),
     )
-    return _DirectOps(c), args.server
+    return _DirectOps(c), server
 
 
 def _follow_tty(client, job_id):

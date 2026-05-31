@@ -264,8 +264,13 @@ def create_diloco_parser(global_args):
     status_parser.add_argument(
         "--server",
         type=str,
-        default="localhost:8512",
-        help="Server address as host:port (default: localhost:8512)",
+        default=None,
+        help=(
+            "DiLoCo server: a server id/label/host:port. When omitted, the\n"
+            "single running server is used automatically (ambiguous if more\n"
+            "than one); falls back to localhost:8512 when the forgather\n"
+            "server can't be consulted."
+        ),
     )
     status_parser.add_argument(
         "--auth-token",
@@ -390,8 +395,13 @@ def create_diloco_parser(global_args):
         p.add_argument(
             "--server",
             type=str,
-            default="localhost:8512",
-            help="Server address as host:port (default: localhost:8512)",
+            default=None,
+            help=(
+                "DiLoCo server: a server id/label/host:port. When omitted,\n"
+                "the single running server is used automatically (ambiguous\n"
+                "if more than one); falls back to localhost:8512 when the\n"
+                "forgather server can't be consulted."
+            ),
         )
         p.add_argument(
             "--auth-token",
@@ -480,8 +490,13 @@ def create_diloco_parser(global_args):
     worker_parser.add_argument(
         "--server",
         type=str,
-        required=True,
-        help="DiLoCo server address as host:port",
+        default=None,
+        help=(
+            "DiLoCo server the worker connects to: a server id/label/host:port.\n"
+            "When omitted, the single running server is used automatically\n"
+            "(ambiguous if more than one); the direct/foreground path falls\n"
+            "back to localhost:8512."
+        ),
     )
     # NOTE: sync_every / bf16_comm / dylu / num_fragments are NOT worker
     # flags. They must match across the group, so the server is their sole

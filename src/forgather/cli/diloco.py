@@ -327,10 +327,12 @@ def _status_cmd(args):
     else:
         from forgather.ml.diloco.client import DiLoCoClient
 
-        # Token + verify_tls are picked up from explicit args / env /
-        # loopback per-port file by DiLoCoClient automatically.
+        # Direct path: no discovery possible, so fall back to the loopback
+        # default when --server is omitted. Token + verify_tls are picked up
+        # from explicit args / env / loopback per-port file automatically.
+        direct_server = args.server or orch.DEFAULT_DIRECT_SERVER
         c = DiLoCoClient(
-            args.server,
+            direct_server,
             timeout=10,
             max_retries=0,  # status is a probe — fail fast, no backoff storm
             token=getattr(args, "auth_token", None),
@@ -340,8 +342,8 @@ def _status_cmd(args):
         get_info = c.get_info
         get_known = c.get_known_workers
         get_queues = c.get_work_queues if want_queues else None
-        source = {"via": "direct", "server": args.server}
-        target = args.server
+        source = {"via": "direct", "server": direct_server}
+        target = direct_server
 
     def _render_once():
         # The core /status read is REQUIRED — a failure here means the
@@ -648,7 +650,9 @@ def _worker_cmd(args):
     # num_fragments are server-authoritative and resolved from /info by
     # the worker at startup (no client override).
     env = os.environ.copy()
-    env["DILOCO_SERVER"] = args.server
+    # Direct/foreground: no discovery here, so default to loopback when
+    # --server is omitted.
+    env["DILOCO_SERVER"] = args.server or orch.DEFAULT_DIRECT_SERVER
     env["DILOCO_HEARTBEAT_INTERVAL"] = str(getattr(args, "heartbeat_interval", 30.0))
 
     if args.worker_id:
@@ -702,7 +706,7 @@ def _worker_cmd(args):
     # sync_every / bf16 / dylu / num_fragments come from the server's /info
     # at startup, so they aren't known here — the worker logs them once it
     # negotiates with the server.
-    diloco_info = f"DiLoCo: server={args.server}"
+    diloco_info = f"DiLoCo: server={env['DILOCO_SERVER']}"
     if args.worker_id:
         diloco_info += f", worker_id={args.worker_id}"
 

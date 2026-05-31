@@ -56,6 +56,30 @@ class TestMatchServer:
     def test_empty_target(self):
         assert orch.match_server(SERVERS, None) is None
 
+
+class TestResolveOne:
+    """Implicit single-server selection when --server is omitted."""
+
+    ONE = [{"id": "local:q1", "base_url": "http://127.0.0.1:8512"}]
+
+    def test_explicit_matches(self):
+        assert orch.resolve_one(SERVERS, "local:q1") == "http://192.168.9.43:8512"
+
+    def test_explicit_unknown_is_none(self):
+        assert orch.resolve_one(self.ONE, "nope:1") is None
+
+    def test_implicit_single(self):
+        assert orch.resolve_one(self.ONE, None) == "http://127.0.0.1:8512"
+
+    def test_implicit_none_when_zero(self):
+        assert orch.resolve_one([], None) is None
+
+    def test_implicit_ambiguous_raises(self):
+        from forgather.cli.server_client import ServerUnreachable
+
+        with pytest.raises(ServerUnreachable):
+            orch.resolve_one(SERVERS, None)  # 2 servers, no --server
+
     # Loopback aliases are equivalent: a server listed under one form
     # matches a --server given as another (the user's localhost/127.0.0.1
     # report).
@@ -283,6 +307,26 @@ class TestResolveOrchestratorBase:
             _loc_args(server="localhost:8512", local_fallback=True)
         ) == (None, None)
 
+    def test_implicit_single_server(self, patch_orchestrator):
+        one = [{"id": "local:q1", "base_url": "http://127.0.0.1:8512"}]
+        client = patch_orchestrator(FakeClient(servers=one))
+        c, base = orch.resolve_orchestrator_base(_loc_args(server=None))
+        assert c is client and base == "http://127.0.0.1:8512"
+
+    def test_implicit_ambiguous_raises(self, patch_orchestrator):
+        from forgather.cli.server_client import ServerUnreachable
+
+        patch_orchestrator(FakeClient(servers=SERVERS))
+        with pytest.raises(ServerUnreachable):
+            orch.resolve_orchestrator_base(_loc_args(server=None))
+
+    def test_implicit_zero_servers_raises(self, patch_orchestrator):
+        from forgather.cli.server_client import ServerUnreachable
+
+        patch_orchestrator(FakeClient(servers=[]))
+        with pytest.raises(ServerUnreachable):
+            orch.resolve_orchestrator_base(_loc_args(server=None))
+
 
 class TestRegistry:
     def test_register_json(self, patch_orchestrator, capsys):
@@ -488,6 +532,27 @@ class TestLaunchWorkers:
     def test_bad_dataset_errors(self, patch_orchestrator, capsys):
         patch_orchestrator(FakeClient())
         rc = orch.launch_workers(_worker_args(dataset="nope"), {})
+        assert rc == 1
+
+    def test_implicit_single_server(self, patch_orchestrator):
+        one = [{"id": "local:q1", "base_url": "http://127.0.0.1:8512"}]
+        client = patch_orchestrator(FakeClient(servers=one))
+        rc = orch.launch_workers(_worker_args(server=None, worker_id="w0", count=1), {})
+        assert rc == 0
+        assert (
+            client.enqueued[0]["job_params"]["diloco"]["server_addr"]
+            == "http://127.0.0.1:8512"
+        )
+
+    def test_implicit_no_servers_errors(self, patch_orchestrator, capsys):
+        patch_orchestrator(FakeClient(servers=[]))
+        rc = orch.launch_workers(_worker_args(server=None, worker_id="w0", count=1), {})
+        assert rc == 1
+        assert "no DiLoCo server" in capsys.readouterr().err
+
+    def test_implicit_ambiguous_errors(self, patch_orchestrator, capsys):
+        patch_orchestrator(FakeClient(servers=SERVERS))
+        rc = orch.launch_workers(_worker_args(server=None, worker_id="w0", count=1), {})
         assert rc == 1
 
 

@@ -244,8 +244,15 @@ each parameter server's token on the local machine. The server's proxy
 resolves every upstream server's bearer token and TLS verification on your
 behalf (the same path the webui uses), so these commands only need the
 server's own auth (`~/.config/forgather/server/auth_token`, or
-`$FORGATHER_SERVER_TOKEN`). Point at a non-default server with
+`$FORGATHER_SERVER_TOKEN`). Point at a non-default forgather server with
 `--via-server URL`.
+
+**Picking the DiLoCo server.** The commands that target a DiLoCo server
+(`status`, `control`, `shutdown`, `worker`) take `--server <id|label|host:port>`,
+but it's optional: with exactly one DiLoCo server running it's selected
+automatically (the common case). With more than one, you must pass
+`--server` (the error lists the choices). When the forgather server can't be
+consulted (e.g. `--local-only`), `--server` defaults to `localhost:8512`.
 
 **Locality.** The server is the default, required path: if it isn't
 reachable these commands **error** rather than silently doing something
