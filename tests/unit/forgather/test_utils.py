@@ -5,11 +5,14 @@ Unit tests for forgather.utils
 import pytest
 
 from forgather.utils import (
+    ADJECTIVES,
+    SPECIES,
     AutoName,
     ConversionDescriptor,
     DiagnosticEnum,
     add_exception_notes,
     format_line_numbers,
+    generate_name,
     indent_block,
     track_depth,
 )
@@ -84,30 +87,41 @@ class TestAddExceptionNotes:
 class TestAutoName:
     def test_first_names(self):
         gen = iter(AutoName())
-        assert next(gen) == "alpha_"
-        assert next(gen) == "beta_"
-        assert next(gen) == "gamma_"
+        # Species varies fastest within a fixed adjective.
+        assert next(gen) == f"{ADJECTIVES[0]}_{SPECIES[0]}_"
+        assert next(gen) == f"{ADJECTIVES[0]}_{SPECIES[1]}_"
+        assert next(gen) == f"{ADJECTIVES[0]}_{SPECIES[2]}_"
 
-    def test_last_single_name(self):
+    def test_sequence_unique(self):
         gen = iter(AutoName())
-        names = [next(gen) for _ in range(24)]
-        assert names[23] == "omega_"
+        names = [next(gen) for _ in range(50)]
+        assert len(set(names)) == 50
 
-    def test_wraps_to_two_letter_names(self):
+    def test_adjective_rolls_over_after_all_species(self):
         gen = iter(AutoName())
-        # Skip first 24 single-letter names (alpha_ through omega_)
-        for _ in range(24):
-            next(gen)
-        # The 25th name: i=24, NAMES[24%24]="alpha" then NAMES[(24//24)%24]="beta"
-        # The least-significant component is the rightmost → "beta_alpha_"
-        assert next(gen) == "beta_alpha_"
+        names = [next(gen) for _ in range(len(SPECIES) + 1)]
+        # After exhausting every species for the first adjective, the second
+        # adjective begins.
+        assert names[len(SPECIES)] == f"{ADJECTIVES[1]}_{SPECIES[0]}_"
 
-    def test_second_two_letter_name(self):
+    def test_overflow_appends_numeric_suffix(self):
         gen = iter(AutoName())
-        for _ in range(25):
-            next(gen)
-        # i=25: NAMES[25%24]="beta" then NAMES[(25//24)%24]="beta" → "beta_beta_"
-        assert next(gen) == "beta_beta_"
+        period = len(ADJECTIVES) * len(SPECIES)
+        # Pull one full period plus one to force a wrap.
+        names = [next(gen) for _ in range(period + 1)]
+        assert names[0] == f"{ADJECTIVES[0]}_{SPECIES[0]}_"
+        assert names[period] == f"{ADJECTIVES[0]}_{SPECIES[0]}_1_"
+
+    def test_overflow_remains_unique(self):
+        gen = iter(AutoName())
+        period = len(ADJECTIVES) * len(SPECIES)
+        names = [next(gen) for _ in range(period + 50)]
+        assert len(set(names)) == len(names)
+
+    def test_valid_python_identifiers(self):
+        gen = iter(AutoName())
+        names = [next(gen) for _ in range(10)]
+        assert all(name.isidentifier() for name in names)
 
     def test_is_iterable(self):
         names = list(next(iter(AutoName())) for _ in range(3))
@@ -118,6 +132,29 @@ class TestAutoName:
         first_run = [next(iter(auto)) for _ in range(3)]
         second_run = [next(iter(auto)) for _ in range(3)]
         assert first_run == second_run
+        assert first_run[0] == f"{ADJECTIVES[0]}_{SPECIES[0]}_"
+
+
+class TestGenerateName:
+    def test_default_format(self):
+        name = generate_name()
+        adjective, sep, species = name.partition("-")
+        assert sep == "-"
+        assert adjective in ADJECTIVES
+        assert species in SPECIES
+
+    def test_custom_separator(self):
+        name = generate_name(separator="_")
+        adjective, sep, species = name.partition("_")
+        assert adjective in ADJECTIVES
+        assert species in SPECIES
+        # An underscore separator yields a valid Python identifier.
+        assert name.isidentifier()
+
+    def test_varies(self):
+        # Extremely unlikely to draw the same pair 50 times if random.
+        names = {generate_name() for _ in range(50)}
+        assert len(names) > 1
 
 
 class TestTrackDepth:
