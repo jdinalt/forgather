@@ -11,6 +11,7 @@ import {
   Job,
 } from "../api";
 import { persistGet, persistSet } from "../persist";
+import LossChart from "./LossChart";
 import { ModalBackdrop } from "./ModalBackdrop";
 
 const STORAGE_KEY = "forgather-diloco-state";
@@ -616,6 +617,13 @@ function ServerDetail({
 
       {status && <AggregateStatsCard status={status} />}
 
+      {status && (
+        <LossHistoryCard
+          baseUrl={server.base_url}
+          refreshSeconds={refreshSeconds}
+        />
+      )}
+
       {!!statusError && (
         <div
           role="alert"
@@ -764,6 +772,60 @@ function AggregateStatsCard({ status }: { status: DiLoCoStatus }) {
             <Field key={k} label={k} value={v} />
           ))}
         </div>
+      </div>
+    </section>
+  );
+}
+
+/** Loss curves (train + eval) over training steps, fetched from the server's
+ *  aggregate-stats history and plotted with pan/zoom/reset. Renders nothing
+ *  until there's at least one loss point, so a run with no loss reported yet
+ *  shows no empty chart. */
+function LossHistoryCard({
+  baseUrl,
+  refreshSeconds,
+}: {
+  baseUrl: string;
+  refreshSeconds: number;
+}) {
+  const histQuery = useQuery({
+    queryKey: ["diloco-stats-history", baseUrl],
+    queryFn: () => api.diLoCoStatsHistory(baseUrl),
+    refetchInterval: refreshSeconds * 1000,
+  });
+  const records = histQuery.data?.records ?? [];
+  const hasLoss = records.some(
+    (r) => typeof r.train_loss === "number" || typeof r.eval_loss === "number",
+  );
+  if (!hasLoss) return null;
+
+  return (
+    <section
+      style={{
+        border: "1px solid var(--border, #3b4261)",
+        borderRadius: 6,
+        overflow: "hidden",
+      }}
+    >
+      <header
+        style={{
+          padding: "8px 14px",
+          background: "var(--bg-surface, #24283b)",
+          borderBottom: "1px solid var(--border, #3b4261)",
+          fontWeight: 600,
+          display: "flex",
+          gap: 8,
+          alignItems: "baseline",
+        }}
+      >
+        <span>Loss curves</span>
+        <span className="muted" style={{ fontWeight: 400, fontSize: "smaller" }}>
+          train / eval — scroll to zoom, drag to pan, double-click to reset
+          {histQuery.data?.downsampled ? " (downsampled)" : ""}
+        </span>
+      </header>
+      <div style={{ padding: 14 }}>
+        <LossChart records={records} />
       </div>
     </section>
   );
