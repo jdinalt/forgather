@@ -34,17 +34,63 @@ def _normalize_target(target):
     return target.rstrip("/")
 
 
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", ""}
+
+
+def _split_host_port(netloc):
+    """Split ``host:port`` (and ``[::1]:port``) into ``(host, port_str)``."""
+    netloc = netloc.strip()
+    if netloc.startswith("["):  # bracketed IPv6 literal
+        host, _, rest = netloc[1:].partition("]")
+        return host, rest.lstrip(":")
+    if ":" in netloc:
+        host, _, port = netloc.rpartition(":")
+        return host, port
+    return netloc, ""
+
+
+def _host_port(value):
+    """``(host, port_str)`` from a full URL or a bare ``host:port``."""
+    if "://" in value:
+        from urllib.parse import urlparse
+
+        u = urlparse(value)
+        return (u.hostname or ""), (str(u.port) if u.port else "")
+    return _split_host_port(value)
+
+
+def _hosts_equiv(a, b):
+    """Host equality treating loopback aliases (localhost / 127.0.0.1 /
+    ::1) as the same — they resolve to the same machine."""
+    a, b = a.lower(), b.lower()
+    if a == b:
+        return True
+    if a in _LOOPBACK_HOSTS and b in _LOOPBACK_HOSTS:
+        return True
+    try:
+        from forgather.tls.policy import host_is_loopback
+
+        if host_is_loopback(a) and host_is_loopback(b):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def match_server(servers, target):
     """Resolve a ``--server`` value to a known server's ``base_url``.
 
     Accepts a server ``id`` (e.g. ``local:<qid>`` / ``registered:<id>``),
-    a ``label``, a full ``base_url``, or a bare ``host:port`` matched
-    against the netloc of a known ``base_url``. Returns the ``base_url``
-    or ``None`` when no server matches.
+    a ``label``, a full ``base_url``, or a bare ``host:port``. Host:port
+    matching is scheme-agnostic and treats loopback aliases (``localhost``
+    / ``127.0.0.1`` / ``::1``) as equivalent, so a server the orchestrator
+    lists as ``https://127.0.0.1:8512`` matches ``--server localhost:8512``.
+    Returns the ``base_url`` or ``None`` when no server matches.
     """
     t = _normalize_target(target)
     if t is None:
         return None
+    th, tp = _host_port(t)
     for s in servers:
         if t == s.get("id") or t == s.get("label"):
             return s.get("base_url")
@@ -53,8 +99,8 @@ def match_server(servers, target):
             continue
         if t == base:
             return base
-        # bare host:port → compare against the base_url's netloc
-        if "://" not in t and base.split("://", 1)[-1] == t:
+        bh, bp = _host_port(base)
+        if tp and bp and tp == bp and _hosts_equiv(th, bh):
             return base
     return None
 
