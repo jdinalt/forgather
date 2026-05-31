@@ -1007,13 +1007,29 @@ on the right:
 2. **Workers table**: per-worker health dot (green/yellow/red by
    heartbeat age), ID (hover for full id), hostname, sync round,
    steps/s, relative heartbeat age, and a per-row **Kick** button.
+   Workers running the trainer control-callback also get per-row
+   **Save checkpoint** / **Save & Stop** / **Abort** controls, and the
+   section header carries **All:** buttons that fan the same action out
+   to every controllable worker at once.
 3. **Server metrics**: outer LR / momentum, worker-death count,
    heartbeat timeout. Sync mode adds a pending-submissions progress
    bar; async mode adds total-submissions, DN buffer status, and DyLU
    state.
-4. **Control card**: **Save checkpoint**, **Shutdown** (confirm
+4. **Control card**: **Save checkpoint**, **Shutdown** (two-mode
    overlay), live **Optimizer** tuning (LR + momentum + Apply),
    **Workers** expected-count adjustment.
+
+   **Shutdown** is the main path for stopping everything and offers two
+   modes:
+   - **Clean shutdown** (the recommended default): issues **Save & Stop**
+     to every controllable worker, waits until they have actually exited,
+     saves a server checkpoint, then stops the server. No data loss. The
+     overlay streams progress (a live worker-stop count) and, if a worker
+     never stops within the timeout, reports it and leaves the server
+     running rather than stranding still-live workers.
+   - **Force kill everything**: force-kills the worker process groups and
+     stops the server without waiting. For "kill it all now, don't care
+     about data loss".
 5. **Work-unit dispatch**: per-queue heatmap (K cells, three states:
    available / issued / completed), with per-worker counters.
 
