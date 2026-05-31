@@ -50,10 +50,42 @@ class TestMatchServer:
         )
 
     def test_no_match(self):
+        # 192.168.9.43 is routable, not loopback → localhost must not match it.
         assert orch.match_server(SERVERS, "localhost:8512") is None
 
     def test_empty_target(self):
         assert orch.match_server(SERVERS, None) is None
+
+    # Loopback aliases are equivalent: a server listed under one form
+    # matches a --server given as another (the user's localhost/127.0.0.1
+    # report).
+    LOOPBACK = [{"base_url": "https://127.0.0.1:8512", "source": "local"}]
+
+    def test_loopback_localhost_url_matches_127(self):
+        assert (
+            orch.match_server(self.LOOPBACK, "https://localhost:8512")
+            == "https://127.0.0.1:8512"
+        )
+
+    def test_loopback_bare_hostport_matches(self):
+        assert (
+            orch.match_server(self.LOOPBACK, "localhost:8512")
+            == "https://127.0.0.1:8512"
+        )
+
+    def test_loopback_ipv6_matches(self):
+        assert (
+            orch.match_server(self.LOOPBACK, "[::1]:8512") == "https://127.0.0.1:8512"
+        )
+
+    def test_loopback_scheme_agnostic(self):
+        assert (
+            orch.match_server(self.LOOPBACK, "http://localhost:8512")
+            == "https://127.0.0.1:8512"
+        )
+
+    def test_loopback_different_port_no_match(self):
+        assert orch.match_server(self.LOOPBACK, "localhost:9999") is None
 
 
 # ---------------------------------------------------------------------------
