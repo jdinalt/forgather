@@ -22,7 +22,10 @@ def _server_cmd(args):
     )
     from forgather.ml.diloco.server import DiLoCoServer
     from forgather.tls import enforce_non_loopback_policy
+    from forgather.tls.discovery import primary_routable_ip
     from forgather.tls.runtime import is_tls_active, stdlib_ssl_context
+
+    _WILDCARD_HOSTS = ("0.0.0.0", "::", "")
 
     logging.basicConfig(
         level=logging.INFO,
@@ -110,15 +113,9 @@ def _server_cmd(args):
     elif token_source == "persisted":
         # Persisted file already exists — no write needed.
         pass
-
-    if not getattr(args, "quiet_tokens", False):
-        print(f"Auth: {format_auth_mode(args, token_source)}")
-        if auth_token is not None and token_source in (
-            "generated",
-            "regenerated",
-            "persisted",
-        ):
-            print(f"  token file: {standalone_token_file(args.port)}")
+    # The human-facing auth banner (token value + curl) is printed below,
+    # once TLS state and the display host are resolved, so the example URL
+    # carries the right scheme and a routable address.
 
     # TLS: build a stdlib SSLContext (or None for cleartext). Refuse
     # non-loopback binds without TLS unless --insecure was passed.
@@ -208,7 +205,53 @@ def _server_cmd(args):
         bulk_auth_enabled=bulk_auth_enabled,
     )
 
-    print(f"Starting DiLoCo server on {args.host}:{args.port}")
+    # Resolve the display host + scheme for the startup banner. A wildcard
+    # bind (``0.0.0.0``) is not something a worker can dial, so show the
+    # primary interface's IP instead — the operator copies this straight
+    # onto worker ``--server`` lines. Mirrors the dataset server's banner.
+    scheme = "https" if tls_on else "http"
+    display_host = args.host
+    if args.host in _WILDCARD_HOSTS:
+        routable = primary_routable_ip()
+        if routable:
+            display_host = routable
+
+    # Auth banner — like the dataset server, print the bearer token (and a
+    # ready-to-run curl) so setting up workers from the CLI is copy-paste.
+    # ``--quiet-tokens`` (set by the webui in --demo mode) suppresses the
+    # value; the per-port token file still carries it for legitimate peers.
+    quiet_tokens = bool(getattr(args, "quiet_tokens", False))
+    if auth_token is None:
+        print(
+            "!! DiLoCo server is running with --no-auth — any host that can "
+            "reach the bind port has full control (shutdown, optimizer, sync)"
+        )
+    else:
+        if token_source == "regenerated":
+            print(
+                "!! --regen-token: replacing the persisted per-port token. "
+                "Existing workers will need to re-pull."
+            )
+        print(f"Auth: {format_auth_mode(args, token_source)}")
+        if quiet_tokens:
+            print("  bearer-token enabled (value suppressed by --quiet-tokens)")
+        else:
+            print(f"  auth token: {auth_token}")
+            print("  workers must send 'Authorization: Bearer <token>'")
+            print(
+                f'  curl -H "Authorization: Bearer {auth_token}" '
+                f"{scheme}://{display_host}:{args.port}/status"
+            )
+        if token_source in ("generated", "regenerated", "persisted"):
+            print(f"  token file: {standalone_token_file(args.port)}")
+
+    print()
+    print(f"Starting DiLoCo server on {scheme}://{display_host}:{args.port}")
+    if display_host != args.host:
+        print(
+            f"  (bound to {args.host}; showing primary interface "
+            f"{display_host} so workers can reach it)"
+        )
     print(f"Waiting for {args.num_workers} worker(s)...")
     print()
     print("To stop the server:")
@@ -216,7 +259,10 @@ def _server_cmd(args):
         "  Ctrl-C              Stop server"
         + (" (saves state automatically)" if args.output_dir else "")
     )
-    print(f"  curl -X POST        http://localhost:{args.port}/control/shutdown")
+    print(
+        f"  curl -X POST        {scheme}://{display_host}:{args.port}/control/shutdown"
+        + (' -H "Authorization: Bearer <token>"' if auth_token else "")
+    )
     print(f"  forgather webui     DiLoCo view → Control card → Shutdown server")
     print()
 

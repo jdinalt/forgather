@@ -132,6 +132,17 @@ server; every worker adopts them from `/info` — there are no worker flags):
 forgather diloco server -o path/to/output --from-checkpoint output_models/my_model/checkpoint-1000 -n 2
 ```
 
+**Startup banner.** On start the server prints what a worker needs to connect,
+mirroring the dataset server:
+
+- The **bearer auth token** (and a ready-to-run `curl` carrying it), plus the
+  per-port token file path. Auth is on by default; `--no-auth` prints a warning
+  instead, and `--quiet-tokens` (set by the webui in `--demo` mode) suppresses
+  the value while still confirming auth is enabled.
+- The **server URL**. When bound to a wildcard address (`-H 0.0.0.0`), the
+  banner shows the host's primary-interface IP rather than `0.0.0.0`, so the
+  address is copy-pasteable straight onto worker `--server` lines.
+
 ### 2. Start Workers
 
 On each machine, launch a worker that wraps the normal training command.

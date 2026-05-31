@@ -493,6 +493,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     auth_token, token_source = _resolve_auth_token(parser, args)
     state.auth_required = bool(auth_token)
 
+    # A wildcard bind (0.0.0.0) isn't a dialable address; show the primary
+    # interface's IP in the banner/curl so the operator can copy it straight
+    # to clients. Falls back to the bind host if nothing routable is found.
+    display_host = args.host
+    if args.host in ("0.0.0.0", "::", ""):
+        try:
+            from forgather.tls.discovery import primary_routable_ip
+
+            _routable = primary_routable_ip()
+            if _routable:
+                display_host = _routable
+        except Exception:
+            pass
+
     # Effective-configuration dump: everything the operator could have
     # influenced via flags or the YAML config, plus the *resolved*
     # auth-token source (persisted vs generated vs regenerated) so a
@@ -558,7 +572,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 _scheme = "http"
             print(
                 f'curl -H "Authorization: Bearer {auth_token}" '
-                f"{_scheme}://{args.host}:{args.port}/v1/datasets",
+                f"{_scheme}://{display_host}:{args.port}/v1/datasets",
                 file=sys.stderr,
                 flush=True,
             )
@@ -630,10 +644,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         scheme = "http"
     print(
-        f"dataset_server URL: {scheme}://{args.host}:{args.port}/",
+        f"dataset_server URL: {scheme}://{display_host}:{args.port}/",
         file=sys.stderr,
         flush=True,
     )
+    if display_host != args.host:
+        print(
+            f"  (bound to {args.host}; showing primary interface "
+            f"{display_host} so clients can reach it)",
+            file=sys.stderr,
+            flush=True,
+        )
 
     uvicorn.run(
         app,
