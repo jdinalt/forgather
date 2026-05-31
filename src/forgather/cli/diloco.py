@@ -200,6 +200,9 @@ def _server_cmd(args):
             )
         print(f"Auth: {format_auth_mode(args, token_source)}")
         if quiet_tokens:
+            # Demo/public-TTY mode: reveal nothing sensitive — not the
+            # token value and not the on-disk path. Legitimate peers
+            # still resolve the token via the per-port file.
             print("  bearer-token enabled (value suppressed by --quiet-tokens)")
         else:
             print(f"  auth token: {auth_token}")
@@ -208,8 +211,8 @@ def _server_cmd(args):
                 f'  curl -H "Authorization: Bearer {auth_token}" '
                 f"{scheme}://{display_host}:{args.port}/status"
             )
-        if token_source in ("generated", "regenerated", "persisted"):
-            print(f"  token file: {standalone_token_file(args.port)}")
+            if token_source in ("generated", "regenerated", "persisted"):
+                print(f"  token file: {standalone_token_file(args.port)}")
 
     print()
     print(f"Starting DiLoCo server on {scheme}://{display_host}:{args.port}")
@@ -232,6 +235,14 @@ def _server_cmd(args):
     print(f"  forgather webui     DiLoCo view → Control card → Shutdown server")
     print()
 
+    # Flush stdout before the blocking serve loop. When the TTY is a pipe
+    # (the webui scheduler captures it), stdout is block-buffered, so the
+    # whole banner above — and the argv/parsed-args diagnostic printed at
+    # entry — would otherwise sit in the buffer until the process exits,
+    # making the bearer token appear only *after* the server is stopped.
+    # The server's own logging goes to stderr (flushed per line), so
+    # without this the two streams land badly out of order.
+    sys.stdout.flush()
     server.run()
 
 

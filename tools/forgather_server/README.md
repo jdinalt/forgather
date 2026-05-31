@@ -520,23 +520,23 @@ even be *clicked* to escape).
 
 ## Quiet-tokens flag (spawned servers)
 
-Both the inference server (`tools/inference_server/server.py`) and the
-dataset server (`tools/dataset_server/server.py`) accept
-`--quiet-tokens`. When set, the bearer-token-bearing launch banner
-(and the `curl -H "Authorization: Bearer …"` example) is replaced
-with a one-line message that says auth is on but suppresses the
-value. The token is still written to its per-port file as usual, so
-the local CLI client / cluster peers still discover it; only the TTY
-log is sanitized.
+The inference server (`tools/inference_server/server.py`), dataset
+server (`tools/dataset_server/server.py`), and DiLoCo server
+(`forgather diloco server`) all accept `--quiet-tokens`. When set, the
+bearer-token-bearing launch banner (and the `curl -H "Authorization:
+Bearer …"` example, and any on-disk token-file path) is replaced with a
+one-line message that says auth is on but reveals nothing sensitive.
+The token is still written to its per-port file as usual, so the local
+CLI client / cluster peers still discover it; only the TTY log is
+sanitized.
 
-Surfaced in the webui:
-- **Inference modal** → "Quiet tokens" checkbox under the chat-template
-  field.
-- **Dataset server modal** → "Quiet tokens" checkbox under the auth
-  block, next to `--regen-token`.
-
-Intended for `--demo` deployments where the Jobs panel's TTY pane is
-visible to untrusted viewers.
+`--quiet-tokens` exists for one purpose: keeping the bearer out of a
+publicly-visible TTY pane in `--demo` deployments. It is **not** an
+operator choice — there is no checkbox in any spawn modal. Instead the
+scheduler applies it automatically to every server it spawns **iff this
+webui is running in `--demo` mode** (`demo_mode_enabled()`); in normal
+operation the token is always printed so it can be copied onto clients,
+Jupyter-style.
 
 ## Authentication overview
 

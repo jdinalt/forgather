@@ -38,7 +38,6 @@ interface PersistedAdHoc {
   // Security (issue #90): control-plane auth knobs.
   noAuth: boolean;
   regenToken: boolean;
-  quietTokens: boolean;
   // Cleartext bulk plane. When on, the server serves the bulk
   // endpoints on a separate cleartext listener on an ephemeral port it
   // picks itself — bypassing TLS for throughput on a trusted LAN.
@@ -67,7 +66,6 @@ const DEFAULT_AD_HOC: PersistedAdHoc = {
   minWorkers: 1,
   noAuth: false,
   regenToken: false,
-  quietTokens: false,
   bulkCleartext: false,
 };
 
@@ -162,7 +160,6 @@ export function DiLoCoServerModal({
         minWorkers: pickNum(editingService.args, "min_workers", 1),
         noAuth: pickBool(editingService.args, "no_auth", false),
         regenToken: pickBool(editingService.args, "regen_token", false),
-        quietTokens: pickBool(editingService.args, "quiet_tokens", false),
         bulkCleartext: pickBool(editingService.args, "bulk_cleartext", false),
       }
     : {
@@ -193,7 +190,6 @@ export function DiLoCoServerModal({
   const [minWorkers, setMinWorkers] = useState(seed.minWorkers);
   const [noAuth, setNoAuth] = useState(seed.noAuth);
   const [regenToken, setRegenToken] = useState(seed.regenToken);
-  const [quietTokens, setQuietTokens] = useState(seed.quietTokens);
   const [bulkCleartext, setBulkCleartext] = useState(seed.bulkCleartext);
   const [saving, setSaving] = useState(false);
 
@@ -267,16 +263,16 @@ export function DiLoCoServerModal({
     // Security (issue #90). The scheduler interprets these:
     //   no_auth=true        → skip token resolution; pass --no-auth
     //   regen_token=true    → rotate the persisted per-port token
-    //   quiet_tokens=true   → suppress the token in the launch banner
     //   bulk_cleartext=true → serve bulk endpoints on a separate
     //                         cleartext listener (server-picked
     //                         ephemeral port), bypassing TLS for speed
-    // ``regen_token`` and ``quiet_tokens`` are no-ops under --no-auth;
-    // strip them so the spawned argv reflects the operator's intent.
+    // Token redaction in the spawned server's TTY is NOT an operator
+    // choice here — the scheduler passes --quiet-tokens automatically
+    // when this webui runs in --demo mode. ``regen_token`` is a no-op
+    // under --no-auth; strip it so the argv reflects intent.
     args.no_auth = noAuth;
     if (!noAuth) {
       args.regen_token = regenToken;
-      args.quiet_tokens = quietTokens;
     }
     if (bulkCleartext) {
       args.bulk_cleartext = true;
@@ -308,7 +304,6 @@ export function DiLoCoServerModal({
       minWorkers,
       noAuth,
       regenToken,
-      quietTokens,
       bulkCleartext,
     };
     persistSet(STORAGE_KEY, JSON.stringify(cur));
@@ -726,19 +721,6 @@ export function DiLoCoServerModal({
                 <span className="muted" style={{ fontSize: "smaller" }}>
                   rotate the per-port token; existing workers will 401
                   until they re-pull it
-                </span>
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={quietTokens}
-                  disabled={noAuth}
-                  onChange={(e) => setQuietTokens(e.target.checked)}
-                />{" "}
-                <code>--quiet-tokens</code>{" "}
-                <span className="muted" style={{ fontSize: "smaller" }}>
-                  suppress the token + file path in the TTY launch
-                  banner (peers still find it via the per-port file)
                 </span>
               </label>
 
