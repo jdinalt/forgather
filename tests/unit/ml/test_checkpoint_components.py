@@ -17,7 +17,7 @@ import shutil
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock, patch
 
 import torch
 import torch.nn as nn
@@ -241,6 +241,7 @@ class _MockTrainer(BaseTrainer):
             dist=StaticDistributedEnvironment(),
             stateful_provider=self,
             model=self.model,
+            model_weights_external=self._model_weights_external(),
         )
 
     def _train_loop(self):
@@ -291,6 +292,43 @@ class TestCheckpointManagerModelSkip(unittest.TestCase):
         self.assertTrue(
             _has_model_weight_file(ckpt), "model weights should be saved by default"
         )
+
+    def test_hook_saved_model_not_skipped_when_not_external(self):
+        """Regression: an FSDP2-style trainer registers NO 'model' component
+        (model_state_component is None) yet saves via model_save_fn. Skipping
+        on `model_state_component is None` would silently drop its weights —
+        the gate must key on model_weights_external, which is False here."""
+        from forgather.ml.sharded_checkpoint import MODEL_EXCLUDED_MARKER
+
+        t = self._trainer(None)  # not external
+        cm = t.checkpoint_manager
+        cm.model_save_fn = MagicMock()
+        cm.model_state_component = None  # mimic FSDP2 ws>1
+        self.assertFalse(cm.model_weights_external)
+        with (
+            patch.object(cm, "_save_model") as save_model,
+            patch.object(cm, "_should_save_common", return_value=True),
+        ):
+            ckpt = cm.save_checkpoint(checkpoint_id="ck1")
+        save_model.assert_called_once()  # model saved via the hook path
+        self.assertFalse(os.path.exists(os.path.join(ckpt, MODEL_EXCLUDED_MARKER)))
+
+    def test_external_writes_marker_even_with_save_fn(self):
+        """When weights ARE external, the model save is skipped and the marker
+        written even if a model_save_fn is present."""
+        from forgather.ml.sharded_checkpoint import MODEL_EXCLUDED_MARKER
+
+        t = self._trainer(["optimizer", "trainer", "rng"])  # external
+        cm = t.checkpoint_manager
+        cm.model_save_fn = MagicMock()
+        self.assertTrue(cm.model_weights_external)
+        with (
+            patch.object(cm, "_save_model") as save_model,
+            patch.object(cm, "_should_save_common", return_value=True),
+        ):
+            ckpt = cm.save_checkpoint(checkpoint_id="ck1")
+        save_model.assert_not_called()
+        self.assertTrue(os.path.exists(os.path.join(ckpt, MODEL_EXCLUDED_MARKER)))
 
     def test_model_excluded_skips_weight_save(self):
         from forgather.ml.sharded_checkpoint import (

@@ -78,11 +78,19 @@ class CheckpointManager(CheckpointInterface):
         shard_index=None,
         model_save_fn: Callable[[str], None] | None = None,
         model_load_fn: Callable[[str], None] | None = None,
+        model_weights_external: bool = False,
     ):
 
         self.dist = dist
         self.config = config
         self.stateful_provider = stateful_provider
+        # When True, model weights are supplied by an external authority (e.g.
+        # a DiLoCo parameter server) and must NOT be saved or loaded here. This
+        # is distinct from ``model_state_component is None``: an FSDP2 trainer
+        # legitimately registers no "model" component yet still saves/loads via
+        # model_save_fn/model_load_fn, so the absence of the component does NOT
+        # mean the model is excluded — only this flag does.
+        self.model_weights_external = model_weights_external
 
         assert model is not None
 
@@ -205,13 +213,15 @@ class CheckpointManager(CheckpointInterface):
         # runs a collective op; the hook itself handles rank gating for the
         # actual file write. In the legacy shard-index path, only the "save
         # common" rank writes.
-        # Skip model-weight save entirely when "model" was filtered out of the
-        # active components (model_state_component is None) — e.g. DiLoCo, where
-        # the parameter server owns the weights. All ranks evaluate the same
-        # config, so the model_save_fn collective is consistently skipped.
-        # Drop a marker so validate_checkpoint accepts this model-less
-        # checkpoint while still rejecting a partial/corrupt normal one.
-        if self.model_state_component is None:
+        # Skip model-weight save entirely when weights are externally managed
+        # (e.g. DiLoCo, where the parameter server owns them). All ranks
+        # evaluate the same flag, so the model_save_fn collective is
+        # consistently skipped. Drop a marker so validate_checkpoint accepts
+        # this model-less checkpoint while still rejecting a partial/corrupt
+        # normal one. NB: gate on model_weights_external, NOT
+        # model_state_component — an FSDP2 trainer has no "model" component but
+        # still saves via model_save_fn.
+        if self.model_weights_external:
             if self._should_save_common():
                 with open(
                     os.path.join(checkpoint_path, MODEL_EXCLUDED_MARKER), "w"
@@ -403,10 +413,12 @@ class CheckpointManager(CheckpointInterface):
         if checkpoint_path is None:
             raise RuntimeError("Could not load checkpoint")
         logger.info(f"Resuming training from checkpoint: {checkpoint_path}")
-        # Skip model-weight load when "model" was filtered out of the active
-        # components (DiLoCo supplies weights from the server). The non-model
-        # training state (optimizer/scheduler/trainer/rng) still restores.
-        if self.model_state_component is not None:
+        # Skip model-weight load when weights are externally managed (DiLoCo
+        # supplies them from the server). The non-model training state
+        # (optimizer/scheduler/trainer/rng) still restores. Gate on
+        # model_weights_external, NOT model_state_component (FSDP2 has no
+        # "model" component but still loads via model_load_fn).
+        if not self.model_weights_external:
             self._load_model_from_checkpoint(checkpoint_path)
         self._load_training_state(checkpoint_path)
 

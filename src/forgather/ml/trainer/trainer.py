@@ -753,6 +753,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             model=self.unwrapped_model(),
             model_preprocessor=self.processing_class,
             stateful_provider=self,
+            model_weights_external=self._model_weights_external(),
         )
         # Set trainer reference for callback state save/load
         checkpoint_manager.trainer = self
@@ -802,19 +803,6 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             self.eval_dataloader = self._get_dataloader(
                 eval_dataset, self.args.per_device_eval_batch_size
             )
-
-    def _model_weights_external(self) -> bool:
-        """True when model weights are supplied by an external authority and
-        must not be loaded from (or saved to) a checkpoint.
-
-        Signalled by excluding ``"model"`` from ``checkpoint_components``: the
-        same config that makes the CheckpointManager skip model save/load also
-        tells construction to build the model empty on meta and initialize the
-        skeleton in place (the weights arrive later — e.g. DiLoCo's parameter
-        sync). One knob, no separate flag.
-        """
-        cc = getattr(self.args, "checkpoint_components", None)
-        return cc is not None and "model" not in cc
 
     def _prepare_model(self) -> None:
         """

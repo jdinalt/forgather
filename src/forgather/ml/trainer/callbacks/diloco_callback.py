@@ -62,7 +62,7 @@ class DiLoCoCallback(TrainerCallback):
 
     **The callback is fail-fast on misconfiguration.** If it's constructed
     (in the trainer's callback list) but ``server_addr`` is unset (and
-    ``DILOCO_SERVER`` is also unset in the env), ``on_train_begin``
+    ``DILOCO_SERVER`` is also unset in the env), ``on_load_model_weights``
     raises ``DiLoCoServerUnreachable`` rather than no-op'ing. The
     older "silent no-op when DILOCO_SERVER is unset" path was a
     silent-failure footgun: two workers running with the callback
@@ -129,8 +129,8 @@ class DiLoCoCallback(TrainerCallback):
         # Server-authoritative settings: these MUST match across the group
         # for the sync barrier / outer step / fragment barriers to be
         # coherent, so the worker takes them verbatim from the server's
-        # /info (resolved in on_train_begin) with no client override. They
-        # stay None until then.
+        # /info (resolved in on_load_model_weights) with no client override.
+        # They stay None until then.
         self.sync_every: Optional[int] = None
         self.bf16_comm: Optional[bool] = None
         self.dylu: Optional[bool] = None
@@ -148,10 +148,10 @@ class DiLoCoCallback(TrainerCallback):
             verify_tls = _env_bool("DILOCO_VERIFY_TLS", True)
         self.verify_tls = verify_tls
 
-        # Worker instance (created in on_train_begin)
+        # Worker instance (created in on_load_model_weights)
         self._worker = None
 
-        # Deferred checkpoint state (loaded before on_train_begin)
+        # Deferred checkpoint state (loaded before on_load_model_weights)
         self._pending_state: Optional[Dict[str, Any]] = None
 
     @property
@@ -275,7 +275,7 @@ class DiLoCoCallback(TrainerCallback):
         if model is None or optimizer is None:
             raise RuntimeError(
                 "DiLoCoCallback: model or optimizer not provided in "
-                "on_train_begin kwargs. Cannot initialize DiLoCoWorker."
+                "on_load_model_weights kwargs. Cannot initialize DiLoCoWorker."
             )
 
         # Pipeline-parallel detection (issue #84). The pipeline trainer
@@ -423,11 +423,14 @@ class DiLoCoCallback(TrainerCallback):
             self._worker = None
             raise
 
-        # Flag the server-provided tensors so the trainer's subsequent
-        # initialize-missing pass fills only what the server did NOT send
-        # (non-persistent buffers like RoPE inv_freq). The server holds the
-        # full persistent state-dict (params + persistent buffers), so flag
-        # exactly those keys; without it the apply-path init would re-randomize
+        # Flag exactly the tensors the worker applied — its PARAMETERS — so the
+        # trainer's subsequent initialize-missing pass fills only the rest
+        # (non-persistent buffers like RoPE inv_freq). The worker syncs
+        # parameters, not buffers (ParamView.apply_global iterates
+        # named_parameters), so flag the parameter names only: that way the
+        # trainer's _verify_external_weights_loaded still catches a persistent
+        # buffer the server never supplied (it stays unflagged) instead of us
+        # masking it. Without flagging, the apply-path init would re-randomize
         # and clobber the just-applied global params. Flag the materialized
         # module(s): the pipeline trainer's stages live in pipeline_modules
         # (trainer.model is the meta skeleton), otherwise the model itself.
@@ -435,7 +438,7 @@ class DiLoCoCallback(TrainerCallback):
 
         pp_modules = getattr(trainer, "pipeline_modules", None) if trainer else None
         for mod in pp_modules or [model]:
-            flag_loaded_tensors(mod, set(mod.state_dict().keys()))
+            flag_loaded_tensors(mod, {name for name, _ in mod.named_parameters()})
 
         # Apply deferred checkpoint state
         if self._pending_state is not None:
@@ -547,13 +550,16 @@ class DiLoCoCallback(TrainerCallback):
         }
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
-        """Defer state restoration until on_train_begin.
+        """Defer state restoration until the worker is created.
 
-        Checkpoint loading happens during _prepare() before on_train_begin,
-        so the worker doesn't exist yet. We store the state and apply it
-        once the worker is created.
+        Checkpoint loading happens during _prepare(); the callback's state
+        load_state_dict runs before on_load_model_weights builds the worker,
+        so the worker doesn't exist yet. We store the state and apply it once
+        the worker is created (in on_load_model_weights).
         """
         if not state_dict:
             return
         self._pending_state = state_dict
-        logger.debug("DiLoCoCallback: checkpoint state deferred until on_train_begin")
+        logger.debug(
+            "DiLoCoCallback: checkpoint state deferred until on_load_model_weights"
+        )

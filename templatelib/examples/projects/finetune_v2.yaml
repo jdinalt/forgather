@@ -19,7 +19,7 @@
     -- set ns.base_lr = lr | default(1.0e-4)
     -- set ns.base_batch_size = base_batch_size | default(16384)
     -- set ns.lr_alpha = lr_alpha | default(0.5)
-    
+
     ## Attention
     -- set ns.attn_implementation = attn_implementation | default("flex_attention")
 

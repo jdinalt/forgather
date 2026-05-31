@@ -1376,6 +1376,7 @@ class PipelineTrainer(
             model_preprocessor=self.processing_class,
             stateful_provider=self,
             shard_index=self.shard_index,
+            model_weights_external=self._model_weights_external(),
         )
         return checkpoint_manager
 

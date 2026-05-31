@@ -453,6 +453,7 @@ class FSDP2Trainer(Trainer[TFSDP2TrainingArguments], Generic[TFSDP2TrainingArgum
             shard_index={},
             model_save_fn=_save_model_hook,
             model_load_fn=_load_model_hook,
+            model_weights_external=self._model_weights_external(),
         )
         checkpoint_manager.trainer = self
         if hasattr(self.args, "preserve_n_best"):

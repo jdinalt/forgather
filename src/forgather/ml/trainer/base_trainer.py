@@ -949,6 +949,21 @@ class BaseTrainer(
 
         return components
 
+    def _model_weights_external(self) -> bool:
+        """True when model weights are supplied by an external authority and
+        must not be loaded from (or saved to) a checkpoint.
+
+        Signalled by excluding ``"model"`` from ``checkpoint_components``: the
+        same config that makes the CheckpointManager skip model save/load also
+        tells construction to build the model empty on meta and initialize the
+        skeleton in place (the weights arrive later — e.g. DiLoCo's parameter
+        sync). One knob, no separate flag. This is the authoritative "model
+        excluded" signal — NOT ``model_state_component is None``, which is also
+        true for an FSDP2 trainer that saves the model via a hook.
+        """
+        cc = getattr(self.args, "checkpoint_components", None)
+        return cc is not None and "model" not in cc
+
     def get_active_state_components(self) -> List[StateComponent]:
         """The checkpoint components actually saved/loaded for this run.
 
