@@ -105,8 +105,10 @@ class FakeClient:
         self.added = dict(
             base_url=base_url, label=label, auth_token=auth_token, verify_tls=verify_tls
         )
+        # The real POST /diloco/registry returns a BARE id (token_hex(4));
+        # the "registered:" prefix is only applied by `diloco servers`.
         return {
-            "id": "registered:new",
+            "id": "a1b2c3d4",
             "label": label or base_url,
             "base_url": base_url,
             "has_auth_token": bool(auth_token),
@@ -226,7 +228,23 @@ class TestRegistry:
             "auth_token": "tok",
             "verify_tls": False,
         }
-        assert json.loads(capsys.readouterr().out)["id"] == "registered:new"
+        # JSON is the entry verbatim — bare id, as the server returns it.
+        assert json.loads(capsys.readouterr().out)["id"] == "a1b2c3d4"
+
+    def test_register_human_shows_prefixed_id(self, patch_orchestrator, capsys):
+        patch_orchestrator(FakeClient())
+        args = argparse.Namespace(
+            via_server=None,
+            url="https://h:8512",
+            label=None,
+            auth_token=None,
+            no_verify_tls=False,
+            json=False,
+        )
+        rc = orch.register_cmd(args)
+        assert rc == 0
+        # Human output uses the copy-pasteable "registered:<id>" form.
+        assert "registered:a1b2c3d4" in capsys.readouterr().out
 
     def test_unregister_strips_prefix(self, patch_orchestrator, capsys):
         client = patch_orchestrator(FakeClient())

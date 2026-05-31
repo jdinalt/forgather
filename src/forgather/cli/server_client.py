@@ -131,6 +131,18 @@ class ServerClient:
 
     def _check_response(self, r):
         if r.status_code == 401:
+            # A 401 carrying this tag came from an *upstream* server the
+            # forgather server was proxying to (a DiLoCo/dataset server whose
+            # stored token is stale), not from the forgather server itself.
+            # The fix is different — re-register the upstream token — so don't
+            # point the user at $FORGATHER_SERVER_TOKEN.
+            if r.headers.get("x-upstream-auth-failed"):
+                raise AuthRequired(
+                    "the forgather server's stored token for the upstream "
+                    "server was rejected. Re-register it with a fresh "
+                    "--auth-token (forgather diloco register …), or check the "
+                    "upstream server's auth."
+                )
             raise AuthRequired(self._auth_error_message())
         if not r.ok:
             try:

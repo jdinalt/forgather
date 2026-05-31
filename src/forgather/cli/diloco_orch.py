@@ -331,7 +331,9 @@ def register_cmd(args):
     if getattr(args, "json", False):
         print(json.dumps(entry, indent=2))
         return 0
-    print(f"Registered '{entry.get('label')}' as {entry.get('id')}")
+    # Show the "registered:<id>" form so it's copy-pasteable straight into
+    # `diloco servers` output / `diloco unregister`.
+    print(f"Registered '{entry.get('label')}' as registered:{entry.get('id')}")
     print(
         f"  {entry.get('base_url')}  "
         f"(auth={'yes' if entry.get('has_auth_token') else 'no'}, "
