@@ -47,7 +47,7 @@ def _make_control():
     return TrainerControl()
 
 
-# Patch targets: the imports inside on_train_begin resolve to these modules
+# Patch targets: the imports inside on_load_model_weights resolve to these modules
 _WORKER_PATCH = "forgather.ml.diloco.worker.DiLoCoWorker"
 _CLIENT_PATCH = "forgather.ml.diloco.client.DiLoCoClient"
 
@@ -111,7 +111,9 @@ class TestFailFastWhenUnconfigured:
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
         with pytest.raises(DiLoCoServerUnreachable, match="DILOCO_SERVER"):
-            cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+            cb.on_load_model_weights(
+                args, state, control, model=model, optimizer=optimizer
+            )
 
     def test_on_log_noop_when_inactive(self):
         """on_log is still a no-op when the worker was never started
@@ -159,7 +161,9 @@ class TestFailFastWhenUnconfigured:
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
         with pytest.raises(DiLoCoServerUnreachable, match="/info round-trip"):
-            cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+            cb.on_load_model_weights(
+                args, state, control, model=model, optimizer=optimizer
+            )
         # Worker was never started since the probe came first.
         MockWorker.return_value.start.assert_not_called()
 
@@ -241,7 +245,7 @@ class TestServerAuthoritativeSettings:
         args, state, control = _make_args(), _make_state(), _make_control()
         model = TinyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
-        cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+        cb.on_load_model_weights(args, state, control, model=model, optimizer=optimizer)
 
         _, kwargs = MockWorker.call_args
         assert kwargs["sync_every"] == 250
@@ -265,7 +269,9 @@ class TestServerAuthoritativeSettings:
         model = TinyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
         with pytest.raises(DiLoCoServerUnreachable, match="sync_every"):
-            cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+            cb.on_load_model_weights(
+                args, state, control, model=model, optimizer=optimizer
+            )
         MockWorker.return_value.start.assert_not_called()
 
     @patch(_CLIENT_PATCH)
@@ -281,7 +287,9 @@ class TestServerAuthoritativeSettings:
         model = TinyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
         with pytest.raises(ValueError, match="heartbeat_interval"):
-            cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+            cb.on_load_model_weights(
+                args, state, control, model=model, optimizer=optimizer
+            )
         MockWorker.return_value.start.assert_not_called()
 
     @patch(_CLIENT_PATCH)
@@ -296,7 +304,7 @@ class TestServerAuthoritativeSettings:
         args, state, control = _make_args(), _make_state(), _make_control()
         model = TinyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
-        cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+        cb.on_load_model_weights(args, state, control, model=model, optimizer=optimizer)
         mock_instance.start.assert_called_once()
 
 
@@ -320,7 +328,7 @@ class TestWorkerLifecycle:
         model = TinyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
-        cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+        cb.on_load_model_weights(args, state, control, model=model, optimizer=optimizer)
 
         MockWorker.assert_called_once_with(
             model=model,
@@ -355,7 +363,7 @@ class TestWorkerLifecycle:
         model = TinyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
-        cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+        cb.on_load_model_weights(args, state, control, model=model, optimizer=optimizer)
         cb.on_train_end(args, state, control)
 
         mock_instance.stop.assert_called_once()
@@ -370,9 +378,35 @@ class TestWorkerLifecycle:
         args, state, control = _make_args(), _make_state(), _make_control()
 
         with pytest.raises(RuntimeError, match="model or optimizer"):
-            cb.on_train_begin(args, state, control)
+            cb.on_load_model_weights(args, state, control)
         MockWorker.assert_not_called()
         assert cb._worker is None
+
+    def test_on_train_begin_requires_worker_started(self):
+        """on_train_begin is a defensive assert: if on_load_model_weights
+        never ran (worker still None — e.g. checkpoint_components didn't
+        exclude 'model'), it fails loud rather than training a model the
+        server never filled."""
+        cb = DiLoCoCallback(server_addr="host:8512")
+        args, state, control = _make_args(), _make_state(), _make_control()
+        with pytest.raises(RuntimeError, match="not started by on_load_model_weights"):
+            cb.on_train_begin(args, state, control)
+
+    @patch(_CLIENT_PATCH)
+    @patch(_WORKER_PATCH)
+    def test_on_train_begin_noop_after_load(self, MockWorker, MockClient):
+        """Once on_load_model_weights has started the worker, on_train_begin
+        passes (no exception, no second worker build)."""
+        MockWorker.return_value.sync_metrics = {}
+        _stub_info(MockClient)
+        cb = DiLoCoCallback(server_addr="host:8512")
+        args, state, control = _make_args(), _make_state(), _make_control()
+        model = TinyModel()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+        cb.on_load_model_weights(args, state, control, model=model, optimizer=optimizer)
+        MockWorker.assert_called_once()
+        cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+        MockWorker.assert_called_once()  # not rebuilt
 
     @patch(_CLIENT_PATCH)
     @patch(_WORKER_PATCH)
@@ -400,7 +434,7 @@ class TestWorkerLifecycle:
         model = TinyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
-        cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+        cb.on_load_model_weights(args, state, control, model=model, optimizer=optimizer)
 
         MockWorker.assert_called_once_with(
             model=model,
@@ -446,7 +480,7 @@ class TestPipelineDetection:
         model = TinyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
-        cb.on_train_begin(
+        cb.on_load_model_weights(
             args,
             state,
             control,
@@ -485,7 +519,7 @@ class TestPipelineDetection:
         model = TinyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
-        cb.on_train_begin(
+        cb.on_load_model_weights(
             args,
             state,
             control,
@@ -523,7 +557,7 @@ class TestMetricsInjection:
         model = TinyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
-        cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+        cb.on_load_model_weights(args, state, control, model=model, optimizer=optimizer)
 
         logs = {"loss": 1.5, "lr": 1e-4}
         cb.on_log(args, state, control, logs=logs)
@@ -557,7 +591,7 @@ class TestMetricsInjection:
         model = TinyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
-        cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+        cb.on_load_model_weights(args, state, control, model=model, optimizer=optimizer)
         # Should not raise
         cb.on_log(args, state, control, logs=None)
 
@@ -587,7 +621,7 @@ class TestStatefulProtocol:
         model = TinyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
-        cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+        cb.on_load_model_weights(args, state, control, model=model, optimizer=optimizer)
 
         sd = cb.state_dict()
         assert sd["sync_count"] == 10
@@ -645,7 +679,7 @@ class TestStatefulProtocol:
         model = TinyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
-        cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+        cb.on_load_model_weights(args, state, control, model=model, optimizer=optimizer)
 
         # Verify state was applied to mock worker
         assert mock_instance._sync_count == 7
@@ -673,7 +707,7 @@ class TestStatefulProtocol:
         model = TinyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
-        cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+        cb.on_load_model_weights(args, state, control, model=model, optimizer=optimizer)
 
         # Worker should not have had state set on it
         mock_instance.start.assert_called_once()
@@ -707,7 +741,7 @@ class TestStatefulProtocol:
         model = TinyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
-        cb.on_train_begin(args, state, control, model=model, optimizer=optimizer)
+        cb.on_load_model_weights(args, state, control, model=model, optimizer=optimizer)
 
         sd = cb.state_dict()
         assert sd  # not empty

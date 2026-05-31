@@ -47,6 +47,16 @@ the same PR (or the very next commit):
 Out-of-date docs are worse than absent ones because they confidently
 mislead.
 
+**Branches.** Feature branches start from `origin/dev` (the staging
+branch); `main` is the release branch, cut from `dev` after testing.
+
+**Docs describe the feature as-is, not as a delta.** `dev` accumulates
+WIP features across many PRs and makes no compatibility guarantee for
+`dev`-only state, so permanent docs must not narrate revision-to-revision
+deltas or PR history ("PR #N changed…", "now builds on…", "no longer…").
+A WIP *design doc* may track PR-to-PR continuity, but stamp it with an
+explicit `TODO(remove …)` and delete/rewrite it once the feature lands.
+
 **Validate after editing configs or templates.** Run `forgather ls` —
 a failed config renders as `PARSE ERROR` instead of its description.
 Use `forgather -t cfg.yaml pp` to inspect preprocessor output when

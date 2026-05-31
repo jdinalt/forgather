@@ -14,6 +14,7 @@ from typing import (
     Dict,
     Generic,
     Iterator,
+    List,
     Optional,
     Protocol,
     Tuple,
@@ -162,6 +163,21 @@ class TrainingArguments(BaseTrainingArguments):
     #          then load + initialize-missing). Requires a checkpoint (or an
     #          external loader such as DiLoCo) to fill the weights.
     construct_model_on: str = "default"  # "default" | "meta" | "device"
+
+    # Which checkpoint state components to save AND load. ``None`` (default)
+    # means every component the trainer produces (today's behavior). A list
+    # restricts checkpoints to those keys — a subset of "model", "optimizer",
+    # "scheduler", "trainer", "dataset", "rng". Filtered at a single chokepoint
+    # (``get_active_state_components``) so each trainer's full
+    # ``get_state_components()`` declaration is untouched.
+    #
+    # Excluding "model" means model weights are NOT persisted: the
+    # CheckpointManager skips model save/load, and _prepare_model treats the
+    # weights as externally supplied (build empty on meta, initialize the
+    # skeleton in place). This is the DiLoCo case — the parameter server owns
+    # the weights, so a worker checkpoints only training progress / optimizer /
+    # RNG and pulls weights from the sync at register.
+    checkpoint_components: Optional[List[str]] = None
 
     # https://pytorch.org/blog/activation-checkpointing-techniques/
     # Requires "torch_compile = True" option
@@ -642,8 +658,11 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         self.state = self._init_state()
         self.checkpoint_manager = self._init_checkpoint_manager()
 
-        # Restore from checkpoint (path already resolved by _resolve_checkpoint)
-        if self.args.resume_from_checkpoint:
+        # Restore weights/state, then initialize what wasn't filled. Runs when
+        # there's a resume checkpoint OR when weights are supplied externally
+        # (checkpoint_components excludes "model" — e.g. DiLoCo, where the
+        # on_load_model_weights hook pulls them from the server).
+        if self.args.resume_from_checkpoint or self._model_weights_external():
             self._restore_from_checkpoint()
 
         self._dispatch_event("on_init_end")
@@ -734,6 +753,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             model=self.unwrapped_model(),
             model_preprocessor=self.processing_class,
             stateful_provider=self,
+            model_weights_external=self._model_weights_external(),
         )
         # Set trainer reference for callback state save/load
         checkpoint_manager.trainer = self
@@ -816,7 +836,20 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         # ``device`` strategy stays as a fallback for models that can't be
         # built on meta.
         effective_strategy = self.args.construct_model_on
-        if (
+        model_external = self._model_weights_external()
+        if model_external:
+            # Model weights are supplied by an external authority (e.g. a
+            # DiLoCo parameter server), not a checkpoint: build the model
+            # empty on meta and initialize the skeleton in place; the sync
+            # overwrites the persistent weights before the first forward.
+            # Requires model_init to (re)build the skeleton.
+            assert self.model_init, (
+                "checkpoint_components excludes 'model' (weights supplied "
+                "externally), which requires model_init to build the empty "
+                "model on the meta device."
+            )
+            effective_strategy = "meta"
+        elif (
             effective_strategy == "default"
             and self.args.resume_from_checkpoint
             and self.model_init
@@ -825,12 +858,14 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             # A pre-built model passed without model_init stays on the
             # default (move-and-load) path.
             effective_strategy = "meta"
-        # Meta needs weights to come from somewhere (a checkpoint). With no
-        # checkpoint there is nothing to fill the materialized tensors, so
-        # from-scratch construction stays on-device (its init path runs in
-        # the model's __init__). DiLoCo, which loads weights from a remote
-        # server, is handled as a checkpoint load by its own wiring.
-        if effective_strategy == "meta" and not self.args.resume_from_checkpoint:
+        # Meta needs weights to come from somewhere (a checkpoint OR an
+        # external source). With neither, from-scratch construction stays
+        # on-device (its init path runs in the model's __init__).
+        if (
+            effective_strategy == "meta"
+            and not self.args.resume_from_checkpoint
+            and not model_external
+        ):
             logger.warning(
                 "No checkpoint available for meta device construction. "
                 "Falling back to 'default' strategy (construct on device, "
@@ -898,6 +933,10 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             case _:
                 raise ValueError("Requires one of: default|meta|device")
         assert self.model is not None
+        # External-weights (e.g. DiLoCo): the model is built empty on meta
+        # here; the weights are loaded later in _restore_from_checkpoint (via
+        # the on_load_model_weights hook) followed by initialize-missing, so
+        # there is nothing to initialize at construction time.
         # Linear-swap recipes (fp8 / qat) are mutually exclusive — see the
         # _LINEAR_SWAP_RECIPES check in BaseTrainingArguments.__post_init__.
         # The if-chain is sequential rather than elif so a future relaxed
@@ -926,32 +965,104 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             logger.info(f"Estimated FLOPs per token: {self._flops_per_token:.2e}")
 
     def _restore_from_checkpoint(self) -> None:
-        """Load the resume checkpoint, THEN initialize what it didn't fill.
+        """Load model/training state, THEN initialize what wasn't filled.
 
-        Order is load-then-init and must stay that way: ``load_checkpoint``
-        flags the tensors it fills (``flag_loaded_tensors``), so the
-        subsequent ``_initialize_missing_after_load`` only touches the rest
-        (non-persistent buffers like RoPE ``inv_freq``, plus any params
-        absent from the checkpoint). Running the init first would leave
-        everything unflagged and re-initialize the whole model — the slow
-        full-init the meta route exists to avoid — only to immediately
-        overwrite it with the loaded weights.
+        Uniform "load → init-missing" path with two possible weight sources:
+
+        * **Checkpoint** — ``load_checkpoint`` loads the active components and
+          flags the tensors it fills (``flag_loaded_tensors``).
+        * **External** (``checkpoint_components`` excludes ``"model"``, e.g.
+          DiLoCo) — the ``on_load_model_weights`` callback loads the weights
+          from the external authority (the parameter server) and flags them.
+          The two compose: with a resume checkpoint present, it restores the
+          non-model components (optimizer / scheduler / trainer / RNG) and the
+          hook supplies the weights.
+
+        Order is load-then-init and must stay that way: the load flags the
+        tensors it fills, so the subsequent ``_initialize_missing_after_load``
+        only touches the rest (non-persistent buffers like RoPE ``inv_freq``,
+        plus any params neither source provided). Running the init first would
+        leave everything unflagged and re-initialize the whole model — the
+        slow full-init the meta route exists to avoid — only to overwrite it.
         """
-        self.load_checkpoint(self.args.resume_from_checkpoint)
+        if self.args.resume_from_checkpoint:
+            self.load_checkpoint(self.args.resume_from_checkpoint)
+        if self._model_weights_external():
+            # Hand off to whatever provides the weights externally (DiLoCo's
+            # worker registers and applies the server's global params, flagging
+            # them so the init pass below skips them). Fail loud if nothing
+            # implements the event — otherwise the model is silently left for
+            # initialize-missing to random-fill (training would ignore the
+            # server's weights entirely).
+            if not self._has_event_handler("on_load_model_weights"):
+                raise RuntimeError(
+                    "checkpoint_components excludes 'model' (weights are "
+                    "supplied externally), but no callback implements "
+                    "on_load_model_weights to load them. Add the loader "
+                    "(e.g. DiLoCoCallback) or include 'model' in "
+                    "checkpoint_components."
+                )
+            self._dispatch_event("on_load_model_weights")
+            # Verify the external source actually loaded the persistent
+            # weights BEFORE initialize-missing fills the gaps — otherwise it
+            # would silently random-initialize them and training would proceed
+            # against garbage instead of the server's params. (Non-persistent
+            # buffers are intentionally absent here; init recomputes those.)
+            self._verify_external_weights_loaded()
         if self._constructed_on_meta:
             self._initialize_missing_after_load()
 
-    def _initialize_missing_after_load(self) -> None:
-        """Initialize the tensors a checkpoint load did NOT fill.
+    def _materialized_modules(self) -> List[torch.nn.Module]:
+        """The on-device module(s) holding the run's real parameters.
 
-        Called from ``_prepare`` AFTER ``load_checkpoint`` (so loaded tensors
-        are already flagged ``_is_hf_initialized`` and get skipped) when the
-        model was constructed on meta. Overridden by trainers whose
-        materialized model isn't ``self.model`` (e.g. PipelineTrainer, which
-        holds the materialized stages in ``self.pipeline_modules``).
+        For most trainers that's ``self.model``. Overridden by trainers whose
+        materialized model isn't ``self.model`` — e.g. PipelineTrainer, where
+        ``self.model`` is the meta skeleton and the real per-rank stages live
+        in ``self.pipeline_modules``. Used by the post-load init and the
+        external-weights verification so both enumerate the same modules.
         """
-        if self.model is not None:
-            initialize_missing_weights(self.model)
+        return [self.model] if self.model is not None else []
+
+    def _initialize_missing_after_load(self) -> None:
+        """Initialize the tensors a load did NOT fill.
+
+        Called from ``_restore_from_checkpoint`` AFTER the checkpoint and/or
+        external load (so loaded tensors are already flagged
+        ``_is_hf_initialized`` and get skipped) when the model was constructed
+        on meta — it recomputes the rest (non-persistent buffers like RoPE
+        ``inv_freq``, plus any params neither source provided).
+        """
+        for module in self._materialized_modules():
+            initialize_missing_weights(module)
+
+    def _verify_external_weights_loaded(self) -> None:
+        """Assert the external source filled every persistent tensor.
+
+        Runs after ``on_load_model_weights`` and BEFORE initialize-missing:
+        every persistent param/buffer (``state_dict`` entry) must be flagged
+        ``_is_hf_initialized``, i.e. actually loaded. Anything unflagged here
+        would be silently random-initialized by the following init pass, so
+        training would proceed against garbage instead of the external
+        weights. Non-persistent buffers (RoPE ``inv_freq``) are excluded from
+        ``state_dict`` and are the init pass's job, so they're not checked.
+        """
+        missing: List[str] = []
+        for module in self._materialized_modules():
+            # keep_vars=True returns the live param/buffer objects (persistent
+            # only) so we can read the flag without cloning.
+            for name, tensor in module.state_dict(keep_vars=True).items():
+                if not getattr(tensor, "_is_hf_initialized", False):
+                    missing.append(name)
+        if missing:
+            shown = ", ".join(missing[:10]) + (" …" if len(missing) > 10 else "")
+            raise RuntimeError(
+                f"on_load_model_weights left {len(missing)} model tensor(s) "
+                f"unloaded ({shown}). checkpoint_components excludes 'model', "
+                f"so the external source (e.g. the DiLoCo server) must supply "
+                f"every persistent weight; the init pass would otherwise "
+                f"random-initialize these and training would ignore the "
+                f"external weights."
+            )
 
     def _apply_fp8_training(self, model: torch.nn.Module) -> torch.nn.Module:
         """Convert nn.Linear layers to Float8Linear for FP8 training via torchao."""

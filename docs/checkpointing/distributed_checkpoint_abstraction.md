@@ -114,6 +114,47 @@ class CheckpointCoordinator:
         ...
 ```
 
+### Selecting active components (`checkpoint_components`)
+
+A trainer's `get_state_components()` declares the **full** set of components
+it is capable of checkpointing. Which of those a given run actually
+saves/loads is selected by the `checkpoint_components` training argument
+(`list[str] | None`, `None` = all), applied at a single chokepoint:
+
+```python
+class BaseTrainer:
+    def get_active_state_components(self) -> List[StateComponent]:
+        """get_state_components() filtered by args.checkpoint_components."""
+        components = self.get_state_components()
+        selected = self.args.checkpoint_components
+        if selected is None:
+            return components
+        # A key outside KNOWN_CHECKPOINT_COMPONENTS raises (typo guard); a
+        # known key this run doesn't produce is ignored.
+        ...
+        return [c for c in components if c.key in set(selected)]
+```
+
+`CheckpointManager` consumes `get_active_state_components()` (not
+`get_state_components()` directly), so every trainer's declaration stays
+intact regardless of the per-run selection, and no trainer-specific code
+needs to know about the filter. The known vocabulary is
+`model`, `optimizer`, `scheduler`, `trainer`, `dataset`, `rng`.
+
+**Weights-external mode.** When `"model"` is excluded, the
+`CheckpointManager` skips model-weight save and load (the model component is
+what populates `model_state_component`; absent it, that is `None`) and writes
+a `MODEL_EXCLUDED_MARKER` sentinel into the checkpoint. `validate_checkpoint`
+accepts a model-less checkpoint **only** when the marker is present, so a
+deliberately weights-external checkpoint stays discoverable for resume while
+a model-less *normal* checkpoint (missing weights, no marker — a partial or
+corrupt save) remains invalid and discovery falls back to an older complete
+one. In this mode the trainer builds the model empty on the meta device and
+expects the weights from an external source; the canonical consumer is a
+DiLoCo worker, whose parameter server owns the weights. See
+[`../trainers/trainer_options.md`](../trainers/trainer_options.md) and
+[`user_guide.md`](user_guide.md).
+
 ## Usage Examples
 
 ### Single Trainer (No Parallelism)

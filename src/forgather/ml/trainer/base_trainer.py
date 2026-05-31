@@ -346,6 +346,14 @@ class BaseTrainer(
     * ``_eval_loop()`` — the evaluation loop, returning a metrics dict.
     """
 
+    #: The full vocabulary of checkpoint state-component keys any trainer may
+    #: produce. Used to fail loud on a typo in ``checkpoint_components`` (a
+    #: key outside this set) while still allowing a known key that a given run
+    #: happens not to produce. See ``get_active_state_components``.
+    KNOWN_CHECKPOINT_COMPONENTS: frozenset = frozenset(
+        {"model", "optimizer", "scheduler", "trainer", "dataset", "rng"}
+    )
+
     args: TBaseTrainingArguments
     model: torch.nn.Module | None
     data_collator: DataCollatorT | None
@@ -647,6 +655,16 @@ class BaseTrainer(
         else:
             raise ValueError("sdpa-backend must be a List[str] or str")
 
+    def _has_event_handler(self, event: str) -> bool:
+        """True if any registered callback implements ``event``.
+
+        Lets a caller distinguish "dispatched and handled" from "no handler
+        exists" so it can fail loud when an action it relies on (e.g.
+        ``on_load_model_weights`` loading external weights) has no implementer,
+        rather than silently doing nothing.
+        """
+        return any(callable(getattr(cb, event, None)) for cb in self.callbacks)
+
     def _dispatch_event(self, event: str, **kwargs):
         """Dispatch a trainer event to all registered callbacks.
 
@@ -930,6 +948,68 @@ class BaseTrainer(
         )
 
         return components
+
+    def _model_weights_external(self) -> bool:
+        """True when model weights are supplied by an external authority and
+        must not be loaded from (or saved to) a checkpoint.
+
+        Signalled by excluding ``"model"`` from ``checkpoint_components``: the
+        same config that makes the CheckpointManager skip model save/load also
+        tells construction to build the model empty on meta and initialize the
+        skeleton in place (the weights arrive later — e.g. DiLoCo's parameter
+        sync). One knob, no separate flag. This is the authoritative "model
+        excluded" signal — NOT ``model_state_component is None``, which is also
+        true for an FSDP2 trainer that saves the model via a hook.
+        """
+        cc = getattr(self.args, "checkpoint_components", None)
+        return cc is not None and "model" not in cc
+
+    def get_active_state_components(self) -> List[StateComponent]:
+        """The checkpoint components actually saved/loaded for this run.
+
+        Calls the subclass's :meth:`get_state_components` (which declares the
+        FULL set the trainer is capable of) and filters it by
+        ``args.checkpoint_components``. ``None`` (default) returns the full
+        set — today's behavior. A list restricts the checkpoint to those keys.
+
+        This is the single chokepoint the ``CheckpointManager`` consults, so
+        every trainer's ``get_state_components()`` implementation stays intact
+        regardless of the per-run selection. Dropping ``"model"`` makes the
+        manager skip model-weight save/load (the model component is what
+        populates ``model_state_component``); see ``CheckpointManager``.
+        """
+        components = self.get_state_components()
+        selected = getattr(self.args, "checkpoint_components", None)
+        if selected is None:
+            return components
+        selected_set = set(selected)
+        # Fail loud on a key outside the known vocabulary — a typo like
+        # "modle" must NOT silently drop "model" and convert a normal run
+        # into a weights-external one (no-silent-fallback). A *known* key that
+        # this particular run doesn't produce (e.g. "dataset" with a
+        # non-stateful loader, or "optimizer" in an eval-only run) is allowed
+        # and simply has no effect.
+        unknown = selected_set - self.KNOWN_CHECKPOINT_COMPONENTS
+        if unknown:
+            raise ValueError(
+                f"checkpoint_components has unknown key(s) {sorted(unknown)}; "
+                f"valid keys are {sorted(self.KNOWN_CHECKPOINT_COMPONENTS)}."
+            )
+        produced = {c.key for c in components}
+        absent = selected_set - produced
+        if absent:
+            logger.info(
+                "checkpoint_components requests %s which this run does not "
+                "produce; ignored.",
+                sorted(absent),
+            )
+        dropped = produced - selected_set
+        if dropped:
+            logger.info(
+                "checkpoint_components excludes %s from checkpoints.",
+                sorted(dropped),
+            )
+        return [c for c in components if c.key in selected_set]
 
     def _get_dataset_sharing_pattern(self) -> SharingPattern:
         """Return the dataset state sharing pattern for this trainer.

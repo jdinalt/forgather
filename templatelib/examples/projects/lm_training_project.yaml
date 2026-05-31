@@ -263,6 +263,7 @@
     -- set ns.total_tokens = total_tokens | default(560)
     -- set ns.warmup_tokens = warmup_tokens | default(56)
     -- set ns.min_cooldown_tokens = min_cooldown_tokens | default(300)
+    -- set ns.annealing_tokens = annealing_tokens | default(0)
 
     ## Batching
     -- set ns.seq_len = seq_len | default(512)
@@ -380,6 +381,7 @@
     -- set ns.total_tokens = ns.total_tokens * 1000 * 1000
     -- set ns.warmup_tokens = ns.warmup_tokens * 1000 * 1000
     -- set ns.min_cooldown_tokens = ns.min_cooldown_tokens * 1000 * 1000
+    -- set ns.annealing_tokens = ns.annealing_tokens * 1000 * 1000
 
     ## Token intervals for logging / eval / save
     -- set ns.logging_tokens = ns.base_logging_tokens * 1000 * 1000 * ns.step_cadence
@@ -394,6 +396,12 @@
     -- set ns.min_cooldown_steps = ns.min_cooldown_tokens // ns.tokens_per_step
     -- set ns.warmup_steps = ns.warmup_tokens // ns.tokens_per_step
     -- set ns.total_steps = ns.total_tokens // ns.tokens_per_step
+    -- set ns.annealing_steps = ns.annealing_tokens // ns.tokens_per_step
+    -- if ns.annealing_steps > 0
+        -- set ns.decay_start_step = (ns.total_steps - ns.annealing_steps) | int
+    -- else
+        -- set ns.decay_start_step = -1
+    -- endif
     -- set ns.total_peak_hardware_flops = ns.world_size * ns.peak_hardware_flops
 
     ## LR Scaling
@@ -442,6 +450,7 @@
 # ns.seq_len: {{ ns.seq_len }} tokens
 # ns.total_steps: {{ ns.total_steps }} steps
 # ns.warmup_steps: {{ ns.warmup_steps }}
+# ns.annealing_steps: {{ ns.annealing_steps }}
 # ns.min_cooldown_steps: {{ ns.min_cooldown_steps }}
 # ns.total_tokens: {{ ns.total_tokens // (1000 * 1000)}}M
 # ns.tokens_per_step: {{ ns.tokens_per_step }} tokens
@@ -596,13 +605,25 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     fuse_optim_with_backward: {{ fuse_optim_with_backward | default(False) }}
     enable_activation_offloading: {{ activation_offloading | default(False) }}
     dataloader_drop_last: True
-    ## Under DiLoCo the model is built empty (from the staged config, no
-    ## weights) and filled from the server's parameter sync at register.
-    ## Construction strategy is left at the operator default here; building
-    ## the empty skeleton on the meta device (allocation-free) and skipping
-    ## model-weight checkpoint save/load is a planned trainer change tracked
-    ## as PR 4 (see docs/trainers/diloco-architecture.md).
+    ## Under DiLoCo the parameter server owns the model weights: the worker
+    ## builds the model empty on meta (allocation-free) and fills it from the
+    ## sync at register, and its checkpoints carry training state but NOT
+    ## model weights. ``checkpoint_components`` excluding "model" drives both
+    ## (the trainer reads it as "weights are external"); it is overridable by
+    ## a child template / leaf that sets ``checkpoint_components``.
+    ##
+    ## "dataset" is also excluded: dataset position is tracked by the DiLoCo
+    ## server via work-units, not the local dataloader, so a local dataset
+    ## checkpoint would be stale/misleading on resume.
+    -- if ns.diloco_is_enabled
+    construct_model_on: meta
+    checkpoint_components: {{ checkpoint_components | toyaml(["optimizer", "scheduler", "trainer", "rng"]) }}
+    -- else
     construct_model_on: {{ construct_model_on | toyaml("default") }}
+    -- if checkpoint_components is defined and checkpoint_components
+    checkpoint_components: {{ checkpoint_components | toyaml }}
+    -- endif
+    -- endif
     activation_memory_budget: {{ activation_memory_budget | toyaml(None) }}
     gc_threshold: {{ gc_threshold | default(0.9) }}
     save_safetensors: {{ save_safetensors | default(False) }}
@@ -767,6 +788,12 @@ optimizer_groups: &optimizer_groups
         group: "Trainer:Schedule"
         min: 0
         help: "Minimum tokens (millions) for LR decay phase"
+    annealing_tokens:
+        names: "--annealing-tokens"
+        type: int
+        group: "Trainer:Schedule"
+        min: 0
+        help: "Number of tokens in annealing phase."
     lr:
         names: "--lr"
         type: float

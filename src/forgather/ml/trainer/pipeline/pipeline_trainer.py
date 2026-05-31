@@ -39,7 +39,6 @@ from ...sharded_checkpoint import (
     ShardIndex,
     SharingMetadataT,
     create_sharing_metadata,
-    initialize_missing_weights,
     make_shard_index,
     retie_parameters,
 )
@@ -514,16 +513,21 @@ class PipelineTrainer(
             mod.to_empty(device=self.dist.device)
             retie_parameters(mod, self.sharing_metadata)
 
-        # Initialize from scratch only when NOT resuming. When resuming, the
-        # stages stay materialized-empty here; the weights are loaded later
-        # by the base _prepare (load_checkpoint over model_parts) and
-        # initialize_missing_weights runs AFTER that load via
-        # _initialize_missing_after_load() — initializing here would init
-        # before the load, the slow full-init the meta route avoids.
-        if not self.args.resume_from_checkpoint:
+        # Populate the materialized stages. Initialize from scratch ONLY for a
+        # fresh, non-external run: rank-0 builds the full model on CPU just
+        # long enough to initialize weights, then distributes each rank's
+        # stage parameters (if this OOMs on a very large model, initialize
+        # from a checkpoint instead). When resuming, or when weights are
+        # external (DiLoCo), the stages stay materialized-empty here — the
+        # weights are loaded later by the base _prepare via
+        # _restore_from_checkpoint (a checkpoint load and/or the
+        # on_load_model_weights hook), and initialize_missing_weights then
+        # fills only the rest (e.g. RoPE buffers) per stage. Initializing here
+        # would init before that load — the full-init the meta route avoids,
+        # and (external) the expensive rank-0 build the parameter server
+        # exists to replace.
+        if not self.args.resume_from_checkpoint and not self._model_weights_external():
             if self.dist.rank == 0:
-                # If this results in OOM (really large model), you will have to initialize the model from a checkpoint
-                # which will likely entail some amount of work.
                 logger.info(
                     "Constructing full model on CPU and distributing initialized parameters from rank0."
                 )
@@ -1321,24 +1325,21 @@ class PipelineTrainer(
         }
 
     @override
-    def _initialize_missing_after_load(self) -> None:
-        """Initialize what the checkpoint didn't fill, AFTER the load.
+    def _materialized_modules(self) -> List[torch.nn.Module]:
+        """The on-device stages holding this rank's real parameters.
 
-        The materialized model lives in ``self.pipeline_modules`` (``self.model``
-        is the meta skeleton kept only for shape/config queries), so the
-        base implementation (which inits ``self.model``) doesn't apply.
+        ``self.model`` is the meta skeleton (kept only for shape/config
+        queries); the materialized weights live in ``self.pipeline_modules``.
+        Drives both the post-load init and the external-weights verification.
 
-        Split stage modules don't expose an HF-style ``_init_weights``, so
-        ``initialize_missing_weights`` takes its fallback path: reset only
-        modules that own a non-persistent buffer (e.g. RoPE ``inv_freq``,
-        never in the checkpoint). That recompute is local and deterministic
-        per module, so every rank produces the same values. (The load — base
-        ``_prepare`` -> ``load_checkpoint`` over the stage ``model_parts`` —
-        also flags loaded tensors via ``flag_loaded_tensors``, which would
-        protect the apply path too, but the fallback is what runs here.)
+        Note for the init pass: split stage modules don't expose an HF-style
+        ``_init_weights``, so ``initialize_missing_weights`` takes its
+        fallback path — reset only modules that own a non-persistent buffer
+        (e.g. RoPE ``inv_freq``, never in the checkpoint). That recompute is
+        local and deterministic per module, so every rank produces the same
+        values; loaded tensors are flagged so the fallback skips them.
         """
-        for mod in self.pipeline_modules:
-            initialize_missing_weights(mod)
+        return list(self.pipeline_modules or [])
 
     def _init_checkpoint_manager(self) -> CheckpointManager:
         """
@@ -1375,6 +1376,7 @@ class PipelineTrainer(
             model_preprocessor=self.processing_class,
             stateful_provider=self,
             shard_index=self.shard_index,
+            model_weights_external=self._model_weights_external(),
         )
         return checkpoint_manager
 

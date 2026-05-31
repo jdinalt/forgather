@@ -475,6 +475,17 @@ class TrainerCallback:
         on_train_metrics     - Called each training step with per-step metrics
                                (loss, grad_norm, tokens, etc.) for fine-grained
                                monitoring or adaptive control
+        on_load_model_weights - Called during _prepare at the checkpoint-load
+                               point when model weights are supplied externally
+                               (checkpoint_components excludes "model"). The
+                               handler loads the weights from its source and
+                               flags them (_is_hf_initialized) so the trainer's
+                               following initialize-missing pass fills only what
+                               the source didn't (e.g. RoPE buffers). DiLoCo's
+                               worker registration implements this.
+
+    The dispatcher only invokes callbacks that actually define a given method,
+    so a callback implements only the events it needs (no no-op overrides).
 
     kwargs always include:
         model, processing_class, optimizer, lr_scheduler,

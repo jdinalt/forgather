@@ -13,8 +13,9 @@
 ## model itself is a !partial (the trainer's model_init): from_config builds
 ## the structure without weights, and the parameter sync overwrites the
 ## freshly-initialized persistent weights before the first forward pass.
-## (Building the empty skeleton on the meta device, allocation-free, is a
-## planned trainer optimization — PR 4; see diloco-architecture.md.)
+## The trainer builds this empty skeleton on the meta device (allocation-
+## free), driven by construct_model_on=meta + checkpoint_components excluding
+## "model" in the project template; see diloco-architecture.md.
 -- extends 'models/base_language_model.yaml'
 
 [model_meta_config]

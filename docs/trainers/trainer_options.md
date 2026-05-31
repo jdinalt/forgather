@@ -232,7 +232,8 @@ Defined in [`trainer.py`](../src/forgather/ml/trainer/trainer.py).
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `gc_threshold` | float | 0.5 | Ratio of allocated-to-total GPU memory that triggers `empty_cache()` (and possibly `gc.collect()`). See the note below - there is a real tuning trade-off. |
-| `construct_model_on` | str | `"default"` | Where to build the model. `"default"` builds on CPU then moves; `"device"` builds directly on device (faster, but can fail when sharding); `"meta"` builds on meta device and materialises empty tensors on target device (fastest). See the note below on `"meta"` semantics and the pipeline trainer. |
+| `construct_model_on` | str | `"default"` | Where to build the model. `"default"` builds on the target device (the model's `__init__` initialises weights); when resuming from a checkpoint with a `model_init`, it transparently uses the meta path. `"meta"` builds on the meta device (no allocation), materialises empty on the target device, then loads/initialises — fastest, and the standard route for checkpoint loading. `"device"` forces on-device construction wrapping a resume load in `no_init_weights()` (fallback for models that can't build on meta). See the notes below. |
+| `checkpoint_components` | list[str] \| None | None | Which checkpoint state components to **save and load**. `None` = every component the trainer produces (default). A list restricts to a subset of `model`, `optimizer`, `scheduler`, `trainer`, `dataset`, `rng`. Excluding `"model"` is the weights-external signal: weights are never checkpointed and the model is built empty on meta (see the note below). A key outside that vocabulary raises. |
 | `activation_memory_budget` | float \| None | None | Sets `torch._functorch.config.activation_memory_budget`. Requires `torch_compile=True`. See [PyTorch activation checkpointing techniques](https://pytorch.org/blog/activation-checkpointing-techniques/). |
 | `fuse_optim_with_backward` | bool | False | Apply optimizer step from the backward gradient hook so each parameter's gradient is consumed and freed immediately after it's produced. Biggest savings when combined with activation checkpointing. Supported by the basic `Trainer` and `PipelineTrainer`, **not** by `DDPTrainer` or `AccelTrainer` (they need gradients intact for the all-reduce). Also incompatible with `max_grad_norm` gradient clipping (clipping needs the full gradient vector before any update is applied), `gradient_accumulation_steps > 1`, and fp16 mixed precision. |
 | `speed_metrics_start_step` | int | 1 | Step at which to start collecting speed metrics. `1` excludes the first step (to skip `torch.compile` warmup). Set higher for longer compile warmups. |
@@ -241,20 +242,39 @@ Defined in [`trainer.py`](../src/forgather/ml/trainer/trainer.py).
 
 Notes on `construct_model_on = "meta"`:
 
-- Meta construction produces a model with uninitialised (empty) tensors.
-  Normally you'd load a checkpoint right after construction to fill them.
-  If you set `"meta"` and no checkpoint is available, the basic trainer
-  falls back to constructing on CPU automatically so you never end up
+- Meta construction produces a model with uninitialised (empty) tensors,
+  filled either by a checkpoint load right after, or — when weights are
+  supplied externally (`checkpoint_components` excludes `"model"`; see
+  below) — by an initialise pass plus that external source. If you set
+  `"meta"` with no checkpoint and weights are not external, the basic
+  trainer falls back to constructing on the device so you never end up
   training against uninitialised weights.
+- Checkpoint loading follows a meta-init contract: construct on meta,
+  materialise empty, load the checkpoint, then initialise only the tensors
+  the checkpoint didn't fill (e.g. non-persistent RoPE buffers).
 - `PipelineTrainer` **always** builds the model on meta - the field is
-  effectively ignored for that trainer. When no checkpoint is present,
-  rank-0 builds the full model on CPU just long enough to initialise
-  weights, then dispatches the initialised parameters/buffers to each
-  rank's empty stage. With a checkpoint, the meta model is filled directly
-  from the checkpoint with no CPU materialisation step.
-- Transformers v5 exposes an API for initialising weights after meta
-  construction, which would let us skip the rank-0 CPU materialisation
-  step entirely. This is not wired up yet.
+  effectively ignored for that trainer. For its from-scratch path, rank-0
+  builds the full model on CPU just long enough to initialise weights, then
+  dispatches the initialised parameters/buffers to each rank's empty stage.
+  With a checkpoint, the meta stages are filled directly from the checkpoint
+  with no CPU materialisation step.
+
+Notes on `checkpoint_components`:
+
+- `None` (the default) saves and loads every component the trainer
+  produces. A list selects a subset; a key outside
+  `model`/`optimizer`/`scheduler`/`trainer`/`dataset`/`rng` raises (a typo
+  can't silently drop a component). A listed key the run doesn't produce
+  (e.g. `dataset` with a non-stateful loader) is ignored.
+- Excluding `"model"` is the **weights-external** signal: the
+  CheckpointManager skips model-weight save/load (marking the checkpoint so
+  it stays resumable), and the trainer builds the model empty on the meta
+  device, initialises the skeleton, and expects the weights from elsewhere.
+  This is how DiLoCo workers run — the parameter server owns the weights —
+  so the DiLoCo template sets
+  `checkpoint_components: [optimizer, scheduler, trainer, rng]`. It also omits
+  `dataset`, whose position the DiLoCo server tracks via work-units (a local
+  dataloader checkpoint would resume from a stale position).
 
 `gc_threshold` is a real trade-off, not just an "OOM knob":
 

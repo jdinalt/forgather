@@ -60,7 +60,7 @@ class WSDScheduler(LRScheduler):
         decay_steps : int, optional
             Total number of steps in the decay phase.  The LR reaches
             ``min_lr`` after exactly this many steps past
-            ``decay_start_step``.  Must be > 0.  Config-only: not saved in
+            ``decay_start_step``. Config-only: not saved in
             checkpoints.  Default is 1.
         decay_start_step : int, optional
             Step at which to begin decay (phase 3).  Set to ``-1`` to disable
@@ -77,8 +77,19 @@ class WSDScheduler(LRScheduler):
         """
         assert warmup_steps >= 0
         assert min_lr > 0.0
-        assert decay_steps > 0
-        assert decay_start_step < 0 or decay_start_step >= warmup_steps
+        # decay_steps may be 0 only when the decay phase is disabled (no
+        # decay_start_step and not starting decay now). Enabling decay needs a
+        # positive decay window.
+        assert decay_steps > 0 or (decay_start_step < 0 and not start_decay), (
+            f"decay_steps must be > 0 to run a decay phase (got {decay_steps}); "
+            f"set annealing_tokens > 0, or disable decay "
+            f"(decay_start_step < 0 and start_decay=False)."
+        )
+        assert decay_start_step < 0 or decay_start_step >= warmup_steps, (
+            f"decay_start_step ({decay_start_step}) must be >= warmup_steps "
+            f"({warmup_steps}); annealing would otherwise overlap warmup. "
+            f"Reduce annealing_tokens or warmup_tokens."
+        )
 
         self.warmup_steps = warmup_steps
         self.min_lr = min_lr

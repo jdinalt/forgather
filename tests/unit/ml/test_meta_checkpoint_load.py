@@ -126,3 +126,58 @@ def test_meta_loaded_model_runs_forward():
     assert logits.shape[0] == 1 and logits.shape[1] == 8
     assert logits.shape[-1] == vocab
     assert torch.isfinite(logits).all()
+
+
+def _build_empty_on_meta():
+    """Empty-meta construction with NO checkpoint: construct on meta,
+    materialize empty, then initialize_missing (nothing flagged -> init all).
+    This is the model-weights-external path (DiLoCo): the worker builds the
+    model empty on meta and the parameter sync supplies weights at register."""
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    from forgather.ml.sharded_checkpoint import (
+        create_sharing_metadata,
+        initialize_missing_weights,
+        retie_parameters,
+    )
+
+    config = AutoConfig.from_pretrained(MODEL_DIR, trust_remote_code=True)
+    with torch.device("meta"):
+        model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+    sharing = create_sharing_metadata(model)
+    model.to_empty(device="cpu")
+    retie_parameters(model, sharing)
+    # No checkpoint load — nothing is flagged, so the init pass fills the
+    # entire model (the empty-meta-from-scratch outcome).
+    initialize_missing_weights(model)
+    return model
+
+
+def test_meta_empty_no_checkpoint_fully_initializes():
+    model = _build_empty_on_meta().eval()
+
+    # Everything materialized off meta.
+    metas = [n for n, t in model.named_parameters() if t.is_meta]
+    metas += [n for n, t in model.named_buffers() if t.is_meta]
+    assert not metas, f"tensors left on meta: {metas}"
+
+    # Every parameter is finite and not the uninitialized all-zero garbage a
+    # bare to_empty() leaves behind (a real init touched them).
+    nonzero_params = 0
+    for n, p in model.named_parameters():
+        assert torch.isfinite(p).all(), f"{n} has non-finite values"
+        if p.abs().sum() > 0:
+            nonzero_params += 1
+    assert nonzero_params > 0, "no parameter was initialized"
+
+    # Derived RoPE buffers recomputed (finite, non-zero).
+    for n, t in model.named_buffers():
+        if n.endswith("inv_freq"):
+            assert torch.isfinite(t).all() and t.abs().sum() > 0, f"{n} not recomputed"
+
+    # And it runs a forward pass.
+    vocab = model.config.vocab_size
+    with torch.no_grad():
+        out = model(input_ids=torch.randint(0, vocab, (1, 8)))
+    logits = out.logits if hasattr(out, "logits") else out
+    assert torch.isfinite(logits).all()

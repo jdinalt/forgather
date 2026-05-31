@@ -62,7 +62,7 @@ class DiLoCoCallback(TrainerCallback):
 
     **The callback is fail-fast on misconfiguration.** If it's constructed
     (in the trainer's callback list) but ``server_addr`` is unset (and
-    ``DILOCO_SERVER`` is also unset in the env), ``on_train_begin``
+    ``DILOCO_SERVER`` is also unset in the env), ``on_load_model_weights``
     raises ``DiLoCoServerUnreachable`` rather than no-op'ing. The
     older "silent no-op when DILOCO_SERVER is unset" path was a
     silent-failure footgun: two workers running with the callback
@@ -129,8 +129,8 @@ class DiLoCoCallback(TrainerCallback):
         # Server-authoritative settings: these MUST match across the group
         # for the sync barrier / outer step / fragment barriers to be
         # coherent, so the worker takes them verbatim from the server's
-        # /info (resolved in on_train_begin) with no client override. They
-        # stay None until then.
+        # /info (resolved in on_load_model_weights) with no client override.
+        # They stay None until then.
         self.sync_every: Optional[int] = None
         self.bf16_comm: Optional[bool] = None
         self.dylu: Optional[bool] = None
@@ -148,10 +148,10 @@ class DiLoCoCallback(TrainerCallback):
             verify_tls = _env_bool("DILOCO_VERIFY_TLS", True)
         self.verify_tls = verify_tls
 
-        # Worker instance (created in on_train_begin)
+        # Worker instance (created in on_load_model_weights)
         self._worker = None
 
-        # Deferred checkpoint state (loaded before on_train_begin)
+        # Deferred checkpoint state (loaded before on_load_model_weights)
         self._pending_state: Optional[Dict[str, Any]] = None
 
     @property
@@ -207,14 +207,24 @@ class DiLoCoCallback(TrainerCallback):
                     f"well below {heartbeat_timeout}s."
                 )
 
-    def on_train_begin(
+    def on_load_model_weights(
         self,
         args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
     ):
-        """Create and start the DiLoCoWorker.
+        """Load the model weights from the DiLoCo server (trainer hook).
+
+        Dispatched by the trainer during ``_prepare`` at the point a
+        checkpoint would load — i.e. when ``checkpoint_components`` excludes
+        ``"model"`` (the DiLoCo default). Builds the ``DiLoCoWorker``,
+        registers (which returns the server's global params), applies them,
+        and flags them ``_is_hf_initialized`` so the trainer's following
+        initialize-missing pass fills only the rest (non-persistent buffers
+        like RoPE ``inv_freq``). The weights arrive *via* register, so this is
+        the whole worker bring-up; the parameter-sync optimizer hook and
+        heartbeat it installs then run during training.
 
         Raises
         ------
@@ -265,7 +275,7 @@ class DiLoCoCallback(TrainerCallback):
         if model is None or optimizer is None:
             raise RuntimeError(
                 "DiLoCoCallback: model or optimizer not provided in "
-                "on_train_begin kwargs. Cannot initialize DiLoCoWorker."
+                "on_load_model_weights kwargs. Cannot initialize DiLoCoWorker."
             )
 
         # Pipeline-parallel detection (issue #84). The pipeline trainer
@@ -413,6 +423,23 @@ class DiLoCoCallback(TrainerCallback):
             self._worker = None
             raise
 
+        # Flag exactly the tensors the worker applied — its PARAMETERS — so the
+        # trainer's subsequent initialize-missing pass fills only the rest
+        # (non-persistent buffers like RoPE inv_freq). The worker syncs
+        # parameters, not buffers (ParamView.apply_global iterates
+        # named_parameters), so flag the parameter names only: that way the
+        # trainer's _verify_external_weights_loaded still catches a persistent
+        # buffer the server never supplied (it stays unflagged) instead of us
+        # masking it. Without flagging, the apply-path init would re-randomize
+        # and clobber the just-applied global params. Flag the materialized
+        # module(s): the pipeline trainer's stages live in pipeline_modules
+        # (trainer.model is the meta skeleton), otherwise the model itself.
+        from forgather.ml.sharded_checkpoint import flag_loaded_tensors
+
+        pp_modules = getattr(trainer, "pipeline_modules", None) if trainer else None
+        for mod in pp_modules or [model]:
+            flag_loaded_tensors(mod, {name for name, _ in mod.named_parameters()})
+
         # Apply deferred checkpoint state
         if self._pending_state is not None:
             self._apply_pending_state()
@@ -422,6 +449,33 @@ class DiLoCoCallback(TrainerCallback):
             f"DiLoCoCallback: worker started "
             f"(server={self.server_addr}, sync_every={self.sync_every})"
         )
+
+    def on_train_begin(
+        self,
+        args: MinimalTrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
+        """Defensive check that the worker was started.
+
+        The worker is brought up earlier, in :meth:`on_load_model_weights`
+        (dispatched during ``_prepare`` when model weights are external). This
+        callback is forgather-specific, so that hook always fires for a
+        correctly configured DiLoCo run. If the worker is still ``None`` here,
+        the run is misconfigured — the callback is active but
+        ``checkpoint_components`` didn't exclude ``"model"``, so the trainer
+        never asked us to load the server's weights. Fail loud rather than
+        train a model the server never filled.
+        """
+        if self._worker is None:
+            raise RuntimeError(
+                "DiLoCoCallback: worker was not started by on_load_model_weights. "
+                "The DiLoCo callback is active but the trainer never dispatched "
+                "the weight-load hook — exclude 'model' from checkpoint_components "
+                "so the worker loads weights from the server (the DiLoCo template "
+                "sets this)."
+            )
 
     def _apply_pending_state(self):
         """Apply deferred state from load_state_dict to the active worker."""
@@ -496,13 +550,16 @@ class DiLoCoCallback(TrainerCallback):
         }
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
-        """Defer state restoration until on_train_begin.
+        """Defer state restoration until the worker is created.
 
-        Checkpoint loading happens during _prepare() before on_train_begin,
-        so the worker doesn't exist yet. We store the state and apply it
-        once the worker is created.
+        Checkpoint loading happens during _prepare(); the callback's state
+        load_state_dict runs before on_load_model_weights builds the worker,
+        so the worker doesn't exist yet. We store the state and apply it once
+        the worker is created (in on_load_model_weights).
         """
         if not state_dict:
             return
         self._pending_state = state_dict
-        logger.debug("DiLoCoCallback: checkpoint state deferred until on_train_begin")
+        logger.debug(
+            "DiLoCoCallback: checkpoint state deferred until on_load_model_weights"
+        )

@@ -4,7 +4,7 @@
 
 ## Overview
 
-Forgather's checkpoint system automatically handles distributed training across multiple GPUs and nodes. Checkpoints include complete training state (model, optimizer, scheduler, dataset position, RNG state) and can be resumed seamlessly.
+Forgather's checkpoint system automatically handles distributed training across multiple GPUs and nodes. Checkpoints include complete training state (model, optimizer, scheduler, dataset position, RNG state) and can be resumed seamlessly. The set of components saved and loaded is selectable via `checkpoint_components`, including a weights-external mode (DiLoCo-style) that omits model weights.
 
 ## Basic Usage
 
@@ -124,7 +124,47 @@ trainer.train()  # Loads model weights, skips deleted components
 
 The checkpoint system will log warnings for missing components but continue loading with your current configuration for those components.
 
-**Note**: Model weights are always required and cannot be skipped.
+**Note**: Model weights are always required and cannot be skipped when the run
+saves model weights. To produce checkpoints without model weights, use
+`checkpoint_components` (see below).
+
+### Selecting Checkpoint Components
+
+`checkpoint_components` selects which state components a run **saves and loads**,
+applied uniformly to both directions:
+
+```python
+args = TrainingArguments(
+    output_dir="output_models/my_model",
+    # Restrict to a subset of the known components
+    checkpoint_components=["model", "optimizer", "scheduler", "trainer"],
+)
+```
+
+- `None` (the default) saves and loads every component the trainer produces.
+- A list restricts to a subset of the known keys: `model`, `optimizer`,
+  `scheduler`, `trainer`, `dataset`, `rng`. A key outside that vocabulary
+  raises, so a typo cannot silently drop a component. A listed key the run
+  doesn't produce (e.g. `dataset` with a non-stateful dataloader) is ignored.
+
+Unlike deleting component files from a checkpoint directory, this also governs
+what is *written* on subsequent saves.
+
+**Weights-external checkpoints.** Excluding `"model"` from the list is the
+weights-external signal: the checkpoint system skips model-weight save and load,
+and the trainer builds the model empty on the meta device, initializes the
+skeleton, and expects weights to arrive from an external source. A sentinel
+marker is written so the model-less checkpoint stays discoverable for resume; a
+model-less checkpoint *without* that marker (i.e. a partial or corrupt normal
+checkpoint) remains invalid, so discovery falls back to an older complete
+checkpoint.
+
+This is how DiLoCo workers run — the parameter server owns the weights — so the
+DiLoCo template sets `checkpoint_components: [optimizer, scheduler, trainer, rng]`.
+It also omits `dataset`, whose position the DiLoCo server tracks via work-units.
+
+See `construct_model_on` and the `checkpoint_components` notes in
+`docs/trainers/trainer_options.md` for the model-construction details.
 
 ## DDP Training (Data Parallel)
 

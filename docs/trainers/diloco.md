@@ -745,10 +745,11 @@ that config, with no weights), and fills it from the parameter sync at
 register. Every worker therefore builds the *same* model the server holds —
 there is no `--model-id-or-path` to get wrong and no shared filesystem
 requirement. See [Model-definition staging](#model-definition-staging) below.
-(Constructing the empty skeleton on the meta device, allocation-free, and
-skipping model-weight checkpoint save/load are planned trainer changes — see
-[Planned: configurable checkpoint state + empty-meta construction](diloco-architecture.md)
-in the architecture doc.)
+The empty skeleton is built on the meta device (allocation-free), and the
+worker checkpoints its training state (optimizer / scheduler / progress /
+RNG) but **never model weights** — those are the server's authority. See
+[Checkpoint state selection + empty-meta construction](diloco-architecture.md)
+in the architecture doc.
 
 ### Model fingerprint check
 
