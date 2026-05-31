@@ -1,5 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import {
+  CSSProperties,
+  Dispatch,
+  SetStateAction,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   api,
   ClusterJobSubmitRequest,
@@ -7,6 +14,7 @@ import {
   ConfigInfo,
   DiLoCoInfo,
   DiLoCoServer,
+  EnqueueRequest,
   ProjectInfo,
 } from "../api";
 import { useDatasetSource } from "../dataset-source";
@@ -176,10 +184,64 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   const [diHeartbeat, setDiHeartbeat] = useState<string>(
     persistedDiLoCo.heartbeatInterval,
   );
-  // worker_id stays per-submit only — auto-generation is the desired
-  // default and a stale value would collide with the prior worker's
-  // registration.
-  const [diWorkerId, setDiWorkerId] = useState<string>("");
+  // Worker pool (batch submit). A DiLoCo run is often N identical workers
+  // differing only by worker_id, so instead of a single worker_id field we
+  // maintain a pool: stopped workers the server knows about (toggled on to
+  // resume from their checkpoint) plus freshly-added new names. On Submit one
+  // job is spawned per pool member. Empty pool == one auto-named worker (the
+  // pre-pool behavior). Per-submit only — not persisted, since reusing a
+  // worker_id collides with the prior worker's registration.
+  //
+  // Stopped workers default to ON: they're usually stopped because the server
+  // was restarted, and the normal intent is to bring every one back. So we
+  // track the *exceptions* — the base worker-ids the operator toggled OFF —
+  // rather than the enabled set; this also sidesteps async-roster seeding (a
+  // worker is enabled the instant it appears unless explicitly disabled).
+  // ``newWorkers`` is the ordered list of added/generated names.
+  const [disabledStopped, setDisabledStopped] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [newWorkers, setNewWorkers] = useState<string[]>([]);
+  // Switching servers (or to "None") invalidates the pool — the ids belong to
+  // a specific server's roster — so reset it.
+  useEffect(() => {
+    setDisabledStopped(new Set());
+    setNewWorkers([]);
+  }, [selectedDiLoCoBase]);
+  // Roster of workers the selected server has ever seen (issue #103). Lifted
+  // here (not in the picker) because Submit needs to know which stopped
+  // workers are toggled on to spawn them.
+  const knownWorkersQ = useQuery({
+    queryKey: ["diloco", "known-workers", selectedDiLoCoBase],
+    queryFn: () => api.diLoCoKnownWorkers(selectedDiLoCoBase),
+    enabled: !!selectedDiLoCoBase,
+    staleTime: 10_000,
+  });
+  const resumableWorkers = useMemo(() => {
+    // Dedupe to the base worker-id the operator actually passes as
+    // --diloco-worker-id; pipeline ranks register as ``<base>_pp<N>`` and
+    // share one local output_dir, so the base is the resumable identity.
+    const seen = new Map<string, string | null | undefined>();
+    for (const w of knownWorkersQ.data?.workers ?? []) {
+      if (w.running) continue;
+      const base = w.worker_id.replace(/_pp\d+$/, "");
+      if (!seen.has(base)) seen.set(base, w.output_dir);
+    }
+    return [...seen.entries()].map(([name, output_dir]) => ({
+      name,
+      output_dir,
+    }));
+  }, [knownWorkersQ.data]);
+  // The concrete set of worker_ids Submit will spawn: enabled stopped
+  // workers + every new worker, deduped, original order preserved.
+  const poolWorkerIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const w of resumableWorkers) {
+      if (!disabledStopped.has(w.name)) ids.push(w.name);
+    }
+    for (const n of newWorkers) ids.push(n);
+    return [...new Set(ids)];
+  }, [resumableWorkers, disabledStopped, newWorkers]);
   useEffect(() => {
     const cur: DiLoCoPersisted = {
       base: selectedDiLoCoBase,
@@ -388,11 +450,20 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     return onlyId !== membersQ.data?.self_node_id;
   }, [clusterActive, mnState.selected, membersQ.data?.self_node_id]);
 
+  // Batch enqueue: spawn one job per request, sequentially (deterministic
+  // ordering; each queue_id is minted server-side). Handles the common case
+  // of a single request too, so the single-node path always routes here.
   const enqueue = useMutation({
-    mutationFn: api.enqueue,
-    onSuccess: (item) => {
+    mutationFn: async (reqs: EnqueueRequest[]) => {
+      const items = [];
+      for (const req of reqs) {
+        items.push(await api.enqueue(req));
+      }
+      return items;
+    },
+    onSuccess: (items) => {
       qc.invalidateQueries({ queryKey: ["queue"] });
-      onSubmitted?.(item.queue_id);
+      if (items[0]) onSubmitted?.(items[0].queue_id);
       onClose();
     },
   });
@@ -571,28 +642,41 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
         gpus = localNproc;
       }
     }
-    const job_params: Record<string, unknown> = {};
     const trimmedNproc = nprocOverride.trim();
-    if (trimmedNproc) job_params.nproc = trimmedNproc;
-    // DiLoCo opt-in: hand the chosen server + dependent settings to
-    // the scheduler, which translates them into DILOCO_* env vars on
-    // the spawned process. Only attached when the operator actually
-    // picked a server in the radio group ("" = None).
-    const diloco = buildDiLoCoPayload({
-      base: selectedDiLoCoBase,
-      heartbeatInterval: diHeartbeat,
-      workerId: diWorkerId,
-    });
-    if (diloco) job_params.diloco = diloco;
-    enqueue.mutate({
-      project_dir: project.project_dir,
-      config: config.name,
-      dynamic_args: dyn,
-      requested_gpus: gpus,
-      priority,
-      dataset_source: datasetSource,
-      ...(Object.keys(job_params).length > 0 ? { job_params } : {}),
-    });
+    // Build one enqueue request for a given worker_id (null == let the
+    // scheduler auto-assign, i.e. fall back to the queue_id).
+    const buildRequest = (workerId: string | null): EnqueueRequest => {
+      const job_params: Record<string, unknown> = {};
+      if (trimmedNproc) job_params.nproc = trimmedNproc;
+      // DiLoCo opt-in: hand the chosen server + dependent settings to
+      // the scheduler, which translates them into DILOCO_* env vars on
+      // the spawned process. Only attached when the operator actually
+      // picked a server in the radio group ("" = None).
+      const diloco = buildDiLoCoPayload({
+        base: selectedDiLoCoBase,
+        heartbeatInterval: diHeartbeat,
+        workerId: workerId ?? "",
+      });
+      if (diloco) job_params.diloco = diloco;
+      return {
+        project_dir: project.project_dir,
+        config: config.name,
+        dynamic_args: dyn,
+        requested_gpus: gpus,
+        priority,
+        dataset_source: datasetSource,
+        ...(Object.keys(job_params).length > 0 ? { job_params } : {}),
+      };
+    };
+
+    // DiLoCo batch: one job per pool member (enabled stopped + new). With
+    // no pool members (or no DiLoCo server) we spawn a single auto-named
+    // job — the pre-pool behavior.
+    const reqs: EnqueueRequest[] =
+      selectedDiLoCoBase && poolWorkerIds.length > 0
+        ? poolWorkerIds.map((wid) => buildRequest(wid))
+        : [buildRequest(null)];
+    enqueue.mutate(reqs);
   };
 
   return (
@@ -784,8 +868,13 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
               onSelectBase={setSelectedDiLoCoBase}
               heartbeatInterval={diHeartbeat}
               setHeartbeatInterval={setDiHeartbeat}
-              workerId={diWorkerId}
-              setWorkerId={setDiWorkerId}
+              resumableWorkers={resumableWorkers}
+              knownWorkersLoading={knownWorkersQ.isLoading}
+              disabledStopped={disabledStopped}
+              setDisabledStopped={setDisabledStopped}
+              newWorkers={newWorkers}
+              setNewWorkers={setNewWorkers}
+              poolWorkerIds={poolWorkerIds}
               persistError={dilocoPersistError}
               infoLoading={dilocoInfoQ.isLoading}
               infoError={dilocoInfoQ.error}
@@ -863,7 +952,11 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
                 ? "Submitting…"
                 : useClusterFanout
                   ? `Submit to ${mnState.selected.size} nodes`
-                  : "Submit"}
+                  : selectedDiLoCoBase && poolWorkerIds.length > 0
+                    ? `Submit ${poolWorkerIds.length} worker${
+                        poolWorkerIds.length === 1 ? "" : "s"
+                      }`
+                    : "Submit"}
             </button>
           </div>
         </footer>
@@ -892,14 +985,25 @@ const DEFAULT_DILOCO_PERSISTED: DiLoCoPersisted = {
   heartbeatInterval: "",
 };
 
+interface ResumableWorker {
+  name: string;
+  output_dir?: string | null;
+}
+
 interface DiLoCoPickerProps {
   servers: DiLoCoServer[];
   selectedBase: string;
   onSelectBase: (base: string) => void;
   heartbeatInterval: string;
   setHeartbeatInterval: (v: string) => void;
-  workerId: string;
-  setWorkerId: (v: string) => void;
+  // Worker pool (batch submit).
+  resumableWorkers: ResumableWorker[];
+  knownWorkersLoading: boolean;
+  disabledStopped: Set<string>;
+  setDisabledStopped: Dispatch<SetStateAction<Set<string>>>;
+  newWorkers: string[];
+  setNewWorkers: Dispatch<SetStateAction<string[]>>;
+  poolWorkerIds: string[];
   persistError: string | null;
   infoLoading: boolean;
   infoError: unknown;
@@ -918,8 +1022,13 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
     onSelectBase,
     heartbeatInterval,
     setHeartbeatInterval,
-    workerId,
-    setWorkerId,
+    resumableWorkers,
+    knownWorkersLoading,
+    disabledStopped,
+    setDisabledStopped,
+    newWorkers,
+    setNewWorkers,
+    poolWorkerIds,
     persistError,
     infoLoading,
     infoError,
@@ -927,32 +1036,75 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
     clusterFanout,
   } = props;
 
-  // Roster of workers the server has ever seen (issue #103). Workers that
-  // are NOT currently running can be relaunched under their old id to
-  // resume from that worker's checkpoint — we surface them as a datalist
-  // menu on the worker_id field below. Hooks must run unconditionally, so
-  // this precedes the cluster-fanout early return.
-  const knownWorkersQ = useQuery({
-    queryKey: ["diloco", "known-workers", selectedBase],
-    queryFn: () => api.diLoCoKnownWorkers(selectedBase),
-    enabled: !!selectedBase,
-    staleTime: 10_000,
-  });
-  const resumableWorkers = useMemo(() => {
-    // Dedupe to the base worker-id the operator actually passes as
-    // --diloco-worker-id; pipeline ranks register as ``<base>_pp<N>`` and
-    // share one local output_dir, so the base is the resumable identity.
-    const seen = new Map<string, string | null | undefined>();
-    for (const w of knownWorkersQ.data?.workers ?? []) {
-      if (w.running) continue;
-      const base = w.worker_id.replace(/_pp\d+$/, "");
-      if (!seen.has(base)) seen.set(base, w.output_dir);
+  // Local UI state for the pool's add/generate controls. Hooks must run
+  // unconditionally, so they precede the cluster-fanout early return.
+  const [addName, setAddName] = useState<string>("");
+  const [genCount, setGenCount] = useState<string>("4");
+  const [generating, setGenerating] = useState<boolean>(false);
+  const [poolError, setPoolError] = useState<string | null>(null);
+
+  // Every name already claimed in the pool — stopped roster ids + added new
+  // ones. Used to reject duplicate adds and to keep generated batches disjoint.
+  const claimedNames = useMemo(() => {
+    const s = new Set<string>();
+    for (const w of resumableWorkers) s.add(w.name);
+    for (const n of newWorkers) s.add(n);
+    return s;
+  }, [resumableWorkers, newWorkers]);
+
+  // Toggling tracks the disabled exceptions: a name in the set is OFF.
+  const toggleStopped = (name: string) => {
+    setPoolError(null);
+    setDisabledStopped((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const addWorker = (raw: string) => {
+    const name = raw.trim();
+    if (!name) return;
+    if (resumableWorkers.some((w) => w.name === name)) {
+      setPoolError(
+        `"${name}" is a stopped worker — toggle its chip above to resume it.`,
+      );
+      return;
     }
-    return [...seen.entries()].map(([name, output_dir]) => ({
-      name,
-      output_dir,
-    }));
-  }, [knownWorkersQ.data]);
+    if (newWorkers.includes(name)) {
+      setPoolError(`"${name}" is already in the pool.`);
+      return;
+    }
+    setNewWorkers((prev) => [...prev, name]);
+    setAddName("");
+    setPoolError(null);
+  };
+
+  const removeNewWorker = (name: string) => {
+    setNewWorkers((prev) => prev.filter((n) => n !== name));
+    setPoolError(null);
+  };
+
+  const generateBatch = async () => {
+    const count = parseInt(genCount, 10);
+    if (!Number.isFinite(count) || count < 1) {
+      setPoolError("Enter a worker count of 1 or more.");
+      return;
+    }
+    setGenerating(true);
+    setPoolError(null);
+    try {
+      const names = await api.generateDiLoCoWorkerNames(count, [
+        ...claimedNames,
+      ]);
+      setNewWorkers((prev) => [...prev, ...names]);
+    } catch (e) {
+      setPoolError((e as Error).message);
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   // Multi-node fanout + DiLoCo together needs per-peer worker IDs and
   // dataset sharding that isn't wired yet. Hide the picker (preserving
@@ -1128,90 +1280,297 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
               </fieldset>
             )}
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: 8,
-              }}
-            >
-              <label>
-                heartbeat_interval (s)
-                <input
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={heartbeatInterval}
-                  onChange={(e) => setHeartbeatInterval(e.target.value)}
-                  placeholder="30"
-                  style={{ width: "100%" }}
-                />
-              </label>
-              <label>
-                worker_id (optional)
-                <input
-                  type="text"
-                  value={workerId}
-                  onChange={(e) => setWorkerId(e.target.value)}
-                  placeholder="auto"
-                  list="diloco-known-workers"
-                  style={{ width: "100%" }}
-                />
-                {/* Name-only autocomplete; the full path is shown (and not
-                    clipped) by the chip menu below, so the datalist option
-                    carries no path label. */}
-                <datalist id="diloco-known-workers">
-                  {resumableWorkers.map((w) => (
-                    <option key={w.name} value={w.name} />
-                  ))}
-                </datalist>
-              </label>
-            </div>
-            {resumableWorkers.length > 0 && (
-              <div className="muted" style={{ fontSize: "smaller", marginTop: 6 }}>
-                Resume a stopped worker from its checkpoint:
-                <div
-                  style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: 6,
-                    marginTop: 4,
-                  }}
-                >
-                  {resumableWorkers.map((w) => {
-                    const dir = (w.output_dir ?? "").replace(/\/+$/, "");
-                    const leaf = dir.split("/").pop() || "";
-                    return (
-                      <button
-                        type="button"
-                        key={w.name}
-                        onClick={() => setWorkerId(w.name)}
-                        title={w.output_dir ?? undefined}
-                        style={{
-                          fontSize: "smaller",
-                          padding: "2px 8px",
-                          borderRadius: 10,
-                          cursor: "pointer",
-                          border:
-                            workerId === w.name
-                              ? "1px solid var(--accent, #7aa2f7)"
-                              : "1px solid var(--border, #3b4261)",
-                        }}
-                      >
-                        {w.name}
-                        {leaf && leaf !== w.name && (
-                          <span className="muted"> · {leaf}</span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+            <label style={{ display: "block", maxWidth: "12em" }}>
+              heartbeat_interval (s)
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={heartbeatInterval}
+                onChange={(e) => setHeartbeatInterval(e.target.value)}
+                placeholder="30"
+                style={{ width: "100%" }}
+              />
+            </label>
+
+            <WorkerPool
+              resumableWorkers={resumableWorkers}
+              knownWorkersLoading={knownWorkersLoading}
+              disabledStopped={disabledStopped}
+              newWorkers={newWorkers}
+              poolWorkerIds={poolWorkerIds}
+              addName={addName}
+              setAddName={setAddName}
+              genCount={genCount}
+              setGenCount={setGenCount}
+              generating={generating}
+              poolError={poolError}
+              onToggleStopped={toggleStopped}
+              onAddWorker={addWorker}
+              onRemoveNewWorker={removeNewWorker}
+              onGenerateBatch={generateBatch}
+            />
           </>
         )}
       </div>
     </details>
+  );
+}
+
+interface WorkerPoolProps {
+  resumableWorkers: ResumableWorker[];
+  knownWorkersLoading: boolean;
+  disabledStopped: Set<string>;
+  newWorkers: string[];
+  poolWorkerIds: string[];
+  addName: string;
+  setAddName: (v: string) => void;
+  genCount: string;
+  setGenCount: (v: string) => void;
+  generating: boolean;
+  poolError: string | null;
+  onToggleStopped: (name: string) => void;
+  onAddWorker: (name: string) => void;
+  onRemoveNewWorker: (name: string) => void;
+  onGenerateBatch: () => void;
+}
+
+const CHIP_BASE: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  fontSize: "smaller",
+  padding: "2px 8px",
+  borderRadius: 10,
+  background: "transparent",
+};
+
+/** The DiLoCo worker pool: a row of chips for stopped workers (toggle to
+ *  resume from checkpoint) and new workers (added manually or generated in
+ *  a batch; removable), plus the add/generate controls. On Submit one job is
+ *  spawned per enabled chip; an empty pool spawns a single auto-named worker. */
+function WorkerPool(props: WorkerPoolProps) {
+  const {
+    resumableWorkers,
+    knownWorkersLoading,
+    disabledStopped,
+    newWorkers,
+    poolWorkerIds,
+    addName,
+    setAddName,
+    genCount,
+    setGenCount,
+    generating,
+    poolError,
+    onToggleStopped,
+    onAddWorker,
+    onRemoveNewWorker,
+    onGenerateBatch,
+  } = props;
+
+  const count = poolWorkerIds.length;
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+          gap: 8,
+        }}
+      >
+        <strong style={{ fontSize: "smaller" }}>Worker pool</strong>
+        <span className="muted" style={{ fontSize: "smaller" }}>
+          {count > 0
+            ? `${count} worker${count === 1 ? "" : "s"} will be spawned`
+            : "empty — one auto-named worker will be spawned"}
+        </span>
+      </div>
+
+      {/* Stopped workers — toggle on to relaunch under the old id and resume
+          from that worker's checkpoint. */}
+      <div style={{ marginTop: 6 }}>
+        <div className="muted" style={{ fontSize: "smaller" }}>
+          Stopped workers{" "}
+          <span style={{ opacity: 0.7 }}>
+            (resumed from checkpoint by default — toggle off to skip)
+          </span>
+        </div>
+        {knownWorkersLoading && (
+          <div className="muted" style={{ fontSize: "smaller", marginTop: 4 }}>
+            Loading roster…
+          </div>
+        )}
+        {!knownWorkersLoading && resumableWorkers.length === 0 && (
+          <div className="muted" style={{ fontSize: "smaller", marginTop: 4 }}>
+            None — the server has no stopped workers to resume.
+          </div>
+        )}
+        {resumableWorkers.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 6,
+              marginTop: 4,
+            }}
+          >
+            {resumableWorkers.map((w) => {
+              const on = !disabledStopped.has(w.name);
+              const dir = (w.output_dir ?? "").replace(/\/+$/, "");
+              const leaf = dir.split("/").pop() || "";
+              return (
+                <button
+                  type="button"
+                  key={w.name}
+                  aria-pressed={on}
+                  onClick={() => onToggleStopped(w.name)}
+                  title={w.output_dir ?? undefined}
+                  style={{
+                    ...CHIP_BASE,
+                    cursor: "pointer",
+                    opacity: on ? 1 : 0.55,
+                    border: on
+                      ? "1px solid var(--accent, #7aa2f7)"
+                      : "1px dashed var(--border, #3b4261)",
+                  }}
+                >
+                  <span aria-hidden style={{ fontSize: "0.85em" }}>
+                    {on ? "☑" : "☐"}
+                  </span>
+                  {w.name}
+                  {leaf && leaf !== w.name && (
+                    <span className="muted"> · {leaf}</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* New workers — added manually or generated; removable. */}
+      {newWorkers.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <div className="muted" style={{ fontSize: "smaller" }}>
+            New workers
+          </div>
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 6,
+              marginTop: 4,
+            }}
+          >
+            {newWorkers.map((name) => (
+              <span
+                key={name}
+                style={{
+                  ...CHIP_BASE,
+                  border: "1px solid var(--accent, #7aa2f7)",
+                }}
+              >
+                {name}
+                <button
+                  type="button"
+                  aria-label={`Remove ${name}`}
+                  title={`Remove ${name}`}
+                  onClick={() => onRemoveNewWorker(name)}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    cursor: "pointer",
+                    padding: 0,
+                    lineHeight: 1,
+                    fontSize: "1.1em",
+                    color: "inherit",
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Add / generate controls. */}
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "flex-end",
+          gap: 8,
+          marginTop: 10,
+        }}
+      >
+        <label style={{ flex: "1 1 12em" }}>
+          <span className="muted" style={{ fontSize: "smaller" }}>
+            Add a worker
+          </span>
+          <div style={{ display: "flex", gap: 4, marginTop: 2 }}>
+            <input
+              type="text"
+              value={addName}
+              onChange={(e) => setAddName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  onAddWorker(addName);
+                }
+              }}
+              placeholder="worker name"
+              style={{ flex: 1, minWidth: 0 }}
+            />
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => onAddWorker(addName)}
+              disabled={!addName.trim()}
+            >
+              Add
+            </button>
+          </div>
+        </label>
+
+        <label>
+          <span className="muted" style={{ fontSize: "smaller" }}>
+            Generate
+          </span>
+          <div style={{ display: "flex", gap: 4, marginTop: 2 }}>
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={genCount}
+              onChange={(e) => setGenCount(e.target.value)}
+              style={{ width: "4.5em" }}
+              title="How many random worker names to generate at once"
+            />
+            <button
+              type="button"
+              className="secondary"
+              onClick={onGenerateBatch}
+              disabled={generating}
+            >
+              {generating ? "Generating…" : "Generate"}
+            </button>
+          </div>
+        </label>
+      </div>
+
+      {poolError && (
+        <div
+          role="alert"
+          className="muted"
+          style={{ color: "tomato", fontSize: "smaller", marginTop: 6 }}
+        >
+          {poolError}
+        </div>
+      )}
+    </div>
   );
 }
 

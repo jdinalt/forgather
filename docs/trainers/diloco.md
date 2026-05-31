@@ -132,6 +132,17 @@ server; every worker adopts them from `/info` — there are no worker flags):
 forgather diloco server -o path/to/output --from-checkpoint output_models/my_model/checkpoint-1000 -n 2
 ```
 
+**Startup banner.** On start the server prints what a worker needs to connect,
+mirroring the dataset server:
+
+- The **bearer auth token** (and a ready-to-run `curl` carrying it), plus the
+  per-port token file path. Auth is on by default; `--no-auth` prints a warning
+  instead, and `--quiet-tokens` (set by the webui in `--demo` mode) suppresses
+  the value while still confirming auth is enabled.
+- The **server URL**. When bound to a wildcard address (`-H 0.0.0.0`), the
+  banner shows the host's primary-interface IP rather than `0.0.0.0`, so the
+  address is copy-pasteable straight onto worker `--server` lines.
+
 ### 2. Start Workers
 
 On each machine, launch a worker that wraps the normal training command.
@@ -167,10 +178,27 @@ worker_id`). To resume a stopped worker, relaunch it with the **same**
 `--worker-id`: the suffix resolves to the same directory and the trainer
 picks up that worker's latest checkpoint. The server remembers the names of
 every worker that has registered — persisted with its checkpoints, so the
-roster survives a server restart — and the webui's submit modal offers the
-not-currently-running names as a menu on the `worker_id` field (the
-`output_dir` each would resume from is shown alongside). Pick one to resume,
-or type a new name to start fresh.
+roster survives a server restart.
+
+**Submitting workers from the webui (worker pool).** When a DiLoCo server is
+selected in the submit modal, the DiLoCo section shows a *worker pool* instead
+of a single `worker_id` field. The pool has two kinds of chips:
+
+- **Stopped workers** — every not-currently-running name on the server's
+  roster, each showing the `output_dir` it would resume from. These are
+  **enabled by default**: workers are usually stopped because the server was
+  restarted, and the normal intent is to bring them all back, each relaunched
+  under its old id to resume from its checkpoint. Toggle a chip off to skip it.
+- **New workers** — names you add. Type one and click **Add**, or set a count
+  and click **Generate** to mint that many random, mutually-unique names (from
+  ~100K adjective-species permutations; generated batches never collide with
+  names already in the pool). New chips carry an **×** to remove them.
+
+On **Submit**, one job is spawned per enabled stopped worker plus every new
+worker — so "spin up N identical workers" or "resume these three and add two
+fresh ones" is a single action. An empty pool submits a single auto-named
+worker (its id falls back to the queue id), preserving the simple one-worker
+flow.
 
 **Server-authoritative settings.** `sync_every`, `bf16_comm`, `dylu`, and
 `num_fragments` must match across every worker in the group for the sync
@@ -990,13 +1018,35 @@ on the right:
 2. **Workers table**: per-worker health dot (green/yellow/red by
    heartbeat age), ID (hover for full id), hostname, sync round,
    steps/s, relative heartbeat age, and a per-row **Kick** button.
+   Each row also has **Save checkpoint** / **Save & Stop** / **Abort**
+   controls, and the section header carries **All:** buttons that apply
+   the same action to every registered worker at once. All of these go
+   through the server's command relay (`/control/command`), so they work
+   for every registered worker — including remote ones — without the
+   webui needing to reach each worker's trainer-control endpoint.
 3. **Server metrics**: outer LR / momentum, worker-death count,
    heartbeat timeout. Sync mode adds a pending-submissions progress
    bar; async mode adds total-submissions, DN buffer status, and DyLU
    state.
-4. **Control card**: **Save checkpoint**, **Shutdown** (confirm
+4. **Control card**: **Save checkpoint**, **Shutdown** (two-mode
    overlay), live **Optimizer** tuning (LR + momentum + Apply),
    **Workers** expected-count adjustment.
+
+   **Shutdown** is the main path for stopping everything and offers two
+   modes (both via the relay, mirroring `forgather diloco shutdown`):
+   - **Clean shutdown** (the recommended default): relays **save_and_stop**
+     to every worker, waits until they have actually exited (polling the
+     server's worker roster), saves a server checkpoint, then stops the
+     server. No data loss. The overlay streams progress (a live
+     worker-stop count) and, if a worker never stops within the timeout,
+     reports it and leaves the server running rather than stranding
+     still-live workers. While it is waiting, a **Cancel** button aborts
+     the sequence and hands control back immediately (the server is left
+     running) so the operator can troubleshoot a worker that won't stop,
+     then retry or force.
+   - **Force stop**: relays **abort** to all workers (they stop without
+     saving) and stops the server without waiting. For "stop it all now,
+     don't care about data loss".
 5. **Work-unit dispatch**: per-queue heatmap (K cells, three states:
    available / issued / completed), with per-worker counters.
 
@@ -1013,10 +1063,42 @@ webui's Control card talks to under the hood.
 | `POST /control/kick_worker` | `{"worker_id": "..."}` | Evict a worker |
 | `POST /control/update_optimizer` | `{"lr": 0.5, "momentum": 0.8}` | Update optimizer hyperparameters |
 | `POST /control/update_num_workers` | `{"num_workers": 4}` | Change expected worker count |
+| `POST /control/command` | `{"command": "save_and_stop", "worker_id": "w0"}` | Relay a trainer-control command to a worker (`worker_id` omitted = all) |
 | `POST /control/shutdown` | `{}` | Save state (if configured) and stop |
 
 All endpoints return `{"status": "ok", ...}` on success or `{"error": "..."}` on
 failure.
+
+#### Command relay
+
+`/control/command` is how the CLI and webui drive a worker's trainer-control
+actions (**save_checkpoint** / **save_and_stop** / **abort**) without reaching
+each worker's own trainer-control HTTP endpoint. The server queues the command
+on the target worker(s) and delivers it on their next **heartbeat**; the DiLoCo
+callback then applies it to the trainer loop exactly as the direct
+trainer-control endpoint would. Latency is bounded by `--heartbeat-interval`.
+For multi-rank workers (DDP / pipeline) only the leader heartbeats, so the
+callback `all_reduce(MAX)`-es the command code across ranks each step — every
+rank reaches the same save/stop decision and the group can't deadlock on a
+divergent stop.
+
+### Controlling workers from the CLI
+
+```bash
+# Relay to all registered workers (or one with --worker-id):
+forgather diloco control save        --server host:8512   # checkpoint, keep training
+forgather diloco control save-stop   --server host:8512   # checkpoint, then stop
+forgather diloco control abort       --server host:8512   # stop now, no save
+
+# Stop the whole run. Clean by default: save-stop every worker, wait for them
+# to exit, checkpoint the server, then stop it.
+forgather diloco shutdown --server host:8512
+forgather diloco shutdown --server host:8512 --timeout 120   # cap the wait
+forgather diloco shutdown --server host:8512 --force         # stop server now, don't wait
+```
+
+A clean `shutdown` that times out waiting for a stuck worker leaves the server
+running so you can troubleshoot (re-run it, or use `--force`).
 
 ### Security Note
 

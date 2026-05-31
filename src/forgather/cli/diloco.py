@@ -22,7 +22,10 @@ def _server_cmd(args):
     )
     from forgather.ml.diloco.server import DiLoCoServer
     from forgather.tls import enforce_non_loopback_policy
+    from forgather.tls.discovery import primary_routable_ip
     from forgather.tls.runtime import is_tls_active, stdlib_ssl_context
+
+    _WILDCARD_HOSTS = ("0.0.0.0", "::", "")
 
     logging.basicConfig(
         level=logging.INFO,
@@ -110,15 +113,9 @@ def _server_cmd(args):
     elif token_source == "persisted":
         # Persisted file already exists — no write needed.
         pass
-
-    if not getattr(args, "quiet_tokens", False):
-        print(f"Auth: {format_auth_mode(args, token_source)}")
-        if auth_token is not None and token_source in (
-            "generated",
-            "regenerated",
-            "persisted",
-        ):
-            print(f"  token file: {standalone_token_file(args.port)}")
+    # The human-facing auth banner (token value + curl) is printed below,
+    # once TLS state and the display host are resolved, so the example URL
+    # carries the right scheme and a routable address.
 
     # TLS: build a stdlib SSLContext (or None for cleartext). Refuse
     # non-loopback binds without TLS unless --insecure was passed.
@@ -208,7 +205,53 @@ def _server_cmd(args):
         bulk_auth_enabled=bulk_auth_enabled,
     )
 
-    print(f"Starting DiLoCo server on {args.host}:{args.port}")
+    # Resolve the display host + scheme for the startup banner. A wildcard
+    # bind (``0.0.0.0``) is not something a worker can dial, so show the
+    # primary interface's IP instead — the operator copies this straight
+    # onto worker ``--server`` lines. Mirrors the dataset server's banner.
+    scheme = "https" if tls_on else "http"
+    display_host = args.host
+    if args.host in _WILDCARD_HOSTS:
+        routable = primary_routable_ip()
+        if routable:
+            display_host = routable
+
+    # Auth banner — like the dataset server, print the bearer token (and a
+    # ready-to-run curl) so setting up workers from the CLI is copy-paste.
+    # ``--quiet-tokens`` (set by the webui in --demo mode) suppresses the
+    # value; the per-port token file still carries it for legitimate peers.
+    quiet_tokens = bool(getattr(args, "quiet_tokens", False))
+    if auth_token is None:
+        print(
+            "!! DiLoCo server is running with --no-auth — any host that can "
+            "reach the bind port has full control (shutdown, optimizer, sync)"
+        )
+    else:
+        if token_source == "regenerated":
+            print(
+                "!! --regen-token: replacing the persisted per-port token. "
+                "Existing workers will need to re-pull."
+            )
+        print(f"Auth: {format_auth_mode(args, token_source)}")
+        if quiet_tokens:
+            print("  bearer-token enabled (value suppressed by --quiet-tokens)")
+        else:
+            print(f"  auth token: {auth_token}")
+            print("  workers must send 'Authorization: Bearer <token>'")
+            print(
+                f'  curl -H "Authorization: Bearer {auth_token}" '
+                f"{scheme}://{display_host}:{args.port}/status"
+            )
+        if token_source in ("generated", "regenerated", "persisted"):
+            print(f"  token file: {standalone_token_file(args.port)}")
+
+    print()
+    print(f"Starting DiLoCo server on {scheme}://{display_host}:{args.port}")
+    if display_host != args.host:
+        print(
+            f"  (bound to {args.host}; showing primary interface "
+            f"{display_host} so workers can reach it)"
+        )
     print(f"Waiting for {args.num_workers} worker(s)...")
     print()
     print("To stop the server:")
@@ -216,7 +259,10 @@ def _server_cmd(args):
         "  Ctrl-C              Stop server"
         + (" (saves state automatically)" if args.output_dir else "")
     )
-    print(f"  curl -X POST        http://localhost:{args.port}/control/shutdown")
+    print(
+        f"  curl -X POST        {scheme}://{display_host}:{args.port}/control/shutdown"
+        + (' -H "Authorization: Bearer <token>"' if auth_token else "")
+    )
     print(f"  forgather webui     DiLoCo view → Control card → Shutdown server")
     print()
 
@@ -302,6 +348,113 @@ def _status_cmd(args):
     return 0
 
 
+def _make_client(args, timeout=10):
+    """Build a DiLoCoClient from the shared control-plane connection args."""
+    from forgather.ml.diloco.client import DiLoCoClient
+
+    return DiLoCoClient(
+        args.server,
+        timeout=timeout,
+        token=getattr(args, "auth_token", None),
+        verify_tls=not getattr(args, "no_verify_tls", False),
+    )
+
+
+# CLI action name -> trainer-control command the server relays.
+_CONTROL_ACTION_MAP = {
+    "save": "save_checkpoint",
+    "save-stop": "save_and_stop",
+    "abort": "abort",
+}
+
+
+def _control_cmd(args):
+    """Relay a trainer-control command to one or all workers."""
+    command = _CONTROL_ACTION_MAP[args.action]
+    client = _make_client(args)
+    try:
+        resp = client.relay_command(command, worker_id=args.worker_id)
+    except Exception as e:
+        print(f"Error contacting server at {args.server}: {e}")
+        return 1
+    workers = resp.get("workers", [])
+    if not workers:
+        print("No workers registered — nothing to do.")
+        return 0
+    print(f"Queued '{command}' for {len(workers)} worker(s): {', '.join(workers)}")
+    print("Each worker applies it on its next heartbeat.")
+    return 0
+
+
+def _shutdown_cmd(args):
+    """Stop the DiLoCo server — cleanly (default) or immediately (--force)."""
+    import time
+
+    client = _make_client(args)
+
+    if args.force:
+        print("Force shutdown: stopping server now (workers will lose sync).")
+        try:
+            client.shutdown()
+        except Exception as e:
+            # The server closes the socket as it exits; tolerate that.
+            print(f"  (server stop signalled; {type(e).__name__})")
+        print("Server stop signalled.")
+        return 0
+
+    # Clean shutdown: save-stop all workers, wait for them to exit, then
+    # checkpoint + stop the server.
+    try:
+        resp = client.relay_command("save_and_stop")
+    except Exception as e:
+        print(f"Error contacting server at {args.server}: {e}")
+        return 1
+    targets = list(resp.get("workers", []))
+    if targets:
+        print(f"Save & stop queued for {len(targets)} worker(s): {', '.join(targets)}")
+        print(f"Waiting up to {int(args.timeout)}s for workers to stop…")
+        deadline = time.time() + args.timeout
+        remaining = set(targets)
+        while remaining and time.time() < deadline:
+            time.sleep(2.0)
+            try:
+                status = client.get_status()
+            except Exception as e:
+                print(f"  (status poll failed: {e}; retrying)")
+                continue
+            live = set(status.get("workers", {}).keys())
+            stopped = remaining - live
+            for wid in stopped:
+                print(f"  stopped: {wid}")
+            remaining = remaining & live
+            print(f"  {len(targets) - len(remaining)}/{len(targets)} stopped")
+        if remaining:
+            print(
+                f"Timed out: {len(remaining)} worker(s) still running "
+                f"({', '.join(sorted(remaining))}). Server left running so you "
+                f"can troubleshoot; re-run, or use --force."
+            )
+            return 1
+        print("All workers stopped.")
+    else:
+        print("No workers registered — skipping worker stop.")
+
+    print("Saving server checkpoint…")
+    try:
+        client.save_state()
+        print("  server checkpoint saved.")
+    except Exception as e:
+        print(f"  server checkpoint failed: {e} (continuing to stop)")
+
+    print("Stopping server…")
+    try:
+        client.shutdown()
+    except Exception as e:
+        print(f"  (server stop signalled; {type(e).__name__})")
+    print("Done.")
+    return 0
+
+
 def _worker_cmd(args):
     """
     Launch training as a DiLoCo worker.
@@ -376,9 +529,13 @@ def diloco_cmd(args):
         return _server_cmd(args)
     elif subcmd == "status":
         return _status_cmd(args)
+    elif subcmd == "control":
+        return _control_cmd(args)
+    elif subcmd == "shutdown":
+        return _shutdown_cmd(args)
     elif subcmd == "worker":
         return _worker_cmd(args)
     else:
-        print("Usage: forgather diloco {server|status|worker}")
+        print("Usage: forgather diloco {server|status|control|shutdown|worker}")
         print("Run 'forgather diloco --help' for details.")
         return 1

@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   api,
-  ControlAction,
   DiLoCoInfo,
   DiLoCoQueueSummary,
   DiLoCoServer,
@@ -654,11 +653,7 @@ function ServerDetail({
           }}
         >
           <ServerMetrics status={status} />
-          <ControlPanel
-            baseUrl={server.base_url}
-            status={status}
-            info={info}
-          />
+          <ControlPanel baseUrl={server.base_url} status={status} info={info} />
         </div>
       )}
       {queues && queues.length > 0 && (
@@ -792,6 +787,109 @@ function truncId(id: string): string {
   return id.length > 48 ? `${id.slice(0, 45)}…` : id;
 }
 
+// Worker control actions, mapped to the server-relayed trainer-control
+// command vocabulary. All worker control in this panel goes through the
+// DiLoCo server's /control/command relay (proxied by diLoCoServerControl):
+// the server queues the command and delivers it on the worker's heartbeat,
+// so it works for every registered worker — local or remote — without the
+// webui needing to reach each worker's trainer-control endpoint.
+type WorkerAction = "save" | "save-stop" | "abort";
+
+const RELAY_COMMAND: Record<WorkerAction, string> = {
+  save: "save_checkpoint",
+  "save-stop": "save_and_stop",
+  abort: "abort",
+};
+
+/** Human label for a control action, for button/result text. */
+function bulkActionLabel(action: WorkerAction): string {
+  switch (action) {
+    case "save":
+      return "Save checkpoint";
+    case "save-stop":
+      return "Save & Stop";
+    case "abort":
+      return "Abort";
+  }
+}
+
+/** Relay a command to specific worker ids, or to all workers when
+ *  ``workerIds`` is null. Targeting a pipeline group means relaying to every
+ *  member id — only the leader's heartbeat consumes it, and the callback's
+ *  cross-rank broadcast then applies it on all ranks, so addressing all
+ *  members is safe and leader-agnostic. */
+async function relayToWorkers(
+  baseUrl: string,
+  command: string,
+  workerIds: string[] | null,
+): Promise<void> {
+  if (workerIds === null) {
+    await api.diLoCoServerControl(baseUrl, "command", { command });
+    return;
+  }
+  await Promise.all(
+    workerIds.map((id) =>
+      api.diLoCoServerControl(baseUrl, "command", { command, worker_id: id }),
+    ),
+  );
+}
+
+const sleep = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
+
+/** Thrown when the operator cancels an in-flight shutdown sequence. The
+ *  ``cancelled`` marker lets the caller distinguish it from a real failure. */
+function cancelledError(): Error {
+  return Object.assign(new Error("cancelled by operator"), { cancelled: true });
+}
+
+/** Poll the DiLoCo server's /status until the workers that were registered
+ *  when we started waiting have all deregistered (applied save-and-stop and
+ *  exited). Tracks that initial target set — not a live count — so a worker
+ *  that crash-restarts (re-registers) or an unrelated late arrival can't pin
+ *  the wait open. Reports progress as targets drop off. Throws on timeout
+ *  (naming how many remain) or when ``shouldCancel`` trips. */
+async function waitForWorkersToStop(
+  baseUrl: string,
+  opts: {
+    timeoutMs?: number;
+    pollMs?: number;
+    onProgress?: (stopped: number, total: number) => void;
+    shouldCancel?: () => boolean;
+  } = {},
+): Promise<void> {
+  const { timeoutMs = 600_000, pollMs = 2_000, onProgress, shouldCancel } = opts;
+  const deadline = Date.now() + timeoutMs;
+  // Capture the target set at the moment we start waiting.
+  let remaining = new Set<string>();
+  try {
+    const s = await api.diLoCoServerStatus(baseUrl);
+    remaining = new Set(Object.keys(s.workers ?? {}));
+  } catch {
+    // ignore; first poll below establishes the set
+  }
+  const total = remaining.size;
+  if (total === 0) return;
+  while (true) {
+    if (shouldCancel?.()) throw cancelledError();
+    try {
+      const s = await api.diLoCoServerStatus(baseUrl);
+      const live = new Set(Object.keys(s.workers ?? {}));
+      remaining = new Set([...remaining].filter((id) => live.has(id)));
+    } catch {
+      // Transient status failure — retry next tick.
+    }
+    onProgress?.(total - remaining.size, total);
+    if (remaining.size === 0) return;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `timed out after ${Math.round(timeoutMs / 1000)}s waiting for ` +
+          `${remaining.size} worker(s) to stop`,
+      );
+    }
+    await sleep(pollMs);
+  }
+}
+
 function WorkersSection({
   baseUrl,
   status,
@@ -805,6 +903,38 @@ function WorkersSection({
 }) {
   const workers = status.workers ?? {};
   const ids = Object.keys(workers);
+  const queryClient = useQueryClient();
+  // Collective worker controls: one relay broadcast (worker_id omitted) tells
+  // the server to queue the command for every registered worker, delivered on
+  // each one's next heartbeat. Works for remote workers too — no per-job
+  // correlation needed.
+  const [bulkBusy, setBulkBusy] = useState<WorkerAction | null>(null);
+  const [bulkMsg, setBulkMsg] = useState<{ ok: boolean; text: string } | null>(
+    null,
+  );
+  const applyToAll = async (action: WorkerAction, confirmMsg?: string) => {
+    if (ids.length === 0) return;
+    if (confirmMsg && !window.confirm(confirmMsg)) return;
+    setBulkBusy(action);
+    setBulkMsg(null);
+    try {
+      const resp = await api.diLoCoServerControl(baseUrl, "command", {
+        command: RELAY_COMMAND[action],
+      });
+      const n = Array.isArray(resp?.workers) ? resp.workers.length : ids.length;
+      setBulkMsg({ ok: true, text: `${bulkActionLabel(action)}: relayed to ${n}` });
+      queryClient.invalidateQueries({ queryKey: ["diloco", "status", baseUrl] });
+    } catch (e) {
+      setBulkMsg({
+        ok: false,
+        text: `${bulkActionLabel(action)}: ${(e as Error).message}`,
+      });
+    } finally {
+      setBulkBusy(null);
+      window.setTimeout(() => setBulkMsg(null), 5000);
+    }
+  };
+
   return (
     <section
       style={{
@@ -819,12 +949,81 @@ function WorkersSection({
           background: "var(--bg-surface, #24283b)",
           borderBottom: "1px solid var(--border, #3b4261)",
           fontWeight: 600,
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          flexWrap: "wrap",
         }}
       >
-        Workers{" "}
-        <span className="muted" style={{ fontWeight: 400, fontSize: "smaller" }}>
-          ({status.num_registered ?? 0}/{status.num_workers ?? "?"})
+        <span>
+          Workers{" "}
+          <span
+            className="muted"
+            style={{ fontWeight: 400, fontSize: "smaller" }}
+          >
+            ({status.num_registered ?? 0}/{status.num_workers ?? "?"})
+          </span>
         </span>
+        <span style={{ flex: 1 }} />
+        {bulkMsg && (
+          <span
+            role="status"
+            style={{
+              fontSize: "smaller",
+              fontWeight: 400,
+              color: bulkMsg.ok ? "#9ece6a" : "tomato",
+            }}
+          >
+            {bulkMsg.text}
+          </span>
+        )}
+        {/* All-workers controls — one relay broadcast to every registered
+            worker. Hidden when no workers are connected. */}
+        {ids.length > 0 && (
+          <span
+            style={{ display: "flex", gap: 6, fontWeight: 400 }}
+            title={`Relay to all ${ids.length} worker(s)`}
+          >
+            <span className="muted" style={{ fontSize: 11, alignSelf: "center" }}>
+              All:
+            </span>
+            <button
+              className="tiny"
+              disabled={bulkBusy !== null}
+              onClick={() => applyToAll("save")}
+              title="Request a checkpoint save on every worker without stopping"
+            >
+              Save
+            </button>
+            <button
+              className="tiny"
+              disabled={bulkBusy !== null}
+              onClick={() =>
+                applyToAll(
+                  "save-stop",
+                  `Save a final checkpoint and stop all ${ids.length} worker(s)?`,
+                )
+              }
+              title="Save a final checkpoint then stop every worker cleanly"
+            >
+              Save &amp; Stop
+            </button>
+            <button
+              className="tiny"
+              style={{ color: "tomato" }}
+              disabled={bulkBusy !== null}
+              onClick={() =>
+                applyToAll(
+                  "abort",
+                  `Abort all ${ids.length} worker(s)? Unsaved progress is lost.`,
+                )
+              }
+              title="Stop every worker immediately without saving"
+            >
+              Abort
+            </button>
+          </span>
+        )}
       </header>
       {ids.length === 0 ? (
         <div className="muted" style={{ padding: "16px 14px" }}>
@@ -1023,17 +1222,21 @@ function GroupCard({
     },
   });
 
-  const jobControlMutation = useMutation({
-    mutationFn: (action: ControlAction) => api.jobControl(job!.job_id!, action),
+  // Trainer-control via the server relay: target every member of the group
+  // (only the leader's heartbeat consumes it; the callback's cross-rank
+  // broadcast applies it on all ranks). Works without a correlated job.
+  const controlMutation = useMutation({
+    mutationFn: (action: WorkerAction) =>
+      relayToWorkers(
+        baseUrl,
+        RELAY_COMMAND[action],
+        group.members.map((m) => m.workerId),
+      ),
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      queryClient.invalidateQueries({
-        queryKey: ["jobs", "status", job?.job_id],
-      });
+      queryClient.invalidateQueries({ queryKey: ["diloco", "status", baseUrl] });
     },
   });
 
-  const canControlJob = !!job?.job_id && !!job?.alive && job.job_type === "training";
   const stats = jobStatusQ.data ?? null;
   const ppN = group.members.length;
 
@@ -1120,56 +1323,52 @@ function GroupCard({
       {stats && <JobStatsRow stats={stats} />}
       {!job && (
         <div className="muted" style={{ fontSize: 11 }}>
-          No correlated forgather job — training-side stats and controls
-          unavailable. (Workers correlate by queue_id or by matching
-          output_dir; this one likely ran outside the webui or under a
-          different output_dir.)
+          No correlated forgather job — training-side stats unavailable.
+          (Controls below still work: they go through the server relay.)
         </div>
       )}
 
-      {canControlJob && (
-        <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap" }}>
-          <button
-            className="tiny"
-            onClick={() => jobControlMutation.mutate("save")}
-            disabled={jobControlMutation.isPending}
-            title="Request a checkpoint save without stopping training"
-          >
-            Save checkpoint
-          </button>
-          <button
-            className="tiny"
-            onClick={() => {
-              if (
-                window.confirm(
-                  `Save final checkpoint and stop group ${group.groupId}?`,
-                )
+      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap" }}>
+        <button
+          className="tiny"
+          onClick={() => controlMutation.mutate("save")}
+          disabled={controlMutation.isPending}
+          title="Request a checkpoint save without stopping training"
+        >
+          Save checkpoint
+        </button>
+        <button
+          className="tiny"
+          onClick={() => {
+            if (
+              window.confirm(
+                `Save final checkpoint and stop group ${group.groupId}?`,
               )
-                jobControlMutation.mutate("save-stop");
-            }}
-            disabled={jobControlMutation.isPending}
-            title="Save a final checkpoint, then stop training cleanly"
-          >
-            Save &amp; Stop
-          </button>
-          <button
-            className="tiny"
-            style={{ color: "tomato" }}
-            onClick={() => {
-              if (
-                window.confirm(
-                  `Abort training on group ${group.groupId}? Any unsaved progress is lost.`,
-                )
+            )
+              controlMutation.mutate("save-stop");
+          }}
+          disabled={controlMutation.isPending}
+          title="Save a final checkpoint, then stop training cleanly"
+        >
+          Save &amp; Stop
+        </button>
+        <button
+          className="tiny"
+          style={{ color: "tomato" }}
+          onClick={() => {
+            if (
+              window.confirm(
+                `Abort training on group ${group.groupId}? Any unsaved progress is lost.`,
               )
-                jobControlMutation.mutate("abort");
-            }}
-            disabled={jobControlMutation.isPending}
-            title="Stop training immediately without saving"
-          >
-            Abort
-          </button>
-        </div>
-      )}
+            )
+              controlMutation.mutate("abort");
+          }}
+          disabled={controlMutation.isPending}
+          title="Stop training immediately without saving"
+        >
+          Abort
+        </button>
+      </div>
 
       {/* Expanded per-rank diagnostics */}
       {expanded && (
@@ -1252,17 +1451,15 @@ function WorkerCard({
     },
   });
 
-  const jobControlMutation = useMutation({
-    mutationFn: (action: ControlAction) => api.jobControl(job!.job_id!, action),
+  // Trainer-control via the server relay, targeting this worker's id.
+  const controlMutation = useMutation({
+    mutationFn: (action: WorkerAction) =>
+      relayToWorkers(baseUrl, RELAY_COMMAND[action], [workerId]),
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      queryClient.invalidateQueries({
-        queryKey: ["jobs", "status", job?.job_id],
-      });
+      queryClient.invalidateQueries({ queryKey: ["diloco", "status", baseUrl] });
     },
   });
 
-  const canControlJob = !!job?.job_id && !!job?.alive && job.job_type === "training";
   const stats = jobStatusQ.data ?? null;
 
   return (
@@ -1337,23 +1534,21 @@ function WorkerCard({
       {!compact && stats && <JobStatsRow stats={stats} />}
       {!compact && !job && (
         <div className="muted" style={{ fontSize: 11 }}>
-          No correlated forgather job — training-side stats and controls
-          unavailable. (Workers correlate by queue_id or by matching
-          output_dir; this one likely ran outside the webui or under a
-          different output_dir.)
+          No correlated forgather job — training-side stats unavailable.
+          (Controls below still work: they go through the server relay.)
         </div>
       )}
 
-      {/* Bottom: trainer-protocol controls (Save / Save & Stop / Abort).
-          Suppressed in compact mode — these are job-level (not
-          rank-level) controls and the group header already exposes
-          them once; duplicating per-rank would be misleading. */}
-      {!compact && canControlJob && (
+      {/* Bottom: trainer-control via the relay (Save / Save & Stop / Abort).
+          Suppressed in compact mode — a pipeline rank's controls are
+          emitted once on the group header; duplicating per-rank would be
+          misleading. */}
+      {!compact && (
         <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap" }}>
           <button
             className="tiny"
-            onClick={() => jobControlMutation.mutate("save")}
-            disabled={jobControlMutation.isPending}
+            onClick={() => controlMutation.mutate("save")}
+            disabled={controlMutation.isPending}
             title="Request a checkpoint save without stopping training"
           >
             Save checkpoint
@@ -1362,9 +1557,9 @@ function WorkerCard({
             className="tiny"
             onClick={() => {
               if (window.confirm(`Save final checkpoint and stop worker ${workerId}?`))
-                jobControlMutation.mutate("save-stop");
+                controlMutation.mutate("save-stop");
             }}
-            disabled={jobControlMutation.isPending}
+            disabled={controlMutation.isPending}
             title="Save a final checkpoint, then stop training cleanly"
           >
             Save &amp; Stop
@@ -1374,9 +1569,9 @@ function WorkerCard({
             style={{ color: "tomato" }}
             onClick={() => {
               if (window.confirm(`Abort training on worker ${workerId}? Any unsaved progress is lost.`))
-                jobControlMutation.mutate("abort");
+                controlMutation.mutate("abort");
             }}
-            disabled={jobControlMutation.isPending}
+            disabled={controlMutation.isPending}
             title="Stop training immediately without saving"
           >
             Abort
@@ -1645,6 +1840,7 @@ function ControlPanel({
   info: DiLoCoInfo | null;
 }) {
   const queryClient = useQueryClient();
+  const numRegistered = Object.keys(status.workers ?? {}).length;
 
   const [confirmShutdown, setConfirmShutdown] = useState(false);
   const [formLr, setFormLr] = useState<string>("");
@@ -1817,10 +2013,15 @@ function ControlPanel({
               onClick={() => setConfirmShutdown(true)}
               disabled={controlMutation.isPending}
               style={{ background: "#3a2a2a", color: "#f7768e" }}
-              title="Stop the DiLoCo server. All connected workers will lose sync."
+              title="Stop the DiLoCo server — cleanly (stop workers, checkpoint, stop) or immediately."
             >
               Shutdown server
             </button>
+            {numRegistered > 0 && (
+              <div className="muted" style={{ fontSize: 11 }}>
+                {numRegistered} registered worker(s)
+              </div>
+            )}
           </div>
 
           {/* Outer optimizer */}
@@ -1926,11 +2127,13 @@ function ControlPanel({
       </div>
 
       {confirmShutdown && (
-        <ShutdownConfirmDialog
-          onCancel={() => setConfirmShutdown(false)}
-          onConfirm={() => {
+        <ShutdownDialog
+          baseUrl={baseUrl}
+          numWorkers={numRegistered}
+          saveDir={saveDir}
+          onClose={() => {
             setConfirmShutdown(false);
-            controlMutation.mutate({ action: "shutdown" });
+            invalidate();
           }}
         />
       )}
@@ -1938,27 +2141,144 @@ function ControlPanel({
   );
 }
 
-/** A11y-correct confirm dialog for the Shutdown action. Uses
- *  ModalBackdrop for click-outside dismissal, declares the dialog
- *  role + aria-modal so AT users get the right announcements, and
- *  binds Escape to Cancel so keyboard-only operators can dismiss
- *  without reaching for the mouse. */
-function ShutdownConfirmDialog({
-  onCancel,
-  onConfirm,
+/** Two-mode shutdown dialog, all driven through the server's command relay.
+ *  The *clean* path is the easy default for "stop everything": relay
+ *  save-and-stop to every worker, wait until they've deregistered (exited),
+ *  checkpoint the server, then stop it. The *force* path relays abort to all
+ *  workers (best-effort — workers stop without saving) and stops the server
+ *  without waiting.
+ *
+ *  A clean run can be cancelled while it waits (hands control back with the
+ *  server still up so the operator can troubleshoot a stuck worker); the
+ *  dialog streams milestones and a live worker-stop count. */
+function ShutdownDialog({
+  baseUrl,
+  numWorkers,
+  saveDir,
+  onClose,
 }: {
-  onCancel: () => void;
-  onConfirm: () => void;
+  baseUrl: string;
+  numWorkers: number;
+  saveDir: string | null;
+  onClose: () => void;
 }) {
+  type Phase = "choose" | "running" | "done" | "failed" | "cancelled";
+  const [phase, setPhase] = useState<Phase>("choose");
+  const [log, setLog] = useState<string[]>([]);
+  const [progress, setProgress] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Cancellation: the long step is the worker-stop poll. A ref (not state) so
+  // the in-flight async loop reads the latest value without a stale closure;
+  // ``cancelling`` state just drives the button label until the loop notices.
+  const cancelRef = useRef(false);
+  const [cancelling, setCancelling] = useState(false);
+  const append = (line: string) => setLog((l) => [...l, line]);
+  const ensureNotCancelled = () => {
+    if (cancelRef.current) throw cancelledError();
+  };
+  const requestCancel = () => {
+    cancelRef.current = true;
+    setCancelling(true);
+    append("Cancel requested — handing control back…");
+  };
+
+  // Escape cancels only while still choosing; once running we ignore it so a
+  // stray keypress can't dismiss the dialog mid-sequence and hide progress.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
+      if (e.key === "Escape" && phase === "choose") onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onCancel]);
+  }, [onClose, phase]);
+
+  const n = numWorkers;
+
+  // Common catch: a cancellation (operator bailed) is not a failure — it just
+  // hands control back with the server still running, so the operator can
+  // troubleshoot. Anything else is a real error.
+  const handleSequenceError = (e: unknown) => {
+    setProgress(null);
+    if (cancelRef.current || (e as { cancelled?: boolean })?.cancelled) {
+      append("Cancelled. The server was NOT stopped; workers may still be running.");
+      setPhase("cancelled");
+    } else {
+      setError((e as Error).message);
+      setPhase("failed");
+    }
+  };
+
+  const runClean = async () => {
+    cancelRef.current = false;
+    setCancelling(false);
+    setPhase("running");
+    try {
+      if (n > 0) {
+        append(`Relaying save-and-stop to ${n} worker(s)…`);
+        await relayToWorkers(baseUrl, "save_and_stop", null);
+        append("Waiting for workers to stop…  (Cancel to regain control)");
+        setProgress(`0/${n} stopped`);
+        await waitForWorkersToStop(baseUrl, {
+          onProgress: (s, t) => setProgress(`${s}/${t} stopped`),
+          shouldCancel: () => cancelRef.current,
+        });
+        append("All workers stopped.");
+        setProgress(null);
+      } else {
+        append("No workers registered — skipping worker stop.");
+      }
+
+      ensureNotCancelled();
+      if (saveDir) {
+        append("Saving server checkpoint…");
+        try {
+          await api.diLoCoServerControl(baseUrl, "save_state");
+          append("  server checkpoint saved.");
+        } catch (e) {
+          // Surface but continue — losing the server checkpoint shouldn't
+          // strand a server we've already told every worker to leave.
+          append(`  server checkpoint failed: ${(e as Error).message}`);
+        }
+      } else {
+        append("No save_dir configured — skipping server checkpoint.");
+      }
+
+      ensureNotCancelled();
+      append("Stopping server…");
+      await api.diLoCoServerControl(baseUrl, "shutdown");
+      append("Server stopped. Done.");
+      setPhase("done");
+    } catch (e) {
+      handleSequenceError(e);
+    }
+  };
+
+  const runForce = async () => {
+    cancelRef.current = false;
+    setCancelling(false);
+    setPhase("running");
+    try {
+      if (n > 0) {
+        append(`Relaying abort to ${n} worker(s)…`);
+        try {
+          await relayToWorkers(baseUrl, "abort", null);
+          append("  abort relayed (workers stop without saving).");
+        } catch (e) {
+          // Best-effort: we're stopping the server next regardless.
+          append(`  abort relay failed: ${(e as Error).message} (continuing).`);
+        }
+      }
+      append("Stopping server…");
+      await api.diLoCoServerControl(baseUrl, "shutdown");
+      append("Server stopped. Done.");
+      setPhase("done");
+    } catch (e) {
+      handleSequenceError(e);
+    }
+  };
+
   return (
-    <ModalBackdrop onClose={onCancel}>
+    <ModalBackdrop onClose={phase === "running" ? () => {} : onClose}>
       <div
         role="dialog"
         aria-modal="true"
@@ -1968,28 +2288,128 @@ function ShutdownConfirmDialog({
           border: "1px solid var(--border, #3b4261)",
           borderRadius: 6,
           padding: 16,
-          maxWidth: 420,
+          maxWidth: 480,
           display: "flex",
           flexDirection: "column",
           gap: 12,
         }}
       >
-        <p id="diloco-shutdown-title" style={{ margin: 0 }}>
-          Shut down the DiLoCo server? Any connected workers will fail
-          to sync; the next sync attempt will surface as a connection
-          error in their TTY pane.
-        </p>
-        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-          <button onClick={onCancel} autoFocus>
-            Cancel
-          </button>
-          <button
-            style={{ background: "#3a2a2a", color: "#f7768e" }}
-            onClick={onConfirm}
-          >
-            Confirm shutdown
-          </button>
-        </div>
+        <strong id="diloco-shutdown-title">Shutdown DiLoCo server</strong>
+
+        {phase === "choose" && (
+          <>
+            <div
+              style={{
+                border: "1px solid var(--border, #3b4261)",
+                borderRadius: 4,
+                padding: 10,
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+              }}
+            >
+              <div style={{ fontWeight: 600 }}>Clean shutdown</div>
+              <div className="muted" style={{ fontSize: "smaller" }}>
+                Save &amp; stop {n > 0 ? `all ${n} worker(s)` : "workers"}, wait
+                for them to exit, checkpoint the server, then stop it. No data
+                loss.
+              </div>
+              <button
+                style={{ alignSelf: "flex-start" }}
+                onClick={runClean}
+                autoFocus
+              >
+                Clean shutdown
+              </button>
+            </div>
+
+            <div
+              style={{
+                border: "1px solid #5a2a2a",
+                borderRadius: 4,
+                padding: 10,
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+              }}
+            >
+              <div style={{ fontWeight: 600, color: "#f7768e" }}>
+                Force stop
+              </div>
+              <div className="muted" style={{ fontSize: "smaller" }}>
+                Relay <strong>abort</strong> to {n > 0 ? `all ${n} worker(s)` : "workers"}{" "}
+                (they stop without saving) and stop the server without waiting.
+                Unsaved progress is lost.
+              </div>
+              <button
+                style={{
+                  alignSelf: "flex-start",
+                  background: "#3a2a2a",
+                  color: "#f7768e",
+                }}
+                onClick={runForce}
+              >
+                Force stop
+              </button>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button onClick={onClose}>Cancel</button>
+            </div>
+          </>
+        )}
+
+        {phase !== "choose" && (
+          <>
+            <pre
+              style={{
+                margin: 0,
+                padding: 10,
+                background: "var(--bg, #1a1b26)",
+                border: "1px solid var(--border, #3b4261)",
+                borderRadius: 4,
+                fontSize: 12,
+                maxHeight: 240,
+                overflow: "auto",
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {log.join("\n")}
+              {progress && `\n${progress}`}
+            </pre>
+            {error && (
+              <div role="alert" style={{ color: "tomato", fontSize: "smaller" }}>
+                {error}
+                {phase === "failed" && (
+                  <div className="muted" style={{ marginTop: 4 }}>
+                    The server was not stopped. Re-open this dialog to retry, or
+                    use Force kill.
+                  </div>
+                )}
+              </div>
+            )}
+            {phase === "cancelled" && (
+              <div className="muted" style={{ fontSize: "smaller" }}>
+                Control handed back so you can troubleshoot. Re-open this dialog
+                to retry once the stuck worker is resolved, or use Force kill.
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              {phase === "running" && (
+                <button
+                  onClick={requestCancel}
+                  disabled={cancelling}
+                  title="Stop waiting and regain control of the UI. The server is left running."
+                >
+                  {cancelling ? "Cancelling…" : "Cancel"}
+                </button>
+              )}
+              <button onClick={onClose} disabled={phase === "running"}>
+                {phase === "running" ? "Working…" : "Close"}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </ModalBackdrop>
   );

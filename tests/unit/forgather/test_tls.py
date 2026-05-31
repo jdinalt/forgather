@@ -308,6 +308,40 @@ def test_discovery_caps_auto_san(tls_root):
     assert len(i) <= 2
 
 
+def test_primary_routable_ip_shape():
+    """Never raises; returns None or a non-loopback IPv4 string. The exact
+    value is environment-dependent, so we only assert the contract used by
+    the server startup banners."""
+    from forgather.tls.discovery import primary_routable_ip
+
+    ip = primary_routable_ip()
+    assert ip is None or (isinstance(ip, str) and not ip.startswith("127."))
+
+
+def test_primary_routable_ip_falls_back_when_no_route(monkeypatch):
+    """When the UDP route probe fails (isolated host), it falls back to
+    detect_ips and still avoids loopback — or returns None."""
+    import socket as _socket
+
+    from forgather.tls import discovery
+
+    real_socket = _socket.socket
+
+    class _NoRouteSocket:
+        def __init__(self, *a, **k):
+            raise OSError("network unreachable")
+
+    monkeypatch.setattr(discovery.socket, "socket", _NoRouteSocket)
+    monkeypatch.setattr(
+        discovery, "detect_ips", lambda: ["127.0.0.1", "::1", "10.1.2.3"]
+    )
+    assert discovery.primary_routable_ip() == "10.1.2.3"
+    # Sanity: the real socket constructor is untouched outside the patch.
+    assert _socket.socket is _NoRouteSocket
+    monkeypatch.undo()
+    assert _socket.socket is real_socket
+
+
 def test_resolve_state_precedence(tls_root):
     """--no-tls always wins; --tls wins over disabled config; default falls back."""
     import argparse

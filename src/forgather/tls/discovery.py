@@ -54,6 +54,40 @@ def detect_hostnames(*, cap: int = MAX_AUTO_SAN_ENTRIES) -> list[str]:
     return out
 
 
+def primary_routable_ip() -> str | None:
+    """Best-effort primary (default-route) IPv4 address of this host.
+
+    Used to turn a wildcard bind (``0.0.0.0`` / ``::``) into a
+    copy-pasteable address in a server's startup banner, so an operator
+    setting up workers doesn't have to translate ``0.0.0.0`` into "the
+    actual LAN IP" by hand.
+
+    Opens a UDP socket toward a public address and reads back the local
+    end the OS chose — no packets are sent (UDP ``connect`` only fixes
+    the route), so this works offline and incurs no traffic. Falls back
+    to the first non-loopback IPv4 from :func:`detect_ips`, then
+    ``None`` when nothing routable can be found.
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # 8.8.8.8:80 is a routing probe, not a connection — no
+            # datagram leaves the host. Any public address works.
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+        finally:
+            s.close()
+        if ip and not ip.startswith("127."):
+            return ip
+    except OSError:
+        # No default route (isolated host / CI sandbox) — fall through.
+        pass
+    for ip in detect_ips():
+        if ip not in ("127.0.0.1", "::1") and ":" not in ip:
+            return ip
+    return None
+
+
 def detect_ips(*, cap: int = MAX_AUTO_SAN_ENTRIES) -> list[str]:
     """Local IPv4/IPv6 addresses, excluding link-local and loopback duplicates.
 

@@ -2339,6 +2339,25 @@ export const api = {
     fetchJson<DiLoCoKnownWorkers>(
       `/api/diloco/known-workers?base=${encodeURIComponent(base)}`,
     ),
+  /** Generate ``count`` memorable, mutually-unique worker names for the
+   *  submit modal's batch-spawn pool. ``exclude`` carries names already in
+   *  the pool so the returned batch is disjoint from them (issue: batch
+   *  worker submit). Server-side rejection sampling guarantees the count. */
+  generateDiLoCoWorkerNames: async (
+    count: number,
+    exclude: string[] = [],
+  ): Promise<string[]> => {
+    const r = await fetch("/api/diloco/generate-worker-names", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ count, exclude }),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+    return (await r.json()).names as string[];
+  },
   /** Summaries of all work-unit dispatch queues on the upstream
    *  DiLoCo server. Empty list when work-dispatch isn't being used. */
   diLoCoWorkQueues: (base: string) =>

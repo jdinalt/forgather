@@ -287,6 +287,10 @@ class DiLoCoWorker:
         # Heartbeat thread (for health monitoring and DyLU)
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_stop = threading.Event()
+        # Relayed trainer-control command (save / save-and-stop / abort),
+        # delivered on the heartbeat response and drained by the callback.
+        self._pending_command: Optional[str] = None
+        self._pending_command_lock = threading.Lock()
 
         # Streaming state: at most one fragment in-flight at a time.
         # The background thread submits pseudo-gradients and stores the
@@ -769,8 +773,33 @@ class DiLoCoWorker:
                             f"DiLoCoWorker {self.worker_id}: DyLU adjusted "
                             f"sync_every {old} -> {new_sync_every}"
                         )
+
+                # Capture any relayed trainer-control command (save /
+                # save-and-stop / abort) for the callback to apply on its
+                # next step. Last-one-wins if several arrive before pickup
+                # (stop/abort are terminal, so coalescing is harmless).
+                cmd = response.get("command")
+                if cmd is not None:
+                    with self._pending_command_lock:
+                        self._pending_command = cmd
+                    logger.info(
+                        f"DiLoCoWorker {self.worker_id}: received control "
+                        f"command '{cmd}' from server"
+                    )
             except Exception as e:
                 logger.warning(f"Heartbeat failed: {e}")
+
+    def consume_pending_command(self) -> Optional[str]:
+        """Return and clear any relayed trainer-control command.
+
+        Called by the DiLoCo callback (leader rank) each step. Returns
+        ``None`` when nothing is queued. Thread-safe against the heartbeat
+        thread that sets it.
+        """
+        with self._pending_command_lock:
+            cmd = self._pending_command
+            self._pending_command = None
+            return cmd
 
     def get_steps_per_second(self) -> float:
         """Compute current training speed from step timestamps."""

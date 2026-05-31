@@ -277,6 +277,80 @@ def create_diloco_parser(global_args):
         ),
     )
 
+    # Shared client-connection args for the control-plane subcommands.
+    def _add_client_conn_args(p):
+        p.add_argument(
+            "--server",
+            type=str,
+            default="localhost:8512",
+            help="Server address as host:port (default: localhost:8512)",
+        )
+        p.add_argument(
+            "--auth-token",
+            default=None,
+            help=(
+                "Bearer token for authenticated servers. When omitted, the "
+                "client falls back to the FORGATHER_DILOCO_SERVER_TOKEN env "
+                "var, then to the per-port loopback file."
+            ),
+        )
+        p.add_argument(
+            "--no-verify-tls",
+            action="store_true",
+            help="Skip TLS certificate verification on the upstream server.",
+        )
+
+    # control subcommand — relay a trainer-control command to workers.
+    control_parser = subparsers.add_parser(
+        "control",
+        help="Relay save / save-stop / abort to one or all workers",
+        formatter_class=RawTextHelpFormatter,
+    )
+    control_parser.add_argument(
+        "action",
+        choices=["save", "save-stop", "abort"],
+        help=(
+            "save      request a checkpoint on every (or one) worker\n"
+            "save-stop save a final checkpoint then stop the worker(s)\n"
+            "abort     stop immediately without saving"
+        ),
+    )
+    control_parser.add_argument(
+        "--worker-id",
+        type=str,
+        default=None,
+        help="Target a single worker by id. Omitted = all registered workers.",
+    )
+    _add_client_conn_args(control_parser)
+
+    # shutdown subcommand — stop the server (clean by default).
+    shutdown_parser = subparsers.add_parser(
+        "shutdown",
+        help="Stop the DiLoCo server (cleanly stops workers first by default)",
+        formatter_class=RawTextHelpFormatter,
+    )
+    shutdown_parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Stop the server immediately without stopping workers first.\n"
+            "Workers will fail on their next sync. Default is a clean\n"
+            "shutdown: save-stop all workers, wait for them to exit,\n"
+            "checkpoint the server, then stop it."
+        ),
+    )
+    shutdown_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=600.0,
+        help=(
+            "Clean shutdown only: max seconds to wait for workers to stop\n"
+            "before giving up (default: 600). On timeout the server is left\n"
+            "running so you can troubleshoot."
+        ),
+    )
+    _add_client_conn_args(shutdown_parser)
+
     # worker subcommand
     worker_parser = subparsers.add_parser(
         "worker",
