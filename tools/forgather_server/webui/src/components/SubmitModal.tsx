@@ -192,16 +192,20 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   // pre-pool behavior). Per-submit only — not persisted, since reusing a
   // worker_id collides with the prior worker's registration.
   //
-  // ``enabledStopped`` holds the *base* worker-ids the operator toggled on;
+  // Stopped workers default to ON: they're usually stopped because the server
+  // was restarted, and the normal intent is to bring every one back. So we
+  // track the *exceptions* — the base worker-ids the operator toggled OFF —
+  // rather than the enabled set; this also sidesteps async-roster seeding (a
+  // worker is enabled the instant it appears unless explicitly disabled).
   // ``newWorkers`` is the ordered list of added/generated names.
-  const [enabledStopped, setEnabledStopped] = useState<Set<string>>(
+  const [disabledStopped, setDisabledStopped] = useState<Set<string>>(
     () => new Set(),
   );
   const [newWorkers, setNewWorkers] = useState<string[]>([]);
   // Switching servers (or to "None") invalidates the pool — the ids belong to
   // a specific server's roster — so reset it.
   useEffect(() => {
-    setEnabledStopped(new Set());
+    setDisabledStopped(new Set());
     setNewWorkers([]);
   }, [selectedDiLoCoBase]);
   // Roster of workers the selected server has ever seen (issue #103). Lifted
@@ -233,11 +237,11 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   const poolWorkerIds = useMemo(() => {
     const ids: string[] = [];
     for (const w of resumableWorkers) {
-      if (enabledStopped.has(w.name)) ids.push(w.name);
+      if (!disabledStopped.has(w.name)) ids.push(w.name);
     }
     for (const n of newWorkers) ids.push(n);
     return [...new Set(ids)];
-  }, [resumableWorkers, enabledStopped, newWorkers]);
+  }, [resumableWorkers, disabledStopped, newWorkers]);
   useEffect(() => {
     const cur: DiLoCoPersisted = {
       base: selectedDiLoCoBase,
@@ -866,8 +870,8 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
               setHeartbeatInterval={setDiHeartbeat}
               resumableWorkers={resumableWorkers}
               knownWorkersLoading={knownWorkersQ.isLoading}
-              enabledStopped={enabledStopped}
-              setEnabledStopped={setEnabledStopped}
+              disabledStopped={disabledStopped}
+              setDisabledStopped={setDisabledStopped}
               newWorkers={newWorkers}
               setNewWorkers={setNewWorkers}
               poolWorkerIds={poolWorkerIds}
@@ -995,8 +999,8 @@ interface DiLoCoPickerProps {
   // Worker pool (batch submit).
   resumableWorkers: ResumableWorker[];
   knownWorkersLoading: boolean;
-  enabledStopped: Set<string>;
-  setEnabledStopped: Dispatch<SetStateAction<Set<string>>>;
+  disabledStopped: Set<string>;
+  setDisabledStopped: Dispatch<SetStateAction<Set<string>>>;
   newWorkers: string[];
   setNewWorkers: Dispatch<SetStateAction<string[]>>;
   poolWorkerIds: string[];
@@ -1020,8 +1024,8 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
     setHeartbeatInterval,
     resumableWorkers,
     knownWorkersLoading,
-    enabledStopped,
-    setEnabledStopped,
+    disabledStopped,
+    setDisabledStopped,
     newWorkers,
     setNewWorkers,
     poolWorkerIds,
@@ -1048,9 +1052,10 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
     return s;
   }, [resumableWorkers, newWorkers]);
 
+  // Toggling tracks the disabled exceptions: a name in the set is OFF.
   const toggleStopped = (name: string) => {
     setPoolError(null);
-    setEnabledStopped((prev) => {
+    setDisabledStopped((prev) => {
       const next = new Set(prev);
       if (next.has(name)) next.delete(name);
       else next.add(name);
@@ -1291,7 +1296,7 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
             <WorkerPool
               resumableWorkers={resumableWorkers}
               knownWorkersLoading={knownWorkersLoading}
-              enabledStopped={enabledStopped}
+              disabledStopped={disabledStopped}
               newWorkers={newWorkers}
               poolWorkerIds={poolWorkerIds}
               addName={addName}
@@ -1315,7 +1320,7 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
 interface WorkerPoolProps {
   resumableWorkers: ResumableWorker[];
   knownWorkersLoading: boolean;
-  enabledStopped: Set<string>;
+  disabledStopped: Set<string>;
   newWorkers: string[];
   poolWorkerIds: string[];
   addName: string;
@@ -1348,7 +1353,7 @@ function WorkerPool(props: WorkerPoolProps) {
   const {
     resumableWorkers,
     knownWorkersLoading,
-    enabledStopped,
+    disabledStopped,
     newWorkers,
     poolWorkerIds,
     addName,
@@ -1388,7 +1393,9 @@ function WorkerPool(props: WorkerPoolProps) {
       <div style={{ marginTop: 6 }}>
         <div className="muted" style={{ fontSize: "smaller" }}>
           Stopped workers{" "}
-          <span style={{ opacity: 0.7 }}>(toggle to resume from checkpoint)</span>
+          <span style={{ opacity: 0.7 }}>
+            (resumed from checkpoint by default — toggle off to skip)
+          </span>
         </div>
         {knownWorkersLoading && (
           <div className="muted" style={{ fontSize: "smaller", marginTop: 4 }}>
@@ -1410,7 +1417,7 @@ function WorkerPool(props: WorkerPoolProps) {
             }}
           >
             {resumableWorkers.map((w) => {
-              const on = enabledStopped.has(w.name);
+              const on = !disabledStopped.has(w.name);
               const dir = (w.output_dir ?? "").replace(/\/+$/, "");
               const leaf = dir.split("/").pop() || "";
               return (

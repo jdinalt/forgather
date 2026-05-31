@@ -174,8 +174,10 @@ selected in the submit modal, the DiLoCo section shows a *worker pool* instead
 of a single `worker_id` field. The pool has two kinds of chips:
 
 - **Stopped workers** — every not-currently-running name on the server's
-  roster, each showing the `output_dir` it would resume from. Toggle a chip on
-  to relaunch that worker under its old id and resume from its checkpoint.
+  roster, each showing the `output_dir` it would resume from. These are
+  **enabled by default**: workers are usually stopped because the server was
+  restarted, and the normal intent is to bring them all back, each relaunched
+  under its old id to resume from its checkpoint. Toggle a chip off to skip it.
 - **New workers** — names you add. Type one and click **Add**, or set a count
   and click **Generate** to mint that many random, mutually-unique names (from
   ~100K adjective-species permutations; generated batches never collide with
