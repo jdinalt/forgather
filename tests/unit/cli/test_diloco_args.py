@@ -43,6 +43,28 @@ class TestLogsVerb:
         assert ns.follow is False
 
 
+class TestDynamicArgPartitionScoping:
+    def test_worker_dynamic_names_not_propagated_to_diloco_parser(self, monkeypatch):
+        """Regression: the worker's dynamic-arg names must NOT land on the
+        top-level diloco parser. main.py partitions the *whole* chosen
+        subcommand against that list, and the dynamic set includes
+        framework names like ``output_dir`` — propagating them would strip
+        ``--output-dir`` from a sibling like ``diloco server``."""
+        import forgather.cli.dynamic_args as da
+
+        def fake_parse(parser, ga):
+            parser._dynamic_arg_names = ["output_dir", "max_steps"]
+
+        monkeypatch.setattr(da, "parse_dynamic_args", fake_parse)
+        ga = argparse.Namespace(config_template="x", project_dir=".", no_dyn=False)
+        parser = create_diloco_parser(ga)
+        # Not smeared onto the top-level parser.
+        assert getattr(parser, "_dynamic_arg_names", []) == []
+        # `diloco server` still keeps its required --output-dir.
+        ns = parser.parse_args(["server", "-o", "/out", "-n", "2"])
+        assert ns.output_dir == "/out"
+
+
 class TestStatusEnrichment:
     def test_new_flags_default_off(self, parser):
         ns = parser.parse_args(["status"])

@@ -449,25 +449,53 @@ def _shutdown_cmd(args):
     return 0
 
 
-def _reconstruct_dynamic_cli(project_dir, config_template, dynamic_args):
-    """Rebuild first-class CLI flags for ``forgather train`` from the parsed
-    dynamic-arg dict, using the config's ``dynamic_args`` schema to emit the
-    correct form per arg: a bare flag for store_true/store_false (only when
-    it differs from the action's implied default), else ``--flag value``.
-
-    Falls back to ``--flag value`` for any arg missing from the schema.
-    """
-    schema = []
+def _load_dynamic_schema(project_dir, config_template):
+    """Return the config's ``dynamic_args`` schema (list of entry dicts), or
+    ``[]`` on any failure / when no config is selected."""
+    if not config_template:
+        return []
     try:
         from forgather import MetaConfig, Project
 
         pdir = MetaConfig.find_project_dir(project_dir)
         proj = Project(config_name=config_template, project_dir=pdir)
         if "dynamic_args" in proj.config:
-            schema = proj("dynamic_args") or []
+            return proj("dynamic_args") or []
     except Exception:
-        schema = []
-    return _dynamic_cli_from_schema(schema, dynamic_args)
+        pass
+    return []
+
+
+def _schema_dests(schema):
+    """argparse dests (``max_steps``) for each entry in a dynamic_args schema."""
+    dests = []
+    for entry in schema or []:
+        if not isinstance(entry, dict):
+            continue
+        names = entry.get("names")
+        if isinstance(names, str):
+            names = [names]
+        if not names:
+            continue
+        long = next((n for n in names if str(n).startswith("--")), names[0])
+        dests.append(long.lstrip("-").replace("-", "_"))
+    return dests
+
+
+def _worker_dynamic_args(args, schema):
+    """Collect the config's dynamic args from the parsed worker namespace.
+
+    Scoped to the schema's dests and filtered for ``None`` (so unset valued
+    args fall back to template defaults). We collect from the namespace
+    directly rather than via main.py's partition — see the note in
+    diloco_args.create_diloco_parser on why the partition isn't propagated.
+    """
+    out = {}
+    for dest in _schema_dests(schema):
+        v = getattr(args, dest, None)
+        if v is not None:
+            out[dest] = v
+    return out
 
 
 def _dynamic_cli_from_schema(schema, dynamic_args):
@@ -522,9 +550,11 @@ def _worker_cmd(args):
     or as ``--dynamic-args <json>`` to the spawned trainer on the direct path.
     """
     from . import diloco_orch as orch
-    from .dynamic_args import get_dynamic_args
 
-    dynamic_args = get_dynamic_args(args)
+    schema = _load_dynamic_schema(
+        getattr(args, "project_dir", "."), getattr(args, "config_template", None)
+    )
+    dynamic_args = _worker_dynamic_args(args, schema)
     count = getattr(args, "count", 1) or 1
 
     if orch.orchestrator_if_up(args) is not None:
@@ -584,13 +614,7 @@ def _worker_cmd(args):
     # 500` reach the training job. The orchestrator path forwards the dict
     # directly as EnqueueRequest.dynamic_args instead.
     if dynamic_args:
-        cmd_args.extend(
-            _reconstruct_dynamic_cli(
-                getattr(args, "project_dir", "."),
-                getattr(args, "config_template", None),
-                dynamic_args,
-            )
-        )
+        cmd_args.extend(_dynamic_cli_from_schema(schema, dynamic_args))
 
     # Forward remaining arguments
     remainder = args.remainder
@@ -612,8 +636,11 @@ def _worker_cmd(args):
     print(diloco_info)
     print(f"Command: {cmd_str}")
 
-    if not args.dry_run:
-        subprocess.run(cmd_args, env=env)
+    if args.dry_run:
+        return 0
+    # Propagate the trainer's exit code so a failed worker surfaces as a
+    # non-zero `forgather diloco worker` exit (scriptability).
+    return subprocess.run(cmd_args, env=env).returncode
 
 
 def diloco_cmd(args):

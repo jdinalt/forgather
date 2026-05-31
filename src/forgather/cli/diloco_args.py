@@ -552,18 +552,25 @@ def create_diloco_parser(global_args):
     )
 
     # Dynamic/template args: build argparse options + help from the config's
-    # ``dynamic_args`` metadata (the established pattern — see train_args.py).
+    # ``dynamic_args`` metadata (the established pattern — see train_args.py),
+    # so a config's args show up under `diloco worker --help` and parse.
     # Only when a config is selected (-t) and dynamic args aren't disabled,
     # so plain `diloco <other-subcommand>` invocations don't pay a config
-    # load. Propagate the discovered names to the top-level diloco parser so
-    # main.py's partition routes them into ``args._dynamic_args``.
+    # load.
+    #
+    # NOTE: we deliberately do NOT propagate ``_dynamic_arg_names`` to the
+    # top-level diloco parser. main.py's partition is global to the chosen
+    # subcommand, and the dynamic-arg set includes framework-standard names
+    # like ``output_dir`` — smearing them across the namespace would strip
+    # ``--output-dir`` from a sibling like ``diloco server``. ``_worker_cmd``
+    # collects the worker's dynamic args from the config schema itself
+    # (see ``_load_dynamic_schema`` / ``_worker_dynamic_args``).
     if getattr(global_args, "config_template", None) and not getattr(
         global_args, "no_dyn", False
     ):
         from .dynamic_args import parse_dynamic_args
 
         parse_dynamic_args(worker_parser, global_args)
-        parser._dynamic_arg_names = getattr(worker_parser, "_dynamic_arg_names", [])
 
     # register / unregister — manage external DiLoCo servers in the
     # forgather server's registry (orchestrator-only).
