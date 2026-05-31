@@ -86,11 +86,7 @@ class ServerClient:
     def __init__(self, base_url=None, timeout=30.0):
         import requests
 
-        base = (
-            base_url
-            or os.environ.get("FORGATHER_SERVER_URL")
-            or _default_base_url()
-        )
+        base = base_url or os.environ.get("FORGATHER_SERVER_URL") or _default_base_url()
         self.base = base.rstrip("/")
         self.timeout = timeout
         self.session = requests.Session()
@@ -113,9 +109,7 @@ class ServerClient:
                 if bundle is not None:
                     self.session.verify = str(bundle)
                 if not cfg.verify_hostname:
-                    self.session.mount(
-                        "https://", _NoHostnameHTTPSAdapter.build()
-                    )
+                    self.session.mount("https://", _NoHostnameHTTPSAdapter.build())
             except Exception:
                 pass
         self._token = _load_auth_token()
@@ -194,6 +188,22 @@ class ServerClient:
             )
         return self._check_response(r)
 
+    def ping(self):
+        """Cheap reachability probe for auto-detect.
+
+        Hits the unauthenticated ``/api/health`` endpoint with a short
+        timeout and returns ``True`` iff the orchestrator answers. Never
+        raises — callers use it to decide between the orchestrator path
+        and the direct-to-param-server path.
+        """
+        import requests
+
+        try:
+            r = self.session.get(self._url("/health"), timeout=min(self.timeout, 2.0))
+            return r.ok
+        except Exception:
+            return False
+
     # Queue
 
     def enqueue_job(
@@ -206,6 +216,7 @@ class ServerClient:
         requested_gpus=0,
         priority=0,
         dynamic_args=None,
+        dataset_source=None,
     ):
         body = {
             "project_dir": project_dir,
@@ -216,6 +227,12 @@ class ServerClient:
             "job_type": job_type,
             "job_params": job_params,
         }
+        # Only sent when set — the server treats a missing dataset_source
+        # as "local" (the EnqueueRequest default). Shapes:
+        #   {"kind": "auto"} | {"kind": "local"} |
+        #   {"kind": "server", "server_id": "local:<qid>" | "user:<id>"}
+        if dataset_source is not None:
+            body["dataset_source"] = dataset_source
         return self._post("/queue", body).json()
 
     def enqueue_training(
@@ -447,3 +464,63 @@ class ServerClient:
         """
         path = f"/cluster/dataset_server_proxy/{server_id}/{op}"
         return self._get(path).json()
+
+    # DiLoCo (the orchestrator proxies to upstream parameter servers,
+    # resolving each upstream's bearer + TLS verification on our behalf —
+    # so these only need the orchestrator's own auth, already configured).
+
+    def list_diloco_servers(self):
+        """Unified list: locally-spawned + registered (+ cluster) servers."""
+        return self._get("/diloco/servers").json()
+
+    def list_diloco_registry(self):
+        """Just the user-registered external entries."""
+        return self._get("/diloco/registry").json()
+
+    def add_diloco_registry(
+        self, *, base_url, label=None, auth_token=None, verify_tls=True
+    ):
+        body = {"base_url": base_url, "verify_tls": verify_tls}
+        if label:
+            body["label"] = label
+        if auth_token:
+            body["auth_token"] = auth_token
+        return self._post("/diloco/registry", body).json()
+
+    def delete_diloco_registry(self, entry_id):
+        return self._delete(f"/diloco/registry/{entry_id}").json()
+
+    def generate_diloco_worker_names(self, count, exclude=None):
+        return self._post(
+            "/diloco/generate-worker-names",
+            {"count": int(count), "exclude": list(exclude or [])},
+        ).json()
+
+    def diloco_server_status(self, base):
+        return self._get(f"/diloco/server-status?base={quote(base, safe='')}").json()
+
+    def diloco_server_info(self, base):
+        return self._get(f"/diloco/server-info?base={quote(base, safe='')}").json()
+
+    def diloco_known_workers(self, base):
+        return self._get(f"/diloco/known-workers?base={quote(base, safe='')}").json()
+
+    def diloco_work_queues(self, base):
+        return self._get(f"/diloco/work-queues?base={quote(base, safe='')}").json()
+
+    def diloco_work_queue(self, base, dataset_id, shuffle_seed):
+        return self._get(
+            f"/diloco/work-queue?base={quote(base, safe='')}"
+            f"&dataset_id={quote(str(dataset_id), safe='')}"
+            f"&shuffle_seed={int(shuffle_seed)}"
+        ).json()
+
+    def diloco_server_control(self, action, base, command=None, worker_id=None):
+        body = {}
+        if command is not None:
+            body["command"] = command
+        if worker_id is not None:
+            body["worker_id"] = worker_id
+        return self._post(
+            f"/diloco/server-control/{action}?base={quote(base, safe='')}", body
+        ).json()

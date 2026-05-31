@@ -242,6 +242,84 @@ def create_diloco_parser(global_args):
             "is external."
         ),
     )
+    status_parser.add_argument(
+        "--queues",
+        action="store_true",
+        help="Also show the work-unit queues (issued / completed / total).",
+    )
+    status_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the merged status (status + info + workers [+ queues]) as JSON.",
+    )
+    status_parser.add_argument(
+        "--via-server",
+        type=str,
+        default=None,
+        metavar="URL",
+        help=(
+            "forgather-server base URL to route through (default: "
+            "$FORGATHER_SERVER_URL or http://127.0.0.1:8765). When the "
+            "server is reachable and knows this target, status is read "
+            "through it (central token/TLS handling)."
+        ),
+    )
+    status_parser.add_argument(
+        "--direct",
+        action="store_true",
+        help=(
+            "Skip the forgather server and query the parameter server "
+            "directly (the legacy path)."
+        ),
+    )
+
+    # servers subcommand — discovery via the forgather server.
+    servers_parser = subparsers.add_parser(
+        "servers",
+        help="List DiLoCo servers the forgather server knows (local + registered)",
+        formatter_class=RawTextHelpFormatter,
+    )
+    servers_parser.add_argument(
+        "--via-server",
+        type=str,
+        default=None,
+        metavar="URL",
+        help="forgather-server base URL (default: env / http://127.0.0.1:8765).",
+    )
+    servers_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the server list as JSON.",
+    )
+
+    # logs subcommand — dump / tail a worker's or server's captured TTY.
+    logs_parser = subparsers.add_parser(
+        "logs",
+        help="Dump or follow a DiLoCo worker/server job's captured TTY log",
+        formatter_class=RawTextHelpFormatter,
+    )
+    logs_parser.add_argument(
+        "job",
+        type=str,
+        help=(
+            "Job to read: a queue_id, a local DiLoCo server id/label, or a\n"
+            "worker_id. Resolved to the underlying job via the forgather\n"
+            "server. (Raw queue_ids also work with 'forgather job tail'.)"
+        ),
+    )
+    logs_parser.add_argument(
+        "-f",
+        "--follow",
+        action="store_true",
+        help="Stream new output until the job exits or Ctrl-C.",
+    )
+    logs_parser.add_argument(
+        "--via-server",
+        type=str,
+        default=None,
+        metavar="URL",
+        help="forgather-server base URL (default: env / http://127.0.0.1:8765).",
+    )
 
     # Shared client-connection args for the control-plane subcommands.
     def _add_client_conn_args(p):
