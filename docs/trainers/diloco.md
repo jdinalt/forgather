@@ -167,10 +167,25 @@ worker_id`). To resume a stopped worker, relaunch it with the **same**
 `--worker-id`: the suffix resolves to the same directory and the trainer
 picks up that worker's latest checkpoint. The server remembers the names of
 every worker that has registered — persisted with its checkpoints, so the
-roster survives a server restart — and the webui's submit modal offers the
-not-currently-running names as a menu on the `worker_id` field (the
-`output_dir` each would resume from is shown alongside). Pick one to resume,
-or type a new name to start fresh.
+roster survives a server restart.
+
+**Submitting workers from the webui (worker pool).** When a DiLoCo server is
+selected in the submit modal, the DiLoCo section shows a *worker pool* instead
+of a single `worker_id` field. The pool has two kinds of chips:
+
+- **Stopped workers** — every not-currently-running name on the server's
+  roster, each showing the `output_dir` it would resume from. Toggle a chip on
+  to relaunch that worker under its old id and resume from its checkpoint.
+- **New workers** — names you add. Type one and click **Add**, or set a count
+  and click **Generate** to mint that many random, mutually-unique names (from
+  ~100K adjective-species permutations; generated batches never collide with
+  names already in the pool). New chips carry an **×** to remove them.
+
+On **Submit**, one job is spawned per enabled stopped worker plus every new
+worker — so "spin up N identical workers" or "resume these three and add two
+fresh ones" is a single action. An empty pool submits a single auto-named
+worker (its id falls back to the queue id), preserving the simple one-worker
+flow.
 
 **Server-authoritative settings.** `sync_every`, `bf16_comm`, `dylu`, and
 `num_fragments` must match across every worker in the group for the sync

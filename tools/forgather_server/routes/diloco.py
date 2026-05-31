@@ -13,6 +13,10 @@ Backs the DiLoCo view in the webui. Surface:
   GET    /api/diloco/registry         List user-added external entries.
   POST   /api/diloco/registry         Add an external entry.
   DELETE /api/diloco/registry/{id}    Remove an external entry.
+  POST   /api/diloco/generate-worker-names
+                                      Mint N unique memorable worker names
+                                      (submit-modal batch pool). Local, no
+                                      proxy.
 
 SSRF policy mirrors :mod:`routes.dataset_server`: loopback is always
 allowed, registered URLs are allowed (the act of registering is the
@@ -43,6 +47,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+from forgather.utils import generate_name
 
 from .. import diloco_server_registry, job_records
 from ..job_records import RUNNING_STATUSES
@@ -621,3 +627,68 @@ def delete_registry_entry(entry_id: str):
             status_code=404, detail=f"no registry entry with id {entry_id!r}"
         )
     return {"deleted": entry_id}
+
+
+# ---------------------------------------------------------------------------
+# Worker-name generation
+# ---------------------------------------------------------------------------
+
+
+class GenerateWorkerNamesRequest(BaseModel):
+    # Number of names to return. Bounded below to reject nonsense and above
+    # so a typo ("10000") can't spin the rejection-sampling loop pointlessly.
+    count: int = 1
+    # Names the caller already has in its pool (stopped workers + already-added
+    # new ones). The generated batch is guaranteed disjoint from this set so a
+    # second "Generate 4" can't collide with the first.
+    exclude: List[str] = []
+
+
+class GenerateWorkerNamesResponse(BaseModel):
+    names: List[str]
+
+
+# Upper bound on a single batch. Far above any realistic worker count; exists
+# only to keep the rejection-sampling loop bounded.
+_MAX_GENERATE = 256
+
+
+@router.post(
+    "/diloco/generate-worker-names", response_model=GenerateWorkerNamesResponse
+)
+def generate_worker_names(req: GenerateWorkerNamesRequest):
+    """Return ``count`` memorable, mutually-unique worker names.
+
+    Backs the submit modal's "Generate N workers" control. Names come from
+    :func:`forgather.utils.generate_name` (adjective-species, ~100K
+    permutations). The returned batch is internally unique and disjoint from
+    ``exclude``; rejection sampling is bounded so a request that cannot be
+    satisfied (pool exhausted by ``exclude``) fails loudly rather than hanging.
+    """
+    if req.count < 1 or req.count > _MAX_GENERATE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"count must be between 1 and {_MAX_GENERATE}",
+        )
+    seen = {s.strip() for s in req.exclude if s and s.strip()}
+    names: List[str] = []
+    # Generous attempt budget: collisions are rare against a 100K-name pool,
+    # but a large ``exclude`` shrinks the effective space, so scale with count.
+    max_attempts = max(req.count * 100, 2000)
+    for _ in range(max_attempts):
+        if len(names) >= req.count:
+            break
+        candidate = generate_name()
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        names.append(candidate)
+    if len(names) < req.count:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"could only generate {len(names)} unique name(s) of "
+                f"{req.count} requested — the name pool may be exhausted"
+            ),
+        )
+    return GenerateWorkerNamesResponse(names=names)

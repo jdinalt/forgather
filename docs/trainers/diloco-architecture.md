@@ -241,12 +241,12 @@ All communication uses HTTP/1.1 over TCP. The server runs a
 roster `self._known_workers`, persisted with the server's checkpoints (see
 "Server state persistence" below). Each entry carries the worker's
 last-reported `output_dir`, its last registration time, and a `running`
-flag (true iff currently registered). The webui's submit modal offers the
-not-running entries as a menu so an operator can relaunch a worker under
-its old id and thereby resume from that worker's own checkpoint — the
-checkpoint path is the worker-id-suffixed `output_dir`, so reusing the id
-is the only way to find it. Routed on the control port only and bearer-
-authenticated, like `/status`.
+flag (true iff currently registered). The webui's submit modal surfaces the
+not-running entries as toggleable chips in its worker pool so an operator can
+relaunch a worker under its old id and thereby resume from that worker's own
+checkpoint — the checkpoint path is the worker-id-suffixed `output_dir`, so
+reusing the id is the only way to find it. Routed on the control port only and
+bearer-authenticated, like `/status`.
 
 `/model_def` is served from `self._model_def_dir`, resolved in `load_state`
 by `_resolve_model_def_dir`: the loaded checkpoint when it carries the

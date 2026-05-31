@@ -106,6 +106,48 @@ class TestRegistry:
 
 
 # ---------------------------------------------------------------------------
+# Worker-name generation
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateWorkerNames:
+    def test_default_count_one(self, client):
+        r = client.post("/api/diloco/generate-worker-names", json={})
+        assert r.status_code == 200, r.text
+        names = r.json()["names"]
+        assert len(names) == 1
+        assert "-" in names[0]
+
+    def test_batch_is_unique(self, client):
+        r = client.post("/api/diloco/generate-worker-names", json={"count": 50})
+        assert r.status_code == 200, r.text
+        names = r.json()["names"]
+        assert len(names) == 50
+        assert len(set(names)) == 50  # no duplicates within the batch
+
+    def test_excludes_are_honored(self, client):
+        # First batch, then a second batch excluding the first — the union
+        # must stay collision-free (the resumable-pool use case).
+        first = client.post(
+            "/api/diloco/generate-worker-names", json={"count": 20}
+        ).json()["names"]
+        second = client.post(
+            "/api/diloco/generate-worker-names",
+            json={"count": 20, "exclude": first},
+        ).json()["names"]
+        assert len(second) == 20
+        assert set(first).isdisjoint(set(second))
+
+    def test_rejects_zero(self, client):
+        r = client.post("/api/diloco/generate-worker-names", json={"count": 0})
+        assert r.status_code == 400
+
+    def test_rejects_too_many(self, client):
+        r = client.post("/api/diloco/generate-worker-names", json={"count": 100000})
+        assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
 # Unified servers list
 # ---------------------------------------------------------------------------
 
