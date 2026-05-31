@@ -672,6 +672,31 @@ class DiLoCoClient:
         """Get server status."""
         return self._request_json("GET", "/status")
 
+    def relay_command(self, command: str, worker_id: Optional[str] = None) -> dict:
+        """Queue a trainer-control command for one or all workers.
+
+        Posts to ``/control/command``; the server stores it and delivers it
+        on the target worker(s)' next heartbeat, which applies it to the
+        trainer loop. ``command`` is one of ``"save_checkpoint"``,
+        ``"save_and_stop"``, ``"abort"``. ``worker_id=None`` broadcasts to
+        every currently-registered worker.
+
+        Returns the server's ``{"status", "command", "workers"}`` ack.
+        """
+        body: Dict[str, Any] = {"command": command}
+        if worker_id is not None:
+            body["worker_id"] = worker_id
+        return self._request_json("POST", "/control/command", body)
+
+    def save_state(self) -> dict:
+        """Ask the server to checkpoint its state to disk now."""
+        return self._request_json("POST", "/control/save_state", {})
+
+    def shutdown(self) -> dict:
+        """Ask the server to stop. The server replies then exits, so a
+        connection-reset after the ack is expected and not an error."""
+        return self._request_json("POST", "/control/shutdown", {}, retries=1)
+
     def get_known_workers(self) -> dict:
         """Get the roster of every worker_id the server has ever seen.
 

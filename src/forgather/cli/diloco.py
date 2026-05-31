@@ -348,6 +348,113 @@ def _status_cmd(args):
     return 0
 
 
+def _make_client(args, timeout=10):
+    """Build a DiLoCoClient from the shared control-plane connection args."""
+    from forgather.ml.diloco.client import DiLoCoClient
+
+    return DiLoCoClient(
+        args.server,
+        timeout=timeout,
+        token=getattr(args, "auth_token", None),
+        verify_tls=not getattr(args, "no_verify_tls", False),
+    )
+
+
+# CLI action name -> trainer-control command the server relays.
+_CONTROL_ACTION_MAP = {
+    "save": "save_checkpoint",
+    "save-stop": "save_and_stop",
+    "abort": "abort",
+}
+
+
+def _control_cmd(args):
+    """Relay a trainer-control command to one or all workers."""
+    command = _CONTROL_ACTION_MAP[args.action]
+    client = _make_client(args)
+    try:
+        resp = client.relay_command(command, worker_id=args.worker_id)
+    except Exception as e:
+        print(f"Error contacting server at {args.server}: {e}")
+        return 1
+    workers = resp.get("workers", [])
+    if not workers:
+        print("No workers registered — nothing to do.")
+        return 0
+    print(f"Queued '{command}' for {len(workers)} worker(s): {', '.join(workers)}")
+    print("Each worker applies it on its next heartbeat.")
+    return 0
+
+
+def _shutdown_cmd(args):
+    """Stop the DiLoCo server — cleanly (default) or immediately (--force)."""
+    import time
+
+    client = _make_client(args)
+
+    if args.force:
+        print("Force shutdown: stopping server now (workers will lose sync).")
+        try:
+            client.shutdown()
+        except Exception as e:
+            # The server closes the socket as it exits; tolerate that.
+            print(f"  (server stop signalled; {type(e).__name__})")
+        print("Server stop signalled.")
+        return 0
+
+    # Clean shutdown: save-stop all workers, wait for them to exit, then
+    # checkpoint + stop the server.
+    try:
+        resp = client.relay_command("save_and_stop")
+    except Exception as e:
+        print(f"Error contacting server at {args.server}: {e}")
+        return 1
+    targets = list(resp.get("workers", []))
+    if targets:
+        print(f"Save & stop queued for {len(targets)} worker(s): {', '.join(targets)}")
+        print(f"Waiting up to {int(args.timeout)}s for workers to stop…")
+        deadline = time.time() + args.timeout
+        remaining = set(targets)
+        while remaining and time.time() < deadline:
+            time.sleep(2.0)
+            try:
+                status = client.get_status()
+            except Exception as e:
+                print(f"  (status poll failed: {e}; retrying)")
+                continue
+            live = set(status.get("workers", {}).keys())
+            stopped = remaining - live
+            for wid in stopped:
+                print(f"  stopped: {wid}")
+            remaining = remaining & live
+            print(f"  {len(targets) - len(remaining)}/{len(targets)} stopped")
+        if remaining:
+            print(
+                f"Timed out: {len(remaining)} worker(s) still running "
+                f"({', '.join(sorted(remaining))}). Server left running so you "
+                f"can troubleshoot; re-run, or use --force."
+            )
+            return 1
+        print("All workers stopped.")
+    else:
+        print("No workers registered — skipping worker stop.")
+
+    print("Saving server checkpoint…")
+    try:
+        client.save_state()
+        print("  server checkpoint saved.")
+    except Exception as e:
+        print(f"  server checkpoint failed: {e} (continuing to stop)")
+
+    print("Stopping server…")
+    try:
+        client.shutdown()
+    except Exception as e:
+        print(f"  (server stop signalled; {type(e).__name__})")
+    print("Done.")
+    return 0
+
+
 def _worker_cmd(args):
     """
     Launch training as a DiLoCo worker.
@@ -422,9 +529,13 @@ def diloco_cmd(args):
         return _server_cmd(args)
     elif subcmd == "status":
         return _status_cmd(args)
+    elif subcmd == "control":
+        return _control_cmd(args)
+    elif subcmd == "shutdown":
+        return _shutdown_cmd(args)
     elif subcmd == "worker":
         return _worker_cmd(args)
     else:
-        print("Usage: forgather diloco {server|status|worker}")
+        print("Usage: forgather diloco {server|status|control|shutdown|worker}")
         print("Run 'forgather diloco --help' for details.")
         return 1

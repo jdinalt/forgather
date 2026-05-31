@@ -36,6 +36,12 @@ from ..trainer_types import (
 logger = logging.getLogger(__name__)
 prefix_logger_rank(logger, show_all_ranks=True)
 
+# Relayed trainer-control commands -> integer code for the cross-rank
+# all_reduce(MAX) in on_step_end. 0 == "no command". Names mirror the
+# worker-side trainer-control vocabulary (control_callback.COMMAND_CODES).
+_RELAY_CODE = {"save_checkpoint": 1, "save_and_stop": 2, "abort": 3}
+_RELAY_NAME = {v: k for k, v in _RELAY_CODE.items()}
+
 
 def _env_bool(name: str, default: bool = False) -> bool:
     """Read a boolean from an environment variable."""
@@ -513,6 +519,86 @@ class DiLoCoCallback(TrainerCallback):
             f"(sync_count={st.get('sync_count', 0)}, "
             f"local_step={st.get('local_step', 0)})"
         )
+
+    def on_step_end(
+        self,
+        args: MinimalTrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
+        """Apply any server-relayed trainer-control command.
+
+        The server queues save / save-and-stop / abort via
+        ``/control/command`` and delivers it on the leader's heartbeat; the
+        worker stashes it. Here we drain it and set the matching control
+        flags so the relay drives the trainer loop exactly like the direct
+        trainer-control endpoint would.
+
+        Multi-rank safety: only the leader heartbeats, so only it holds a
+        command — but every rank must reach the same stop/save decision or
+        the ranks diverge and deadlock at the next collective. We therefore
+        ``all_reduce(MAX)`` a one-int command code across the default process
+        group: every rank participates every step (no divergence in the
+        collective), and MAX carries the leader's non-zero code to all.
+        """
+        if self._worker is None:
+            return control
+
+        local = self._worker.consume_pending_command()
+        code = _RELAY_CODE.get(local, 0)
+
+        code = self._sync_command_code(code)
+        if code:
+            self._apply_relay_command(_RELAY_NAME[code], control)
+        return control
+
+    def _sync_command_code(self, code: int) -> int:
+        """all_reduce(MAX) the command code across ranks; identity in the
+        single-process case. Failures are logged and treated as "no command"
+        rather than risking a half-stopped cluster on a transient comm error."""
+        try:
+            import torch
+            import torch.distributed as dist
+
+            if (
+                dist.is_available()
+                and dist.is_initialized()
+                and dist.get_world_size() > 1
+            ):
+                device = self._command_device()
+                t = torch.tensor([code], dtype=torch.long, device=device)
+                dist.all_reduce(t, op=dist.ReduceOp.MAX)
+                return int(t.item())
+        except Exception as e:  # pragma: no cover - comm failure path
+            logger.warning(f"DiLoCoCallback: command sync failed: {e}")
+            return 0
+        return code
+
+    def _command_device(self):
+        """Device for the command all_reduce — the model's param device so
+        the tensor rides the same backend (NCCL/gloo) the group uses."""
+        import torch
+
+        try:
+            if self._worker is not None and self._worker.model is not None:
+                return next(self._worker.model.parameters()).device
+        except StopIteration:
+            pass
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def _apply_relay_command(self, command: str, control: TrainerControl):
+        """Map a relayed command to TrainerControl flags (mirrors
+        control_callback._apply_command for save / save-and-stop / abort)."""
+        if command == "save_checkpoint":
+            control.should_save = True
+        elif command == "save_and_stop":
+            control.should_save = True
+            control.should_training_stop = True
+        elif command == "abort":
+            control.should_abort_without_save = True
+            control.should_training_stop = True
+        logger.info(f"DiLoCoCallback: applied relayed command '{command}'")
 
     def on_log(
         self,

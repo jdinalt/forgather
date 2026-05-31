@@ -81,6 +81,11 @@ class WorkerInfo:
     # resumable run that must reuse a stable worker name (issue #103).
     output_dir: Optional[str] = None
     extra: Dict[str, Any] = field(default_factory=dict)
+    # Trainer-control command queued for this worker, delivered on its next
+    # heartbeat and cleared on delivery (the relay channel for collective
+    # save / save-and-stop / abort issued via /control/command). One of
+    # ``"save_checkpoint"``, ``"save_and_stop"``, ``"abort"``, or ``None``.
+    pending_command: Optional[str] = None
 
 
 @dataclass
@@ -261,8 +266,15 @@ _CONTROL_AUDIT_FIELDS: Dict[str, frozenset] = {
     "kick_worker": frozenset({"worker_id"}),
     "update_optimizer": frozenset({"lr", "momentum", "nesterov"}),
     "update_num_workers": frozenset({"num_workers"}),
+    "command": frozenset({"command", "worker_id"}),
     "shutdown": frozenset(),
 }
+
+# Trainer-control commands the relay (/control/command) accepts and queues
+# for delivery on a worker's next heartbeat. These mirror the worker-side
+# trainer-control vocabulary (see control_callback.COMMAND_CODES) minus the
+# server-irrelevant ones: the relay only drives save / stop / abort.
+_RELAY_COMMANDS = frozenset({"save_checkpoint", "save_and_stop", "abort"})
 
 
 def _audit_control_data(action: str, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -2088,6 +2100,11 @@ class DiLoCoServer:
             self._workers[worker_id].last_heartbeat = time.time()
             if "steps_per_second" in info:
                 self._workers[worker_id].steps_per_second = info["steps_per_second"]
+            # Pop any queued trainer-control command for this worker. Cleared
+            # on delivery so it fires exactly once; the worker applies it to
+            # its trainer loop (save / save-and-stop / abort).
+            command = self._workers[worker_id].pending_command
+            self._workers[worker_id].pending_command = None
 
         # Compute DyLU recommendation if enabled
         recommended_sync_every = self._compute_dylu_sync_every(worker_id)
@@ -2100,6 +2117,8 @@ class DiLoCoServer:
         }
         if recommended_sync_every is not None:
             response["recommended_sync_every"] = recommended_sync_every
+        if command is not None:
+            response["command"] = command
 
         _send_json_response(handler, response)
 
@@ -2642,6 +2661,8 @@ class DiLoCoServer:
                 self._handle_control_update_optimizer(handler, data)
             elif action == "update_num_workers":
                 self._handle_control_update_num_workers(handler, data)
+            elif action == "command":
+                self._handle_control_command(handler, data)
             elif action == "shutdown":
                 self._handle_control_shutdown(handler, data)
             else:
@@ -2673,6 +2694,56 @@ class DiLoCoServer:
         self._handle_worker_death(worker_id)
         logger.info(f"Worker {worker_id} kicked via control endpoint")
         _send_json_response(handler, {"status": "ok", "worker_id": worker_id})
+
+    def _handle_control_command(self, handler, data):
+        """Queue a trainer-control command for one or all workers.
+
+        Body: ``{"command": "save_checkpoint"|"save_and_stop"|"abort",
+        "worker_id": "..."}``. ``worker_id`` is optional — omitted (or
+        ``"*"``) queues the command for every currently-registered worker.
+
+        This is the relay that lets the CLI (and the webui) drive the
+        per-worker controls without reaching each worker's trainer-control
+        HTTP endpoint directly: the command rides the worker's next
+        heartbeat response, and the DiLoCo callback applies it to the
+        trainer loop. Latency is bounded by ``heartbeat_interval``.
+        """
+        command = data.get("command")
+        if command not in _RELAY_COMMANDS:
+            _send_json_response(
+                handler,
+                {
+                    "error": (
+                        f"unknown command {command!r}; expected one of "
+                        f"{sorted(_RELAY_COMMANDS)}"
+                    )
+                },
+                400,
+            )
+            return
+        worker_id = data.get("worker_id")
+        with self._workers_lock:
+            if worker_id in (None, "", "*"):
+                targets = list(self._workers.keys())
+            elif worker_id in self._workers:
+                targets = [worker_id]
+            else:
+                _send_json_response(
+                    handler, {"error": f"Worker {worker_id} not found"}, 404
+                )
+                return
+            for wid in targets:
+                self._workers[wid].pending_command = command
+        logger.info(
+            "Queued control command %r for %d worker(s): %s",
+            command,
+            len(targets),
+            targets,
+        )
+        _send_json_response(
+            handler,
+            {"status": "ok", "command": command, "workers": targets},
+        )
 
     def _handle_control_update_optimizer(self, handler, data):
         """Update outer optimizer hyperparameters in-place."""

@@ -1060,10 +1060,42 @@ webui's Control card talks to under the hood.
 | `POST /control/kick_worker` | `{"worker_id": "..."}` | Evict a worker |
 | `POST /control/update_optimizer` | `{"lr": 0.5, "momentum": 0.8}` | Update optimizer hyperparameters |
 | `POST /control/update_num_workers` | `{"num_workers": 4}` | Change expected worker count |
+| `POST /control/command` | `{"command": "save_and_stop", "worker_id": "w0"}` | Relay a trainer-control command to a worker (`worker_id` omitted = all) |
 | `POST /control/shutdown` | `{}` | Save state (if configured) and stop |
 
 All endpoints return `{"status": "ok", ...}` on success or `{"error": "..."}` on
 failure.
+
+#### Command relay
+
+`/control/command` is how the CLI and webui drive a worker's trainer-control
+actions (**save_checkpoint** / **save_and_stop** / **abort**) without reaching
+each worker's own trainer-control HTTP endpoint. The server queues the command
+on the target worker(s) and delivers it on their next **heartbeat**; the DiLoCo
+callback then applies it to the trainer loop exactly as the direct
+trainer-control endpoint would. Latency is bounded by `--heartbeat-interval`.
+For multi-rank workers (DDP / pipeline) only the leader heartbeats, so the
+callback `all_reduce(MAX)`-es the command code across ranks each step — every
+rank reaches the same save/stop decision and the group can't deadlock on a
+divergent stop.
+
+### Controlling workers from the CLI
+
+```bash
+# Relay to all registered workers (or one with --worker-id):
+forgather diloco control save        --server host:8512   # checkpoint, keep training
+forgather diloco control save-stop   --server host:8512   # checkpoint, then stop
+forgather diloco control abort       --server host:8512   # stop now, no save
+
+# Stop the whole run. Clean by default: save-stop every worker, wait for them
+# to exit, checkpoint the server, then stop it.
+forgather diloco shutdown --server host:8512
+forgather diloco shutdown --server host:8512 --timeout 120   # cap the wait
+forgather diloco shutdown --server host:8512 --force         # stop server now, don't wait
+```
+
+A clean `shutdown` that times out waiting for a stuck worker leaves the server
+running so you can troubleshoot (re-run it, or use `--force`).
 
 ### Security Note
 
