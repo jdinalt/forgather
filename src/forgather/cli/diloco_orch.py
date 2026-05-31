@@ -246,6 +246,51 @@ def assemble_status(*, get_status, get_info, get_known_workers, get_work_queues)
     }
 
 
+def _render_aggregate_stats(agg):
+    """Render the server's unified aggregate training stats block.
+
+    Skips lines whose metric hasn't been reported yet so a fresh server (or an
+    older one without the ``aggregate_stats`` field) doesn't print a wall of
+    zeros. Counters are lifetime totals; gauges are summed over the workers
+    currently reporting.
+    """
+    lines = []
+    tt = agg.get("total_tokens")
+    if tt:
+        lines.append(f"  Total tokens:  {tt:,}")
+    ts = agg.get("total_steps")
+    if ts:
+        lines.append(f"  Total steps:   {ts:,}")
+    tf = agg.get("total_flos")
+    if tf:
+        lines.append(f"  Total FLOPs:   {tf:.3e}")
+    tps = agg.get("tok_per_sec")
+    if tps:
+        lines.append(f"  Throughput:    {tps:,.0f} tok/s")
+    mfu = agg.get("mfu")
+    if mfu:
+        lines.append(f"  MFU:           {mfu * 100:.1f}%")
+    pm = agg.get("peak_memory")
+    if pm:
+        lines.append(f"  Peak memory:   {pm / 1e9:.2f} GB")
+    gn = agg.get("grad_norm")
+    if gn is not None:
+        lines.append(f"  Grad norm:     {gn:.3f}")
+    tl = agg.get("train_loss")
+    if tl is not None:
+        lines.append(f"  Train loss:    {tl:.4f}")
+    el = agg.get("eval_loss")
+    if el is not None:
+        es = agg.get("eval_step")
+        suffix = f" (@ step {es:,})" if es is not None else ""
+        lines.append(f"  Eval loss:     {el:.4f}{suffix}")
+    if lines:
+        print()
+        print("Training stats (aggregate):")
+        for line in lines:
+            print(line)
+
+
 def render_status(merged, *, want_queues):
     """Human-readable rendering of an :func:`assemble_status` result."""
     import datetime
@@ -290,6 +335,8 @@ def render_status(merged, *, want_queues):
     pending = status.get("pending_submissions", [])
     if pending:
         print(f"  Pending sync:  {', '.join(pending)}")
+
+    _render_aggregate_stats(status.get("aggregate_stats") or {})
 
     workers = status.get("workers", {})
     if workers:

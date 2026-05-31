@@ -1141,6 +1141,26 @@ export interface DiLoCoStatus {
   save_dir?: string;
   model_params?: number;
   model_size_mb?: number;
+  /** Unified aggregate training stats collected from all workers. */
+  aggregate_stats?: DiLoCoAggregateStats;
+}
+
+/** Server-side aggregate training statistics (see diloco/stats.py).
+ *  Lifetime counters are cumulative across the server's checkpoints; the
+ *  gauges sum/average over the workers currently reporting; the losses are
+ *  smoothed EMAs (null until first reported). */
+export interface DiLoCoAggregateStats {
+  total_tokens?: number;
+  total_flos?: number;
+  total_steps?: number;
+  tok_per_sec?: number;
+  mfu?: number;
+  peak_memory?: number;
+  grad_norm?: number | null;
+  train_loss?: number | null;
+  eval_loss?: number | null;
+  eval_step?: number | null;
+  num_reporting?: number;
 }
 
 /** One entry in the upstream ``/known_workers`` roster. */

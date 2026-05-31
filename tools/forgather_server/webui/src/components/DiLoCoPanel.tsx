@@ -614,6 +614,8 @@ function ServerDetail({
     >
       <DashboardHeader server={server} status={status} info={info} />
 
+      {status && <AggregateStatsCard status={status} />}
+
       {!!statusError && (
         <div
           role="alert"
@@ -681,6 +683,89 @@ function Field({
       </div>
       <div>{value}</div>
     </div>
+  );
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return String(n);
+}
+
+/** Unified aggregate training stats collected from every worker (total
+ *  tokens/steps/FLOPs, aggregate throughput/MFU/memory, smoothed train/eval
+ *  loss). Renders nothing until at least one metric has been reported, so a
+ *  fresh server shows no empty card. */
+function AggregateStatsCard({ status }: { status: DiLoCoStatus }) {
+  const agg = status.aggregate_stats;
+  if (!agg) return null;
+  const items: Array<[string, React.ReactNode]> = [];
+  if (agg.total_tokens) items.push(["Total tokens", formatTokens(agg.total_tokens)]);
+  if (agg.total_steps)
+    items.push(["Total steps", agg.total_steps.toLocaleString()]);
+  if (agg.total_flos) items.push(["Total FLOPs", agg.total_flos.toExponential(2)]);
+  if (agg.tok_per_sec)
+    items.push([
+      "Throughput",
+      `${Math.round(agg.tok_per_sec).toLocaleString()} tok/s`,
+    ]);
+  if (agg.mfu) items.push(["MFU", `${(agg.mfu * 100).toFixed(1)}%`]);
+  if (agg.peak_memory)
+    items.push(["Peak memory", `${(agg.peak_memory / 1e9).toFixed(2)} GB`]);
+  if (agg.grad_norm != null) items.push(["Grad norm", agg.grad_norm.toFixed(3)]);
+  if (agg.train_loss != null)
+    items.push(["Train loss", agg.train_loss.toFixed(4)]);
+  if (agg.eval_loss != null)
+    items.push([
+      "Eval loss",
+      agg.eval_step != null
+        ? `${agg.eval_loss.toFixed(4)} @ ${agg.eval_step.toLocaleString()}`
+        : agg.eval_loss.toFixed(4),
+    ]);
+  if (items.length === 0) return null;
+
+  return (
+    <section
+      style={{
+        border: "1px solid var(--border, #3b4261)",
+        borderRadius: 6,
+        overflow: "hidden",
+      }}
+    >
+      <header
+        style={{
+          padding: "8px 14px",
+          background: "var(--bg-surface, #24283b)",
+          borderBottom: "1px solid var(--border, #3b4261)",
+          fontWeight: 600,
+          display: "flex",
+          gap: 8,
+          alignItems: "baseline",
+        }}
+      >
+        <span>Training stats</span>
+        {agg.num_reporting != null && (
+          <span className="muted" style={{ fontWeight: 400, fontSize: "smaller" }}>
+            (aggregate of {agg.num_reporting} reporting)
+          </span>
+        )}
+      </header>
+      <div style={{ padding: 14 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+            gap: 12,
+          }}
+        >
+          {items.map(([k, v]) => (
+            <Field key={k} label={k} value={v} />
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 
