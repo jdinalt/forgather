@@ -313,6 +313,123 @@ def _resolve_job_id(client, token):
     return token
 
 
+def register_cmd(args):
+    """Register an external DiLoCo server with the forgather server."""
+    from .server_client import AuthRequired, ServerUnreachable
+
+    client = _orchestrator(args)
+    try:
+        entry = client.add_diloco_registry(
+            base_url=args.url,
+            label=getattr(args, "label", None),
+            auth_token=getattr(args, "auth_token", None),
+            verify_tls=not getattr(args, "no_verify_tls", False),
+        )
+    except (ServerUnreachable, AuthRequired, RuntimeError) as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(entry, indent=2))
+        return 0
+    # Show the "registered:<id>" form so it's copy-pasteable straight into
+    # `diloco servers` output / `diloco unregister`.
+    print(f"Registered '{entry.get('label')}' as registered:{entry.get('id')}")
+    print(
+        f"  {entry.get('base_url')}  "
+        f"(auth={'yes' if entry.get('has_auth_token') else 'no'}, "
+        f"verify_tls={entry.get('verify_tls')})"
+    )
+    return 0
+
+
+def unregister_cmd(args):
+    """Remove a previously-registered external DiLoCo server."""
+    from .server_client import AuthRequired, ServerUnreachable
+
+    client = _orchestrator(args)
+    rid = args.entry_id
+    # Accept both the "registered:<id>" form printed by `diloco servers`
+    # and the bare registry id.
+    if rid.startswith("registered:"):
+        rid = rid[len("registered:") :]
+    try:
+        resp = client.delete_diloco_registry(rid)
+    except (ServerUnreachable, AuthRequired, RuntimeError) as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    print(f"Unregistered {resp.get('deleted', rid)}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Control surface — a uniform adapter over the direct DiLoCoClient and the
+# orchestrator proxy, so the multi-step shutdown flow is written once.
+# ---------------------------------------------------------------------------
+
+
+class _DirectOps:
+    """Talk straight to the parameter server via DiLoCoClient."""
+
+    def __init__(self, client):
+        self._c = client
+
+    def relay(self, command, worker_id=None):
+        return self._c.relay_command(command, worker_id=worker_id)
+
+    def get_status(self):
+        return self._c.get_status()
+
+    def save_state(self):
+        return self._c.save_state()
+
+    def shutdown(self):
+        return self._c.shutdown()
+
+
+class _OrchestratorOps:
+    """Route control actions through the forgather server's proxy (which
+    resolves the upstream token + TLS for us)."""
+
+    def __init__(self, client, base):
+        self._c = client
+        self._base = base
+
+    def relay(self, command, worker_id=None):
+        return self._c.diloco_server_control(
+            "command", self._base, command=command, worker_id=worker_id
+        )
+
+    def get_status(self):
+        return self._c.diloco_server_status(self._base)
+
+    def save_state(self):
+        return self._c.diloco_server_control("save_state", self._base)
+
+    def shutdown(self):
+        return self._c.diloco_server_control("shutdown", self._base)
+
+
+def make_control_ops(args, *, timeout=30):
+    """Build a control surface, orchestrator-first with direct fallback.
+
+    Returns ``(ops, label)`` where ``label`` describes the target for
+    human messages. Honors ``--direct`` / ``--via-server`` via
+    :func:`resolve_orchestrator_base`.
+    """
+    client, base = resolve_orchestrator_base(args)
+    if base is not None:
+        return _OrchestratorOps(client, base), f"{base} (via forgather server)"
+    from forgather.ml.diloco.client import DiLoCoClient
+
+    c = DiLoCoClient(
+        args.server,
+        timeout=timeout,
+        token=getattr(args, "auth_token", None),
+        verify_tls=not getattr(args, "no_verify_tls", False),
+    )
+    return _DirectOps(c), args.server
+
+
 def _follow_tty(client, job_id):
     """Stream a job's TTY to stdout until it ends or Ctrl-C. Mirrors the
     ``forgather job tail`` pattern."""

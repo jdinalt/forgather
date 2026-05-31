@@ -333,18 +333,6 @@ def _status_cmd(args):
     return orch.render_status(merged, want_queues=want_queues)
 
 
-def _make_client(args, timeout=10):
-    """Build a DiLoCoClient from the shared control-plane connection args."""
-    from forgather.ml.diloco.client import DiLoCoClient
-
-    return DiLoCoClient(
-        args.server,
-        timeout=timeout,
-        token=getattr(args, "auth_token", None),
-        verify_tls=not getattr(args, "no_verify_tls", False),
-    )
-
-
 # CLI action name -> trainer-control command the server relays.
 _CONTROL_ACTION_MAP = {
     "save": "save_checkpoint",
@@ -355,12 +343,14 @@ _CONTROL_ACTION_MAP = {
 
 def _control_cmd(args):
     """Relay a trainer-control command to one or all workers."""
+    from . import diloco_orch as orch
+
     command = _CONTROL_ACTION_MAP[args.action]
-    client = _make_client(args)
+    ops, label = orch.make_control_ops(args)
     try:
-        resp = client.relay_command(command, worker_id=args.worker_id)
+        resp = ops.relay(command, worker_id=args.worker_id)
     except Exception as e:
-        print(f"Error contacting server at {args.server}: {e}")
+        print(f"Error contacting server at {label}: {e}")
         return 1
     workers = resp.get("workers", [])
     if not workers:
@@ -372,15 +362,23 @@ def _control_cmd(args):
 
 
 def _shutdown_cmd(args):
-    """Stop the DiLoCo server — cleanly (default) or immediately (--force)."""
+    """Stop the DiLoCo server — cleanly (default) or immediately (--force).
+
+    Orchestrator-first with direct fallback (see make_control_ops): when
+    the forgather server is up and knows this target, the control actions
+    route through its proxy; otherwise they go straight to the parameter
+    server. ``--direct`` forces the latter.
+    """
     import time
 
-    client = _make_client(args)
+    from . import diloco_orch as orch
+
+    ops, label = orch.make_control_ops(args)
 
     if args.force:
         print("Force shutdown: stopping server now (workers will lose sync).")
         try:
-            client.shutdown()
+            ops.shutdown()
         except Exception as e:
             # The server closes the socket as it exits; tolerate that.
             print(f"  (server stop signalled; {type(e).__name__})")
@@ -390,9 +388,9 @@ def _shutdown_cmd(args):
     # Clean shutdown: save-stop all workers, wait for them to exit, then
     # checkpoint + stop the server.
     try:
-        resp = client.relay_command("save_and_stop")
+        resp = ops.relay("save_and_stop")
     except Exception as e:
-        print(f"Error contacting server at {args.server}: {e}")
+        print(f"Error contacting server at {label}: {e}")
         return 1
     targets = list(resp.get("workers", []))
     if targets:
@@ -403,7 +401,7 @@ def _shutdown_cmd(args):
         while remaining and time.time() < deadline:
             time.sleep(2.0)
             try:
-                status = client.get_status()
+                status = ops.get_status()
             except Exception as e:
                 print(f"  (status poll failed: {e}; retrying)")
                 continue
@@ -426,14 +424,14 @@ def _shutdown_cmd(args):
 
     print("Saving server checkpoint…")
     try:
-        client.save_state()
+        ops.save_state()
         print("  server checkpoint saved.")
     except Exception as e:
         print(f"  server checkpoint failed: {e} (continuing to stop)")
 
     print("Stopping server…")
     try:
-        client.shutdown()
+        ops.shutdown()
     except Exception as e:
         print(f"  (server stop signalled; {type(e).__name__})")
     print("Done.")
@@ -528,10 +526,18 @@ def diloco_cmd(args):
         from .diloco_orch import logs_cmd
 
         return logs_cmd(args)
+    elif subcmd == "register":
+        from .diloco_orch import register_cmd
+
+        return register_cmd(args)
+    elif subcmd == "unregister":
+        from .diloco_orch import unregister_cmd
+
+        return unregister_cmd(args)
     else:
         print(
-            "Usage: forgather diloco "
-            "{server|worker|status|servers|logs|control|shutdown}"
+            "Usage: forgather diloco {server|worker|status|servers|logs|"
+            "register|unregister|control|shutdown}"
         )
         print("Run 'forgather diloco --help' for details.")
         return 1
