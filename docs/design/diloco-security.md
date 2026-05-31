@@ -31,20 +31,27 @@ The 14-endpoint DiLoCo wire splits two ways:
 | Control | `/register`, `/heartbeat`, `/deregister`, `/datasets/register`, `/work/{request,complete,queues,queue}`, `/control/*`, `/status`, `/info`, `/health` | small JSON | Latency-tolerant |
 | Bulk | `/submit_pseudograd`, `/submit_fragment_pseudograd`, `/global_params` | torch.save'd state dict | Throughput-sensitive (MBs) |
 
-The two planes can run on a single port (default) or on two ports
-(`--bulk-port <N>`). The control port is always TLS+bearer-auth (or
-explicit `--no-auth`). The bulk port's TLS/auth posture is
-independently configurable; defaults to cleartext+no-auth when
-`--bulk-port` is set.
+The two planes run on a single port (default) or, with
+`--bulk-cleartext`, the bulk endpoints move to a second listener. The
+control port is always TLS+bearer-auth (or explicit `--no-auth`). The
+bulk listener has no configurable posture: it is always cleartext,
+unauthenticated, and bound to a server-picked ephemeral port. Its sole
+reason to exist is to bypass TLS for throughput on a trusted LAN — a
+TLS bulk plane would gain nothing over the control port, and a bearer
+sent over a sniffable socket leaks the control credential to a sniffer
+who can already read the tensors, so neither is offered.
 
-When `--bulk-port` is set:
+When `--bulk-cleartext` is set:
 
 * The control port refuses bulk paths with HTTP 404 + an
   `X-Forgather-Bulk-Url` header. Avoids two ways into the bulk plane
   (the slow-but-secure path + the fast-but-cleartext path) which
   would let an attacker pick whichever is convenient.
 * `/register` responses include the same `X-Forgather-Bulk-Url`
-  header so workers learn the URL without an extra round-trip.
+  header so workers learn the server-assigned ephemeral port without
+  an extra round-trip — and because that header rides the
+  TLS-protected control plane, the port never needs to be a stable,
+  operator-chosen value.
 * The DiLoCo HTTP client (`forgather.ml.diloco.client.DiLoCoClient`)
   captures the bulk URL from `/register` and routes the three bulk
   endpoints there automatically. The control URL still hosts every
@@ -173,8 +180,9 @@ When forgather_server spawns a DiLoCo server through the queue:
 * `Authorization: Bearer <token>` on every authenticated request.
 * `WWW-Authenticate: Bearer realm="forgather-diloco"` on 401 responses.
 * `X-Forgather-Bulk-Url: <url>` on `/register` responses when the
-  server has a separate bulk listener; also on 404 responses from
-  the control port for bulk paths.
+  cleartext bulk plane is enabled (carries the server-assigned
+  ephemeral port); also on 404 responses from the control port for
+  bulk paths.
 * `X-Diloco-Auth-Token: <token>` — webui proxy override header.
 
 ## Out of scope (deferred)
@@ -196,7 +204,7 @@ When forgather_server spawns a DiLoCo server through the queue:
 | `tests/unit/ml/diloco/test_server_auth.py` | Bearer 401/200 paths; verify_bearer unit |
 | `tests/unit/ml/diloco/test_client_auth.py` | End-to-end client/server auth |
 | `tests/unit/ml/diloco/test_server_mtls.py` | mTLS skip-bearer; peer_cert_authenticated unit |
-| `tests/unit/ml/diloco/test_server_bulk_port.py` | Two-port routing |
+| `tests/unit/ml/diloco/test_server_bulk_port.py` | Cleartext bulk-plane routing + ephemeral-port advertisement |
 | `tests/unit/ml/diloco/test_audit_log.py` | JSONL records + best-effort writer |
 | `tests/unit/forgather_server/test_scheduler_diloco_server_token.py` | Per-port spawn token |
 | `tests/unit/forgather_server/test_routes_diloco_auth.py` | Proxy auth/verify_tls attachment |

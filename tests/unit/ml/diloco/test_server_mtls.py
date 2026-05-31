@@ -203,17 +203,10 @@ def test_mtls_control_plus_cleartext_bulk(tmp_path, tls_root):
     """Recommended production posture (per the design doc):
     control plane on TLS + mTLS, bulk plane on cleartext + no-auth.
     End-to-end: mTLS register, then /global_params via the cleartext
-    bulk listener."""
-    import socket
-
+    bulk listener (server-assigned ephemeral port)."""
     cfg = _provisioned_cfg(tls_root)
     ctx = stdlib_ssl_context()
     assert ctx is not None
-    # Pick a free port for the cleartext bulk listener.
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    bulk_port = s.getsockname()[1]
-    s.close()
 
     ckpt = make_initial_checkpoint(_state_dict(), tmp_path)
     server = DiLoCoServer(
@@ -224,12 +217,11 @@ def test_mtls_control_plus_cleartext_bulk(tmp_path, tls_root):
         heartbeat_timeout=0,
         auth_token="bearer-fallback",
         ssl_context=ctx,
-        bulk_port=bulk_port,
-        bulk_ssl_context=None,  # cleartext bulk
-        bulk_auth_enabled=False,  # no bearer on bulk
+        bulk_cleartext=True,  # cleartext, no-auth, ephemeral bulk plane
     )
     server.start()
     time.sleep(0.2)
+    bulk_port = server.bulk_port
     try:
         # Register over mTLS — uses the cluster client cert; no bearer.
         client_ctx = urllib_ssl_context()

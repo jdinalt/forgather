@@ -864,14 +864,10 @@ function JobCard({
               <span>auth:</span> <em>--no-auth</em>
             </div>
           )}
-          {typeof job.job_params.bulk_port === "number" && (
+          {job.job_params.bulk_cleartext === true && (
             <div>
               <span>bulk:</span>{" "}
-              <code>:{job.job_params.bulk_port as number}</code>{" "}
-              <em>
-                ({job.job_params.bulk_tls ? "TLS" : "cleartext"},{" "}
-                {job.job_params.bulk_auth ? "auth" : "no-auth"})
-              </em>
+              <em>cleartext, no-auth (server-assigned ephemeral port)</em>
             </div>
           )}
           {typeof job.job_params.num_workers === "number" && (

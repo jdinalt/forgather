@@ -39,12 +39,10 @@ interface PersistedAdHoc {
   noAuth: boolean;
   regenToken: boolean;
   quietTokens: boolean;
-  // Two-port bulk plane. ``bulkPort`` of 0 means "off" (single
-  // listener); any non-zero value spawns the second listener with
-  // the bulk-tls / bulk-auth settings below.
-  bulkPort: number;
-  bulkTls: boolean;
-  bulkAuth: boolean;
+  // Cleartext bulk plane. When on, the server serves the bulk
+  // endpoints on a separate cleartext listener on an ephemeral port it
+  // picks itself — bypassing TLS for throughput on a trusted LAN.
+  bulkCleartext: boolean;
 }
 
 const DEFAULT_AD_HOC: PersistedAdHoc = {
@@ -70,9 +68,7 @@ const DEFAULT_AD_HOC: PersistedAdHoc = {
   noAuth: false,
   regenToken: false,
   quietTokens: false,
-  bulkPort: 0,
-  bulkTls: false,
-  bulkAuth: false,
+  bulkCleartext: false,
 };
 
 function loadPersisted(): PersistedAdHoc {
@@ -167,9 +163,7 @@ export function DiLoCoServerModal({
         noAuth: pickBool(editingService.args, "no_auth", false),
         regenToken: pickBool(editingService.args, "regen_token", false),
         quietTokens: pickBool(editingService.args, "quiet_tokens", false),
-        bulkPort: pickNum(editingService.args, "bulk_port", 0),
-        bulkTls: pickBool(editingService.args, "bulk_tls", false),
-        bulkAuth: pickBool(editingService.args, "bulk_auth", false),
+        bulkCleartext: pickBool(editingService.args, "bulk_cleartext", false),
       }
     : {
         ...persisted,
@@ -200,9 +194,7 @@ export function DiLoCoServerModal({
   const [noAuth, setNoAuth] = useState(seed.noAuth);
   const [regenToken, setRegenToken] = useState(seed.regenToken);
   const [quietTokens, setQuietTokens] = useState(seed.quietTokens);
-  const [bulkPort, setBulkPort] = useState(seed.bulkPort);
-  const [bulkTls, setBulkTls] = useState(seed.bulkTls);
-  const [bulkAuth, setBulkAuth] = useState(seed.bulkAuth);
+  const [bulkCleartext, setBulkCleartext] = useState(seed.bulkCleartext);
   const [saving, setSaving] = useState(false);
 
   // Light validation — the backend re-checks but flagging in-UI is friendlier.
@@ -276,8 +268,9 @@ export function DiLoCoServerModal({
     //   no_auth=true        → skip token resolution; pass --no-auth
     //   regen_token=true    → rotate the persisted per-port token
     //   quiet_tokens=true   → suppress the token in the launch banner
-    //   bulk_port>0         → spawn a second listener on that port;
-    //                         bulk_tls / bulk_auth configure it
+    //   bulk_cleartext=true → serve bulk endpoints on a separate
+    //                         cleartext listener (server-picked
+    //                         ephemeral port), bypassing TLS for speed
     // ``regen_token`` and ``quiet_tokens`` are no-ops under --no-auth;
     // strip them so the spawned argv reflects the operator's intent.
     args.no_auth = noAuth;
@@ -285,10 +278,8 @@ export function DiLoCoServerModal({
       args.regen_token = regenToken;
       args.quiet_tokens = quietTokens;
     }
-    if (bulkPort > 0) {
-      args.bulk_port = bulkPort;
-      args.bulk_tls = bulkTls;
-      args.bulk_auth = bulkAuth;
+    if (bulkCleartext) {
+      args.bulk_cleartext = true;
     }
     return args;
   };
@@ -318,9 +309,7 @@ export function DiLoCoServerModal({
       noAuth,
       regenToken,
       quietTokens,
-      bulkPort,
-      bulkTls,
-      bulkAuth,
+      bulkCleartext,
     };
     persistSet(STORAGE_KEY, JSON.stringify(cur));
   };
@@ -756,49 +745,21 @@ export function DiLoCoServerModal({
               <hr style={{ width: "100%", opacity: 0.2 }} />
 
               <label>
-                Bulk port (0 = single listener)
                 <input
-                  type="number"
-                  min={0}
-                  max={65535}
-                  value={bulkPort}
-                  onChange={(e) => setBulkPort(Number(e.target.value))}
-                  style={{ width: "100%" }}
-                />
-                <div className="muted" style={{ fontSize: "smaller" }}>
-                  Routes /submit_pseudograd, /submit_fragment_pseudograd,
-                  and /global_params to a second listener — the
-                  throughput-vs-security trade-off for trusted LANs.
-                </div>
+                  type="checkbox"
+                  checked={bulkCleartext}
+                  onChange={(e) => setBulkCleartext(e.target.checked)}
+                />{" "}
+                <code>--bulk-cleartext</code>{" "}
+                <span className="muted" style={{ fontSize: "smaller" }}>
+                  Bypass TLS for bulk data: serve /submit_pseudograd,
+                  /submit_fragment_pseudograd, and /global_params on a
+                  separate cleartext listener on a server-assigned
+                  ephemeral port (workers learn it over the encrypted
+                  control channel). Trades on-wire confidentiality of the
+                  bulk tensors for throughput — trusted LANs only.
+                </span>
               </label>
-              {bulkPort > 0 && (
-                <>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={bulkTls}
-                      onChange={(e) => setBulkTls(e.target.checked)}
-                    />{" "}
-                    <code>--bulk-tls</code>{" "}
-                    <span className="muted" style={{ fontSize: "smaller" }}>
-                      require TLS on the bulk listener (default off when
-                      bulk_port is set — matches torch.distributed)
-                    </span>
-                  </label>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={bulkAuth}
-                      onChange={(e) => setBulkAuth(e.target.checked)}
-                    />{" "}
-                    <code>--bulk-auth</code>{" "}
-                    <span className="muted" style={{ fontSize: "smaller" }}>
-                      require bearer on the bulk listener (default off
-                      when bulk_port is set)
-                    </span>
-                  </label>
-                </>
-              )}
             </div>
           </fieldset>
         </div>

@@ -2658,10 +2658,14 @@ Two distinct security planes:
 * **Control** (`/register`, `/heartbeat`, `/control/*`, `/status`,
   `/info`, work-queue endpoints) — always TLS + bearer-required.
 * **Bulk** (`/submit_pseudograd`, `/submit_fragment_pseudograd`,
-  `/global_params`) — opt-in second listener via `--bulk-port`
-  with cleartext + no-auth as the default (matching
-  `torch.distributed`'s posture). RCE protection is independent:
-  every inbound tensor blob uses `weights_only=True`.
+  `/global_params`) — opt-in second listener via `--bulk-cleartext`
+  (a single toggle, surfaced in the DiLoCo server modal). Always
+  cleartext + no-auth on a server-picked ephemeral port; its only
+  purpose is to bypass TLS for throughput on a trusted LAN. Workers
+  learn the ephemeral port from the `X-Forgather-Bulk-Url` header on
+  `/register` (delivered over the TLS control plane), so there's no
+  port for the operator to choose or distribute. RCE protection is
+  independent: every inbound tensor blob uses `weights_only=True`.
 
 mTLS works the same as it does for `forgather server`: when TLS is
 enabled with a cluster CA bundle present, a client presenting a

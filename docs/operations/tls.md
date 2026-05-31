@@ -432,21 +432,28 @@ token plumbing.
 #### Bulk data plane (throughput vs security)
 
 Pseudo-gradient and weight transfer can be moved to a separate
-listener via `--bulk-port`:
+cleartext listener via `--bulk-cleartext`:
 
 ```bash
-# Control on 8512 (TLS + bearer); bulk on 8513 (cleartext, no auth)
+# Control on 8512 (TLS + bearer); bulk on a server-picked ephemeral
+# port (cleartext, no auth).
 forgather diloco server -o /path/to/model -n 2 \
     --port 8512 --tls \
-    --bulk-port 8513
+    --bulk-cleartext
 ```
 
-The defaults when `--bulk-port` is set are cleartext + no-auth —
-matching `torch.distributed`'s posture on a trusted LAN. The control
-port keeps TLS + bearer regardless, so registration / heartbeat /
-control actions stay protected even when the bulk channel is wide
-open. Operators who want both ports fully secured can pass
-`--bulk-tls` and `--bulk-auth`.
+`--bulk-cleartext` is a single toggle: the bulk listener is always
+cleartext, unauthenticated, and bound to an ephemeral port the server
+picks itself. Its only purpose is to bypass TLS for throughput on a
+trusted LAN — a TLS bulk plane would gain nothing over the control
+port, and a bearer token sent over a sniffable socket is theater
+(anyone on the wire reads the tensors anyway), so neither is offered.
+Workers learn the ephemeral port from the `X-Forgather-Bulk-Url`
+header on the `/register` response, which travels over the
+TLS-protected control plane — so there's nothing to copy onto worker
+command lines and no fixed port to manage. The control port keeps
+TLS + bearer regardless, so registration / heartbeat / control actions
+stay protected even when the bulk channel is wide open.
 
 **Threat model**: with the bulk plane unauthenticated, an attacker on
 the LAN can disrupt a training job (inject garbage pseudo-gradients,
