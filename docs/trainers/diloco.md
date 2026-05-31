@@ -261,6 +261,20 @@ forgather diloco logs spectacular-fox --follow   # live tail
 `forgather diloco logs <queue_id>` is a convenience wrapper; the generic
 `forgather job tail <queue_id>` / `forgather job dump <queue_id>` work too.
 
+```bash
+# Register an external DiLoCo server so the forgather server (and these
+# CLI commands) can reach it. The token is stored server-side and used to
+# authenticate upstream on your behalf.
+forgather diloco register https://gpu-box:8512 --label prod --auth-token <tok>
+forgather diloco unregister registered:<id>     # id shown by `diloco servers`
+```
+
+`control` and `shutdown` are also orchestrator-first: when the forgather
+server is up and knows the target, the relay / save-state / stop actions
+route through it (so you don't need the parameter server's token locally);
+otherwise they go direct. `--direct` forces the direct path on any of these
+commands.
+
 ## Programmatic API
 
 The DiLoCo system can also be used directly in Python, independent of the CLI.

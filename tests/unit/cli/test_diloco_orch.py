@@ -99,6 +99,31 @@ class FakeClient:
         self.dumped = job_id
         return self._dump
 
+    def add_diloco_registry(
+        self, *, base_url, label=None, auth_token=None, verify_tls=True
+    ):
+        self.added = dict(
+            base_url=base_url, label=label, auth_token=auth_token, verify_tls=verify_tls
+        )
+        return {
+            "id": "registered:new",
+            "label": label or base_url,
+            "base_url": base_url,
+            "has_auth_token": bool(auth_token),
+            "verify_tls": verify_tls,
+        }
+
+    def delete_diloco_registry(self, entry_id):
+        self.deleted_id = entry_id
+        return {"deleted": entry_id}
+
+    def diloco_server_control(self, action, base, command=None, worker_id=None):
+        self.control_call = (action, base, command, worker_id)
+        return {"status": "ok", "command": command, "workers": ["w0", "w1"]}
+
+    def diloco_server_status(self, base):
+        return {"workers": {}}
+
 
 @pytest.fixture
 def patch_orchestrator(monkeypatch):
@@ -179,6 +204,66 @@ class TestResolveOrchestratorBase:
             direct=False, server="localhost:8512", via_server=None
         )
         assert orch.resolve_orchestrator_base(args) == (None, None)
+
+
+class TestRegistry:
+    def test_register_json(self, patch_orchestrator, capsys):
+        client = patch_orchestrator(FakeClient())
+        args = argparse.Namespace(
+            via_server=None,
+            url="https://h:8512",
+            label="L",
+            auth_token="tok",
+            no_verify_tls=True,
+            json=True,
+        )
+        rc = orch.register_cmd(args)
+        assert rc == 0
+        # Forwarded with verify_tls inverted from --no-verify-tls.
+        assert client.added == {
+            "base_url": "https://h:8512",
+            "label": "L",
+            "auth_token": "tok",
+            "verify_tls": False,
+        }
+        assert json.loads(capsys.readouterr().out)["id"] == "registered:new"
+
+    def test_unregister_strips_prefix(self, patch_orchestrator, capsys):
+        client = patch_orchestrator(FakeClient())
+        rc = orch.unregister_cmd(
+            argparse.Namespace(via_server=None, entry_id="registered:abcd")
+        )
+        assert rc == 0
+        assert client.deleted_id == "abcd"  # "registered:" prefix stripped
+
+
+class TestControlOps:
+    def test_orchestrator_ops_relay(self, monkeypatch):
+        client = FakeClient(servers=SERVERS)
+        monkeypatch.setattr(
+            orch, "resolve_orchestrator_base", lambda args: (client, "http://h:8512")
+        )
+        ops, label = orch.make_control_ops(argparse.Namespace(server="local:q1"))
+        assert isinstance(ops, orch._OrchestratorOps)
+        assert "via forgather server" in label
+        ops.relay("save_checkpoint", worker_id="w0")
+        assert client.control_call == (
+            "command",
+            "http://h:8512",
+            "save_checkpoint",
+            "w0",
+        )
+
+    def test_direct_ops_fallback(self, monkeypatch):
+        monkeypatch.setattr(
+            orch, "resolve_orchestrator_base", lambda args: (None, None)
+        )
+        args = argparse.Namespace(
+            server="localhost:8512", auth_token=None, no_verify_tls=False
+        )
+        ops, label = orch.make_control_ops(args)
+        assert isinstance(ops, orch._DirectOps)
+        assert label == "localhost:8512"
 
 
 class TestStatusExitCode:

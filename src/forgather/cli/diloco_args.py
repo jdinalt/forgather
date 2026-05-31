@@ -343,6 +343,22 @@ def create_diloco_parser(global_args):
             action="store_true",
             help="Skip TLS certificate verification on the upstream server.",
         )
+        p.add_argument(
+            "--via-server",
+            type=str,
+            default=None,
+            metavar="URL",
+            help=(
+                "forgather-server base URL to route through (default: env / "
+                "http://127.0.0.1:8765). When the server is up and knows this "
+                "target, the action goes through it (central token/TLS)."
+            ),
+        )
+        p.add_argument(
+            "--direct",
+            action="store_true",
+            help="Skip the forgather server; act on the parameter server directly.",
+        )
 
     # control subcommand — relay a trainer-control command to workers.
     control_parser = subparsers.add_parser(
@@ -444,6 +460,66 @@ def create_diloco_parser(global_args):
         "remainder",
         nargs=argparse.REMAINDER,
         help="Remaining arguments forwarded to the training script",
+    )
+
+    # register / unregister — manage external DiLoCo servers in the
+    # forgather server's registry (orchestrator-only).
+    register_parser = subparsers.add_parser(
+        "register",
+        help="Register an external DiLoCo server with the forgather server",
+        formatter_class=RawTextHelpFormatter,
+    )
+    register_parser.add_argument(
+        "url",
+        type=str,
+        help="Base URL of the external DiLoCo server, e.g. https://host:8512",
+    )
+    register_parser.add_argument(
+        "--label",
+        type=str,
+        default=None,
+        help="Human-friendly label (defaults to the base URL).",
+    )
+    register_parser.add_argument(
+        "--auth-token",
+        type=str,
+        default=None,
+        help="Bearer token the proxy uses upstream. Omit for a --no-auth server.",
+    )
+    register_parser.add_argument(
+        "--no-verify-tls",
+        action="store_true",
+        help="Skip TLS chain validation for this entry (SSH-tunneled remotes).",
+    )
+    register_parser.add_argument(
+        "--via-server",
+        type=str,
+        default=None,
+        metavar="URL",
+        help="forgather-server base URL (default: env / http://127.0.0.1:8765).",
+    )
+    register_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the created registry entry as JSON.",
+    )
+
+    unregister_parser = subparsers.add_parser(
+        "unregister",
+        help="Remove a registered external DiLoCo server",
+        formatter_class=RawTextHelpFormatter,
+    )
+    unregister_parser.add_argument(
+        "entry_id",
+        type=str,
+        help="Registry entry id (accepts the 'registered:<id>' form from 'servers').",
+    )
+    unregister_parser.add_argument(
+        "--via-server",
+        type=str,
+        default=None,
+        metavar="URL",
+        help="forgather-server base URL (default: env / http://127.0.0.1:8765).",
     )
 
     return parser
