@@ -1,7 +1,6 @@
 -- extends "training_script/causal_lm/causal_lm.yaml"
 {% from "mixins/diloco.yaml" import
-    callback_entry as dl_callback_entry,
-    dynamic_args as dl_dynamic_args
+    callback_entry as dl_callback_entry
     with context
 %}
 ## ---------------------------------------------------------------------------
@@ -726,7 +725,6 @@ optimizer_groups: &optimizer_groups
 
 [dynamic_args]
     == super()
-{{ dl_dynamic_args() }}
     enable_diloco:
         names: "--enable-diloco"
         type: bool

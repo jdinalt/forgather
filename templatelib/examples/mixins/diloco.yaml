@@ -16,10 +16,11 @@
 ## ``worker_id: null`` instead of ``w0``. The current Forgather
 ## dynamic-args also need the context to flow through.
 ##
-## Activation: ``DILOCO_SERVER`` env var (set by the scheduler when
-## DiLoCo is enabled) OR the ``--diloco-server`` Jinja var (CLI
-## override). When neither is set the callback should be gated off
-## by the leaf and the same config behaves as a vanilla training run.
+## Activation: the ``DILOCO_SERVER`` env var — set by ``forgather diloco
+## worker`` and by the webui scheduler when DiLoCo is enabled (or a
+## ``diloco_server`` template var, if a caller passes one). When neither is
+## set the callback is gated off by the leaf and the same config behaves as
+## a vanilla training run.
 
 -- macro callback_entry()
     ## DiLoCo callback. Client-local DILOCO_* env vars are read by the
@@ -39,29 +40,13 @@
 -- endmacro
 
 
--- macro dynamic_args()
-    ## DiLoCo knobs surfaced on the train submit modal. The webui's DiLoCo
-    ## radio group writes to these when the operator picks a server.
-    ## Optional from the CLI side; unset means env-var fallback (or
-    ## callback default).
-    ##
-    ## sync_every / num_fragments / dylu / bf16_comm are NOT exposed: they
-    ## are server-authoritative (read from /info), so there is no operator
-    ## knob — the webui shows the server's values read-only instead.
-    diloco_server:
-        names: "--diloco-server"
-        type: str
-        group: "DiLoCo"
-        help: "DiLoCo server address host:port. When unset, the DiLoCo callback isn't constructed and the config runs as a vanilla finetune."
-    diloco_heartbeat_interval:
-        names: "--diloco-heartbeat-interval"
-        type: float
-        group: "DiLoCo"
-        min: 0
-        help: "Seconds between heartbeats to the server (client-local; validated against the server's heartbeat-timeout)."
-    diloco_worker_id:
-        names: "--diloco-worker-id"
-        type: str
-        group: "DiLoCo"
-        help: "Stable worker identity; auto-generated if unset."
--- endmacro
+## NOTE: there is intentionally no ``dynamic_args()`` macro. The DiLoCo
+## worker knobs (server address, worker id, heartbeat interval) are
+## worker-launch concerns, not general training-config knobs: they are set
+## by ``forgather diloco worker`` and by the webui's dedicated DiLoCo
+## interface, both via the ``DILOCO_*`` env vars that ``callback_entry``'s
+## constructor reads when its args are None. ``callback_entry`` still
+## honors ``diloco_server`` / ``diloco_worker_id`` /
+## ``diloco_heartbeat_interval`` if a caller passes them as template vars
+## (``toyaml(None)`` → None when undefined), but they're no longer surfaced
+## as ``--diloco-*`` CLI flags on every training config.
