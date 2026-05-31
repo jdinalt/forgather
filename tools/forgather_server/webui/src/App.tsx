@@ -72,7 +72,7 @@ const VIEWS: { id: View; label: string; icon: string; clusterOnly?: boolean }[] 
     { id: "jobs", label: "Jobs", icon: "⚙" },
     { id: "inference", label: "Inference", icon: "🔮" },
     { id: "datasets", label: "Datasets", icon: "🗂" },
-    { id: "diloco", label: "DiLoCo", icon: "⚡" },
+    { id: "diloco", label: "DiLoCo", icon: "🧩" },
   ];
 
 // A window glyph with a left-biased vertical divider — represents the
@@ -892,7 +892,7 @@ export default function App() {
       serviceType: "mkdocs",
     },
     {
-      icon: "⚡",
+      icon: "🧩",
       label: "DiLoCo…",
       title:
         "Start a DiLoCo parameter server. CPU-only, long-lived; holds global model parameters and accepts pseudo-gradient submissions from workers over HTTP.",
