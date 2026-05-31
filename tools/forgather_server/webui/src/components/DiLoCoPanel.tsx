@@ -870,49 +870,51 @@ interface GroupView {
 
 /** Correlate a worker group to its forgather job (issue #103).
  *
- *  Primary key: ``queue_id``/``job_id`` == the group id. The scheduler
- *  defaults ``DILOCO_WORKER_ID = queue_id`` for webui-spawned jobs, and
- *  pipeline ranks register as ``<queue_id>_pp<N>`` (the group id strips
- *  that suffix), so this matches both solo and pipeline jobs.
+ *  Two keys identify a candidate job:
+ *   - ``queue_id``/``job_id`` == the group id. The scheduler defaults
+ *     ``DILOCO_WORKER_ID = queue_id`` for webui-spawned jobs, and pipeline
+ *     ranks register as ``<queue_id>_pp<N>`` (the group id strips that
+ *     suffix), so this matches both solo and pipeline jobs.
+ *   - the worker's reported ``output_dir``. A run that reuses a stable
+ *     custom worker-id (e.g. to resume from its checkpoint) registers under
+ *     an id != queue_id, so the id key misses; the per-worker output-dir
+ *     suffix is kept in lockstep with the job's resolved ``output_dir``, so
+ *     this re-links it. Pipeline ranks of one job share a local output_dir,
+ *     so any member's value identifies the group.
  *
- *  Fallback key: the worker's reported ``output_dir``. A run that must
- *  reuse a stable custom worker-id (e.g. to resume from its checkpoint)
- *  registers under an id != queue_id, so the primary key misses. The
- *  per-worker output-dir suffix is kept in lockstep with the job's
- *  resolved ``output_dir`` (same worker-id, same suffix), so matching on
- *  it re-links the worker to its job. Pipeline ranks of one job share a
- *  local output_dir, so any member's value identifies the group.
- *
- *  Resuming a worker spawns a NEW job at the SAME output_dir while the
- *  previous (now finished) job still lingers in the list with that dir, so
- *  an exact-match find could return the dead job. Prefer a live job among
- *  the output_dir matches, then the most-recently-started, so the running
- *  respawn wins its own stats/controls. */
+ *  We gather candidates by BOTH keys and rank live-first (then most
+ *  recently started) rather than short-circuiting on the id key. This is
+ *  essential because a worker is often named after a PRIOR run's queue_id
+ *  (picked from the restart menu): the old job with that exact queue_id
+ *  still lingers in the list, dead, and an id-key-first match would bind
+ *  the worker to that corpse — hiding the live job's stats/controls. The
+ *  same ranking lets a fresh respawn outrank the stopped job that still
+ *  shares its output_dir. */
 function correlateJob(
   group: GroupView,
   workers: Record<string, DiLoCoWorkerStatus>,
   jobs: Job[] | null,
 ): Job | null {
   if (!jobs) return null;
-  const byId = jobs.find(
-    (j) => j.queue_id === group.groupId || j.job_id === group.groupId,
-  );
-  if (byId) return byId;
   const groupOutputDir = group.members
     .map((m) => workers[m.workerId]?.output_dir)
     .find((d) => d);
-  if (!groupOutputDir) return null;
-  const matches = jobs.filter((j) => j.output_dir === groupOutputDir);
-  if (matches.length === 0) return null;
-  // Live first, then most recently started — the fresh respawn outranks
-  // the stopped job that shares its output_dir.
-  matches.sort(
+  const candidates = jobs.filter(
+    (j) =>
+      j.queue_id === group.groupId ||
+      j.job_id === group.groupId ||
+      (!!groupOutputDir && j.output_dir === groupOutputDir),
+  );
+  if (candidates.length === 0) return null;
+  // Live first, then most recently started — a running respawn outranks a
+  // dead job that shares its queue_id (old name reuse) or output_dir.
+  candidates.sort(
     (a, b) =>
       Number(b.alive) - Number(a.alive) ||
       (b.started_at ?? b.submitted_at ?? 0) -
         (a.started_at ?? a.submitted_at ?? 0),
   );
-  return matches[0];
+  return candidates[0];
 }
 
 /** Group workers by stripping the ``_pp<N>`` suffix from ``worker_id``.
