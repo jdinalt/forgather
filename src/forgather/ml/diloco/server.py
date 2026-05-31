@@ -47,6 +47,7 @@ from forgather.ml.diloco.auth import authenticate_request
 from forgather.ml.diloco.model_def import (
     MODEL_HASH_HEADER,
     compute_bundle_hash,
+    enumerate_model_def_files,
     pack_model_def,
 )
 from forgather.ml.sharded_checkpoint import (
@@ -543,6 +544,16 @@ class DiLoCoServer:
         # custom code, tokenizer) from here so DiLoCo workers can construct
         # the model without a shared filesystem (issue #53).
         self._loaded_checkpoint_dir: Optional[str] = None
+        # Directory the /model_def bundle is actually served from. The model
+        # definition (config + custom code + tokenizer) lives with the model,
+        # not in each rotated checkpoint: save_state writes only weights +
+        # server_state.pt into checkpoint-N, so a server restarted off such a
+        # checkpoint has no definition there. Resolved in load_state to a dir
+        # that actually carries it (the loaded checkpoint if self-contained,
+        # else output_dir — the model's home). None when neither has it, in
+        # which case /model_def fails loudly instead of serving an empty
+        # bundle. See _resolve_model_def_dir.
+        self._model_def_dir: Optional[str] = None
         # Packed bundle is content-stable for the server's lifetime
         # (_loaded_checkpoint_dir never changes), so build it once on first
         # request and cache it — avoids re-walking + re-reading the dir, and
@@ -2245,6 +2256,25 @@ class DiLoCoServer:
         }
         _send_json_response(handler, response)
 
+    def _resolve_model_def_dir(self) -> Optional[str]:
+        """Pick the directory to serve the model-definition bundle from.
+
+        The definition (config.json + custom modeling/configuration ``.py`` +
+        tokenizer) belongs to the model's home directory, not to each rotated
+        checkpoint: ``save_state`` writes only weights + ``server_state.pt``
+        into ``checkpoint-N``, so a server restarted off such a checkpoint has
+        no definition there. Prefer the dir we loaded from when it actually
+        carries the definition (e.g. a self-contained ``--from-checkpoint``
+        model dir), else fall back to ``output_dir`` — the model's home, where
+        the original config/code/tokenizer live alongside the ``checkpoints/``
+        subtree. Returns None when neither has it, so ``/model_def`` can fail
+        loudly rather than ship a worker an empty bundle (issue #53 / #103).
+        """
+        for cand in (self._loaded_checkpoint_dir, self.output_dir):
+            if cand and os.path.isdir(cand) and enumerate_model_def_files(cand):
+                return os.path.realpath(cand)
+        return None
+
     def _handle_model_def(self, handler: BaseHTTPRequestHandler):
         """Serve the model-definition bundle (issue #53).
 
@@ -2262,19 +2292,25 @@ class DiLoCoServer:
         world-readable. The ``X-Forgather-Model-Hash`` header lets the
         worker pair the bundle with the server's advertised ``model_hash``.
         """
-        if not self._loaded_checkpoint_dir or not os.path.isdir(
-            self._loaded_checkpoint_dir
-        ):
+        if not self._model_def_dir or not os.path.isdir(self._model_def_dir):
             _send_json_response(
                 handler,
-                {"error": "server has no model-definition directory to serve"},
+                {
+                    "error": (
+                        "server has no model-definition directory to serve: "
+                        "neither the loaded checkpoint nor output_dir contains "
+                        "config.json / modeling code / tokenizer. Start the "
+                        "server from a self-contained model dir, or place the "
+                        "definition at the output_dir top level."
+                    )
+                },
                 503,
             )
             return
         try:
             with self._model_def_lock:
                 if self._model_def_bundle is None:
-                    self._model_def_bundle = pack_model_def(self._loaded_checkpoint_dir)
+                    self._model_def_bundle = pack_model_def(self._model_def_dir)
                 payload = self._model_def_bundle
         except OSError as exc:
             _send_json_response(
@@ -3121,24 +3157,38 @@ class DiLoCoServer:
         # Initialize from state-dictionary
         self._initialize(state_dict)
 
-        # Remember where we loaded from so /model_def can serve the
-        # definition bundle, and fold the bundle's content hash into the
-        # advertised model_hash. _initialize() set model_hash from the
-        # parameter (name, shape) set alone; folding in the on-disk config /
-        # custom-code / tokenizer contents means a worker's cached bundle
-        # stamp invalidates on *any* definition change (a config tweak or an
-        # edited modeling .py), not only a parameter-shape change.
+        # Remember where we loaded from, then resolve where the model
+        # *definition* bundle is served from — the loaded checkpoint if it
+        # carries the definition, else output_dir (the model's home). A
+        # rotated server checkpoint holds only weights + server_state.pt, so
+        # after a restart-from-checkpoint the definition is found at
+        # output_dir, not in checkpoint-N (issue #103). Fold the bundle's
+        # content hash into the advertised model_hash so a worker's cached
+        # bundle stamp invalidates on *any* definition change (a config tweak
+        # or an edited modeling .py), not only a parameter-shape change.
         self._loaded_checkpoint_dir = os.path.realpath(checkpoint_path)
-        try:
-            bundle_hash = compute_bundle_hash(self._loaded_checkpoint_dir)
-            self._model_hash = hashlib.sha256(
-                (self._model_hash + ":" + bundle_hash).encode("utf-8")
-            ).hexdigest()
-        except OSError as exc:
-            # A hash over the definition files is best-effort: if the dir is
-            # unreadable we keep the parameter-only hash rather than fail the
-            # load. /model_def will surface the real error if hit.
-            logger.warning("Could not hash model-definition bundle: %s", exc)
+        self._model_def_dir = self._resolve_model_def_dir()
+        if self._model_def_dir is None:
+            logger.warning(
+                "No model-definition files (config.json / modeling .py / "
+                "tokenizer) found in the loaded checkpoint (%s) or output_dir "
+                "(%s). /model_def will return 503 and DiLoCo workers cannot "
+                "stage the model. Start from a self-contained model dir or "
+                "place the definition at the output_dir top level.",
+                self._loaded_checkpoint_dir,
+                self.output_dir,
+            )
+        else:
+            try:
+                bundle_hash = compute_bundle_hash(self._model_def_dir)
+                self._model_hash = hashlib.sha256(
+                    (self._model_hash + ":" + bundle_hash).encode("utf-8")
+                ).hexdigest()
+            except OSError as exc:
+                # A hash over the definition files is best-effort: if the dir
+                # is unreadable we keep the parameter-only hash rather than
+                # fail the load. /model_def will surface the real error if hit.
+                logger.warning("Could not hash model-definition bundle: %s", exc)
 
         # Load server state if present
         if server_state is not None:

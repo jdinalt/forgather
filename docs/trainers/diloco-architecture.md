@@ -248,11 +248,26 @@ checkpoint path is the worker-id-suffixed `output_dir`, so reusing the id
 is the only way to find it. Routed on the control port only and bearer-
 authenticated, like `/status`.
 
-`/model_def` is served from the checkpoint directory the server was started
-from (captured as `self._loaded_checkpoint_dir` in `load_state`). The
-include/exclude policy, deterministic packing, and traversal-safe extraction
-live in `forgather.ml.diloco.model_def`; the worker-side staging into
-`<output_dir>/diloco_model_def/` lives in
+`/model_def` is served from `self._model_def_dir`, resolved in `load_state`
+by `_resolve_model_def_dir`: the loaded checkpoint when it carries the
+definition (a self-contained `--from-checkpoint` model dir), else
+`output_dir` — the model's home. This fallback matters because a *rotated*
+server checkpoint (`checkpoints/checkpoint-N/`) holds only weights +
+`server_state.pt`; the definition (`config.json` + custom modeling/config
+`.py` + tokenizer) lives at the `output_dir` top level. Without the
+fallback, a server restarted off a rotated checkpoint would serve an empty
+bundle and every worker's config load would fail with "Unrecognized model"
+(issue #103). When neither dir carries a definition, `_model_def_dir` is
+`None` and `/model_def` returns 503 (loud failure, no empty bundle); the
+worker's `stage_model_def` independently refuses to stamp a bundle that has
+no `config.json`, so a definition-less fetch can never poison the staging
+cache. The folded `model_hash` is computed over `_model_def_dir`, so it is
+stable across a restart (the definition dir doesn't change even when the
+loaded checkpoint does).
+
+The include/exclude policy, deterministic packing, and traversal-safe
+extraction live in `forgather.ml.diloco.model_def`; the worker-side staging
+into `<output_dir>/diloco_model_def/` lives in
 `forgather.ml.diloco.model_stage`. Both `/info` and `/model_def` are
 control-plane endpoints (bearer-required, never served on the bulk
 listener).
@@ -672,8 +687,8 @@ the cache.
 * **DDP / multi-worker.** `file_lock_build(..., force_lock=True)` serializes
   ranks/workers sharing one host: one fetches under the lock, the rest
   re-check the stamp on acquiring it and reuse.
-* **Server-side bundle cache.** `_loaded_checkpoint_dir` is content-stable
-  for the server's lifetime, so the server packs the tar once (lazily, under
+* **Server-side bundle cache.** `_model_def_dir` is content-stable for the
+  server's lifetime, so the server packs the tar once (lazily, under
   `_model_def_lock`) and caches `self._model_def_bundle`. Concurrent worker
   fetches don't each re-walk the dir or hold separate in-memory copies.
 * **Hash semantics.** `_model_hash` is the parameter `(name, shape)`
