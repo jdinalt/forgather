@@ -1026,7 +1026,10 @@ on the right:
      saves a server checkpoint, then stops the server. No data loss. The
      overlay streams progress (a live worker-stop count) and, if a worker
      never stops within the timeout, reports it and leaves the server
-     running rather than stranding still-live workers.
+     running rather than stranding still-live workers. While it is
+     waiting, a **Cancel** button aborts the sequence and hands control
+     back immediately (the server is left running) so the operator can
+     troubleshoot a worker that won't stop, then retry or force-kill.
    - **Force kill everything**: force-kills the worker process groups and
      stops the server without waiting. For "kill it all now, don't care
      about data loss".

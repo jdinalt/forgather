@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -837,21 +837,30 @@ function bulkActionLabel(action: ControlAction): string {
 
 const sleep = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
 
+/** Thrown when the operator cancels an in-flight shutdown sequence. The
+ *  ``cancelled`` marker lets the caller distinguish it from a real failure. */
+function cancelledError(): Error {
+  return Object.assign(new Error("cancelled by operator"), { cancelled: true });
+}
+
 /** Poll the jobs list until every id has stopped (absent or ``alive:false``),
  *  reporting progress as workers drop off. Throws on timeout, naming the
- *  workers still alive so the caller can surface them. */
+ *  workers still alive so the caller can surface them. Checks ``shouldCancel``
+ *  each tick so the operator can bail out of a hung wait. */
 async function waitForWorkersToStop(
   ids: string[],
   opts: {
     timeoutMs?: number;
     pollMs?: number;
     onProgress?: (stopped: number, total: number) => void;
+    shouldCancel?: () => boolean;
   } = {},
 ): Promise<void> {
-  const { timeoutMs = 600_000, pollMs = 2_000, onProgress } = opts;
+  const { timeoutMs = 600_000, pollMs = 2_000, onProgress, shouldCancel } = opts;
   const remaining = new Set(ids);
   const deadline = Date.now() + timeoutMs;
   while (remaining.size > 0) {
+    if (shouldCancel?.()) throw cancelledError();
     let jobs: Job[];
     try {
       jobs = await api.listJobs(true);
@@ -2165,12 +2174,25 @@ function ShutdownDialog({
   saveDir: string | null;
   onClose: () => void;
 }) {
-  type Phase = "choose" | "running" | "done" | "failed";
+  type Phase = "choose" | "running" | "done" | "failed" | "cancelled";
   const [phase, setPhase] = useState<Phase>("choose");
   const [log, setLog] = useState<string[]>([]);
   const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Cancellation: the long step is the worker-stop poll. A ref (not state) so
+  // the in-flight async loop reads the latest value without a stale closure;
+  // ``cancelling`` state just drives the button label until the loop notices.
+  const cancelRef = useRef(false);
+  const [cancelling, setCancelling] = useState(false);
   const append = (line: string) => setLog((l) => [...l, line]);
+  const ensureNotCancelled = () => {
+    if (cancelRef.current) throw cancelledError();
+  };
+  const requestCancel = () => {
+    cancelRef.current = true;
+    setCancelling(true);
+    append("Cancel requested — handing control back…");
+  };
 
   // Escape cancels only while still choosing; once running we ignore it so a
   // stray keypress can't dismiss the dialog mid-sequence and hide progress.
@@ -2184,7 +2206,23 @@ function ShutdownDialog({
 
   const n = workerJobs.length;
 
+  // Common catch: a cancellation (operator bailed) is not a failure — it just
+  // hands control back with the server still running, so the operator can
+  // troubleshoot. Anything else is a real error.
+  const handleSequenceError = (e: unknown) => {
+    setProgress(null);
+    if (cancelRef.current || (e as { cancelled?: boolean })?.cancelled) {
+      append("Cancelled. The server was NOT stopped; workers may still be running.");
+      setPhase("cancelled");
+    } else {
+      setError((e as Error).message);
+      setPhase("failed");
+    }
+  };
+
   const runClean = async () => {
+    cancelRef.current = false;
+    setCancelling(false);
     setPhase("running");
     try {
       if (n > 0) {
@@ -2198,11 +2236,14 @@ function ShutdownDialog({
             `  ${n - failed} accepted save-stop; ${failed} did not respond (continuing).`,
           );
         }
-        append("Waiting for workers to stop…");
+        append("Waiting for workers to stop…  (Cancel to regain control)");
         setProgress(`0/${n} stopped`);
         await waitForWorkersToStop(
           workerJobs.map((w) => w.jobId),
-          { onProgress: (s, t) => setProgress(`${s}/${t} stopped`) },
+          {
+            onProgress: (s, t) => setProgress(`${s}/${t} stopped`),
+            shouldCancel: () => cancelRef.current,
+          },
         );
         append("All workers stopped.");
         setProgress(null);
@@ -2210,6 +2251,7 @@ function ShutdownDialog({
         append("No controllable workers — skipping worker stop.");
       }
 
+      ensureNotCancelled();
       if (saveDir) {
         append("Saving server checkpoint…");
         try {
@@ -2224,18 +2266,19 @@ function ShutdownDialog({
         append("No save_dir configured — skipping server checkpoint.");
       }
 
+      ensureNotCancelled();
       append("Stopping server…");
       await api.diLoCoServerControl(baseUrl, "shutdown");
       append("Server stopped. Done.");
       setPhase("done");
     } catch (e) {
-      setError((e as Error).message);
-      setProgress(null);
-      setPhase("failed");
+      handleSequenceError(e);
     }
   };
 
   const runForce = async () => {
+    cancelRef.current = false;
+    setCancelling(false);
     setPhase("running");
     try {
       if (n > 0) {
@@ -2245,13 +2288,13 @@ function ShutdownDialog({
         );
         append("  kill signals sent.");
       }
+      ensureNotCancelled();
       append("Stopping server…");
       await api.diLoCoServerControl(baseUrl, "shutdown");
       append("Server stopped. Done.");
       setPhase("done");
     } catch (e) {
-      setError((e as Error).message);
-      setPhase("failed");
+      handleSequenceError(e);
     }
   };
 
@@ -2365,7 +2408,22 @@ function ShutdownDialog({
                 )}
               </div>
             )}
-            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            {phase === "cancelled" && (
+              <div className="muted" style={{ fontSize: "smaller" }}>
+                Control handed back so you can troubleshoot. Re-open this dialog
+                to retry once the stuck worker is resolved, or use Force kill.
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              {phase === "running" && (
+                <button
+                  onClick={requestCancel}
+                  disabled={cancelling}
+                  title="Stop waiting and regain control of the UI. The server is left running."
+                >
+                  {cancelling ? "Cancelling…" : "Cancel"}
+                </button>
+              )}
               <button onClick={onClose} disabled={phase === "running"}>
                 {phase === "running" ? "Working…" : "Close"}
               </button>
