@@ -842,10 +842,12 @@ function cancelledError(): Error {
   return Object.assign(new Error("cancelled by operator"), { cancelled: true });
 }
 
-/** Poll the DiLoCo server's /status until every registered worker has
- *  deregistered (i.e. workers applied save-and-stop and exited). Reports
- *  progress as the worker count falls. Throws on timeout (naming how many
- *  remain) or when ``shouldCancel`` trips. */
+/** Poll the DiLoCo server's /status until the workers that were registered
+ *  when we started waiting have all deregistered (applied save-and-stop and
+ *  exited). Tracks that initial target set — not a live count — so a worker
+ *  that crash-restarts (re-registers) or an unrelated late arrival can't pin
+ *  the wait open. Reports progress as targets drop off. Throws on timeout
+ *  (naming how many remain) or when ``shouldCancel`` trips. */
 async function waitForWorkersToStop(
   baseUrl: string,
   opts: {
@@ -857,30 +859,31 @@ async function waitForWorkersToStop(
 ): Promise<void> {
   const { timeoutMs = 600_000, pollMs = 2_000, onProgress, shouldCancel } = opts;
   const deadline = Date.now() + timeoutMs;
-  // Total = the worker set at the moment we start waiting.
-  let total = 0;
+  // Capture the target set at the moment we start waiting.
+  let remaining = new Set<string>();
   try {
     const s = await api.diLoCoServerStatus(baseUrl);
-    total = Object.keys(s.workers ?? {}).length;
+    remaining = new Set(Object.keys(s.workers ?? {}));
   } catch {
-    // ignore; first poll below establishes the count
+    // ignore; first poll below establishes the set
   }
+  const total = remaining.size;
+  if (total === 0) return;
   while (true) {
     if (shouldCancel?.()) throw cancelledError();
-    let live = total;
     try {
       const s = await api.diLoCoServerStatus(baseUrl);
-      live = Object.keys(s.workers ?? {}).length;
-      if (live > total) total = live;
+      const live = new Set(Object.keys(s.workers ?? {}));
+      remaining = new Set([...remaining].filter((id) => live.has(id)));
     } catch {
       // Transient status failure — retry next tick.
     }
-    onProgress?.(Math.max(0, total - live), total);
-    if (live === 0) return;
+    onProgress?.(total - remaining.size, total);
+    if (remaining.size === 0) return;
     if (Date.now() >= deadline) {
       throw new Error(
         `timed out after ${Math.round(timeoutMs / 1000)}s waiting for ` +
-          `${live} worker(s) to stop`,
+          `${remaining.size} worker(s) to stop`,
       );
     }
     await sleep(pollMs);

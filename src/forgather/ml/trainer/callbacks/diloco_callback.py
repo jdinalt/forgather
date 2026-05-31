@@ -541,6 +541,13 @@ class DiLoCoCallback(TrainerCallback):
         ``all_reduce(MAX)`` a one-int command code across the default process
         group: every rank participates every step (no divergence in the
         collective), and MAX carries the leader's non-zero code to all.
+
+        This assumes ranks dispatch ``on_step_end`` in lockstep (equal-length
+        iteration) — the standard DDP requirement; uneven dataloader
+        exhaustion already deadlocks DDP at the gradient all-reduce
+        independent of this collective. ``self._worker`` is created on every
+        rank (followers just never heartbeat), so the early return below is
+        consistent across ranks and can't cause a partial collective.
         """
         if self._worker is None:
             return control
@@ -576,14 +583,23 @@ class DiLoCoCallback(TrainerCallback):
         return code
 
     def _command_device(self):
-        """Device for the command all_reduce — the model's param device so
-        the tensor rides the same backend (NCCL/gloo) the group uses."""
+        """Device for the command all_reduce — a real on-device parameter so
+        the tensor rides the same backend (NCCL/gloo) the group uses.
+
+        Read from the worker's ``param_view`` (the actual sharded/on-device
+        tensors), NOT ``model.parameters()``: under pipeline parallelism the
+        trainer's ``model`` root is the meta-device skeleton, so its params
+        report ``device='meta'`` and a tensor built there can't be
+        all-reduced. ``param_view`` always points at the live tensors.
+        """
         import torch
 
         try:
-            if self._worker is not None and self._worker.model is not None:
-                return next(self._worker.model.parameters()).device
-        except StopIteration:
+            if self._worker is not None:
+                for _name, p in self._worker.param_view.named_parameters():
+                    if p.device.type != "meta":
+                        return p.device
+        except Exception:
             pass
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

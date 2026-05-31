@@ -2100,11 +2100,13 @@ class DiLoCoServer:
             self._workers[worker_id].last_heartbeat = time.time()
             if "steps_per_second" in info:
                 self._workers[worker_id].steps_per_second = info["steps_per_second"]
-            # Pop any queued trainer-control command for this worker. Cleared
-            # on delivery so it fires exactly once; the worker applies it to
-            # its trainer loop (save / save-and-stop / abort).
+            # Read (don't yet clear) any queued trainer-control command. We
+            # clear it only *after* the response is successfully sent below,
+            # so a dropped/failed heartbeat response doesn't silently lose the
+            # command — it's redelivered on the next heartbeat. Heartbeats are
+            # serial per worker (only the leader sends them), so there's no
+            # concurrent-delivery race for the same worker_id.
             command = self._workers[worker_id].pending_command
-            self._workers[worker_id].pending_command = None
 
         # Compute DyLU recommendation if enabled
         recommended_sync_every = self._compute_dylu_sync_every(worker_id)
@@ -2121,6 +2123,15 @@ class DiLoCoServer:
             response["command"] = command
 
         _send_json_response(handler, response)
+
+        # Delivered: clear the command now that the response went out. Guard
+        # against a newer command queued between the read and here (leave it
+        # for the next heartbeat) so we don't drop it.
+        if command is not None:
+            with self._workers_lock:
+                w = self._workers.get(worker_id)
+                if w is not None and w.pending_command == command:
+                    w.pending_command = None
 
     def _handle_deregister(self, handler: BaseHTTPRequestHandler):
         """Handle worker deregistration.
