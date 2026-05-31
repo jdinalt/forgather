@@ -736,8 +736,13 @@ _PP_SUFFIX = re.compile(r"_pp\d+$")
 
 def _stopped_base_workers(known):
     """Base worker-ids (pipeline ``_pp<N>`` suffix stripped, deduped) with no
-    currently-running rank — the resumable set. Mirrors the webui's
-    resumable-worker derivation."""
+    currently-running rank — the resumable set.
+
+    Like the webui's resumable-worker derivation, but stricter: a base is
+    resumable only when *every* rank under it is stopped. The webui treats a
+    base as resumable if any rank is stopped; excluding bases with a live rank
+    avoids duplicating a still-running rank during a bulk relaunch.
+    """
     running_bases, all_bases, seen = set(), [], set()
     for w in known.get("workers", []) or []:
         wid = (w.get("worker_id") or "").strip()
