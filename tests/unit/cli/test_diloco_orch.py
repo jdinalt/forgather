@@ -56,30 +56,6 @@ class TestMatchServer:
     def test_empty_target(self):
         assert orch.match_server(SERVERS, None) is None
 
-
-class TestResolveOne:
-    """Implicit single-server selection when --server is omitted."""
-
-    ONE = [{"id": "local:q1", "base_url": "http://127.0.0.1:8512"}]
-
-    def test_explicit_matches(self):
-        assert orch.resolve_one(SERVERS, "local:q1") == "http://192.168.9.43:8512"
-
-    def test_explicit_unknown_is_none(self):
-        assert orch.resolve_one(self.ONE, "nope:1") is None
-
-    def test_implicit_single(self):
-        assert orch.resolve_one(self.ONE, None) == "http://127.0.0.1:8512"
-
-    def test_implicit_none_when_zero(self):
-        assert orch.resolve_one([], None) is None
-
-    def test_implicit_ambiguous_raises(self):
-        from forgather.cli.server_client import ServerUnreachable
-
-        with pytest.raises(ServerUnreachable):
-            orch.resolve_one(SERVERS, None)  # 2 servers, no --server
-
     # Loopback aliases are equivalent: a server listed under one form
     # matches a --server given as another (the user's localhost/127.0.0.1
     # report).
@@ -110,6 +86,30 @@ class TestResolveOne:
 
     def test_loopback_different_port_no_match(self):
         assert orch.match_server(self.LOOPBACK, "localhost:9999") is None
+
+
+class TestResolveOne:
+    """Implicit single-server selection when --server is omitted."""
+
+    ONE = [{"id": "local:q1", "base_url": "http://127.0.0.1:8512"}]
+
+    def test_explicit_matches(self):
+        assert orch.resolve_one(SERVERS, "local:q1") == "http://192.168.9.43:8512"
+
+    def test_explicit_unknown_is_none(self):
+        assert orch.resolve_one(self.ONE, "nope:1") is None
+
+    def test_implicit_single(self):
+        assert orch.resolve_one(self.ONE, None) == "http://127.0.0.1:8512"
+
+    def test_implicit_none_when_zero(self):
+        assert orch.resolve_one([], None) is None
+
+    def test_implicit_ambiguous_raises(self):
+        from forgather.cli.server_client import ServerUnreachable
+
+        with pytest.raises(ServerUnreachable):
+            orch.resolve_one(SERVERS, None)  # 2 servers, no --server
 
 
 # ---------------------------------------------------------------------------
