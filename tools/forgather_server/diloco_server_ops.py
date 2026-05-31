@@ -47,9 +47,7 @@ def build_diloco_server_command(
     auth_token_file: Optional[str] = None,
     no_auth: bool = False,
     quiet_tokens: bool = False,
-    bulk_port: Optional[int] = None,
-    bulk_tls: Optional[bool] = None,
-    bulk_auth: Optional[bool] = None,
+    bulk_cleartext: bool = False,
 ) -> List[str]:
     """Build argv for ``forgather diloco server``.
 
@@ -123,15 +121,8 @@ def build_diloco_server_command(
         # is still discoverable via the per-port file for legitimate
         # peers — only the launch banner is suppressed.
         cmd.append("--quiet-tokens")
-    # Two-port bulk plane. Only emit flags when the operator opted in.
-    if bulk_port is not None:
-        cmd.extend(["--bulk-port", str(int(bulk_port))])
-        if bulk_tls is True:
-            cmd.append("--bulk-tls")
-        elif bulk_tls is False:
-            cmd.append("--no-bulk-tls")
-        if bulk_auth is True:
-            cmd.append("--bulk-auth")
-        elif bulk_auth is False:
-            cmd.append("--no-bulk-auth")
+    # Cleartext bulk plane. Single opt-in flag; the server picks the
+    # ephemeral port and advertises it to workers over the control plane.
+    if bulk_cleartext:
+        cmd.append("--bulk-cleartext")
     return cmd

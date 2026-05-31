@@ -490,9 +490,7 @@ def spawn_diloco_server_process(
     auth_token_file: Optional[str] = None,
     no_auth: bool = False,
     quiet_tokens: bool = False,
-    bulk_port: Optional[int] = None,
-    bulk_tls: Optional[bool] = None,
-    bulk_auth: Optional[bool] = None,
+    bulk_cleartext: bool = False,
     extra_env: Optional[Dict[str, str]] = None,
 ) -> LaunchResult:
     """Spawn a DiLoCo parameter server.
@@ -530,9 +528,7 @@ def spawn_diloco_server_process(
         auth_token_file=auth_token_file,
         no_auth=no_auth,
         quiet_tokens=quiet_tokens,
-        bulk_port=bulk_port,
-        bulk_tls=bulk_tls,
-        bulk_auth=bulk_auth,
+        bulk_cleartext=bulk_cleartext,
     )
     return _spawn_subprocess(cmd, [], tty_log_path, extra_env)
 

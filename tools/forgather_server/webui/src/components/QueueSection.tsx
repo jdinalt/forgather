@@ -1,14 +1,21 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, QueueItem } from "../api";
 
-export function QueuePanel() {
+/** Queued (not-yet-dispatched) jobs plus a compact scheduler status line.
+ *  Rendered at the top of the Jobs view's list pane (see JobsPanel) so
+ *  queued and running work read as one continuous list — queued items sit
+ *  above the jobs the scheduler has already dispatched. The verbose
+ *  empty-state copy the old standalone Queue view carried is dropped: when
+ *  nothing is queued the section collapses to just the scheduler line, and
+ *  the jobs list below has its own empty-state. */
+export function QueueSection() {
   const qc = useQueryClient();
   const listQ = useQuery({
     queryKey: ["queue"],
     queryFn: api.listQueue,
     refetchInterval: 2000,
   });
-  // Scheduler toggle lives in the app sidebar header — this panel only
+  // Scheduler toggle lives in the app sidebar header — this section only
   // reports the current state.
   const schedQ = useQuery({
     queryKey: ["scheduler-status"],
@@ -28,8 +35,8 @@ export function QueuePanel() {
   const schedEnabled = !!schedQ.data?.enabled;
 
   return (
-    <div className="queue-panel">
-      <header className="queue-panel-header">
+    <div className="queue-section">
+      <header className="queue-section-header">
         <div className="sched-toggle">
           <span className={"sched-light " + (schedEnabled ? "on" : "off")} />
           <strong>Scheduler</strong>
@@ -46,36 +53,30 @@ export function QueuePanel() {
         <span className="muted">{items.length} queued</span>
       </header>
 
-      {listQ.isLoading && <div className="pane-state muted">Loading…</div>}
       {listQ.error && (
         <div className="pane-state err">
           <pre>{String(listQ.error)}</pre>
         </div>
       )}
-      {items.length === 0 && !listQ.isLoading && (
-        <div className="pane-state muted">
-          Queue empty. Submit a job with the ▶ button on a config in the
-          Projects tab. Once the scheduler dispatches one it'll move to the
-          Jobs tab.
+
+      {items.length > 0 && (
+        <div className="queue-list">
+          {items.map((it) => (
+            <QueueCard
+              key={it.queue_id}
+              item={it}
+              onCancel={() => {
+                if (confirm(`Cancel queued ${it.queue_id}?`)) {
+                  cancel.mutate(it.queue_id);
+                }
+              }}
+              cancelPending={
+                cancel.isPending && cancel.variables === it.queue_id
+              }
+            />
+          ))}
         </div>
       )}
-
-      <div className="queue-list">
-        {items.map((it) => (
-          <QueueCard
-            key={it.queue_id}
-            item={it}
-            onCancel={() => {
-              if (confirm(`Cancel queued ${it.queue_id}?`)) {
-                cancel.mutate(it.queue_id);
-              }
-            }}
-            cancelPending={
-              cancel.isPending && cancel.variables === it.queue_id
-            }
-          />
-        ))}
-      </div>
     </div>
   );
 }

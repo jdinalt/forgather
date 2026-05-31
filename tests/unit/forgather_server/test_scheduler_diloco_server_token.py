@@ -107,23 +107,19 @@ def test_build_diloco_command_no_auth():
     assert "--auth-token-file" not in cmd
 
 
-def test_build_diloco_command_bulk_port_flags():
-    """The bulk-port flags surface on the spawn argv when configured."""
+def test_build_diloco_command_bulk_cleartext_flag():
+    """The cleartext-bulk flag surfaces on the spawn argv when enabled."""
     from forgather_server.diloco_server_ops import build_diloco_server_command
 
     cmd = build_diloco_server_command(
         output_dir="/tmp/out",
         num_workers=1,
         port=8512,
-        bulk_port=9999,
-        bulk_tls=False,
-        bulk_auth=False,
+        bulk_cleartext=True,
     )
-    assert "--bulk-port" in cmd
-    idx = cmd.index("--bulk-port")
-    assert cmd[idx + 1] == "9999"
-    assert "--no-bulk-tls" in cmd
-    assert "--no-bulk-auth" in cmd
+    assert "--bulk-cleartext" in cmd
+    # No port number is emitted — the server picks an ephemeral one.
+    assert "--bulk-port" not in cmd
 
 
 def test_build_diloco_command_group_settings():
@@ -162,20 +158,17 @@ def test_build_diloco_command_group_settings_defaults():
     assert "--no-bf16" not in cmd
 
 
-def test_build_diloco_command_no_bulk_port_omits_flags():
-    """No --bulk-port → bulk_tls/bulk_auth are silently dropped."""
+def test_build_diloco_command_no_bulk_cleartext_omits_flag():
+    """Default (bulk_cleartext off) → no bulk flag on the argv."""
     from forgather_server.diloco_server_ops import build_diloco_server_command
 
     cmd = build_diloco_server_command(
         output_dir="/tmp/out",
         num_workers=1,
         port=8512,
-        bulk_tls=True,
-        bulk_auth=True,
     )
+    assert "--bulk-cleartext" not in cmd
     assert "--bulk-port" not in cmd
-    assert "--bulk-tls" not in cmd
-    assert "--bulk-auth" not in cmd
 
 
 # ---------------------------------------------------------------------------

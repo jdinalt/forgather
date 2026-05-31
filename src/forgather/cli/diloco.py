@@ -35,12 +35,31 @@ def _server_cmd(args):
     # Echo the resolved configuration up-front so the TTY log contains
     # exactly what we were asked to do — useful for diagnosing webui /
     # autostart issues where the launching command isn't otherwise
-    # visible. argv first (verbatim from the caller), then the parsed
-    # namespace (post-defaults).
-    print(f"argv: {sys.argv}")
+    # visible. argv first (from the caller), then the parsed namespace
+    # (post-defaults). A bearer passed inline (``--auth-token <secret>``)
+    # is redacted from both so it can't leak into a captured/public TTY;
+    # the webui/demo spawn path uses ``--auth-token-file`` (a path, not the
+    # secret) so it's unaffected.
+    def _redact_argv(argv):
+        out, skip = [], False
+        for tok in argv:
+            if skip:
+                out.append("<redacted>")
+                skip = False
+            elif tok == "--auth-token":
+                out.append(tok)
+                skip = True
+            elif tok.startswith("--auth-token="):
+                out.append("--auth-token=<redacted>")
+            else:
+                out.append(tok)
+        return out
+
+    print(f"argv: {_redact_argv(sys.argv)}")
     print("parsed args:")
     for k, v in sorted(vars(args).items()):
-        print(f"  {k} = {v!r}")
+        shown = "<redacted>" if (k == "auth_token" and v) else v
+        print(f"  {k} = {shown!r}")
 
     # Build outer optimizer factory
     nesterov = not args.no_nesterov
@@ -132,50 +151,18 @@ def _server_cmd(args):
     else:
         print("TLS: disabled (cleartext)")
 
-    # Two-port bulk plane (issue #90). Defaults when --bulk-port is set:
-    # cleartext, no auth — matching torch.distributed's posture on a
-    # trusted LAN. Explicit --bulk-tls / --bulk-auth flip those bits.
-    bulk_port = getattr(args, "bulk_port", None)
-    bulk_ssl_context = None
-    bulk_auth_enabled = True  # ignored when bulk_port is None
-    if bulk_port is not None:
-        bulk_tls = getattr(args, "bulk_tls", None)
-        if bulk_tls is True:
-            # Use the same SSL context for the bulk listener — same
-            # cluster identity, same CA bundle. Distinct contexts add
-            # no security here.
-            bulk_ssl_context = ssl_context
-            if bulk_ssl_context is None:
-                _auth_parser.error(
-                    "--bulk-tls requires the control plane to also be on "
-                    "TLS (pass --tls or provision the cluster)."
-                )
-        # else: bulk_tls is False (explicit --no-bulk-tls) or None
-        # (default → cleartext); both leave bulk_ssl_context=None.
-
-        bulk_auth = getattr(args, "bulk_auth", None)
-        # Default when --bulk-port is set: bulk auth OFF (opt-out for
-        # throughput). Explicit --bulk-auth turns it on.
-        bulk_auth_enabled = bool(bulk_auth) if bulk_auth is not None else False
-        # Requiring the bearer on a *cleartext* bulk listener would make
-        # every worker POST the control-plane token in plaintext (the
-        # bulk and control listeners share one secret). A LAN sniffer
-        # would then capture full control-plane authority — exactly the
-        # "host takeover" boundary the two-port split is meant to hold.
-        # Refuse the combination: either secure the bulk port with
-        # --bulk-tls, or run it --no-bulk-auth.
-        if bulk_auth_enabled and auth_token and bulk_ssl_context is None:
-            _auth_parser.error(
-                "--bulk-auth requires the bulk listener to be on TLS "
-                "(pass --bulk-tls). Sending the bearer token over a "
-                "cleartext bulk port would leak the control-plane "
-                "credential to anyone on the network. Use --no-bulk-auth "
-                "for an unauthenticated cleartext bulk plane."
-            )
+    # Cleartext bulk plane (issue #90). A single toggle: the bulk
+    # endpoints move to a separate cleartext, unauthenticated listener on
+    # a server-picked ephemeral port whose sole purpose is to bypass TLS
+    # for throughput on a trusted LAN. No port/TLS/auth knobs — a TLS bulk
+    # plane gains nothing over the control port, and a bearer over a
+    # sniffable socket is theater. The actual port is logged at bind and
+    # delivered to workers over the TLS control plane.
+    bulk_cleartext = getattr(args, "bulk_cleartext", False)
+    if bulk_cleartext:
         print(
-            f"Bulk listener: port={bulk_port} "
-            f"({'TLS' if bulk_ssl_context else 'cleartext'}, "
-            f"{'auth' if bulk_auth_enabled and auth_token else 'no-auth'})"
+            "Bulk listener: cleartext, no-auth, server-assigned "
+            "(ephemeral) port — TLS bypassed for throughput"
         )
 
     # Create server
@@ -200,9 +187,7 @@ def _server_cmd(args):
         default_work_units=default_work_units,
         auth_token=auth_token,
         ssl_context=ssl_context,
-        bulk_port=bulk_port,
-        bulk_ssl_context=bulk_ssl_context,
-        bulk_auth_enabled=bulk_auth_enabled,
+        bulk_cleartext=bulk_cleartext,
     )
 
     # Resolve the display host + scheme for the startup banner. A wildcard
@@ -234,6 +219,9 @@ def _server_cmd(args):
             )
         print(f"Auth: {format_auth_mode(args, token_source)}")
         if quiet_tokens:
+            # Demo/public-TTY mode: reveal nothing sensitive — not the
+            # token value and not the on-disk path. Legitimate peers
+            # still resolve the token via the per-port file.
             print("  bearer-token enabled (value suppressed by --quiet-tokens)")
         else:
             print(f"  auth token: {auth_token}")
@@ -242,8 +230,8 @@ def _server_cmd(args):
                 f'  curl -H "Authorization: Bearer {auth_token}" '
                 f"{scheme}://{display_host}:{args.port}/status"
             )
-        if token_source in ("generated", "regenerated", "persisted"):
-            print(f"  token file: {standalone_token_file(args.port)}")
+            if token_source in ("generated", "regenerated", "persisted"):
+                print(f"  token file: {standalone_token_file(args.port)}")
 
     print()
     print(f"Starting DiLoCo server on {scheme}://{display_host}:{args.port}")
@@ -266,6 +254,14 @@ def _server_cmd(args):
     print(f"  forgather webui     DiLoCo view → Control card → Shutdown server")
     print()
 
+    # Flush stdout before the blocking serve loop. When the TTY is a pipe
+    # (the webui scheduler captures it), stdout is block-buffered, so the
+    # whole banner above — and the argv/parsed-args diagnostic printed at
+    # entry — would otherwise sit in the buffer until the process exits,
+    # making the bearer token appear only *after* the server is stopped.
+    # The server's own logging goes to stderr (flushed per line), so
+    # without this the two streams land badly out of order.
+    sys.stdout.flush()
     server.run()
 
 

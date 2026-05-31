@@ -9,6 +9,7 @@ import { api, ControlAction, Job } from "../api";
 import { useDemoMode } from "../demoMode";
 import { persistGet, persistSet } from "../persist";
 import { ContextMenu } from "./ContextMenu";
+import { QueueSection } from "./QueueSection";
 import { TtyViewer } from "./TtyViewer";
 
 interface JobMenuTarget {
@@ -379,6 +380,7 @@ export function JobsPanel({
         ref={listPaneRef}
         style={showTty ? { flex: `0 0 ${splitPct}%` } : undefined}
       >
+        <QueueSection />
         {jobs.length === 0 && (
           <div className="pane-state muted">
             No jobs yet. Submit one from a config's ▶ button or launch
@@ -862,14 +864,10 @@ function JobCard({
               <span>auth:</span> <em>--no-auth</em>
             </div>
           )}
-          {typeof job.job_params.bulk_port === "number" && (
+          {job.job_params.bulk_cleartext === true && (
             <div>
               <span>bulk:</span>{" "}
-              <code>:{job.job_params.bulk_port as number}</code>{" "}
-              <em>
-                ({job.job_params.bulk_tls ? "TLS" : "cleartext"},{" "}
-                {job.job_params.bulk_auth ? "auth" : "no-auth"})
-              </em>
+              <em>cleartext, no-auth (server-assigned ephemeral port)</em>
             </div>
           )}
           {typeof job.job_params.num_workers === "number" && (

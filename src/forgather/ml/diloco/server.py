@@ -456,9 +456,7 @@ class DiLoCoServer:
         min_workers: int = 1,
         auth_token: Optional[str] = None,
         ssl_context: Optional["ssl.SSLContext"] = None,
-        bulk_port: Optional[int] = None,
-        bulk_ssl_context: Optional["ssl.SSLContext"] = None,
-        bulk_auth_enabled: bool = True,
+        bulk_cleartext: bool = False,
         default_work_units: int = 1024,
     ):
         if num_workers < 1:
@@ -519,19 +517,23 @@ class DiLoCoServer:
         self.auth_token = auth_token
         self.ssl_context = ssl_context
         # Optional second listener for bulk data transport (pseudo-
-        # gradients + global-params). When ``bulk_port`` is set the
-        # three bulk endpoints are served *only* on that port; the
-        # control port returns 404 with an ``X-Forgather-Bulk-Url``
-        # hint header. Operators opt into the second listener for
-        # throughput; on a trusted LAN they typically also disable
-        # TLS+auth there (``bulk_ssl_context=None``,
-        # ``bulk_auth_enabled=False``) — matching torch.distributed's
-        # posture. Even with auth off, the per-request torch.load uses
-        # ``weights_only=True`` so a malicious peer can only disrupt
-        # training, not RCE the host.
-        self.bulk_port = bulk_port
-        self.bulk_ssl_context = bulk_ssl_context
-        self.bulk_auth_enabled = bulk_auth_enabled
+        # gradients + global-params). When ``bulk_cleartext`` is set the
+        # three bulk endpoints are served *only* on this listener and the
+        # control port returns 404 with an ``X-Forgather-Bulk-Url`` hint
+        # header. The bulk listener is always cleartext + unauthenticated
+        # on a server-picked ephemeral port: its entire purpose is to
+        # bypass TLS for throughput on a trusted LAN, and a bearer token
+        # over a sniffable cleartext socket is security theater (anyone on
+        # the wire reads the tensors anyway). The port is ephemeral because
+        # workers learn it over the TLS-protected control plane (the
+        # ``/register`` response header), so there's nothing to gain from
+        # pinning a fixed number. ``weights_only=True`` on every bulk
+        # ``torch.load`` keeps a malicious peer to disrupting training, not
+        # RCE-ing the host. ``self.bulk_port`` is filled in with the actual
+        # OS-assigned port once the listener binds (see
+        # ``_start_bulk_listener``); it is ``None`` until then / when off.
+        self._bulk_enabled = bool(bulk_cleartext)
+        self.bulk_port: Optional[int] = None
         self._bulk_server = None
         self._bulk_server_thread = None
         # Audit log (issue #90). Append-only JSONL records for events
@@ -2865,10 +2867,10 @@ class DiLoCoServer:
                     pass
                 self._audit_fh = None
 
-    # Three "bulk" endpoints: large tensor transfers. When a separate
-    # bulk port is configured these are removed from the control port
-    # and only served on the bulk listener. Centralized here so the
-    # routing tables and the off-port 404 hint stay in sync.
+    # Three "bulk" endpoints: large tensor transfers. When the cleartext
+    # bulk plane is enabled these are removed from the control port and
+    # only served on the bulk listener. Centralized here so the routing
+    # tables and the off-port 404 hint stay in sync.
     _BULK_PATHS = frozenset(
         {"/submit_pseudograd", "/submit_fragment_pseudograd", "/global_params"}
     )
@@ -2881,11 +2883,11 @@ class DiLoCoServer:
     def get_bulk_url(self, request_host: Optional[str] = None) -> Optional[str]:
         """Public URL workers should use for the bulk endpoints.
 
-        ``None`` when no separate bulk listener is configured (bulk
-        endpoints are served on the control port). The ``/register``
-        response includes this string under the
-        ``X-Forgather-Bulk-Url`` header so workers learn about it
-        without an extra round-trip.
+        ``None`` when the cleartext bulk plane is disabled (bulk endpoints
+        are served on the control port) or before the listener has bound.
+        The ``/register`` response includes this string under the
+        ``X-Forgather-Bulk-Url`` header so workers learn the
+        server-assigned ephemeral port without an extra round-trip.
 
         When the server bound a wildcard address (``0.0.0.0`` / ``::``)
         it has no reliable view of its own routable address, so
@@ -2895,13 +2897,13 @@ class DiLoCoServer:
         to reach the control port, which is routable from that worker by
         construction — and fall back to loopback only as a last resort.
         """
-        if self.bulk_port is None:
+        if not self._bulk_enabled or self.bulk_port is None:
             return None
-        scheme = "https" if self.bulk_ssl_context is not None else "http"
+        # The bulk plane is always cleartext (it exists to bypass TLS).
         host = self.host
         if host in self._WILDCARD_HOSTS or host is None:
             host = request_host or "127.0.0.1"
-        return f"{scheme}://{host}:{self.bulk_port}"
+        return f"http://{host}:{self.bulk_port}"
 
     def _create_handler(self, role: str = "control"):
         """Create a request handler bound to this server.
@@ -2909,12 +2911,12 @@ class DiLoCoServer:
         ``role`` selects which set of endpoints + which auth token the
         handler enforces:
 
-        * ``"control"`` — full route table. When ``bulk_port`` is set
-          the three bulk paths are intentionally absent (a 404 with an
-          ``X-Forgather-Bulk-Url`` hint is returned instead).
-        * ``"bulk"`` — only the three bulk paths plus ``/health``;
-          auth check uses ``bulk_auth_enabled`` + the bearer
-          (defaults to the control token when ``bulk_auth_enabled``).
+        * ``"control"`` — full route table. When the cleartext bulk
+          plane is enabled the three bulk paths are intentionally absent
+          (a 404 with an ``X-Forgather-Bulk-Url`` hint is returned).
+        * ``"bulk"`` — only the three bulk paths plus ``/health``,
+          always unauthenticated (the cleartext bulk plane never checks
+          the bearer; see ``_expected_token``).
         """
         server_ref = self
 
@@ -2924,14 +2926,13 @@ class DiLoCoServer:
                 logger.debug(format, *args)
 
             def _expected_token(self) -> Optional[str]:
-                """Token this listener checks against. The bulk
-                listener can opt out entirely via
-                ``bulk_auth_enabled=False`` — in that case bulk
-                endpoints are unauthenticated."""
-                if role == "bulk" and not server_ref.bulk_auth_enabled:
+                """Token this listener checks against. The cleartext bulk
+                listener is always unauthenticated — sending the bearer
+                over a sniffable socket would leak the control-plane
+                credential to anyone on the wire, so we never check it
+                there."""
+                if role == "bulk":
                     return None
-                # Both roles share the same bearer when auth is on —
-                # there's one secret per server, two listeners.
                 return server_ref.auth_token
 
             def _authenticated(self, path: str) -> bool:
@@ -2952,7 +2953,7 @@ class DiLoCoServer:
                 would let an attacker pick whichever is convenient."""
                 if (
                     role != "control"
-                    or server_ref.bulk_port is None
+                    or not server_ref._bulk_enabled
                     or path not in DiLoCoServer._BULK_PATHS
                 ):
                     return False
@@ -3407,37 +3408,33 @@ class DiLoCoServer:
         )
 
     def _start_bulk_listener(self) -> None:
-        """Spawn the bulk-port listener when configured.
+        """Spawn the cleartext bulk listener when enabled.
 
         Runs in its own daemon thread with its own handler class
-        (``role="bulk"``). The bulk handler enforces the bulk-port's
-        own auth-token / TLS settings; cleartext + unauthenticated is
-        explicitly allowed for trusted-LAN throughput.
+        (``role="bulk"``). Always cleartext + unauthenticated, bound to an
+        OS-assigned ephemeral port — the listener exists to bypass TLS for
+        throughput, so encryption/auth on it would defeat the purpose. The
+        bound port is read back from the socket and stored on
+        ``self.bulk_port`` so ``get_bulk_url`` can advertise it to workers
+        over the control plane.
         """
-        if self.bulk_port is None:
+        if not self._bulk_enabled:
             return
         bulk_handler_class = self._create_handler(role="bulk")
-        self._bulk_server = ThreadingHTTPServer(
-            (self.host, self.bulk_port), bulk_handler_class
-        )
+        # Bind port 0: the OS picks a free ephemeral port, guaranteeing it
+        # isn't already in use. Workers receive the real port via the
+        # ``X-Forgather-Bulk-Url`` header on the (TLS-protected) control
+        # plane, so it never needs to be a stable, operator-chosen number.
+        self._bulk_server = ThreadingHTTPServer((self.host, 0), bulk_handler_class)
         self._bulk_server.daemon_threads = True
-        if self.bulk_ssl_context is not None:
-            self._bulk_server.socket = self.bulk_ssl_context.wrap_socket(
-                self._bulk_server.socket, server_side=True
-            )
+        self.bulk_port = self._bulk_server.socket.getsockname()[1]
         self._bulk_server_thread = threading.Thread(
             target=self._bulk_server.serve_forever, daemon=True
         )
         self._bulk_server_thread.start()
-        bulk_scheme = "https" if self.bulk_ssl_context is not None else "http"
-        bulk_auth = (
-            "bearer-required"
-            if self.bulk_auth_enabled and self.auth_token
-            else "no-auth"
-        )
         logger.info(
-            f"DiLoCo bulk listener on {bulk_scheme}://{self.host}:{self.bulk_port} "
-            f"(auth={bulk_auth})"
+            f"DiLoCo bulk listener on http://{self.host}:{self.bulk_port} "
+            f"(cleartext, no-auth — TLS bypassed for throughput)"
         )
 
     def _stop_bulk_listener(self) -> None:
@@ -3449,6 +3446,7 @@ class DiLoCoServer:
             self._bulk_server.server_close()
             self._bulk_server = None
             self._bulk_server_thread = None
+            self.bulk_port = None
 
     def run(self):
         """Run the server (blocking). Call this from the main process."""

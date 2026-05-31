@@ -137,8 +137,9 @@ mirroring the dataset server:
 
 - The **bearer auth token** (and a ready-to-run `curl` carrying it), plus the
   per-port token file path. Auth is on by default; `--no-auth` prints a warning
-  instead, and `--quiet-tokens` (set by the webui in `--demo` mode) suppresses
-  the value while still confirming auth is enabled.
+  instead, and `--quiet-tokens` (applied automatically by the webui only in
+  `--demo` mode — never an operator checkbox) suppresses the value and the
+  file path while still confirming auth is enabled.
 - The **server URL**. When bound to a wildcard address (`-H 0.0.0.0`), the
   banner shows the host's primary-interface IP rather than `0.0.0.0`, so the
   address is copy-pasteable straight onto worker `--server` lines.

@@ -47,6 +47,7 @@ from forgather.ml.diloco.auth import (
 )
 
 from . import _atomic, _gc, gpu_monitor, job_records, launcher, queue_store
+from .auth import demo_mode_enabled
 from .job_records import RUNNING_STATUSES, TERMINAL_STATUSES, JobRecord
 from .paths import (
     inference_token_file,
@@ -412,7 +413,12 @@ def _build_inference(item, gpu_indices, tty_path):
         tty_log_path=tty_path,
         auth_token_file=auth_token_file,
         no_auth=no_auth,
-        quiet_tokens=bool(p.get("quiet_tokens", False)),
+        # Token redaction in the spawned server's TTY is a demo-mode
+        # concern, not an operator choice: suppress the bearer in the
+        # launch banner only when this webui is running --demo (public
+        # TTY pane). In normal operation the token is shown so it can be
+        # copied onto clients, Jupyter-style.
+        quiet_tokens=demo_mode_enabled(),
     )
 
 
@@ -447,7 +453,12 @@ def _build_dataset_server(item, gpu_indices, tty_path):
         tty_log_path=tty_path,
         auth_token_file=auth_token_file,
         no_auth=no_auth,
-        quiet_tokens=bool(p.get("quiet_tokens", False)),
+        # Token redaction in the spawned server's TTY is a demo-mode
+        # concern, not an operator choice: suppress the bearer in the
+        # launch banner only when this webui is running --demo (public
+        # TTY pane). In normal operation the token is shown so it can be
+        # copied onto clients, Jupyter-style.
+        quiet_tokens=demo_mode_enabled(),
     )
 
 
@@ -603,10 +614,13 @@ def _build_diloco_server(item, gpu_indices, tty_path):
         ),
         auth_token_file=auth_token_file,
         no_auth=no_auth,
-        quiet_tokens=bool(p.get("quiet_tokens", False)),
-        bulk_port=(int(p["bulk_port"]) if p.get("bulk_port") is not None else None),
-        bulk_tls=p.get("bulk_tls"),
-        bulk_auth=p.get("bulk_auth"),
+        # Token redaction in the spawned server's TTY is a demo-mode
+        # concern, not an operator choice: suppress the bearer in the
+        # launch banner only when this webui is running --demo (public
+        # TTY pane). In normal operation the token is shown so it can be
+        # copied onto clients, Jupyter-style.
+        quiet_tokens=demo_mode_enabled(),
+        bulk_cleartext=bool(p.get("bulk_cleartext", False)),
         tty_log_path=tty_path,
     )
 
