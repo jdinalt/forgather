@@ -9,11 +9,13 @@ import {
   DiLoCoStatus,
   DiLoCoWorkerStatus,
   Job,
+  ServiceStatus,
 } from "../api";
 import { persistGet, persistSet } from "../persist";
 import { DiLoCoServerModal } from "./DiLoCoServerModal";
 import LossChart from "./LossChart";
 import { ModalBackdrop } from "./ModalBackdrop";
+import { ServicesPanel } from "./ServicesPanel";
 import { TensorBoardModal } from "./TensorBoardModal";
 
 const STORAGE_KEY = "forgather-diloco-state";
@@ -69,9 +71,13 @@ function relativeAge(epoch: number | undefined): string {
 export function DiLoCoPanel({
   pendingServerPick,
   onServerPickConsumed,
+  onEditService,
 }: {
   pendingServerPick?: { queueId: string; key: number } | null;
   onServerPickConsumed?: () => void;
+  /** Open the DiLoCo service in edit mode (routed to App's editingService,
+   *  which renders the DiLoCoServerModal edit modal). */
+  onEditService?: (s: ServiceStatus) => void;
 } = {}) {
   const [state, setState] = useState<PanelState>(loadState);
   // Launch-a-local-server modal (same modal as Services → DiLoCo) and the
@@ -235,6 +241,7 @@ export function DiLoCoPanel({
           }
           onAfterRegistryChange={() => serversQuery.refetch()}
           onStartLocal={() => setLaunchOpen(true)}
+          onEditService={onEditService}
         />
 
         <div style={{ minHeight: 0, overflow: "auto" }}>
@@ -299,6 +306,7 @@ interface ServersListProps {
   onSelect: (id: string) => void;
   onAfterRegistryChange: () => void;
   onStartLocal: () => void;
+  onEditService?: (s: ServiceStatus) => void;
 }
 
 function ServersList({
@@ -309,6 +317,7 @@ function ServersList({
   onSelect,
   onAfterRegistryChange,
   onStartLocal,
+  onEditService,
 }: ServersListProps) {
   const [showAdd, setShowAdd] = useState(false);
   const local = servers.filter((s) => s.source === "local");
@@ -358,6 +367,32 @@ function ServersList({
       )}
 
       <div style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
+        {/* Defined services — start/stop toggle, edit, delete (same control
+            surface as Services → DiLoCo). A running service also appears in
+            the live groups below; this section is for managing the
+            definitions. */}
+        <div
+          className="muted"
+          style={{
+            fontSize: "smaller",
+            padding: "4px 8px",
+            borderBottom: "1px solid var(--border, #333)",
+          }}
+        >
+          Services
+        </div>
+        <ServicesPanel filterType="diloco" onEditService={onEditService} />
+
+        <div
+          className="muted"
+          style={{
+            fontSize: "smaller",
+            padding: "4px 8px",
+            borderBottom: "1px solid var(--border, #333)",
+          }}
+        >
+          Live
+        </div>
         {loading && <div className="muted" style={{ padding: 8 }}>Loading…</div>}
         {!!error && (
           <div className="muted" style={{ padding: 8, color: "tomato" }}>

@@ -1514,6 +1514,7 @@ export default function App() {
           <DiLoCoPanel
             pendingServerPick={pendingDiLoCoServer}
             onServerPickConsumed={clearPendingDiLoCoServer}
+            onEditService={setEditingService}
           />
         </div>
       </div>
