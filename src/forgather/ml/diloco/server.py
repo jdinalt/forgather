@@ -2204,8 +2204,23 @@ class DiLoCoServer:
                 )
 
                 self._stats_writer = JsonLogWriter(self._STATS_LOG_FILENAME)
-                if self._stats_log_state:
-                    self._stats_writer.load_state_dict(self._stats_log_state)
+                state = self._stats_log_state
+                # No writer-resume state in the checkpoint (fresh start, or a
+                # checkpoint predating this feature) but a stats log may
+                # already exist from a previous run in this output_dir. Route
+                # through the resume/truncate path (opens "w") instead of the
+                # fresh exclusive-create open ("x"), which would FileExistsError
+                # and silently disable logging for the life of the process.
+                # Keeps any prior records up to the current step, then appends.
+                if not state:
+                    existing = self._stats_log_path()
+                    if existing and os.path.isfile(existing):
+                        state = {
+                            "log_path": existing,
+                            "last_step": self._stats.total_steps,
+                        }
+                if state:
+                    self._stats_writer.load_state_dict(state)
                 self._stats_writer.open(os.path.dirname(self._stats_log_path()))
             data = {k: v for k, v in snap.items() if k != "total_steps"}
             data["sync_round"] = self._sync_round

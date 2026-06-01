@@ -365,6 +365,43 @@ class TestUnifiedStats:
         assert rec["global_step"] == 10
         assert rec["total_tokens"] == 1000
 
+    def test_stale_log_file_does_not_break_logging(self, tmp_path):
+        # Regression: a stats log left by a prior run in the same output_dir
+        # must not make the fresh "x"-mode open raise FileExistsError and
+        # silently disable logging (empty history → no webui plot).
+        # Pre-create a stale (closed, empty) stats log.
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        (logs_dir / "diloco_server_stats.json").write_text("[\n\n]")
+
+        sd = _make_state_dict()
+        ckpt = make_initial_checkpoint(sd, tmp_path)
+        server = DiLoCoServer(
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=1,
+            port=0,
+            outer_optimizer_factory=lambda p: torch.optim.SGD(p, lr=1.0),
+        )
+        server.start()
+        time.sleep(0.2)
+        try:
+            client = DiLoCoClient(f"localhost:{server.port}", timeout=10)
+            client.register("worker_0")
+            client.heartbeat(
+                "worker_0",
+                stats={"tokens_total": 1000, "step_total": 10, "loss": 3.0},
+            )
+            deadline = time.time() + 5.0
+            hist = client.get_stats_history()
+            while not hist["records"] and time.time() < deadline:
+                time.sleep(0.05)
+                hist = client.get_stats_history()
+            assert hist["records"], "logging silently disabled by stale log file"
+            assert hist["records"][-1]["global_step"] == 10
+        finally:
+            server.stop()
+
     def test_evicted_worker_drops_from_throughput(self, two_worker_server):
         server, c0, c1, sd = two_worker_server
         c0.register("worker_0")
