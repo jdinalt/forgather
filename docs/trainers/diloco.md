@@ -1356,8 +1356,11 @@ If SSH tunneling is impractical (e.g., trusted LAN with many workers), you can
 bind to all interfaces:
 
 ```bash
-forgather diloco server -o ./model -n 4 --host 0.0.0.0
+forgather diloco server -o ./model -n 4 -H 0.0.0.0
 ```
+
+(`-H` is the short alias for `--host`, matching `forgather server` and
+`forgather dataset-server start`.)
 
 **Warning**: This exposes the server's HTTP control endpoints (including
 `/control/shutdown`, `/control/update_optimizer`, etc., which the webui

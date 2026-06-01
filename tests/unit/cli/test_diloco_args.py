@@ -64,6 +64,16 @@ class TestDynamicArgPartitionScoping:
         ns = parser.parse_args(["server", "-o", "/out", "-n", "2"])
         assert ns.output_dir == "/out"
 
+    def test_server_host_short_and_long(self, parser):
+        # -H is the short alias for --host (consistent with `forgather
+        # server` / `dataset-server start`).
+        ns = parser.parse_args(["server", "-o", "/out", "-n", "2", "-H", "0.0.0.0"])
+        assert ns.host == "0.0.0.0"
+        ns = parser.parse_args(["server", "-o", "/out", "-n", "2", "--host", "1.2.3.4"])
+        assert ns.host == "1.2.3.4"
+        # Default unchanged.
+        assert parser.parse_args(["server", "-o", "/o", "-n", "1"]).host == "127.0.0.1"
+
 
 class TestStatusEnrichment:
     def test_new_flags_default_off(self, parser):

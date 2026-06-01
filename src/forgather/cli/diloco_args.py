@@ -114,6 +114,7 @@ def create_diloco_parser(global_args):
         ),
     )
     server_parser.add_argument(
+        "-H",
         "--host",
         type=str,
         default="127.0.0.1",
