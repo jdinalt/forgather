@@ -723,6 +723,7 @@ class DiLoCoServer:
         self._stats_writer = None  # JsonLogWriter, opened lazily once running
         self._stats_log_state = None  # pending writer resume state (from load_state)
         self._stats_log_step = -1  # last total_steps a stats record was logged at
+        self._last_logged_eval_step = None  # eval_step of the last eval logged
 
         # Server state
         self._server: Optional[HTTPServer] = None
@@ -2224,6 +2225,17 @@ class DiLoCoServer:
                 self._stats_writer.open(os.path.dirname(self._stats_log_path()))
             data = {k: v for k, v in snap.items() if k != "total_steps"}
             data["sync_round"] = self._sync_round
+            # Emit eval_loss only on records where a *new* eval arrived (the
+            # eval_step advanced); null it otherwise. eval is sparse relative
+            # to the per-step stats stream, so repeating the held EMA value on
+            # every record would draw a flat staircase — nulling between evals
+            # lets the plot connect the real eval points into a curve (the
+            # chart spans gaps), matching a worker's TensorBoard eval line.
+            eval_step = snap.get("eval_step")
+            if eval_step is None or eval_step == self._last_logged_eval_step:
+                data["eval_loss"] = None
+            else:
+                self._last_logged_eval_step = eval_step
             self._stats_writer.write_record(global_step=steps, epoch=0.0, data=data)
             self._stats_log_step = steps
         except Exception as e:  # pragma: no cover - logging must not break HB

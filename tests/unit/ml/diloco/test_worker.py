@@ -639,3 +639,42 @@ class TestPipelineGroupGuards:
                 pp_world_size=2,
                 dylu=True,
             )
+
+
+class TestSetStats:
+    """The pending-stats slot merges on_log + on_evaluate snapshots so an
+    eval reported between heartbeats isn't clobbered before it ships."""
+
+    def _bare_worker(self):
+        # Exercise the stats slot in isolation, without standing up a server.
+        w = DiLoCoWorker.__new__(DiLoCoWorker)
+        w._pending_stats = None
+        w._pending_stats_lock = threading.Lock()
+        return w
+
+    def test_merge_not_clobber(self):
+        w = self._bare_worker()
+        w.set_stats({"loss": 1.0, "tokens_total": 10, "step_total": 3})
+        w.set_stats({"eval_loss": 2.0, "eval_step": 3})  # on_evaluate
+        w.set_stats({"loss": 1.1, "tokens_total": 20, "step_total": 4})  # on_log
+        merged = w._consume_stats()
+        # eval survived the later on_log; train fields are the latest values.
+        assert merged == {
+            "loss": 1.1,
+            "tokens_total": 20,
+            "step_total": 4,
+            "eval_loss": 2.0,
+            "eval_step": 3,
+        }
+
+    def test_consume_clears(self):
+        w = self._bare_worker()
+        w.set_stats({"loss": 1.0})
+        assert w._consume_stats() == {"loss": 1.0}
+        assert w._consume_stats() is None
+
+    def test_empty_snapshot_ignored(self):
+        w = self._bare_worker()
+        w.set_stats(None)
+        w.set_stats({})
+        assert w._consume_stats() is None

@@ -60,16 +60,20 @@ function panZoomPlugin(): uPlot.Plugin {
         let startMax = 0;
         over.addEventListener("mousedown", (e: MouseEvent) => {
           panning = true;
-          mark(true);
           startClientX = e.clientX;
           startMin = u.scales.x.min ?? fullRange()[0];
           startMax = u.scales.x.max ?? fullRange()[1];
         });
         const onMove = (e: MouseEvent) => {
           if (!panning) return;
+          const dxPx = e.clientX - startClientX;
+          // A bare click (no real movement) must not disable live-follow —
+          // only an actual drag counts as the user taking over the view.
+          if (Math.abs(dxPx) < 3) return;
+          mark(true);
           const rect = over.getBoundingClientRect();
           const perPx = (startMax - startMin) / Math.max(1, rect.width);
-          const dx = (e.clientX - startClientX) * perPx;
+          const dx = dxPx * perPx;
           u.setScale("x", { min: startMin - dx, max: startMax - dx });
         };
         const onUp = () => {
