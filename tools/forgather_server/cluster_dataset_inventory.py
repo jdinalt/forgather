@@ -657,6 +657,14 @@ class MasterInventory:
         # resolves to the same host. Include loopback servers then, so a
         # single-node `auto` setup (e.g. `forgather dataset-server start`
         # without -H 0.0.0.0) just works instead of 410-ing.
+        #
+        # KNOWN LIMITATION (issue #123): this keys on the master's own member
+        # count, not the requester's locality (resolve() has no requester
+        # identity). On a genuine multi-node cluster there is a narrow
+        # startup/partition-heal window where members() transiently reads 1
+        # while a remote peer proxies a request — it could then be routed to
+        # this master's loopback server. The correct fix gates on requester
+        # locality; tracked separately. Steady-state behavior is correct.
         single_node = len(cluster.members()) <= 1
         with self._lock:
 

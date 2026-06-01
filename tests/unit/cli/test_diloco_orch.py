@@ -649,7 +649,10 @@ class TestResolveDatasetSource:
         assert orch.resolve_dataset_source(
             client, argparse.Namespace(dataset=None)
         ) == {"kind": "auto"}
-        assert "auto (cluster routing)" in capsys.readouterr().out
+        cap = capsys.readouterr()
+        # Informational message goes to stderr, never stdout (keeps --json clean).
+        assert "auto (cluster routing)" in cap.err
+        assert cap.out == ""
 
     def test_unset_defaults_to_local_in_standalone(self):
         client = FakeClient(cluster_self=None)  # standalone
@@ -834,6 +837,21 @@ class TestLaunchWorkers:
         rc = orch.launch_workers(_worker_args(worker_id="w0", dataset=None), {})
         assert rc == 0
         assert client.enqueued[0]["dataset_source"] is None
+
+    def test_json_stdout_clean_with_auto_default(self, patch_orchestrator, capsys):
+        # --json + unset --dataset in cluster mode: the "dataset source: auto"
+        # note must go to stderr so stdout stays parseable JSON.
+        client = patch_orchestrator(
+            FakeClient(servers=SERVERS, cluster_self={"node_id": "n1"})
+        )
+        rc = orch.launch_workers(
+            _worker_args(worker_id="w0", dataset=None, json=True), {}
+        )
+        assert rc == 0
+        cap = capsys.readouterr()
+        parsed = json.loads(cap.out)  # raises if stdout was polluted
+        assert parsed[0]["worker_id"] == "w0"
+        assert "auto (cluster routing)" in cap.err
 
     def test_missing_config_errors(self, patch_orchestrator, capsys):
         patch_orchestrator(FakeClient())

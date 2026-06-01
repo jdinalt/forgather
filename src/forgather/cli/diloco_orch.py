@@ -776,9 +776,12 @@ def resolve_dataset_source(client, args):
     except Exception:
         in_cluster = False
     if in_cluster:
+        # Informational only → stderr, so it never pollutes the --json stdout
+        # the launch handlers emit for agent/script consumption.
         print(
             "dataset source: auto (cluster routing) — server is in cluster "
-            "mode; pass --dataset local to override"
+            "mode; pass --dataset local to override",
+            file=sys.stderr,
         )
         return {"kind": "auto"}
     return None
