@@ -797,6 +797,26 @@ function LossHistoryCard({
   const hasLoss = records.some(
     (r) => typeof r.train_loss === "number" || typeof r.eval_loss === "number",
   );
+  // Surface an unreachable endpoint (e.g. a DiLoCo server predating
+  // /stats_history) instead of silently hiding — otherwise "no chart" is
+  // indistinguishable from "no data yet". Stay quiet on the normal
+  // no-loss-reported-yet case.
+  if (histQuery.isError) {
+    return (
+      <section
+        style={{
+          border: "1px solid var(--border, #3b4261)",
+          borderRadius: 6,
+          padding: "8px 14px",
+          fontSize: "smaller",
+        }}
+        className="muted"
+      >
+        Loss curves unavailable — the DiLoCo server doesn't expose{" "}
+        <code>/stats_history</code> (restart it to enable the loss plot).
+      </section>
+    );
+  }
   if (!hasLoss) return null;
 
   return (
