@@ -1144,6 +1144,40 @@ async function waitForWorkersToStop(
   }
 }
 
+/** Per-worker TensorBoard launcher: opens the TB modal on the worker's own
+ *  ``output_dir/runs``. Renders nothing when the worker never reported an
+ *  output_dir (older client / no correlated job), since there's no logdir. */
+function WorkerTBButton({
+  outputDir,
+  label,
+}: {
+  outputDir?: string | null;
+  label: string;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!outputDir) return null;
+  const logdir = `${outputDir.replace(/\/+$/, "")}/runs`;
+  return (
+    <>
+      <button
+        className="tiny"
+        onClick={() => setOpen(true)}
+        title={`Open TensorBoard on ${logdir}`}
+      >
+        📊 TB
+      </button>
+      {open && (
+        <TensorBoardModal
+          global
+          initialLogdir={logdir}
+          initialWindowTitle={`DiLoCo worker ${label}`}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
 function WorkersSection({
   baseUrl,
   status,
@@ -1583,6 +1617,10 @@ function GroupCard({
       )}
 
       <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap" }}>
+        <WorkerTBButton
+          outputDir={canonical?.output_dir}
+          label={canonicalMember.workerId}
+        />
         <button
           className="tiny"
           onClick={() => controlMutation.mutate("save")}
@@ -1799,6 +1837,7 @@ function WorkerCard({
           misleading. */}
       {!compact && (
         <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap" }}>
+          <WorkerTBButton outputDir={workerStatus.output_dir} label={workerId} />
           <button
             className="tiny"
             onClick={() => controlMutation.mutate("save")}
