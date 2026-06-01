@@ -161,15 +161,22 @@ export default function LossChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [height]);
 
-  // Push new data without recreating the plot. By default re-autoscale so the
-  // live curve keeps following new points (resetScales=true); once the user
-  // has zoomed/panned, preserve their view (resetScales=false) until they
-  // double-click to reset.
+  // Push new data without recreating the plot. Always use the redrawing
+  // setData (resetScales=true) so new points actually paint — setData(.,false)
+  // updates the buffer but doesn't reliably repaint until the next user event.
+  // When the user has panned/zoomed, restore their x-range right after so the
+  // live curve keeps extending without yanking their view. Double-click clears
+  // the flag and resumes full live-follow.
   useEffect(() => {
     const u = plotRef.current;
     if (!u) return;
-    const follow = !(u as unknown as { _userZoomed?: boolean })._userZoomed;
-    u.setData(data, follow);
+    const zoomed = !!(u as unknown as { _userZoomed?: boolean })._userZoomed;
+    const xMin = u.scales.x.min;
+    const xMax = u.scales.x.max;
+    u.setData(data, true);
+    if (zoomed && xMin != null && xMax != null) {
+      u.setScale("x", { min: xMin, max: xMax });
+    }
   }, [data]);
 
   return (
