@@ -11,8 +11,10 @@ import {
   Job,
 } from "../api";
 import { persistGet, persistSet } from "../persist";
+import { DiLoCoServerModal } from "./DiLoCoServerModal";
 import LossChart from "./LossChart";
 import { ModalBackdrop } from "./ModalBackdrop";
+import { TensorBoardModal } from "./TensorBoardModal";
 
 const STORAGE_KEY = "forgather-diloco-state";
 
@@ -72,6 +74,10 @@ export function DiLoCoPanel({
   onServerPickConsumed?: () => void;
 } = {}) {
   const [state, setState] = useState<PanelState>(loadState);
+  // Launch-a-local-server modal (same modal as Services → DiLoCo) and the
+  // TensorBoard launcher for the selected server's runs/ dir.
+  const [launchOpen, setLaunchOpen] = useState(false);
+  const [tbOpen, setTbOpen] = useState(false);
   useEffect(() => {
     persistSet(STORAGE_KEY, JSON.stringify(state));
   }, [state]);
@@ -167,6 +173,18 @@ export function DiLoCoPanel({
             <span className="muted"> — {selected.base_url}</span>
           )}
           <span style={{ flex: 1 }} />
+          {selected && (
+            <button
+              onClick={() => setTbOpen(true)}
+              title={
+                statusQuery.data?.save_dir
+                  ? `Open TensorBoard on ${statusQuery.data.save_dir}/runs`
+                  : "Open TensorBoard (pick a logdir)"
+              }
+            >
+              📊 TensorBoard
+            </button>
+          )}
           <label
             className="muted"
             style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
@@ -216,6 +234,7 @@ export function DiLoCoPanel({
             setState((s) => ({ ...s, selectedId: id }))
           }
           onAfterRegistryChange={() => serversQuery.refetch()}
+          onStartLocal={() => setLaunchOpen(true)}
         />
 
         <div style={{ minHeight: 0, overflow: "auto" }}>
@@ -239,6 +258,31 @@ export function DiLoCoPanel({
           )}
         </div>
       </div>
+
+      {launchOpen && (
+        <DiLoCoServerModal
+          onClose={() => setLaunchOpen(false)}
+          onSubmitted={(queueId) => {
+            setLaunchOpen(false);
+            serversQuery.refetch();
+            // Select the just-launched local server (id is local:<queue_id>).
+            setState((s) => ({ ...s, selectedId: `local:${queueId}` }));
+          }}
+        />
+      )}
+
+      {tbOpen && selected && (
+        <TensorBoardModal
+          global
+          initialLogdir={
+            statusQuery.data?.save_dir
+              ? `${statusQuery.data.save_dir.replace(/\/+$/, "")}/runs`
+              : ""
+          }
+          initialWindowTitle={`DiLoCo ${selected.label}`}
+          onClose={() => setTbOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -254,6 +298,7 @@ interface ServersListProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onAfterRegistryChange: () => void;
+  onStartLocal: () => void;
 }
 
 function ServersList({
@@ -263,6 +308,7 @@ function ServersList({
   selectedId,
   onSelect,
   onAfterRegistryChange,
+  onStartLocal,
 }: ServersListProps) {
   const [showAdd, setShowAdd] = useState(false);
   const local = servers.filter((s) => s.source === "local");
@@ -290,6 +336,12 @@ function ServersList({
       >
         <strong>Servers</strong>
         <span style={{ flex: 1 }} />
+        <button
+          onClick={onStartLocal}
+          title="Launch a local DiLoCo server (or save it as a service)"
+        >
+          + Start local…
+        </button>
         <button onClick={() => setShowAdd((v) => !v)}>
           {showAdd ? "Cancel" : "+ Add external…"}
         </button>
