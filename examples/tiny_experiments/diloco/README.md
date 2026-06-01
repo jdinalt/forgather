@@ -663,6 +663,73 @@ analysis script that produced them is
 
 ---
 
+## Extended sweep: budget, sync interval, and single-worker local-SGD
+
+The 1× comparison above is a *conservative* budget (≈1× Chinchilla, 500M
+tokens). The papers report that DiLoCo's advantage shows up in the **end-game**
+of longer runs, so this sweep doubles the budget to **2× (≈1B tokens)** and
+varies two knobs: the **sync interval** `H` (`--sync-every` 500 / 100 / 20) and
+the **worker count** (2-worker vs a single worker). All six runs use the same
+34.4M model and the same seed init; the two baselines (DDPx2 and single-GPU)
+are re-run at 2× for reference.
+
+### Final eval loss @ 2× (~1B tokens)
+
+| run | eval loss |
+|---|---|
+| **DiLoCo, 2w, H=20** | **2.887** |
+| DiLoCo, 2w, H=100 | 2.936 |
+| DiLoCo, 1-worker, H=500 | 2.938 |
+| DDPx2 baseline | 2.993 |
+| single-GPU baseline | 2.999 |
+| DiLoCo, 2w, H=500 | 3.076 |
+
+### 1. DiLoCo catches up — and overtakes — at a longer budget
+
+![Sync-interval sweep @ 2x](assets/sweep_sync_interval.png)
+
+This is the headline. **At 1×, DiLoCo trailed the baseline** (eval 3.343 vs
+3.156). **At 2×, DiLoCo with `H ≤ 100` overtakes both baselines** (2.887 / 2.936
+vs 2.993 / 2.999). The end-game panel makes the ordering unambiguous: H=20 and
+H=100 pull *below* the baselines in the back half of the run, exactly where the
+literature says the gain appears. (H=500 is the exception — it's still slightly
+behind the baselines at 2×; see below.)
+
+### 2. Shorter sync intervals converge better (for more bandwidth)
+
+The sync interval is monotonic: **H=20 (2.887) < H=100 (2.936) < H=500
+(3.076)**. More frequent synchronization keeps the workers' replicas from
+drifting as far between averages, so the global model tracks an all-reduce run
+more closely — at the cost of proportionally more communication (H=20 syncs
+**25× more often** than H=500). That's the core DiLoCo dial: trade bandwidth for
+convergence. The paper's recommended `H≈500` is the bandwidth-frugal end; on a
+fast interconnect you can afford a shorter `H` and close the gap.
+
+### 3. Single-worker local-SGD generalizes slightly better
+
+![1-worker DiLoCo vs single-GPU baseline @ 2x](assets/sweep_1worker.png)
+
+The cleanest test of the "local-SGD finds flatter minima" idea: a **1-worker**
+DiLoCo run vs the **single-GPU baseline** — *same* GPU, *same* data, *same* 1B
+tokens; the only difference is DiLoCo's outer SGD-with-Nesterov applied to the
+slow (every-500-step) trajectory. The 1-worker run reaches a **higher train
+loss** but a **lower eval loss** (2.938 vs 2.999) — it fits the training data
+less tightly yet generalizes better, the classic flatter-minima signature. The
+effect is modest here (~0.06) but in the predicted direction, with no data
+parallelism involved at all.
+
+### Caveats & next step
+
+One model, one seed per config, eval loss as the generalization proxy — this is
+suggestive, not a benchmark. But the three effects are consistent with the
+local-SGD literature and reproduce from the CLI in under an hour per run. The
+natural next step is a **5× budget** to see how far the overtake widens (the 2×
+gap is already growing at the end of these curves). Plots, the parsed
+`assets/sweep_curves.csv`, and the analysis script
+[`analysis/plot_sweep.py`](analysis/plot_sweep.py) are in the repo.
+
+---
+
 ## Going further
 
 This example deliberately sticks to the simple path: a single homogeneous node, two
