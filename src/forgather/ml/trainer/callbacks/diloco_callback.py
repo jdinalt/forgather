@@ -689,6 +689,14 @@ class DiLoCoCallback(TrainerCallback):
         step = getattr(state, "global_step", None)
         if step is not None:
             snap["step_total"] = int(step)
+        # Per-worker progress target (this worker's planned optimizer steps).
+        # Reported so the server / `forgather diloco status` can show each
+        # worker's global-step / max-steps progress; it's a passthrough
+        # per-worker value, not aggregated across workers (which may run
+        # different budgets). See diloco/stats.py.
+        max_steps = getattr(state, "max_steps", None)
+        if max_steps is not None and max_steps > 0:
+            snap["max_steps"] = int(max_steps)
 
         if logs:
             if logs.get("tokens") is not None:

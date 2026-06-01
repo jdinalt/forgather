@@ -221,6 +221,16 @@ class TestSanitization:
         assert sanitize_stats("oops") == {}
         assert sanitize_stats(42) == {}
 
+    def test_max_steps_retained_per_worker_but_not_aggregated(self):
+        # max_steps is a per-worker progress target (#125): kept in the
+        # sanitized per-worker stats, but never folded into the aggregate
+        # (it's not a delta counter or a summable gauge).
+        out = sanitize_stats({"step_total": 100, "max_steps": 8030, "loss": 2.0})
+        assert out["max_steps"] == 8030
+        agg = StatsAggregator()
+        agg.update("w0", out)
+        assert "max_steps" not in agg.snapshot()
+
     def test_nan_loss_does_not_poison_ema(self):
         agg = StatsAggregator()
         agg.update("w0", {"loss": float("nan"), "tokens_window": 100})

@@ -68,6 +68,7 @@ _STAT_FIELDS = (
     "tokens_total",
     "flos_total",
     "step_total",
+    "max_steps",  # per-worker progress target; passthrough (not aggregated)
     "tokens_window",
     "loss",
     "grad_norm",
