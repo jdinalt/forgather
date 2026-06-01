@@ -350,6 +350,14 @@ function SplitPane({ split, isActive, api, openMenu }: SplitProps) {
               minimap: { enabled: false },
               fontSize: 13,
               scrollBeyondLastLine: false,
+              // Kill the word-based suggestion menu — the "abc"
+              // (CompletionItemKind.Text) entries Monaco synthesises from
+              // words already in the document when a language has no real
+              // completion provider (YAML, forgather templates, plain
+              // Python). They carry no useful information and pop
+              // constantly while typing. Real provider-driven completions
+              // (e.g. JSON) are unaffected.
+              wordBasedSuggestions: "off",
             }}
             onChange={(v) => api.setContent(activeBuf.path, v ?? "")}
             onMount={onMount}
