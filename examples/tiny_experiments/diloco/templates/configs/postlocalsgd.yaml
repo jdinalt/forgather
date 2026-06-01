@@ -1,0 +1,45 @@
+-- extends "projects/small.yaml"
+
+## DDPx2 + PyTorch **PostLocalSGD** (torch's PeriodicModelAverager): after a
+## warmup of full all-reduce, the ranks take local steps and *plainly average*
+## their weights every `period` steps — there is NO outer optimizer (no Nesterov
+## slow-momentum). This is the comparison point for DiLoCo: same periodic
+## averaging idea, minus the outer step, so it isolates what the outer optimizer
+## buys. ``dispatch_batches`` is on so it trains on the same data as the DiLoCo,
+## single-GPU, and work-unit runs (no 50%-offset DDP shard).
+##
+## ``--post-local-period`` / ``--post-local-start`` are exposed so the averaging
+## cadence can be set at launch (e.g. --post-local-period 100 to line up with
+## DiLoCo H=100).
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "PostLocalSGD (DDPx2)"
+    -- set ns.config_description = "DDPx2 + PyTorch PostLocalSGD periodic averaging (no outer optimizer), for comparison with DiLoCo"
+    -- set ns.log_name = "postlocalsgd"
+    -- set ns.dispatch_batches = True
+
+[trainer_args]
+    == super()
+    post_local_sgd:
+        enabled: True
+        start_step: {{ post_local_start | toyaml(800) }}
+        period: {{ post_local_period | toyaml(100) }}
+
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_scheduler
+    warmup_steps: {{ ns.warmup_steps }}
+    min_lr: {{ ns.min_lr | toyaml }}
+    decay_steps: {{ ns.annealing_steps }}
+    decay_start_step: {{ ns.decay_start_step }}
+
+[dynamic_args]
+    == super()
+    post_local_start:
+        names: "--post-local-start"
+        type: int
+        help: "PostLocalSGD start step (full all-reduce warmup before local averaging)"
+    post_local_period:
+        names: "--post-local-period"
+        type: int
+        help: "PostLocalSGD averaging period, in steps"
