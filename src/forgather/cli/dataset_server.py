@@ -13,6 +13,7 @@ Subcommands:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -44,14 +45,18 @@ def dataset_server_cmd(args) -> int:
 
 
 def _parse_local_maps(raw):
-    """``["NAME=PATH", ...]`` → ``[[name, path], ...]``; raises ValueError on
-    a malformed entry. Empty/None → ``[]``."""
+    """``["NAME=PATH", ...]`` → ``[[name, abspath], ...]``; raises ValueError on
+    a malformed entry. Empty/None → ``[]``.
+
+    PATH is absolutized against the CLI's CWD: on the scheduled path the job
+    runs from the forgather repo root, so a relative local path typed in the
+    user's shell would otherwise resolve against the wrong directory."""
     pairs = []
     for entry in raw or []:
         name, sep, path = str(entry).partition("=")
         if not sep or not name or not path:
             raise ValueError(f"--local expects NAME=PATH, got {entry!r}")
-        pairs.append([name, path])
+        pairs.append([name, os.path.abspath(path)])
     return pairs
 
 
@@ -74,7 +79,7 @@ def _start_job_params(args, local_pairs) -> dict:
         "allow_downloads": bool(args.allow_downloads),
     }
     if args.config:
-        params["config_file"] = args.config
+        params["config_file"] = os.path.abspath(args.config)
     if local_pairs:
         params["locals"] = local_pairs
     return params
@@ -154,7 +159,7 @@ def _start_local(args, local_pairs) -> int:
     if args.regen_token:
         cmd_args.append("--regen-token")
     if args.config:
-        cmd_args.extend(["--config", args.config])
+        cmd_args.extend(["--config", os.path.abspath(args.config)])
     # Forward any extra/unknown flags verbatim (e.g. TLS options).
     cmd_args.extend(getattr(args, "extra", None) or [])
     print(f"Running: {' '.join(cmd_args)}")

@@ -13,6 +13,7 @@ and shell pipelines can consume them.
 """
 
 import json
+import os
 import re
 import sys
 
@@ -666,9 +667,14 @@ def unregister_cmd(args):
 
 def _server_job_params(args):
     """Build the ``diloco_server`` job_params from the `server` subparser
-    args — the same shape the webui's DiLoCoServerModal submits."""
+    args — the same shape the webui's DiLoCoServerModal submits.
+
+    Paths are absolutized against the CLI's CWD before they go into the job:
+    the scheduler launches the job from the forgather repo root, so a
+    relative ``--output-dir`` typed in the user's shell would otherwise
+    resolve against the wrong directory."""
     p = {
-        "output_dir": args.output_dir,
+        "output_dir": os.path.abspath(args.output_dir),
         "port": args.port,
         "num_workers": args.num_workers,
         "host": args.host,
@@ -692,7 +698,7 @@ def _server_job_params(args):
     if p["dylu"]:
         p["dylu_base_sync_every"] = args.dylu_base_sync_every
     if getattr(args, "from_checkpoint", None):
-        p["from_checkpoint"] = args.from_checkpoint
+        p["from_checkpoint"] = os.path.abspath(args.from_checkpoint)
     if not p["no_auth"] and getattr(args, "regen_token", False):
         p["regen_token"] = True
     return p
@@ -705,7 +711,7 @@ def launch_server(args):
     client = _orchestrator(args)
     try:
         item = client.enqueue_job(
-            project_dir=args.output_dir,
+            project_dir=os.path.abspath(args.output_dir),
             config=f"diloco:{args.port}",
             job_type="diloco_server",
             job_params=_server_job_params(args),

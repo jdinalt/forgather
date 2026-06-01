@@ -6,6 +6,7 @@ mirroring `forgather diloco server`. ``--local-only`` runs it foreground.
 """
 
 import argparse
+import os
 
 import pytest
 
@@ -55,6 +56,21 @@ def test_parse_local_maps_valid():
 def test_parse_local_maps_invalid(bad):
     with pytest.raises(ValueError):
         ds._parse_local_maps([bad])
+
+
+def test_parse_local_maps_absolutizes_relative_path():
+    # The scheduled job runs from the repo root, so a relative local path
+    # must be resolved against the CLI's CWD before enqueue.
+    [[name, path]] = ds._parse_local_maps(["foo=../data/foo"])
+    assert name == "foo"
+    assert path == os.path.abspath("../data/foo")
+    assert os.path.isabs(path)
+
+
+def test_start_job_params_absolutizes_config():
+    params = ds._start_job_params(_start_args(config="rel/ds.yaml"), [])
+    assert params["config_file"] == os.path.abspath("rel/ds.yaml")
+    assert os.path.isabs(params["config_file"])
 
 
 def _start_args(**over):

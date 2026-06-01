@@ -329,6 +329,46 @@ class TestQueueDiagnostics:
 # ---------------------------------------------------------------------------
 
 
+class TestLoadStateErrors:
+    """load_state distinguishes a missing directory from one with no
+    checkpoints, and reports the absolute path + cwd (the old message said
+    'no checkpoints' for a path that didn't exist — misleading, especially
+    for a relative path resolved against an unexpected cwd)."""
+
+    def _server(self, tmp_path):
+        sd = _state_dict()
+        ckpt = make_initial_checkpoint(sd, tmp_path)
+        # Not started → load_state is allowed and won't bind a port.
+        return DiLoCoServer(
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=1,
+            port=0,
+            default_work_units=8,
+        )
+
+    def test_missing_dir_reports_clearly(self, tmp_path):
+        s = self._server(tmp_path)
+        missing = str(tmp_path / "nope")
+        s.output_dir = missing
+        with pytest.raises(FileNotFoundError) as ei:
+            s.load_state()
+        msg = str(ei.value)
+        assert "does not exist" in msg
+        assert os.path.abspath(missing) in msg
+
+    def test_empty_dir_reports_no_checkpoints(self, tmp_path):
+        s = self._server(tmp_path)
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        s.output_dir = str(empty)
+        with pytest.raises(ValueError) as ei:
+            s.load_state()
+        msg = str(ei.value)
+        assert "No checkpoints found" in msg
+        assert os.path.abspath(str(empty)) in msg
+
+
 class TestPersistence:
     def test_work_queues_persisted_and_restored(self, tmp_path):
         """The server is the authority for which rows have been consumed,

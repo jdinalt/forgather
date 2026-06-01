@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 
 import pytest
 
@@ -690,6 +691,20 @@ class TestLaunchServer:
         # dylu off → no dylu_base_sync_every; auth on but regen off → no regen_token
         assert "dylu_base_sync_every" not in jp
         assert "regen_token" not in jp
+
+    def test_relative_output_dir_is_absolutized(self, patch_orchestrator):
+        # The scheduler launches the job from the repo root, so a relative
+        # --output-dir must be resolved against the CLI's CWD before enqueue.
+        client = patch_orchestrator(FakeClient())
+        rc = orch.launch_server(
+            _server_args(output_dir="../../models/small", from_checkpoint="ckpt/x")
+        )
+        assert rc == 0
+        kw = client.enqueued[0]
+        assert kw["project_dir"] == os.path.abspath("../../models/small")
+        assert kw["job_params"]["output_dir"] == os.path.abspath("../../models/small")
+        assert kw["job_params"]["from_checkpoint"] == os.path.abspath("ckpt/x")
+        assert os.path.isabs(kw["job_params"]["output_dir"])
 
 
 def _worker_args(**over):

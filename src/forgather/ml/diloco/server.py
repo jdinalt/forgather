@@ -3499,10 +3499,23 @@ class DiLoCoServer:
             )
 
         if checkpoint_path is None:
+            # Distinguish "directory doesn't exist" from "directory exists but
+            # holds no checkpoints" — the former was previously reported as the
+            # latter, which is misleading (especially with a relative path that
+            # resolved against an unexpected CWD). Show the absolute path so the
+            # caller can see exactly where we looked.
+            if not os.path.isdir(self.output_dir):
+                raise FileNotFoundError(
+                    f"Model directory does not exist: {self.output_dir} "
+                    f"(resolved to {os.path.abspath(self.output_dir)}; "
+                    f"cwd={os.getcwd()})"
+                )
             checkpoint_path = find_latest_checkpoint(self.output_dir)
             if not checkpoint_path:
                 raise ValueError(
-                    f"No checkpoints found in {self.output_dir}. Please provide a valid model directory."
+                    f"No checkpoints found in {self.output_dir} "
+                    f"({os.path.abspath(self.output_dir)}). "
+                    f"Please provide a valid model directory."
                 )
 
         if not os.path.exists(checkpoint_path):
