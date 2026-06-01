@@ -1,23 +1,22 @@
--- extends "projects/small.yaml"
+-- extends "configs/baseline.yaml"
 
-## DDPx2 + PyTorch **PostLocalSGD** (torch's PeriodicModelAverager): after a
-## warmup of full all-reduce, the ranks take local steps and *plainly average*
-## their weights every `period` steps — there is NO outer optimizer (no Nesterov
-## slow-momentum). This is the comparison point for DiLoCo: same periodic
-## averaging idea, minus the outer step, so it isolates what the outer optimizer
-## buys. ``dispatch_batches`` is on so it trains on the same data as the DiLoCo,
-## single-GPU, and work-unit runs (no 50%-offset DDP shard).
+## The DDP baseline, with PyTorch **PostLocalSGD** turned on — and nothing else
+## changed. PostLocalSGD (torch's PeriodicModelAverager) has the ranks take
+## local steps and *plainly average* their weights every `period` steps after a
+## warmup; there is NO pseudo-gradient and NO outer Nesterov momentum. Comparing
+## it to DiLoCo at the same averaging cadence isolates exactly what DiLoCo's
+## outer optimizer contributes.
 ##
-## ``--post-local-period`` / ``--post-local-start`` are exposed so the averaging
-## cadence can be set at launch (e.g. --post-local-period 100 to line up with
-## DiLoCo H=100).
+## This extends baseline.yaml so the ONLY difference from the DDP baseline is the
+## post_local_sgd block below; run it the same way as the baseline (i.e. with
+## --dispatch-batches yes for data parity). ``--post-local-period`` /
+## ``--post-local-start`` set the averaging cadence at launch.
 
 [config_metadata]
     == super()
     -- set ns.config_name = "PostLocalSGD (DDPx2)"
-    -- set ns.config_description = "DDPx2 + PyTorch PostLocalSGD periodic averaging (no outer optimizer), for comparison with DiLoCo"
+    -- set ns.config_description = "DDP baseline + PyTorch PostLocalSGD averaging (no outer optimizer), for comparison with DiLoCo"
     -- set ns.log_name = "postlocalsgd"
-    -- set ns.dispatch_batches = True
 
 [trainer_args]
     == super()
@@ -25,13 +24,6 @@
         enabled: True
         start_step: {{ post_local_start | toyaml(800) }}
         period: {{ post_local_period | toyaml(100) }}
-
-[lr_scheduler]
-lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_scheduler
-    warmup_steps: {{ ns.warmup_steps }}
-    min_lr: {{ ns.min_lr | toyaml }}
-    decay_steps: {{ ns.annealing_steps }}
-    decay_start_step: {{ ns.decay_start_step }}
 
 [dynamic_args]
     == super()
