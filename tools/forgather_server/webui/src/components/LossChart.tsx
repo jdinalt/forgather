@@ -32,6 +32,10 @@ function panZoomPlugin(): uPlot.Plugin {
           return xs.length ? [xs[0] as number, xs[xs.length - 1] as number] : [0, 1];
         };
 
+        const mark = (z: boolean) => {
+          (u as unknown as { _userZoomed?: boolean })._userZoomed = z;
+        };
+
         over.addEventListener(
           "wheel",
           (e: WheelEvent) => {
@@ -44,6 +48,7 @@ function panZoomPlugin(): uPlot.Plugin {
             const factor = e.deltaY < 0 ? 0.8 : 1.25; // up = zoom in
             const nMin = xVal - (xVal - min) * factor;
             const nMax = xVal + (max - xVal) * factor;
+            mark(true);
             u.setScale("x", { min: nMin, max: nMax });
           },
           { passive: false },
@@ -55,6 +60,7 @@ function panZoomPlugin(): uPlot.Plugin {
         let startMax = 0;
         over.addEventListener("mousedown", (e: MouseEvent) => {
           panning = true;
+          mark(true);
           startClientX = e.clientX;
           startMin = u.scales.x.min ?? fullRange()[0];
           startMax = u.scales.x.max ?? fullRange()[1];
@@ -73,7 +79,8 @@ function panZoomPlugin(): uPlot.Plugin {
         window.addEventListener("mouseup", onUp);
 
         over.addEventListener("dblclick", () => {
-          // Re-autoscale both axes to the full data range.
+          // Re-autoscale to the full data range and resume live-following.
+          mark(false);
           u.setData(u.data);
         });
 
@@ -150,9 +157,15 @@ export default function LossChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [height]);
 
-  // Push new data without recreating the plot (preserves the current zoom).
+  // Push new data without recreating the plot. By default re-autoscale so the
+  // live curve keeps following new points (resetScales=true); once the user
+  // has zoomed/panned, preserve their view (resetScales=false) until they
+  // double-click to reset.
   useEffect(() => {
-    plotRef.current?.setData(data, false);
+    const u = plotRef.current;
+    if (!u) return;
+    const follow = !(u as unknown as { _userZoomed?: boolean })._userZoomed;
+    u.setData(data, follow);
   }, [data]);
 
   return (
