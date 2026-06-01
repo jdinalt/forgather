@@ -755,7 +755,8 @@ class DiLoCoServer:
         # guard so the signal path and /control/shutdown converge on one run.
         self._shutdown_lock = threading.Lock()
         self._shutting_down = False
-        self._shutdown_event = threading.Event()
+        self._shutdown_event = threading.Event()  # "shutdown requested"
+        self._shutdown_done = threading.Event()  # "drain + stop finished"
 
     @staticmethod
     def _find_available_port(start_port: int = 8512, max_attempts: int = 100) -> int:
@@ -2356,35 +2357,45 @@ class DiLoCoServer:
         max_points = max(1, min(max_points, 20000))
 
         records: List[dict] = []
+        total = 0
         path = self._stats_log_path()
         if path and os.path.isfile(path):
             try:
+                # Two passes so peak memory scales with max_points, not the
+                # (training-length) log size: pass 1 counts records to pick a
+                # stride, pass 2 parses only the kept lines (every stride-th,
+                # plus the last). The webui polls this on a refresh interval,
+                # so re-parsing the whole growing file each time would be
+                # needlessly expensive.
                 with open(path) as f:
+                    for line in f:
+                        if line.strip():
+                            total += 1
+                stride = 1 if total <= max_points else math.ceil(total / max_points)
+                with open(path) as f:
+                    idx = -1
                     for line in f:
                         line = line.strip()
                         if not line:
                             continue
-                        try:
-                            records.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            continue  # skip a partial/torn last line
+                        idx += 1
+                        if idx % stride == 0 or idx == total - 1:
+                            try:
+                                records.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                continue  # skip a partial/torn line
             except Exception as e:
                 logger.warning("stats_history: failed to read %s: %s", path, e)
                 records = []
-
-        total = len(records)
-        downsampled = False
-        if total > max_points:
-            stride = math.ceil(total / max_points)
-            sampled = records[::stride]
-            if sampled[-1] is not records[-1]:
-                sampled.append(records[-1])
-            records = sampled
-            downsampled = True
+                total = 0
 
         _send_json_response(
             handler,
-            {"records": records, "count": total, "downsampled": downsampled},
+            {
+                "records": records,
+                "count": total,
+                "downsampled": total > max_points,
+            },
         )
 
     def _handle_deregister(self, handler: BaseHTTPRequestHandler):
@@ -3590,6 +3601,10 @@ class DiLoCoServer:
             if self._resume_run_subdir:
                 self._tb_purge_step = self._stats.total_steps
             self._stats_log_step = -1
+            # Seed the last-logged eval step from the restored aggregator so a
+            # resume doesn't re-log the same eval point that was already
+            # recorded before the checkpoint.
+            self._last_logged_eval_step = self._stats.snapshot().get("eval_step")
 
             # Restore work-unit dispatch state (#105): the per-(dataset_id,
             # shuffle_seed) issued/completed bitmaps and the per-dataset
@@ -3866,9 +3881,15 @@ class DiLoCoServer:
         funnel here, and the first caller wins.
         """
         with self._shutdown_lock:
-            if self._shutting_down:
-                return
+            first = not self._shutting_down
             self._shutting_down = True
+        if not first:
+            # Another caller (e.g. a /control/shutdown daemon) is already
+            # draining. Block until it finishes rather than returning — a
+            # signal-triggered caller in run() would otherwise let the process
+            # exit and kill the in-flight drain before save_state completes.
+            self._shutdown_done.wait(timeout + 30.0)
+            return
         try:
             if self._running:
                 targets = self._relay_command_all("save_and_stop")
@@ -3900,6 +3921,7 @@ class DiLoCoServer:
                 if self._running:
                     self.stop()
             finally:
+                self._shutdown_done.set()
                 self._shutdown_event.set()
 
     @property

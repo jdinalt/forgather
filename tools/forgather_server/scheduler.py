@@ -1397,7 +1397,22 @@ def _kill_record(queue_id: str, sig: int) -> bool:
         # if it's still alive at the end. The CAS keeps the status
         # at "aborted" but the error makes the orphan visible to the
         # operator instead of silently disappearing.
-        if not _wait_for_pid_exit(record.pid, timeout=2.0):
+        # A DiLoCo server traps SIGTERM into a *coordinated* shutdown — it
+        # relays save_and_stop to its workers and keeps serving until they
+        # drain, which legitimately takes far longer than 2s. So for a
+        # diloco_server + SIGTERM, a non-exit at 2s is expected, not a hang:
+        # don't stamp the misleading "stuck in CUDA" error. (SIGKILL, or any
+        # other job type, keeps the original fast-exit expectation.)
+        graceful_diloco = record.job_type == "diloco_server" and sig == signal.SIGTERM
+        if graceful_diloco:
+            log.info(
+                "Signalled %s (pid=%d) to shut down; the DiLoCo server is "
+                "draining its workers (save_and_stop) and will exit once they "
+                "finish.",
+                queue_id,
+                record.pid,
+            )
+        elif not _wait_for_pid_exit(record.pid, timeout=2.0):
             log.warning(
                 "kill of %s (pid=%d, sig=%d) did not exit within "
                 "timeout — process may be stuck in a CUDA driver "
