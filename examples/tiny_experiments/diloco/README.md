@@ -524,6 +524,19 @@ forgather diloco server --output-dir ../../../models/small_llama --num-workers 2
 forgather diloco worker --resume-workers
 ```
 
+> **Re-pass any custom dynamic args on resume.** `--resume-workers` rebuilds each
+> worker's args from the resume command line + the config defaults; it does *not*
+> yet remember the args the workers were originally launched with
+> ([#124](https://github.com/jdinalt/forgather/issues/124)). So if you launched
+> with a non-default budget (e.g. `--total-tokens 250` for a fair 2-worker
+> comparison), pass the **same** flags again on resume, or the run silently
+> reverts to the config's full budget:
+>
+> ```bash
+> forgather -t tiny.yaml diloco worker --resume-workers \
+>     --total-tokens 250 --warmup-tokens 25 --min-cooldown-tokens 100
+> ```
+
 ### 10. Cleanup
 
 ```bash
