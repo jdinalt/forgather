@@ -55,14 +55,38 @@ class TestDeltaAccumulation:
 
 
 class TestLiveGauges:
-    def test_throughput_mfu_memory_sum_over_workers(self):
+    def test_throughput_and_memory_sum_mfu_is_mean(self):
+        # Extensive quantities (throughput, memory) sum; MFU is an intensive
+        # per-device fraction, so it's a (token-weighted) mean — here equal
+        # weight since no tokens_window was reported.
         agg = StatsAggregator()
         agg.update("w0", {"tok_per_sec": 100.0, "mfu": 0.2, "peak_mem": 1e9})
         agg.update("w1", {"tok_per_sec": 150.0, "mfu": 0.3, "peak_mem": 2e9})
         s = agg.snapshot()
         assert s["tok_per_sec"] == 250.0
-        assert s["mfu"] == pytest.approx(0.5)
+        assert s["mfu"] == pytest.approx(0.25)
         assert s["peak_memory"] == pytest.approx(3e9)
+
+    def test_mfu_token_weighted_mean_fallback(self):
+        # No FLOPs reported → MFU falls back to token weighting.
+        agg = StatsAggregator()
+        agg.update("w0", {"mfu": 0.1, "tokens_window": 100})
+        agg.update("w1", {"mfu": 0.5, "tokens_window": 300})
+        # (0.1*100 + 0.5*300) / 400 = 0.4
+        assert agg.snapshot()["mfu"] == pytest.approx(0.4)
+
+    def test_mfu_flos_weighted_when_available(self):
+        # FLOPs is the preferred MFU weight. Equal tokens_window isolates the
+        # FLOPs effect: token-weighting would give (0.1+0.5)/2 = 0.3.
+        agg = StatsAggregator()
+        # First reports establish FLOPs baselines (no window yet).
+        agg.update("w0", {"flos_total": 1000, "mfu": 0.1, "tokens_window": 100})
+        agg.update("w1", {"flos_total": 1000, "mfu": 0.5, "tokens_window": 100})
+        # Second reports create FLOPs windows: w0 +100, w1 +900.
+        agg.update("w0", {"flos_total": 1100, "mfu": 0.1, "tokens_window": 100})
+        agg.update("w1", {"flos_total": 1900, "mfu": 0.5, "tokens_window": 100})
+        # (0.1*100 + 0.5*900) / 1000 = 0.46
+        assert agg.snapshot()["mfu"] == pytest.approx(0.46)
 
     def test_latest_value_replaces_previous(self):
         agg = StatsAggregator()

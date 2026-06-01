@@ -319,6 +319,18 @@ The server uses `ThreadingHTTPServer` which spawns a new daemon thread for each
 incoming HTTP request. This is required because in synchronous mode, multiple
 worker requests block concurrently waiting at the barrier.
 
+`run()` serves on a background thread and blocks the main thread on an event;
+SIGTERM/SIGINT just set that event. All stop paths — the signal handlers,
+`/control/shutdown`, and `forgather diloco shutdown` — converge on
+`graceful_shutdown()`, which relays `save_and_stop` to every worker, then keeps
+serving while they finish (including any in-flight sync round), checkpoint, and
+deregister. Serving during the drain is essential: a worker parked on the sync
+barrier would deadlock if submissions stopped being accepted; as each worker
+leaves, the barrier's expected set shrinks via the normal worker-death path.
+Once the roster is empty (or a timeout elapses) it saves state and stops. A
+re-entrancy guard makes it idempotent so the signal and endpoint paths converge
+on one run.
+
 **Critical locking:**
 
 | Lock | Protects | Used by |
@@ -867,18 +879,37 @@ Aggregation rules:
   a `worker_id` on resume continues the count; a counter reset clamps to a
   non-negative delta. These persist in the checkpoint (`stats` key), as does the
   per-worker last-seen baseline needed to keep deltas correct across a restart.
-- **Live gauges** (`tok_per_sec`, `mfu`, `peak_memory` summed; `grad_norm`
-  token-weighted mean) are computed on demand from the latest snapshot of each
-  currently-reporting worker; not persisted, and `drop_worker` removes an
-  evicted worker from them (its delta baseline is kept).
+- **Live gauges** are computed on demand from the latest snapshot of each
+  currently-reporting worker: `tok_per_sec` and `peak_memory` sum (extensive);
+  `mfu` and `grad_norm` are weighted means (intensive — summing MFU would
+  exceed 100%), MFU weighted by each worker's per-report FLOPs increment
+  (falling back to tokens), grad_norm by tokens. Not persisted, and
+  `drop_worker` removes an evicted worker from them (its delta baseline is kept).
 - **Loss** is a token-weighted EMA (`S = decay·S + w·loss`, `Z = decay·Z + w`,
   `loss = S/Z`); `S`/`Z` persist so smoothing survives a resume. `train_loss`
   uses a stronger decay than the weak-EMA `eval_loss`.
 
-When `output_dir` is set the server also appends each aggregate snapshot to
-`<output_dir>/logs/diloco_server_stats.json` via the trainer's `JsonLogWriter`
-(throttled to one record per advance in total steps), which truncates to the
-checkpoint step and resumes — its position is the persisted `stats_log` key.
+When `output_dir` is set the server logs each aggregate snapshot (throttled to
+one record per advance in total steps) into a per-run directory
+`<output_dir>/runs/<time_ns>_<run_name>` — the trainer's `runs/` convention, so
+the two are tooling-compatible. A fresh start makes a new dir (unique by
+`time_ns`); the chosen subdir is persisted in the checkpoint (`stats_run_subdir`)
+and a resume reuses it for continuity. `_run_name` comes from `--run-name`
+(default hostname) and is sanitized to a safe path component. Each run dir holds:
+
+- `diloco_server_stats.jsonl` — one JSON object per line, append-only.
+  Deliberately not the trainer's JSON-array `JsonLogWriter`: append-only JSONL
+  into a unique-per-run dir is robust to restarts (no exclusive-create race, no
+  truncate-to-empty on resume) where the array format's bracket/close
+  management was not. Served by `/stats_history` for the webui plot.
+- TensorBoard event files — the same scalars via a `torch.utils.tensorboard`
+  `SummaryWriter`, tags `train-loss`/`eval-loss`/`grad-norm` (matching the
+  trainer, for overlay) plus `tokens-per-sec`/`mfu`/`total-tokens`/etc. On
+  resume the writer is opened with `purge_step` = the restored total step.
+
+Writes are guarded by `_stats_log_lock` (`_handle_heartbeat` runs on concurrent
+threads). The logs are not otherwise checkpoint-coupled — only the run subdir
+is persisted, for directory continuity.
 
 ---
 
@@ -897,7 +928,6 @@ checkpoint step and resumes — its position is the persisted `stats_log` key.
     "total_submissions": int,
     "known_workers": Dict[str, {output_dir, last_registered}],
     "stats": StatsAggregator.state_dict(),   # lifetime counters + loss EMA
-    "stats_log": JsonLogWriter.state_dict(),  # stats-log resume position
 }
 ```
 

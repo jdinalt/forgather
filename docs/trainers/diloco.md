@@ -506,7 +506,7 @@ Collected metrics:
 | `total_flos` | sum of per-worker increments | yes |
 | `total_steps` | sum of per-worker increments | yes |
 | `tok_per_sec` | sum over currently-reporting workers | no (live) |
-| `mfu` | sum over currently-reporting workers | no (live) |
+| `mfu` | FLOPs-weighted mean (falls back to tokens) | no (live) |
 | `peak_memory` | sum over currently-reporting workers | no (live) |
 | `grad_norm` | token-weighted mean | no (live) |
 | `train_loss` | token-weighted EMA | yes (EMA state) |
@@ -519,9 +519,28 @@ by `worker_id`, relaunching a worker under the same id (`diloco worker
 history. Live gauges are recomputed from the workers currently reporting and a
 worker the server evicts drops out of them.
 
-When the server has an `output_dir`, it also writes the aggregate stream to
-`<output_dir>/logs/diloco_server_stats.json` (the same JSON-log format a
-worker uses), truncating to the checkpoint step and continuing on resume.
+### Run directories and logs
+
+When the server has an `output_dir`, each freshly-started run logs to its own
+directory under `<output_dir>/runs/<timestamp>_<run-name>` (the same `runs/`
+convention the trainers use, so common tooling and TensorBoard can read them
+together). `--run-name` sets the label (defaults to the hostname); a resume
+from checkpoint continues the prior run's directory rather than fragmenting
+across a new one. Keeping each run in its own directory makes it easy to retain
+and compare runs with different parameters.
+
+Each run directory holds two things:
+
+- `diloco_server_stats.jsonl` — the aggregate stream, one JSON record per line
+  (append-only). The webui DiLoCo server view plots train/eval loss from it
+  (scroll to zoom, drag to pan, double-click to reset), served via
+  `GET /stats_history` (proxied as `GET /api/diloco/stats-history`). This
+  in-panel plot is for quick diagnostics.
+- TensorBoard event files — the same aggregates mirrored via the torch
+  TensorBoard logger (resuming where it left off on restart, like the trainer).
+  Point TensorBoard at `<output_dir>/runs` to overlay and compare runs, or to
+  overlay the server aggregate against a worker's own run (the scalar tags
+  `train-loss` / `eval-loss` / `grad-norm` match the trainer's).
 
 Per-worker eval curves don't track precisely between syncs — for that detail,
 point TensorBoard at an individual worker's `output_dir`. The server's
@@ -1214,6 +1233,14 @@ on the right:
 5. **Work-unit dispatch**: per-queue heatmap (K cells, three states:
    available / issued / completed), with per-worker counters.
 
+The **same coordinated sequence** runs server-side for every other way a
+server is stopped — `forgather diloco shutdown`, a SIGTERM from the scheduler
+(stopping/disabling a DiLoCo service, or the Views → DiLoCo run/stop toggle),
+and Ctrl-C on a foreground `forgather diloco server`. All of them relay
+`save_and_stop` to the workers and let them drain (the server keeps serving so
+no worker deadlocks at the barrier) before saving and exiting, rather than
+hard-killing the process. Only `force-kill` (SIGKILL) skips this.
+
 An earlier version of the server shipped its own Alpine.js dashboard
 at `/dashboard`; that page was removed when the webui panel took
 over. The control endpoints below are unchanged and are what the
@@ -1228,7 +1255,7 @@ webui's Control card talks to under the hood.
 | `POST /control/update_optimizer` | `{"lr": 0.5, "momentum": 0.8}` | Update optimizer hyperparameters |
 | `POST /control/update_num_workers` | `{"num_workers": 4}` | Change expected worker count |
 | `POST /control/command` | `{"command": "save_and_stop", "worker_id": "w0"}` | Relay a trainer-control command to a worker (`worker_id` omitted = all) |
-| `POST /control/shutdown` | `{}` | Save state (if configured) and stop |
+| `POST /control/shutdown` | `{}` | Coordinated shutdown: relay `save_and_stop` to all workers, keep serving while they drain (so none deadlocks on the sync barrier), then save state and stop |
 
 All endpoints return `{"status": "ok", ...}` on success or `{"error": "..."}` on
 failure.

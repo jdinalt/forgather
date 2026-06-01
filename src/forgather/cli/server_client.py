@@ -556,6 +556,12 @@ class ServerClient:
     def diloco_work_queues(self, base):
         return self._get(f"/diloco/work-queues?base={quote(base, safe='')}").json()
 
+    def diloco_stats_history(self, base, max_points=2000):
+        return self._get(
+            f"/diloco/stats-history?base={quote(base, safe='')}"
+            f"&max_points={int(max_points)}"
+        ).json()
+
     def diloco_work_queue(self, base, dataset_id, shuffle_seed):
         return self._get(
             f"/diloco/work-queue?base={quote(base, safe='')}"

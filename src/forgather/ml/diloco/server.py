@@ -29,7 +29,10 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
+import platform
+import re
 import socket
 import ssl
 import struct
@@ -462,6 +465,7 @@ class DiLoCoServer:
         ssl_context: Optional["ssl.SSLContext"] = None,
         bulk_cleartext: bool = False,
         default_work_units: int = 1024,
+        run_name: Optional[str] = None,
     ):
         if num_workers < 1:
             raise ValueError(f"num_workers must be >= 1, got {num_workers}")
@@ -477,6 +481,9 @@ class DiLoCoServer:
         self.host = host
         self.port = port or self._find_available_port()
         self.output_dir = output_dir
+        # Operator label for this run's stats log dir; consumed in
+        # _initialize (which also runs on resume, so it must not own this).
+        self._run_name = run_name
         self.save_every_n_rounds = save_every_n_rounds
         self.save_total_limit = save_total_limit
         self.async_mode = async_mode
@@ -719,15 +726,37 @@ class DiLoCoServer:
         from .stats import StatsAggregator
 
         self._stats = StatsAggregator()
-        self._stats_writer = None  # JsonLogWriter, opened lazily once running
-        self._stats_log_state = None  # pending writer resume state (from load_state)
+        # Per-run log directory (mirrors the trainer: <output_dir>/runs/
+        # <time_ns>_<name>), holding both the JSONL stats stream and a
+        # TensorBoard event file. A fresh start gets a new dir; the chosen
+        # subdir is persisted in the checkpoint so a resume continues into the
+        # same dir (TensorBoard resumes via purge_step). Distinct runs are
+        # retained for comparison/overlay. _maybe_log_stats runs on concurrent
+        # heartbeat threads, so its IO + bookkeeping are guarded by this lock.
+        # (``self._run_name`` is set in __init__ — _initialize also runs on
+        # resume and must not clobber it.)
+        self._stats_log_lock = threading.Lock()
+        self._stats_run_dir = None  # resolved absolute run dir (lazy)
+        self._stats_run_subdir = None  # relative "runs/..." for the checkpoint
+        self._resume_run_subdir = None  # prior run subdir, from load_state
+        self._tb_writer = None  # torch TensorBoard SummaryWriter (lazy)
+        self._tb_purge_step = None  # discard TB events after this step on resume
         self._stats_log_step = -1  # last total_steps a stats record was logged at
+        self._last_logged_eval_step = None  # eval_step of the last eval logged
 
         # Server state
         self._server: Optional[HTTPServer] = None
         self._server_thread: Optional[threading.Thread] = None
         self._started_at: Optional[float] = None
         self._dirty = False
+
+        # Coordinated graceful shutdown (relay save_and_stop to workers, let
+        # them drain while we keep serving, then save + stop). Re-entrancy
+        # guard so the signal path and /control/shutdown converge on one run.
+        self._shutdown_lock = threading.Lock()
+        self._shutting_down = False
+        self._shutdown_event = threading.Event()  # "shutdown requested"
+        self._shutdown_done = threading.Event()  # "drain + stop finished"
 
     @staticmethod
     def _find_available_port(start_port: int = 8512, max_attempts: int = 100) -> int:
@@ -2181,37 +2210,193 @@ class DiLoCoServer:
             self._maybe_log_stats()
 
     def _maybe_log_stats(self):
-        """Append one aggregate-stats record to the server's JSON log stream
-        when training has advanced (keyed by total optimizer steps).
+        """Append one aggregate-stats record to the server's stats log when
+        training has advanced (keyed by total optimizer steps).
 
-        Mirrors a worker's JSON logger: the file is opened lazily (only when
-        ``output_dir`` is set), and on a checkpoint resume it truncates to the
-        restored step and continues appending — the resume state is loaded
-        from the server checkpoint in :meth:`load_state`. Best-effort: a
-        logging failure must never break the heartbeat path.
+        The log is **JSONL** (one JSON object per line), opened in append mode
+        — deliberately not the JSON-array writer the trainer uses. A
+        long-running server is restarted often and reuses its ``output_dir``;
+        append-only is robust to a pre-existing log from any prior run (no
+        exclusive-create FileExistsError, no truncate-to-empty), whereas the
+        array format needs bracket/close management that proved fragile across
+        restarts. The first write of each process truncates a stale log so a
+        run starts a clean stream. Best-effort: a logging failure must never
+        break the heartbeat path.
         """
         if not self.output_dir:
             return
-        snap = self._stats.snapshot()
-        steps = int(snap.get("total_steps", 0) or 0)
-        if steps <= self._stats_log_step:
-            return
-        try:
-            if self._stats_writer is None:
-                from forgather.ml.trainer.callbacks.json_log_writer import (
-                    JsonLogWriter,
-                )
-
-                self._stats_writer = JsonLogWriter("diloco_server_stats.json")
-                if self._stats_log_state:
-                    self._stats_writer.load_state_dict(self._stats_log_state)
-                self._stats_writer.open(os.path.join(self.output_dir, "logs"))
+        # Serialize concurrent heartbeat threads: the step check and the
+        # appends must be atomic or two workers race on the same files.
+        with self._stats_log_lock:
+            snap = self._stats.snapshot()
+            steps = int(snap.get("total_steps", 0) or 0)
+            if steps <= self._stats_log_step:
+                return
+            run_dir = self._ensure_run_dir()
+            if run_dir is None:
+                return
             data = {k: v for k, v in snap.items() if k != "total_steps"}
+            data["global_step"] = steps
             data["sync_round"] = self._sync_round
-            self._stats_writer.write_record(global_step=steps, epoch=0.0, data=data)
+            data["timestamp"] = time.time()
+            # Emit eval_loss only on records where a *new* eval arrived (the
+            # eval_step advanced); null it otherwise. eval is sparse relative
+            # to the per-step stats stream, so repeating the held EMA value on
+            # every record would draw a flat staircase — nulling between evals
+            # lets the plot connect the real eval points into a curve (the
+            # chart spans gaps), matching a worker's TensorBoard eval line.
+            eval_step = snap.get("eval_step")
+            eval_fresh = (
+                eval_step is not None and eval_step != self._last_logged_eval_step
+            )
+            if not eval_fresh:
+                data["eval_loss"] = None
+            else:
+                self._last_logged_eval_step = eval_step
+            # JSONL stream (append-only; the run dir is unique per fresh run so
+            # a new run starts an empty file, while a resumed run continues its
+            # own file).
+            try:
+                with open(os.path.join(run_dir, self._STATS_LOG_FILENAME), "a") as f:
+                    f.write(json.dumps(data) + "\n")
+            except Exception as e:  # pragma: no cover - must not break HB
+                logger.warning("Failed to write server stats log: %s", e)
+            # TensorBoard mirror, for overlay/comparison across runs.
+            self._log_to_tensorboard(steps, snap, eval_fresh)
             self._stats_log_step = steps
-        except Exception as e:  # pragma: no cover - logging must not break HB
-            logger.warning("Failed to write server stats log: %s", e)
+
+    def _ensure_run_dir(self) -> Optional[str]:
+        """Resolve (and create) this run's log directory under
+        ``<output_dir>/runs/``. Caller holds ``_stats_log_lock``.
+
+        Reuses the prior run's dir on resume (``_resume_run_subdir`` from the
+        checkpoint) for continuity; otherwise creates a fresh
+        ``runs/<time_ns>_<name>`` (matching the trainer's convention, so common
+        tools / TensorBoard can read them together). Returns None when there's
+        no ``output_dir`` to write under.
+        """
+        if self._stats_run_dir is not None:
+            return self._stats_run_dir
+        if not self.output_dir:
+            return None
+        if self._resume_run_subdir:
+            candidate = os.path.join(self.output_dir, self._resume_run_subdir)
+            if os.path.isdir(candidate):
+                self._stats_run_dir = candidate
+                self._stats_run_subdir = self._resume_run_subdir
+                logger.info("Stats: resuming run log dir %s", candidate)
+                return candidate
+        name = self._run_name or platform.node() or "diloco"
+        # Sanitize the (operator-supplied) name to a safe path component —
+        # no separators / traversal, conservative character set.
+        name = re.sub(r"[^A-Za-z0-9._-]", "-", name)[:64] or "diloco"
+        subdir = os.path.join("runs", f"{time.time_ns()}_{name}")
+        self._stats_run_dir = os.path.join(self.output_dir, subdir)
+        self._stats_run_subdir = subdir
+        os.makedirs(self._stats_run_dir, exist_ok=True)
+        logger.info("Stats: logging this run to %s", self._stats_run_dir)
+        return self._stats_run_dir
+
+    def _log_to_tensorboard(self, step: int, snap: dict, eval_fresh: bool) -> None:
+        """Mirror the aggregate snapshot to a TensorBoard event file in the run
+        dir. Caller holds ``_stats_log_lock``. Best-effort. Scalar tags match
+        the trainer's (``train-loss``/``eval-loss``/``grad-norm``) so a worker's
+        own TB run and the server aggregate overlay in TensorBoard."""
+        try:
+            if self._tb_writer is None:
+                from torch.utils.tensorboard import SummaryWriter
+
+                kwargs = {}
+                if self._tb_purge_step is not None:
+                    kwargs["purge_step"] = self._tb_purge_step
+                self._tb_writer = SummaryWriter(self._stats_run_dir, **kwargs)
+            w = self._tb_writer
+
+            def add(tag, key):
+                v = snap.get(key)
+                if isinstance(v, (int, float)):
+                    w.add_scalar(tag, v, global_step=step)
+
+            add("train-loss", "train_loss")
+            add("grad-norm", "grad_norm")
+            add("tokens-per-sec", "tok_per_sec")
+            add("mfu", "mfu")
+            add("total-tokens", "total_tokens")
+            add("total-flos", "total_flos")
+            add("peak-memory", "peak_memory")
+            if eval_fresh:
+                add("eval-loss", "eval_loss")
+            w.flush()
+        except Exception as e:  # pragma: no cover - must not break HB
+            logger.warning("Failed to write server TensorBoard stats: %s", e)
+
+    def _stats_log_path(self) -> Optional[str]:
+        """Path to the current run's aggregate-stats JSONL log, or None when no
+        run dir has been resolved yet (no ``output_dir`` / nothing logged)."""
+        if not self._stats_run_dir:
+            return None
+        return os.path.join(self._stats_run_dir, self._STATS_LOG_FILENAME)
+
+    def _handle_stats_history(self, handler: BaseHTTPRequestHandler):
+        """Serve the aggregate-stats history (the JSONL log the server writes)
+        for the webui's loss-curve plot.
+
+        Reads the JSONL log line by line (skipping any blank/partial line),
+        returning the records downsampled to ``max_points`` (the latest point
+        is always kept). Empty when no ``output_dir`` / nothing logged yet.
+        Control-plane, bearer-authenticated like ``/status`` (do_GET runs the
+        auth gate first).
+        """
+        from urllib.parse import parse_qs, urlparse
+
+        qs = parse_qs(urlparse(handler.path).query)
+        try:
+            max_points = int(qs.get("max_points", ["2000"])[0])
+        except (ValueError, TypeError, IndexError):
+            max_points = 2000
+        max_points = max(1, min(max_points, 20000))
+
+        records: List[dict] = []
+        total = 0
+        path = self._stats_log_path()
+        if path and os.path.isfile(path):
+            try:
+                # Two passes so peak memory scales with max_points, not the
+                # (training-length) log size: pass 1 counts records to pick a
+                # stride, pass 2 parses only the kept lines (every stride-th,
+                # plus the last). The webui polls this on a refresh interval,
+                # so re-parsing the whole growing file each time would be
+                # needlessly expensive.
+                with open(path) as f:
+                    for line in f:
+                        if line.strip():
+                            total += 1
+                stride = 1 if total <= max_points else math.ceil(total / max_points)
+                with open(path) as f:
+                    idx = -1
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        idx += 1
+                        if idx % stride == 0 or idx == total - 1:
+                            try:
+                                records.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                continue  # skip a partial/torn line
+            except Exception as e:
+                logger.warning("stats_history: failed to read %s: %s", path, e)
+                records = []
+                total = 0
+
+        _send_json_response(
+            handler,
+            {
+                "records": records,
+                "count": total,
+                "downsampled": total > max_points,
+            },
+        )
 
     def _handle_deregister(self, handler: BaseHTTPRequestHandler):
         """Handle worker deregistration.
@@ -2881,13 +3066,18 @@ class DiLoCoServer:
         _send_json_response(handler, {"status": "ok", "num_workers": self.num_workers})
 
     def _handle_control_shutdown(self, handler, data):
-        """Gracefully shut down the server."""
+        """Gracefully shut down the server (webui "Shutdown server" button /
+        ``forgather diloco shutdown``).
+
+        Runs the coordinated drain: relay ``save_and_stop`` to all workers,
+        keep serving while they checkpoint + deregister (so no worker deadlocks
+        on the sync barrier), then save server state and stop. Done in a
+        background thread so the HTTP response goes out first and the server
+        keeps serving the workers' final syncs during the drain.
+        """
         logger.info("Shutdown requested via control endpoint")
-        if self.save_every_n_rounds > 0:
-            self.save_state()
         _send_json_response(handler, {"status": "ok", "message": "Shutting down"})
-        # Stop in a separate thread so the response can be sent first
-        threading.Thread(target=self.stop, daemon=True).start()
+        threading.Thread(target=self.graceful_shutdown, daemon=True).start()
 
     def _audit(self, event: str, **fields: Any) -> None:
         """Append a JSONL event to ``<output_dir>/diloco_audit.log``.
@@ -2957,6 +3147,9 @@ class DiLoCoServer:
     _BULK_PATHS = frozenset(
         {"/submit_pseudograd", "/submit_fragment_pseudograd", "/global_params"}
     )
+
+    #: Filename of the aggregate-stats JSONL log, under ``<output_dir>/logs/``.
+    _STATS_LOG_FILENAME = "diloco_server_stats.jsonl"
 
     #: Bind hosts that are not routable as a connect target. When the
     #: server binds one of these we can't put it in the advertised bulk
@@ -3147,6 +3340,8 @@ class DiLoCoServer:
                         server_ref._handle_get_queues(self)
                     elif path == "/work/queue":
                         server_ref._handle_get_queue(self)
+                    elif path == "/stats_history":
+                        server_ref._handle_stats_history(self)
                     else:
                         _send_json_response(
                             self, {"error": f"Unknown endpoint: {path}"}, 404
@@ -3238,15 +3433,13 @@ class DiLoCoServer:
             "known_workers": known_workers,
             "work_queues": work_queues,
             "dataset_lengths": dataset_lengths,
-            # Unified-stats lifetime counters + EMA state, and the stats log
-            # writer's resume position, so total tokens/flos/steps and the
-            # smoothed loss survive a restart and the log stream continues.
+            # Unified-stats lifetime counters + EMA state, so total
+            # tokens/flos/steps and the smoothed loss survive a restart, plus
+            # the run's log subdir so a resume continues logging into the same
+            # runs/<...> dir (JSONL appends, TensorBoard resumes via purge_step)
+            # rather than fragmenting across a new dir each restart.
             "stats": self._stats.state_dict(),
-            "stats_log": (
-                self._stats_writer.state_dict()
-                if self._stats_writer is not None
-                else self._stats_log_state
-            ),
+            "stats_run_subdir": self._stats_run_subdir,
         }
         torch.save(server_state, os.path.join(checkpoint_path, "server_state.pt"))
 
@@ -3398,14 +3591,20 @@ class DiLoCoServer:
             self._known_workers = server_state.get("known_workers", {}) or {}
 
             # Restore unified-stats lifetime state (counters, per-worker
-            # last-seen baselines, loss EMA) and the stats-log resume position.
-            # Absent on pre-feature checkpoints → start fresh.
+            # last-seen baselines, loss EMA). Absent on pre-feature
+            # checkpoints → start fresh. Reuse the prior run's log subdir for
+            # continuity (JSONL append + TensorBoard purge_step past the
+            # restored step); the throttle starts below total_steps so the
+            # first post-restart record writes.
             self._stats.load_state_dict(server_state.get("stats") or {})
-            self._stats_log_state = server_state.get("stats_log")
-            # Resume the log throttle at the restored total step so the next
-            # record advances past it, rather than re-writing a duplicate
-            # record at the step the log was already truncated to.
-            self._stats_log_step = self._stats.total_steps
+            self._resume_run_subdir = server_state.get("stats_run_subdir")
+            if self._resume_run_subdir:
+                self._tb_purge_step = self._stats.total_steps
+            self._stats_log_step = -1
+            # Seed the last-logged eval step from the restored aggregator so a
+            # resume doesn't re-log the same eval point that was already
+            # recorded before the checkpoint.
+            self._last_logged_eval_step = self._stats.snapshot().get("eval_step")
 
             # Restore work-unit dispatch state (#105): the per-(dataset_id,
             # shuffle_seed) issued/completed bitmaps and the per-dataset
@@ -3551,73 +3750,48 @@ class DiLoCoServer:
             self.bulk_port = None
 
     def run(self):
-        """Run the server (blocking). Call this from the main process."""
+        """Run the server (blocking). Call this from the main process.
+
+        Serves on a background thread and blocks the main thread until a
+        shutdown is requested (SIGTERM — how the forgather_server scheduler
+        stops a server job — SIGINT/Ctrl-C, or the ``/control/shutdown``
+        endpoint). All three converge on :meth:`graceful_shutdown`, which
+        relays ``save_and_stop`` to the workers and lets them drain (while the
+        background thread keeps serving so they don't deadlock on the sync
+        barrier) before saving state and stopping.
+        """
         if self._running:
             raise RuntimeError("Run cannot be called, if already running.")
-        handler_class = self._create_handler()
-        self._server = ThreadingHTTPServer((self.host, self.port), handler_class)
-        self._server.daemon_threads = True
-        self._wrap_tls()
-        self._running = True
-        self._started_at = time.time()
+        # Serve in a background thread (start() also logs the banner + brings
+        # up the health monitor and bulk listener). The main thread then
+        # blocks until shutdown so the coordinated drain can keep serving.
+        self.start()
 
-        mode = "async" if self.async_mode else "sync"
-        scheme = "https" if self.ssl_context is not None else "http"
-        auth_state = "bearer-required" if self.auth_token else "no-auth"
-        logger.info(
-            f"DiLoCo server starting on {scheme}://{self.host}:{self.port} "
-            f"(mode={mode}, auth={auth_state})"
-        )
-        logger.info(
-            f"Expecting {self.num_workers} worker(s), min_workers={self.min_workers}"
-        )
-        if self.heartbeat_timeout > 0:
-            logger.info(f"Health monitoring: timeout={self.heartbeat_timeout}s")
-        if self.async_mode and self.dn_buffer_size > 0:
-            logger.info(f"Delayed Nesterov: buffer_size={self.dn_buffer_size}")
-        if self.dylu_enabled:
-            logger.info(f"DyLU enabled: base_sync_every={self.dylu_base_sync_every}")
-
-        self._start_health_monitor()
-        self._start_bulk_listener()
-
-        # Flush state on SIGTERM (how the forgather_server scheduler stops a
-        # server job) as well as SIGINT (Ctrl-C), so a webui-triggered stop
-        # doesn't lose rounds / issued work-units since the last autosave
-        # (#105). The handler just raises KeyboardInterrupt to break
-        # serve_forever; the single save below in `finally` then covers every
-        # exit path. signal.signal only works on the main thread (run() is
-        # the blocking CLI entrypoint); fall back gracefully otherwise.
         import signal as _signal
 
-        def _raise_interrupt(signum, frame):
-            raise KeyboardInterrupt
+        def _request_shutdown(signum, frame):
+            # Don't tear down from the handler — just wake the main thread,
+            # which runs the coordinated shutdown while the server keeps
+            # serving the workers' final syncs.
+            self._shutdown_event.set()
 
-        prev_sigterm = None
+        prev_sigterm = prev_sigint = None
         try:
-            prev_sigterm = _signal.signal(_signal.SIGTERM, _raise_interrupt)
+            prev_sigterm = _signal.signal(_signal.SIGTERM, _request_shutdown)
+            prev_sigint = _signal.signal(_signal.SIGINT, _request_shutdown)
         except (ValueError, OSError):
-            pass  # not on the main thread — SIGTERM stays default
+            pass  # not on the main thread — signals stay default
 
         try:
-            self._server.serve_forever()
-        except KeyboardInterrupt:
-            logger.info("Server interrupted (signal) — shutting down")
+            self._shutdown_event.wait()
         finally:
-            if self.save_every_n_rounds > 0:
-                try:
-                    logger.info("Saving server state before shutdown...")
-                    self.save_state()
-                except Exception as exc:
-                    logger.error("Failed to save server state on shutdown: %s", exc)
             if prev_sigterm is not None:
                 _signal.signal(_signal.SIGTERM, prev_sigterm)
-            self._stop_health_monitor()
-            self._stop_bulk_listener()
-            self._running = False
-            self._server.server_close()
-            self._close_audit()
-            logger.info("Server stopped")
+            if prev_sigint is not None:
+                _signal.signal(_signal.SIGINT, prev_sigint)
+            # Coordinated drain + save + stop. No-ops if a /control/shutdown
+            # already ran it (re-entrancy guard); otherwise this is the run.
+            self.graceful_shutdown()
 
     def start(self):
         """Start the server in a background thread (non-blocking)."""
@@ -3665,8 +3839,11 @@ class DiLoCoServer:
                 logger.error("Failed to save server state on stop: %s", exc)
         self._stop_health_monitor()
         self._stop_bulk_listener()
-        if self._stats_writer is not None:
-            self._stats_writer.close()
+        if self._tb_writer is not None:
+            try:
+                self._tb_writer.close()
+            except Exception:
+                pass
         if self._server:
             self._server.shutdown()
             self._running = False
@@ -3675,6 +3852,77 @@ class DiLoCoServer:
             self._server.server_close()
             self._close_audit()
             logger.info("Server stopped")
+
+    def _relay_command_all(self, command: str) -> List[str]:
+        """Queue a trainer-control command (e.g. ``save_and_stop``) for every
+        registered worker; it rides each worker's next heartbeat. Returns the
+        targeted worker ids."""
+        with self._workers_lock:
+            targets = list(self._workers.keys())
+            for wid in targets:
+                self._workers[wid].pending_command = command
+        return targets
+
+    def graceful_shutdown(self, timeout: float = 300.0, poll: float = 0.5) -> None:
+        """Coordinated cluster shutdown.
+
+        Relays ``save_and_stop`` to every worker (delivered on their next
+        heartbeat), then keeps the server **serving** while they finish their
+        current step — including any in-flight sync round — checkpoint, and
+        deregister. Serving during the drain is essential: a worker parked on
+        the sync barrier would deadlock if the server stopped accepting
+        submissions. As each worker leaves, the barrier's expected set shrinks
+        (the normal worker-death path), so the remaining workers release. Once
+        all workers have drained (or ``timeout`` elapses), saves server state
+        and stops.
+
+        Idempotent and safe to call from any thread: the signal path (SIGTERM/
+        SIGINT in :meth:`run`) and the ``/control/shutdown`` endpoint both
+        funnel here, and the first caller wins.
+        """
+        with self._shutdown_lock:
+            first = not self._shutting_down
+            self._shutting_down = True
+        if not first:
+            # Another caller (e.g. a /control/shutdown daemon) is already
+            # draining. Block until it finishes rather than returning — a
+            # signal-triggered caller in run() would otherwise let the process
+            # exit and kill the in-flight drain before save_state completes.
+            self._shutdown_done.wait(timeout + 30.0)
+            return
+        try:
+            if self._running:
+                targets = self._relay_command_all("save_and_stop")
+                logger.info(
+                    "Graceful shutdown: relayed save_and_stop to %d worker(s): %s",
+                    len(targets),
+                    targets,
+                )
+                deadline = time.time() + timeout
+                while time.time() < deadline:
+                    with self._workers_lock:
+                        if not self._workers:
+                            break
+                    time.sleep(poll)
+                with self._workers_lock:
+                    remaining = list(self._workers.keys())
+                if remaining:
+                    logger.warning(
+                        "Graceful shutdown: %d worker(s) still registered after "
+                        "%.0fs (%s); saving and stopping anyway.",
+                        len(remaining),
+                        timeout,
+                        remaining,
+                    )
+                else:
+                    logger.info("Graceful shutdown: all workers drained.")
+        finally:
+            try:
+                if self._running:
+                    self.stop()
+            finally:
+                self._shutdown_done.set()
+                self._shutdown_event.set()
 
     @property
     def address(self) -> str:

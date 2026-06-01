@@ -356,6 +356,36 @@ class TestProxy:
         assert r.status_code == 403
         assert "registry" in r.json()["detail"].lower()
 
+    def test_stats_history_passes_through(self, client, no_local_servers, monkeypatch):
+        """The stats-history proxy forwards GET <base>/stats_history (with
+        max_points) and returns the upstream history verbatim."""
+        upstream_payload = {
+            "records": [{"global_step": 10, "train_loss": 3.0}],
+            "count": 1,
+            "downsampled": False,
+        }
+
+        def fake_handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/stats_history"
+            assert request.url.params.get("max_points") == "500"
+            return httpx.Response(200, json=upstream_payload)
+
+        _patch_async_client(monkeypatch, fake_handler)
+        r = client.get(
+            "/api/diloco/stats-history",
+            params={"base": "http://127.0.0.1:8512", "max_points": 500},
+        )
+        assert r.status_code == 200
+        assert r.json() == upstream_payload
+
+    def test_stats_history_refused_for_unknown_remote(self, client, no_local_servers):
+        r = client.get(
+            "/api/diloco/stats-history",
+            params={"base": "http://10.0.0.99:8512"},
+        )
+        assert r.status_code == 403
+        assert "registry" in r.json()["detail"].lower()
+
     def test_status_allowed_after_registering(
         self, client, no_local_servers, monkeypatch
     ):

@@ -694,6 +694,16 @@ class DiLoCoClient:
         """Get server status."""
         return self._request_json("GET", "/status")
 
+    def get_stats_history(self, max_points: int = 2000) -> dict:
+        """Get the server's aggregate-stats history (for plotting).
+
+        Returns ``{"records": [...], "count": int, "downsampled": bool}``;
+        ``records`` are the logged aggregate snapshots, downsampled to at most
+        ``max_points`` (latest always kept). Empty when the server has no
+        output_dir / nothing logged yet.
+        """
+        return self._request_json("GET", f"/stats_history?max_points={int(max_points)}")
+
     def relay_command(self, command: str, worker_id: Optional[str] = None) -> dict:
         """Queue a trainer-control command for one or all workers.
 

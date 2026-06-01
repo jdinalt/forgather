@@ -1163,6 +1163,27 @@ export interface DiLoCoAggregateStats {
   num_reporting?: number;
 }
 
+/** One logged aggregate-stats snapshot (a row in the server's stats log). */
+export interface DiLoCoStatsRecord {
+  global_step: number;
+  sync_round?: number;
+  train_loss?: number | null;
+  eval_loss?: number | null;
+  eval_step?: number | null;
+  total_tokens?: number;
+  tok_per_sec?: number;
+  mfu?: number;
+  [k: string]: number | null | undefined;
+}
+
+/** Response of ``GET /api/diloco/stats-history`` — the aggregate-stats history
+ *  for plotting, downsampled to at most ``max_points`` (latest kept). */
+export interface DiLoCoStatsHistory {
+  records: DiLoCoStatsRecord[];
+  count: number;
+  downsampled: boolean;
+}
+
 /** One entry in the upstream ``/known_workers`` roster. */
 export interface DiLoCoKnownWorker {
   worker_id: string;
@@ -2391,6 +2412,13 @@ export const api = {
       `/api/diloco/work-queue?base=${encodeURIComponent(base)}` +
         `&dataset_id=${encodeURIComponent(dataset_id)}` +
         `&shuffle_seed=${shuffle_seed}`,
+    ),
+  /** Aggregate-stats history (proxied from ``GET <base>/stats_history``) for
+   *  the loss-curve plot. Downsampled server-side to ``maxPoints``. */
+  diLoCoStatsHistory: (base: string, maxPoints = 2000) =>
+    fetchJson<DiLoCoStatsHistory>(
+      `/api/diloco/stats-history?base=${encodeURIComponent(base)}` +
+        `&max_points=${maxPoints}`,
     ),
   /** Proxy POST ``<base>/control/{action}`` with an opaque JSON body. */
   diLoCoServerControl: async (

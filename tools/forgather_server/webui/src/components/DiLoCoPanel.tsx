@@ -9,9 +9,14 @@ import {
   DiLoCoStatus,
   DiLoCoWorkerStatus,
   Job,
+  ServiceStatus,
 } from "../api";
 import { persistGet, persistSet } from "../persist";
+import { DiLoCoServerModal } from "./DiLoCoServerModal";
+import LossChart from "./LossChart";
 import { ModalBackdrop } from "./ModalBackdrop";
+import { ServicesPanel } from "./ServicesPanel";
+import { TensorBoardModal } from "./TensorBoardModal";
 
 const STORAGE_KEY = "forgather-diloco-state";
 
@@ -66,11 +71,19 @@ function relativeAge(epoch: number | undefined): string {
 export function DiLoCoPanel({
   pendingServerPick,
   onServerPickConsumed,
+  onEditService,
 }: {
   pendingServerPick?: { queueId: string; key: number } | null;
   onServerPickConsumed?: () => void;
+  /** Open the DiLoCo service in edit mode (routed to App's editingService,
+   *  which renders the DiLoCoServerModal edit modal). */
+  onEditService?: (s: ServiceStatus) => void;
 } = {}) {
   const [state, setState] = useState<PanelState>(loadState);
+  // Launch-a-local-server modal (same modal as Services → DiLoCo) and the
+  // TensorBoard launcher for the selected server's runs/ dir.
+  const [launchOpen, setLaunchOpen] = useState(false);
+  const [tbOpen, setTbOpen] = useState(false);
   useEffect(() => {
     persistSet(STORAGE_KEY, JSON.stringify(state));
   }, [state]);
@@ -166,6 +179,18 @@ export function DiLoCoPanel({
             <span className="muted"> — {selected.base_url}</span>
           )}
           <span style={{ flex: 1 }} />
+          {selected && (
+            <button
+              onClick={() => setTbOpen(true)}
+              title={
+                statusQuery.data?.save_dir
+                  ? `Open TensorBoard on ${statusQuery.data.save_dir}/runs`
+                  : "Open TensorBoard (pick a logdir)"
+              }
+            >
+              📊 TensorBoard
+            </button>
+          )}
           <label
             className="muted"
             style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
@@ -215,6 +240,8 @@ export function DiLoCoPanel({
             setState((s) => ({ ...s, selectedId: id }))
           }
           onAfterRegistryChange={() => serversQuery.refetch()}
+          onStartLocal={() => setLaunchOpen(true)}
+          onEditService={onEditService}
         />
 
         <div style={{ minHeight: 0, overflow: "auto" }}>
@@ -238,6 +265,31 @@ export function DiLoCoPanel({
           )}
         </div>
       </div>
+
+      {launchOpen && (
+        <DiLoCoServerModal
+          onClose={() => setLaunchOpen(false)}
+          onSubmitted={(queueId) => {
+            setLaunchOpen(false);
+            serversQuery.refetch();
+            // Select the just-launched local server (id is local:<queue_id>).
+            setState((s) => ({ ...s, selectedId: `local:${queueId}` }));
+          }}
+        />
+      )}
+
+      {tbOpen && selected && (
+        <TensorBoardModal
+          global
+          initialLogdir={
+            statusQuery.data?.save_dir
+              ? `${statusQuery.data.save_dir.replace(/\/+$/, "")}/runs`
+              : ""
+          }
+          initialWindowTitle={`DiLoCo ${selected.label}`}
+          onClose={() => setTbOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -253,6 +305,8 @@ interface ServersListProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onAfterRegistryChange: () => void;
+  onStartLocal: () => void;
+  onEditService?: (s: ServiceStatus) => void;
 }
 
 function ServersList({
@@ -262,6 +316,8 @@ function ServersList({
   selectedId,
   onSelect,
   onAfterRegistryChange,
+  onStartLocal,
+  onEditService,
 }: ServersListProps) {
   const [showAdd, setShowAdd] = useState(false);
   const local = servers.filter((s) => s.source === "local");
@@ -289,6 +345,12 @@ function ServersList({
       >
         <strong>Servers</strong>
         <span style={{ flex: 1 }} />
+        <button
+          onClick={onStartLocal}
+          title="Launch a local DiLoCo server (or save it as a service)"
+        >
+          + Start local…
+        </button>
         <button onClick={() => setShowAdd((v) => !v)}>
           {showAdd ? "Cancel" : "+ Add external…"}
         </button>
@@ -305,6 +367,32 @@ function ServersList({
       )}
 
       <div style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
+        {/* Defined services — start/stop toggle, edit, delete (same control
+            surface as Services → DiLoCo). A running service also appears in
+            the live groups below; this section is for managing the
+            definitions. */}
+        <div
+          className="muted"
+          style={{
+            fontSize: "smaller",
+            padding: "4px 8px",
+            borderBottom: "1px solid var(--border, #333)",
+          }}
+        >
+          Services
+        </div>
+        <ServicesPanel filterType="diloco" onEditService={onEditService} />
+
+        <div
+          className="muted"
+          style={{
+            fontSize: "smaller",
+            padding: "4px 8px",
+            borderBottom: "1px solid var(--border, #333)",
+          }}
+        >
+          Live
+        </div>
         {loading && <div className="muted" style={{ padding: 8 }}>Loading…</div>}
         {!!error && (
           <div className="muted" style={{ padding: 8, color: "tomato" }}>
@@ -616,6 +704,13 @@ function ServerDetail({
 
       {status && <AggregateStatsCard status={status} />}
 
+      {status && (
+        <LossHistoryCard
+          baseUrl={server.base_url}
+          refreshSeconds={refreshSeconds}
+        />
+      )}
+
       {!!statusError && (
         <div
           role="alert"
@@ -764,6 +859,80 @@ function AggregateStatsCard({ status }: { status: DiLoCoStatus }) {
             <Field key={k} label={k} value={v} />
           ))}
         </div>
+      </div>
+    </section>
+  );
+}
+
+/** Loss curves (train + eval) over training steps, fetched from the server's
+ *  aggregate-stats history and plotted with pan/zoom/reset. Renders nothing
+ *  until there's at least one loss point, so a run with no loss reported yet
+ *  shows no empty chart. */
+function LossHistoryCard({
+  baseUrl,
+  refreshSeconds,
+}: {
+  baseUrl: string;
+  refreshSeconds: number;
+}) {
+  const histQuery = useQuery({
+    queryKey: ["diloco-stats-history", baseUrl],
+    queryFn: () => api.diLoCoStatsHistory(baseUrl),
+    refetchInterval: refreshSeconds * 1000,
+  });
+  const records = histQuery.data?.records ?? [];
+  const hasLoss = records.some(
+    (r) => typeof r.train_loss === "number" || typeof r.eval_loss === "number",
+  );
+  // Surface an unreachable endpoint (e.g. a DiLoCo server predating
+  // /stats_history) instead of silently hiding — otherwise "no chart" is
+  // indistinguishable from "no data yet". Stay quiet on the normal
+  // no-loss-reported-yet case.
+  if (histQuery.isError) {
+    return (
+      <section
+        style={{
+          border: "1px solid var(--border, #3b4261)",
+          borderRadius: 6,
+          padding: "8px 14px",
+          fontSize: "smaller",
+        }}
+        className="muted"
+      >
+        Loss curves unavailable — the DiLoCo server doesn't expose{" "}
+        <code>/stats_history</code> (restart it to enable the loss plot).
+      </section>
+    );
+  }
+  if (!hasLoss) return null;
+
+  return (
+    <section
+      style={{
+        border: "1px solid var(--border, #3b4261)",
+        borderRadius: 6,
+        overflow: "hidden",
+      }}
+    >
+      <header
+        style={{
+          padding: "8px 14px",
+          background: "var(--bg-surface, #24283b)",
+          borderBottom: "1px solid var(--border, #3b4261)",
+          fontWeight: 600,
+          display: "flex",
+          gap: 8,
+          alignItems: "baseline",
+        }}
+      >
+        <span>Loss curves</span>
+        <span className="muted" style={{ fontWeight: 400, fontSize: "smaller" }}>
+          train / eval — scroll to zoom, drag to pan, double-click to reset
+          {histQuery.data?.downsampled ? " (downsampled)" : ""}
+        </span>
+      </header>
+      <div style={{ padding: 14 }}>
+        <LossChart records={records} />
       </div>
     </section>
   );
@@ -973,6 +1142,40 @@ async function waitForWorkersToStop(
     }
     await sleep(pollMs);
   }
+}
+
+/** Per-worker TensorBoard launcher: opens the TB modal on the worker's own
+ *  ``output_dir/runs``. Renders nothing when the worker never reported an
+ *  output_dir (older client / no correlated job), since there's no logdir. */
+function WorkerTBButton({
+  outputDir,
+  label,
+}: {
+  outputDir?: string | null;
+  label: string;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!outputDir) return null;
+  const logdir = `${outputDir.replace(/\/+$/, "")}/runs`;
+  return (
+    <>
+      <button
+        className="tiny"
+        onClick={() => setOpen(true)}
+        title={`Open TensorBoard on ${logdir}`}
+      >
+        📊 TB
+      </button>
+      {open && (
+        <TensorBoardModal
+          global
+          initialLogdir={logdir}
+          initialWindowTitle={`DiLoCo worker ${label}`}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
+  );
 }
 
 function WorkersSection({
@@ -1414,6 +1617,10 @@ function GroupCard({
       )}
 
       <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap" }}>
+        <WorkerTBButton
+          outputDir={canonical?.output_dir}
+          label={canonicalMember.workerId}
+        />
         <button
           className="tiny"
           onClick={() => controlMutation.mutate("save")}
@@ -1630,6 +1837,7 @@ function WorkerCard({
           misleading. */}
       {!compact && (
         <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap" }}>
+          <WorkerTBButton outputDir={workerStatus.output_dir} label={workerId} />
           <button
             className="tiny"
             onClick={() => controlMutation.mutate("save")}

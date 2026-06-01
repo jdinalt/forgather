@@ -28,6 +28,10 @@ interface PersistedAdHoc {
   numFragments: number;
   bf16Comm: boolean;
   fromCheckpoint: string;
+  // Optional label for this run's stats log dir (runs/<timestamp>_<runName>),
+  // holding the JSONL stream + TensorBoard events. Honored on a fresh start;
+  // a resume from checkpoint continues the prior run's dir regardless.
+  runName: string;
   saveEvery: number;
   saveTotalLimit: number;
   outerLr: number;
@@ -57,6 +61,7 @@ const DEFAULT_AD_HOC: PersistedAdHoc = {
   numFragments: 1,
   bf16Comm: true,
   fromCheckpoint: "",
+  runName: "",
   saveEvery: 10,
   saveTotalLimit: 3,
   outerLr: 0.7,
@@ -151,6 +156,7 @@ export function DiLoCoServerModal({
         numFragments: pickNum(editingService.args, "num_fragments", 1),
         bf16Comm: pickBool(editingService.args, "bf16_comm", true),
         fromCheckpoint: pickStr(editingService.args, "from_checkpoint", ""),
+        runName: pickStr(editingService.args, "run_name", ""),
         saveEvery: pickNum(editingService.args, "save_every", 10),
         saveTotalLimit: pickNum(editingService.args, "save_total_limit", 3),
         outerLr: pickNum(editingService.args, "outer_lr", 0.7),
@@ -179,6 +185,7 @@ export function DiLoCoServerModal({
   const [numFragments, setNumFragments] = useState(seed.numFragments);
   const [bf16Comm, setBf16Comm] = useState(seed.bf16Comm);
   const [fromCheckpoint, setFromCheckpoint] = useState(seed.fromCheckpoint);
+  const [runName, setRunName] = useState(seed.runName);
   const [saveEvery, setSaveEvery] = useState(seed.saveEvery);
   const [saveTotalLimit, setSaveTotalLimit] = useState(seed.saveTotalLimit);
   const [outerLr, setOuterLr] = useState(seed.outerLr);
@@ -260,6 +267,7 @@ export function DiLoCoServerModal({
     if (dnBufferSize > 0) args.dn_buffer_size = dnBufferSize;
     if (dylu) args.dylu_base_sync_every = dyluBase;
     if (trimmedFromCheckpoint) args.from_checkpoint = trimmedFromCheckpoint;
+    if (runName.trim()) args.run_name = runName.trim();
     // Security (issue #90). The scheduler interprets these:
     //   no_auth=true        → skip token resolution; pass --no-auth
     //   regen_token=true    → rotate the persisted per-port token
@@ -295,6 +303,7 @@ export function DiLoCoServerModal({
       numFragments,
       bf16Comm,
       fromCheckpoint: trimmedFromCheckpoint,
+      runName,
       saveEvery,
       saveTotalLimit,
       outerLr,
@@ -509,6 +518,25 @@ export function DiLoCoServerModal({
               <div className="muted" style={{ fontSize: "smaller" }}>
                 Overrides loading from the latest checkpoint in
                 output_dir.
+              </div>
+            </label>
+          </div>
+
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label>
+              Run name (optional)
+              <input
+                type="text"
+                value={runName}
+                onChange={(e) => setRunName(e.target.value)}
+                placeholder="e.g. lr0.7-2workers"
+                style={{ width: "100%" }}
+              />
+              <div className="muted" style={{ fontSize: "smaller" }}>
+                Labels this run's stats dir
+                (<code>output_dir/runs/&lt;timestamp&gt;_&lt;run-name&gt;</code>,
+                holding the JSONL stream + TensorBoard events). Defaults to the
+                hostname. A resume from checkpoint continues the prior run's dir.
               </div>
             </label>
           </div>

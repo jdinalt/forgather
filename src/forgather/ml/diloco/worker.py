@@ -812,16 +812,23 @@ class DiLoCoWorker:
             return cmd
 
     def set_stats(self, snap: Optional[dict]) -> None:
-        """Stash the latest unified-stats snapshot for the next heartbeat.
+        """Merge a unified-stats snapshot into the pending heartbeat payload.
 
-        Called by the DiLoCo callback (leader rank) from ``on_log`` /
-        ``on_evaluate``. Last-one-wins: if several logs fire between
-        heartbeats only the most recent snapshot ships, which is fine — the
-        cumulative counters it carries are absolute, so the server's deltas
-        stay correct even when intermediate snapshots are coalesced away.
+        Called by the DiLoCo callback (leader rank) from ``on_log`` and
+        ``on_evaluate``. The two write disjoint fields (train metrics vs
+        ``eval_loss``/``eval_step``), so we *merge* rather than replace: a
+        merge means an eval reported between heartbeats isn't clobbered by a
+        subsequent ``on_log`` (and vice versa) before the heartbeat ships it.
+        Per-key last-write-wins keeps the latest value; the whole dict is
+        cleared once consumed by a heartbeat.
         """
+        if not snap:
+            return
         with self._pending_stats_lock:
-            self._pending_stats = snap
+            if self._pending_stats is None:
+                self._pending_stats = dict(snap)
+            else:
+                self._pending_stats.update(snap)
 
     def _consume_stats(self) -> Optional[dict]:
         """Return and clear the pending stats snapshot (consume-once)."""
