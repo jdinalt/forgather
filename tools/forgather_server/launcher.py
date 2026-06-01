@@ -491,6 +491,7 @@ def spawn_diloco_server_process(
     no_auth: bool = False,
     quiet_tokens: bool = False,
     bulk_cleartext: bool = False,
+    run_name: Optional[str] = None,
     extra_env: Optional[Dict[str, str]] = None,
 ) -> LaunchResult:
     """Spawn a DiLoCo parameter server.
@@ -529,6 +530,7 @@ def spawn_diloco_server_process(
         no_auth=no_auth,
         quiet_tokens=quiet_tokens,
         bulk_cleartext=bulk_cleartext,
+        run_name=run_name,
     )
     return _spawn_subprocess(cmd, [], tty_log_path, extra_env)
 

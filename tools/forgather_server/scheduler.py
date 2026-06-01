@@ -621,6 +621,7 @@ def _build_diloco_server(item, gpu_indices, tty_path):
         # copied onto clients, Jupyter-style.
         quiet_tokens=demo_mode_enabled(),
         bulk_cleartext=bool(p.get("bulk_cleartext", False)),
+        run_name=(p.get("run_name") or None),
         tty_log_path=tty_path,
     )
 

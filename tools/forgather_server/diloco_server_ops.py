@@ -48,6 +48,7 @@ def build_diloco_server_command(
     no_auth: bool = False,
     quiet_tokens: bool = False,
     bulk_cleartext: bool = False,
+    run_name: Optional[str] = None,
 ) -> List[str]:
     """Build argv for ``forgather diloco server``.
 
@@ -132,4 +133,9 @@ def build_diloco_server_command(
     # ephemeral port and advertises it to workers over the control plane.
     if bulk_cleartext:
         cmd.append("--bulk-cleartext")
+    # Run label for the per-run stats log dir (runs/<ts>_<run_name>). The
+    # server sanitizes it to a safe path component; honored only on a fresh
+    # start (a resume continues the checkpoint's recorded run dir).
+    if run_name:
+        cmd.extend(["--run-name", str(run_name)])
     return cmd

@@ -132,6 +132,23 @@ def test_build_diloco_command_bulk_cleartext_flag():
     assert "--bulk-port" not in cmd
 
 
+def test_build_diloco_command_run_name():
+    """--run-name surfaces on the spawn argv when set, and is omitted when not."""
+    from forgather_server.diloco_server_ops import build_diloco_server_command
+
+    cmd = build_diloco_server_command(
+        output_dir="/tmp/out",
+        num_workers=1,
+        port=8512,
+        run_name="lr0.7-2w",
+    )
+    assert "--run-name" in cmd
+    assert cmd[cmd.index("--run-name") + 1] == "lr0.7-2w"
+
+    cmd2 = build_diloco_server_command(output_dir="/tmp/out", num_workers=1, port=8512)
+    assert "--run-name" not in cmd2
+
+
 def test_build_diloco_command_group_settings():
     """sync_every/num_fragments/bf16_comm (server-authoritative, adopted by
     workers from /info) surface on the spawn argv."""
