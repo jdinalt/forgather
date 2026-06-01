@@ -308,6 +308,8 @@ class FakeClient:
         dump=b"",
         tty_path=None,
         known=None,
+        cluster_self=None,
+        cluster_self_raises=False,
     ):
         self._servers = servers or []
         self._jobs = jobs or []
@@ -315,8 +317,16 @@ class FakeClient:
         self._dump = dump
         self._tty_path = tty_path
         self._known = known or {"workers": []}
+        self._cluster_self = cluster_self
+        self._cluster_self_raises = cluster_self_raises
         self.enqueued = []
         self.base = "http://fake-orch:8765"
+
+    def cluster_self(self):
+        # null in standalone mode, an identity dict in cluster mode.
+        if self._cluster_self_raises:
+            raise RuntimeError("cluster probe failed")
+        return self._cluster_self
 
     def diloco_known_workers(self, base):
         return self._known
@@ -597,6 +607,42 @@ class TestDatasetSource:
             orch.parse_dataset_source("bogus")
 
 
+class TestResolveDatasetSource:
+    """Mode-aware default for an unset --dataset (mirrors the webui)."""
+
+    def test_explicit_value_wins_even_in_cluster(self):
+        # An explicit --dataset is honored verbatim regardless of mode.
+        client = FakeClient(cluster_self={"node_id": "n1"})
+        assert (
+            orch.resolve_dataset_source(client, argparse.Namespace(dataset="local"))
+            is None
+        )
+        assert orch.resolve_dataset_source(
+            client, argparse.Namespace(dataset="server:user:x")
+        ) == {"kind": "server", "server_id": "user:x"}
+
+    def test_unset_defaults_to_auto_in_cluster(self, capsys):
+        client = FakeClient(cluster_self={"node_id": "n1", "is_master": True})
+        assert orch.resolve_dataset_source(
+            client, argparse.Namespace(dataset=None)
+        ) == {"kind": "auto"}
+        assert "auto (cluster routing)" in capsys.readouterr().out
+
+    def test_unset_defaults_to_local_in_standalone(self):
+        client = FakeClient(cluster_self=None)  # standalone
+        assert (
+            orch.resolve_dataset_source(client, argparse.Namespace(dataset=None))
+            is None
+        )
+
+    def test_probe_failure_falls_back_to_local(self):
+        client = FakeClient(cluster_self_raises=True)
+        assert (
+            orch.resolve_dataset_source(client, argparse.Namespace(dataset=None))
+            is None
+        )
+
+
 def _server_args(**over):
     base = dict(
         output_dir="/m",
@@ -696,6 +742,22 @@ class TestLaunchWorkers:
         assert client.enqueued[0]["job_params"]["diloco"]["worker_id"] == "w0"
         # unknown server passed through verbatim
         assert client.enqueued[0]["job_params"]["diloco"]["server_addr"] == "h:8512"
+
+    def test_unset_dataset_defaults_auto_in_cluster(self, patch_orchestrator):
+        # --dataset omitted + server in cluster mode → auto, like the webui.
+        client = patch_orchestrator(
+            FakeClient(servers=SERVERS, cluster_self={"node_id": "n1"})
+        )
+        rc = orch.launch_workers(_worker_args(worker_id="w0", dataset=None), {})
+        assert rc == 0
+        assert client.enqueued[0]["dataset_source"] == {"kind": "auto"}
+
+    def test_unset_dataset_defaults_local_in_standalone(self, patch_orchestrator):
+        # --dataset omitted + standalone server → local (no dataset_source).
+        client = patch_orchestrator(FakeClient(servers=SERVERS, cluster_self=None))
+        rc = orch.launch_workers(_worker_args(worker_id="w0", dataset=None), {})
+        assert rc == 0
+        assert client.enqueued[0]["dataset_source"] is None
 
     def test_missing_config_errors(self, patch_orchestrator, capsys):
         patch_orchestrator(FakeClient())

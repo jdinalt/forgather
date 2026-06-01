@@ -346,6 +346,17 @@ server, guaranteed unique), `--dataset auto|local|server:<id>`,
 honored; `--count > 1` requires the server (you can't foreground N). Add
 `--json` to `server` / `worker` to get the queue ids back for scripting.
 
+**`--dataset` default is mode-aware**, mirroring the webui Submit-job
+modal: when you don't pass `--dataset`, workers default to `auto` (cluster
+routing) if the forgather server is in cluster mode, otherwise `local` (the
+in-process loader). An explicit value always wins — pass `--dataset local`
+to force the in-process loader even in cluster mode. Note that `auto` does
+**not** fall back to local: if the cluster has no healthy dataset server for
+the requested dataset, the worker retries (server still warming up / none
+yet) or fails loudly (warmed up, none can serve it) rather than silently
+loading in-process — so a cluster running `auto` must actually have a
+dataset server.
+
 `--resume-workers` is a distinct mode: it re-launches every *stopped*
 worker the server's known-worker roster reports (deduped on the pipeline
 `_pp<N>` suffix), reusing each worker id so it resumes its checkpoint. It

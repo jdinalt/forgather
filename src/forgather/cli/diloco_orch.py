@@ -743,6 +743,36 @@ def parse_dataset_source(spec):
     )
 
 
+def resolve_dataset_source(client, args):
+    """Resolve ``--dataset`` into an ``EnqueueRequest.dataset_source`` dict.
+
+    An explicit ``--dataset`` value always wins (including ``local``, the
+    in-process loader). When ``--dataset`` is **unset**, the default is
+    mode-aware, matching the webui Submit modal: ``auto`` (cluster routing)
+    when the forgather server is in cluster mode, otherwise local (``None``).
+    The cluster probe is best-effort — a failed/empty probe falls back to
+    local — and the chosen default is logged so the picked source is visible
+    to scripts. Raises ``ValueError`` on an invalid explicit value.
+    """
+    spec = getattr(args, "dataset", None)
+    if spec:
+        # Explicit value wins verbatim (local / auto / server:<id>).
+        return parse_dataset_source(spec)
+    # Unset → mode-aware default. cluster_self() is null in standalone mode,
+    # an identity object in cluster mode (same gate the webui uses).
+    try:
+        in_cluster = client.cluster_self() is not None
+    except Exception:
+        in_cluster = False
+    if in_cluster:
+        print(
+            "dataset source: auto (cluster routing) — server is in cluster "
+            "mode; pass --dataset local to override"
+        )
+        return {"kind": "auto"}
+    return None
+
+
 def _resolve_worker_server(client, args):
     """Resolve the DiLoCo server the worker(s) connect to (a routable
     base_url when the forgather server knows it, else the verbatim
@@ -836,15 +866,14 @@ def launch_workers(args, dynamic_args):
             file=sys.stderr,
         )
         return 1
-    try:
-        dataset_source = parse_dataset_source(getattr(args, "dataset", None))
-    except ValueError as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-
     from .server_client import AuthRequired, ServerUnreachable
 
     client = _orchestrator(args)
+    try:
+        dataset_source = resolve_dataset_source(client, args)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     server = _resolve_worker_server(client, args)
     if server is None:
         return 1
@@ -915,13 +944,12 @@ def launch_resume(args, dynamic_args):
             file=sys.stderr,
         )
         return 1
+    client = _orchestrator(args)
     try:
-        dataset_source = parse_dataset_source(getattr(args, "dataset", None))
+        dataset_source = resolve_dataset_source(client, args)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-
-    client = _orchestrator(args)
     # Resume needs a server the forgather server knows — that's where the
     # known-worker roster comes from.
     explicit = getattr(args, "server", None)

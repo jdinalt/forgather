@@ -577,9 +577,11 @@ def create_diloco_parser(global_args):
         metavar="SOURCE",
         help=(
             "Dataset source for the worker job(s): 'auto' (cluster routing),\n"
-            "'local' (in-process loader, the default), or 'server:<id>' for a\n"
-            "specific dataset server (id from 'forgather diloco servers' or the\n"
-            "dataset-server registry)."
+            "'local' (in-process loader), or 'server:<id>' for a specific\n"
+            "dataset server (id from 'forgather diloco servers' or the\n"
+            "dataset-server registry). When unset, the default is mode-aware\n"
+            "(matching the webui): 'auto' if the forgather server is in\n"
+            "cluster mode, otherwise 'local'."
         ),
     )
     worker_parser.add_argument(
