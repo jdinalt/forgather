@@ -1,11 +1,20 @@
--- extends "projects/tinyv2.yaml"
+-- extends "projects/small.yaml"
 
-## Non-DiLoCo baseline: same tinyv2 hyperparameters as the DiLoCo
-## configs, for comparison. Lets you see how a vanilla single-node
-## run scores against an N-worker DiLoCo run on the same setup.
+## Non-DiLoCo baseline / control. Same "small" base as default.yaml
+## (small Llama model, Fineweb-Edu Packed dataset, DDP trainer, and the
+## WSD schedule below), but with DiLoCo left OFF — so you can compare a
+## vanilla single-host run against an N-worker DiLoCo run on identical
+## settings. ``enable_diloco`` defaults to False upstream; we don't set it.
 
 [config_metadata]
     == super()
     -- set ns.config_name = "Baseline"
-    -- set ns.config_description = "Tiny Experiment baseline, for comparison"
+    -- set ns.config_description = "Non-DiLoCo control (small Llama + Fineweb-Edu), for comparison"
     -- set ns.log_name = "baseline"
+
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_scheduler
+    warmup_steps: {{ ns.warmup_steps }}
+    min_lr: {{ ns.min_lr | toyaml }}
+    decay_steps: {{ ns.annealing_steps }}
+    decay_start_step: {{ ns.decay_start_step }}

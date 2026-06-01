@@ -172,6 +172,24 @@ launched through the Forgather server, all of this is configured for you.
 
 ## Walkthrough
 
+### Configurations in this project
+
+`forgather ls` lists three configs, all built on the same "small" base (small
+Llama model, DDP trainer, WSD schedule) so they're directly comparable:
+
+| Config | DiLoCo | Dataset | Use it for |
+|---|---|---|---|
+| `default.yaml` | on | Fineweb-Edu (`smollm-corpus`, ~1 TB) | the full DiLoCo run (this walkthrough) |
+| `tiny.yaml` | on | **Tiny Stories** (~50 GB) | trying the demo **without** caching ~1 TB |
+| `baseline.yaml` | off | Fineweb-Edu | a non-DiLoCo control to compare against |
+
+The walkthrough below uses `default.yaml` (the project default, so no `-t`
+needed). **To run the demo without the giant download, substitute
+`-t tiny.yaml`** wherever a worker is launched — it's identical except the
+dataset is Tiny Stories (cache it in [step 4](#4-cache-and-index-the-datasets)).
+`baseline.yaml` is the same setup with DiLoCo turned off, for an apples-to-apples
+comparison of a vanilla single-host run vs. an N-worker DiLoCo run.
+
 ### 1. Construct the Model (first time only)
 
 The DiLoCo server needs a model with initialized weights to seed the global
@@ -254,6 +272,13 @@ policy:
 Work-unit dispatch streams rows from a dataset that is already cached and indexed on
 at least one cluster member. If you've loaded these datasets through another project,
 they're already cached and you can skip this step.
+
+> **Just want to try the demo?** Use `tiny.yaml`, which trains on **Tiny Stories**
+> (~50 GB) instead of Fineweb-Edu (~1 TB) — everything else is identical. Cache
+> only Tiny Stories (the first `fast_load_iterable_dataset(...)` call below, or
+> `forgather -p ../../datasets/roneneldan/ -t fast-iter-packed.yaml dataset
+> --target train_dataset_split`), then pass `-t tiny.yaml` when launching workers
+> in [step 6](#6-start-the-workers).
 
 Check what's in the cache:
 
@@ -358,6 +383,9 @@ work-unit dispatch:
 ```bash
 # torch.compile is disabled here for faster startup; for a real run, leave it enabled.
 forgather diloco worker --count 2 --compile no
+
+# Or, to run on Tiny Stories instead of the ~1 TB Fineweb-Edu dataset:
+forgather -t tiny.yaml diloco worker --count 2 --compile no
 ```
 
 `--compile no` is a dynamic/template argument from the training config (the same ones
