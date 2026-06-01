@@ -728,6 +728,53 @@ gap is already growing at the end of these curves). Plots, the parsed
 `assets/sweep_curves.csv`, and the analysis script
 [`analysis/plot_sweep.py`](analysis/plot_sweep.py) are in the repo.
 
+### Background: why this happens, and where to read more
+
+None of this is new — these toy-scale runs replicate effects that are
+well-established in the local-SGD literature. The pointers below map each
+observation to the work that explains (or first reported) it.
+
+- **Flat vs. sharp minima → generalization.** The framing that wide/flat optima
+  generalize better than sharp ones, and that small-batch noise finds the flat
+  ones, is from Keskar et al., *On Large-Batch Training for Deep Learning:
+  Generalization Gap and Sharp Minima* (ICLR 2017,
+  [arXiv:1609.04836](https://arxiv.org/abs/1609.04836)).
+
+- **Why local SGD generalizes better — and when.** Gu, Lyu, Huang & Arora, *Why
+  (and When) does Local SGD Generalize Better than SGD?* (ICLR 2023,
+  [arXiv:2303.01215](https://arxiv.org/abs/2303.01215)) show that periodic
+  averaging induces a drift that accelerates sharpness reduction — **but only
+  with a small learning rate and a long enough run.** That conditional is
+  exactly our curve: at 1× DiLoCo trailed; the win only emerged in the **2×
+  end-game**. See also Lin, Stich, Patel & Jaggi, *Don't Use Large Mini-Batches,
+  Use Local SGD* (ICLR 2020, [arXiv:1808.07217](https://arxiv.org/abs/1808.07217)),
+  which reports the same generalization edge over large-batch training.
+
+- **The single-worker result is Lookahead / weight averaging.** A 1-worker
+  DiLoCo step — `H` inner steps, then a slow outer update — is precisely the
+  Lookahead optimizer of Zhang, Lucas, Ba & Hinton, *Lookahead Optimizer: k
+  steps forward, 1 step back* (NeurIPS 2019,
+  [arXiv:1907.08610](https://arxiv.org/abs/1907.08610)), which is shown to
+  amplify SGD's implicit regularization at negligible cost. Stochastic Weight
+  Averaging — Izmailov et al., *Averaging Weights Leads to Wider Optima and
+  Better Generalization* ([arXiv:1803.05407](https://arxiv.org/abs/1803.05407)) —
+  is the same "averaging finds flatter optima" idea. Both support the practical
+  reading: a DiLoCo-style outer step is worth folding into ordinary single-node
+  training, no parameter server required.
+
+- **The outer optimizer is SlowMo.** DiLoCo's outer step (Nesterov momentum on
+  the pseudo-gradient) is the slow-momentum update of Wang, Tantia, Ballas &
+  Rabbat, *SlowMo* (ICLR 2020, [arXiv:1910.00643](https://arxiv.org/abs/1910.00643)),
+  which likewise improves both optimization and generalization.
+
+- **DiLoCo itself, and at scale.** The method: Douillard et al., *DiLoCo:
+  Distributed Low-Communication Training of Language Models*
+  ([arXiv:2311.08105](https://arxiv.org/abs/2311.08105)). At real scale the
+  overtake we see in miniature is corroborated by Charles et al., *Scaling Laws
+  for DiLoCo* (2025, [arXiv:2503.09799](https://arxiv.org/abs/2503.09799)), which
+  finds DiLoCo can beat data-parallel training for a fixed token budget and
+  improves downstream generalization with scale.
+
 ---
 
 ## Going further
