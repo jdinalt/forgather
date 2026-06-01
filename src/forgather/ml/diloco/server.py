@@ -750,6 +750,13 @@ class DiLoCoServer:
         self._started_at: Optional[float] = None
         self._dirty = False
 
+        # Coordinated graceful shutdown (relay save_and_stop to workers, let
+        # them drain while we keep serving, then save + stop). Re-entrancy
+        # guard so the signal path and /control/shutdown converge on one run.
+        self._shutdown_lock = threading.Lock()
+        self._shutting_down = False
+        self._shutdown_event = threading.Event()
+
     @staticmethod
     def _find_available_port(start_port: int = 8512, max_attempts: int = 100) -> int:
         """Find an available port.
@@ -3048,13 +3055,18 @@ class DiLoCoServer:
         _send_json_response(handler, {"status": "ok", "num_workers": self.num_workers})
 
     def _handle_control_shutdown(self, handler, data):
-        """Gracefully shut down the server."""
+        """Gracefully shut down the server (webui "Shutdown server" button /
+        ``forgather diloco shutdown``).
+
+        Runs the coordinated drain: relay ``save_and_stop`` to all workers,
+        keep serving while they checkpoint + deregister (so no worker deadlocks
+        on the sync barrier), then save server state and stop. Done in a
+        background thread so the HTTP response goes out first and the server
+        keeps serving the workers' final syncs during the drain.
+        """
         logger.info("Shutdown requested via control endpoint")
-        if self.save_every_n_rounds > 0:
-            self.save_state()
         _send_json_response(handler, {"status": "ok", "message": "Shutting down"})
-        # Stop in a separate thread so the response can be sent first
-        threading.Thread(target=self.stop, daemon=True).start()
+        threading.Thread(target=self.graceful_shutdown, daemon=True).start()
 
     def _audit(self, event: str, **fields: Any) -> None:
         """Append a JSONL event to ``<output_dir>/diloco_audit.log``.
@@ -3723,73 +3735,48 @@ class DiLoCoServer:
             self.bulk_port = None
 
     def run(self):
-        """Run the server (blocking). Call this from the main process."""
+        """Run the server (blocking). Call this from the main process.
+
+        Serves on a background thread and blocks the main thread until a
+        shutdown is requested (SIGTERM — how the forgather_server scheduler
+        stops a server job — SIGINT/Ctrl-C, or the ``/control/shutdown``
+        endpoint). All three converge on :meth:`graceful_shutdown`, which
+        relays ``save_and_stop`` to the workers and lets them drain (while the
+        background thread keeps serving so they don't deadlock on the sync
+        barrier) before saving state and stopping.
+        """
         if self._running:
             raise RuntimeError("Run cannot be called, if already running.")
-        handler_class = self._create_handler()
-        self._server = ThreadingHTTPServer((self.host, self.port), handler_class)
-        self._server.daemon_threads = True
-        self._wrap_tls()
-        self._running = True
-        self._started_at = time.time()
+        # Serve in a background thread (start() also logs the banner + brings
+        # up the health monitor and bulk listener). The main thread then
+        # blocks until shutdown so the coordinated drain can keep serving.
+        self.start()
 
-        mode = "async" if self.async_mode else "sync"
-        scheme = "https" if self.ssl_context is not None else "http"
-        auth_state = "bearer-required" if self.auth_token else "no-auth"
-        logger.info(
-            f"DiLoCo server starting on {scheme}://{self.host}:{self.port} "
-            f"(mode={mode}, auth={auth_state})"
-        )
-        logger.info(
-            f"Expecting {self.num_workers} worker(s), min_workers={self.min_workers}"
-        )
-        if self.heartbeat_timeout > 0:
-            logger.info(f"Health monitoring: timeout={self.heartbeat_timeout}s")
-        if self.async_mode and self.dn_buffer_size > 0:
-            logger.info(f"Delayed Nesterov: buffer_size={self.dn_buffer_size}")
-        if self.dylu_enabled:
-            logger.info(f"DyLU enabled: base_sync_every={self.dylu_base_sync_every}")
-
-        self._start_health_monitor()
-        self._start_bulk_listener()
-
-        # Flush state on SIGTERM (how the forgather_server scheduler stops a
-        # server job) as well as SIGINT (Ctrl-C), so a webui-triggered stop
-        # doesn't lose rounds / issued work-units since the last autosave
-        # (#105). The handler just raises KeyboardInterrupt to break
-        # serve_forever; the single save below in `finally` then covers every
-        # exit path. signal.signal only works on the main thread (run() is
-        # the blocking CLI entrypoint); fall back gracefully otherwise.
         import signal as _signal
 
-        def _raise_interrupt(signum, frame):
-            raise KeyboardInterrupt
+        def _request_shutdown(signum, frame):
+            # Don't tear down from the handler — just wake the main thread,
+            # which runs the coordinated shutdown while the server keeps
+            # serving the workers' final syncs.
+            self._shutdown_event.set()
 
-        prev_sigterm = None
+        prev_sigterm = prev_sigint = None
         try:
-            prev_sigterm = _signal.signal(_signal.SIGTERM, _raise_interrupt)
+            prev_sigterm = _signal.signal(_signal.SIGTERM, _request_shutdown)
+            prev_sigint = _signal.signal(_signal.SIGINT, _request_shutdown)
         except (ValueError, OSError):
-            pass  # not on the main thread — SIGTERM stays default
+            pass  # not on the main thread — signals stay default
 
         try:
-            self._server.serve_forever()
-        except KeyboardInterrupt:
-            logger.info("Server interrupted (signal) — shutting down")
+            self._shutdown_event.wait()
         finally:
-            if self.save_every_n_rounds > 0:
-                try:
-                    logger.info("Saving server state before shutdown...")
-                    self.save_state()
-                except Exception as exc:
-                    logger.error("Failed to save server state on shutdown: %s", exc)
             if prev_sigterm is not None:
                 _signal.signal(_signal.SIGTERM, prev_sigterm)
-            self._stop_health_monitor()
-            self._stop_bulk_listener()
-            self._running = False
-            self._server.server_close()
-            self._close_audit()
-            logger.info("Server stopped")
+            if prev_sigint is not None:
+                _signal.signal(_signal.SIGINT, prev_sigint)
+            # Coordinated drain + save + stop. No-ops if a /control/shutdown
+            # already ran it (re-entrancy guard); otherwise this is the run.
+            self.graceful_shutdown()
 
     def start(self):
         """Start the server in a background thread (non-blocking)."""
@@ -3850,6 +3837,70 @@ class DiLoCoServer:
             self._server.server_close()
             self._close_audit()
             logger.info("Server stopped")
+
+    def _relay_command_all(self, command: str) -> List[str]:
+        """Queue a trainer-control command (e.g. ``save_and_stop``) for every
+        registered worker; it rides each worker's next heartbeat. Returns the
+        targeted worker ids."""
+        with self._workers_lock:
+            targets = list(self._workers.keys())
+            for wid in targets:
+                self._workers[wid].pending_command = command
+        return targets
+
+    def graceful_shutdown(self, timeout: float = 300.0, poll: float = 0.5) -> None:
+        """Coordinated cluster shutdown.
+
+        Relays ``save_and_stop`` to every worker (delivered on their next
+        heartbeat), then keeps the server **serving** while they finish their
+        current step — including any in-flight sync round — checkpoint, and
+        deregister. Serving during the drain is essential: a worker parked on
+        the sync barrier would deadlock if the server stopped accepting
+        submissions. As each worker leaves, the barrier's expected set shrinks
+        (the normal worker-death path), so the remaining workers release. Once
+        all workers have drained (or ``timeout`` elapses), saves server state
+        and stops.
+
+        Idempotent and safe to call from any thread: the signal path (SIGTERM/
+        SIGINT in :meth:`run`) and the ``/control/shutdown`` endpoint both
+        funnel here, and the first caller wins.
+        """
+        with self._shutdown_lock:
+            if self._shutting_down:
+                return
+            self._shutting_down = True
+        try:
+            if self._running:
+                targets = self._relay_command_all("save_and_stop")
+                logger.info(
+                    "Graceful shutdown: relayed save_and_stop to %d worker(s): %s",
+                    len(targets),
+                    targets,
+                )
+                deadline = time.time() + timeout
+                while time.time() < deadline:
+                    with self._workers_lock:
+                        if not self._workers:
+                            break
+                    time.sleep(poll)
+                with self._workers_lock:
+                    remaining = list(self._workers.keys())
+                if remaining:
+                    logger.warning(
+                        "Graceful shutdown: %d worker(s) still registered after "
+                        "%.0fs (%s); saving and stopping anyway.",
+                        len(remaining),
+                        timeout,
+                        remaining,
+                    )
+                else:
+                    logger.info("Graceful shutdown: all workers drained.")
+        finally:
+            try:
+                if self._running:
+                    self.stop()
+            finally:
+                self._shutdown_event.set()
 
     @property
     def address(self) -> str:

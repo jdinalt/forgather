@@ -1233,6 +1233,14 @@ on the right:
 5. **Work-unit dispatch**: per-queue heatmap (K cells, three states:
    available / issued / completed), with per-worker counters.
 
+The **same coordinated sequence** runs server-side for every other way a
+server is stopped — `forgather diloco shutdown`, a SIGTERM from the scheduler
+(stopping/disabling a DiLoCo service, or the Views → DiLoCo run/stop toggle),
+and Ctrl-C on a foreground `forgather diloco server`. All of them relay
+`save_and_stop` to the workers and let them drain (the server keeps serving so
+no worker deadlocks at the barrier) before saving and exiting, rather than
+hard-killing the process. Only `force-kill` (SIGKILL) skips this.
+
 An earlier version of the server shipped its own Alpine.js dashboard
 at `/dashboard`; that page was removed when the webui panel took
 over. The control endpoints below are unchanged and are what the
@@ -1247,7 +1255,7 @@ webui's Control card talks to under the hood.
 | `POST /control/update_optimizer` | `{"lr": 0.5, "momentum": 0.8}` | Update optimizer hyperparameters |
 | `POST /control/update_num_workers` | `{"num_workers": 4}` | Change expected worker count |
 | `POST /control/command` | `{"command": "save_and_stop", "worker_id": "w0"}` | Relay a trainer-control command to a worker (`worker_id` omitted = all) |
-| `POST /control/shutdown` | `{}` | Save state (if configured) and stop |
+| `POST /control/shutdown` | `{}` | Coordinated shutdown: relay `save_and_stop` to all workers, keep serving while they drain (so none deadlocks on the sync barrier), then save state and stop |
 
 All endpoints return `{"status": "ok", ...}` on success or `{"error": "..."}` on
 failure.

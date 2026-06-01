@@ -477,6 +477,61 @@ class TestUnifiedStats:
         )
         assert resumed._resume_run_subdir == subdir
 
+    def test_graceful_shutdown_relays_savestop_and_drains(self, tmp_path):
+        # Coordinated shutdown: relay save_and_stop to all workers, keep
+        # serving while they drain (no deadlock), then save + stop.
+        import threading
+
+        sd = _make_state_dict()
+        ckpt = make_initial_checkpoint(sd, tmp_path)
+        server = DiLoCoServer(
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=2,
+            port=0,
+            outer_optimizer_factory=lambda p: torch.optim.SGD(p, lr=1.0),
+        )
+        server.start()
+        time.sleep(0.2)
+        try:
+            c0 = DiLoCoClient(f"localhost:{server.port}", timeout=10)
+            c1 = DiLoCoClient(f"localhost:{server.port}", timeout=10)
+            c0.register("worker_0")
+            c1.register("worker_1")
+
+            t = threading.Thread(
+                target=lambda: server.graceful_shutdown(timeout=10, poll=0.1),
+                daemon=True,
+            )
+            t.start()
+
+            # save_and_stop is relayed to every worker...
+            deadline = time.time() + 5.0
+            while time.time() < deadline and not (
+                server._workers
+                and all(
+                    w.pending_command == "save_and_stop"
+                    for w in server._workers.values()
+                )
+            ):
+                time.sleep(0.05)
+            assert server._workers, "workers drained before the relay was observed"
+            assert all(
+                w.pending_command == "save_and_stop" for w in server._workers.values()
+            )
+            # ...and the server keeps serving while they drain (no deadlock).
+            assert server._running
+
+            # Workers finish and deregister; the drain then completes and the
+            # server saves + stops on its own.
+            c0.deregister("worker_0")
+            c1.deregister("worker_1")
+            t.join(timeout=10)
+            assert not server._running
+        finally:
+            if server._running:
+                server.stop()
+
     def test_concurrent_heartbeat_stats_do_not_race(self, two_worker_server):
         # Regression: two workers heartbeating with stats at the same instant
         # must not race in the log writer (the old exclusive-create open could

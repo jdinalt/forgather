@@ -319,6 +319,18 @@ The server uses `ThreadingHTTPServer` which spawns a new daemon thread for each
 incoming HTTP request. This is required because in synchronous mode, multiple
 worker requests block concurrently waiting at the barrier.
 
+`run()` serves on a background thread and blocks the main thread on an event;
+SIGTERM/SIGINT just set that event. All stop paths — the signal handlers,
+`/control/shutdown`, and `forgather diloco shutdown` — converge on
+`graceful_shutdown()`, which relays `save_and_stop` to every worker, then keeps
+serving while they finish (including any in-flight sync round), checkpoint, and
+deregister. Serving during the drain is essential: a worker parked on the sync
+barrier would deadlock if submissions stopped being accepted; as each worker
+leaves, the barrier's expected set shrinks via the normal worker-death path.
+Once the roster is empty (or a timeout elapses) it saves state and stops. A
+re-entrancy guard makes it idempotent so the signal and endpoint paths converge
+on one run.
+
 **Critical locking:**
 
 | Lock | Protects | Used by |
