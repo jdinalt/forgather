@@ -878,9 +878,15 @@ Aggregation rules:
   uses a stronger decay than the weak-EMA `eval_loss`.
 
 When `output_dir` is set the server also appends each aggregate snapshot to
-`<output_dir>/logs/diloco_server_stats.json` via the trainer's `JsonLogWriter`
-(throttled to one record per advance in total steps), which truncates to the
-checkpoint step and resumes — its position is the persisted `stats_log` key.
+`<output_dir>/logs/diloco_server_stats.jsonl` (one JSON object per line,
+throttled to one record per advance in total steps). It is append-only and
+deliberately not the trainer's JSON-array `JsonLogWriter`: a long-running
+server is restarted often and reuses its `output_dir`, and append-only JSONL
+is robust to a pre-existing log (no exclusive-create race, no truncate-to-empty
+on resume) where the array format's bracket/close management was not. Writes
+are guarded by a lock (`_handle_heartbeat` runs on concurrent threads), and the
+first write of each process truncates a stale log so a run starts a clean
+stream; the log is not checkpoint-coupled.
 
 ---
 
@@ -899,7 +905,6 @@ checkpoint step and resumes — its position is the persisted `stats_log` key.
     "total_submissions": int,
     "known_workers": Dict[str, {output_dir, last_registered}],
     "stats": StatsAggregator.state_dict(),   # lifetime counters + loss EMA
-    "stats_log": JsonLogWriter.state_dict(),  # stats-log resume position
 }
 ```
 

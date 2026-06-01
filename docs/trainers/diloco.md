@@ -520,11 +520,11 @@ history. Live gauges are recomputed from the workers currently reporting and a
 worker the server evicts drops out of them.
 
 When the server has an `output_dir`, it also writes the aggregate stream to
-`<output_dir>/logs/diloco_server_stats.json` (the same JSON-log format a
-worker uses), truncating to the checkpoint step and continuing on resume. The
-webui DiLoCo server view plots train/eval loss from this history (scroll to
-zoom, drag to pan, double-click to reset); it's served via
-`GET /stats_history` (proxied as `GET /api/diloco/stats-history`).
+`<output_dir>/logs/diloco_server_stats.jsonl` (one JSON record per line,
+append-only; each server process starts a fresh stream). The webui DiLoCo
+server view plots train/eval loss from this history (scroll to zoom, drag to
+pan, double-click to reset); it's served via `GET /stats_history` (proxied as
+`GET /api/diloco/stats-history`).
 
 Per-worker eval curves don't track precisely between syncs — for that detail,
 point TensorBoard at an individual worker's `output_dir`. The server's

@@ -720,8 +720,11 @@ class DiLoCoServer:
         from .stats import StatsAggregator
 
         self._stats = StatsAggregator()
-        self._stats_writer = None  # JsonLogWriter, opened lazily once running
-        self._stats_log_state = None  # pending writer resume state (from load_state)
+        # Stats log (JSONL, append-only). _maybe_log_stats runs on concurrent
+        # heartbeat threads, so its file IO + the step/eval bookkeeping are
+        # guarded by this lock.
+        self._stats_log_lock = threading.Lock()
+        self._stats_log_started = False  # has this process written/truncated yet
         self._stats_log_step = -1  # last total_steps a stats record was logged at
         self._last_logged_eval_step = None  # eval_step of the last eval logged
 
@@ -2183,80 +2186,74 @@ class DiLoCoServer:
             self._maybe_log_stats()
 
     def _maybe_log_stats(self):
-        """Append one aggregate-stats record to the server's JSON log stream
-        when training has advanced (keyed by total optimizer steps).
+        """Append one aggregate-stats record to the server's stats log when
+        training has advanced (keyed by total optimizer steps).
 
-        Mirrors a worker's JSON logger: the file is opened lazily (only when
-        ``output_dir`` is set), and on a checkpoint resume it truncates to the
-        restored step and continues appending — the resume state is loaded
-        from the server checkpoint in :meth:`load_state`. Best-effort: a
-        logging failure must never break the heartbeat path.
+        The log is **JSONL** (one JSON object per line), opened in append mode
+        — deliberately not the JSON-array writer the trainer uses. A
+        long-running server is restarted often and reuses its ``output_dir``;
+        append-only is robust to a pre-existing log from any prior run (no
+        exclusive-create FileExistsError, no truncate-to-empty), whereas the
+        array format needs bracket/close management that proved fragile across
+        restarts. The first write of each process truncates a stale log so a
+        run starts a clean stream. Best-effort: a logging failure must never
+        break the heartbeat path.
         """
         if not self.output_dir:
             return
-        snap = self._stats.snapshot()
-        steps = int(snap.get("total_steps", 0) or 0)
-        if steps <= self._stats_log_step:
-            return
-        try:
-            if self._stats_writer is None:
-                from forgather.ml.trainer.callbacks.json_log_writer import (
-                    JsonLogWriter,
-                )
-
-                self._stats_writer = JsonLogWriter(self._STATS_LOG_FILENAME)
-                state = self._stats_log_state
-                # No writer-resume state in the checkpoint (fresh start, or a
-                # checkpoint predating this feature) but a stats log may
-                # already exist from a previous run in this output_dir. Route
-                # through the resume/truncate path (opens "w") instead of the
-                # fresh exclusive-create open ("x"), which would FileExistsError
-                # and silently disable logging for the life of the process.
-                # Keeps any prior records up to the current step, then appends.
-                if not state:
-                    existing = self._stats_log_path()
-                    if existing and os.path.isfile(existing):
-                        state = {
-                            "log_path": existing,
-                            "last_step": self._stats.total_steps,
-                        }
-                if state:
-                    self._stats_writer.load_state_dict(state)
-                self._stats_writer.open(os.path.dirname(self._stats_log_path()))
-            data = {k: v for k, v in snap.items() if k != "total_steps"}
-            data["sync_round"] = self._sync_round
-            # Emit eval_loss only on records where a *new* eval arrived (the
-            # eval_step advanced); null it otherwise. eval is sparse relative
-            # to the per-step stats stream, so repeating the held EMA value on
-            # every record would draw a flat staircase — nulling between evals
-            # lets the plot connect the real eval points into a curve (the
-            # chart spans gaps), matching a worker's TensorBoard eval line.
-            eval_step = snap.get("eval_step")
-            if eval_step is None or eval_step == self._last_logged_eval_step:
-                data["eval_loss"] = None
-            else:
-                self._last_logged_eval_step = eval_step
-            self._stats_writer.write_record(global_step=steps, epoch=0.0, data=data)
-            self._stats_log_step = steps
-        except Exception as e:  # pragma: no cover - logging must not break HB
-            logger.warning("Failed to write server stats log: %s", e)
+        # Serialize concurrent heartbeat threads: the step check, the
+        # truncate-once flag, and the append must be atomic or two workers
+        # race on the same file.
+        with self._stats_log_lock:
+            snap = self._stats.snapshot()
+            steps = int(snap.get("total_steps", 0) or 0)
+            if steps <= self._stats_log_step:
+                return
+            try:
+                path = self._stats_log_path()
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                data = {k: v for k, v in snap.items() if k != "total_steps"}
+                data["global_step"] = steps
+                data["sync_round"] = self._sync_round
+                data["timestamp"] = time.time()
+                # Emit eval_loss only on records where a *new* eval arrived
+                # (the eval_step advanced); null it otherwise. eval is sparse
+                # relative to the per-step stats stream, so repeating the held
+                # EMA value on every record would draw a flat staircase —
+                # nulling between evals lets the plot connect the real eval
+                # points into a curve (the chart spans gaps), matching a
+                # worker's TensorBoard eval line.
+                eval_step = snap.get("eval_step")
+                if eval_step is None or eval_step == self._last_logged_eval_step:
+                    data["eval_loss"] = None
+                else:
+                    self._last_logged_eval_step = eval_step
+                # Truncate a stale log on the first write of this process;
+                # append thereafter.
+                mode = "a" if self._stats_log_started else "w"
+                with open(path, mode) as f:
+                    f.write(json.dumps(data) + "\n")
+                self._stats_log_started = True
+                self._stats_log_step = steps
+            except Exception as e:  # pragma: no cover - must not break HB
+                logger.warning("Failed to write server stats log: %s", e)
 
     def _stats_log_path(self) -> Optional[str]:
-        """Path to the aggregate-stats JSON log, or None when there's no
+        """Path to the aggregate-stats JSONL log, or None when there's no
         ``output_dir`` to write under."""
         if not self.output_dir:
             return None
         return os.path.join(self.output_dir, "logs", self._STATS_LOG_FILENAME)
 
     def _handle_stats_history(self, handler: BaseHTTPRequestHandler):
-        """Serve the aggregate-stats history (the JSON log the server writes)
+        """Serve the aggregate-stats history (the JSONL log the server writes)
         for the webui's loss-curve plot.
 
-        Reads the on-disk log (it parses cleanly mid-run — the writer keeps the
-        array unclosed while appending) and returns the records, optionally
-        downsampled to ``max_points`` (the latest point is always kept). Empty
-        when no ``output_dir`` / nothing logged yet. Control-plane, bearer-
-        authenticated like ``/status`` (do_GET runs the auth gate first).
+        Reads the JSONL log line by line (skipping any blank/partial line),
+        returning the records downsampled to ``max_points`` (the latest point
+        is always kept). Empty when no ``output_dir`` / nothing logged yet.
+        Control-plane, bearer-authenticated like ``/status`` (do_GET runs the
+        auth gate first).
         """
         from urllib.parse import parse_qs, urlparse
 
@@ -2271,10 +2268,15 @@ class DiLoCoServer:
         path = self._stats_log_path()
         if path and os.path.isfile(path):
             try:
-                from forgather.ml.trainer.callbacks.json_logger import _parse_json_log
-
                 with open(path) as f:
-                    records = _parse_json_log(f.read())
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            records.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue  # skip a partial/torn last line
             except Exception as e:
                 logger.warning("stats_history: failed to read %s: %s", path, e)
                 records = []
@@ -3039,8 +3041,8 @@ class DiLoCoServer:
         {"/submit_pseudograd", "/submit_fragment_pseudograd", "/global_params"}
     )
 
-    #: Filename of the aggregate-stats JSON log, under ``<output_dir>/logs/``.
-    _STATS_LOG_FILENAME = "diloco_server_stats.json"
+    #: Filename of the aggregate-stats JSONL log, under ``<output_dir>/logs/``.
+    _STATS_LOG_FILENAME = "diloco_server_stats.jsonl"
 
     #: Bind hosts that are not routable as a connect target. When the
     #: server binds one of these we can't put it in the advertised bulk
@@ -3324,15 +3326,11 @@ class DiLoCoServer:
             "known_workers": known_workers,
             "work_queues": work_queues,
             "dataset_lengths": dataset_lengths,
-            # Unified-stats lifetime counters + EMA state, and the stats log
-            # writer's resume position, so total tokens/flos/steps and the
-            # smoothed loss survive a restart and the log stream continues.
+            # Unified-stats lifetime counters + EMA state, so total
+            # tokens/flos/steps and the smoothed loss survive a restart. The
+            # JSONL stats log itself is append-only and not checkpoint-coupled
+            # (each process starts a fresh stream), so it needs no saved state.
             "stats": self._stats.state_dict(),
-            "stats_log": (
-                self._stats_writer.state_dict()
-                if self._stats_writer is not None
-                else self._stats_log_state
-            ),
         }
         torch.save(server_state, os.path.join(checkpoint_path, "server_state.pt"))
 
@@ -3484,14 +3482,13 @@ class DiLoCoServer:
             self._known_workers = server_state.get("known_workers", {}) or {}
 
             # Restore unified-stats lifetime state (counters, per-worker
-            # last-seen baselines, loss EMA) and the stats-log resume position.
-            # Absent on pre-feature checkpoints → start fresh.
+            # last-seen baselines, loss EMA). Absent on pre-feature
+            # checkpoints → start fresh. The JSONL stats log is append-only and
+            # truncated fresh on this process's first write, so there's no log
+            # state to restore; the throttle starts below total_steps so the
+            # first post-restart record writes.
             self._stats.load_state_dict(server_state.get("stats") or {})
-            self._stats_log_state = server_state.get("stats_log")
-            # Resume the log throttle at the restored total step so the next
-            # record advances past it, rather than re-writing a duplicate
-            # record at the step the log was already truncated to.
-            self._stats_log_step = self._stats.total_steps
+            self._stats_log_step = -1
 
             # Restore work-unit dispatch state (#105): the per-(dataset_id,
             # shuffle_seed) issued/completed bitmaps and the per-dataset
@@ -3751,8 +3748,6 @@ class DiLoCoServer:
                 logger.error("Failed to save server state on stop: %s", exc)
         self._stop_health_monitor()
         self._stop_bulk_listener()
-        if self._stats_writer is not None:
-            self._stats_writer.close()
         if self._server:
             self._server.shutdown()
             self._running = False

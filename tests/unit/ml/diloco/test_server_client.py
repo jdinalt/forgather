@@ -327,7 +327,7 @@ class TestUnifiedStats:
             "worker_0",
             stats={"tokens_total": 1000, "step_total": 10, "loss": 3.0},
         )
-        log_path = os.path.join(server.output_dir, "logs", "diloco_server_stats.json")
+        log_path = os.path.join(server.output_dir, "logs", "diloco_server_stats.jsonl")
         # The log record is written after the heartbeat response is sent (file
         # IO is kept off the heartbeat latency path), so poll briefly for it.
         deadline = time.time() + 5.0
@@ -367,12 +367,13 @@ class TestUnifiedStats:
 
     def test_stale_log_file_does_not_break_logging(self, tmp_path):
         # Regression: a stats log left by a prior run in the same output_dir
-        # must not make the fresh "x"-mode open raise FileExistsError and
-        # silently disable logging (empty history → no webui plot).
-        # Pre-create a stale (closed, empty) stats log.
+        # must not break logging. The JSONL writer truncates a stale file on
+        # the first write of the process and appends thereafter.
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
-        (logs_dir / "diloco_server_stats.json").write_text("[\n\n]")
+        (logs_dir / "diloco_server_stats.jsonl").write_text(
+            '{"global_step": 999, "train_loss": 1.0}\nGARBAGE LINE\n'
+        )
 
         sd = _make_state_dict()
         ckpt = make_initial_checkpoint(sd, tmp_path)
@@ -397,10 +398,43 @@ class TestUnifiedStats:
             while not hist["records"] and time.time() < deadline:
                 time.sleep(0.05)
                 hist = client.get_stats_history()
-            assert hist["records"], "logging silently disabled by stale log file"
-            assert hist["records"][-1]["global_step"] == 10
+            assert hist["records"], "logging broken by stale log file"
+            # Stale content was truncated; only this run's record remains.
+            assert [r["global_step"] for r in hist["records"]] == [10]
         finally:
             server.stop()
+
+    def test_concurrent_heartbeat_stats_do_not_race(self, two_worker_server):
+        # Regression: two workers heartbeating with stats at the same instant
+        # must not race in the log writer (the old exclusive-create open could
+        # FileExistsError, silently disabling logging). Fire concurrently.
+        import threading
+
+        server, c0, c1, sd = two_worker_server
+        c0.register("worker_0")
+        c1.register("worker_1")
+
+        def beat(client, wid, step):
+            client.heartbeat(
+                wid,
+                stats={"tokens_total": 100 * step, "step_total": step, "loss": 2.0},
+            )
+
+        threads = []
+        for i in range(1, 9):
+            threads.append(threading.Thread(target=beat, args=(c0, "worker_0", i)))
+            threads.append(threading.Thread(target=beat, args=(c1, "worker_1", i)))
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        deadline = time.time() + 5.0
+        hist = c0.get_stats_history()
+        while not hist["records"] and time.time() < deadline:
+            time.sleep(0.05)
+            hist = c0.get_stats_history()
+        assert hist["records"], "concurrent heartbeats raced and broke logging"
 
     def test_evicted_worker_drops_from_throughput(self, two_worker_server):
         server, c0, c1, sd = two_worker_server
