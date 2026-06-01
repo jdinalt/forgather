@@ -398,8 +398,11 @@ def render_status(merged, *, want_queues):
     if workers:
         print()
         print("Workers (registered):")
-        print(f"  {'ID':<30} {'Host':<15} {'Round':<8} {'Steps/s':<10} {'Last HB'}")
-        print("  " + "-" * 75)
+        print(
+            f"  {'ID':<26} {'Host':<12} {'Round':<6} {'Steps/s':<8} "
+            f"{'Progress':<28} {'Last HB'}"
+        )
+        print("  " + "-" * 94)
         for wid, w in workers.items():
             last_hb = "—"
             if w.get("last_heartbeat"):
@@ -407,10 +410,11 @@ def render_status(merged, *, want_queues):
                     "%H:%M:%S"
                 )
             print(
-                f"  {wid:<30} "
-                f"{str(w.get('hostname', '?')):<15} "
-                f"{w.get('sync_round', 0):<8} "
-                f"{(w.get('steps_per_second') or 0):<10.2f} "
+                f"  {str(wid):<26} "
+                f"{str(w.get('hostname', '?')):<12} "
+                f"{w.get('sync_round', 0):<6} "
+                f"{(w.get('steps_per_second') or 0):<8.2f} "
+                f"{_worker_progress(w.get('stats')):<28} "
                 f"{last_hb}"
             )
 
@@ -488,6 +492,30 @@ def _queue_label(q):
     if hint.get("split"):
         label += f"@{hint['split']}"
     return label
+
+
+def _worker_progress(stats, bar_width=8):
+    """A compact per-worker progress cell for the status table, from the
+    worker's reported ``step_total`` / ``max_steps`` (DiLoCoCallback stats).
+
+    Returns ``"[####----]  58% 4,672/8,030"`` when both are known, the bare
+    step count when only ``step_total`` is reported (older worker / no target),
+    or ``"—"`` when neither is available.
+    """
+    if not isinstance(stats, dict):
+        return "—"
+    step = stats.get("step_total")
+    mx = stats.get("max_steps")
+    if step is None:
+        return "—"
+    step = int(step)
+    if not mx or mx <= 0:
+        return f"{step:,}"
+    mx = int(mx)
+    frac = max(0.0, min(1.0, step / mx))
+    filled = int(round(bar_width * frac))
+    bar = "#" * filled + "-" * (bar_width - filled)
+    return f"[{bar}] {frac * 100:3.0f}% {step:,}/{mx:,}"
 
 
 # ---------------------------------------------------------------------------

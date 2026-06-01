@@ -428,10 +428,10 @@ Training stats (aggregate of 2 reporting):
   Eval loss:     5.4825 (@ step 963)
 
 Workers (registered):
-  ID                             Host            Round    Steps/s    Last HB
-  ---------------------------------------------------------------------------
-  glacial-chihuahua              hal9000         2        4.98       05:54:28
-  brown-koa                      hal9000         2        4.91       05:54:29
+  ID                         Host         Round  Steps/s  Progress                     Last HB
+  ----------------------------------------------------------------------------------------------
+  glacial-chihuahua          hal9000      2      4.98     [##------]  24% 1,920/8,030   05:54:28
+  brown-koa                  hal9000      2      4.91     [##------]  24% 1,904/8,030   05:54:29
 
 Known workers: 2 (2 running)
 
@@ -447,6 +447,10 @@ A few things to read here:
 - **Sync round** advances each time both workers submit and the server steps the
   outer optimizer — at H=500 local steps per round, you'll see it tick roughly every
   500 steps × (1 / steps-per-second).
+- **Progress** is each worker's own `global_step / max_steps` (with a small bar) —
+  reported by the DiLoCo callback, so you can see how far along each worker is and
+  its target. Workers can have different targets (e.g. heterogeneous budgets), so
+  it's shown per worker rather than aggregated.
 - **Training stats** are aggregated across all reporting workers — a server-level
   view of the run (total tokens/steps/FLOPs, throughput, MFU, smoothed train/eval
   loss). The same block appears in the webui DiLoCo view.

@@ -224,6 +224,53 @@ def test_render_status_prefers_server_optimizer_description(capsys):
     assert "SGD(lr=0.7, momentum=0.9)\n" not in out
 
 
+class TestWorkerProgress:
+    """Per-worker progress cell from the DiLoCoCallback stats (#125)."""
+
+    def test_step_and_max(self):
+        cell = orch._worker_progress({"step_total": 4672, "max_steps": 8030})
+        assert "4,672/8,030" in cell
+        assert "58%" in cell
+        assert cell.startswith("[") and "#" in cell and "-" in cell  # bar
+
+    def test_complete(self):
+        cell = orch._worker_progress({"step_total": 8030, "max_steps": 8030})
+        assert "100%" in cell
+        assert "-" not in cell.split("]")[0]  # bar fully filled
+
+    def test_step_only_no_target(self):
+        # Older worker / no max_steps reported → bare step count, no bar.
+        assert orch._worker_progress({"step_total": 500}) == "500"
+
+    def test_missing(self):
+        assert orch._worker_progress({}) == "—"
+        assert orch._worker_progress(None) == "—"
+
+
+def test_render_status_workers_show_progress(capsys):
+    merged = orch.assemble_status(
+        get_status=lambda: {
+            "status": "running",
+            "workers": {
+                "w0": {
+                    "hostname": "h",
+                    "sync_round": 9,
+                    "steps_per_second": 5.0,
+                    "stats": {"step_total": 4672, "max_steps": 8030},
+                }
+            },
+        },
+        get_info=lambda: {},
+        get_known_workers=lambda: {},
+        get_work_queues=None,
+    )
+    orch.render_status(merged, want_queues=False)
+    out = capsys.readouterr().out
+    assert "Progress" in out  # column header
+    assert "4,672/8,030" in out
+    assert "58%" in out
+
+
 def test_render_status_known_workers_resumable(capsys):
     merged = orch.assemble_status(
         get_status=lambda: {"status": "running"},
