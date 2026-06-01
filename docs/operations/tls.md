@@ -36,7 +36,7 @@ multi-tenant setups).
 forgather tls init
 forgather tls status
 forgather server -H 0.0.0.0          # auto-on: HTTPS, refuses to bind without TLS
-forgather dataset-server start -H 0.0.0.0
+forgather dataset-server start --local-only -H 0.0.0.0
 forgather inf server -H 0.0.0.0 -m output_models/my_model
 ```
 
