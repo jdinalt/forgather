@@ -5,7 +5,9 @@ It is intended for developers who need to understand how the system works,
 troubleshoot issues, or implement new features.
 
 For user-facing documentation (CLI usage, quick start, API examples), see
-[diloco.md](diloco.md).
+[diloco.md](diloco.md). For a runnable, end-to-end CLI walkthrough, see the
+canonical example at
+[`examples/tiny_experiments/diloco/`](../../examples/tiny_experiments/diloco/README.md).
 
 ## Contents
 

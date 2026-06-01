@@ -6,6 +6,13 @@ requires high-bandwidth interconnects (NVLink, InfiniBand), DiLoCo reduces
 communication by ~500x, making 1 Gig Ethernet practical for multi-machine
 training.
 
+> **Running DiLoCo from the CLI?** The canonical, end-to-end, verified
+> walkthrough is
+> [`examples/tiny_experiments/diloco/`](../../examples/tiny_experiments/diloco/README.md)
+> — start there for a guided run (build the model, start the servers, launch
+> workers, monitor, stop, resume). This document is the reference: it explains
+> the protocol, every setting, and the advanced modes the example doesn't cover.
+
 The system supports two operating modes:
 - **Synchronous**: All workers must submit before the server applies the outer
   optimizer. Simple and deterministic.
@@ -85,6 +92,11 @@ utilization on 1 Gig Ethernet.
 | 7B         | 14 GB     | 112s                   | 500s compute         | 82%         |
 
 ## Quick Start
+
+This section is a condensed inline reference. For a guided, verified, end-to-end
+run — building the model, starting the Forgather/dataset/DiLoCo servers, launching
+workers, monitoring, stopping, and resuming — follow the canonical CLI example at
+[`examples/tiny_experiments/diloco/`](../../examples/tiny_experiments/diloco/README.md).
 
 ### 1. Start the Server
 
@@ -962,7 +974,8 @@ Or add the callback directly in your project template:
         heartbeat_interval: {{ diloco_heartbeat_interval | default(None) }}
 ```
 
-See `examples/tiny_experiments/diloco/` for a complete working example.
+See [`examples/tiny_experiments/diloco/`](../../examples/tiny_experiments/diloco/README.md)
+— the canonical end-to-end CLI walkthrough — for a complete working example.
 
 ### Checkpoint Behavior
 
