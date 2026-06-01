@@ -524,6 +524,21 @@ forgather diloco server --output-dir ../../../models/small_llama --num-workers 2
 forgather diloco worker --resume-workers
 ```
 
+> **Dynamic args are per-launch — re-pass any non-default ones on resume.**
+> Resume restores each worker's training *state* from its checkpoint — global
+> step, optimizer, and LR scheduler — so it picks up exactly where it stopped
+> (and, given the same `max_steps`, finishes after ~the same number of tokens).
+> The dynamic/template args (`--compile`, `--total-tokens`, …) are read from
+> *this* command line plus the config defaults on every launch — by design, so
+> you can change them on resume (e.g. flip `--compile` back on). The flip side:
+> a **non-default** budget must be repeated, or `max_steps` reverts to the
+> config default. For the halved-budget run above:
+>
+> ```bash
+> forgather -t tiny.yaml diloco worker --resume-workers \
+>     --total-tokens 250 --warmup-tokens 25 --min-cooldown-tokens 100
+> ```
+
 ### 10. Cleanup
 
 ```bash
@@ -536,6 +551,111 @@ rm -rf ../../../models/small_llama/checkpoints/
 # Delete server logs (per-run TensorBoard + JSONL stats)
 rm -rf ../../../models/small_llama/runs/
 ```
+
+---
+
+## Results: DiLoCo vs. a DDP baseline
+
+To make this concrete, here's an actual run of this project: the
+`baseline.yaml` control (a vanilla **DDP** job across 2 GPUs) against the
+`default.yaml` **DiLoCo** config (2 single-GPU workers + parameter server),
+trained on the **same token budget** so the only variable is the
+parallelization strategy.
+
+### The token-budget caveat (important)
+
+A DiLoCo worker is an ordinary trainer that computes its own step budget as if
+it were running standalone — **it does not know it's one of N workers.** So N
+workers each run the *full* schedule, processing N× the intended tokens. A DDP
+job, by contrast, divides the budget across its ranks (`tokens_per_step` scales
+with `world_size`).
+
+To compare fairly, give each DiLoCo worker **`1/N` of the budget**. Here N=2,
+so the DiLoCo workers were launched with half of `baseline.yaml`'s 500M-token
+budget:
+
+```bash
+forgather diloco worker --count 2 --compile no \
+    --total-tokens 250 --warmup-tokens 25 --min-cooldown-tokens 100
+```
+
+That makes each DiLoCo worker run the *identical* per-device schedule as each
+baseline rank — **8030 steps, 803 warmup** — so both runs process ~500M total
+tokens over the same number of optimizer steps per GPU.
+
+### Setup
+
+| | Baseline | DiLoCo |
+|---|---|---|
+| Strategy | DDP, 2 GPUs (all-reduce every step) | 2 single-GPU workers + server (sync every 500 steps) |
+| Model | small Llama, 34.4M params | same |
+| Dataset | Fineweb-Edu (`smollm-corpus`) | same |
+| Steps / GPU | 8030 (803 warmup) | 8030 / worker (803 warmup) |
+| Total tokens | 519M | 517M |
+| Outer optimizer | — | SGD(lr=0.7, momentum=0.9, nesterov) |
+| GPUs | 2× RTX 4090 | 2× RTX 4090 (+ CPU server) |
+
+> Two honest caveats. (1) The runs use **different random seeds** for weight
+> init (the baseline builds its own model; DiLoCo seeds from the saved
+> checkpoint), so small differences are expected. (2) Each DiLoCo worker scales
+> its inner LR for a *single*-GPU effective batch, while the baseline scales for
+> the 2-GPU global batch — that LR difference is inherent to the two strategies,
+> not a bug. The outer SGD is what reconciles the workers.
+
+### Results
+
+![Train and eval loss vs. tokens](assets/loss_comparison.png)
+
+| metric | baseline (DDPx2) | DiLoCo (2 workers) |
+|---|---|---|
+| final train loss | **3.121** | 3.313 |
+| final eval loss | **3.156** | 3.343 |
+| total tokens | 519M | 517M |
+| avg throughput | 310K tok/s | 309K tok/s |
+| sync rounds | n/a (every step) | 16 (every 500 steps) |
+
+![Throughput and grad norm vs. tokens](assets/throughput_gradnorm.png)
+
+### What this shows
+
+- **DiLoCo gets close, for ~500× less synchronization.** At an equal token
+  budget, DiLoCo's eval loss (3.343) trails the all-reduce baseline (3.156) by
+  about **0.19** (~6%). The baseline coordinates *every* step; DiLoCo
+  synchronized **16 times** total. That gap is the price of communication
+  efficiency — and it's small for the model to have spent almost the entire run
+  with no global coordination between sync rounds.
+- **Throughput is identical here (~310K tok/s)** — which is exactly the point
+  the single-host setup *can't* show off. DiLoCo's advantage is bandwidth, not
+  compute: on this box both strategies share a fast bus, so DiLoCo's
+  every-500-steps sync buys nothing over DDP's every-step all-reduce. The win
+  appears when the interconnect is slow (multi-host / WAN), where DDP stalls on
+  the network every step and DiLoCo keeps the GPUs busy. This run is an
+  apples-to-apples *quality* check, not a throughput demo.
+- **The gap narrows over training** (see the converging loss curves) and would
+  likely shrink further with outer-optimizer / `sync_every` tuning — left as an
+  exercise.
+
+### Two patterns worth a follow-up
+
+Suggestive, not conclusive at this scale and budget — but they line up with
+known local-SGD behavior and would make good follow-up studies:
+
+- **DiLoCo is still descending faster than the baseline at the end of the run.**
+  The gap shrinks throughout and the late-run slope is steeper, so the curves
+  hint that DiLoCo could *catch up to or overtake* the baseline given a larger
+  token budget. The obvious test: a longer run at the same model size.
+- **DiLoCo's gradient norm keeps falling and sits well below the baseline's,
+  which has flattened.** Local-SGD theory associates the averaging of
+  independently-evolved replicas with settling into *flatter* minima, which tend
+  to generalize better. A held-out / downstream eval on a longer run would be
+  the way to probe whether that shows up here.
+
+That a model synchronizing only **16 times** over the whole run lands this close
+to an all-reduce-every-step baseline is, on its own, a striking result.
+
+The plots and a CSV of the parsed curves are in [`assets/`](assets/); the
+analysis script that produced them is
+[`analysis/plot_experiment.py`](analysis/plot_experiment.py).
 
 ---
 
