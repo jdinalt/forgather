@@ -527,9 +527,13 @@ def _shutdown_cmd(args):
 
 def _load_dynamic_schema(project_dir, config_template):
     """Return the config's ``dynamic_args`` schema (list of entry dicts), or
-    ``[]`` on any failure / when no config is selected."""
-    if not config_template:
-        return []
+    ``[]`` on any failure.
+
+    ``config_template=None`` resolves the project's DEFAULT config (via
+    ``Project(config_name=None)``), matching the parser side
+    (``diloco_args.parse_dynamic_args``) and ``forgather train`` — so the
+    worker collects + forwards dynamic args even without an explicit ``-t``.
+    """
     try:
         from forgather import MetaConfig, Project
 

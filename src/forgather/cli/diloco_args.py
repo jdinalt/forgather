@@ -2,10 +2,30 @@
 
 import argparse
 import os
+import sys
 from argparse import RawTextHelpFormatter
 
 from forgather.ml.diloco.auth import add_auth_args
 from forgather.tls.runtime import add_server_tls_args
+
+
+def _diloco_subcommand(argv=None):
+    """Best-effort: the ``diloco`` sub-subcommand being invoked (e.g.
+    ``"worker"``), read from argv, or ``None``.
+
+    Used only to decide whether to pay the config load for dynamic-arg
+    discovery: ``create_diloco_parser`` builds every subparser eagerly, but
+    only ``worker`` consumes/forwards a config's dynamic args, so the other
+    verbs (status / servers / logs / control / shutdown) shouldn't load a
+    project just to build their parser. The first non-flag token after
+    ``diloco`` is the sub-subcommand (global flags precede ``diloco``)."""
+    argv = sys.argv[1:] if argv is None else argv
+    if "diloco" not in argv:
+        return None
+    for tok in argv[argv.index("diloco") + 1 :]:
+        if not tok.startswith("-"):
+            return tok
+    return None
 
 
 def create_diloco_parser(global_args):
@@ -618,10 +638,18 @@ def create_diloco_parser(global_args):
 
     # Dynamic/template args: build argparse options + help from the config's
     # ``dynamic_args`` metadata (the established pattern — see train_args.py),
-    # so a config's args show up under `diloco worker --help` and parse.
-    # Only when a config is selected (-t) and dynamic args aren't disabled,
-    # so plain `diloco <other-subcommand>` invocations don't pay a config
-    # load.
+    # so a config's args show up under `diloco worker --help`, parse, and
+    # forward. Like `forgather train`, this uses the selected config or the
+    # project's DEFAULT config when ``-t`` is omitted (parse_dynamic_args
+    # resolves the default via ``Project(config_name=None)``) — so
+    # ``forgather diloco worker --compile no`` works from a project dir
+    # without an explicit ``-t``.
+    #
+    # Gated to an actual ``worker`` invocation (not just "a config is
+    # selected"): create_diloco_parser builds every subparser eagerly, so
+    # without this gate every `diloco <sub>` (status / servers / logs / …)
+    # would pay a config load — and error noisily ("Loading dynamic args
+    # failed!") when run outside a project. Only `worker` forwards them.
     #
     # NOTE: we deliberately do NOT propagate ``_dynamic_arg_names`` to the
     # top-level diloco parser. main.py's partition is global to the chosen
@@ -630,9 +658,7 @@ def create_diloco_parser(global_args):
     # ``--output-dir`` from a sibling like ``diloco server``. ``_worker_cmd``
     # collects the worker's dynamic args from the config schema itself
     # (see ``_load_dynamic_schema`` / ``_worker_dynamic_args``).
-    if getattr(global_args, "config_template", None) and not getattr(
-        global_args, "no_dyn", False
-    ):
+    if _diloco_subcommand() == "worker" and not getattr(global_args, "no_dyn", False):
         from .dynamic_args import parse_dynamic_args
 
         parse_dynamic_args(worker_parser, global_args)
