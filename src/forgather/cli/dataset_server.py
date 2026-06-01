@@ -13,6 +13,7 @@ Subcommands:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -43,14 +44,151 @@ def dataset_server_cmd(args) -> int:
 # ----- start -----
 
 
-def _start_cmd(args) -> int:
+def _parse_local_maps(raw):
+    """``["NAME=PATH", ...]`` → ``[[name, abspath], ...]``; raises ValueError on
+    a malformed entry. Empty/None → ``[]``.
+
+    PATH is absolutized against the CLI's CWD: on the scheduled path the job
+    runs from the forgather repo root, so a relative local path typed in the
+    user's shell would otherwise resolve against the wrong directory."""
+    pairs = []
+    for entry in raw or []:
+        name, sep, path = str(entry).partition("=")
+        if not sep or not name or not path:
+            raise ValueError(f"--local expects NAME=PATH, got {entry!r}")
+        pairs.append([name, os.path.abspath(path)])
+    return pairs
+
+
+def _start_job_params(args, local_pairs) -> dict:
+    """Build the ``dataset_server`` job_params the scheduler consumes.
+
+    Identical shape to the webui's "Start dataset server" modal (buildArgs):
+    the scheduler provisions the per-port auth token + TLS itself, so no
+    token/cert is sent here.
+    """
+    params = {
+        "host": args.host,
+        "port": args.port,
+        "log_level": args.log_level,
+        "no_auth": bool(args.no_auth),
+        # regen_token is only meaningful when auth is on.
+        "regen_token": bool(args.regen_token) and not bool(args.no_auth),
+        "no_hf": bool(args.no_hf),
+        "allow_paths": bool(args.allow_paths),
+        "allow_downloads": bool(args.allow_downloads),
+    }
+    if args.config:
+        params["config_file"] = os.path.abspath(args.config)
+    if local_pairs:
+        params["locals"] = local_pairs
+    return params
+
+
+def _start_via_server(client, args, local_pairs) -> int:
+    """Enqueue a scheduled ``dataset_server`` job through the forgather server.
+
+    The scheduler starts it in the background (CPU-only), captures its TTY,
+    provisions auth/TLS, and the cluster dataset inventory picks it up — so
+    it shows up as a job and is known to the cluster, exactly like a
+    webui-launched server.
+    """
+    from .server_client import AuthRequired, ServerUnreachable
+
+    # Extra/unknown server flags can't be honored by the scheduler (it owns
+    # the managed flag surface); they only apply to a foreground launch.
+    extra = getattr(args, "extra", None) or []
+    if extra:
+        print(
+            "error: these flags are only supported with --local-only: "
+            f"{' '.join(extra)}",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        item = client.enqueue_job(
+            # No project context for this tool; the launcher ignores
+            # project_dir for dataset_server jobs (matches the webui).
+            project_dir="/",
+            config=f"dataset:{args.port}",
+            job_type="dataset_server",
+            job_params=_start_job_params(args, local_pairs),
+            requested_gpus=0,
+            priority=getattr(args, "priority", 0),
+        )
+    except (ServerUnreachable, AuthRequired, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps(item, indent=2))
+        return 0
+    qid = item.get("queue_id")
+    print(f"Enqueued dataset server job {qid} (the scheduler will start it).")
+    print("  status:  forgather dataset-server status")
+    print(f"  logs:    forgather job tail {qid} -f")
+    print(f"  stop:    forgather job stop {qid}")
+    return 0
+
+
+def _start_local(args, local_pairs) -> int:
+    """Run the dataset server in the foreground (the pre-scheduler path)."""
     repo_root = _repo_root()
-    cmd_args = [sys.executable, "-m", "tools.dataset_server"]
-    remainder = getattr(args, "remainder", None) or []
-    cmd_args.extend(remainder)
+    cmd_args = [
+        sys.executable,
+        "-m",
+        "tools.dataset_server",
+        "-H",
+        args.host,
+        "-p",
+        str(args.port),
+        "-l",
+        args.log_level,
+    ]
+    if args.no_hf:
+        cmd_args.append("--no-hf")
+    if args.allow_paths:
+        cmd_args.append("--allow-paths")
+    if args.allow_downloads:
+        cmd_args.append("--allow-downloads")
+    for name, path in local_pairs:
+        cmd_args.extend(["--local", f"{name}={path}"])
+    if args.no_auth:
+        cmd_args.append("--no-auth")
+    if args.regen_token:
+        cmd_args.append("--regen-token")
+    if args.config:
+        cmd_args.extend(["--config", os.path.abspath(args.config)])
+    # Forward any extra/unknown flags verbatim (e.g. TLS options).
+    cmd_args.extend(getattr(args, "extra", None) or [])
     print(f"Running: {' '.join(cmd_args)}")
     print()
     return subprocess.run(cmd_args, cwd=str(repo_root)).returncode
+
+
+def _start_cmd(args) -> int:
+    # Orchestrator-first (matches `forgather diloco server`): enqueue a
+    # scheduled job by default; --local-only forces foreground; --local-
+    # fallback uses foreground only when the server is unreachable; the
+    # default errors if the server is down (no silent local degrade).
+    from . import diloco_orch as orch  # generic orchestrator-locality helper
+    from .server_client import ServerUnreachable
+
+    try:
+        local_pairs = _parse_local_maps(getattr(args, "local_maps", None))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        client = orch.use_orchestrator(args)
+    except ServerUnreachable as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if client is not None:
+        return _start_via_server(client, args, local_pairs)
+    return _start_local(args, local_pairs)
 
 
 def _repo_root() -> Path:

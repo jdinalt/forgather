@@ -1,0 +1,33 @@
+-- extends "projects/small.yaml"
+
+## Same DiLoCo "small" config as default.yaml (small Llama model, DDP
+## trainer, WSD schedule), but with the dataset swapped from
+## HuggingFaceTB/smollm-corpus (Fineweb-Edu, ~1 TB) to the much smaller
+## Tiny Stories dataset — so you can run the demo end-to-end without
+## caching a terabyte of data. Only the dataset differs from default.yaml.
+##
+## NB: ``enable_diloco`` is a RENDER-TIME signal. Running this config still
+## requires ``DILOCO_SERVER`` to be set in the worker env (preprocess_dataset's
+## validity check rejects ``work_units`` without it); the scheduler / launcher
+## sets it when actually training. The flag here lets ``forgather pp`` / ``ls``
+## show the DiLoCo-enabled rendering without spinning up a server.
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DiLoCo Training (Tiny Stories)"
+    -- set ns.config_description = "Small Llama + DiLoCo on Tiny Stories (no ~1 TB download)"
+    -- set ns.log_name = "diloco_tiny"
+
+    -- set ns.enable_diloco = enable_diloco | default(True)
+
+    ## Swap the dataset to Tiny Stories (roneneldan) so the demo runs without
+    ## the giant Fineweb-Edu cache. Everything else stays as the small base.
+    -- set ns.dataset_proj = abspath(joinpath(ns.forgather_dir, "examples", "datasets", "roneneldan"))
+    -- set ns.dataset_config = dataset_config | default("fast-iter-packed.yaml")
+
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_scheduler
+    warmup_steps: {{ ns.warmup_steps }}
+    min_lr: {{ ns.min_lr | toyaml }}
+    decay_steps: {{ ns.annealing_steps }}
+    decay_start_step: {{ ns.decay_start_step }}

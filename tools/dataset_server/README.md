@@ -26,7 +26,7 @@ Two use cases this is built for:
 
    ```bash
    # On the dataset host (one-time):
-   forgather dataset-server start
+   forgather dataset-server start --local-only
    # → prints `dataset_server auth token: <hex>`; copy it.
 
    # On the remote workstation:
@@ -47,12 +47,47 @@ Two use cases this is built for:
 
 ## Quick start
 
+### Launch modes — scheduled (default) vs foreground
+
+`forgather dataset-server start` defaults to enqueuing a **scheduled job
+through the forgather server** (`forgather server`), exactly like
+`forgather diloco server`. The scheduler starts it in the background
+(CPU-only), captures its TTY log, provisions its auth token + TLS
+automatically, and the cluster's dataset inventory picks it up — so the
+server shows up under `forgather job ls` and is known to the cluster
+(`auto` routing can reach it). This is the path you want for coordinated /
+multi-node setups:
+
+```bash
+# Background, cluster-registered, auto-provisioned security:
+forgather dataset-server start -H 0.0.0.0
+# → "Enqueued dataset server job <id> (the scheduler will start it)."
+forgather dataset-server status      # confirm it's up
+forgather job ls                     # it appears as a dataset_server job
+```
+
+This requires `forgather server` to be running; if it isn't, the command
+**errors** rather than silently launching something local. Two opt-outs:
+
+- `--local-only` runs the server in the **foreground** in your terminal
+  (the pre-scheduler behavior — useful for a quick local/SSH-tunnel
+  server, or where no forgather server is running). The server
+  auto-generates/persists its own per-port token, printed to stderr.
+  Extra/unknown flags (e.g. TLS options) are forwarded verbatim only on
+  this path.
+- `--local-fallback` uses the foreground path **only** when the forgather
+  server is unreachable.
+
+The remaining quick-start examples below use `--local-only` because they
+show the foreground token output and same-host tunneling.
+
 ### Same host (zero-config auth)
 
 ```bash
-# Terminal 1 — start the server. Token is auto-generated and
-# written to ~/.config/forgather/dataset_server/8766.token (mode 0600).
-forgather dataset-server start
+# Terminal 1 — start the server in the foreground. Token is
+# auto-generated and written to
+# ~/.config/forgather/dataset_server/8766.token (mode 0600).
+forgather dataset-server start --local-only
 
 # Terminal 2 — point clients at it. The localhost token is
 # auto-discovered by the loader and the diagnostic CLI; no token
@@ -79,7 +114,7 @@ forgather train
 # Cross-host bind without TLS is refused unless --insecure. Run
 # `forgather tls init` on this host first (and `forgather tls
 # install` on every client) — see docs/operations/tls.md.
-forgather dataset-server start --host 0.0.0.0 \
+forgather dataset-server start --local-only --host 0.0.0.0 \
     --local stories=/data/tinystories
 
 # Client (training nodes) — read the token from the file rather
@@ -370,11 +405,21 @@ python -m tools.dataset_server --help
 ### Via the forgather CLI
 
 ```bash
-forgather dataset-server start [server flags...]
+forgather dataset-server start [flags...]
 ```
 
-`start` is a REMAINDER passthrough — every flag after `start`
-goes to the underlying script unchanged. `--help` is forwarded.
+By default `start` enqueues a **scheduled job** through the forgather
+server (background, cluster-registered, auto-provisioned auth/TLS) — see
+[Launch modes](#launch-modes--scheduled-default-vs-foreground). The flags
+below are the managed subset the scheduler honors (the same set the webui's
+"Start dataset server" modal exposes): `-H/--host`, `-p/--port`,
+`-l/--log-level`, `--no-hf`, `--allow-paths`, `--allow-downloads`,
+`--local NAME=PATH` (repeatable), `--no-auth`, `--regen-token`, `--config`.
+
+Add `--local-only` to run the server in the foreground instead; on that
+path any extra/unknown flags (e.g. TLS options the standalone script
+accepts) are forwarded verbatim. `--help` shows the wrapper's flags; for
+the full standalone flag set, run `python -m tools.dataset_server --help`.
 
 ### Examples
 

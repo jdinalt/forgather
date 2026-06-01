@@ -413,9 +413,7 @@ class MasterInventory:
                 self._last_dataset_pass_ts = None
                 self._ever_observed_healthy = False
                 self._warned_local_collisions = set()
-                log.info(
-                    "became master; cleared dataset inventory and starting fresh"
-                )
+                log.info("became master; cleared dataset inventory and starting fresh")
                 return True
             if not is_master and currently_master:
                 self._servers = {}
@@ -611,9 +609,7 @@ class MasterInventory:
 
     def servers_snapshot(self) -> List[MasterServerEntry]:
         with self._lock:
-            return [
-                MasterServerEntry(**asdict(s)) for s in self._servers.values()
-            ]
+            return [MasterServerEntry(**asdict(s)) for s in self._servers.values()]
 
     def get_server(self, server_id: str) -> Optional[MasterServerEntry]:
         with self._lock:
@@ -653,26 +649,36 @@ class MasterInventory:
         Selection is uniform random across the candidate set — crude
         load balancing across replicas.
         """
+        # Loopback entries are visible in the Servers panel (node-local
+        # datasets are a legit thing) but normally aren't cluster-routable —
+        # a remote peer can't reach another node's 127.0.0.1. The one case
+        # where they ARE usable is a single-node cluster: every worker runs
+        # on the only node, co-located with the loopback server, so 127.0.0.1
+        # resolves to the same host. Include loopback servers then, so a
+        # single-node `auto` setup (e.g. `forgather dataset-server start`
+        # without -H 0.0.0.0) just works instead of 410-ing.
+        #
+        # KNOWN LIMITATION (issue #123): this keys on the master's own member
+        # count, not the requester's locality (resolve() has no requester
+        # identity). On a genuine multi-node cluster there is a narrow
+        # startup/partition-heal window where members() transiently reads 1
+        # while a remote peer proxies a request — it could then be routed to
+        # this master's loopback server. The correct fix gates on requester
+        # locality; tracked separately. Steady-state behavior is correct.
+        single_node = len(cluster.members()) <= 1
         with self._lock:
-            # Loopback entries are visible in the Servers panel
-            # (node-local datasets are a legit thing) but never
-            # cluster-routable — other peers can't reach them. Filter
-            # them out at the routing decision rather than at the
-            # inventory level.
+
+            def _routable(s) -> bool:
+                return s.healthy and (single_node or not s.loopback)
+
             if dataset_id.startswith("local/"):
                 candidates = [
                     s
                     for s in self._servers.values()
-                    if s.healthy
-                    and not s.loopback
-                    and dataset_id in s.available_keys
+                    if _routable(s) and dataset_id in s.available_keys
                 ]
             else:
-                candidates = [
-                    s
-                    for s in self._servers.values()
-                    if s.healthy and not s.loopback
-                ]
+                candidates = [s for s in self._servers.values() if _routable(s)]
             if not candidates:
                 return None
             chosen = random.choice(candidates)
@@ -700,8 +706,7 @@ class MasterInventory:
         """
         with self._lock:
             return (
-                self._last_dataset_pass_ts is not None
-                and self._ever_observed_healthy
+                self._last_dataset_pass_ts is not None and self._ever_observed_healthy
             )
 
 
@@ -740,9 +745,7 @@ def _local_server_from_dict(raw: Dict[str, Any]) -> Optional[LocalServer]:
             # Default True so older peers that don't ship the field
             # keep their secure-by-default posture.
             verify_tls=bool(raw.get("verify_tls", True)),
-            source_id=(
-                str(raw["source_id"]) if raw.get("source_id") else None
-            ),
+            source_id=(str(raw["source_id"]) if raw.get("source_id") else None),
             loopback=bool(raw.get("loopback", False)),
         )
     except (KeyError, TypeError, ValueError):
@@ -1127,9 +1130,7 @@ async def master_collect_servers_loop(
             raise
 
 
-async def master_health_loop(
-    *, interval_seconds: Optional[float] = None
-) -> None:
+async def master_health_loop(*, interval_seconds: Optional[float] = None) -> None:
     """Run the per-server /v1/health probe loop until cancelled."""
     interval = (
         interval_seconds if interval_seconds is not None else HEALTH_INTERVAL_SECONDS
@@ -1159,15 +1160,9 @@ async def master_dataset_refresh_loop(
     ``HEALTH_INTERVAL_SECONDS`` cadence so the router warms up faster
     than the steady-state ``REFRESH_INTERVAL_SECONDS``.
     """
-    fast = (
-        interval_seconds
-        if interval_seconds is not None
-        else HEALTH_INTERVAL_SECONDS
-    )
+    fast = interval_seconds if interval_seconds is not None else HEALTH_INTERVAL_SECONDS
     steady = (
-        interval_seconds
-        if interval_seconds is not None
-        else REFRESH_INTERVAL_SECONDS
+        interval_seconds if interval_seconds is not None else REFRESH_INTERVAL_SECONDS
     )
     log.info(
         "master dataset-refresh loop starting (fast=%.1fs steady=%.1fs)",

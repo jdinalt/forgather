@@ -93,18 +93,102 @@ def create_dataset_server_parser(global_args):
         dest="ds_subcommand", metavar="<action>", required=False
     )
 
-    # `start` — REMAINDER passthrough; --help goes to the wrapped script.
+    # `start` — by default enqueues a scheduled ``dataset_server`` job through
+    # the forgather server (background, cluster-registered, auto-provisioned
+    # auth/TLS), exactly like ``forgather diloco server``. ``--local-only``
+    # runs it in the foreground instead. The server flags below mirror the
+    # subset the scheduler honors (== the webui's "Start dataset server"
+    # modal); any extra flags are captured and forwarded only on the
+    # foreground path.
     start_parser = subparsers.add_parser(
         "start",
-        help="Launch the dataset server (forwards flags to the script).",
+        help="Launch the dataset server (scheduled job; --local-only for foreground).",
         formatter_class=RawTextHelpFormatter,
-        add_help=False,
     )
-    start_parser.add_argument("dummy", nargs="?", default="", help=argparse.SUPPRESS)
+    # Locality: the forgather server is the default, required path.
     start_parser.add_argument(
-        "remainder",
-        nargs=argparse.REMAINDER,
-        help="Arguments to forward to tools/dataset_server/server.py",
+        "--local-fallback",
+        action="store_true",
+        help=(
+            "If the forgather server isn't reachable, fall back to running\n"
+            "the dataset server in the foreground instead of erroring."
+        ),
+    )
+    start_parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help=(
+            "Never contact the forgather server; run the dataset server in\n"
+            "the foreground (the pre-scheduler behavior). Extra flags after\n"
+            "the known ones are forwarded verbatim to the server script."
+        ),
+    )
+    start_parser.add_argument(
+        "--via-server",
+        metavar="URL",
+        default=None,
+        help=(
+            "forgather-server base URL to enqueue through (default:\n"
+            "$FORGATHER_SERVER_URL or http://127.0.0.1:8765)."
+        ),
+    )
+    start_parser.add_argument(
+        "--priority",
+        type=int,
+        default=0,
+        help="Scheduler priority for the enqueued job (default: 0).",
+    )
+    # Server flags — the managed subset (mirrors dataset_server_ops /
+    # the webui modal). Auth tokens + TLS are provisioned by the
+    # scheduler on the server path; on --local-only the server script
+    # auto-generates/persists a per-port token as before.
+    start_parser.add_argument("-H", "--host", default="127.0.0.1", help="Bind address")
+    start_parser.add_argument("-p", "--port", type=int, default=8766, help="Bind port")
+    start_parser.add_argument(
+        "-l",
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging level",
+    )
+    start_parser.add_argument(
+        "--no-hf",
+        action="store_true",
+        help="Disable HF cache loading; only --local datasets are servable.",
+    )
+    start_parser.add_argument(
+        "--allow-paths",
+        action="store_true",
+        help="Allow clients to request loading by absolute filesystem path.",
+    )
+    start_parser.add_argument(
+        "--allow-downloads",
+        action="store_true",
+        help="Allow HF downloads when the cache is missing a dataset.",
+    )
+    start_parser.add_argument(
+        "--local",
+        action="append",
+        default=[],
+        dest="local_maps",
+        metavar="NAME=PATH",
+        help="Register a local dataset as 'local/NAME'. Repeatable.",
+    )
+    start_parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        help="Disable bearer-token auth (only on an already-trusted network).",
+    )
+    start_parser.add_argument(
+        "--regen-token",
+        action="store_true",
+        help="Rotate the persisted per-port auth token at startup.",
+    )
+    start_parser.add_argument(
+        "--config",
+        default=None,
+        metavar="FILE",
+        help="Optional YAML config file (see the dataset server README).",
     )
 
     # Diagnostic subcommands.

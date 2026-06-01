@@ -333,11 +333,31 @@ function SplitPane({ split, isActive, api, openMenu }: SplitProps) {
             language={languageFor(activeBuf.path)}
             path={activeBuf.path}
             theme="vs-dark"
-            value={activeBuf.content}
+            // UNCONTROLLED on purpose. Driving Monaco with a controlled
+            // `value={content}` fed back from onChange creates a feedback
+            // loop: @monaco-editor/react reconciles a changed `value` with a
+            // full-model-range executeEdits, and under fast typing the
+            // prop lags a render behind the model, so that effect fires with
+            // stale content, replaces the whole file, and collapses the
+            // cursor to EOF (re-opening word-based suggestions — the menu of
+            // "abc" entries). `defaultValue` seeds the model once; onChange
+            // still tracks dirty state. External content swaps (initial load,
+            // reload-from-disk, conflict-reload) all toggle `loading`, which
+            // unmounts/remounts this editor and recreates the model from the
+            // fresh seed, so they keep working without re-introducing the loop.
+            defaultValue={activeBuf.content}
             options={{
               minimap: { enabled: false },
               fontSize: 13,
               scrollBeyondLastLine: false,
+              // Kill the word-based suggestion menu — the "abc"
+              // (CompletionItemKind.Text) entries Monaco synthesises from
+              // words already in the document when a language has no real
+              // completion provider (YAML, forgather templates, plain
+              // Python). They carry no useful information and pop
+              // constantly while typing. Real provider-driven completions
+              // (e.g. JSON) are unaffected.
+              wordBasedSuggestions: "off",
             }}
             onChange={(v) => api.setContent(activeBuf.path, v ?? "")}
             onMount={onMount}

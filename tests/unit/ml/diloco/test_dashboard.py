@@ -286,6 +286,14 @@ class TestStatusExtensions:
         # Verify values
         assert data["outer_lr"] == 1.0  # from _simple_sgd
         assert data["outer_momentum"] == 0.5
+
+        # Full one-line optimizer description (class + every hyperparameter,
+        # incl. nesterov) — more informative than reconstructing SGD(lr,
+        # momentum) client-side, and generalizes to other optimizers.
+        assert data["outer_optimizer"].startswith("SGD(")
+        assert "lr=1.0" in data["outer_optimizer"]
+        assert "momentum=0.5" in data["outer_optimizer"]
+        assert "nesterov=" in data["outer_optimizer"]
         assert data["model_params"] == 8 * 8 * 2  # 2 layers of 8x8
         assert isinstance(data["model_size_mb"], (int, float))
 

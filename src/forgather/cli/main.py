@@ -354,7 +354,7 @@ def parse_args(args=None):
             and subcommand_args
             and subcommand_args[0] == "start"
         )
-        if subcommand in ["convert", "finalize", "server"] or ds_is_start:
+        if subcommand in ["convert", "finalize", "server"]:
             sub_args = argparse.Namespace()
             if subcommand == "convert":
                 sub_args.remainder = (
@@ -374,16 +374,22 @@ def parse_args(args=None):
                     if server_original_args is not None
                     else subcommand_args
                 )
-            elif ds_is_start:
-                sub_args.ds_subcommand = "start"
-                sub_args.remainder = (
-                    dataset_server_original_args
-                    if dataset_server_original_args is not None
-                    else subcommand_args[1:]
-                )
-            else:
-                sub_args.remainder = subcommand_args
             sub_args.dummy = ""
+        elif ds_is_start:
+            # 'dataset-server start' flags were carved out of the global parse
+            # so the server's -p/-H don't collide with global -p/--project-dir.
+            # Parse them through the dataset-server subparser now; parse_known
+            # keeps any extra server flags (e.g. TLS) for the --local-only
+            # foreground path to forward verbatim.
+            start_tokens = (
+                dataset_server_original_args
+                if dataset_server_original_args is not None
+                else subcommand_args[1:]
+            )
+            sub_args, ds_extra = subcommand_parser.parse_known_args(
+                ["start"] + start_tokens
+            )
+            sub_args.extra = ds_extra
         else:
             sub_args = subcommand_parser.parse_args(subcommand_args)
     except SystemExit:

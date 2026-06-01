@@ -6,6 +6,13 @@ requires high-bandwidth interconnects (NVLink, InfiniBand), DiLoCo reduces
 communication by ~500x, making 1 Gig Ethernet practical for multi-machine
 training.
 
+> **Running DiLoCo from the CLI?** The canonical, end-to-end, verified
+> walkthrough is
+> [`examples/tiny_experiments/diloco/`](../../examples/tiny_experiments/diloco/README.md)
+> — start there for a guided run (build the model, start the servers, launch
+> workers, monitor, stop, resume). This document is the reference: it explains
+> the protocol, every setting, and the advanced modes the example doesn't cover.
+
 The system supports two operating modes:
 - **Synchronous**: All workers must submit before the server applies the outer
   optimizer. Simple and deterministic.
@@ -85,6 +92,11 @@ utilization on 1 Gig Ethernet.
 | 7B         | 14 GB     | 112s                   | 500s compute         | 82%         |
 
 ## Quick Start
+
+This section is a condensed inline reference. For a guided, verified, end-to-end
+run — building the model, starting the Forgather/dataset/DiLoCo servers, launching
+workers, monitoring, stopping, and resuming — follow the canonical CLI example at
+[`examples/tiny_experiments/diloco/`](../../examples/tiny_experiments/diloco/README.md).
 
 ### 1. Start the Server
 
@@ -224,11 +236,21 @@ forgather diloco status --server localhost:8512 --watch    # refresh in place
 ```
 
 Shows sync round, registered workers, their hostnames, training speeds, and
-pending sync submissions. In async mode, also shows total submissions, DN buffer
-status, and DyLU configuration. Add `--queues` to also list the work-unit
-queues (issued / completed / total per `(dataset_id, shuffle_seed)`), and
-`--json` to emit the whole snapshot (status + info + workers [+ queues]) as a
-single JSON object for scripting / agents.
+pending sync submissions, plus the outer-optimizer config (`SGD(lr, momentum)`),
+the server's save/output dir, and the fault-tolerance thresholds (heartbeat
+timeout, min workers). In async mode, also shows total submissions, DN buffer
+status, and DyLU configuration. The known-worker line expands into a
+**resumable roster** — the not-running worker_ids (with last-seen times) you can
+relaunch under to resume from their checkpoints.
+
+Add `--queues` to also show **work-unit dispatch** per `(dataset_id,
+shuffle_seed)` queue: a human-readable dataset label (from the worker's
+load-args hint, e.g. `wikitext@train`) with the raw `dataset_id` hash kept as a
+secondary line, the dataset row count, issued/completed counts with a percent,
+and a **per-worker issued/completed breakdown** (the `by_worker` table). The
+per-unit heatmap is webui-only — it doesn't translate to a terminal. Pass
+`--json` to emit the whole snapshot (status + info + workers [+ queues, with
+`by_worker`]) as a single JSON object for scripting / agents.
 
 It also shows **unified training statistics** — a server-level view aggregated
 from every worker (see [Unified statistics](#unified-statistics)): total tokens
@@ -335,6 +357,17 @@ server, guaranteed unique), `--dataset auto|local|server:<id>`,
 `--gpus-per-worker`, `--priority`. A single explicit `--worker-id` is
 honored; `--count > 1` requires the server (you can't foreground N). Add
 `--json` to `server` / `worker` to get the queue ids back for scripting.
+
+**`--dataset` default is mode-aware**, mirroring the webui Submit-job
+modal: when you don't pass `--dataset`, workers default to `auto` (cluster
+routing) if the forgather server is in cluster mode, otherwise `local` (the
+in-process loader). An explicit value always wins — pass `--dataset local`
+to force the in-process loader even in cluster mode. Note that `auto` does
+**not** fall back to local: if the cluster has no healthy dataset server for
+the requested dataset, the worker retries (server still warming up / none
+yet) or fails loudly (warmed up, none can serve it) rather than silently
+loading in-process — so a cluster running `auto` must actually have a
+dataset server.
 
 `--resume-workers` is a distinct mode: it re-launches every *stopped*
 worker the server's known-worker roster reports (deduped on the pipeline
@@ -941,7 +974,8 @@ Or add the callback directly in your project template:
         heartbeat_interval: {{ diloco_heartbeat_interval | default(None) }}
 ```
 
-See `examples/tiny_experiments/diloco/` for a complete working example.
+See [`examples/tiny_experiments/diloco/`](../../examples/tiny_experiments/diloco/README.md)
+— the canonical end-to-end CLI walkthrough — for a complete working example.
 
 ### Checkpoint Behavior
 
@@ -1335,8 +1369,11 @@ If SSH tunneling is impractical (e.g., trusted LAN with many workers), you can
 bind to all interfaces:
 
 ```bash
-forgather diloco server -o ./model -n 4 --host 0.0.0.0
+forgather diloco server -o ./model -n 4 -H 0.0.0.0
 ```
+
+(`-H` is the short alias for `--host`, matching `forgather server` and
+`forgather dataset-server start`.)
 
 **Warning**: This exposes the server's HTTP control endpoints (including
 `/control/shutdown`, `/control/update_optimizer`, etc., which the webui

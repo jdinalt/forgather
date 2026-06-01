@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 
 import pytest
 
@@ -151,12 +152,156 @@ def test_render_status_shows_aggregate_stats(capsys):
     )
     orch.render_status(merged, want_queues=False)
     out = capsys.readouterr().out
-    assert "Training stats (aggregate)" in out
+    # num_reporting annotates the aggregate header.
+    assert "Training stats (aggregate of 2 reporting):" in out
     assert "14,547,721" in out
     assert "172,215 tok/s" in out
     assert "17.0%" in out
     assert "7.4327" in out
     assert "@ step 400" in out
+
+
+def test_render_status_aggregate_without_num_reporting(capsys):
+    # No num_reporting → plain header, no "(aggregate of N reporting)".
+    merged = orch.assemble_status(
+        get_status=lambda: {
+            "status": "running",
+            "aggregate_stats": {"total_tokens": 100},
+        },
+        get_info=lambda: {},
+        get_known_workers=lambda: {},
+        get_work_queues=None,
+    )
+    orch.render_status(merged, want_queues=False)
+    out = capsys.readouterr().out
+    assert "Training stats (aggregate):" in out
+    assert "reporting" not in out
+
+
+def test_render_status_header_fields(capsys):
+    # Outer-optimizer config, save_dir, min_workers, fragment_submissions —
+    # all sourced from /status (save_dir falls back to info.output_dir).
+    merged = orch.assemble_status(
+        get_status=lambda: {
+            "status": "running",
+            "outer_lr": 0.7,
+            "outer_momentum": 0.9,
+            "heartbeat_timeout": 120,
+            "min_workers": 2,
+            "fragment_submissions": 12,
+        },
+        get_info=lambda: {"output_dir": "/tmp/run42"},
+        get_known_workers=lambda: {},
+        get_work_queues=None,
+    )
+    orch.render_status(merged, want_queues=False)
+    out = capsys.readouterr().out
+    # No outer_optimizer field → reconstruct from lr/momentum (old servers).
+    assert "SGD(lr=0.7, momentum=0.9)" in out
+    assert "Save dir:      /tmp/run42" in out
+    assert "min workers: 2" in out
+    assert "Frag submits:  12" in out
+
+
+def test_render_status_prefers_server_optimizer_description(capsys):
+    # When the server supplies the full optimizer description, render it
+    # verbatim (shows nesterov etc.) instead of reconstructing SGD(lr, mom).
+    merged = orch.assemble_status(
+        get_status=lambda: {
+            "status": "running",
+            "outer_optimizer": "SGD(lr=0.7, momentum=0.9, nesterov=True)",
+            "outer_lr": 0.7,
+            "outer_momentum": 0.9,
+        },
+        get_info=lambda: {},
+        get_known_workers=lambda: {},
+        get_work_queues=None,
+    )
+    orch.render_status(merged, want_queues=False)
+    out = capsys.readouterr().out
+    assert "Outer opt:     SGD(lr=0.7, momentum=0.9, nesterov=True)" in out
+    # The reconstructed two-field form must not also appear.
+    assert "SGD(lr=0.7, momentum=0.9)\n" not in out
+
+
+def test_render_status_known_workers_resumable(capsys):
+    merged = orch.assemble_status(
+        get_status=lambda: {"status": "running"},
+        get_info=lambda: {},
+        get_known_workers=lambda: {
+            "workers": [
+                {"worker_id": "live-one", "running": True},
+                {
+                    "worker_id": "stopped-one",
+                    "running": False,
+                    "last_registered": 1_700_000_000,
+                },
+            ]
+        },
+        get_work_queues=None,
+    )
+    orch.render_status(merged, want_queues=False)
+    out = capsys.readouterr().out
+    assert "Known workers: 2 (1 running)" in out
+    assert "Resumable (not running):" in out
+    assert "stopped-one" in out
+    # The running worker is not offered as resumable.
+    assert "live-one" not in out.split("Resumable")[1]
+
+
+def test_render_status_work_dispatch_label_and_by_worker(capsys):
+    # The detail getter attaches by_worker; the hint yields a readable label
+    # while the raw dataset_id stays visible as a secondary line.
+    def detail(ds, seed):
+        assert ds == "abc123" and seed == 0
+        return {
+            "by_worker": {
+                "w0": {"units_issued": 5, "units_completed": 4},
+                "w1": {"units_issued": 3, "units_completed": 3},
+            }
+        }
+
+    merged = orch.assemble_status(
+        get_status=lambda: {"status": "running"},
+        get_info=lambda: {},
+        get_known_workers=lambda: {},
+        get_work_queues=lambda: [
+            {
+                "dataset_id": "abc123",
+                "shuffle_seed": 0,
+                "total_units": 100,
+                "issued_count": 8,
+                "completed_count": 7,
+                "hint": {"length": 50000, "path": "wikitext", "split": "train"},
+            }
+        ],
+        get_work_queue_detail=detail,
+    )
+    orch.render_status(merged, want_queues=True)
+    out = capsys.readouterr().out
+    assert "Work-unit dispatch:" in out
+    assert "wikitext@train@0: 8/100 issued (8% issued), 7 confirmed" in out
+    assert "50,000 rows" in out
+    assert "dataset_id: abc123" in out
+    assert "w0" in out and "w1" in out
+
+
+def test_assemble_status_detail_failure_is_tolerated():
+    # A failing detail fetch must not drop the queue summary.
+    def boom(ds, seed):
+        raise RuntimeError("upstream 404")
+
+    merged = orch.assemble_status(
+        get_status=lambda: {},
+        get_info=lambda: {},
+        get_known_workers=lambda: {},
+        get_work_queues=lambda: [
+            {"dataset_id": "x", "shuffle_seed": 0, "total_units": 1}
+        ],
+        get_work_queue_detail=boom,
+    )
+    assert merged["work_queues"][0]["dataset_id"] == "x"
+    assert "by_worker" not in merged["work_queues"][0]
 
 
 def test_render_status_skips_empty_aggregate(capsys):
@@ -186,6 +331,8 @@ class FakeClient:
         dump=b"",
         tty_path=None,
         known=None,
+        cluster_self=None,
+        cluster_self_raises=False,
     ):
         self._servers = servers or []
         self._jobs = jobs or []
@@ -193,8 +340,16 @@ class FakeClient:
         self._dump = dump
         self._tty_path = tty_path
         self._known = known or {"workers": []}
+        self._cluster_self = cluster_self
+        self._cluster_self_raises = cluster_self_raises
         self.enqueued = []
         self.base = "http://fake-orch:8765"
+
+    def cluster_self(self):
+        # null in standalone mode, an identity dict in cluster mode.
+        if self._cluster_self_raises:
+            raise RuntimeError("cluster probe failed")
+        return self._cluster_self
 
     def diloco_known_workers(self, base):
         return self._known
@@ -475,6 +630,84 @@ class TestDatasetSource:
             orch.parse_dataset_source("bogus")
 
 
+class TestResolveDatasetSource:
+    """Mode-aware default for an unset --dataset (mirrors the webui)."""
+
+    def test_explicit_value_wins_even_in_cluster(self):
+        # An explicit --dataset is honored verbatim regardless of mode.
+        client = FakeClient(cluster_self={"node_id": "n1"})
+        assert (
+            orch.resolve_dataset_source(client, argparse.Namespace(dataset="local"))
+            is None
+        )
+        assert orch.resolve_dataset_source(
+            client, argparse.Namespace(dataset="server:user:x")
+        ) == {"kind": "server", "server_id": "user:x"}
+
+    def test_unset_defaults_to_auto_in_cluster(self, capsys):
+        client = FakeClient(cluster_self={"node_id": "n1", "is_master": True})
+        assert orch.resolve_dataset_source(
+            client, argparse.Namespace(dataset=None)
+        ) == {"kind": "auto"}
+        cap = capsys.readouterr()
+        # Informational message goes to stderr, never stdout (keeps --json clean).
+        assert "auto (cluster routing)" in cap.err
+        assert cap.out == ""
+
+    def test_unset_defaults_to_local_in_standalone(self):
+        client = FakeClient(cluster_self=None)  # standalone
+        assert (
+            orch.resolve_dataset_source(client, argparse.Namespace(dataset=None))
+            is None
+        )
+
+    def test_probe_failure_falls_back_to_local(self):
+        client = FakeClient(cluster_self_raises=True)
+        assert (
+            orch.resolve_dataset_source(client, argparse.Namespace(dataset=None))
+            is None
+        )
+
+
+class TestResolveConfigName:
+    """Worker launch resolves the config like `forgather train`: explicit -t
+    wins, else the project's default_config from meta.yaml."""
+
+    def test_explicit_wins(self):
+        ns = argparse.Namespace(config_template="x.yaml", project_dir="/p")
+        assert orch._resolve_config_name(ns) == "x.yaml"
+
+    def test_default_from_meta(self, monkeypatch):
+        import forgather
+
+        class FakeMeta:
+            @staticmethod
+            def find_project_dir(p):
+                return p
+
+            def __init__(self, pdir):
+                pass
+
+            def default_config(self):
+                return "default.yaml"
+
+        monkeypatch.setattr(forgather, "MetaConfig", FakeMeta)
+        ns = argparse.Namespace(config_template=None, project_dir="/p")
+        assert orch._resolve_config_name(ns) == "default.yaml"
+
+    def test_none_when_no_project(self, monkeypatch):
+        import forgather
+
+        class FakeMeta:
+            @staticmethod
+            def find_project_dir(p):
+                raise RuntimeError("no meta.yaml")
+
+        monkeypatch.setattr(forgather, "MetaConfig", FakeMeta)
+        ns = argparse.Namespace(config_template=None, project_dir="/nope")
+        assert orch._resolve_config_name(ns) is None
+
+
 def _server_args(**over):
     base = dict(
         output_dir="/m",
@@ -522,6 +755,20 @@ class TestLaunchServer:
         # dylu off → no dylu_base_sync_every; auth on but regen off → no regen_token
         assert "dylu_base_sync_every" not in jp
         assert "regen_token" not in jp
+
+    def test_relative_output_dir_is_absolutized(self, patch_orchestrator):
+        # The scheduler launches the job from the repo root, so a relative
+        # --output-dir must be resolved against the CLI's CWD before enqueue.
+        client = patch_orchestrator(FakeClient())
+        rc = orch.launch_server(
+            _server_args(output_dir="../../models/small", from_checkpoint="ckpt/x")
+        )
+        assert rc == 0
+        kw = client.enqueued[0]
+        assert kw["project_dir"] == os.path.abspath("../../models/small")
+        assert kw["job_params"]["output_dir"] == os.path.abspath("../../models/small")
+        assert kw["job_params"]["from_checkpoint"] == os.path.abspath("ckpt/x")
+        assert os.path.isabs(kw["job_params"]["output_dir"])
 
 
 def _worker_args(**over):
@@ -575,6 +822,37 @@ class TestLaunchWorkers:
         # unknown server passed through verbatim
         assert client.enqueued[0]["job_params"]["diloco"]["server_addr"] == "h:8512"
 
+    def test_unset_dataset_defaults_auto_in_cluster(self, patch_orchestrator):
+        # --dataset omitted + server in cluster mode → auto, like the webui.
+        client = patch_orchestrator(
+            FakeClient(servers=SERVERS, cluster_self={"node_id": "n1"})
+        )
+        rc = orch.launch_workers(_worker_args(worker_id="w0", dataset=None), {})
+        assert rc == 0
+        assert client.enqueued[0]["dataset_source"] == {"kind": "auto"}
+
+    def test_unset_dataset_defaults_local_in_standalone(self, patch_orchestrator):
+        # --dataset omitted + standalone server → local (no dataset_source).
+        client = patch_orchestrator(FakeClient(servers=SERVERS, cluster_self=None))
+        rc = orch.launch_workers(_worker_args(worker_id="w0", dataset=None), {})
+        assert rc == 0
+        assert client.enqueued[0]["dataset_source"] is None
+
+    def test_json_stdout_clean_with_auto_default(self, patch_orchestrator, capsys):
+        # --json + unset --dataset in cluster mode: the "dataset source: auto"
+        # note must go to stderr so stdout stays parseable JSON.
+        client = patch_orchestrator(
+            FakeClient(servers=SERVERS, cluster_self={"node_id": "n1"})
+        )
+        rc = orch.launch_workers(
+            _worker_args(worker_id="w0", dataset=None, json=True), {}
+        )
+        assert rc == 0
+        cap = capsys.readouterr()
+        parsed = json.loads(cap.out)  # raises if stdout was polluted
+        assert parsed[0]["worker_id"] == "w0"
+        assert "auto (cluster routing)" in cap.err
+
     def test_missing_config_errors(self, patch_orchestrator, capsys):
         patch_orchestrator(FakeClient())
         rc = orch.launch_workers(_worker_args(config_template=None), {})
@@ -585,6 +863,17 @@ class TestLaunchWorkers:
         patch_orchestrator(FakeClient())
         rc = orch.launch_workers(_worker_args(dataset="nope"), {})
         assert rc == 1
+
+    def test_no_dash_t_uses_project_default_config(
+        self, patch_orchestrator, monkeypatch
+    ):
+        # No -t: the enqueued job's config is the project's default_config
+        # (resolved like `forgather train`), not an error.
+        client = patch_orchestrator(FakeClient(servers=SERVERS))
+        monkeypatch.setattr(orch, "_resolve_config_name", lambda args: "default.yaml")
+        rc = orch.launch_workers(_worker_args(config_template=None, worker_id="w0"), {})
+        assert rc == 0
+        assert client.enqueued[0]["config"] == "default.yaml"
 
     def test_implicit_single_server(self, patch_orchestrator):
         one = [{"id": "local:q1", "base_url": "http://127.0.0.1:8512"}]

@@ -13,6 +13,7 @@ and shell pipelines can consume them.
 """
 
 import json
+import os
 import re
 import sys
 
@@ -224,12 +225,25 @@ def resolve_orchestrator_base(args):
 # ---------------------------------------------------------------------------
 
 
-def assemble_status(*, get_status, get_info, get_known_workers, get_work_queues):
-    """Merge the four DiLoCo read endpoints into one dict.
+def assemble_status(
+    *,
+    get_status,
+    get_info,
+    get_known_workers,
+    get_work_queues,
+    get_work_queue_detail=None,
+):
+    """Merge the DiLoCo read endpoints into one dict.
 
     Each getter is a zero-arg callable; any that raises is recorded as
     ``None`` so a partial server (e.g. one with no work queues yet) still
     produces useful output rather than failing the whole command.
+
+    ``get_work_queue_detail`` is the only two-arg getter — ``(dataset_id,
+    shuffle_seed) -> detail dict``. When provided, each queue summary is
+    enriched in place with its ``by_worker`` dispatch breakdown (the
+    per-unit bitmaps are intentionally dropped — they don't render in a
+    terminal). A failed detail fetch leaves that queue's summary untouched.
     """
 
     def _safe(fn):
@@ -238,11 +252,23 @@ def assemble_status(*, get_status, get_info, get_known_workers, get_work_queues)
         except Exception:
             return None
 
+    queues = _safe(get_work_queues) if get_work_queues else None
+    if queues and get_work_queue_detail is not None:
+        for q in queues:
+            if not isinstance(q, dict):
+                continue
+            try:
+                detail = get_work_queue_detail(q["dataset_id"], q["shuffle_seed"])
+            except Exception:
+                continue
+            if isinstance(detail, dict) and "by_worker" in detail:
+                q["by_worker"] = detail["by_worker"]
+
     return {
         "status": _safe(get_status),
         "info": _safe(get_info),
         "known_workers": _safe(get_known_workers),
-        "work_queues": _safe(get_work_queues) if get_work_queues else None,
+        "work_queues": queues,
     }
 
 
@@ -286,7 +312,11 @@ def _render_aggregate_stats(agg):
         lines.append(f"  Eval loss:     {el:.4f}{suffix}")
     if lines:
         print()
-        print("Training stats (aggregate):")
+        nr = agg.get("num_reporting")
+        if nr:
+            print(f"Training stats (aggregate of {nr} reporting):")
+        else:
+            print("Training stats (aggregate):")
         for line in lines:
             print(line)
 
@@ -318,6 +348,25 @@ def render_status(merged, *, want_queues):
             line += f" ({size_mb:.1f} MB)"
         print(line)
 
+    # Outer-optimizer config (the core DiLoCo hyperparameters) and the
+    # checkpoint/output dir — both shown in the webui dashboard but absent
+    # from the CLI until now. Prefer the server's full one-line description
+    # (class + every hyperparameter, incl. nesterov; generalizes beyond SGD);
+    # fall back to reconstructing it from lr/momentum for older servers.
+    outer_opt = status.get("outer_optimizer")
+    outer_lr = status.get("outer_lr")
+    outer_momentum = status.get("outer_momentum")
+    if outer_opt:
+        print(f"  Outer opt:     {outer_opt}")
+    elif outer_lr is not None or outer_momentum is not None:
+        print(
+            f"  Outer opt:     SGD(lr={outer_lr if outer_lr is not None else '?'}, "
+            f"momentum={outer_momentum if outer_momentum is not None else '?'})"
+        )
+    save_dir = status.get("save_dir") or info.get("output_dir")
+    if save_dir:
+        print(f"  Save dir:      {save_dir}")
+
     if status.get("mode") == "async":
         print(f"  Submissions:   {status.get('total_submissions', 0)}")
         dn_buf = status.get("dn_buffer_size", 0)
@@ -329,9 +378,16 @@ def render_status(merged, *, want_queues):
     deaths = status.get("total_worker_deaths", 0)
     if deaths:
         print(f"  Worker deaths: {deaths}")
+    frag = status.get("fragment_submissions")
+    if frag:
+        print(f"  Frag submits:  {frag}")
     hb_timeout = status.get("heartbeat_timeout", 0)
     if hb_timeout:
-        print(f"  HB timeout:    {hb_timeout}s")
+        line = f"  HB timeout:    {hb_timeout}s"
+        min_workers = status.get("min_workers")
+        if min_workers is not None:
+            line += f" (min workers: {min_workers})"
+        print(line)
     pending = status.get("pending_submissions", [])
     if pending:
         print(f"  Pending sync:  {', '.join(pending)}")
@@ -363,30 +419,75 @@ def render_status(merged, *, want_queues):
         running = sum(1 for w in known if w.get("running"))
         print()
         print(f"Known workers: {len(known)} ({running} running)")
+        # List the not-running (resumable) names so an operator can pick a
+        # worker_id to relaunch under (`--resume-workers` / a `--worker-id`
+        # that resumes that worker's checkpoint). Running names can't be
+        # relaunched, so they stay out of this roster.
+        resumable = [w for w in known if not w.get("running")]
+        if resumable:
+            print("  Resumable (not running):")
+            for w in sorted(resumable, key=lambda x: str(x.get("worker_id", ""))):
+                wid = str(w.get("worker_id", "?"))
+                last = w.get("last_registered")
+                when = (
+                    datetime.datetime.fromtimestamp(last).strftime("%Y-%m-%d %H:%M")
+                    if last
+                    else "—"
+                )
+                print(f"    {wid:<30} last seen {when}")
 
     if want_queues:
         queues = merged.get("work_queues")
         print()
         if not queues:
-            print("Work-unit queues: none")
+            print("Work-unit dispatch: none")
         else:
-            print("Work-unit queues:")
-            print(
-                f"  {'dataset_id':<24} {'seed':<12} {'issued':>8} "
-                f"{'done':>8} {'total':>8}"
-            )
-            print("  " + "-" * 64)
+            print("Work-unit dispatch:")
             for q in queues:
-                ds = str(q.get("dataset_id", "?"))
-                if len(ds) > 23:
-                    ds = ds[:20] + "..."
-                print(
-                    f"  {ds:<24} {str(q.get('shuffle_seed', '?')):<12} "
-                    f"{q.get('issued_count', 0):>8} "
-                    f"{q.get('completed_count', 0):>8} "
-                    f"{q.get('total_units', 0):>8}"
-                )
+                label = _queue_label(q) or str(q.get("dataset_id", "?"))
+                seed = q.get("shuffle_seed", "?")
+                issued = q.get("issued_count", 0)
+                done = q.get("completed_count", 0)
+                total = q.get("total_units", 0) or 0
+                rows = (q.get("hint") or {}).get("length")
+                pct = f" ({100 * issued / total:.0f}% issued)" if total else ""
+                head = f"  {label}@{seed}: {issued}/{total} issued{pct}"
+                if done:
+                    head += f", {done} confirmed"
+                if rows:
+                    head += f" — {rows:,} rows"
+                print(head)
+                # When the label isn't the raw hash, keep the opaque
+                # dataset_id visible (it keys the queue) but secondary.
+                if _queue_label(q):
+                    print(f"    dataset_id: {q.get('dataset_id', '?')}")
+                by_worker = q.get("by_worker") or {}
+                if by_worker:
+                    print(f"    {'worker':<30} {'issued':>8} {'completed':>10}")
+                    for wid, c in sorted(by_worker.items()):
+                        print(
+                            f"    {str(wid):<30} "
+                            f"{c.get('units_issued', 0):>8} "
+                            f"{c.get('units_completed', 0):>10}"
+                        )
     return 0
+
+
+def _queue_label(q):
+    """Human-readable dataset label from a queue summary's ``hint`` fields
+    (``path:name@split``), or ``None`` when the worker shipped no hint
+    (legacy server) so the caller falls back to the raw ``dataset_id`` hash.
+    Mirrors the webui's ``formatQueueLabel``."""
+    hint = (q or {}).get("hint") or {}
+    path = hint.get("path")
+    if not path:
+        return None
+    label = str(path)
+    if hint.get("name"):
+        label += f":{hint['name']}"
+    if hint.get("split"):
+        label += f"@{hint['split']}"
+    return label
 
 
 # ---------------------------------------------------------------------------
@@ -571,9 +672,14 @@ def unregister_cmd(args):
 
 def _server_job_params(args):
     """Build the ``diloco_server`` job_params from the `server` subparser
-    args — the same shape the webui's DiLoCoServerModal submits."""
+    args — the same shape the webui's DiLoCoServerModal submits.
+
+    Paths are absolutized against the CLI's CWD before they go into the job:
+    the scheduler launches the job from the forgather repo root, so a
+    relative ``--output-dir`` typed in the user's shell would otherwise
+    resolve against the wrong directory."""
     p = {
-        "output_dir": args.output_dir,
+        "output_dir": os.path.abspath(args.output_dir),
         "port": args.port,
         "num_workers": args.num_workers,
         "host": args.host,
@@ -597,7 +703,7 @@ def _server_job_params(args):
     if p["dylu"]:
         p["dylu_base_sync_every"] = args.dylu_base_sync_every
     if getattr(args, "from_checkpoint", None):
-        p["from_checkpoint"] = args.from_checkpoint
+        p["from_checkpoint"] = os.path.abspath(args.from_checkpoint)
     if not p["no_auth"] and getattr(args, "regen_token", False):
         p["regen_token"] = True
     return p
@@ -610,7 +716,7 @@ def launch_server(args):
     client = _orchestrator(args)
     try:
         item = client.enqueue_job(
-            project_dir=args.output_dir,
+            project_dir=os.path.abspath(args.output_dir),
             config=f"diloco:{args.port}",
             job_type="diloco_server",
             job_params=_server_job_params(args),
@@ -648,6 +754,39 @@ def parse_dataset_source(spec):
     )
 
 
+def resolve_dataset_source(client, args):
+    """Resolve ``--dataset`` into an ``EnqueueRequest.dataset_source`` dict.
+
+    An explicit ``--dataset`` value always wins (including ``local``, the
+    in-process loader). When ``--dataset`` is **unset**, the default is
+    mode-aware, matching the webui Submit modal: ``auto`` (cluster routing)
+    when the forgather server is in cluster mode, otherwise local (``None``).
+    The cluster probe is best-effort — a failed/empty probe falls back to
+    local — and the chosen default is logged so the picked source is visible
+    to scripts. Raises ``ValueError`` on an invalid explicit value.
+    """
+    spec = getattr(args, "dataset", None)
+    if spec:
+        # Explicit value wins verbatim (local / auto / server:<id>).
+        return parse_dataset_source(spec)
+    # Unset → mode-aware default. cluster_self() is null in standalone mode,
+    # an identity object in cluster mode (same gate the webui uses).
+    try:
+        in_cluster = client.cluster_self() is not None
+    except Exception:
+        in_cluster = False
+    if in_cluster:
+        # Informational only → stderr, so it never pollutes the --json stdout
+        # the launch handlers emit for agent/script consumption.
+        print(
+            "dataset source: auto (cluster routing) — server is in cluster "
+            "mode; pass --dataset local to override",
+            file=sys.stderr,
+        )
+        return {"kind": "auto"}
+    return None
+
+
 def _resolve_worker_server(client, args):
     """Resolve the DiLoCo server the worker(s) connect to (a routable
     base_url when the forgather server knows it, else the verbatim
@@ -677,6 +816,23 @@ def _resolve_worker_server(client, args):
     return server
 
 
+def _resolve_config_name(args):
+    """The config name to launch workers with: the explicit ``-t``, or the
+    project's ``default_config`` from meta.yaml (like ``forgather train`` and
+    the other subcommands). Returns ``None`` when neither is available (no
+    project / no default), so the caller can error clearly."""
+    explicit = getattr(args, "config_template", None)
+    if explicit:
+        return explicit
+    try:
+        from forgather import MetaConfig
+
+        project_dir = MetaConfig.find_project_dir(getattr(args, "project_dir", "."))
+        return MetaConfig(project_dir).default_config() or None
+    except Exception:
+        return None
+
+
 def _enqueue_worker_jobs(client, names, server, args, dynamic_args, dataset_source):
     """Enqueue one training job per worker name (shared by launch + resume).
 
@@ -685,7 +841,7 @@ def _enqueue_worker_jobs(client, names, server, args, dynamic_args, dataset_sour
     """
     from .server_client import AuthRequired, ServerUnreachable
 
-    config = getattr(args, "config_template", None)
+    config = _resolve_config_name(args)
     hb = getattr(args, "heartbeat_interval", None)
     gpus = getattr(args, "gpus_per_worker", 1)
     priority = getattr(args, "priority", 0)
@@ -733,23 +889,22 @@ def launch_workers(args, dynamic_args):
     given), and enqueue one training job per worker with the shared dynamic
     args + dataset source.
     """
-    config = getattr(args, "config_template", None)
-    if not config:
+    if not _resolve_config_name(args):
         print(
-            "error: launching a worker needs a config — pass -t <config> "
+            "error: launching a worker needs a config — none given (-t) and "
+            "no default_config in the project's meta.yaml. Pass -t <config> "
             "(e.g. forgather -p <project> -t <config> diloco worker …).",
             file=sys.stderr,
         )
         return 1
-    try:
-        dataset_source = parse_dataset_source(getattr(args, "dataset", None))
-    except ValueError as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-
     from .server_client import AuthRequired, ServerUnreachable
 
     client = _orchestrator(args)
+    try:
+        dataset_source = resolve_dataset_source(client, args)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     server = _resolve_worker_server(client, args)
     if server is None:
         return 1
@@ -813,20 +968,19 @@ def launch_resume(args, dynamic_args):
     """
     from .server_client import AuthRequired, ServerUnreachable
 
-    config = getattr(args, "config_template", None)
-    if not config:
+    if not _resolve_config_name(args):
         print(
-            "error: resuming workers needs a config — pass -t <config>.",
+            "error: resuming workers needs a config — none given (-t) and no "
+            "default_config in the project's meta.yaml. Pass -t <config>.",
             file=sys.stderr,
         )
         return 1
+    client = _orchestrator(args)
     try:
-        dataset_source = parse_dataset_source(getattr(args, "dataset", None))
+        dataset_source = resolve_dataset_source(client, args)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-
-    client = _orchestrator(args)
     # Resume needs a server the forgather server knows — that's where the
     # known-worker roster comes from.
     explicit = getattr(args, "server", None)

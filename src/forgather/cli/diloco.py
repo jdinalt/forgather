@@ -323,6 +323,11 @@ def _status_cmd(args):
         get_info = lambda: client.diloco_server_info(base)  # noqa: E731
         get_known = lambda: client.diloco_known_workers(base)  # noqa: E731
         get_queues = (lambda: client.diloco_work_queues(base)) if want_queues else None
+        get_queue_detail = (
+            (lambda ds, seed: client.diloco_work_queue(base, ds, seed))  # noqa: E731
+            if want_queues
+            else None
+        )
         source = {"via": "orchestrator", "base": base}
         target = base
     else:
@@ -343,6 +348,7 @@ def _status_cmd(args):
         get_info = c.get_info
         get_known = c.get_known_workers
         get_queues = c.get_work_queues if want_queues else None
+        get_queue_detail = c.get_work_queue if want_queues else None
         source = {"via": "direct", "server": direct_server}
         target = direct_server
 
@@ -366,6 +372,7 @@ def _status_cmd(args):
             get_info=get_info,
             get_known_workers=get_known,
             get_work_queues=get_queues,
+            get_work_queue_detail=get_queue_detail,
         )
         if as_json:
             print(json.dumps({"source": source, **merged}, default=str, indent=2))
@@ -520,9 +527,13 @@ def _shutdown_cmd(args):
 
 def _load_dynamic_schema(project_dir, config_template):
     """Return the config's ``dynamic_args`` schema (list of entry dicts), or
-    ``[]`` on any failure / when no config is selected."""
-    if not config_template:
-        return []
+    ``[]`` on any failure.
+
+    ``config_template=None`` resolves the project's DEFAULT config (via
+    ``Project(config_name=None)``), matching the parser side
+    (``diloco_args.parse_dynamic_args``) and ``forgather train`` — so the
+    worker collects + forwards dynamic args even without an explicit ``-t``.
+    """
     try:
         from forgather import MetaConfig, Project
 
