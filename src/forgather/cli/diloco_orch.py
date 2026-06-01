@@ -224,12 +224,25 @@ def resolve_orchestrator_base(args):
 # ---------------------------------------------------------------------------
 
 
-def assemble_status(*, get_status, get_info, get_known_workers, get_work_queues):
-    """Merge the four DiLoCo read endpoints into one dict.
+def assemble_status(
+    *,
+    get_status,
+    get_info,
+    get_known_workers,
+    get_work_queues,
+    get_work_queue_detail=None,
+):
+    """Merge the DiLoCo read endpoints into one dict.
 
     Each getter is a zero-arg callable; any that raises is recorded as
     ``None`` so a partial server (e.g. one with no work queues yet) still
     produces useful output rather than failing the whole command.
+
+    ``get_work_queue_detail`` is the only two-arg getter — ``(dataset_id,
+    shuffle_seed) -> detail dict``. When provided, each queue summary is
+    enriched in place with its ``by_worker`` dispatch breakdown (the
+    per-unit bitmaps are intentionally dropped — they don't render in a
+    terminal). A failed detail fetch leaves that queue's summary untouched.
     """
 
     def _safe(fn):
@@ -238,11 +251,23 @@ def assemble_status(*, get_status, get_info, get_known_workers, get_work_queues)
         except Exception:
             return None
 
+    queues = _safe(get_work_queues) if get_work_queues else None
+    if queues and get_work_queue_detail is not None:
+        for q in queues:
+            if not isinstance(q, dict):
+                continue
+            try:
+                detail = get_work_queue_detail(q["dataset_id"], q["shuffle_seed"])
+            except Exception:
+                continue
+            if isinstance(detail, dict) and "by_worker" in detail:
+                q["by_worker"] = detail["by_worker"]
+
     return {
         "status": _safe(get_status),
         "info": _safe(get_info),
         "known_workers": _safe(get_known_workers),
-        "work_queues": _safe(get_work_queues) if get_work_queues else None,
+        "work_queues": queues,
     }
 
 
@@ -286,7 +311,11 @@ def _render_aggregate_stats(agg):
         lines.append(f"  Eval loss:     {el:.4f}{suffix}")
     if lines:
         print()
-        print("Training stats (aggregate):")
+        nr = agg.get("num_reporting")
+        if nr:
+            print(f"Training stats (aggregate of {nr} reporting):")
+        else:
+            print("Training stats (aggregate):")
         for line in lines:
             print(line)
 
@@ -318,6 +347,20 @@ def render_status(merged, *, want_queues):
             line += f" ({size_mb:.1f} MB)"
         print(line)
 
+    # Outer-optimizer config (the core DiLoCo hyperparameters) and the
+    # checkpoint/output dir — both shown in the webui dashboard but absent
+    # from the CLI until now.
+    outer_lr = status.get("outer_lr")
+    outer_momentum = status.get("outer_momentum")
+    if outer_lr is not None or outer_momentum is not None:
+        print(
+            f"  Outer opt:     SGD(lr={outer_lr if outer_lr is not None else '?'}, "
+            f"momentum={outer_momentum if outer_momentum is not None else '?'})"
+        )
+    save_dir = status.get("save_dir") or info.get("output_dir")
+    if save_dir:
+        print(f"  Save dir:      {save_dir}")
+
     if status.get("mode") == "async":
         print(f"  Submissions:   {status.get('total_submissions', 0)}")
         dn_buf = status.get("dn_buffer_size", 0)
@@ -329,9 +372,16 @@ def render_status(merged, *, want_queues):
     deaths = status.get("total_worker_deaths", 0)
     if deaths:
         print(f"  Worker deaths: {deaths}")
+    frag = status.get("fragment_submissions")
+    if frag:
+        print(f"  Frag submits:  {frag}")
     hb_timeout = status.get("heartbeat_timeout", 0)
     if hb_timeout:
-        print(f"  HB timeout:    {hb_timeout}s")
+        line = f"  HB timeout:    {hb_timeout}s"
+        min_workers = status.get("min_workers")
+        if min_workers is not None:
+            line += f" (min workers: {min_workers})"
+        print(line)
     pending = status.get("pending_submissions", [])
     if pending:
         print(f"  Pending sync:  {', '.join(pending)}")
@@ -363,30 +413,75 @@ def render_status(merged, *, want_queues):
         running = sum(1 for w in known if w.get("running"))
         print()
         print(f"Known workers: {len(known)} ({running} running)")
+        # List the not-running (resumable) names so an operator can pick a
+        # worker_id to relaunch under (`--resume-workers` / a `--worker-id`
+        # that resumes that worker's checkpoint). Running names can't be
+        # relaunched, so they stay out of this roster.
+        resumable = [w for w in known if not w.get("running")]
+        if resumable:
+            print("  Resumable (not running):")
+            for w in sorted(resumable, key=lambda x: str(x.get("worker_id", ""))):
+                wid = str(w.get("worker_id", "?"))
+                last = w.get("last_registered")
+                when = (
+                    datetime.datetime.fromtimestamp(last).strftime("%Y-%m-%d %H:%M")
+                    if last
+                    else "—"
+                )
+                print(f"    {wid:<30} last seen {when}")
 
     if want_queues:
         queues = merged.get("work_queues")
         print()
         if not queues:
-            print("Work-unit queues: none")
+            print("Work-unit dispatch: none")
         else:
-            print("Work-unit queues:")
-            print(
-                f"  {'dataset_id':<24} {'seed':<12} {'issued':>8} "
-                f"{'done':>8} {'total':>8}"
-            )
-            print("  " + "-" * 64)
+            print("Work-unit dispatch:")
             for q in queues:
-                ds = str(q.get("dataset_id", "?"))
-                if len(ds) > 23:
-                    ds = ds[:20] + "..."
-                print(
-                    f"  {ds:<24} {str(q.get('shuffle_seed', '?')):<12} "
-                    f"{q.get('issued_count', 0):>8} "
-                    f"{q.get('completed_count', 0):>8} "
-                    f"{q.get('total_units', 0):>8}"
-                )
+                label = _queue_label(q) or str(q.get("dataset_id", "?"))
+                seed = q.get("shuffle_seed", "?")
+                issued = q.get("issued_count", 0)
+                done = q.get("completed_count", 0)
+                total = q.get("total_units", 0) or 0
+                rows = (q.get("hint") or {}).get("length")
+                pct = f" ({100 * issued / total:.0f}% issued)" if total else ""
+                head = f"  {label}@{seed}: {issued}/{total} issued{pct}"
+                if done:
+                    head += f", {done} confirmed"
+                if rows:
+                    head += f" — {rows:,} rows"
+                print(head)
+                # When the label isn't the raw hash, keep the opaque
+                # dataset_id visible (it keys the queue) but secondary.
+                if _queue_label(q):
+                    print(f"    dataset_id: {q.get('dataset_id', '?')}")
+                by_worker = q.get("by_worker") or {}
+                if by_worker:
+                    print(f"    {'worker':<30} {'issued':>8} {'completed':>10}")
+                    for wid, c in sorted(by_worker.items()):
+                        print(
+                            f"    {str(wid):<30} "
+                            f"{c.get('units_issued', 0):>8} "
+                            f"{c.get('units_completed', 0):>10}"
+                        )
     return 0
+
+
+def _queue_label(q):
+    """Human-readable dataset label from a queue summary's ``hint`` fields
+    (``path:name@split``), or ``None`` when the worker shipped no hint
+    (legacy server) so the caller falls back to the raw ``dataset_id`` hash.
+    Mirrors the webui's ``formatQueueLabel``."""
+    hint = (q or {}).get("hint") or {}
+    path = hint.get("path")
+    if not path:
+        return None
+    label = str(path)
+    if hint.get("name"):
+        label += f":{hint['name']}"
+    if hint.get("split"):
+        label += f"@{hint['split']}"
+    return label
 
 
 # ---------------------------------------------------------------------------

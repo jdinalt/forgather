@@ -224,11 +224,21 @@ forgather diloco status --server localhost:8512 --watch    # refresh in place
 ```
 
 Shows sync round, registered workers, their hostnames, training speeds, and
-pending sync submissions. In async mode, also shows total submissions, DN buffer
-status, and DyLU configuration. Add `--queues` to also list the work-unit
-queues (issued / completed / total per `(dataset_id, shuffle_seed)`), and
-`--json` to emit the whole snapshot (status + info + workers [+ queues]) as a
-single JSON object for scripting / agents.
+pending sync submissions, plus the outer-optimizer config (`SGD(lr, momentum)`),
+the server's save/output dir, and the fault-tolerance thresholds (heartbeat
+timeout, min workers). In async mode, also shows total submissions, DN buffer
+status, and DyLU configuration. The known-worker line expands into a
+**resumable roster** — the not-running worker_ids (with last-seen times) you can
+relaunch under to resume from their checkpoints.
+
+Add `--queues` to also show **work-unit dispatch** per `(dataset_id,
+shuffle_seed)` queue: a human-readable dataset label (from the worker's
+load-args hint, e.g. `wikitext@train`) with the raw `dataset_id` hash kept as a
+secondary line, the dataset row count, issued/completed counts with a percent,
+and a **per-worker issued/completed breakdown** (the `by_worker` table). The
+per-unit heatmap is webui-only — it doesn't translate to a terminal. Pass
+`--json` to emit the whole snapshot (status + info + workers [+ queues, with
+`by_worker`]) as a single JSON object for scripting / agents.
 
 It also shows **unified training statistics** — a server-level view aggregated
 from every worker (see [Unified statistics](#unified-statistics)): total tokens

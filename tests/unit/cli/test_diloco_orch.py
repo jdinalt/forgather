@@ -151,12 +151,134 @@ def test_render_status_shows_aggregate_stats(capsys):
     )
     orch.render_status(merged, want_queues=False)
     out = capsys.readouterr().out
-    assert "Training stats (aggregate)" in out
+    # num_reporting annotates the aggregate header.
+    assert "Training stats (aggregate of 2 reporting):" in out
     assert "14,547,721" in out
     assert "172,215 tok/s" in out
     assert "17.0%" in out
     assert "7.4327" in out
     assert "@ step 400" in out
+
+
+def test_render_status_aggregate_without_num_reporting(capsys):
+    # No num_reporting → plain header, no "(aggregate of N reporting)".
+    merged = orch.assemble_status(
+        get_status=lambda: {
+            "status": "running",
+            "aggregate_stats": {"total_tokens": 100},
+        },
+        get_info=lambda: {},
+        get_known_workers=lambda: {},
+        get_work_queues=None,
+    )
+    orch.render_status(merged, want_queues=False)
+    out = capsys.readouterr().out
+    assert "Training stats (aggregate):" in out
+    assert "reporting" not in out
+
+
+def test_render_status_header_fields(capsys):
+    # Outer-optimizer config, save_dir, min_workers, fragment_submissions —
+    # all sourced from /status (save_dir falls back to info.output_dir).
+    merged = orch.assemble_status(
+        get_status=lambda: {
+            "status": "running",
+            "outer_lr": 0.7,
+            "outer_momentum": 0.9,
+            "heartbeat_timeout": 120,
+            "min_workers": 2,
+            "fragment_submissions": 12,
+        },
+        get_info=lambda: {"output_dir": "/tmp/run42"},
+        get_known_workers=lambda: {},
+        get_work_queues=None,
+    )
+    orch.render_status(merged, want_queues=False)
+    out = capsys.readouterr().out
+    assert "SGD(lr=0.7, momentum=0.9)" in out
+    assert "Save dir:      /tmp/run42" in out
+    assert "min workers: 2" in out
+    assert "Frag submits:  12" in out
+
+
+def test_render_status_known_workers_resumable(capsys):
+    merged = orch.assemble_status(
+        get_status=lambda: {"status": "running"},
+        get_info=lambda: {},
+        get_known_workers=lambda: {
+            "workers": [
+                {"worker_id": "live-one", "running": True},
+                {
+                    "worker_id": "stopped-one",
+                    "running": False,
+                    "last_registered": 1_700_000_000,
+                },
+            ]
+        },
+        get_work_queues=None,
+    )
+    orch.render_status(merged, want_queues=False)
+    out = capsys.readouterr().out
+    assert "Known workers: 2 (1 running)" in out
+    assert "Resumable (not running):" in out
+    assert "stopped-one" in out
+    # The running worker is not offered as resumable.
+    assert "live-one" not in out.split("Resumable")[1]
+
+
+def test_render_status_work_dispatch_label_and_by_worker(capsys):
+    # The detail getter attaches by_worker; the hint yields a readable label
+    # while the raw dataset_id stays visible as a secondary line.
+    def detail(ds, seed):
+        assert ds == "abc123" and seed == 0
+        return {
+            "by_worker": {
+                "w0": {"units_issued": 5, "units_completed": 4},
+                "w1": {"units_issued": 3, "units_completed": 3},
+            }
+        }
+
+    merged = orch.assemble_status(
+        get_status=lambda: {"status": "running"},
+        get_info=lambda: {},
+        get_known_workers=lambda: {},
+        get_work_queues=lambda: [
+            {
+                "dataset_id": "abc123",
+                "shuffle_seed": 0,
+                "total_units": 100,
+                "issued_count": 8,
+                "completed_count": 7,
+                "hint": {"length": 50000, "path": "wikitext", "split": "train"},
+            }
+        ],
+        get_work_queue_detail=detail,
+    )
+    orch.render_status(merged, want_queues=True)
+    out = capsys.readouterr().out
+    assert "Work-unit dispatch:" in out
+    assert "wikitext@train@0: 8/100 issued (8% issued), 7 confirmed" in out
+    assert "50,000 rows" in out
+    assert "dataset_id: abc123" in out
+    assert "w0" in out and "w1" in out
+
+
+def test_assemble_status_detail_failure_is_tolerated():
+    # A failing detail fetch must not drop the queue summary.
+    def boom(ds, seed):
+        raise RuntimeError("upstream 404")
+
+    merged = orch.assemble_status(
+        get_status=lambda: {},
+        get_info=lambda: {},
+        get_known_workers=lambda: {},
+        get_work_queues=lambda: [
+            {"dataset_id": "x", "shuffle_seed": 0, "total_units": 1}
+        ],
+        get_work_queue_detail=boom,
+    )
+    assert merged["work_queues"][0]["dataset_id"] == "x"
+    assert "by_worker" not in merged["work_queues"][0]
 
 
 def test_render_status_skips_empty_aggregate(capsys):

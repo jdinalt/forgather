@@ -304,7 +304,11 @@ def create_diloco_parser(global_args):
     status_parser.add_argument(
         "--queues",
         action="store_true",
-        help="Also show the work-unit queues (issued / completed / total).",
+        help=(
+            "Also show work-unit dispatch: per-queue dataset label, row "
+            "count, issued/completed, and a per-worker issued/completed "
+            "breakdown (no per-unit heatmap — see the webui for that)."
+        ),
     )
     status_parser.add_argument(
         "--watch",
