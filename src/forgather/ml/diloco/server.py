@@ -31,6 +31,8 @@ import json
 import logging
 import math
 import os
+import platform
+import re
 import socket
 import ssl
 import struct
@@ -463,6 +465,7 @@ class DiLoCoServer:
         ssl_context: Optional["ssl.SSLContext"] = None,
         bulk_cleartext: bool = False,
         default_work_units: int = 1024,
+        run_name: Optional[str] = None,
     ):
         if num_workers < 1:
             raise ValueError(f"num_workers must be >= 1, got {num_workers}")
@@ -478,6 +481,9 @@ class DiLoCoServer:
         self.host = host
         self.port = port or self._find_available_port()
         self.output_dir = output_dir
+        # Operator label for this run's stats log dir; consumed in
+        # _initialize (which also runs on resume, so it must not own this).
+        self._run_name = run_name
         self.save_every_n_rounds = save_every_n_rounds
         self.save_total_limit = save_total_limit
         self.async_mode = async_mode
@@ -720,11 +726,21 @@ class DiLoCoServer:
         from .stats import StatsAggregator
 
         self._stats = StatsAggregator()
-        # Stats log (JSONL, append-only). _maybe_log_stats runs on concurrent
-        # heartbeat threads, so its file IO + the step/eval bookkeeping are
-        # guarded by this lock.
+        # Per-run log directory (mirrors the trainer: <output_dir>/runs/
+        # <time_ns>_<name>), holding both the JSONL stats stream and a
+        # TensorBoard event file. A fresh start gets a new dir; the chosen
+        # subdir is persisted in the checkpoint so a resume continues into the
+        # same dir (TensorBoard resumes via purge_step). Distinct runs are
+        # retained for comparison/overlay. _maybe_log_stats runs on concurrent
+        # heartbeat threads, so its IO + bookkeeping are guarded by this lock.
+        # (``self._run_name`` is set in __init__ — _initialize also runs on
+        # resume and must not clobber it.)
         self._stats_log_lock = threading.Lock()
-        self._stats_log_started = False  # has this process written/truncated yet
+        self._stats_run_dir = None  # resolved absolute run dir (lazy)
+        self._stats_run_subdir = None  # relative "runs/..." for the checkpoint
+        self._resume_run_subdir = None  # prior run subdir, from load_state
+        self._tb_writer = None  # torch TensorBoard SummaryWriter (lazy)
+        self._tb_purge_step = None  # discard TB events after this step on resume
         self._stats_log_step = -1  # last total_steps a stats record was logged at
         self._last_logged_eval_step = None  # eval_step of the last eval logged
 
@@ -2201,49 +2217,117 @@ class DiLoCoServer:
         """
         if not self.output_dir:
             return
-        # Serialize concurrent heartbeat threads: the step check, the
-        # truncate-once flag, and the append must be atomic or two workers
-        # race on the same file.
+        # Serialize concurrent heartbeat threads: the step check and the
+        # appends must be atomic or two workers race on the same files.
         with self._stats_log_lock:
             snap = self._stats.snapshot()
             steps = int(snap.get("total_steps", 0) or 0)
             if steps <= self._stats_log_step:
                 return
+            run_dir = self._ensure_run_dir()
+            if run_dir is None:
+                return
+            data = {k: v for k, v in snap.items() if k != "total_steps"}
+            data["global_step"] = steps
+            data["sync_round"] = self._sync_round
+            data["timestamp"] = time.time()
+            # Emit eval_loss only on records where a *new* eval arrived (the
+            # eval_step advanced); null it otherwise. eval is sparse relative
+            # to the per-step stats stream, so repeating the held EMA value on
+            # every record would draw a flat staircase — nulling between evals
+            # lets the plot connect the real eval points into a curve (the
+            # chart spans gaps), matching a worker's TensorBoard eval line.
+            eval_step = snap.get("eval_step")
+            eval_fresh = (
+                eval_step is not None and eval_step != self._last_logged_eval_step
+            )
+            if not eval_fresh:
+                data["eval_loss"] = None
+            else:
+                self._last_logged_eval_step = eval_step
+            # JSONL stream (append-only; the run dir is unique per fresh run so
+            # a new run starts an empty file, while a resumed run continues its
+            # own file).
             try:
-                path = self._stats_log_path()
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                data = {k: v for k, v in snap.items() if k != "total_steps"}
-                data["global_step"] = steps
-                data["sync_round"] = self._sync_round
-                data["timestamp"] = time.time()
-                # Emit eval_loss only on records where a *new* eval arrived
-                # (the eval_step advanced); null it otherwise. eval is sparse
-                # relative to the per-step stats stream, so repeating the held
-                # EMA value on every record would draw a flat staircase —
-                # nulling between evals lets the plot connect the real eval
-                # points into a curve (the chart spans gaps), matching a
-                # worker's TensorBoard eval line.
-                eval_step = snap.get("eval_step")
-                if eval_step is None or eval_step == self._last_logged_eval_step:
-                    data["eval_loss"] = None
-                else:
-                    self._last_logged_eval_step = eval_step
-                # Truncate a stale log on the first write of this process;
-                # append thereafter.
-                mode = "a" if self._stats_log_started else "w"
-                with open(path, mode) as f:
+                with open(os.path.join(run_dir, self._STATS_LOG_FILENAME), "a") as f:
                     f.write(json.dumps(data) + "\n")
-                self._stats_log_started = True
-                self._stats_log_step = steps
             except Exception as e:  # pragma: no cover - must not break HB
                 logger.warning("Failed to write server stats log: %s", e)
+            # TensorBoard mirror, for overlay/comparison across runs.
+            self._log_to_tensorboard(steps, snap, eval_fresh)
+            self._stats_log_step = steps
 
-    def _stats_log_path(self) -> Optional[str]:
-        """Path to the aggregate-stats JSONL log, or None when there's no
-        ``output_dir`` to write under."""
+    def _ensure_run_dir(self) -> Optional[str]:
+        """Resolve (and create) this run's log directory under
+        ``<output_dir>/runs/``. Caller holds ``_stats_log_lock``.
+
+        Reuses the prior run's dir on resume (``_resume_run_subdir`` from the
+        checkpoint) for continuity; otherwise creates a fresh
+        ``runs/<time_ns>_<name>`` (matching the trainer's convention, so common
+        tools / TensorBoard can read them together). Returns None when there's
+        no ``output_dir`` to write under.
+        """
+        if self._stats_run_dir is not None:
+            return self._stats_run_dir
         if not self.output_dir:
             return None
-        return os.path.join(self.output_dir, "logs", self._STATS_LOG_FILENAME)
+        if self._resume_run_subdir:
+            candidate = os.path.join(self.output_dir, self._resume_run_subdir)
+            if os.path.isdir(candidate):
+                self._stats_run_dir = candidate
+                self._stats_run_subdir = self._resume_run_subdir
+                logger.info("Stats: resuming run log dir %s", candidate)
+                return candidate
+        name = self._run_name or platform.node() or "diloco"
+        # Sanitize the (operator-supplied) name to a safe path component —
+        # no separators / traversal, conservative character set.
+        name = re.sub(r"[^A-Za-z0-9._-]", "-", name)[:64] or "diloco"
+        subdir = os.path.join("runs", f"{time.time_ns()}_{name}")
+        self._stats_run_dir = os.path.join(self.output_dir, subdir)
+        self._stats_run_subdir = subdir
+        os.makedirs(self._stats_run_dir, exist_ok=True)
+        logger.info("Stats: logging this run to %s", self._stats_run_dir)
+        return self._stats_run_dir
+
+    def _log_to_tensorboard(self, step: int, snap: dict, eval_fresh: bool) -> None:
+        """Mirror the aggregate snapshot to a TensorBoard event file in the run
+        dir. Caller holds ``_stats_log_lock``. Best-effort. Scalar tags match
+        the trainer's (``train-loss``/``eval-loss``/``grad-norm``) so a worker's
+        own TB run and the server aggregate overlay in TensorBoard."""
+        try:
+            if self._tb_writer is None:
+                from torch.utils.tensorboard import SummaryWriter
+
+                kwargs = {}
+                if self._tb_purge_step is not None:
+                    kwargs["purge_step"] = self._tb_purge_step
+                self._tb_writer = SummaryWriter(self._stats_run_dir, **kwargs)
+            w = self._tb_writer
+
+            def add(tag, key):
+                v = snap.get(key)
+                if isinstance(v, (int, float)):
+                    w.add_scalar(tag, v, global_step=step)
+
+            add("train-loss", "train_loss")
+            add("grad-norm", "grad_norm")
+            add("tokens-per-sec", "tok_per_sec")
+            add("mfu", "mfu")
+            add("total-tokens", "total_tokens")
+            add("total-flos", "total_flos")
+            add("peak-memory", "peak_memory")
+            if eval_fresh:
+                add("eval-loss", "eval_loss")
+            w.flush()
+        except Exception as e:  # pragma: no cover - must not break HB
+            logger.warning("Failed to write server TensorBoard stats: %s", e)
+
+    def _stats_log_path(self) -> Optional[str]:
+        """Path to the current run's aggregate-stats JSONL log, or None when no
+        run dir has been resolved yet (no ``output_dir`` / nothing logged)."""
+        if not self._stats_run_dir:
+            return None
+        return os.path.join(self._stats_run_dir, self._STATS_LOG_FILENAME)
 
     def _handle_stats_history(self, handler: BaseHTTPRequestHandler):
         """Serve the aggregate-stats history (the JSONL log the server writes)
@@ -3327,10 +3411,12 @@ class DiLoCoServer:
             "work_queues": work_queues,
             "dataset_lengths": dataset_lengths,
             # Unified-stats lifetime counters + EMA state, so total
-            # tokens/flos/steps and the smoothed loss survive a restart. The
-            # JSONL stats log itself is append-only and not checkpoint-coupled
-            # (each process starts a fresh stream), so it needs no saved state.
+            # tokens/flos/steps and the smoothed loss survive a restart, plus
+            # the run's log subdir so a resume continues logging into the same
+            # runs/<...> dir (JSONL appends, TensorBoard resumes via purge_step)
+            # rather than fragmenting across a new dir each restart.
             "stats": self._stats.state_dict(),
+            "stats_run_subdir": self._stats_run_subdir,
         }
         torch.save(server_state, os.path.join(checkpoint_path, "server_state.pt"))
 
@@ -3483,11 +3569,14 @@ class DiLoCoServer:
 
             # Restore unified-stats lifetime state (counters, per-worker
             # last-seen baselines, loss EMA). Absent on pre-feature
-            # checkpoints → start fresh. The JSONL stats log is append-only and
-            # truncated fresh on this process's first write, so there's no log
-            # state to restore; the throttle starts below total_steps so the
+            # checkpoints → start fresh. Reuse the prior run's log subdir for
+            # continuity (JSONL append + TensorBoard purge_step past the
+            # restored step); the throttle starts below total_steps so the
             # first post-restart record writes.
             self._stats.load_state_dict(server_state.get("stats") or {})
+            self._resume_run_subdir = server_state.get("stats_run_subdir")
+            if self._resume_run_subdir:
+                self._tb_purge_step = self._stats.total_steps
             self._stats_log_step = -1
 
             # Restore work-unit dispatch state (#105): the per-(dataset_id,
@@ -3748,6 +3837,11 @@ class DiLoCoServer:
                 logger.error("Failed to save server state on stop: %s", exc)
         self._stop_health_monitor()
         self._stop_bulk_listener()
+        if self._tb_writer is not None:
+            try:
+                self._tb_writer.close()
+            except Exception:
+                pass
         if self._server:
             self._server.shutdown()
             self._running = False

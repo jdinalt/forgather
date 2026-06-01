@@ -519,12 +519,28 @@ by `worker_id`, relaunching a worker under the same id (`diloco worker
 history. Live gauges are recomputed from the workers currently reporting and a
 worker the server evicts drops out of them.
 
-When the server has an `output_dir`, it also writes the aggregate stream to
-`<output_dir>/logs/diloco_server_stats.jsonl` (one JSON record per line,
-append-only; each server process starts a fresh stream). The webui DiLoCo
-server view plots train/eval loss from this history (scroll to zoom, drag to
-pan, double-click to reset); it's served via `GET /stats_history` (proxied as
-`GET /api/diloco/stats-history`).
+### Run directories and logs
+
+When the server has an `output_dir`, each freshly-started run logs to its own
+directory under `<output_dir>/runs/<timestamp>_<run-name>` (the same `runs/`
+convention the trainers use, so common tooling and TensorBoard can read them
+together). `--run-name` sets the label (defaults to the hostname); a resume
+from checkpoint continues the prior run's directory rather than fragmenting
+across a new one. Keeping each run in its own directory makes it easy to retain
+and compare runs with different parameters.
+
+Each run directory holds two things:
+
+- `diloco_server_stats.jsonl` — the aggregate stream, one JSON record per line
+  (append-only). The webui DiLoCo server view plots train/eval loss from it
+  (scroll to zoom, drag to pan, double-click to reset), served via
+  `GET /stats_history` (proxied as `GET /api/diloco/stats-history`). This
+  in-panel plot is for quick diagnostics.
+- TensorBoard event files — the same aggregates mirrored via the torch
+  TensorBoard logger (resuming where it left off on restart, like the trainer).
+  Point TensorBoard at `<output_dir>/runs` to overlay and compare runs, or to
+  overlay the server aggregate against a worker's own run (the scalar tags
+  `train-loss` / `eval-loss` / `grad-norm` match the trainer's).
 
 Per-worker eval curves don't track precisely between syncs — for that detail,
 point TensorBoard at an individual worker's `output_dir`. The server's

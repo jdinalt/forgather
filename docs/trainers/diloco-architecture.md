@@ -877,16 +877,27 @@ Aggregation rules:
   `loss = S/Z`); `S`/`Z` persist so smoothing survives a resume. `train_loss`
   uses a stronger decay than the weak-EMA `eval_loss`.
 
-When `output_dir` is set the server also appends each aggregate snapshot to
-`<output_dir>/logs/diloco_server_stats.jsonl` (one JSON object per line,
-throttled to one record per advance in total steps). It is append-only and
-deliberately not the trainer's JSON-array `JsonLogWriter`: a long-running
-server is restarted often and reuses its `output_dir`, and append-only JSONL
-is robust to a pre-existing log (no exclusive-create race, no truncate-to-empty
-on resume) where the array format's bracket/close management was not. Writes
-are guarded by a lock (`_handle_heartbeat` runs on concurrent threads), and the
-first write of each process truncates a stale log so a run starts a clean
-stream; the log is not checkpoint-coupled.
+When `output_dir` is set the server logs each aggregate snapshot (throttled to
+one record per advance in total steps) into a per-run directory
+`<output_dir>/runs/<time_ns>_<run_name>` — the trainer's `runs/` convention, so
+the two are tooling-compatible. A fresh start makes a new dir (unique by
+`time_ns`); the chosen subdir is persisted in the checkpoint (`stats_run_subdir`)
+and a resume reuses it for continuity. `_run_name` comes from `--run-name`
+(default hostname) and is sanitized to a safe path component. Each run dir holds:
+
+- `diloco_server_stats.jsonl` — one JSON object per line, append-only.
+  Deliberately not the trainer's JSON-array `JsonLogWriter`: append-only JSONL
+  into a unique-per-run dir is robust to restarts (no exclusive-create race, no
+  truncate-to-empty on resume) where the array format's bracket/close
+  management was not. Served by `/stats_history` for the webui plot.
+- TensorBoard event files — the same scalars via a `torch.utils.tensorboard`
+  `SummaryWriter`, tags `train-loss`/`eval-loss`/`grad-norm` (matching the
+  trainer, for overlay) plus `tokens-per-sec`/`mfu`/`total-tokens`/etc. On
+  resume the writer is opened with `purge_step` = the restored total step.
+
+Writes are guarded by `_stats_log_lock` (`_handle_heartbeat` runs on concurrent
+threads). The logs are not otherwise checkpoint-coupled — only the run subdir
+is persisted, for directory continuity.
 
 ---
 

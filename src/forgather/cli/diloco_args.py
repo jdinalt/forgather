@@ -104,6 +104,16 @@ def create_diloco_parser(global_args):
         help="Load model from specified checkpoint path. Overrides loading from newest.",
     )
     server_parser.add_argument(
+        "--run-name",
+        default=None,
+        help=(
+            "Short label for this run's stats log dir "
+            "(<output_dir>/runs/<timestamp>_<run-name>, holding the JSONL\n"
+            "stream + TensorBoard events). Defaults to the hostname. A resume\n"
+            "from checkpoint continues the prior run's dir regardless."
+        ),
+    )
+    server_parser.add_argument(
         "--host",
         type=str,
         default="127.0.0.1",

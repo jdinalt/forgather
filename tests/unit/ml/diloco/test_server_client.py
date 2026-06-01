@@ -320,29 +320,33 @@ class TestUnifiedStats:
         assert agg["eval_loss"] == pytest.approx(2.5)
         assert agg["eval_step"] == 42
 
-    def test_stats_log_written(self, server_and_client):
+    def test_stats_log_written_to_run_dir_with_tensorboard(self, server_and_client):
+        import glob
+
         server, client, sd = server_and_client
         client.register("worker_0")
         client.heartbeat(
             "worker_0",
             stats={"tokens_total": 1000, "step_total": 10, "loss": 3.0},
         )
-        log_path = os.path.join(server.output_dir, "logs", "diloco_server_stats.jsonl")
-        # The log record is written after the heartbeat response is sent (file
-        # IO is kept off the heartbeat latency path), so poll briefly for it.
+        # The record is written after the heartbeat response, so poll for it.
+        pat = os.path.join(server.output_dir, "runs", "*", "diloco_server_stats.jsonl")
         deadline = time.time() + 5.0
-        while not os.path.isfile(log_path) and time.time() < deadline:
+        while not glob.glob(pat) and time.time() < deadline:
             time.sleep(0.05)
-        assert os.path.isfile(log_path)
+        matches = glob.glob(pat)
+        assert matches, "no JSONL under runs/<run>/"
+        with open(matches[0]) as f:
+            assert '"global_step": 10' in f.read()
+        # A TensorBoard event file is written alongside it in the run dir.
+        run_dir = os.path.dirname(matches[0])
         deadline = time.time() + 5.0
-        content = ""
-        while '"global_step": 10' not in content and time.time() < deadline:
-            with open(log_path) as f:
-                content = f.read()
-            if '"global_step": 10' not in content:
-                time.sleep(0.05)
-        # At least one record carrying the aggregate total step.
-        assert '"global_step": 10' in content
+        while (
+            not glob.glob(os.path.join(run_dir, "*tfevents*"))
+            and time.time() < deadline
+        ):
+            time.sleep(0.05)
+        assert glob.glob(os.path.join(run_dir, "*tfevents*")), "no TB event file"
 
     def test_stats_history_endpoint(self, server_and_client):
         server, client, sd = server_and_client
@@ -365,14 +369,15 @@ class TestUnifiedStats:
         assert rec["global_step"] == 10
         assert rec["total_tokens"] == 1000
 
-    def test_stale_log_file_does_not_break_logging(self, tmp_path):
-        # Regression: a stats log left by a prior run in the same output_dir
-        # must not break logging. The JSONL writer truncates a stale file on
-        # the first write of the process and appends thereafter.
-        logs_dir = tmp_path / "logs"
-        logs_dir.mkdir()
-        (logs_dir / "diloco_server_stats.jsonl").write_text(
-            '{"global_step": 999, "train_loss": 1.0}\nGARBAGE LINE\n'
+    def test_fresh_run_isolated_from_old_logs(self, tmp_path):
+        # A fresh start writes to its own unique runs/<ts>_<name> dir, so logs
+        # left by prior runs can't collide with or pollute it (the old shared
+        # logs/ file was the source of the exclusive-create race + stale-data
+        # bugs).
+        old_run = tmp_path / "runs" / "1_old"
+        old_run.mkdir(parents=True)
+        (old_run / "diloco_server_stats.jsonl").write_text(
+            '{"global_step": 999, "train_loss": 1.0}\n'
         )
 
         sd = _make_state_dict()
@@ -382,6 +387,7 @@ class TestUnifiedStats:
             from_checkpoint=ckpt,
             num_workers=1,
             port=0,
+            run_name="experiment-a",
             outer_optimizer_factory=lambda p: torch.optim.SGD(p, lr=1.0),
         )
         server.start()
@@ -398,11 +404,78 @@ class TestUnifiedStats:
             while not hist["records"] and time.time() < deadline:
                 time.sleep(0.05)
                 hist = client.get_stats_history()
-            assert hist["records"], "logging broken by stale log file"
-            # Stale content was truncated; only this run's record remains.
+            assert hist["records"], "logging broken"
+            # This run's history holds only this run's record, not the old 999.
             assert [r["global_step"] for r in hist["records"]] == [10]
+            # ...and it landed in a new, run-name-tagged dir (not the old one).
+            import glob
+
+            dirs = [
+                os.path.basename(d)
+                for d in glob.glob(os.path.join(str(tmp_path), "runs", "*"))
+            ]
+            assert any(d.endswith("_experiment-a") for d in dirs)
+            assert "1_old" in dirs  # the old run dir is retained, untouched
         finally:
             server.stop()
+
+    def _offline_server(self, tmp_path, **kw):
+        # A constructed (not started) server, enough to exercise run-dir logic.
+        sd = _make_state_dict()
+        ckpt = make_initial_checkpoint(sd, tmp_path)
+        return DiLoCoServer(
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=1,
+            port=0,
+            outer_optimizer_factory=lambda p: torch.optim.SGD(p, lr=1.0),
+            **kw,
+        )
+
+    def test_fresh_run_dir_uses_run_name(self, tmp_path):
+        server = self._offline_server(tmp_path, run_name="my exp/01")
+        run_dir = server._ensure_run_dir()
+        assert os.path.isdir(run_dir)
+        # Name is sanitized to a safe path component, no separators.
+        assert server._stats_run_subdir.startswith("runs" + os.sep)
+        assert server._stats_run_subdir.endswith("_my-exp-01")
+        assert ".." not in server._stats_run_subdir
+
+    def test_resume_reuses_prior_run_dir(self, tmp_path):
+        prior = os.path.join("runs", "123_prior")
+        os.makedirs(os.path.join(str(tmp_path), prior))
+        server = self._offline_server(tmp_path)
+        server._resume_run_subdir = prior  # as load_state would set it
+        run_dir = server._ensure_run_dir()
+        assert run_dir == os.path.join(str(tmp_path), prior)
+        assert server._stats_run_subdir == prior
+
+    def test_run_subdir_round_trips_through_checkpoint(self, tmp_path):
+        # save_state persists the run subdir so a resume continues the dir.
+        server = self._offline_server(tmp_path, run_name="r1")
+        server.start()
+        time.sleep(0.2)
+        try:
+            client = DiLoCoClient(f"localhost:{server.port}", timeout=10)
+            client.register("worker_0")
+            client.heartbeat("worker_0", stats={"step_total": 5, "loss": 1.0})
+            deadline = time.time() + 5.0
+            while not client.get_stats_history()["records"] and time.time() < deadline:
+                time.sleep(0.05)
+            subdir = server._stats_run_subdir
+            assert subdir
+            server._dirty = True  # force a save (no sync round occurred)
+            server.save_state()
+        finally:
+            server.stop()
+
+        resumed = DiLoCoServer(
+            output_dir=str(tmp_path),
+            num_workers=1,
+            port=0,
+            outer_optimizer_factory=lambda p: torch.optim.SGD(p, lr=1.0),
+        )
+        assert resumed._resume_run_subdir == subdir
 
     def test_concurrent_heartbeat_stats_do_not_race(self, two_worker_server):
         # Regression: two workers heartbeating with stats at the same instant

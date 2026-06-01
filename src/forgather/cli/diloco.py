@@ -207,6 +207,7 @@ def _server_cmd(args):
         auth_token=auth_token,
         ssl_context=ssl_context,
         bulk_cleartext=bulk_cleartext,
+        run_name=getattr(args, "run_name", None),
     )
 
     # Resolve the display host + scheme for the startup banner. A wildcard
