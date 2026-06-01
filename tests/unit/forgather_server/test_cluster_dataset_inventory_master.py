@@ -21,7 +21,6 @@ import uuid
 
 import httpx
 import pytest
-
 from forgather_server import cluster, cluster_dataset_inventory, cluster_membership
 from forgather_server.cluster_dataset_inventory import (
     LocalServer,
@@ -38,9 +37,7 @@ def isolated_cluster_state(tmp_path, monkeypatch):
     cluster_dir = tmp_path / "cluster"
     cluster_dir.mkdir()
     monkeypatch.setattr(paths, "cluster_state_dir", lambda: cluster_dir)
-    monkeypatch.setattr(
-        paths, "cluster_node_id_file", lambda: cluster_dir / "node_id"
-    )
+    monkeypatch.setattr(paths, "cluster_node_id_file", lambda: cluster_dir / "node_id")
     cluster._reset_for_tests()
     cluster_dataset_inventory._reset_master_state_for_tests()
     cluster_membership._reset_role_listeners_for_tests()
@@ -238,13 +235,19 @@ class TestMasterInventoryStateMachine:
         inv.merge_servers(
             {
                 "s1": MasterServerEntry(
-                    server_id="s1", base_url="http://x:8766",
-                    auth_token="", label="x", source="local",
+                    server_id="s1",
+                    base_url="http://x:8766",
+                    auth_token="",
+                    label="x",
+                    source="local",
                     peer_node_id=None,
                 ),
                 "s2": MasterServerEntry(
-                    server_id="s2", base_url="http://y:8766",
-                    auth_token="", label="y", source="local",
+                    server_id="s2",
+                    base_url="http://y:8766",
+                    auth_token="",
+                    label="y",
+                    source="local",
                     peer_node_id=None,
                 ),
             }
@@ -252,8 +255,11 @@ class TestMasterInventoryStateMachine:
         inv.merge_servers(
             {
                 "s1": MasterServerEntry(
-                    server_id="s1", base_url="http://x:8766",
-                    auth_token="", label="x", source="local",
+                    server_id="s1",
+                    base_url="http://x:8766",
+                    auth_token="",
+                    label="x",
+                    source="local",
                     peer_node_id=None,
                 )
             }
@@ -274,7 +280,7 @@ def _seed_inventory(servers):
     return inv
 
 
-def _make_entry(*, server_id, base_url, healthy=True, locals_names=()):
+def _make_entry(*, server_id, base_url, healthy=True, locals_names=(), loopback=False):
     e = MasterServerEntry(
         server_id=server_id,
         base_url=base_url,
@@ -283,6 +289,7 @@ def _make_entry(*, server_id, base_url, healthy=True, locals_names=()):
         source="local",
         peer_node_id=None,
         healthy=healthy,
+        loopback=loopback,
     )
     e.available_keys = [f"local/{n}" for n in locals_names]
     return e
@@ -295,10 +302,10 @@ class TestResolve:
     ``(base_url, token)`` tuple shape."""
 
     def test_local_path_only_servers_with_that_name(self):
-        a = _make_entry(server_id="a", base_url="http://a:8766",
-                        locals_names=["stories"])
-        b = _make_entry(server_id="b", base_url="http://b:8766",
-                        locals_names=["other"])
+        a = _make_entry(
+            server_id="a", base_url="http://a:8766", locals_names=["stories"]
+        )
+        b = _make_entry(server_id="b", base_url="http://b:8766", locals_names=["other"])
         inv = _seed_inventory([a, b])
         pick = inv.resolve("local/stories")
         assert pick is not None
@@ -307,8 +314,7 @@ class TestResolve:
         assert pick.server_id == "a"
 
     def test_local_returns_none_when_no_match(self):
-        a = _make_entry(server_id="a", base_url="http://a:8766",
-                        locals_names=["other"])
+        a = _make_entry(server_id="a", base_url="http://a:8766", locals_names=["other"])
         inv = _seed_inventory([a])
         assert inv.resolve("local/missing") is None
 
@@ -316,10 +322,12 @@ class TestResolve:
         """Two servers advertising the same local/<name> should be
         treated as interchangeable replicas (the documented redundancy
         story). Verify the resolver picks both over many calls."""
-        a = _make_entry(server_id="a", base_url="http://a:8766",
-                        locals_names=["stories"])
-        b = _make_entry(server_id="b", base_url="http://b:8766",
-                        locals_names=["stories"])
+        a = _make_entry(
+            server_id="a", base_url="http://a:8766", locals_names=["stories"]
+        )
+        b = _make_entry(
+            server_id="b", base_url="http://b:8766", locals_names=["stories"]
+        )
         inv = _seed_inventory([a, b])
         urls = {inv.resolve("local/stories").base_url for _ in range(40)}
         # Statistically vanishingly unlikely to be wrong; >40 calls of
@@ -328,25 +336,61 @@ class TestResolve:
         assert urls == {"http://a:8766", "http://b:8766"}
 
     def test_local_skips_unhealthy(self):
-        a = _make_entry(server_id="a", base_url="http://a:8766",
-                        locals_names=["stories"], healthy=False)
-        b = _make_entry(server_id="b", base_url="http://b:8766",
-                        locals_names=["stories"], healthy=True)
+        a = _make_entry(
+            server_id="a",
+            base_url="http://a:8766",
+            locals_names=["stories"],
+            healthy=False,
+        )
+        b = _make_entry(
+            server_id="b",
+            base_url="http://b:8766",
+            locals_names=["stories"],
+            healthy=True,
+        )
         inv = _seed_inventory([a, b])
         for _ in range(20):
             pick = inv.resolve("local/stories")
             assert pick is not None
             assert pick.base_url == "http://b:8766"
 
+    def test_single_node_includes_loopback(self, monkeypatch):
+        """In a single-node cluster the worker is co-located with a loopback
+        dataset server, so 127.0.0.1 is reachable — resolve must include it
+        instead of 410-ing (e.g. `forgather dataset-server start` without
+        -H 0.0.0.0)."""
+        monkeypatch.setattr(cluster, "members", lambda: ["self"])  # 1 node
+        a = _make_entry(server_id="a", base_url="https://127.0.0.1:8766", loopback=True)
+        inv = _seed_inventory([a])
+        pick = inv.resolve("HuggingFaceTB/smollm-corpus")
+        assert pick is not None
+        assert pick.base_url == "https://127.0.0.1:8766"
+
+    def test_multi_node_excludes_loopback(self, monkeypatch):
+        # >1 node: a loopback server on one node isn't reachable from a worker
+        # on another, so it's excluded (no other candidate → None).
+        monkeypatch.setattr(cluster, "members", lambda: ["self", "peer"])
+        a = _make_entry(server_id="a", base_url="https://127.0.0.1:8766", loopback=True)
+        inv = _seed_inventory([a])
+        assert inv.resolve("HuggingFaceTB/smollm-corpus") is None
+
+    def test_multi_node_prefers_routable_over_loopback(self, monkeypatch):
+        monkeypatch.setattr(cluster, "members", lambda: ["self", "peer"])
+        a = _make_entry(server_id="a", base_url="https://127.0.0.1:8766", loopback=True)
+        b = _make_entry(server_id="b", base_url="https://10.0.0.5:8766", loopback=False)
+        inv = _seed_inventory([a, b])
+        for _ in range(20):
+            pick = inv.resolve("HuggingFaceTB/smollm-corpus")
+            assert pick is not None
+            assert pick.base_url == "https://10.0.0.5:8766"
+
     def test_hf_path_picks_any_healthy_server(self):
         """For non-local requests, the master picks any healthy server
         — the server loads on demand. The client's resilient backend
         retries elsewhere if the chosen server can't actually serve
         the dataset."""
-        a = _make_entry(server_id="a", base_url="http://a:8766",
-                        locals_names=["foo"])
-        b = _make_entry(server_id="b", base_url="http://b:8766",
-                        locals_names=["bar"])
+        a = _make_entry(server_id="a", base_url="http://a:8766", locals_names=["foo"])
+        b = _make_entry(server_id="b", base_url="http://b:8766", locals_names=["bar"])
         inv = _seed_inventory([a, b])
         urls = {inv.resolve("allenai/c4").base_url for _ in range(40)}
         assert urls == {"http://a:8766", "http://b:8766"}
@@ -356,19 +400,21 @@ class TestResolve:
         inv = _seed_inventory([a])
         assert inv.resolve("allenai/c4") is None
 
-    def test_loopback_entries_excluded_from_routing(self):
-        """Loopback entries appear in the inventory (the Servers
-        panel shows them) but ``resolve()`` skips them — other
-        cluster peers can't reach a node-local URL even if the
-        server is healthy from the master's POV."""
+    def test_loopback_entries_excluded_from_routing(self, monkeypatch):
+        """In a MULTI-node cluster, loopback entries appear in the
+        inventory (the Servers panel shows them) but ``resolve()`` skips
+        them — other cluster peers can't reach a node-local URL even if the
+        server is healthy from the master's POV. (Single-node is the
+        exception; see ``test_single_node_includes_loopback``.)"""
+        monkeypatch.setattr(cluster, "members", lambda: ["self", "peer"])
         # Build a loopback entry and a normal one, both with
         # local/stories. Only the non-loopback should be returned.
         loopback = _make_entry(
             server_id="lb",
             base_url="http://127.0.0.1:8766",
             locals_names=["stories"],
+            loopback=True,
         )
-        loopback.loopback = True
         normal = _make_entry(
             server_id="lan",
             base_url="http://10.0.0.5:8766",
@@ -380,17 +426,18 @@ class TestResolve:
             assert pick is not None
             assert pick.base_url == "http://10.0.0.5:8766"
 
-    def test_loopback_only_returns_none(self):
-        """If the only healthy server is loopback, the router returns
-        None — i.e. surfaces 410 to clients. Loopback entries are
-        never cluster-routable, regardless of how many of them there
-        are."""
+    def test_loopback_only_returns_none(self, monkeypatch):
+        """In a multi-node cluster, if the only healthy server is loopback
+        the router returns None — i.e. surfaces 410 to clients, since no
+        peer can reach a node-local URL. (A single-node cluster includes it
+        instead — see ``test_single_node_includes_loopback``.)"""
+        monkeypatch.setattr(cluster, "members", lambda: ["self", "peer"])
         loopback = _make_entry(
             server_id="lb",
             base_url="http://127.0.0.1:8766",
             locals_names=["stories"],
+            loopback=True,
         )
-        loopback.loopback = True
         inv = _seed_inventory([loopback])
         assert inv.resolve("local/stories") is None
         assert inv.resolve("allenai/c4") is None
@@ -430,9 +477,7 @@ class TestCollectServersTick:
             source="local",
             peer_node_id="self",
         )
-        monkeypatch.setattr(
-            cluster_dataset_inventory, "local_servers", lambda: [local]
-        )
+        monkeypatch.setattr(cluster_dataset_inventory, "local_servers", lambda: [local])
         # No peers — only the local server should land in inventory.
 
         def handler(req):
@@ -461,9 +506,7 @@ class TestCollectServersTick:
             cluster_name="c",
             source="peer_pull",
         )
-        monkeypatch.setattr(
-            cluster_dataset_inventory, "local_servers", lambda: []
-        )
+        monkeypatch.setattr(cluster_dataset_inventory, "local_servers", lambda: [])
 
         def handler(req):
             assert req.url.path == "/api/cluster/dataset_servers_local"
@@ -716,12 +759,20 @@ class TestLocalCollisions:
         inv.merge_servers(
             {
                 "a": MasterServerEntry(
-                    server_id="a", base_url="http://a", auth_token="",
-                    label="a", source="local", peer_node_id=None,
+                    server_id="a",
+                    base_url="http://a",
+                    auth_token="",
+                    label="a",
+                    source="local",
+                    peer_node_id=None,
                 ),
                 "b": MasterServerEntry(
-                    server_id="b", base_url="http://b", auth_token="",
-                    label="b", source="local", peer_node_id=None,
+                    server_id="b",
+                    base_url="http://b",
+                    auth_token="",
+                    label="b",
+                    source="local",
+                    peer_node_id=None,
                 ),
             }
         )
@@ -745,12 +796,20 @@ class TestLocalCollisions:
         inv.merge_servers(
             {
                 "a": MasterServerEntry(
-                    server_id="a", base_url="http://a", auth_token="",
-                    label="a", source="local", peer_node_id=None,
+                    server_id="a",
+                    base_url="http://a",
+                    auth_token="",
+                    label="a",
+                    source="local",
+                    peer_node_id=None,
                 ),
                 "b": MasterServerEntry(
-                    server_id="b", base_url="http://b", auth_token="",
-                    label="b", source="local", peer_node_id=None,
+                    server_id="b",
+                    base_url="http://b",
+                    auth_token="",
+                    label="b",
+                    source="local",
+                    peer_node_id=None,
                 ),
             }
         )
@@ -779,12 +838,20 @@ class TestLocalCollisions:
         inv.merge_servers(
             {
                 "a": MasterServerEntry(
-                    server_id="a", base_url="http://a", auth_token="",
-                    label="a", source="local", peer_node_id=None,
+                    server_id="a",
+                    base_url="http://a",
+                    auth_token="",
+                    label="a",
+                    source="local",
+                    peer_node_id=None,
                 ),
                 "b": MasterServerEntry(
-                    server_id="b", base_url="http://b", auth_token="",
-                    label="b", source="local", peer_node_id=None,
+                    server_id="b",
+                    base_url="http://b",
+                    auth_token="",
+                    label="b",
+                    source="local",
+                    peer_node_id=None,
                 ),
             }
         )
