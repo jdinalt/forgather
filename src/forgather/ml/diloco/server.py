@@ -315,6 +315,25 @@ def _default_outer_optimizer_factory(params):
     return torch.optim.SGD(params, lr=0.7, momentum=0.9, nesterov=True)
 
 
+def _describe_optimizer(optimizer) -> str:
+    """One-line description of an optimizer for status display.
+
+    Class name + the full hyperparameter set of its (single) param group,
+    e.g. ``SGD(lr=0.7, momentum=0.9, dampening=0, weight_decay=0,
+    nesterov=True)``. This is more informative than reconstructing
+    ``lr``/``momentum`` client-side — it shows ``nesterov`` and every other
+    knob — and it generalizes to optimizers other than SGD without the CLI
+    having to know their shape. The outer optimizer always has a single param
+    group (one ParameterList); if that ever changes, fall back to a count.
+    """
+    name = type(optimizer).__name__
+    groups = optimizer.param_groups
+    if len(groups) != 1:
+        return f"{name}({len(groups)} param groups)"
+    items = ", ".join(f"{k}={v}" for k, v in groups[0].items() if k != "params")
+    return f"{name}({items})"
+
+
 def _serialize_state_dict(state_dict: Dict[str, torch.Tensor]) -> bytes:
     """Serialize a state dict to bytes using torch.save."""
     buf = io.BytesIO()
@@ -2473,6 +2492,10 @@ class DiLoCoServer:
         pg = self.outer_optimizer.param_groups[0]
         response["outer_lr"] = pg.get("lr", 0)
         response["outer_momentum"] = pg.get("momentum", 0)
+        # Full one-line description (class + all hyperparameters, incl.
+        # nesterov) — generalizes beyond SGD; the lr/momentum fields above
+        # stay for the webui's separate metric cells + back-compat.
+        response["outer_optimizer"] = _describe_optimizer(self.outer_optimizer)
         response["save_dir"] = self.output_dir
         response["model_params"] = self._model_params
         response["model_size_mb"] = round(self._model_size_mb, 2)

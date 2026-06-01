@@ -350,10 +350,15 @@ def render_status(merged, *, want_queues):
 
     # Outer-optimizer config (the core DiLoCo hyperparameters) and the
     # checkpoint/output dir — both shown in the webui dashboard but absent
-    # from the CLI until now.
+    # from the CLI until now. Prefer the server's full one-line description
+    # (class + every hyperparameter, incl. nesterov; generalizes beyond SGD);
+    # fall back to reconstructing it from lr/momentum for older servers.
+    outer_opt = status.get("outer_optimizer")
     outer_lr = status.get("outer_lr")
     outer_momentum = status.get("outer_momentum")
-    if outer_lr is not None or outer_momentum is not None:
+    if outer_opt:
+        print(f"  Outer opt:     {outer_opt}")
+    elif outer_lr is not None or outer_momentum is not None:
         print(
             f"  Outer opt:     SGD(lr={outer_lr if outer_lr is not None else '?'}, "
             f"momentum={outer_momentum if outer_momentum is not None else '?'})"

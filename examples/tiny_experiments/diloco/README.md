@@ -331,7 +331,7 @@ DiLoCo Server Status
   Workers:       0/2
   Uptime:        0h 0m
   Parameters:    34,417,152 (131.3 MB)
-  Outer opt:     SGD(lr=0.7, momentum=0.9)
+  Outer opt:     SGD(lr=0.7, momentum=0.9, dampening=0, weight_decay=0, nesterov=True, maximize=False, foreach=None, differentiable=False, fused=None)
   Save dir:      /mnt/rust/home/dinalt/rust/forgather/models/small_llama
   HB timeout:    120.0s (min workers: 1)
 ```
@@ -384,7 +384,7 @@ DiLoCo Server Status
   Workers:       2/2
   Uptime:        0h 4m
   Parameters:    34,417,152 (131.3 MB)
-  Outer opt:     SGD(lr=0.7, momentum=0.9)
+  Outer opt:     SGD(lr=0.7, momentum=0.9, dampening=0, weight_decay=0, nesterov=True, maximize=False, foreach=None, differentiable=False, fused=None)
   Save dir:      /mnt/rust/home/dinalt/rust/forgather/models/small_llama
   HB timeout:    120.0s (min workers: 1)
 

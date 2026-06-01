@@ -196,10 +196,32 @@ def test_render_status_header_fields(capsys):
     )
     orch.render_status(merged, want_queues=False)
     out = capsys.readouterr().out
+    # No outer_optimizer field → reconstruct from lr/momentum (old servers).
     assert "SGD(lr=0.7, momentum=0.9)" in out
     assert "Save dir:      /tmp/run42" in out
     assert "min workers: 2" in out
     assert "Frag submits:  12" in out
+
+
+def test_render_status_prefers_server_optimizer_description(capsys):
+    # When the server supplies the full optimizer description, render it
+    # verbatim (shows nesterov etc.) instead of reconstructing SGD(lr, mom).
+    merged = orch.assemble_status(
+        get_status=lambda: {
+            "status": "running",
+            "outer_optimizer": "SGD(lr=0.7, momentum=0.9, nesterov=True)",
+            "outer_lr": 0.7,
+            "outer_momentum": 0.9,
+        },
+        get_info=lambda: {},
+        get_known_workers=lambda: {},
+        get_work_queues=None,
+    )
+    orch.render_status(merged, want_queues=False)
+    out = capsys.readouterr().out
+    assert "Outer opt:     SGD(lr=0.7, momentum=0.9, nesterov=True)" in out
+    # The reconstructed two-field form must not also appear.
+    assert "SGD(lr=0.7, momentum=0.9)\n" not in out
 
 
 def test_render_status_known_workers_resumable(capsys):
