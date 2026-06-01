@@ -644,6 +644,45 @@ class TestResolveDatasetSource:
         )
 
 
+class TestResolveConfigName:
+    """Worker launch resolves the config like `forgather train`: explicit -t
+    wins, else the project's default_config from meta.yaml."""
+
+    def test_explicit_wins(self):
+        ns = argparse.Namespace(config_template="x.yaml", project_dir="/p")
+        assert orch._resolve_config_name(ns) == "x.yaml"
+
+    def test_default_from_meta(self, monkeypatch):
+        import forgather
+
+        class FakeMeta:
+            @staticmethod
+            def find_project_dir(p):
+                return p
+
+            def __init__(self, pdir):
+                pass
+
+            def default_config(self):
+                return "default.yaml"
+
+        monkeypatch.setattr(forgather, "MetaConfig", FakeMeta)
+        ns = argparse.Namespace(config_template=None, project_dir="/p")
+        assert orch._resolve_config_name(ns) == "default.yaml"
+
+    def test_none_when_no_project(self, monkeypatch):
+        import forgather
+
+        class FakeMeta:
+            @staticmethod
+            def find_project_dir(p):
+                raise RuntimeError("no meta.yaml")
+
+        monkeypatch.setattr(forgather, "MetaConfig", FakeMeta)
+        ns = argparse.Namespace(config_template=None, project_dir="/nope")
+        assert orch._resolve_config_name(ns) is None
+
+
 def _server_args(**over):
     base = dict(
         output_dir="/m",
@@ -784,6 +823,17 @@ class TestLaunchWorkers:
         patch_orchestrator(FakeClient())
         rc = orch.launch_workers(_worker_args(dataset="nope"), {})
         assert rc == 1
+
+    def test_no_dash_t_uses_project_default_config(
+        self, patch_orchestrator, monkeypatch
+    ):
+        # No -t: the enqueued job's config is the project's default_config
+        # (resolved like `forgather train`), not an error.
+        client = patch_orchestrator(FakeClient(servers=SERVERS))
+        monkeypatch.setattr(orch, "_resolve_config_name", lambda args: "default.yaml")
+        rc = orch.launch_workers(_worker_args(config_template=None, worker_id="w0"), {})
+        assert rc == 0
+        assert client.enqueued[0]["config"] == "default.yaml"
 
     def test_implicit_single_server(self, patch_orchestrator):
         one = [{"id": "local:q1", "base_url": "http://127.0.0.1:8512"}]

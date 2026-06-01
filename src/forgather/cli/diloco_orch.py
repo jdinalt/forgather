@@ -808,6 +808,23 @@ def _resolve_worker_server(client, args):
     return server
 
 
+def _resolve_config_name(args):
+    """The config name to launch workers with: the explicit ``-t``, or the
+    project's ``default_config`` from meta.yaml (like ``forgather train`` and
+    the other subcommands). Returns ``None`` when neither is available (no
+    project / no default), so the caller can error clearly."""
+    explicit = getattr(args, "config_template", None)
+    if explicit:
+        return explicit
+    try:
+        from forgather import MetaConfig
+
+        project_dir = MetaConfig.find_project_dir(getattr(args, "project_dir", "."))
+        return MetaConfig(project_dir).default_config() or None
+    except Exception:
+        return None
+
+
 def _enqueue_worker_jobs(client, names, server, args, dynamic_args, dataset_source):
     """Enqueue one training job per worker name (shared by launch + resume).
 
@@ -816,7 +833,7 @@ def _enqueue_worker_jobs(client, names, server, args, dynamic_args, dataset_sour
     """
     from .server_client import AuthRequired, ServerUnreachable
 
-    config = getattr(args, "config_template", None)
+    config = _resolve_config_name(args)
     hb = getattr(args, "heartbeat_interval", None)
     gpus = getattr(args, "gpus_per_worker", 1)
     priority = getattr(args, "priority", 0)
@@ -864,10 +881,10 @@ def launch_workers(args, dynamic_args):
     given), and enqueue one training job per worker with the shared dynamic
     args + dataset source.
     """
-    config = getattr(args, "config_template", None)
-    if not config:
+    if not _resolve_config_name(args):
         print(
-            "error: launching a worker needs a config — pass -t <config> "
+            "error: launching a worker needs a config — none given (-t) and "
+            "no default_config in the project's meta.yaml. Pass -t <config> "
             "(e.g. forgather -p <project> -t <config> diloco worker …).",
             file=sys.stderr,
         )
@@ -943,10 +960,10 @@ def launch_resume(args, dynamic_args):
     """
     from .server_client import AuthRequired, ServerUnreachable
 
-    config = getattr(args, "config_template", None)
-    if not config:
+    if not _resolve_config_name(args):
         print(
-            "error: resuming workers needs a config — pass -t <config>.",
+            "error: resuming workers needs a config — none given (-t) and no "
+            "default_config in the project's meta.yaml. Pass -t <config>.",
             file=sys.stderr,
         )
         return 1
