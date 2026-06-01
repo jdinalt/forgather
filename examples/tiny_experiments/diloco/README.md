@@ -524,13 +524,15 @@ forgather diloco server --output-dir ../../../models/small_llama --num-workers 2
 forgather diloco worker --resume-workers
 ```
 
-> **Re-pass any custom dynamic args on resume.** `--resume-workers` rebuilds each
-> worker's args from the resume command line + the config defaults; it does *not*
-> yet remember the args the workers were originally launched with
-> ([#124](https://github.com/jdinalt/forgather/issues/124)). So if you launched
-> with a non-default budget (e.g. `--total-tokens 250` for a fair 2-worker
-> comparison), pass the **same** flags again on resume, or the run silently
-> reverts to the config's full budget:
+> **Dynamic args are per-launch — re-pass any non-default ones on resume.**
+> Resume restores each worker's training *state* from its checkpoint — global
+> step, optimizer, and LR scheduler — so it picks up exactly where it stopped
+> (and, given the same `max_steps`, finishes after ~the same number of tokens).
+> The dynamic/template args (`--compile`, `--total-tokens`, …) are read from
+> *this* command line plus the config defaults on every launch — by design, so
+> you can change them on resume (e.g. flip `--compile` back on). The flip side:
+> a **non-default** budget must be repeated, or `max_steps` reverts to the
+> config default. For the halved-budget run above:
 >
 > ```bash
 > forgather -t tiny.yaml diloco worker --resume-workers \
@@ -632,6 +634,24 @@ tokens over the same number of optimizer steps per GPU.
 - **The gap narrows over training** (see the converging loss curves) and would
   likely shrink further with outer-optimizer / `sync_every` tuning — left as an
   exercise.
+
+### Two patterns worth a follow-up
+
+Suggestive, not conclusive at this scale and budget — but they line up with
+known local-SGD behavior and would make good follow-up studies:
+
+- **DiLoCo is still descending faster than the baseline at the end of the run.**
+  The gap shrinks throughout and the late-run slope is steeper, so the curves
+  hint that DiLoCo could *catch up to or overtake* the baseline given a larger
+  token budget. The obvious test: a longer run at the same model size.
+- **DiLoCo's gradient norm keeps falling and sits well below the baseline's,
+  which has flattened.** Local-SGD theory associates the averaging of
+  independently-evolved replicas with settling into *flatter* minima, which tend
+  to generalize better. A held-out / downstream eval on a longer run would be
+  the way to probe whether that shows up here.
+
+That a model synchronizing only **16 times** over the whole run lands this close
+to an all-reduce-every-step baseline is, on its own, a striking result.
 
 The plots and a CSV of the parsed curves are in [`assets/`](assets/); the
 analysis script that produced them is
