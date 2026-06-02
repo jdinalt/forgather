@@ -74,30 +74,25 @@ def add_via_server_arg(parser, help=None):
 # ---------------------------------------------------------------------------
 
 
-def collect_dynamic_args(args):
-    """Collect + validate a config's dynamic args from the parsed namespace.
+def validate_dynamic_args(project_dir, config_template, dynamic_args):
+    """Enforce a config's ``required: true`` dynamic args and numeric bounds.
 
-    Mirrors the validation ``forgather train`` has always done: enforce
-    ``required: true`` schema entries and numeric bounds here (rather than via
-    argparse) so the non-action paths (pp / ls / code) don't trip on
-    placeholder defaults. Exits(1) with a clear message on a missing-required
-    or out-of-bounds value. Returns the ``dynamic_args`` dict.
+    Done here (rather than via argparse) so the non-action paths (pp / ls /
+    code) don't trip on placeholder defaults. Exits(1) with a clear message on
+    a missing-required or out-of-bounds value. Shared by ``collect_dynamic_args``
+    and the DiLoCo worker path (which collects its dynamic args differently but
+    must enforce the same constraints).
     """
-    from .dynamic_args import (
-        get_dynamic_args,
-        required_dynamic_arg_dests,
-        validate_dynamic_arg_bounds,
-    )
+    from .dynamic_args import required_dynamic_arg_dests, validate_dynamic_arg_bounds
 
-    dynamic_args = get_dynamic_args(args)
-    required = required_dynamic_arg_dests(args.project_dir, args.config_template)
+    required = required_dynamic_arg_dests(project_dir, config_template)
     missing = [d for d in required if d not in dynamic_args]
     if missing:
         flags = ", ".join(f"--{d.replace('_', '-')}" for d in missing)
         print(f"error: required dynamic arg(s) missing: {flags}", file=sys.stderr)
         raise SystemExit(1)
     bound_errors = validate_dynamic_arg_bounds(
-        args.project_dir, args.config_template, dynamic_args
+        project_dir, config_template, dynamic_args
     )
     if bound_errors:
         print(
@@ -105,6 +100,18 @@ def collect_dynamic_args(args):
             file=sys.stderr,
         )
         raise SystemExit(1)
+
+
+def collect_dynamic_args(args):
+    """Collect + validate a config's dynamic args from the parsed namespace.
+
+    Mirrors the validation ``forgather train`` has always done. Returns the
+    ``dynamic_args`` dict.
+    """
+    from .dynamic_args import get_dynamic_args
+
+    dynamic_args = get_dynamic_args(args)
+    validate_dynamic_args(args.project_dir, args.config_template, dynamic_args)
     return dynamic_args
 
 
