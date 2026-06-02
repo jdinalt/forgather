@@ -168,3 +168,41 @@ def tail_job(client, job_id):
             pass
 
     asyncio.run(_run())
+
+
+def attach_submitted(client, queue_id, *, poll_interval=1.0):
+    """Wait for an enqueued job to be dispatched, then stream its TTY.
+
+    Backs the ``--foreground`` submit paths: a job is queued first and only
+    gets a captured TTY once the scheduler dispatches it (it appears in
+    ``list_jobs`` at that point). Poll the queue→jobs transition, then tail.
+    Ctrl-C detaches the terminal without stopping the job (use
+    ``forgather job stop`` to actually stop it).
+    """
+    import time
+
+    from .server_client import ServerUnreachable
+
+    print(
+        f"queued: {queue_id}; waiting for the scheduler to start it "
+        "(Ctrl-C detaches without stopping the job)...",
+        file=sys.stderr,
+    )
+    try:
+        while True:
+            try:
+                jobs = client.list_jobs(include_dead=True)
+            except (ServerUnreachable, RuntimeError) as e:
+                print(f"error: {e}", file=sys.stderr)
+                return
+            if any(j.get("queue_id") == queue_id for j in jobs):
+                break  # dispatched — a TTY now exists to stream
+            time.sleep(poll_interval)
+    except KeyboardInterrupt:
+        print(
+            f"\ndetached; {queue_id} is still queued "
+            "('forgather job cancel' to remove it).",
+            file=sys.stderr,
+        )
+        return
+    tail_job(client, queue_id)

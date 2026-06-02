@@ -4,6 +4,7 @@ import argparse
 from argparse import RawTextHelpFormatter
 
 from .dynamic_args import parse_dynamic_args
+from .submit_orch import add_locality_args
 
 
 def create_train_parser(global_args):
@@ -40,30 +41,66 @@ def create_train_parser(global_args):
         help="Just show the generated commandline, without actually executing it.",
     )
     parser.add_argument(
+        "--schedule",
+        action="store_true",
+        help=(
+            "Submit to the forgather-server scheduler instead of running\n"
+            "locally. Runs in the background by default; --foreground attaches\n"
+            "and streams the job's output. (See also: forgather submit.)"
+        ),
+    )
+    parser.add_argument(
+        "--foreground",
+        action="store_true",
+        help=(
+            "With --schedule, attach to the scheduled job and stream its\n"
+            "output until it exits (Ctrl-C detaches without stopping it)."
+        ),
+    )
+    # Deprecated alias of --schedule (kept so existing scripts/examples work).
+    parser.add_argument(
         "--enqueue",
         action="store_true",
-        help="Submit to the forgather-server queue instead of running locally.",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        metavar="SOURCE",
+        help=(
+            "Dataset source for the scheduled job: 'auto' (cluster routing),\n"
+            "'local' (in-process loader), or 'server:<id>'. Unset = mode-aware\n"
+            "(auto when the server is in cluster mode, else local). Only\n"
+            "applies with --schedule."
+        ),
     )
     parser.add_argument(
         "--priority",
         type=int,
         default=0,
-        help="Queue priority for --enqueue (default: 0).",
+        help="Scheduler priority for --schedule (default: 0).",
     )
     parser.add_argument(
         "--requested-gpus",
         type=int,
         default=None,
         metavar="N",
-        help="Number of GPUs to request when enqueueing (default: nproc_per_node from config).",
+        help="GPUs to request when scheduling (default: nproc_per_node from config).",
     )
     parser.add_argument(
         "--server",
+        "--via-server",
+        dest="via_server",
         type=str,
         default=None,
         metavar="URL",
-        help="forgather-server URL for --enqueue (default: $FORGATHER_SERVER_URL or http://127.0.0.1:8765).",
+        help=(
+            "forgather-server URL for --schedule (default: $FORGATHER_SERVER_URL"
+            " or http://127.0.0.1:8765)."
+        ),
     )
+    add_locality_args(parser)
     parser.add_argument(
         "remainder",
         nargs=argparse.REMAINDER,
