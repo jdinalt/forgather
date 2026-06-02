@@ -779,6 +779,11 @@ def diloco_cmd(args):
     elif subcmd == "shutdown":
         return _shutdown_cmd(args)
     elif subcmd == "worker":
+        print(
+            "note: 'forgather diloco worker' is deprecated; use "
+            "'forgather submit --diloco-server <id>' (the unified submit verb).",
+            file=sys.stderr,
+        )
         return _worker_cmd(args)
     elif subcmd == "servers":
         from .diloco_orch import servers_cmd

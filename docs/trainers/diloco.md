@@ -166,15 +166,20 @@ explicit `--output-dir` the operator passes, so workers get distinct
 per-worker dirs for free):
 
 ```bash
-forgather diloco worker \
-    --server 192.168.1.100:8512 \
+forgather submit --diloco-server 192.168.1.100:8512 \
     --worker-id w0 \
     -p my_project -t train.yaml \
     train -d 0
 ```
 
+Workers launch via `forgather submit --diloco-server <id>`, which makes
+DiLoCo an opt-in dimension on the regular `submit` verb (mirroring the
+webui's single submit modal). `forgather diloco worker` remains as a
+deprecated alias of `submit --diloco-server` and prints a deprecation
+note.
+
 Worker arguments:
-- `--server`: Server address as `host:port`
+- `--diloco-server`: Server address as `host:port`
 - `--worker-id`: Unique worker identity. Drives the per-worker output-dir
   suffix the project template appends to `ns.output_dir`, and the
   uniqueness key the server enforces on `/register`. Auto-generated when
@@ -326,8 +331,8 @@ unreachable server errors unless you pass `--local-fallback` / `--local-only`.
 
 ### Launching as scheduled jobs
 
-By default `diloco server` and `diloco worker` **enqueue scheduled jobs**
-through the forgather server instead of running in the foreground — the
+`diloco server` and `forgather submit --diloco-server` **enqueue scheduled
+jobs** by default through the forgather server instead of running in the foreground — the
 scheduler picks idle GPUs, captures the TTY, and the jobs show up in the
 webui. As above, an unreachable server errors; `--local-fallback` runs
 in-process when the server is down, and `--local-only` always runs
@@ -342,21 +347,21 @@ forgather diloco server -o path/to/model -n 2 --bulk-cleartext
 # Launch 4 auto-named workers in one command, each a scheduled training
 # job, wired to the cluster's dataset routing. Dynamic/template args work
 # exactly like `forgather train` (built from the config's metadata, shown
-# in `diloco worker --help`).
-forgather -p my_project -t train.yaml diloco worker \
-    --server local:<queue_id> --count 4 --dataset auto --max-steps 5000
+# in `submit --help`).
+forgather -p my_project -t train.yaml submit \
+    --diloco-server local:<queue_id> --count 4 --dataset auto --max-steps 5000
 
 # Bring a worker set back after a server shutdown / manual stop: re-launch
 # every stopped worker the server knows, reusing each id (so each resumes
 # from its own checkpoint).
-forgather -p my_project -t train.yaml diloco worker --resume-workers --dataset auto
+forgather -p my_project -t train.yaml submit --resume-workers --dataset auto
 ```
 
 Worker launch options (orchestrator path): `--count N` (auto-named via the
 server, guaranteed unique), `--dataset auto|local|server:<id>`,
 `--gpus-per-worker`, `--priority`. A single explicit `--worker-id` is
 honored; `--count > 1` requires the server (you can't foreground N). Add
-`--json` to `server` / `worker` to get the queue ids back for scripting.
+`--json` to `server` / `submit` to get the queue ids back for scripting.
 
 **`--dataset` default is mode-aware**, mirroring the webui Submit-job
 modal: when you don't pass `--dataset`, workers default to `auto` (cluster
@@ -547,7 +552,7 @@ Collected metrics:
 
 Lifetime counters and the loss EMAs persist in `server_state.pt`, so they
 survive a restart; because the per-worker token/step/FLOP increments are keyed
-by `worker_id`, relaunching a worker under the same id (`diloco worker
+by `worker_id`, relaunching a worker under the same id (`submit
 --resume-workers`) continues the totals rather than double-counting the resumed
 history. Live gauges are recomputed from the workers currently reporting and a
 worker the server evicts drops out of them.
@@ -645,7 +650,7 @@ Workers adjust their `sync_every` dynamically.
 forgather diloco server -o ./model -n 3 --async --dylu --dylu-base-sync-every 500
 
 # Worker — picks up dylu + sync_every from the server's /info
-forgather diloco worker --server host:8512 --worker-id w0 -- train
+forgather submit --diloco-server host:8512 --worker-id w0 -- train
 ```
 
 ### Staleness Tracking
@@ -695,8 +700,7 @@ communication becomes fully overlapped.
 ```bash
 # Streaming fragments are configured on the server, not the worker —
 # the worker reads num_fragments (and sync_every) from /info.
-forgather diloco worker \
-    --server 192.168.1.100:8512 \
+forgather submit --diloco-server 192.168.1.100:8512 \
     --worker-id w0 \
     -p my_project -t train.yaml \
     train
@@ -927,7 +931,8 @@ callback = DiLoCoCallback(
     heartbeat_interval=30.0,
 )
 
-# Or rely on environment variables (set by `forgather diloco worker`)
+# Or rely on environment variables (set by `forgather submit --diloco-server`,
+# or the deprecated `diloco worker`)
 callback = DiLoCoCallback()
 
 trainer = Trainer(
@@ -1349,7 +1354,7 @@ exposing the server on all interfaces and provides encrypted communication:
 ssh -L 8512:localhost:8512 server-machine
 
 # Then start the worker pointing to localhost:
-forgather diloco worker --server localhost:8512 ...
+forgather submit --diloco-server localhost:8512 ...
 ```
 
 The `-L 8512:localhost:8512` flag forwards the worker's local port 8512 to port

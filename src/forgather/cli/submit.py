@@ -1,7 +1,14 @@
 """`forgather submit` — submit the current project's config to the scheduler.
 
-Single-node by default (delegates to the same path as `train --schedule`);
-`--global` fans out across the cluster via submit_orch.submit_global.
+The single entry point for launching a run, mirroring the webui submit modal:
+
+- default: single-node training (same path as `train --schedule`).
+- `--global`: multi-node rendezvous fan-out (one torchrun world across nodes).
+- `--diloco-server <id>` / `--resume-workers`: DiLoCo worker(s) joining a
+  param-server (N independent local-SGD replicas).
+
+`--global` and the DiLoCo opt-in are different parallelism axes and are mutually
+exclusive.
 """
 
 import os
@@ -10,6 +17,21 @@ import sys
 
 def submit_cmd(args):
     from . import submit_orch
+
+    diloco_mode = bool(getattr(args, "server", None)) or getattr(
+        args, "resume_workers", False
+    )
+    run_global = getattr(args, "run_global", False)
+
+    if diloco_mode and run_global:
+        print(
+            "error: --global and the DiLoCo opt-in (--diloco-server / "
+            "--resume-workers) can't be combined — they're different "
+            "parallelism models (--global is one rendezvous across nodes; "
+            "DiLoCo is independent local-SGD replicas). Pick one.",
+            file=sys.stderr,
+        )
+        return 1
 
     # Resolve the config: explicit -t, else the project's default_config.
     config = getattr(
@@ -24,7 +46,14 @@ def submit_cmd(args):
         return 1
     args.config_template = config
 
-    if getattr(args, "run_global", False):
+    if diloco_mode:
+        # DiLoCo worker(s): the shared worker-launch impl (also reached by the
+        # deprecated `forgather diloco worker`). --diloco-server maps to its
+        # param-server arg (dest="server").
+        from .diloco import _worker_cmd
+
+        return _worker_cmd(args) or 0
+    if run_global:
         return _submit_global(args, submit_orch, config)
     return _submit_single(args, submit_orch, config)
 
