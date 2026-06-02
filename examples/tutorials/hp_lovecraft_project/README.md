@@ -788,18 +788,24 @@ A few quick inference experiments that are fun to run after training:
 
 ## Monitoring and Control
 
-Forgather has a control interface for monitoring and safely stopping
-running jobs. Prefer this over Ctrl-C, which can leave worker processes
-hanging (especially for pipeline-parallel runs).
+`forgather job` monitors and safely stops any training run that exposes a
+control endpoint, as long as the forgather server is running (typically on
+the same host): the server discovers the trainer's endpoint and relays
+commands to it. This includes a plain foreground `forgather train` -- you
+don't need `--schedule`. (`forgather job` does require a running server;
+`--schedule` or `forgather submit` is only for when you also want the
+scheduler to queue and manage the run.) Prefer `forgather job stop` over
+Ctrl-C, which can leave worker processes hanging (especially for
+pipeline-parallel runs).
 
 ```bash
-forgather control list                 # discover running jobs
-forgather control status JOB_ID        # inspect a specific job
-forgather control save JOB_ID          # force checkpoint save
-forgather control stop JOB_ID          # graceful stop (saves a final checkpoint)
-forgather control save-stop JOB_ID     # save then exit
-forgather control abort JOB_ID         # kill without saving
-forgather control cleanup              # prune dead job endpoint files
+forgather job list                 # discover controllable jobs
+forgather job status JOB_ID        # inspect a specific job
+forgather job save JOB_ID          # force checkpoint save
+forgather job stop JOB_ID          # graceful stop (saves a final checkpoint)
+forgather job save-stop JOB_ID     # save then exit
+forgather job abort JOB_ID         # kill without saving
+forgather job cleanup              # prune terminal job records
 ```
 
 ### Training dashboards
@@ -870,7 +876,7 @@ optimizer: &optimizer !partial:torchao.optim:AdamW4bit
 The auto-decay trigger is derived from `ns.total_steps` and
 `ns.annealing_steps`; override the annealing budget via `--annealing-tokens`
 (millions), or force an early decay at any step with
-`forgather control save` followed by `--start-annealing` on resume.
+`forgather job save` followed by `--start-annealing` on resume.
 
 ### Push to Llama-2-7B for the highest context
 

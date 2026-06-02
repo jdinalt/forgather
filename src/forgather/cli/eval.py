@@ -98,15 +98,27 @@ def show_cmd(args):
 
 
 def test_cmd(args):
-    if getattr(args, "enqueue", False):
+    from . import submit_orch
+
+    # --enqueue is the legacy spelling of --schedule.
+    if getattr(args, "enqueue", False) and not getattr(args, "schedule", False):
+        print("note: --enqueue is deprecated; use --schedule.", file=sys.stderr)
+    schedule = getattr(args, "schedule", False) or getattr(args, "enqueue", False)
+    local_only = getattr(args, "local_only", False)
+
+    if schedule and not local_only:
         if args.devices:
             print(
-                "error: --enqueue and --devices are mutually exclusive (server picks GPUs)",
+                "error: --schedule and --devices are mutually exclusive "
+                "(the scheduler picks GPUs)",
                 file=sys.stderr,
             )
             raise SystemExit(1)
         if args.dry_run:
-            print("error: --dry-run is not meaningful with --enqueue", file=sys.stderr)
+            print(
+                "error: --dry-run is not meaningful with --schedule",
+                file=sys.stderr,
+            )
             raise SystemExit(1)
 
     forgather_dir = _forgather_dir()
@@ -117,30 +129,48 @@ def test_cmd(args):
         raise SystemExit(f"Error: {e}")
     model_path = _resolve_model_path(args)
 
-    if getattr(args, "enqueue", False):
-        job_params = {
-            "eval_project": project_dir,
-            "eval_template": template,
-            "model_path": model_path,
-            **eval_script_args_to_job_params(args),
-        }
-        from .server_client import ServerClient, ServerUnreachable
+    if schedule:
+        from .server_client import ServerUnreachable
 
-        client = ServerClient.from_args(args)
         try:
-            item = client.enqueue_job(
-                project_dir=project_dir,
-                config=template,
-                job_type="eval",
-                job_params=job_params,
-                requested_gpus=1,
-                priority=args.priority,
-            )
+            client = submit_orch.use_orchestrator(args)
         except ServerUnreachable as e:
             print(str(e), file=sys.stderr)
             raise SystemExit(1)
-        print(f"queued: {item['queue_id']} ({args.name}, priority={item['priority']})")
-        return
+        if client is not None:
+            job_params = {
+                "eval_project": project_dir,
+                "eval_template": template,
+                "model_path": model_path,
+                **eval_script_args_to_job_params(args),
+            }
+            try:
+                dataset_source = submit_orch.resolve_dataset_source(client, args)
+            except ValueError as e:
+                print(str(e), file=sys.stderr)
+                raise SystemExit(1)
+            try:
+                item = submit_orch.submit_single(
+                    client,
+                    project_dir=project_dir,
+                    config=template,
+                    dynamic_args=None,
+                    requested_gpus=1,
+                    priority=args.priority,
+                    dataset_source=dataset_source,
+                    job_type="eval",
+                    job_params=job_params,
+                )
+            except (ServerUnreachable, RuntimeError) as e:
+                print(str(e), file=sys.stderr)
+                raise SystemExit(1)
+            queue_id = item["queue_id"]
+            if getattr(args, "foreground", False):
+                submit_orch.attach_submitted(client, queue_id)
+            else:
+                print(f"queued: {queue_id} ({args.name}, priority={item['priority']})")
+            return
+        # client is None → fall through to the foreground path.
 
     eval_script = os.path.join(forgather_dir, "scripts", "eval_script.py")
 
@@ -161,9 +191,7 @@ def test_cmd(args):
         try:
             import torch
 
-            cuda_visible = (
-                torch.cuda.is_available() and torch.cuda.device_count() > 0
-            )
+            cuda_visible = torch.cuda.is_available() and torch.cuda.device_count() > 0
         except (ImportError, RuntimeError):
             cuda_visible = False
         nproc = "gpu"

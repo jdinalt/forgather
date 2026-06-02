@@ -863,10 +863,16 @@ class ForgatherShell(cmd.Cmd):
             print(self.do_commands.__doc__)
             return
 
-        commands = self._get_available_commands()
+        # Show a one-line description per command, like the top-level
+        # `forgather --help` overview (built from each subcommand parser's
+        # description, no_dyn so no project load).
+        from .main import iter_command_summaries
+
         print("Available commands:")
-        for command in sorted(commands):
-            print(f"  {command}")
+        for name, summary in iter_command_summaries():
+            print(f"  {name:<14} {summary}")
+        print()
+        print("Use '<command> --help' for help on a specific command.")
 
     def do_edit(self, arg):
         """Interactively select and edit template files

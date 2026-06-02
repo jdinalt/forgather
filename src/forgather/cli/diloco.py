@@ -631,12 +631,21 @@ def _worker_cmd(args):
     or as ``--dynamic-args <json>`` to the spawned trainer on the direct path.
     """
     from . import diloco_orch as orch
+    from . import submit_orch
     from .server_client import ServerUnreachable
 
     schema = _load_dynamic_schema(
         getattr(args, "project_dir", "."), getattr(args, "config_template", None)
     )
     dynamic_args = _worker_dynamic_args(args, schema)
+    # Enforce the config's required/bounded dynamic args up front (same check
+    # `forgather submit`/`train` do), so a missing required arg fails here
+    # rather than deep inside the spawned worker job.
+    submit_orch.validate_dynamic_args(
+        getattr(args, "project_dir", "."),
+        getattr(args, "config_template", None),
+        dynamic_args,
+    )
     count = getattr(args, "count", 1) or 1
     resume = getattr(args, "resume_workers", False)
 

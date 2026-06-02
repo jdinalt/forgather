@@ -1529,7 +1529,7 @@ def _reattach_or_cleanup_on_startup() -> None:
     recycled the pid and we treat it as gone. Delegated to
     :func:`trainer_control.is_endpoint_pid_alive` so the guard and its
     slack constant (:data:`trainer_control.PID_REUSE_SLACK_SECONDS`)
-    stay aligned with the Jobs API and the ``forgather control``
+    stay aligned with the Jobs API and the ``forgather job``
     cleanup/list paths.
     """
     reattached = 0

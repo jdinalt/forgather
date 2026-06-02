@@ -81,8 +81,8 @@ the token or the password. The token sits at
 
 > **Why a token?** A loopback-bound server is reachable by _any_
 > local user on the host, not just you. The token gates that
-> exposure. CLI commands (`forgather sched`, `forgather job`,
-> `forgather train --enqueue`, …) read the token file
+> exposure. CLI commands (`forgather job`, `forgather submit`,
+> `forgather train --schedule`, …) read the token file
 > automatically — you never paste it on the command line.
 
 If your training host is remote, set up SSH port forwarding on the remote
@@ -110,7 +110,7 @@ server, point them at the remote token file:
 
 ```bash
 export FORGATHER_SERVER_TOKEN=$(ssh dev-host cat .config/forgather/server/auth_token)
-forgather sched status
+forgather job scheduler status
 ```
 
 The

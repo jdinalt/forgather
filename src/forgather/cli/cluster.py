@@ -34,26 +34,6 @@ def _short_uuid(node_id):
     return (node_id or "")[:8]
 
 
-def _resolve_host_to_node_id(members, host):
-    """Look up a hostname in the membership table.
-
-    Match priority: exact hostname > address. Returns the matching
-    member dict or raises a clear RuntimeError. Surface a hint at
-    available hostnames when nothing matches — typo detection beats
-    uuid-soup error messages.
-    """
-    for m in members:
-        if m.get("hostname") == host:
-            return m
-    for m in members:
-        if m.get("address") == host:
-            return m
-    available = ", ".join(m.get("hostname", "?") for m in members) or "(none)"
-    raise RuntimeError(
-        f"no cluster member matches hostname {host!r}; available: {available}"
-    )
-
-
 def _gpus_available_on(member):
     """Best-effort GPU count for a member from its probe.
 
@@ -89,11 +69,21 @@ def _cmd_nodes(client, args):
     # Pull GPU info too — without it the table is much less useful.
     try:
         gpu_payload = client._get("/cluster/gpus").json()
-        gpus_by_node = {n["node_id"]: n.get("gpus", []) for n in gpu_payload.get("nodes", [])}
+        gpus_by_node = {
+            n["node_id"]: n.get("gpus", []) for n in gpu_payload.get("nodes", [])
+        }
     except Exception:
         gpus_by_node = {}
 
-    col_w = {"role": 8, "host": 18, "addr": 22, "uuid": 10, "reach": 10, "gpus": 12, "ver": 16}
+    col_w = {
+        "role": 8,
+        "host": 18,
+        "addr": 22,
+        "uuid": 10,
+        "reach": 10,
+        "gpus": 12,
+        "ver": 16,
+    }
 
     def header():
         return (
@@ -226,64 +216,11 @@ def _print_bundle_detail(bundle):
             print(f"           error: {err}")
 
 
-def _parse_member_spec(spec):
-    """Parse ``HOST:GPUS[:IFACE]`` into a tuple."""
-    parts = spec.split(":")
-    if len(parts) == 2:
-        host, gpus = parts
-        iface = None
-    elif len(parts) == 3:
-        host, gpus, iface = parts
-    else:
-        raise RuntimeError(
-            f"invalid --member spec {spec!r}: expected HOST:GPUS[:IFACE]"
-        )
-    try:
-        n = int(gpus)
-    except ValueError:
-        raise RuntimeError(f"invalid GPU count in --member {spec!r}: {gpus!r}")
-    if n < 1:
-        raise RuntimeError(f"GPU count must be >= 1 in --member {spec!r}")
-    return host, n, (iface or None)
-
-
-def _parse_dataset_source(spec):
-    """Translate the CLI ``--dataset-source`` value to the dict shape
-    the forgather_server expects in the submit body.
-
-    Accepted values:
-      ``None`` / ``"local"`` / ``""``: omit (training script default).
-      ``"auto"``: cluster auto-routing.
-      ``"server:<server_id>"``: pin to a specific known server (run
-        ``forgather cluster datasets`` for ids).
-    """
-    if spec is None:
-        return None
-    spec = spec.strip()
-    if spec in ("", "local"):
-        return None
-    if spec == "auto":
-        return {"kind": "auto"}
-    if spec.startswith("server:"):
-        sid = spec[len("server:") :].strip()
-        if not sid:
-            raise RuntimeError(
-                "--dataset-source server:<id> requires a non-empty id"
-            )
-        return {"kind": "server", "server_id": sid}
-    raise RuntimeError(
-        f"unknown --dataset-source value: {spec!r} "
-        "(expected 'auto', 'local', or 'server:<id>')"
-    )
-
-
 def _parse_dynamic_args(specs):
     out = {}
     for s in specs:
         if "=" not in s:
-            raise RuntimeError(
-                f"invalid --dynamic-arg {s!r}: expected KEY=VAL"
-            )
+            raise RuntimeError(f"invalid --dynamic-arg {s!r}: expected KEY=VAL")
         k, v = s.split("=", 1)
         # Cast integers and bools where obvious; otherwise pass through
         # as a string. Server-side preprocessor coerces from there.
@@ -301,177 +238,35 @@ def _parse_dynamic_args(specs):
 
 
 def _cmd_submit(client, args):
-    import os
+    """Deprecated alias of `forgather submit --global`.
 
-    # ``-p`` / ``-t`` are GLOBAL forgather flags (consumed before the
-    # subcommand parser). Validate here so the operator gets a clear
-    # message rather than a downstream "project_dir = None" crash.
+    The multi-node fan-out core now lives in submit_orch.submit_global, shared
+    with the `submit` verb. This keeps the legacy ad-hoc `--dynamic-arg KEY=VAL`
+    parsing (the submit verb uses the richer config schema instead) and prints
+    a one-line deprecation note.
+    """
+    from . import submit_orch
+
     project_dir = getattr(args, "project_dir", None)
     config = getattr(args, "config_template", None)
-    if not project_dir or project_dir in (".", ""):
-        # Default project_dir is "." which is meaningless for a remote
-        # peer fanout — every peer would resolve "." to its own cwd.
-        # Refuse the submit unless the operator explicitly set -p.
-        print(
-            "error: cluster submit needs an absolute project path. Pass "
-            "``-p <abs-path>`` (a global forgather flag, before "
-            "``cluster submit``).",
-            file=sys.stderr,
-        )
-        return 1
-    # Reject relative paths even if the operator passed something
-    # other than ".". A relative ``-p`` like ``./foo`` resolves
-    # against each peer's cwd, which is per-container and almost
-    # never the same on every node — silently produces a confusing
-    # "no such project" error from one or more peers, hours into
-    # debugging. The webui already enforces absolute paths via the
-    # config picker; mirror that here.
-    if not os.path.isabs(project_dir):
-        print(
-            f"error: cluster submit needs an absolute project path; got "
-            f"relative {project_dir!r}. Resolve with ``readlink -f`` and "
-            "pass the canonical path so every peer sees the same files.",
-            file=sys.stderr,
-        )
-        return 1
-    if not config:
-        print(
-            "error: cluster submit needs ``-t <config>`` (a global "
-            "forgather flag, before ``cluster submit``).",
-            file=sys.stderr,
-        )
-        return 1
-
-    members_payload = client.cluster_members()
-    members = members_payload.get("members") or []
-    if not members:
-        print(
-            "no cluster members visible; is the server running with --cluster?",
-            file=sys.stderr,
-        )
-        return 1
-
-    # If --member specs were passed, resolve hostnames; otherwise default to
-    # "every reachable peer with all its GPUs".
-    if args.member:
-        spec_members = []
-        for spec in args.member:
-            host, gpus, iface = _parse_member_spec(spec)
-            m = _resolve_host_to_node_id(members, host)
-            if not m.get("reachable"):
-                print(
-                    f"warning: member {host} is currently unreachable; submit will fail",
-                    file=sys.stderr,
-                )
-            spec_members.append(
-                {
-                    "node_id": m["node_id"],
-                    "nproc_per_node": gpus,
-                    "nccl_socket_ifname": iface,
-                }
-            )
-    else:
-        try:
-            gpu_payload = client._get("/cluster/gpus").json()
-        except Exception as e:
-            print(
-                f"could not enumerate cluster GPUs to default --member: {e}; "
-                "pass --member explicitly",
-                file=sys.stderr,
-            )
-            return 1
-        nodes = gpu_payload.get("nodes") or []
-        spec_members = []
-        for node in nodes:
-            if not node.get("reachable"):
-                continue
-            count = sum(
-                1
-                for g in (node.get("gpus") or [])
-                if not g.get("disabled") and not g.get("excluded")
-            )
-            if count < 1:
-                continue
-            spec_members.append(
-                {
-                    "node_id": node["node_id"],
-                    "nproc_per_node": count,
-                    "nccl_socket_ifname": None,
-                }
-            )
-        if not spec_members:
-            print(
-                "no reachable cluster member has any usable GPUs; "
-                "pass --member explicitly to override",
-                file=sys.stderr,
-            )
-            return 1
-
-    rdzv_node_id = None
-    if args.rdzv_host:
-        rdzv_node_id = _resolve_host_to_node_id(members, args.rdzv_host)["node_id"]
-
     dynamic_args = _parse_dynamic_args(args.dynamic_arg)
-    dataset_source = _parse_dataset_source(getattr(args, "dataset_source", None))
-
-    resp = client.cluster_jobs_submit(
-        project_dir=project_dir,
-        config=config,
-        members=spec_members,
-        dynamic_args=dynamic_args,
-        priority=args.priority,
-        rdzv_node_id=rdzv_node_id,
-        rdzv_port=args.rdzv_port,
-        allow_version_mismatch=args.allow_version_mismatch,
-        dataset_source=dataset_source,
+    dataset_source = submit_orch.parse_dataset_source(
+        getattr(args, "dataset_source", None)
     )
 
-    bundle = resp.get("cluster_job") or {}
-    warnings = resp.get("warnings") or []
-
-    if args.json:
-        print(json.dumps(resp, indent=2))
-    else:
-        bid = bundle.get("cluster_job_id")
-        rdzv = bundle.get("rdzv_endpoint")
-        print(f"submitted: {bid}")
-        print(f"rdzv:      {rdzv}")
-        print("members:")
-        for m in bundle.get("members") or []:
-            print(
-                f"  rank {m.get('node_rank')}: "
-                f"{m.get('hostname')} x{m.get('nproc_per_node')}  "
-                f"queue_id={m.get('queue_id')}"
-            )
-        for w in warnings:
-            print(f"warning: {w}", file=sys.stderr)
-
-    if not args.wait:
-        return 0
-
-    # --wait: poll until terminal, exit non-zero on failure
-    bundle_id = bundle.get("cluster_job_id")
-    if not bundle_id:
-        print("no bundle id in response; cannot wait", file=sys.stderr)
-        return 1
-
-    deadline = time.monotonic() + max(0, args.wait_timeout)
-    last_status = None
-    while time.monotonic() < deadline:
-        time.sleep(args.poll_interval)
-        try:
-            cur = client.cluster_job_get(bundle_id) or {}
-        except Exception as e:
-            print(f"poll error (continuing): {e}", file=sys.stderr)
-            continue
-        rolled = cur.get("rolled_up_status") or cur.get("status")
-        if rolled != last_status:
-            print(f"status: {rolled}")
-            last_status = rolled
-        if rolled in ("done", "failed", "cancelled"):
-            return 0 if rolled == "done" else 2
-    print(f"timed out after {args.wait_timeout}s waiting for terminal status", file=sys.stderr)
-    return 3
+    print(
+        "note: 'forgather cluster submit' is deprecated; "
+        "use 'forgather submit --global'.",
+        file=sys.stderr,
+    )
+    return submit_orch.submit_global(
+        client,
+        args,
+        project_dir=project_dir,
+        config=config,
+        dynamic_args=dynamic_args,
+        dataset_source=dataset_source,
+    )
 
 
 def _cmd_cancel(client, args):
@@ -538,16 +333,16 @@ def _cmd_server(client, args):
     if op == "status":
         try:
             health = client.cluster_server_proxy_get(args.server_id, "health")
-            auth_status = client.cluster_server_proxy_get(
-                args.server_id, "auth-status"
-            )
+            auth_status = client.cluster_server_proxy_get(args.server_id, "auth-status")
         except RuntimeError as e:
             print(f"status failed: {e}", file=sys.stderr)
             return 1
         if args.json:
             print(_json.dumps({"health": health, "auth_status": auth_status}, indent=2))
             return 0
-        print(f"service: {health.get('service', '?')}  version: {health.get('version', '?')}")
+        print(
+            f"service: {health.get('service', '?')}  version: {health.get('version', '?')}"
+        )
         print(f"status:  {health.get('status', '?')}")
         policy = health.get("policy") or {}
         if policy:
@@ -607,8 +402,10 @@ def _cmd_server(client, args):
             print("(no local/<name> mappings registered)")
             return 0
         if isinstance(entries, dict):
-            entries = [{"name": k, **(v if isinstance(v, dict) else {})}
-                       for k, v in entries.items()]
+            entries = [
+                {"name": k, **(v if isinstance(v, dict) else {})}
+                for k, v in entries.items()
+            ]
         print(f"{len(entries)} local mapping(s):")
         for e in entries:
             print(
@@ -707,9 +504,7 @@ def _cmd_datasets(client, args):
                 d_streak = s.get("consecutive_dataset_failures", 0) or 0
                 streak = ""
                 if h_streak > 0 or d_streak > 0:
-                    streak = (
-                        f" (streak: health={h_streak} datasets={d_streak})"
-                    )
+                    streak = f" (streak: health={h_streak} datasets={d_streak})"
                 print(
                     f"      polls: health={h_fail}/{h_total} failed, "
                     f"datasets={d_fail}/{d_total} failed{streak}"
@@ -721,9 +516,7 @@ def _cmd_datasets(client, args):
         server_id_to_url = {s["server_id"]: s["base_url"] for s in servers}
         for d in datasets:
             ids = d.get("server_ids", [])
-            hosts = [
-                server_id_to_url.get(sid, sid)[:30] for sid in ids
-            ]
+            hosts = [server_id_to_url.get(sid, sid)[:30] for sid in ids]
             length = d.get("length")
             length_str = str(length) if length is not None else "?"
             print(
@@ -779,6 +572,7 @@ def cluster_cmd(args):
     except ServerUnreachable as e:
         print(str(e), file=sys.stderr)
         return 1
-    except RuntimeError as e:
+    except (RuntimeError, ValueError) as e:
+        # ValueError: a bad --dataset-source value (parse_dataset_source).
         print(str(e), file=sys.stderr)
         return 1

@@ -80,7 +80,6 @@ def get_subcommand_registry():
         create_tb_parser,
         create_tlist_parser,
     )
-    from .control_args import create_control_parser
     from .dataset_args import create_dataset_parser
     from .dataset_server_args import create_dataset_server_parser
     from .diloco_args import create_diloco_parser
@@ -94,6 +93,7 @@ def get_subcommand_registry():
     from .plot_args import create_plot_parser
     from .project_args import create_project_parser
     from .sched_args import create_sched_parser
+    from .submit_args import create_submit_parser
     from .tls_args import create_tls_parser
     from .train_args import create_train_parser
     from .trefs_args import create_trefs_parser
@@ -119,10 +119,10 @@ def get_subcommand_registry():
         "code": create_code_parser,
         "construct": create_construct_parser,
         "train": create_train_parser,
+        "submit": create_submit_parser,
         "dataset": create_dataset_parser,
         "dataset-server": create_dataset_server_parser,
         "ws": create_ws_parser,
-        "control": create_control_parser,
         "model": create_model_parser,
         "project": create_project_parser,
         "inf": create_inf_parser,
@@ -145,6 +145,46 @@ def get_subcommand_registry():
     }
 
 
+def _summarize_description(description, max_len=62):
+    """Reduce a parser ``description`` to a single-line summary.
+
+    Several subcommands stuff full usage, subcommand lists, or workflow
+    examples into their ``description=`` so it shows under their own
+    ``--help``. The top-level listing only wants one line each, so take the
+    first non-empty line and length-cap it. Each subcommand's own
+    ``--help`` still renders the full text.
+    """
+    if not description:
+        return ""
+    first_line = next(
+        (line.strip() for line in description.splitlines() if line.strip()), ""
+    )
+    if len(first_line) > max_len:
+        first_line = first_line[: max_len - 1].rstrip() + "…"
+    return first_line
+
+
+def iter_command_summaries():
+    """Yield ``(name, one-line summary)`` for every subcommand, sorted by name.
+
+    Shared by the top-level ``--help`` and the interactive ``commands`` listing.
+    Uses a ``no_dyn=True`` dummy so building each parser doesn't load a project
+    config (and stays fast / quiet).
+    """
+    registry = get_subcommand_registry()
+    dummy_global_args = argparse.Namespace(
+        project_dir=".", config_template=None, no_dyn=True
+    )
+    for cmd_name in sorted(registry.keys()):
+        try:
+            summary = _summarize_description(
+                registry[cmd_name](dummy_global_args).description
+            )
+        except Exception:
+            summary = "[Error loading description]"
+        yield cmd_name, summary
+
+
 def show_main_help():
     """Show the main help message with available subcommands."""
     print("Forgather CLI")
@@ -162,17 +202,8 @@ def show_main_help():
     print("  --help                   Show this help message")
     print()
     print("Available subcommands:")
-    registry = get_subcommand_registry()
-    for cmd_name in sorted(registry.keys()):
-        # Create a dummy global_args for the registry call
-        dummy_global_args = argparse.Namespace(
-            project_dir=".", config_template=None, no_dyn=True
-        )
-        try:
-            parser = registry[cmd_name](dummy_global_args)
-            print(f"  {cmd_name:<12} {parser.description}")
-        except:
-            print(f"  {cmd_name:<12} [Error loading description]")
+    for cmd_name, summary in iter_command_summaries():
+        print(f"  {cmd_name:<14} {summary}")
     print()
     print("Use 'forgather <subcommand> --help' for help on a specific subcommand.")
 
@@ -335,6 +366,17 @@ def parse_args(args=None):
 
     # Check if subcommand exists
     if subcommand not in registry:
+        if subcommand == "control":
+            # 'control' was the local, server-less trainer-control CLI. It's
+            # removed now that the forgather server is the default control
+            # plane: server-managed jobs are controlled via 'forgather job'.
+            print(
+                "Error: 'forgather control' was removed. Use 'forgather job "
+                "<save|stop|save-stop|abort|status|tail|logs>' against the "
+                "forgather server instead (start one with 'forgather server').",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         print(f"Error: Unknown subcommand '{subcommand}'")
         print()
         show_main_help()
@@ -466,6 +508,12 @@ def main():
                 from .train import train_cmd
 
                 train_cmd(args)
+            case "submit":
+                from .submit import submit_cmd
+
+                rc = submit_cmd(args)
+                if rc:
+                    sys.exit(rc)
             case "dataset":
                 from .dataset import dataset_cmd
 
@@ -485,10 +533,6 @@ def main():
                 from .project import project_cmd
 
                 project_cmd(args)
-            case "control":
-                from .control import control_cmd
-
-                control_cmd(args)
             case "model":
                 from .model import model_cmd
 

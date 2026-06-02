@@ -13,9 +13,10 @@ def create_inf_parser(global_args):
         "  forgather inf server [args...]  - Start inference server\n"
         "  forgather inf client [args...]  - Start inference client\n\n"
         "All arguments after 'server' or 'client' are forwarded to the respective script.\n\n"
-        "To submit the inference server to the forgather-server queue, pass --enqueue\n"
-        "inside the forwarded args. Run 'forgather inf server --enqueue --help' for the\n"
-        "full list of supported flags in enqueue mode.",
+        "'inf server' submits to the forgather-server scheduler (background) by default;\n"
+        "pass --local-only to run it in the foreground, or --local-fallback to foreground\n"
+        "only when the server is unreachable. Run 'forgather inf server --help' for the\n"
+        "list of supported flags.",
         formatter_class=RawTextHelpFormatter,
         add_help=True,
     )

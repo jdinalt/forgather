@@ -7,7 +7,7 @@ from argparse import RawTextHelpFormatter
 def create_sched_parser(global_args):
     parser = argparse.ArgumentParser(
         prog="forgather sched",
-        description="Manage the forgather-server job queue and scheduler",
+        description="(deprecated) Alias of 'forgather job' for queue/scheduler verbs",
         formatter_class=RawTextHelpFormatter,
     )
     parser.add_argument(

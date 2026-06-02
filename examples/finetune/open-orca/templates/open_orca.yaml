@@ -35,7 +35,7 @@
     ## total_tokens budget; annealing_tokens controls the final decay window.
     ## The WSDScheduler inherited from finetune_v2 holds LR constant until
     ## start_annealing is triggered (either in the config or via
-    ## `forgather control save-stop`), then decays over this many tokens.
+    ## `forgather job save-stop`), then decays over this many tokens.
     -- set ns.annealing_tokens = annealing_tokens | default(200)
 
     ## Text-generation eval prompts. Override the default
@@ -83,7 +83,7 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_schedule
     ## Automatic WSD decay trigger: with a fixed total_tokens budget the
     ## scheduler transitions from the stable phase into decay at step
     ## ns.decay_start_step without needing `--start-annealing` or a
-    ## `forgather control` RPC. See open_orca.yaml [globals] for the
+    ## `forgather job` RPC. See open_orca.yaml [globals] for the
     ## derivation. Override decay_start_step via --decay-start-step or
     ## set to -1 to fall back to the manual-trigger flow.
     decay_start_step: {{ ns.decay_start_step }}

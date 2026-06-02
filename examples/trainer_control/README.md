@@ -4,26 +4,47 @@ This directory contains examples of using the TrainerControlCallback system for 
 
 ## Files
 
-- `trainer_control_demo.py` - Complete demo showing how to add TrainerControlCallback to your training job and control it from another terminal
+- `trainer_control_demo.py` - Demo showing how to add `TrainerControlCallback` to a training job so it exposes an external control endpoint.
 
 ## Usage
 
-### Running the Demo
+### Running the demo
 
 ```bash
-# Terminal 1: Start training with control enabled
 cd examples/trainer_control
 python trainer_control_demo.py
-
-# Terminal 2: Control the training job
-forgather control list                    # Find your job
-forgather control status JOB_ID          # Check status  
-forgather control save JOB_ID            # Save checkpoint
-forgather control stop JOB_ID            # Gracefully stop
-forgather control abort JOB_ID           # Abort without saving
 ```
 
-The demo creates a simple transformer model and trains it on synthetic data, demonstrating all aspects of the trainer control system.
+The demo trains a small transformer on synthetic data with
+`TrainerControlCallback` enabled, which exposes a control endpoint
+(`~/.config/forgather/jobs/<job_id>/endpoint.json`).
+
+### Controlling a training job
+
+The callback is what makes a job controllable. There are two ways to reach it:
+
+- **Via `forgather job` (CLI).** As long as the forgather server is running
+  (typically on the same host), it discovers the trainer's control endpoint
+  (`~/.config/forgather/jobs/<id>/endpoint.json`) and relays commands to it.
+  This works for any run with the callback enabled -- a plain foreground
+  `forgather train`, a `forgather submit` / `forgather train --schedule` job,
+  or a run launched from the webui:
+
+  ```bash
+  forgather job list                 # find the job id
+  forgather job status <job_id>      # check status
+  forgather job save <job_id>        # checkpoint
+  forgather job stop <job_id>        # graceful stop
+  forgather job abort <job_id>       # abort without saving
+  ```
+
+  `forgather job` requires a running server; `--schedule` (or
+  `forgather submit`) is only needed when you also want the scheduler to queue
+  and manage the run.
+
+- **Programmatically.** Drive the control endpoint directly with the
+  `forgather.trainer_control` client (no server required). This is how the
+  standalone demo in this directory is intended to be controlled.
 
 ## Key Features Demonstrated
 
@@ -59,4 +80,7 @@ trainer = Trainer(
 )
 ```
 
-Then control from another terminal using the `forgather control` commands.
+Then control it from another terminal with `forgather job` (when the
+forgather server is running, it discovers the trainer's control endpoint),
+or drive the control endpoint directly via the `forgather.trainer_control`
+client.

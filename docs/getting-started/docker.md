@@ -839,7 +839,7 @@ docker exec -u forgather -ti forgather-server bash
 
 The diagnostic shell has the venv on `PATH`, so `forgather`,
 `python`, and the rest of the CLI work as expected. Useful for
-`forgather control list`, `forgather logs summary`, and ad-hoc
+`forgather job list`, `forgather logs summary`, and ad-hoc
 Python work.
 
 ### `--dev`: testing fixes without rebuilding (debug only)

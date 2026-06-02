@@ -33,35 +33,42 @@ Or in a configuration template:
     trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback
 ```
 
-**2. Start training** as usual:
+**2. Start training** with the control callback enabled:
 
 ```bash
 forgather -t config.yaml train
 ```
 
-**3. Control from another terminal:**
+A plain foreground `forgather train` is controllable via `forgather job`
+as long as the forgather server is running (typically on the same host):
+the server discovers the trainer's control endpoint and relays commands to
+it. `forgather job` needs a running server -- that is its one requirement.
+Use `--schedule` (or `forgather submit`) only when you additionally want
+the scheduler to queue and manage the run; it is not required for control.
+
+**3. Control from another terminal** via `forgather job` (which proxies
+through the forgather server):
 
 ```bash
-forgather control list                    # Find running jobs
-forgather control status JOB_ID          # Check training progress
-forgather control save JOB_ID            # Save a checkpoint now
-forgather control stop JOB_ID            # Gracefully stop after current step
-forgather control save-stop JOB_ID       # Save checkpoint, then stop
-forgather control abort JOB_ID           # Stop immediately without saving
+forgather job list                    # Find running jobs
+forgather job status JOB_ID          # Check training progress
+forgather job save JOB_ID            # Save a checkpoint now
+forgather job stop JOB_ID            # Gracefully stop after current step
+forgather job save-stop JOB_ID       # Save checkpoint, then stop
+forgather job abort JOB_ID           # Stop immediately without saving
 ```
 
 ## CLI reference
 
 | Command | Description |
 |---------|-------------|
-| `forgather control list` | List all discoverable jobs (shows status, host, port, PID, start time) |
-| `forgather control status JOB_ID` | Show current step, epoch, max_steps, and latest logged metrics |
-| `forgather control save JOB_ID` | Trigger a checkpoint save (runs evaluation first if configured) |
-| `forgather control stop JOB_ID` | Graceful stop -- training finishes the current step, then exits |
-| `forgather control save-stop JOB_ID` | Save a checkpoint, then gracefully stop |
-| `forgather control abort JOB_ID` | Abort immediately without saving (prompts for confirmation) |
-| `forgather control cleanup` | Remove endpoint files for dead jobs |
-| `forgather control cleanup --force` | Remove dead job files without confirmation |
+| `forgather job list` | List queued and active jobs (shows status, type, priority, GPUs, project/config) |
+| `forgather job status JOB_ID` | Show current step, epoch, max_steps, and latest logged metrics |
+| `forgather job save JOB_ID` | Trigger a checkpoint save (runs evaluation first if configured) |
+| `forgather job stop JOB_ID` | Graceful stop -- training finishes the current step, then exits |
+| `forgather job save-stop JOB_ID` | Save a checkpoint, then gracefully stop |
+| `forgather job abort JOB_ID` | Abort immediately without saving (prompts for confirmation) |
+| `forgather job cleanup [JOB_ID]` | Remove terminal job records (all, or a specific job) |
 
 ## How it works
 
@@ -72,19 +79,20 @@ The control system has two sides:
 - **Server side** (`TrainerControlCallback`): An HTTP server running in a background
   thread on rank 0 of the training process. It accepts commands and queues them for
   the training loop to process.
-- **Client side** (`forgather control` CLI): Discovers jobs via endpoint files and
-  sends HTTP requests.
+- **Client side** (`forgather job` CLI): Sends requests to the forgather server,
+  which proxies them to the trainer's control endpoint.
 
 ### Job discovery
 
 When `TrainerControlCallback` starts, rank 0 writes an endpoint file to
 `~/.config/forgather/jobs/<job_id>/endpoint.json` containing the host, port, and PID.
-The `forgather control list` command scans this directory to find running jobs
-and checks whether each process is still alive.
+The forgather server scans this directory to find running jobs and checks whether
+each process is still alive; `forgather job list` surfaces them.
 
 When training ends (or is stopped), the endpoint file is automatically cleaned up.
-If a job crashes without cleanup, use `forgather control cleanup` to remove stale
-entries.
+If a job crashes without cleanup, the endpoint file is left behind, but the server
+treats it as dead via a PID-liveness check and stops surfacing it in
+`forgather job list`.
 
 ### Distributed coordination
 

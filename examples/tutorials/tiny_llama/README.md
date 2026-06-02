@@ -154,22 +154,28 @@ compact one-line-per-run table across every run under `output_models/`.
 
 ## 3. Control a Running Job
 
-Forgather attaches a control server to each training process. From a
-second shell while training is in flight:
+`forgather job` controls any training run that exposes a control endpoint,
+as long as the forgather server is running (typically on the same host):
+the server discovers the trainer's endpoint and relays commands to it. This
+includes a plain foreground `forgather train` -- you don't need
+`--schedule`. `forgather job` does require a running server (that is its one
+requirement); `--schedule` (or `forgather submit`) is only for when you also
+want the scheduler to queue and manage the run. To drive a run from a second
+shell:
 
 ```bash
-forgather control list                 # see running jobs
-forgather control status JOB_ID        # detailed status for one job
-forgather control save JOB_ID          # force checkpoint save
-forgather control stop JOB_ID          # graceful stop (saves a final checkpoint)
-forgather control save-stop JOB_ID     # save then stop
-forgather control abort JOB_ID         # stop without saving (use for failed experiments)
-forgather control cleanup              # prune dead job endpoint files
+forgather job list                 # see controllable jobs
+forgather job status JOB_ID        # detailed status for one job
+forgather job save JOB_ID          # force checkpoint save
+forgather job stop JOB_ID          # graceful stop (saves a final checkpoint)
+forgather job save-stop JOB_ID     # save then stop
+forgather job abort JOB_ID         # stop without saving (use for failed experiments)
+forgather job cleanup              # prune terminal job records
 ```
 
-`JOB_ID` is the token printed in the training log (`Trainer control
-endpoint: http://.../jobs/<JOB_ID>`). Prefer these commands over Ctrl-C --
-Ctrl-C can leave worker processes hanging, especially under DDP.
+`JOB_ID` is the id reported by `forgather job list` (also shown when you
+submit a job). Prefer `forgather job stop` over killing the process -- it
+shuts the workers down cleanly, which matters under DDP.
 
 ## 4. Evaluate the Model
 

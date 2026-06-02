@@ -6,19 +6,34 @@ import sys
 
 from forgather.latent import Latent
 
-from .dynamic_args import (
-    get_dynamic_args,
-    required_dynamic_arg_dests,
-    validate_dynamic_arg_bounds,
-)
 from .utils import BaseCommand, assert_project_class
 
 
 def train_cmd(args):
-    """Run configuration with train script."""
-    if args.enqueue and args.devices:
+    """Run configuration with train script.
+
+    Default: run locally in the foreground via torchrun. With --schedule
+    (or the deprecated --enqueue alias) the job is submitted to the
+    forgather-server scheduler instead — in the background unless
+    --foreground attaches to stream its output. --local-only / a
+    --local-fallback against an unreachable server drop back to the
+    foreground torchrun path.
+    """
+    from . import submit_orch
+
+    # --enqueue is the legacy spelling of --schedule.
+    if args.enqueue and not args.schedule:
         print(
-            "error: --enqueue and --devices are mutually exclusive (server picks GPUs)",
+            "note: --enqueue is deprecated; use --schedule.",
+            file=sys.stderr,
+        )
+    schedule = args.schedule or args.enqueue
+    local_only = getattr(args, "local_only", False)
+
+    if schedule and args.devices and not local_only:
+        print(
+            "error: --schedule and --devices are mutually exclusive "
+            "(the scheduler picks GPUs)",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -29,36 +44,15 @@ def train_cmd(args):
     # Dynamic args may override values consumed by the meta block (e.g.
     # nproc_per_node), so they must be supplied to the preprocessor before
     # we materialize meta — otherwise we read template defaults and pass
-    # the wrong --nproc-per-node to torchrun.
-    dynamic_args = get_dynamic_args(args)
-    # ``required: true`` in the schema is enforced here rather than via
-    # argparse so non-action paths (pp, ls, code) don't trip on placeholder
-    # defaults. ``train`` is the canonical action that actually consumes
-    # the value.
-    required = required_dynamic_arg_dests(args.project_dir, args.config_template)
-    missing = [d for d in required if d not in dynamic_args]
-    if missing:
-        flags = ", ".join(f"--{d.replace('_', '-')}" for d in missing)
-        print(
-            f"error: required dynamic arg(s) missing: {flags}",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
-    bound_errors = validate_dynamic_arg_bounds(
-        args.project_dir, args.config_template, dynamic_args
-    )
-    if bound_errors:
-        print(
-            "error: dynamic arg constraint violated: " + "; ".join(bound_errors),
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
+    # the wrong --nproc-per-node to torchrun. collect_dynamic_args also
+    # enforces required/bounds (the same checks train has always done).
+    dynamic_args = submit_orch.collect_dynamic_args(args)
     config, _ = cmd.get_config(**dynamic_args)
     config_meta = Latent.materialize(config.meta)
     nproc_per_node = config_meta["nproc_per_node"]
 
     # --nproc wins over the config value. Honor the override even for the
-    # --enqueue path so users can submit jobs at a specific GPU count
+    # scheduled path so users can submit jobs at a specific GPU count
     # without having to teach the config about it.
     if args.nproc is not None:
         nproc_per_node = args.nproc
@@ -73,9 +67,7 @@ def train_cmd(args):
         try:
             import torch
 
-            cuda_visible = (
-                torch.cuda.is_available() and torch.cuda.device_count() > 0
-            )
+            cuda_visible = torch.cuda.is_available() and torch.cuda.device_count() > 0
         except (ImportError, RuntimeError):
             cuda_visible = False
         if not cuda_visible:
@@ -87,30 +79,58 @@ def train_cmd(args):
             )
             nproc_per_node = 1
 
-    if args.enqueue:
-        from .server_client import ServerClient, ServerUnreachable
+    if schedule:
+        # use_orchestrator returns a client to enqueue through, or None to
+        # act locally (--local-only, or --local-fallback when the server is
+        # down). None falls through to the foreground torchrun path below.
+        from .server_client import ServerUnreachable
 
-        client = ServerClient.from_args(args)
-        requested_gpus = (
-            args.requested_gpus
-            if args.requested_gpus is not None
-            else int(nproc_per_node)
-        )
         try:
-            item = client.enqueue_training(
-                project_dir=os.path.abspath(args.project_dir),
-                config=args.config_template,
-                dynamic_args=dynamic_args,
-                priority=args.priority,
-                requested_gpus=requested_gpus,
-            )
+            client = submit_orch.use_orchestrator(args)
         except ServerUnreachable as e:
             print(str(e), file=sys.stderr)
             raise SystemExit(1)
-        print(
-            f"queued: {item['queue_id']} (priority={item['priority']}, gpus={item['requested_gpus']})"
-        )
-        return
+        if client is not None:
+            if args.requested_gpus is not None:
+                requested_gpus = args.requested_gpus
+            else:
+                try:
+                    requested_gpus = int(nproc_per_node)
+                except (TypeError, ValueError):
+                    print(
+                        "error: couldn't infer the GPU count from config "
+                        f"nproc_per_node={nproc_per_node!r}; pass --requested-gpus N.",
+                        file=sys.stderr,
+                    )
+                    raise SystemExit(1)
+            try:
+                dataset_source = submit_orch.resolve_dataset_source(client, args)
+            except ValueError as e:
+                print(str(e), file=sys.stderr)
+                raise SystemExit(1)
+            try:
+                item = submit_orch.submit_single(
+                    client,
+                    project_dir=os.path.abspath(args.project_dir),
+                    config=args.config_template,
+                    dynamic_args=dynamic_args,
+                    priority=args.priority,
+                    requested_gpus=requested_gpus,
+                    dataset_source=dataset_source,
+                )
+            except (ServerUnreachable, RuntimeError) as e:
+                print(str(e), file=sys.stderr)
+                raise SystemExit(1)
+            queue_id = item["queue_id"]
+            if args.foreground:
+                submit_orch.attach_submitted(client, queue_id)
+            else:
+                print(
+                    f"queued: {queue_id} (priority={item['priority']}, "
+                    f"gpus={item['requested_gpus']})"
+                )
+            return
+        # client is None → fall through to the foreground torchrun path.
 
     train_script_path = os.path.join(
         config_meta["forgather_dir"], "scripts", "train_script.py"

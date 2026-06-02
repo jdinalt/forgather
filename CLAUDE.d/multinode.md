@@ -10,12 +10,15 @@ forgather cluster jobs                     # multi-node bundles
 forgather cluster jobs <bundle-id>         # per-rank detail
 forgather cluster cancel <bundle-id>       # fan-out cancel
 
-forgather -p <proj> -t <cfg> cluster submit \
+forgather -p <proj> -t <cfg> submit --global \
     [--member host:gpus[:iface] ...]       # repeatable; default = every reachable peer's idle GPUs
     [--rdzv-host hostname] [--rdzv-port 29400] \
     [--priority N] [--dynamic-arg KEY=VAL ...] \
     [--allow-version-mismatch] [--wait]
 ```
+
+(`forgather cluster submit ...` is a deprecated alias of
+`forgather submit --global ...`.)
 
 Hostnames in `--member` resolve to UUIDs via the membership table — no
 UUIDs ever appear in the CLI.

@@ -27,25 +27,38 @@ failed configs show as `PARSE ERROR` instead of their description.
 ## Training
 
 ```bash
-forgather -t cfg.yaml train                # local
+forgather -t cfg.yaml train                # local, foreground
 forgather -t cfg.yaml train -d 0,1         # specific GPUs
 forgather -t cfg.yaml train --dry-run      # print command only
-forgather -t cfg.yaml train --enqueue      # send to forgather server
+forgather -t cfg.yaml train --schedule     # submit to the scheduler (background)
+forgather -t cfg.yaml train --schedule --foreground   # ...and attach
 ```
+
+### Running via the scheduler
+
+```bash
+forgather -t cfg.yaml submit                # shorthand for `train --schedule` (single-node)
+forgather -p <abs-path> submit --global \
+    --member HOST:GPUS[:IFACE] ...          # multi-node fan-out
+```
+
+`forgather submit` is the canonical scheduler entry point.
+`forgather cluster submit ...` is a deprecated alias of
+`forgather submit --global ...`.
 
 ## Job control (server-managed jobs)
 
 ```bash
-forgather control list                     # discoverable jobs
-forgather control status JOB_ID
-forgather control save JOB_ID              # checkpoint now
-forgather control stop JOB_ID              # graceful stop + save
-forgather control save-stop JOB_ID
-forgather control abort JOB_ID             # no save (failed experiments)
-forgather control cleanup [--force]
+forgather job list                     # queued + active jobs
+forgather job status JOB_ID
+forgather job save JOB_ID              # checkpoint now
+forgather job stop JOB_ID              # graceful stop + save
+forgather job save-stop JOB_ID
+forgather job abort JOB_ID             # no save (failed experiments)
+forgather job cleanup [JOB_ID]
 ```
 
-Job control requires `TrainerControlCallback` in the trainer; see
+Save/stop/abort require `TrainerControlCallback` in the trainer; see
 `examples/trainer_control/` and `docs/trainers/trainer-control.md`.
 
 ## Log analysis
@@ -65,12 +78,17 @@ Plots default to outlier-aware y-axis scaling; pass
 ## Server / cluster / GPU
 
 ```bash
-forgather sched   status | list | pause | resume | cancel <id> | cleanup
-forgather job     status | save | stop | abort | tail | dump <id>
+forgather job     list | status | save | stop | abort | tail | dump <id>
+forgather job     cancel <id> | cleanup [<id>] | gc
+forgather job     scheduler status | pause | resume
 forgather gpu     status | disable | enable | priority | kill <idx>
-forgather cluster nodes | jobs [<id>] | submit | cancel <id>
+forgather cluster nodes | jobs [<id>] | cancel <id>
 forgather tls     init | status | renew | export-ca | import-ca | mint | install
 ```
+
+`forgather job` is the merged queue + job-control surface.
+`forgather sched ...` is a deprecated alias (`sched status/pause/resume`
+now live under `job scheduler`).
 
 All accept `--server URL` or `$FORGATHER_SERVER_URL` (default
 `http://127.0.0.1:8765`). Cluster + TLS detail in
@@ -80,12 +98,17 @@ modals: `tools/forgather_server/README.md`.
 ## Inference
 
 ```bash
-forgather inf server -m MODEL_PATH         # bf16, cuda:0
+forgather inf server -m MODEL_PATH         # bf16, cuda:0 (scheduler, background)
 forgather inf server -c -m MODEL_PATH      # from Forgather checkpoint
+forgather inf server --local-only -m MODEL_PATH   # foreground (old default)
 forgather inf client                        # interactive chat
 forgather inf client --message "..."        # single message
 forgather inf client --completion "..."     # completion mode
 ```
+
+`inf server` is a long-running service: it submits to the scheduler
+(background) by default. `--local-only` runs it in the foreground;
+`--local-fallback` foregrounds only when the server is unreachable.
 
 Detail: `tools/inference_server/README.md`.
 

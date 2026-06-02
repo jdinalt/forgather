@@ -558,7 +558,7 @@ curl --cacert ~/.config/forgather/tls/ca/ca.crt \
     https://$(hostname):8765/api/health
 
 # 4. From a peer (after `tls install` / `import-ca`).
-forgather sched status   # uses the shared bundle automatically
+forgather job scheduler status   # uses the shared bundle automatically
 ```
 
 ## Trusting the CA from a browser
@@ -817,7 +817,7 @@ STATE_VOLUME=$HOME/.config/forgather docker/runtime/run.sh --recreate
 
 The container sees the host's TLS state and serves HTTPS off the
 same CA. The CLI on the host already trusts that CA, so
-`forgather sched status` from outside the container Just Works.
+`forgather job scheduler status` from outside the container Just Works.
 
 **3. Multi-node cluster with one CA holder (no bake):**
 
@@ -1056,8 +1056,8 @@ All three servers (`forgather server`, `dataset-server start`,
 
 ## CLI clients
 
-CLI clients (`forgather control`, `forgather job`, `forgather sched`,
-`forgather gpu`, `forgather cluster`, `forgather dataset-server
+CLI clients (`forgather job`, `forgather submit`, `forgather gpu`,
+`forgather cluster`, `forgather dataset-server
 status|list|cache|local`) pick the scheme + CA bundle up from the
 shared config automatically. Override with the env vars:
 

@@ -12,10 +12,10 @@ Usage:
   python examples/trainer_control_demo.py
 
   # Terminal 2: Control the training job
-  forgather control list                    # Find your job
-  forgather control status JOB_ID          # Check status
-  forgather control save JOB_ID            # Save checkpoint
-  forgather control stop JOB_ID            # Gracefully stop
+  forgather job list                    # Find your job
+  forgather job status JOB_ID          # Check status
+  forgather job save JOB_ID            # Save checkpoint
+  forgather job stop JOB_ID            # Gracefully stop
 """
 
 import os
@@ -170,19 +170,22 @@ def main():
 
     print("✅ Trainer created successfully!")
     print()
-    print("🎛️  Control Interface Information:")
+    print("Control Interface Information:")
     print(f"   Job ID: {job_id}")
     print(f"   Host: {platform.node()}")
-    print(f"   Discovery: ~/.config/forgather/jobs/{job_id}/endpoint.json")
+    print(f"   Endpoint: ~/.config/forgather/jobs/{job_id}/endpoint.json")
     print()
-    print("📱 Control Commands (run in another terminal):")
-    print(f"   forgather control list                    # List all jobs")
-    print(f"   forgather control status {job_id}       # Get job status")
-    print(f"   forgather control save {job_id}         # Save checkpoint")
-    print(f"   forgather control stop {job_id}         # Graceful stop")
-    print(f"   forgather control save-stop {job_id}    # Save and stop")
+    print("This demo's control endpoint can be driven programmatically via the")
+    print("forgather.trainer_control client (see the README). It is also")
+    print("controllable via 'forgather job' whenever the forgather server is")
+    print("running on this host -- the server discovers the endpoint above and")
+    print("relays commands to it (no '--schedule' / scheduler required):")
+    print("   forgather job list                   # find the job id")
+    print("   forgather job save <job_id>          # checkpoint")
+    print("   forgather job stop <job_id>          # graceful stop")
+    print("   forgather job save-stop <job_id>     # save and stop")
     print()
-    print("🏃 Starting training... (use control commands to interact)")
+    print("Starting training...")
     print("=" * 60)
 
     try:
