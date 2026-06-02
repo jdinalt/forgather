@@ -178,7 +178,11 @@ def _reap_finished() -> None:
                 # Re-attached item with no pid (shouldn't happen) — clean up.
                 rc = None
             else:
-                if _pid_is_alive(record.pid):
+                # Use the PID-reuse-guarded check (create_time vs started_at) —
+                # same as startup re-attach and the GC sweep — so a recycled pid
+                # can't keep a re-attached / promoted-external record "running"
+                # forever.
+                if trainer_control.is_endpoint_pid_alive(record.pid, record.started_at):
                     continue  # still alive
                 rc = None  # can't retrieve exit code of a non-child process
 
@@ -1337,6 +1341,13 @@ def _correlate_running_records() -> None:
             break
 
 
+# Endpoints that looked external on the previous tick. We only promote an
+# endpoint after it survives a tick unclaimed, so a scheduler-spawned trainer
+# whose record hasn't correlated yet (and whose PID lineage momentarily can't be
+# walked) gets a tick for _correlate_running_records to claim it first.
+_promote_grace: set[str] = set()
+
+
 def _promote_external_endpoints() -> None:
     """Promote externally-launched trainer endpoints into JobRecords.
 
@@ -1345,20 +1356,22 @@ def _promote_external_endpoints() -> None:
     endpoint but has no JobRecord. Synthesize one (marked
     ``externally_launched``) so it appears in ``forgather job`` with
     first-class status/lifecycle and is reaped by PID liveness like a
-    re-attached job. Scheduler-spawned trainers are excluded — they correlate
-    to their own record via PID lineage (see ``_correlate_running_records``),
-    so they're never double-counted.
+    re-attached job. Scheduler-spawned trainers are excluded two ways — by
+    job_id (once correlated) and by PID lineage — plus a one-tick grace so a
+    not-yet-correlated scheduler job is never promoted as a duplicate.
 
     GPU accounting is intentionally deferred: external records carry
     ``gpu_indices=[]`` (so they don't reserve the scheduler's pool). Wiring
     real, ``CUDA_VISIBLE_DEVICES``-correct accounting is a follow-up.
     """
+    global _promote_grace
     try:
         endpoints = trainer_control.list_jobs()
     except Exception as e:
         log.debug("list_jobs failed during promotion: %s", e)
         return
     if not endpoints:
+        _promote_grace = set()
         return
 
     records = job_records.list_records()
@@ -1369,6 +1382,7 @@ def _promote_external_endpoints() -> None:
         r.pid for r in records if r.status in RUNNING_STATUSES and r.pid is not None
     }
 
+    seen_unclaimed: set[str] = set()
     for ep in endpoints:
         if ep.job_id in known_job_ids:
             continue  # already represented (correlated or already promoted)
@@ -1378,6 +1392,11 @@ def _promote_external_endpoints() -> None:
             anc in launcher_pids for anc in _pid_ancestors(ep.pid)
         ):
             continue  # scheduler-spawned; _correlate attaches it to its record
+        # Genuine external candidate. Wait one tick before promoting so a
+        # not-yet-correlated scheduler job isn't briefly double-counted.
+        seen_unclaimed.add(ep.job_id)
+        if ep.job_id not in _promote_grace:
+            continue
         queue_id = f"ext_{ep.job_id}"
         if job_records.get_record(queue_id) is not None:
             continue
@@ -1403,6 +1422,9 @@ def _promote_external_endpoints() -> None:
             ep.job_id,
             ep.pid,
         )
+
+    # Carry this tick's unclaimed candidates into the next tick's grace set.
+    _promote_grace = seen_unclaimed
 
 
 def _try_link_tty(tty_path: str, logs_dir: str) -> None:

@@ -356,6 +356,22 @@ def job_control(job_id: str, action: str):
                 status_code=400,
                 detail=f"{action} is only supported on server-launched jobs",
             )
+        if getattr(rec, "externally_launched", False):
+            # The kill paths signal the job's process group. An externally
+            # launched trainer (e.g. a foreground ``forgather train``) runs in
+            # the operator's shell session, NOT a server-spawned group, so
+            # signalling its group would hit the operator's shell. Refuse and
+            # point at the graceful relay (which targets the trainer's own HTTP
+            # control endpoint).
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{action} is not supported for externally-launched jobs "
+                    "(the server is not their session leader). Use action=abort "
+                    "or stop (graceful, via the trainer's control endpoint), or "
+                    "stop it where you started it."
+                ),
+            )
         if action == "force-kill":
             ok = scheduler.force_kill_record(rec.queue_id)
             msg = "force-killed (SIGKILL on process group)"

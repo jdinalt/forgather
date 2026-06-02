@@ -44,10 +44,14 @@ log = logging.getLogger("forgather_server.gc")
 ORPHAN_TTY_TTL_SECONDS = int(os.environ.get("FORGATHER_ORPHAN_TTY_TTL_SECONDS", "3600"))
 
 # Age threshold for the endpoint-dir sweep. Reuses the env var the removed
-# ``forgather control cleanup`` honored, for operator continuity.
-ORPHAN_ENDPOINT_TTL_SECONDS = int(
-    os.environ.get("FORGATHER_ORPHAN_JOB_DIR_TTL_SECONDS", "3600")
-)
+# ``forgather control cleanup`` honored, for operator continuity. Guarded so a
+# bad value can't break the module import (and thus the scheduler).
+try:
+    ORPHAN_ENDPOINT_TTL_SECONDS = int(
+        os.environ.get("FORGATHER_ORPHAN_JOB_DIR_TTL_SECONDS", "3600")
+    )
+except ValueError:
+    ORPHAN_ENDPOINT_TTL_SECONDS = 3600
 
 
 def relocate_tty_to_logs(record: JobRecord) -> Optional[Path]:
@@ -170,21 +174,59 @@ def sweep_orphan_ttys(ttl_seconds: int = ORPHAN_TTY_TTL_SECONDS) -> int:
     return removed
 
 
+def _pid_definitely_gone(pid: int) -> bool:
+    """True only if ``pid`` provably refers to no live process.
+
+    Deliberately conservative: returns ``False`` when liveness is
+    *indeterminate* (e.g. the process exists but is owned by another user and
+    psutil can't inspect it). The endpoint-dir sweep deletes a directory only
+    when its trainer is **proven** gone, never when we merely can't tell —
+    deleting a live trainer's control dir (auth token + pending commands) is far
+    worse than leaking a stale dir.
+    """
+    try:
+        import psutil
+
+        try:
+            psutil.Process(pid)
+            return False  # exists (alive / zombie / not-inspectable)
+        except psutil.NoSuchProcess:
+            return True
+        except psutil.AccessDenied:
+            return False  # exists, owned by another user
+    except ImportError:
+        try:
+            os.kill(pid, 0)
+            return False
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False  # exists, different user
+
+
 def sweep_dead_endpoint_dirs(ttl_seconds: int = ORPHAN_ENDPOINT_TTL_SECONDS) -> int:
     """Remove stale TrainerControlCallback endpoint dirs under ``<config>/jobs/``.
 
     A trainer writes ``~/.config/forgather/jobs/<job_id>/`` (endpoint.json,
     auth_token, control_dir) and removes it on a clean exit; a crashed or
-    SIGKILLed trainer leaves it behind. This sweep removes dirs whose endpoint
-    PID is gone (or that have no parseable endpoint) and are older than the TTL —
-    the reaper the removed ``forgather control cleanup`` used to provide. Live
-    endpoints (PID alive) are protected regardless of age.
+    SIGKILLed trainer leaves it behind. This sweep restores the reaper the
+    removed ``forgather control cleanup`` provided.
+
+    A dir is removed only when it is older than the TTL AND one of:
+    its ``endpoint.json`` parses and its PID is **provably gone**, or it has no
+    ``endpoint.json`` at all (a true orphan). A dir is **kept** whenever the
+    endpoint is live, the PID can't be proven dead (indeterminate / another
+    user), or ``endpoint.json`` is present but unparseable (could be a live
+    trainer whose schema we don't recognize). The TTL alone is NOT treated as
+    proof of death — a trainer's dir mtime is frozen at startup, so a
+    long-running trainer is older than the TTL while very much alive; its live
+    PID is what protects it.
 
     Returns the number of dirs removed. Best-effort: per-dir errors are logged
-    and swallowed. If endpoint discovery itself fails, the sweep is skipped this
-    round (conservative — never remove a dir we couldn't prove dead).
+    and swallowed.
     """
-    from forgather import trainer_control
+    import json as _json
+
     from forgather.preprocess import forgather_config_dir
 
     jobs_dir = Path(forgather_config_dir()) / "jobs"
@@ -193,29 +235,32 @@ def sweep_dead_endpoint_dirs(ttl_seconds: int = ORPHAN_ENDPOINT_TTL_SECONDS) -> 
     except FileNotFoundError:
         return 0
 
-    try:
-        alive_job_ids = {
-            ep.job_id
-            for ep in trainer_control.list_jobs()
-            if trainer_control.is_endpoint_pid_alive(ep.pid, ep.started_at)
-        }
-    except Exception as e:
-        log.debug("endpoint discovery failed during dir sweep: %s", e)
-        return 0
-
     now = time.time()
     removed = 0
     for entry in entries:
-        if not entry.is_dir():
+        # Don't follow symlinks (and rmtree refuses them anyway).
+        if entry.is_symlink() or not entry.is_dir():
             continue
-        if entry.name in alive_job_ids:
-            continue  # live trainer — never touch
         try:
             mtime = entry.stat().st_mtime
         except OSError:
             continue
         if now - mtime < ttl_seconds:
-            continue  # fresh; protect against a just-started trainer
+            continue  # fresh; protect a just-started trainer mid-write
+
+        ep_file = entry / "endpoint.json"
+        if ep_file.exists():
+            try:
+                pid = _json.loads(ep_file.read_text()).get("pid")
+            except Exception:
+                # Present but unparseable — could be a live trainer with a
+                # schema we don't recognize. Leave it alone.
+                continue
+            if pid is None or not _pid_definitely_gone(int(pid)):
+                continue  # alive or indeterminate — keep
+        # else: no endpoint.json and older than the TTL → a genuine orphan
+        # (a live trainer writes endpoint.json at startup, well within the TTL).
+
         try:
             shutil.rmtree(entry)
             removed += 1

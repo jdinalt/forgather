@@ -1348,8 +1348,12 @@ creation calls so the world-collective stays balanced.
   ``gpu_indices=[]`` — GPU accounting deferred), so it appears in
   ``forgather job`` with first-class status and is reaped by PID liveness
   like a re-attached job. Scheduler-spawned trainers are excluded (they
-  correlate to their own record by PID lineage), so they're never
-  double-counted.
+  correlate to their own record by PID lineage, plus a one-tick grace), so
+  they're never double-counted. An external job is controlled only through the
+  graceful relay (``save``/``stop``/``save-stop``/``abort`` hit the trainer's
+  own HTTP control endpoint); ``kill``/``force-kill`` are refused for it, since
+  the server is not its session leader and signalling its process group would
+  hit the operator's shell.
 
 - **Stale endpoint cleanup.** A trainer-control endpoint directory
   (``~/.config/forgather/jobs/job_*/``) left behind by a crashed or
