@@ -91,7 +91,11 @@ def server_cmd(args):
         )
 
     if local_only:
-        return _run_server_foreground(remainder)
+        # Strip the scheduler-only flags so the foreground server script
+        # (which doesn't know them) doesn't choke — same as the
+        # --local-fallback foreground path.
+        server_args = _strip_value_flags(remainder, {"--priority", "--server"})
+        return _run_server_foreground(server_args)
     return _enqueue_inference(args, remainder, local_fallback=local_fallback)
 
 

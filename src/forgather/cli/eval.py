@@ -144,7 +144,11 @@ def test_cmd(args):
                 "model_path": model_path,
                 **eval_script_args_to_job_params(args),
             }
-            dataset_source = submit_orch.resolve_dataset_source(client, args)
+            try:
+                dataset_source = submit_orch.resolve_dataset_source(client, args)
+            except ValueError as e:
+                print(str(e), file=sys.stderr)
+                raise SystemExit(1)
             try:
                 item = submit_orch.submit_single(
                     client,

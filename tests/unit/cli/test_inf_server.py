@@ -67,6 +67,32 @@ def test_local_only_runs_foreground(monkeypatch):
     assert captured["args"] == ["-m", "/model", "--port", "8137"]
 
 
+def test_local_only_strips_scheduler_flags(monkeypatch):
+    # --priority / --server are scheduler-only; the foreground server script
+    # doesn't know them, so they must be stripped before forwarding.
+    captured = {}
+    monkeypatch.setattr(inf, "_run_server_foreground", _fg_capture(captured))
+    rc = inf.server_cmd(
+        _args(
+            [
+                "--local-only",
+                "-m",
+                "/model",
+                "--priority",
+                "3",
+                "--server",
+                "http://h",
+                "--port",
+                "8137",
+            ]
+        )
+    )
+    assert rc == 0
+    assert "--priority" not in captured["args"]
+    assert "--server" not in captured["args"]
+    assert captured["args"] == ["-m", "/model", "--port", "8137"]
+
+
 def test_default_enqueues(monkeypatch, capsys):
     fake = _FakeClient(up=True)
     monkeypatch.setattr(server_client, "ServerClient", lambda server=None: fake)

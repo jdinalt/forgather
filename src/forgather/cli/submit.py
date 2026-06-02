@@ -65,6 +65,7 @@ def _submit_global(args, submit_orch, config):
     except ServerUnreachable as e:
         print(str(e), file=sys.stderr)
         return 1
-    except RuntimeError as e:
+    except (RuntimeError, ValueError) as e:
+        # ValueError: a bad --dataset value (parse_dataset_source).
         print(str(e), file=sys.stderr)
         return 1

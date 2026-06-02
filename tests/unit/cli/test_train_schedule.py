@@ -119,6 +119,16 @@ def test_foreground_attaches(monkeypatch):
     assert attached["queue_id"] == "q-9"
 
 
+def test_bad_dataset_value_errors_cleanly(monkeypatch):
+    # An explicit bad --dataset value raises ValueError in resolve_dataset_source
+    # (before any client call); train_cmd must turn it into a clean exit, not a
+    # traceback. resolve_dataset_source is intentionally NOT mocked here.
+    monkeypatch.setattr(submit_orch, "use_orchestrator", lambda args: _FakeClient())
+    with pytest.raises(SystemExit) as exc:
+        train_cmd(_train_args(schedule=True, dataset="bogus"))
+    assert exc.value.code == 1
+
+
 def test_local_only_falls_through_to_foreground(monkeypatch, capsys):
     # --local-only → use_orchestrator returns None → foreground torchrun path.
     # --dry-run keeps it from actually launching; it should print the command.

@@ -103,7 +103,11 @@ def train_cmd(args):
                         file=sys.stderr,
                     )
                     raise SystemExit(1)
-            dataset_source = submit_orch.resolve_dataset_source(client, args)
+            try:
+                dataset_source = submit_orch.resolve_dataset_source(client, args)
+            except ValueError as e:
+                print(str(e), file=sys.stderr)
+                raise SystemExit(1)
             try:
                 item = submit_orch.submit_single(
                     client,
