@@ -71,18 +71,21 @@ def _enqueue(args, config_file, client):
     if args.watch:
         job_params["watch"] = list(args.watch)
 
+    from . import submit_orch
     from .server_client import ServerUnreachable
 
     try:
-        item = client.enqueue_job(
+        item = submit_orch.submit_single(
+            client,
             project_dir=os.path.abspath(args.project_dir),
             config=f"mkdocs:{args.port}",
             job_type="mkdocs",
             job_params=job_params,
             requested_gpus=0,
             priority=args.priority,
+            dynamic_args=None,
         )
-    except ServerUnreachable as e:
+    except (ServerUnreachable, RuntimeError) as e:
         print(str(e), file=sys.stderr)
         raise SystemExit(1)
     print(

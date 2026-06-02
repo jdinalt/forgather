@@ -244,33 +244,36 @@ def _enqueue_inference(args, remainder, local_fallback=False):
     if sub.compile_args:
         job_params["compile_args"] = sub.compile_args
 
-    from .server_client import ServerClient, ServerUnreachable
+    from . import submit_orch
+    from .server_client import ServerUnreachable
 
-    client = ServerClient(sub.server)
-    if not client.ping():
-        # The forgather server is the default, required path. Fall back to a
-        # foreground server only when --local-fallback was passed; otherwise
-        # fail loud (no silent local degrade).
-        if local_fallback:
-            server_args = _strip_value_flags(remainder, {"--priority", "--server"})
-            return _run_server_foreground(server_args)
-        print(
-            f"the forgather server at {client.base} isn't reachable. Start it "
-            "('forgather server'), or pass --local-fallback to run a foreground "
-            "server, or --local-only to skip the server.",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
+    # Reuse the shared locality decision: server-required by default,
+    # --local-fallback drops to a foreground server when it's down. (--local-only
+    # was handled in server_cmd before we got here.)
+    locality = argparse.Namespace(
+        via_server=sub.server, local_only=False, local_fallback=local_fallback
+    )
     try:
-        item = client.enqueue_job(
+        client = submit_orch.use_orchestrator(locality)
+    except ServerUnreachable as e:
+        print(str(e), file=sys.stderr)
+        raise SystemExit(1)
+    if client is None:
+        # --local-fallback and the server is down → foreground server.
+        server_args = _strip_value_flags(remainder, {"--priority", "--server"})
+        return _run_server_foreground(server_args)
+    try:
+        item = submit_orch.submit_single(
+            client,
             project_dir=os.path.abspath(args.project_dir),
             config=f"inference:{sub.port}",
             job_type="inference",
             job_params=job_params,
             requested_gpus=1,
             priority=sub.priority,
+            dynamic_args=None,
         )
-    except ServerUnreachable as e:
+    except (ServerUnreachable, RuntimeError) as e:
         print(str(e), file=sys.stderr)
         raise SystemExit(1)
     print(

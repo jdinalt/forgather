@@ -216,34 +216,6 @@ def _print_bundle_detail(bundle):
             print(f"           error: {err}")
 
 
-def _parse_dataset_source(spec):
-    """Translate the CLI ``--dataset-source`` value to the dict shape
-    the forgather_server expects in the submit body.
-
-    Accepted values:
-      ``None`` / ``"local"`` / ``""``: omit (training script default).
-      ``"auto"``: cluster auto-routing.
-      ``"server:<server_id>"``: pin to a specific known server (run
-        ``forgather cluster datasets`` for ids).
-    """
-    if spec is None:
-        return None
-    spec = spec.strip()
-    if spec in ("", "local"):
-        return None
-    if spec == "auto":
-        return {"kind": "auto"}
-    if spec.startswith("server:"):
-        sid = spec[len("server:") :].strip()
-        if not sid:
-            raise RuntimeError("--dataset-source server:<id> requires a non-empty id")
-        return {"kind": "server", "server_id": sid}
-    raise RuntimeError(
-        f"unknown --dataset-source value: {spec!r} "
-        "(expected 'auto', 'local', or 'server:<id>')"
-    )
-
-
 def _parse_dynamic_args(specs):
     out = {}
     for s in specs:
@@ -278,7 +250,9 @@ def _cmd_submit(client, args):
     project_dir = getattr(args, "project_dir", None)
     config = getattr(args, "config_template", None)
     dynamic_args = _parse_dynamic_args(args.dynamic_arg)
-    dataset_source = _parse_dataset_source(getattr(args, "dataset_source", None))
+    dataset_source = submit_orch.parse_dataset_source(
+        getattr(args, "dataset_source", None)
+    )
 
     print(
         "note: 'forgather cluster submit' is deprecated; "
@@ -598,6 +572,7 @@ def cluster_cmd(args):
     except ServerUnreachable as e:
         print(str(e), file=sys.stderr)
         return 1
-    except RuntimeError as e:
+    except (RuntimeError, ValueError) as e:
+        # ValueError: a bad --dataset-source value (parse_dataset_source).
         print(str(e), file=sys.stderr)
         return 1

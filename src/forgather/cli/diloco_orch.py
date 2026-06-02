@@ -767,16 +767,23 @@ def launch_server(args):
 def parse_dataset_source(spec):
     """``--dataset`` value → an EnqueueRequest.dataset_source dict (or None).
 
-    ``None``/``local`` → None (in-process loader). ``auto`` → cluster
+    ``None``/``local``/``""`` → None (in-process loader). ``auto`` → cluster
     auto-routing. ``server:<id>`` → a specific registered/local server.
-    Raises ValueError on anything else.
+    Raises ValueError on anything else (including an empty ``server:`` id). The
+    single parser for this wire format — shared by train/eval/submit and the
+    ``cluster submit`` / ``submit --global`` paths.
     """
+    if spec is not None:
+        spec = spec.strip()
     if not spec or spec == "local":
         return None
     if spec == "auto":
         return {"kind": "auto"}
     if spec.startswith("server:"):
-        return {"kind": "server", "server_id": spec[len("server:") :]}
+        server_id = spec[len("server:") :].strip()
+        if not server_id:
+            raise ValueError("--dataset server:<id> requires a non-empty id")
+        return {"kind": "server", "server_id": server_id}
     raise ValueError(
         f"invalid --dataset {spec!r}; expected 'auto', 'local', or 'server:<id>'"
     )
