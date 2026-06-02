@@ -344,7 +344,7 @@ forgather:samantha [llama2_7b/2gpu_pp.yaml]> quit
 
 ## Control Interface
 
-`forgather job` monitors and controls jobs that the forgather server's scheduler is managing -- launch the run with `forgather train --schedule`, `forgather submit`, or the webui to make it controllable this way. A plain foreground `forgather train` is not registered with the server and is not visible to `forgather job`; stop it with control-c. For a scheduler-launched job, `forgather job stop` is the preferred means of prematurely ending the run, as it avoids the possibility of causing one or more workers to hang that control-c carries (pipeline parallel frequently hangs on termination).
+`forgather job` monitors and controls any training run that exposes a control endpoint, as long as the forgather server is running (typically on the same host): the server discovers the trainer's endpoint and relays commands to it. This includes a plain foreground `forgather train` -- you do not need `--schedule`. (`forgather job` does require a running server; `--schedule` or `forgather submit` is only for when you also want the scheduler to queue and manage the run.) `forgather job stop` is the preferred means of prematurely ending the run, as it avoids the possibility of causing one or more workers to hang that control-c carries (pipeline parallel frequently hangs on termination).
 
 ```bash
 usage: forgather job [-h] {list,status,stop,save-stop,abort,save,cleanup,...} ...

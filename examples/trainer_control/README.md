@@ -21,24 +21,30 @@ The demo trains a small transformer on synthetic data with
 
 ### Controlling a training job
 
-The callback is what makes a job controllable; how you reach it depends on how
-the job was launched:
+The callback is what makes a job controllable. There are two ways to reach it:
 
-- **Server-managed jobs (recommended).** Run training through the forgather
-  server's scheduler — `forgather submit`, `forgather train --schedule`, or the
-  webui — and control it with `forgather job`:
+- **Via `forgather job` (CLI).** As long as the forgather server is running
+  (typically on the same host), it discovers the trainer's control endpoint
+  (`~/.config/forgather/jobs/<id>/endpoint.json`) and relays commands to it.
+  This works for any run with the callback enabled -- a plain foreground
+  `forgather train`, a `forgather submit` / `forgather train --schedule` job,
+  or a run launched from the webui:
 
   ```bash
-  forgather job list                 # find the queue_id
-  forgather job status <queue_id>    # check status
-  forgather job save <queue_id>      # checkpoint
-  forgather job stop <queue_id>      # graceful stop
-  forgather job abort <queue_id>     # abort without saving
+  forgather job list                 # find the job id
+  forgather job status <job_id>      # check status
+  forgather job save <job_id>        # checkpoint
+  forgather job stop <job_id>        # graceful stop
+  forgather job abort <job_id>       # abort without saving
   ```
 
-- **Locally-launched jobs** (like this standalone demo) aren't registered with
-  the forgather server, so `forgather job` won't see them. Drive their control
-  endpoint programmatically with the `forgather.trainer_control` client.
+  `forgather job` requires a running server; `--schedule` (or
+  `forgather submit`) is only needed when you also want the scheduler to queue
+  and manage the run.
+
+- **Programmatically.** Drive the control endpoint directly with the
+  `forgather.trainer_control` client (no server required). This is how the
+  standalone demo in this directory is intended to be controlled.
 
 ## Key Features Demonstrated
 
@@ -74,6 +80,7 @@ trainer = Trainer(
 )
 ```
 
-Then control it from another terminal: run the job through the scheduler
-(`forgather submit`) and use `forgather job`, or drive the local control
-endpoint directly via the `forgather.trainer_control` client.
+Then control it from another terminal with `forgather job` (when the
+forgather server is running, it discovers the trainer's control endpoint),
+or drive the control endpoint directly via the `forgather.trainer_control`
+client.

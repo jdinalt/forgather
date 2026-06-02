@@ -788,16 +788,18 @@ A few quick inference experiments that are fun to run after training:
 
 ## Monitoring and Control
 
-`forgather job` monitors and safely stops jobs the forgather server's
-scheduler is managing -- launch the run with `forgather train --schedule`,
-`forgather submit`, or the webui to make it controllable this way. A plain
-foreground `forgather train` is not visible to `forgather job`; stop it
-with Ctrl-C. For a scheduler-launched job, prefer `forgather job stop`
-over Ctrl-C, which can leave worker processes hanging (especially for
+`forgather job` monitors and safely stops any training run that exposes a
+control endpoint, as long as the forgather server is running (typically on
+the same host): the server discovers the trainer's endpoint and relays
+commands to it. This includes a plain foreground `forgather train` -- you
+don't need `--schedule`. (`forgather job` does require a running server;
+`--schedule` or `forgather submit` is only for when you also want the
+scheduler to queue and manage the run.) Prefer `forgather job stop` over
+Ctrl-C, which can leave worker processes hanging (especially for
 pipeline-parallel runs).
 
 ```bash
-forgather job list                 # discover server-managed jobs
+forgather job list                 # discover controllable jobs
 forgather job status JOB_ID        # inspect a specific job
 forgather job save JOB_ID          # force checkpoint save
 forgather job stop JOB_ID          # graceful stop (saves a final checkpoint)

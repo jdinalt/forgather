@@ -93,12 +93,15 @@ specific devices.
 ### DDP Notes
 
 - All GPUs are used by default. Restrict with `-d 0` or `-d 0,1`.
-- Stopping DDP with Ctrl-C can leave worker processes running. For a
-  foreground `forgather train` run, Ctrl-C followed by the usual process
-  cleanup applies. If you launch the run through the scheduler
-  (`forgather train --schedule` / `forgather submit`), it becomes a
-  server-managed job and you can shut it down cleanly with `forgather job
-  list` and `forgather job stop JOB_ID`.
+- Stopping DDP with a hard Ctrl-C can leave worker processes running, in
+  which case the usual process cleanup applies. To avoid that, shut the run
+  down cleanly with `forgather job list` and `forgather job stop JOB_ID`:
+  these work against a foreground `forgather train` run too, as long as the
+  forgather server is running (it discovers the trainer's control endpoint
+  and relays the stop). Launching through the scheduler
+  (`forgather train --schedule` / `forgather submit`) additionally lets the
+  scheduler queue and manage the run, but is not required for `forgather
+  job` control.
 
 ### FSDP2 Notes
 

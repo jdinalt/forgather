@@ -154,15 +154,17 @@ compact one-line-per-run table across every run under `output_models/`.
 
 ## 3. Control a Running Job
 
-`forgather job` controls jobs that the forgather server's scheduler is
-managing -- those launched with `forgather train --schedule`, `forgather
-submit`, or the webui. A plain foreground `forgather train` (the default)
-is not registered with the server and is not visible to `forgather job`;
-stop it with Ctrl-C. To drive a run from a second shell, start it through
-the scheduler, then:
+`forgather job` controls any training run that exposes a control endpoint,
+as long as the forgather server is running (typically on the same host):
+the server discovers the trainer's endpoint and relays commands to it. This
+includes a plain foreground `forgather train` -- you don't need
+`--schedule`. `forgather job` does require a running server (that is its one
+requirement); `--schedule` (or `forgather submit`) is only for when you also
+want the scheduler to queue and manage the run. To drive a run from a second
+shell:
 
 ```bash
-forgather job list                 # see server-managed jobs
+forgather job list                 # see controllable jobs
 forgather job status JOB_ID        # detailed status for one job
 forgather job save JOB_ID          # force checkpoint save
 forgather job stop JOB_ID          # graceful stop (saves a final checkpoint)
@@ -171,10 +173,9 @@ forgather job abort JOB_ID         # stop without saving (use for failed experim
 forgather job cleanup              # prune terminal job records
 ```
 
-`JOB_ID` is the queue id reported by `forgather job list` (also shown
-when you submit the job). For a scheduler-launched job, prefer `forgather
-job stop` over killing the process -- it shuts the workers down cleanly,
-which matters under DDP.
+`JOB_ID` is the id reported by `forgather job list` (also shown when you
+submit a job). Prefer `forgather job stop` over killing the process -- it
+shuts the workers down cleanly, which matters under DDP.
 
 ## 4. Evaluate the Model
 

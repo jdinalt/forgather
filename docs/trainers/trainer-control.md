@@ -33,12 +33,18 @@ Or in a configuration template:
     trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback
 ```
 
-**2. Start training as a server-managed job** so the scheduler tracks it
-(plain `forgather train` runs locally and isn't visible to `forgather job`):
+**2. Start training** with the control callback enabled:
 
 ```bash
-forgather -t config.yaml train --schedule    # or: forgather submit
+forgather -t config.yaml train
 ```
+
+A plain foreground `forgather train` is controllable via `forgather job`
+as long as the forgather server is running (typically on the same host):
+the server discovers the trainer's control endpoint and relays commands to
+it. `forgather job` needs a running server -- that is its one requirement.
+Use `--schedule` (or `forgather submit`) only when you additionally want
+the scheduler to queue and manage the run; it is not required for control.
 
 **3. Control from another terminal** via `forgather job` (which proxies
 through the forgather server):
@@ -84,8 +90,9 @@ The forgather server scans this directory to find running jobs and checks whethe
 each process is still alive; `forgather job list` surfaces them.
 
 When training ends (or is stopped), the endpoint file is automatically cleaned up.
-If a job crashes without cleanup, the server's periodic GC sweep removes stale
-entries (`forgather job gc` runs it on demand).
+If a job crashes without cleanup, the endpoint file is left behind, but the server
+treats it as dead via a PID-liveness check and stops surfacing it in
+`forgather job list`.
 
 ### Distributed coordination
 

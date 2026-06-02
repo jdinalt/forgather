@@ -307,8 +307,8 @@ The run was interrupted once about 50 minutes in to apply a corrected
 `weight_decay` config: stopped after saving a final checkpoint, then
 resumed from `checkpoint-2560` with the new config. (A graceful,
 save-on-exit stop like this is exactly what `forgather job save-stop`
-does for a scheduler-launched run; see *Triggering the annealing phase*
-below.) The WSDScheduler's `load_state_dict` correctly picked
+does for a run controllable via `forgather job`; see *Triggering the
+annealing phase* below.) The WSDScheduler's `load_state_dict` correctly picked
 up `last_epoch` from the checkpoint but took the newly-computed
 `decay_start_step` from the constructor (per the `_CONFIG_ONLY_KEYS`
 split in `wsd_scheduler.py:110-143`), so the decay schedule fired at
@@ -695,13 +695,15 @@ forgather logs plot --loss-curves "${OO_RUN}/runs"/*/trainer_logs.json
 ```
 
 The `nohup ... &` launch above runs the trainer in the foreground (just
-detached from the terminal), so it is *not* registered with the forgather
-server and `forgather job` will not see it -- stop it with `kill` on the
-process, or let it run to completion. If you want live control via
-`forgather job` (status, on-demand checkpoint, graceful stop), launch the
-run through the scheduler instead -- `forgather -t llama3_1b/4gpu_ddp.yaml
-train --schedule -M "${OO_RUN}" -d 0,1,3,4` (or `forgather submit`) -- and
-then use `forgather job list` to find its queue id.
+detached from the terminal). It still exposes a control endpoint, so it is
+controllable via `forgather job` (status, on-demand checkpoint, graceful
+stop) as long as the forgather server is running on the same host -- the
+server discovers the trainer's endpoint and relays commands to it. Use
+`forgather job list` to find the job and `forgather job stop` /
+`forgather job save` to drive it; you can also just `kill` the process or
+let it run to completion. (`forgather job` requires a running server; the
+`--schedule` flag -- or `forgather submit` -- is only needed when you also
+want the scheduler to queue and manage the run.)
 
 ### Triggering the annealing phase
 
@@ -748,14 +750,16 @@ forgather -t llama3_1b/4gpu_ddp.yaml train --start-annealing \
     -M "${OO_RUN}" -d 0,1,3,4
 
 # (b) React to the loss curve mid-run via the control interface.
-#     This path requires a server-managed run: launch it with
-#     `--schedule` (or `forgather submit`) so `forgather job` can see it.
-#     Save the current state and stop the job, then edit the config
-#     (or pass --decay-start-step on relaunch) and resume with the
-#     new schedule. Auto-resume picks up the checkpoint and the new
-#     constructor decay_start_step takes effect.
-forgather -t llama3_1b/4gpu_ddp.yaml train --schedule -M "${OO_RUN}" -d 0,1,3,4
-forgather job list                          # find the queue id
+#     `forgather job` works against this run as long as the forgather
+#     server is running (it discovers the trainer's control endpoint);
+#     `--schedule` (or `forgather submit`) is only needed if you also
+#     want the scheduler to queue and manage the run. Save the current
+#     state and stop the job, then edit the config (or pass
+#     --decay-start-step on relaunch) and resume with the new schedule.
+#     Auto-resume picks up the checkpoint and the new constructor
+#     decay_start_step takes effect.
+forgather -t llama3_1b/4gpu_ddp.yaml train -M "${OO_RUN}" -d 0,1,3,4
+forgather job list                          # find the job id
 forgather job save-stop JOB_ID              # save then exit
 # ... edit decay_start_step in the config, then ...
 forgather -t llama3_1b/4gpu_ddp.yaml train -M "${OO_RUN}" -d 0,1,3,4

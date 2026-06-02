@@ -655,10 +655,13 @@ forgather tb --all -- --bind_all   # all interfaces
 ```
 
 External control of a running job (save / stop / abort / trigger
-annealing) uses the standard `forgather job` commands. The job must be
-server-managed for this -- launch it with `forgather train --schedule`,
-`forgather submit`, or the webui; a plain foreground `forgather train`
-is stopped with Ctrl-C. See
+annealing) uses the standard `forgather job` commands. These work against
+any run that exposes a control endpoint -- including a plain foreground
+`forgather train` -- as long as the forgather server is running (typically
+on the same host); the server discovers the trainer's endpoint and relays
+commands to it. A running server is `forgather job`'s only requirement;
+`--schedule` (or `forgather submit`) is for when you additionally want the
+scheduler to queue and manage the run. See
 [Trainer Control](../../../trainers/trainer-control.md).
 
 ## References
