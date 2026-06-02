@@ -33,6 +33,11 @@ def submit_cmd(args):
         )
         return 1
 
+    # Fail loud on flags that belong to a different mode (no silent no-op).
+    rc = _check_mode_flags(args, diloco_mode, run_global)
+    if rc:
+        return rc
+
     # Resolve the config: explicit -t, else the project's default_config.
     config = getattr(
         args, "config_template", None
@@ -56,6 +61,67 @@ def submit_cmd(args):
     if run_global:
         return _submit_global(args, submit_orch, config)
     return _submit_single(args, submit_orch, config)
+
+
+def _check_mode_flags(args, diloco_mode, run_global):
+    """Reject flags that belong to a different submit mode (fail loud).
+
+    The submit parser carries flags for all three modes (single-node, --global,
+    DiLoCo); a flag from the wrong mode would otherwise be parsed and silently
+    ignored. Returns a non-zero exit code on a misuse, else None.
+    """
+
+    def _err(flags, msg):
+        print(f"error: {', '.join(flags)} {msg}", file=sys.stderr)
+        return 1
+
+    # DiLoCo-worker knobs require the DiLoCo opt-in.
+    if not diloco_mode:
+        misused = []
+        if getattr(args, "count", 1) != 1:
+            misused.append("--count")
+        if getattr(args, "worker_id", None):
+            misused.append("--worker-id")
+        if getattr(args, "heartbeat_interval", 30.0) != 30.0:
+            misused.append("--heartbeat-interval")
+        if getattr(args, "gpus_per_worker", 1) != 1:
+            misused.append("--gpus-per-worker")
+        if getattr(args, "devices", None):
+            misused.append("--devices")
+        if getattr(args, "dry_run", False):
+            misused.append("--dry-run")
+        if misused:
+            return _err(
+                misused,
+                "apply only to DiLoCo workers; pass --diloco-server <id> "
+                "(or --resume-workers).",
+            )
+
+    # Multi-node knobs require --global.
+    if not run_global:
+        misused = []
+        if getattr(args, "member", None):
+            misused.append("--member")
+        if getattr(args, "rdzv_host", None):
+            misused.append("--rdzv-host")
+        if getattr(args, "rdzv_port", None) is not None:
+            misused.append("--rdzv-port")
+        if getattr(args, "allow_version_mismatch", False):
+            misused.append("--allow-version-mismatch")
+        if getattr(args, "wait", False):
+            misused.append("--wait")
+        if misused:
+            return _err(misused, "apply only to multi-node submit; pass --global.")
+
+    # --requested-gpus is the single-node GPU knob; the other modes have their
+    # own (DiLoCo: --gpus-per-worker; --global: per-member counts).
+    if (diloco_mode or run_global) and getattr(
+        args, "requested_gpus", None
+    ) is not None:
+        alt = "--gpus-per-worker" if diloco_mode else "the per-member GPU count"
+        return _err(["--requested-gpus"], f"is single-node only; use {alt}.")
+
+    return None
 
 
 def _submit_single(args, submit_orch, config):

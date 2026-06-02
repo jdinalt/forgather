@@ -100,3 +100,61 @@ def test_diloco_worker_prints_deprecation(monkeypatch, capsys):
     diloco_mod.diloco_cmd(argparse.Namespace(diloco_subcommand="worker"))
     err = capsys.readouterr().err
     assert "deprecated" in err and "submit --diloco-server" in err
+
+
+# --- fail-loud mode-flag validation -----------------------------------------
+
+
+def test_diloco_knob_without_diloco_mode_errors():
+    rc = submit_mod.submit_cmd(_submit_args(count=4))
+    assert rc == 1
+
+
+def test_global_knob_without_global_errors():
+    rc = submit_mod.submit_cmd(_submit_args(member=["h1:2"]))
+    assert rc == 1
+
+
+def test_requested_gpus_in_diloco_mode_errors():
+    rc = submit_mod.submit_cmd(_submit_args(server="X", requested_gpus=4))
+    assert rc == 1
+
+
+# --- dynamic-args forwarding (the submit-partition regression) --------------
+
+
+def test_dynamic_args_forwarded_on_submit_path():
+    """`submit --diloco-server` must forward the config's dynamic args.
+
+    Regression guard: submit declares dynamic args on its own subparser, so
+    main.py partitions them into args._dynamic_args; the worker path must read
+    them from there (not just from raw namespace attributes). Exercised via the
+    real CLI (--local-only --dry-run prints the spawned `forgather train` cmd).
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[3]
+    project = str(repo / "examples" / "base_lm_project")
+    out = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "forgather.cli",
+            "-p",
+            project,
+            "-t",
+            "diloco.yaml",
+            "submit",
+            "--diloco-server",
+            "localhost:8512",
+            "--local-only",
+            "--dry-run",
+            "--max-steps",
+            "7",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert "--max-steps 7" in out.stdout, out.stdout + out.stderr

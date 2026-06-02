@@ -563,15 +563,22 @@ def _schema_dests(schema):
 
 
 def _worker_dynamic_args(args, schema):
-    """Collect the config's dynamic args from the parsed worker namespace.
+    """Collect the config's dynamic args, scoped to the schema's dests.
 
-    Scoped to the schema's dests and filtered for ``None`` (so unset valued
-    args fall back to template defaults). We collect from the namespace
-    directly rather than via main.py's partition — see the note in
-    diloco_args.create_diloco_parser on why the partition isn't propagated.
+    Two callers reach the worker path with the dynamic args in different
+    places: ``forgather diloco worker`` keeps them as namespace attributes (the
+    diloco parser deliberately doesn't propagate ``_dynamic_arg_names`` — see
+    diloco_args.create_diloco_parser), while ``forgather submit`` declares them
+    on its own subparser, so main.py partitions them into ``args._dynamic_args``
+    and strips the attributes. Support both: take the partitioned dict, then
+    overlay any namespace-attribute values. ``None`` is filtered so unset valued
+    args fall back to template defaults.
     """
     out = {}
+    partitioned = getattr(args, "_dynamic_args", None) or {}
     for dest in _schema_dests(schema):
+        if partitioned.get(dest) is not None:
+            out[dest] = partitioned[dest]
         v = getattr(args, dest, None)
         if v is not None:
             out[dest] = v
@@ -617,6 +624,11 @@ def _dynamic_cli_from_schema(schema, dynamic_args):
 def _worker_cmd(args):
     """
     Launch training as a DiLoCo worker.
+
+    Shared entry point: reached both by ``forgather diloco worker`` (deprecated)
+    and by ``forgather submit --diloco-server`` (submit_cmd calls this directly).
+    Keep its arg contract stable for both — don't rename or change its signature
+    without updating ``submit.submit_cmd``.
 
     By default the worker(s) are enqueued as scheduled training jobs through
     the forgather server — the path that supports ``--count N`` (auto-named),
