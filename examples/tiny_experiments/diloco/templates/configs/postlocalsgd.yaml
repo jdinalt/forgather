@@ -1,0 +1,37 @@
+-- extends "configs/baseline.yaml"
+
+## The DDP baseline, with PyTorch **PostLocalSGD** turned on — and nothing else
+## changed. PostLocalSGD (torch's PeriodicModelAverager) has the ranks take
+## local steps and *plainly average* their weights every `period` steps after a
+## warmup; there is NO pseudo-gradient and NO outer Nesterov momentum. Comparing
+## it to DiLoCo at the same averaging cadence isolates exactly what DiLoCo's
+## outer optimizer contributes.
+##
+## This extends baseline.yaml so the ONLY difference from the DDP baseline is the
+## post_local_sgd block below; run it the same way as the baseline (i.e. with
+## --dispatch-batches yes for data parity). ``--post-local-period`` /
+## ``--post-local-start`` set the averaging cadence at launch.
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "PostLocalSGD (DDPx2)"
+    -- set ns.config_description = "DDP baseline + PyTorch PostLocalSGD averaging (no outer optimizer), for comparison with DiLoCo"
+    -- set ns.log_name = "postlocalsgd"
+
+[trainer_args]
+    == super()
+    post_local_sgd:
+        enabled: True
+        start_step: {{ post_local_start | toyaml(800) }}
+        period: {{ post_local_period | toyaml(100) }}
+
+[dynamic_args]
+    == super()
+    post_local_start:
+        names: "--post-local-start"
+        type: int
+        help: "PostLocalSGD start step (full all-reduce warmup before local averaging)"
+    post_local_period:
+        names: "--post-local-period"
+        type: int
+        help: "PostLocalSGD averaging period, in steps"

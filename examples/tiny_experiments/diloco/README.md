@@ -679,6 +679,163 @@ analysis script that produced them is
 
 ---
 
+## Extended sweep: budget, sync interval, and single-worker local-SGD
+
+The 1× comparison above is a *conservative* budget (≈1× Chinchilla, 500M
+tokens). The papers report that DiLoCo's advantage shows up in the **end-game**
+of longer runs, so this sweep doubles the budget to **2× (≈1B tokens)** and
+varies three things: the **sync interval** `H` (`--sync-every` 500 / 100 / 20),
+the **worker count** (2-worker vs a single worker, the latter also swept across
+`H`), and the **synchronization mechanism** (DiLoCo's pseudo-gradient + outer
+Nesterov vs PyTorch's PostLocalSGD, which is pure periodic weight averaging).
+Every run uses the same 34.4M model, the same seed init, the same data (every
+worker sees the same examples in the same order), and the same constant learning
+rate (warmup-stable, **no annealing** — so there is no end-of-run LR-decay
+confound on any curve).
+
+### Final eval loss @ 2× (~1B tokens)
+
+| run | eval loss |
+|---|---|
+| **DiLoCo, 1w, H=100** | **2.870** |
+| DiLoCo, 1w, H=20 | 2.877 |
+| DiLoCo, 2w, H=20 | 2.887 |
+| DiLoCo, 2w, H=100 | 2.936 |
+| DiLoCo, 1w, H=500 | 2.938 |
+| single-GPU baseline | 2.999 |
+| DDPx2 baseline | 3.005 |
+| PostLocalSGD, H=20 | 3.057 |
+| PostLocalSGD, H=100 | 3.075 |
+| DiLoCo, 2w, H=500 | 3.076 |
+
+### 1. DiLoCo catches up — and overtakes — at a longer budget
+
+![Sync-interval sweep @ 2x](assets/sweep_sync_interval.png)
+
+This is the headline. **At 1×, DiLoCo trailed the baseline** (eval 3.343 vs
+3.156). **At 2×, DiLoCo with `H ≤ 100` overtakes both baselines** (2.887 / 2.936
+vs 3.005 / 2.999). The end-game panel makes the ordering unambiguous: H=20 and
+H=100 pull *below* the baselines in the back half of the run, exactly where the
+literature says the gain appears. (H=500 is the exception — it's still slightly
+behind the baselines at 2×; see below.)
+
+### 2. Shorter sync intervals converge better (for more bandwidth)
+
+The sync interval is monotonic: **H=20 (2.887) < H=100 (2.936) < H=500
+(3.076)**. More frequent synchronization keeps the workers' replicas from
+drifting as far between averages, so the global model tracks an all-reduce run
+more closely — at the cost of proportionally more communication (H=20 syncs
+**25× more often** than H=500). That's the core DiLoCo dial: trade bandwidth for
+convergence. The paper's recommended `H≈500` is the bandwidth-frugal end; on a
+fast interconnect you can afford a shorter `H` and close the gap.
+
+### 3. Single-worker local-SGD generalizes better — and also likes a shorter sync
+
+![Single-worker DiLoCo (sync sweep) vs single-GPU baseline @ 2x](assets/sweep_1worker.png)
+
+The cleanest test of the "local-SGD finds flatter minima" idea: a **1-worker**
+DiLoCo run vs the **single-GPU baseline** — *same* GPU, *same* data, *same* 1B
+tokens; the only difference is DiLoCo's outer SGD-with-Nesterov wrapped around
+the inner trajectory. **Every single-worker run lands below the baseline on eval
+loss** (2.870–2.938 vs 2.999) without fitting the training data any more tightly
+— the flatter-minima signature, with no data parallelism involved at all.
+
+The sync interval matters here too, though weakly: **H=100 (2.870) and H=20
+(2.877) edge out H=500 (2.938)** — a shorter outer step tracks the inner
+trajectory's flat directions a little more closely. H=100 vs H=20 is a wash
+within run-to-run noise; the meaningful gap is shorter-than-500 vs the
+bandwidth-frugal 500.
+
+### 4. The gain is the outer optimizer, not the averaging
+
+![Outer optimizer vs pure averaging @ 2x](assets/sweep_postlocalsgd.png)
+
+DiLoCo's outer step is a **pseudo-gradient** (the net change a worker
+accumulated over `H` steps) fed to an **SGD-with-Nesterov** optimizer. PyTorch
+ships a simpler local-SGD — [`PostLocalSGD`](https://pytorch.org/docs/stable/distributed.algorithms.join.html)
+— that just **averages** the workers' weights every `period` steps: no
+pseudo-gradient, no outer momentum. Running it at the *same* cadence isolates
+exactly what the outer optimizer contributes.
+
+At matched cadence it isn't close. **PostLocalSGD H=100 (3.075) and H=20 (3.057)
+both finish *above* even the every-step DDP baseline (3.005)**, while DiLoCo at
+the same `H` lands well below it (2.936 / 2.887). Tightening the sync barely
+helps the averaging run (3.075 → 3.057); the entire ~0.15 gap to DiLoCo is the
+outer Nesterov update. This is **not** a divergence — PostLocalSGD trains stably
+the whole way (each run does an 800-step full-DDP warmup before averaging
+engages), it just converges *inefficiently* to a worse optimum at constant LR.
+Pure periodic averaging keeps the replicas close; it does **not** supply the
+implicit regularization the slow-momentum outer step does. That is the
+mechanism behind the whole sweep: DiLoCo's edge is the outer optimizer
+([SlowMo](#background-why-this-happens-and-where-to-read-more), below), not the
+fact of periodic synchronization.
+
+### Caveats & next step
+
+One model, one seed per config, eval loss as the generalization proxy — this is
+suggestive, not a benchmark. But the four effects are consistent with the
+local-SGD literature and reproduce from the CLI in under an hour per run. The
+natural next step is a **5× budget** to see how far the overtake widens (the 2×
+gap is already growing at the end of these curves). The three plots, the parsed
+`assets/sweep_curves.csv`, and the analysis script
+[`analysis/plot_sweep.py`](analysis/plot_sweep.py) are in the repo — the script
+regenerates every figure in this section from the raw run logs, so adding a run
+or a new comparison is a matter of editing one dict. The PostLocalSGD knob lives
+in [`templates/configs/postlocalsgd.yaml`](templates/configs/postlocalsgd.yaml)
+(the DDP baseline plus PyTorch PostLocalSGD, nothing else changed).
+
+### Background: why this happens, and where to read more
+
+None of this is new — these toy-scale runs replicate effects that are
+well-established in the local-SGD literature. The pointers below map each
+observation to the work that explains (or first reported) it.
+
+- **Flat vs. sharp minima → generalization.** The framing that wide/flat optima
+  generalize better than sharp ones, and that small-batch noise finds the flat
+  ones, is from Keskar et al., *On Large-Batch Training for Deep Learning:
+  Generalization Gap and Sharp Minima* (ICLR 2017,
+  [arXiv:1609.04836](https://arxiv.org/abs/1609.04836)).
+
+- **Why local SGD generalizes better — and when.** Gu, Lyu, Huang & Arora, *Why
+  (and When) does Local SGD Generalize Better than SGD?* (ICLR 2023,
+  [arXiv:2303.01215](https://arxiv.org/abs/2303.01215)) show that periodic
+  averaging induces a drift that accelerates sharpness reduction — **but only
+  with a small learning rate and a long enough run.** That conditional is
+  exactly our curve: at 1× DiLoCo trailed; the win only emerged in the **2×
+  end-game**. See also Lin, Stich, Patel & Jaggi, *Don't Use Large Mini-Batches,
+  Use Local SGD* (ICLR 2020, [arXiv:1808.07217](https://arxiv.org/abs/1808.07217)),
+  which reports the same generalization edge over large-batch training.
+
+- **The single-worker result is Lookahead / weight averaging.** A 1-worker
+  DiLoCo step — `H` inner steps, then a slow outer update — is precisely the
+  Lookahead optimizer of Zhang, Lucas, Ba & Hinton, *Lookahead Optimizer: k
+  steps forward, 1 step back* (NeurIPS 2019,
+  [arXiv:1907.08610](https://arxiv.org/abs/1907.08610)), which is shown to
+  amplify SGD's implicit regularization at negligible cost. Stochastic Weight
+  Averaging — Izmailov et al., *Averaging Weights Leads to Wider Optima and
+  Better Generalization* ([arXiv:1803.05407](https://arxiv.org/abs/1803.05407)) —
+  is the same "averaging finds flatter optima" idea. Both support the practical
+  reading: a DiLoCo-style outer step is worth folding into ordinary single-node
+  training, no parameter server required.
+
+- **The outer optimizer is SlowMo.** DiLoCo's outer step (Nesterov momentum on
+  the pseudo-gradient) is the slow-momentum update of Wang, Tantia, Ballas &
+  Rabbat, *SlowMo* (ICLR 2020, [arXiv:1910.00643](https://arxiv.org/abs/1910.00643)),
+  which likewise improves both optimization and generalization. Section 4 above
+  is the controlled version of that claim: swapping the slow-momentum outer step
+  for plain weight averaging (PyTorch PostLocalSGD) at the same cadence gives up
+  the entire advantage, landing below even the every-step DDP baseline.
+
+- **DiLoCo itself, and at scale.** The method: Douillard et al., *DiLoCo:
+  Distributed Low-Communication Training of Language Models*
+  ([arXiv:2311.08105](https://arxiv.org/abs/2311.08105)). At real scale the
+  overtake we see in miniature is corroborated by Charles et al., *Scaling Laws
+  for DiLoCo* (2025, [arXiv:2503.09799](https://arxiv.org/abs/2503.09799)), which
+  finds DiLoCo can beat data-parallel training for a fixed token budget and
+  improves downstream generalization with scale.
+
+---
+
 ## Going further
 
 This example deliberately sticks to the simple path: a single homogeneous node, two

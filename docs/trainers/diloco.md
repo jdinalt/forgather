@@ -1429,8 +1429,27 @@ See `docs/design/diloco-pipeline-groups.md` for the full design.
 
 ## References
 
-- Douillard et al., "DiLoCo: Distributed Low-Communication Training of Language Models" (2024)
+**DiLoCo and direct lineage**
+
+- Douillard et al., "DiLoCo: Distributed Low-Communication Training of Language Models" ([arXiv:2311.08105](https://arxiv.org/abs/2311.08105))
 - Douillard et al., "DiPaCo: Distributed Path Composition" (2024)
-- Douillard et al., "Asynchronous Local-SGD Training for Language Modeling" (2024) - Async DiLoCo, Delayed Nesterov, DyLU
-- Douillard et al., "Streaming DiLoCo with Overlapping Communication" (2024) - Fragment-based staggered sync
-- TorchFt (Meta) - fault-tolerant distributed training library
+- Liu et al., "Asynchronous Local-SGD Training for Language Modeling" (2024) — Async DiLoCo, Delayed Nesterov, DyLU
+- Douillard et al., "Streaming DiLoCo with Overlapping Communication" (2025) — fragment-based staggered sync
+- Charles et al., "Communication-Efficient Language Model Training Scales Reliably and Robustly: Scaling Laws for DiLoCo" ([arXiv:2503.09799](https://arxiv.org/abs/2503.09799))
+- TorchFt (Meta) — fault-tolerant distributed training library
+
+**Local SGD, slow momentum, and the outer optimizer**
+
+- Wang, Tantia, Ballas & Rabbat, "SlowMo: Improving Communication-Efficient Distributed SGD with Slow Momentum" (ICLR 2020, [arXiv:1910.00643](https://arxiv.org/abs/1910.00643)) — the slow/outer-momentum update DiLoCo's outer optimizer generalizes
+- Lin, Stich, Patel & Jaggi, "Don't Use Large Mini-Batches, Use Local SGD" (ICLR 2020, [arXiv:1808.07217](https://arxiv.org/abs/1808.07217))
+- Zhang, Lucas, Ba & Hinton, "Lookahead Optimizer: k steps forward, 1 step back" (NeurIPS 2019, [arXiv:1907.08610](https://arxiv.org/abs/1907.08610)) — the single-worker local-SGD analog
+
+**Generalization / flat minima** (why local SGD can train *better*, not just cheaper)
+
+- Gu, Lyu, Huang & Arora, "Why (and When) does Local SGD Generalize Better than SGD?" (ICLR 2023, [arXiv:2303.01215](https://arxiv.org/abs/2303.01215)) — sharpness-reduction drift; needs small LR + long training
+- Izmailov et al., "Averaging Weights Leads to Wider Optima and Better Generalization" (SWA, [arXiv:1803.05407](https://arxiv.org/abs/1803.05407))
+- Keskar et al., "On Large-Batch Training for Deep Learning: Generalization Gap and Sharp Minima" (ICLR 2017, [arXiv:1609.04836](https://arxiv.org/abs/1609.04836))
+
+A worked, reproducible illustration of these effects (DiLoCo overtaking a DDP
+baseline at a longer budget; single-worker local-SGD generalizing better) is in
+the [canonical example](../../examples/tiny_experiments/diloco/README.md#extended-sweep-budget-sync-interval-and-single-worker-local-sgd).
