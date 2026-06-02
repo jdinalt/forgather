@@ -40,11 +40,18 @@ forgather -t cfg.yaml train --schedule --foreground   # ...and attach
 forgather -t cfg.yaml submit                # shorthand for `train --schedule` (single-node)
 forgather -p <abs-path> submit --global \
     --member HOST:GPUS[:IFACE] ...          # multi-node fan-out
+forgather -t cfg.yaml submit \
+    --diloco-server <id> --count 4          # DiLoCo worker(s)
 ```
 
-`forgather submit` is the canonical scheduler entry point.
+`forgather submit` is the canonical scheduler entry point (mirrors the webui
+submit modal): single-node by default, `--global` for multi-node rendezvous,
+`--diloco-server`/`--resume-workers` for DiLoCo worker(s). `--global` and the
+DiLoCo opt-in are mutually exclusive (different parallelism axes).
 `forgather cluster submit ...` is a deprecated alias of
-`forgather submit --global ...`.
+`forgather submit --global ...`; `forgather diloco worker ...` is a deprecated
+alias of `forgather submit --diloco-server ...` (the `diloco server/status/...`
+param-server verbs are unchanged).
 
 ## Job control (server-managed jobs)
 
