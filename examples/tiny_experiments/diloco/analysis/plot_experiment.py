@@ -2,10 +2,11 @@
 """3-way comparison at the 1x (~500M-token) budget: DDPx2 baseline, single-GPU
 baseline, and the 2-worker DiLoCo run.
 
-The DDPx2 + DiLoCo curves are read from the committed ``assets/curves.csv``
-(their original run dirs are ephemeral); the single-GPU baseline is parsed from
-its TensorBoard run. Writes the comparison plots and rewrites ``curves.csv``
-with all three series.
+The DiLoCo curve is read from the committed ``assets/curves.csv`` (its original
+run dir is ephemeral); the DDPx2 and single-GPU baselines are parsed from their
+TensorBoard runs. All three runs see identical data and use the same constant LR
+(annealing=0). Writes the comparison plots and rewrites ``curves.csv`` with all
+three series.
 
 Run from examples/tiny_experiments/diloco/.
 """
@@ -25,33 +26,48 @@ ASSETS = os.path.join(HERE, "assets")
 # Single-GPU baseline (1x, 500M, 16062 steps). TrainOutput: 520,462,475 tok / 16062 steps.
 BASE1_TB = os.path.join(HERE, "output_models/small/runs/baseline_2026-06-01T16-02-47")
 BASE1_TOK_PER_STEP = 520462475 / 16062
+# DDPx2 baseline (1x, 500M, 8030 steps). TrainOutput: 520,462,475 tok / 8030 steps.
+BASE_DDP2_TB = os.path.join(
+    HERE, "output_models/small/runs/baseline_2026-06-02T00-10-55"
+)
+BASE_DDP2_TOK_PER_STEP = 520462475 / 8030
 
 
 def tb_scalar(ea, tag):
     return [(e.step, e.value) for e in ea.Scalars(tag)]
 
 
-# ---- existing series (DDPx2 baseline + DiLoCo) from committed curves.csv ----
+# ---- DiLoCo series from committed curves.csv (its run dir is ephemeral) ----
+# The baselines are (re)parsed from TensorBoard below, so skip them on load.
 existing = defaultdict(list)  # (series, metric) -> [(tokens, value)]
 with open(os.path.join(ASSETS, "curves.csv")) as f:
     for row in csv.DictReader(f):
-        if row["series"] in ("baseline_1gpu",):  # don't double-load on re-run
+        if row["series"] in ("baseline", "baseline_1gpu"):  # parsed from TB instead
             continue
         existing[(row["series"], row["metric"])].append(
             (float(row["tokens"]), float(row["value"]))
         )
 
-# ---- single-GPU baseline (TensorBoard) ----
-ea = EventAccumulator(BASE1_TB)
-ea.Reload()
-b1 = {}  # metric -> [(tokens, value)]
-for tag, metric in [
+TB_TAGS = [
     ("train-loss", "train_loss"),
     ("eval-loss", "eval_loss"),
     ("tok-per-sec", "tok_per_sec"),
     ("grad-norm", "grad_norm"),
-]:
-    b1[metric] = [(s * BASE1_TOK_PER_STEP, v) for s, v in tb_scalar(ea, tag)]
+]
+
+
+def tb_series(run_dir, tok_per_step):
+    ea = EventAccumulator(run_dir)
+    ea.Reload()
+    return {
+        metric: [(s * tok_per_step, v) for s, v in tb_scalar(ea, tag)]
+        for tag, metric in TB_TAGS
+    }
+
+
+# ---- baselines (TensorBoard): DDPx2 and single-GPU ----
+bddp2 = tb_series(BASE_DDP2_TB, BASE_DDP2_TOK_PER_STEP)
+b1 = tb_series(BASE1_TB, BASE1_TOK_PER_STEP)
 
 # Series in plot order, with display labels + colors.
 COLORS = {"baseline": "#1f6fb2", "baseline_1gpu": "#2ca25f", "diloco": "#d9772b"}
@@ -63,6 +79,8 @@ LABELS = {
 
 
 def curve(series, metric):
+    if series == "baseline":
+        return bddp2[metric]
     if series == "baseline_1gpu":
         return b1[metric]
     return existing[(series, metric)]

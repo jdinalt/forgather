@@ -617,10 +617,10 @@ scaling, but trains all 500M tokens sequentially with no averaging.
 
 | metric | DDPx2 baseline | single-GPU baseline | DiLoCo (2 workers) |
 |---|---|---|---|
-| final train loss | 3.121 | **3.183** | 3.313 |
-| final eval loss | 3.156 | **3.139** | 3.343 |
-| total tokens | 519M | 520M | 517M |
-| avg throughput | 310K tok/s | 204K tok/s (1 GPU) | 309K tok/s |
+| final train loss | 3.196 | **3.183** | 3.313 |
+| final eval loss | 3.148 | **3.139** | 3.343 |
+| total tokens | 520M | 520M | 517M |
+| avg throughput | 357K tok/s | 204K tok/s (1 GPU) | 309K tok/s |
 | sync rounds | n/a (every step) | n/a | 16 (every 500 steps) |
 
 ![Throughput and grad norm vs. tokens](assets/throughput_gradnorm.png)
@@ -628,23 +628,25 @@ scaling, but trains all 500M tokens sequentially with no averaging.
 ### What this shows
 
 - **DiLoCo gets close, for ~500× less synchronization.** At an equal token
-  budget, DiLoCo's eval loss (3.343) trails the all-reduce baseline (3.156) by
-  about **0.19** (~6%). The baseline coordinates *every* step; DiLoCo
+  budget, DiLoCo's eval loss (3.343) trails the all-reduce baseline (3.148) by
+  about **0.20** (~6%). The baseline coordinates *every* step; DiLoCo
   synchronized **16 times** total. That gap is the price of communication
   efficiency — and it's small for the model to have spent almost the entire run
   with no global coordination between sync rounds.
 - **The gap is DiLoCo's mechanism, not the batch size.** The single-GPU baseline
-  (eval **3.139**) lands essentially on top of the DDPx2 baseline (**3.156**) —
+  (eval **3.139**) lands essentially on top of the DDPx2 baseline (**3.148**) —
   their curves are nearly indistinguishable — so going from 1 to 2 GPUs (a 2×
   global batch, different LR scaling) barely moves the result here. Since the
   DiLoCo workers share the single-GPU baseline's per-device batch and LR, the
-  ~0.19 DiLoCo gap can't be blamed on batch/LR; it comes from training two
+  ~0.20 DiLoCo gap can't be blamed on batch/LR; it comes from training two
   half-data replicas and averaging them only every 500 steps. (If anything the
   single-GPU run edges out DDPx2 — 2× as many optimizer updates over the same
   tokens.)
-- **Throughput is identical here (~310K tok/s)** — which is exactly the point
-  the single-host setup *can't* show off. DiLoCo's advantage is bandwidth, not
-  compute: on this box both strategies share a fast bus, so DiLoCo's
+- **Throughput is in the same ballpark for both 2-GPU runs (~310–360K tok/s)** —
+  the spread is single-host scheduling/measurement noise, not a strategy effect.
+  Which is exactly the point the single-host setup *can't* show off. DiLoCo's
+  advantage is bandwidth, not compute: on this box both strategies share a fast
+  bus, so DiLoCo's
   every-500-steps sync buys nothing over DDP's every-step all-reduce. The win
   appears when the interconnect is slow (multi-host / WAN), where DDP stalls on
   the network every step and DiLoCo keeps the GPUs busy. This run is an
