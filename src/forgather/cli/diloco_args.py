@@ -43,20 +43,8 @@ def create_diloco_parser(global_args):
     # --local-fallback degrades to a direct/foreground action only when the
     # server is unreachable; --local-only skips the server entirely. Without
     # either, an unreachable server is an error (no silent local degrade).
-    def _add_locality_args(p):
-        p.add_argument(
-            "--local-fallback",
-            action="store_true",
-            help=(
-                "If the forgather server isn't reachable, fall back to a\n"
-                "direct/foreground action instead of erroring."
-            ),
-        )
-        p.add_argument(
-            "--local-only",
-            action="store_true",
-            help="Never contact the forgather server; act directly/foreground.",
-        )
+    # Shared with train --schedule / submit / eval via submit_orch.
+    from .submit_orch import add_locality_args as _add_locality_args
 
     # server subcommand
     server_parser = subparsers.add_parser(
