@@ -25,35 +25,74 @@ def inf_cmd(args):
         return 1
 
 
+def _pop_flag(tokens, name):
+    """Remove every occurrence of a value-less flag (``--x`` or ``--x=...``)
+    from *tokens* in place; return True if any were present."""
+    found = False
+    out = []
+    for t in tokens:
+        if t == name or t.startswith(name + "="):
+            found = True
+            continue
+        out.append(t)
+    tokens[:] = out
+    return found
+
+
+def _strip_value_flags(tokens, names):
+    """Return a copy of *tokens* with each flag in *names* and its value
+    removed (handles ``--flag value`` and ``--flag=value``)."""
+    out = []
+    skip = False
+    for t in tokens:
+        if skip:
+            skip = False
+            continue
+        if t in names:
+            skip = True  # also drop the following value
+            continue
+        if any(t.startswith(n + "=") for n in names):
+            continue
+        out.append(t)
+    return out
+
+
+def _run_server_foreground(server_args):
+    """Run the inference server script in the foreground (blocking)."""
+    script_path = _get_script_path("server.py")
+    cmd_args = [sys.executable, str(script_path), *server_args]
+    print(f"Running: {' '.join(cmd_args)}")
+    print()
+    return subprocess.run(cmd_args).returncode
+
+
 def server_cmd(args):
     """
-    Launch the inference server script.
+    Launch the inference server.
+
+    The inference server is a long-running service, so it is submitted to the
+    forgather-server scheduler (background) by default — like dataset-server and
+    the DiLoCo server. ``--local-only`` runs it in the foreground instead;
+    ``--local-fallback`` foregrounds only when the server is unreachable. The
+    old ``--enqueue`` flag is now the default and is accepted as a deprecated
+    no-op.
 
     Args:
         args: Parsed arguments with remainder containing forwarded args
     """
-    if args.remainder and any(
-        t == "--enqueue" or t.startswith("--enqueue=") for t in args.remainder
-    ):
-        return _enqueue_inference(args)
+    remainder = list(getattr(args, "remainder", None) or [])
+    local_only = _pop_flag(remainder, "--local-only")
+    local_fallback = _pop_flag(remainder, "--local-fallback")
+    if _pop_flag(remainder, "--enqueue"):
+        print(
+            "note: --enqueue is deprecated; `inf server` now submits to the "
+            "scheduler by default (use --local-only to run in the foreground).",
+            file=sys.stderr,
+        )
 
-    # Get path to server.py script
-    script_path = _get_script_path("server.py")
-
-    # Build command: python server.py <forwarded_args>
-    cmd_args = [sys.executable, str(script_path)]
-
-    # Forward all remaining arguments
-    if hasattr(args, "remainder") and args.remainder:
-        cmd_args.extend(args.remainder)
-
-    # Print command for transparency
-    print(f"Running: {' '.join(cmd_args)}")
-    print()
-
-    # Run server in foreground (blocking)
-    result = subprocess.run(cmd_args)
-    return result.returncode
+    if local_only:
+        return _run_server_foreground(remainder)
+    return _enqueue_inference(args, remainder, local_fallback=local_fallback)
 
 
 def client_cmd(args):
@@ -114,11 +153,10 @@ def _get_script_path(script_name):
     return script_path
 
 
-def _enqueue_inference(args):
+def _enqueue_inference(args, remainder, local_fallback=False):
     import argparse
 
-    p = argparse.ArgumentParser(prog="forgather inf server --enqueue", add_help=True)
-    p.add_argument("--enqueue", action="store_true", required=True)
+    p = argparse.ArgumentParser(prog="forgather inf server", add_help=True)
     p.add_argument(
         "-m",
         "--model",
@@ -151,7 +189,7 @@ def _enqueue_inference(args):
     p.add_argument("--compile-args", default=None)
     p.add_argument("--priority", type=int, default=0)
     p.add_argument("--server", default=None)
-    sub = p.parse_args(args.remainder)
+    sub = p.parse_args(remainder)
 
     # Parse -m args into name/path specs. ``NAME=PATH`` or bare ``PATH``.
     models_list = []
@@ -205,6 +243,20 @@ def _enqueue_inference(args):
     from .server_client import ServerClient, ServerUnreachable
 
     client = ServerClient(sub.server)
+    if not client.ping():
+        # The forgather server is the default, required path. Fall back to a
+        # foreground server only when --local-fallback was passed; otherwise
+        # fail loud (no silent local degrade).
+        if local_fallback:
+            server_args = _strip_value_flags(remainder, {"--priority", "--server"})
+            return _run_server_foreground(server_args)
+        print(
+            f"the forgather server at {client.base} isn't reachable. Start it "
+            "('forgather server'), or pass --local-fallback to run a foreground "
+            "server, or --local-only to skip the server.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     try:
         item = client.enqueue_job(
             project_dir=os.path.abspath(args.project_dir),
