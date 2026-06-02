@@ -80,7 +80,6 @@ def get_subcommand_registry():
         create_tb_parser,
         create_tlist_parser,
     )
-    from .control_args import create_control_parser
     from .dataset_args import create_dataset_parser
     from .dataset_server_args import create_dataset_server_parser
     from .diloco_args import create_diloco_parser
@@ -124,7 +123,6 @@ def get_subcommand_registry():
         "dataset": create_dataset_parser,
         "dataset-server": create_dataset_server_parser,
         "ws": create_ws_parser,
-        "control": create_control_parser,
         "model": create_model_parser,
         "project": create_project_parser,
         "inf": create_inf_parser,
@@ -357,6 +355,17 @@ def parse_args(args=None):
 
     # Check if subcommand exists
     if subcommand not in registry:
+        if subcommand == "control":
+            # 'control' was the local, server-less trainer-control CLI. It's
+            # removed now that the forgather server is the default control
+            # plane: server-managed jobs are controlled via 'forgather job'.
+            print(
+                "Error: 'forgather control' was removed. Use 'forgather job "
+                "<save|stop|save-stop|abort|status|tail|logs>' against the "
+                "forgather server instead (start one with 'forgather server').",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         print(f"Error: Unknown subcommand '{subcommand}'")
         print()
         show_main_help()
@@ -513,10 +522,6 @@ def main():
                 from .project import project_cmd
 
                 project_cmd(args)
-            case "control":
-                from .control import control_cmd
-
-                control_cmd(args)
             case "model":
                 from .model import model_cmd
 
