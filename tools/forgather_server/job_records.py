@@ -62,6 +62,14 @@ class JobRecord:
     exit_code: Optional[int] = None
     error: Optional[str] = None
 
+    # True for records the scheduler did NOT spawn: a trainer launched outside
+    # the server (e.g. a foreground ``forgather train`` with
+    # TrainerControlCallback) that the scheduler promoted from its discovered
+    # control endpoint. Such a record has no Popen handle and no
+    # scheduler-reserved GPUs; it is reaped by PID liveness like a re-attached
+    # job.
+    externally_launched: bool = False
+
     # IO + correlation with TrainerControlClient endpoints.
     tty_log_path: Optional[str] = None
     job_id: Optional[str] = None  # set after PID-lineage match with an endpoint

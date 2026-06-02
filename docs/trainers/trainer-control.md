@@ -89,10 +89,16 @@ When `TrainerControlCallback` starts, rank 0 writes an endpoint file to
 The forgather server scans this directory to find running jobs and checks whether
 each process is still alive; `forgather job list` surfaces them.
 
+A trainer the server did not itself launch (e.g. a foreground `forgather train`)
+is **promoted** to a first-class job record when discovered, so it shows up in
+`forgather job` with normal status/lifecycle (marked as externally launched; it
+reserves no scheduler GPUs). It is reaped by PID liveness like a re-attached job.
+
 When training ends (or is stopped), the endpoint file is automatically cleaned up.
-If a job crashes without cleanup, the endpoint file is left behind, but the server
-treats it as dead via a PID-liveness check and stops surfacing it in
-`forgather job list`.
+If a job crashes without cleanup, the endpoint directory is left behind; the server
+treats it as dead via a PID-liveness check (so it stops appearing in
+`forgather job list`) and a periodic GC sweep removes the stale directory once it
+is older than the TTL (`FORGATHER_ORPHAN_JOB_DIR_TTL_SECONDS`, default 1h).
 
 ### Distributed coordination
 
