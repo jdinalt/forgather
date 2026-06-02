@@ -3,11 +3,13 @@
 import argparse
 from argparse import RawTextHelpFormatter
 
+from .submit_orch import add_locality_args
+
 
 def create_mkdocs_parser(_global_args):
     parser = argparse.ArgumentParser(
         prog="forgather mkdocs",
-        description="Run mkdocs serve (locally or via the forgather-server queue)",
+        description="Run the docs server (mkdocs serve) via the scheduler or locally",
         formatter_class=RawTextHelpFormatter,
     )
     parser.add_argument("-f", "--config-file", required=True, help="Path to mkdocs.yml")
@@ -30,16 +32,21 @@ def create_mkdocs_parser(_global_args):
         default=[],
         help="Extra path to watch (repeatable)",
     )
-    parser.add_argument(
-        "--enqueue", action="store_true", help="Submit to the forgather-server queue"
-    )
+    # The docs server is long-running, so it submits to the scheduler
+    # (background) by default; --local-only runs it in the foreground.
+    parser.add_argument("--enqueue", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--priority", type=int, default=0)
     parser.add_argument(
-        "--server", default=None, help="forgather-server URL (or $FORGATHER_SERVER_URL)"
+        "--server",
+        "--via-server",
+        dest="via_server",
+        default=None,
+        help="forgather-server URL (or $FORGATHER_SERVER_URL)",
     )
+    add_locality_args(parser)
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print the local command without executing",
+        help="Print the local command without executing (foreground only)",
     )
     return parser
