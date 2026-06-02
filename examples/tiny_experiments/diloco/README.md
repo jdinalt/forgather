@@ -589,48 +589,64 @@ tokens over the same number of optimizer steps per GPU.
 
 ### Setup
 
-| | Baseline | DiLoCo |
-|---|---|---|
-| Strategy | DDP, 2 GPUs (all-reduce every step) | 2 single-GPU workers + server (sync every 500 steps) |
-| Model | small Llama, 34.4M params | same |
-| Dataset | Fineweb-Edu (`smollm-corpus`) | same |
-| Steps / GPU | 8030 (803 warmup) | 8030 / worker (803 warmup) |
-| Total tokens | 519M | 517M |
-| Outer optimizer | — | SGD(lr=0.7, momentum=0.9, nesterov) |
-| GPUs | 2× RTX 4090 | 2× RTX 4090 (+ CPU server) |
+A **third control** — a *single-GPU* baseline at the same token budget — is
+included to separate two effects that the DDPx2-vs-DiLoCo comparison conflates:
+the **batch-size/LR difference** (1 GPU vs 2) and **DiLoCo's infrequent sync**.
+The single-GPU baseline shares the DiLoCo workers' per-device batch and LR
+scaling, but trains all 500M tokens sequentially with no averaging.
+
+| | DDPx2 baseline | single-GPU baseline | DiLoCo |
+|---|---|---|---|
+| Strategy | DDP, 2 GPUs (all-reduce every step) | 1 GPU (sequential) | 2 single-GPU workers + server (sync every 500 steps) |
+| Model | small Llama, 34.4M | same | same |
+| Dataset | Fineweb-Edu (`smollm-corpus`) | same | same |
+| Steps / GPU | 8030 | 16062 | 8030 / worker |
+| Total tokens | 519M | 520M | 517M |
+| Outer optimizer | — | — | SGD(lr=0.7, momentum=0.9, nesterov) |
+| GPUs | 2× RTX 4090 | 1× RTX 4090 | 2× RTX 4090 (+ CPU server) |
 
 > Two honest caveats. (1) The runs use **different random seeds** for weight
-> init (the baseline builds its own model; DiLoCo seeds from the saved
-> checkpoint), so small differences are expected. (2) Each DiLoCo worker scales
-> its inner LR for a *single*-GPU effective batch, while the baseline scales for
-> the 2-GPU global batch — that LR difference is inherent to the two strategies,
-> not a bug. The outer SGD is what reconciles the workers.
+> init, so small differences are expected. (2) The DiLoCo workers and the
+> single-GPU baseline scale their LR for a *single*-GPU effective batch, while
+> DDPx2 scales for the 2-GPU global batch — that LR difference is inherent to
+> the strategies, not a bug. The outer SGD is what reconciles the DiLoCo workers.
 
 ### Results
 
-![Train and eval loss vs. tokens](assets/loss_comparison.png)
+![Train and eval loss vs. tokens, three configs](assets/loss_comparison.png)
 
-| metric | baseline (DDPx2) | DiLoCo (2 workers) |
-|---|---|---|
-| final train loss | **3.121** | 3.313 |
-| final eval loss | **3.156** | 3.343 |
-| total tokens | 519M | 517M |
-| avg throughput | 310K tok/s | 309K tok/s |
-| sync rounds | n/a (every step) | 16 (every 500 steps) |
+| metric | DDPx2 baseline | single-GPU baseline | DiLoCo (2 workers) |
+|---|---|---|---|
+| final train loss | 3.196 | **3.183** | 3.313 |
+| final eval loss | 3.148 | **3.139** | 3.343 |
+| total tokens | 520M | 520M | 517M |
+| avg throughput | 357K tok/s | 204K tok/s (1 GPU) | 309K tok/s |
+| sync rounds | n/a (every step) | n/a | 16 (every 500 steps) |
 
 ![Throughput and grad norm vs. tokens](assets/throughput_gradnorm.png)
 
 ### What this shows
 
 - **DiLoCo gets close, for ~500× less synchronization.** At an equal token
-  budget, DiLoCo's eval loss (3.343) trails the all-reduce baseline (3.156) by
-  about **0.19** (~6%). The baseline coordinates *every* step; DiLoCo
+  budget, DiLoCo's eval loss (3.343) trails the all-reduce baseline (3.148) by
+  about **0.20** (~6%). The baseline coordinates *every* step; DiLoCo
   synchronized **16 times** total. That gap is the price of communication
   efficiency — and it's small for the model to have spent almost the entire run
   with no global coordination between sync rounds.
-- **Throughput is identical here (~310K tok/s)** — which is exactly the point
-  the single-host setup *can't* show off. DiLoCo's advantage is bandwidth, not
-  compute: on this box both strategies share a fast bus, so DiLoCo's
+- **The gap is DiLoCo's mechanism, not the batch size.** The single-GPU baseline
+  (eval **3.139**) lands essentially on top of the DDPx2 baseline (**3.148**) —
+  their curves are nearly indistinguishable — so going from 1 to 2 GPUs (a 2×
+  global batch, different LR scaling) barely moves the result here. Since the
+  DiLoCo workers share the single-GPU baseline's per-device batch and LR, the
+  ~0.20 DiLoCo gap can't be blamed on batch/LR; it comes from training two
+  half-data replicas and averaging them only every 500 steps. (If anything the
+  single-GPU run edges out DDPx2 — 2× as many optimizer updates over the same
+  tokens.)
+- **Throughput is in the same ballpark for both 2-GPU runs (~310–360K tok/s)** —
+  the spread is single-host scheduling/measurement noise, not a strategy effect.
+  Which is exactly the point the single-host setup *can't* show off. DiLoCo's
+  advantage is bandwidth, not compute: on this box both strategies share a fast
+  bus, so DiLoCo's
   every-500-steps sync buys nothing over DDP's every-step all-reduce. The win
   appears when the interconnect is slow (multi-host / WAN), where DDP stalls on
   the network every step and DiLoCo keeps the GPUs busy. This run is an
