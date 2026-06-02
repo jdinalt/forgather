@@ -21,6 +21,8 @@ import os
 from argparse import RawTextHelpFormatter
 from typing import Any
 
+from .submit_orch import add_locality_args
+
 path_type = lambda x: os.path.normpath(os.path.expanduser(x))
 
 
@@ -354,22 +356,48 @@ def create_eval_parser(_global_args):
         help="Show the torchrun command without executing it",
     )
     test.add_argument(
-        "--enqueue",
+        "--schedule",
         action="store_true",
-        help="Submit to the forgather-server queue instead of running locally.",
+        help=(
+            "Submit to the forgather-server scheduler instead of running\n"
+            "locally (background by default; --foreground attaches)."
+        ),
+    )
+    test.add_argument(
+        "--foreground",
+        action="store_true",
+        help="With --schedule, attach to the job and stream its output.",
+    )
+    # Deprecated alias of --schedule.
+    test.add_argument("--enqueue", action="store_true", help=argparse.SUPPRESS)
+    test.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        metavar="SOURCE",
+        help=(
+            "Dataset source for the scheduled job: 'auto', 'local', or\n"
+            "'server:<id>'. Unset = mode-aware. Only applies with --schedule."
+        ),
     )
     test.add_argument(
         "--priority",
         type=int,
         default=0,
-        help="Queue priority for --enqueue (default: 0).",
+        help="Scheduler priority for --schedule (default: 0).",
     )
     test.add_argument(
         "--server",
+        "--via-server",
+        dest="via_server",
         type=str,
         default=None,
         metavar="URL",
-        help="forgather-server URL for --enqueue (default: $FORGATHER_SERVER_URL or http://127.0.0.1:8765).",
+        help=(
+            "forgather-server URL for --schedule (default: $FORGATHER_SERVER_URL"
+            " or http://127.0.0.1:8765)."
+        ),
     )
+    add_locality_args(test)
 
     return parser
