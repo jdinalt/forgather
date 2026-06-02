@@ -43,6 +43,12 @@ log = logging.getLogger("forgather_server.gc")
 # against deleting a TTY that's about to be claimed by a JobRecord write.
 ORPHAN_TTY_TTL_SECONDS = int(os.environ.get("FORGATHER_ORPHAN_TTY_TTL_SECONDS", "3600"))
 
+# Age threshold for the endpoint-dir sweep. Reuses the env var the removed
+# ``forgather control cleanup`` honored, for operator continuity.
+ORPHAN_ENDPOINT_TTL_SECONDS = int(
+    os.environ.get("FORGATHER_ORPHAN_JOB_DIR_TTL_SECONDS", "3600")
+)
+
 
 def relocate_tty_to_logs(record: JobRecord) -> Optional[Path]:
     """Move the central TTY file into the run's ``logs/`` directory.
@@ -161,6 +167,61 @@ def sweep_orphan_ttys(ttl_seconds: int = ORPHAN_TTY_TTL_SECONDS) -> int:
             log.info("swept orphan tty %s", entry.name)
         except OSError as e:
             log.warning("could not unlink %s: %s", entry, e)
+    return removed
+
+
+def sweep_dead_endpoint_dirs(ttl_seconds: int = ORPHAN_ENDPOINT_TTL_SECONDS) -> int:
+    """Remove stale TrainerControlCallback endpoint dirs under ``<config>/jobs/``.
+
+    A trainer writes ``~/.config/forgather/jobs/<job_id>/`` (endpoint.json,
+    auth_token, control_dir) and removes it on a clean exit; a crashed or
+    SIGKILLed trainer leaves it behind. This sweep removes dirs whose endpoint
+    PID is gone (or that have no parseable endpoint) and are older than the TTL —
+    the reaper the removed ``forgather control cleanup`` used to provide. Live
+    endpoints (PID alive) are protected regardless of age.
+
+    Returns the number of dirs removed. Best-effort: per-dir errors are logged
+    and swallowed. If endpoint discovery itself fails, the sweep is skipped this
+    round (conservative — never remove a dir we couldn't prove dead).
+    """
+    from forgather import trainer_control
+    from forgather.preprocess import forgather_config_dir
+
+    jobs_dir = Path(forgather_config_dir()) / "jobs"
+    try:
+        entries = list(jobs_dir.iterdir())
+    except FileNotFoundError:
+        return 0
+
+    try:
+        alive_job_ids = {
+            ep.job_id
+            for ep in trainer_control.list_jobs()
+            if trainer_control.is_endpoint_pid_alive(ep.pid, ep.started_at)
+        }
+    except Exception as e:
+        log.debug("endpoint discovery failed during dir sweep: %s", e)
+        return 0
+
+    now = time.time()
+    removed = 0
+    for entry in entries:
+        if not entry.is_dir():
+            continue
+        if entry.name in alive_job_ids:
+            continue  # live trainer — never touch
+        try:
+            mtime = entry.stat().st_mtime
+        except OSError:
+            continue
+        if now - mtime < ttl_seconds:
+            continue  # fresh; protect against a just-started trainer
+        try:
+            shutil.rmtree(entry)
+            removed += 1
+            log.info("swept dead endpoint dir %s", entry.name)
+        except OSError as e:
+            log.warning("could not remove %s: %s", entry, e)
     return removed
 
 

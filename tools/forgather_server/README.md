@@ -1341,14 +1341,27 @@ creation calls so the world-collective stays balanced.
   — the record stays visible in the UI instead of silently
   disappearing while the GPU is still pinned.
 
-- **Stale endpoint cleanup.** A trainer-control endpoint file
-  (``~/.config/forgather/jobs/job_*/endpoint.json``) left behind by a
-  killed-and-restarted server can resurface as a phantom "running"
-  job in the Jobs list. The Jobs panel's right-click menu offers a
-  **Remove stale endpoint** action for entries whose PID is
-  dead/zombie/recycled — backend rmtree's the directory so the
-  entry stops surfacing. Toggle "include dead endpoints" on the
-  Jobs panel to see them; the default view filters them out.
+- **External-trainer promotion.** A trainer the server did not launch
+  (e.g. a foreground ``forgather train`` with ``TrainerControlCallback``)
+  writes a control endpoint but has no JobRecord. The scheduler tick
+  promotes such a live endpoint into a JobRecord (``externally_launched``,
+  ``gpu_indices=[]`` — GPU accounting deferred), so it appears in
+  ``forgather job`` with first-class status and is reaped by PID liveness
+  like a re-attached job. Scheduler-spawned trainers are excluded (they
+  correlate to their own record by PID lineage), so they're never
+  double-counted.
+
+- **Stale endpoint cleanup.** A trainer-control endpoint directory
+  (``~/.config/forgather/jobs/job_*/``) left behind by a crashed or
+  SIGKILLed trainer can resurface as a phantom "running" job. The server
+  treats an endpoint whose PID is dead/zombie/recycled as not-running (it
+  drops out of the default Jobs list), and a periodic GC sweep
+  (``_gc.sweep_dead_endpoint_dirs``, on the scheduler tick and at startup)
+  removes the directory once it is older than the TTL
+  (``FORGATHER_ORPHAN_JOB_DIR_TTL_SECONDS``, default 1h) — the reaper the
+  removed ``forgather control cleanup`` used to provide. The Jobs panel's
+  right-click **Remove stale endpoint** action still removes one on demand;
+  toggle "include dead endpoints" to see them.
 
 - **Single-writer checkpoints on shared FS.** When several ranks
   share a filesystem (NFS, the typical multi-node setup), only one
