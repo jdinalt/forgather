@@ -164,6 +164,27 @@ def _summarize_description(description, max_len=62):
     return first_line
 
 
+def iter_command_summaries():
+    """Yield ``(name, one-line summary)`` for every subcommand, sorted by name.
+
+    Shared by the top-level ``--help`` and the interactive ``commands`` listing.
+    Uses a ``no_dyn=True`` dummy so building each parser doesn't load a project
+    config (and stays fast / quiet).
+    """
+    registry = get_subcommand_registry()
+    dummy_global_args = argparse.Namespace(
+        project_dir=".", config_template=None, no_dyn=True
+    )
+    for cmd_name in sorted(registry.keys()):
+        try:
+            summary = _summarize_description(
+                registry[cmd_name](dummy_global_args).description
+            )
+        except Exception:
+            summary = "[Error loading description]"
+        yield cmd_name, summary
+
+
 def show_main_help():
     """Show the main help message with available subcommands."""
     print("Forgather CLI")
@@ -181,17 +202,7 @@ def show_main_help():
     print("  --help                   Show this help message")
     print()
     print("Available subcommands:")
-    registry = get_subcommand_registry()
-    for cmd_name in sorted(registry.keys()):
-        # Create a dummy global_args for the registry call
-        dummy_global_args = argparse.Namespace(
-            project_dir=".", config_template=None, no_dyn=True
-        )
-        try:
-            parser = registry[cmd_name](dummy_global_args)
-            summary = _summarize_description(parser.description)
-        except Exception:
-            summary = "[Error loading description]"
+    for cmd_name, summary in iter_command_summaries():
         print(f"  {cmd_name:<14} {summary}")
     print()
     print("Use 'forgather <subcommand> --help' for help on a specific subcommand.")
