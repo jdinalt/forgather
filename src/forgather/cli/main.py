@@ -145,6 +145,25 @@ def get_subcommand_registry():
     }
 
 
+def _summarize_description(description, max_len=62):
+    """Reduce a parser ``description`` to a single-line summary.
+
+    Several subcommands stuff full usage, subcommand lists, or workflow
+    examples into their ``description=`` so it shows under their own
+    ``--help``. The top-level listing only wants one line each, so take the
+    first non-empty line and length-cap it. Each subcommand's own
+    ``--help`` still renders the full text.
+    """
+    if not description:
+        return ""
+    first_line = next(
+        (line.strip() for line in description.splitlines() if line.strip()), ""
+    )
+    if len(first_line) > max_len:
+        first_line = first_line[: max_len - 1].rstrip() + "…"
+    return first_line
+
+
 def show_main_help():
     """Show the main help message with available subcommands."""
     print("Forgather CLI")
@@ -170,9 +189,10 @@ def show_main_help():
         )
         try:
             parser = registry[cmd_name](dummy_global_args)
-            print(f"  {cmd_name:<12} {parser.description}")
-        except:
-            print(f"  {cmd_name:<12} [Error loading description]")
+            summary = _summarize_description(parser.description)
+        except Exception:
+            summary = "[Error loading description]"
+        print(f"  {cmd_name:<14} {summary}")
     print()
     print("Use 'forgather <subcommand> --help' for help on a specific subcommand.")
 
