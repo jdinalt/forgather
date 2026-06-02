@@ -94,6 +94,7 @@ def get_subcommand_registry():
     from .plot_args import create_plot_parser
     from .project_args import create_project_parser
     from .sched_args import create_sched_parser
+    from .submit_args import create_submit_parser
     from .tls_args import create_tls_parser
     from .train_args import create_train_parser
     from .trefs_args import create_trefs_parser
@@ -119,6 +120,7 @@ def get_subcommand_registry():
         "code": create_code_parser,
         "construct": create_construct_parser,
         "train": create_train_parser,
+        "submit": create_submit_parser,
         "dataset": create_dataset_parser,
         "dataset-server": create_dataset_server_parser,
         "ws": create_ws_parser,
@@ -486,6 +488,12 @@ def main():
                 from .train import train_cmd
 
                 train_cmd(args)
+            case "submit":
+                from .submit import submit_cmd
+
+                rc = submit_cmd(args)
+                if rc:
+                    sys.exit(rc)
             case "dataset":
                 from .dataset import dataset_cmd
 

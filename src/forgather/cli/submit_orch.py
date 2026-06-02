@@ -170,6 +170,225 @@ def tail_job(client, job_id):
     asyncio.run(_run())
 
 
+# ---------------------------------------------------------------------------
+# Multi-node fan-out (--global / the old `cluster submit`)
+# ---------------------------------------------------------------------------
+
+
+def parse_member_spec(spec):
+    """Parse ``HOST:GPUS[:IFACE]`` into ``(host, gpus:int, iface|None)``."""
+    parts = spec.split(":")
+    if len(parts) == 2:
+        host, gpus = parts
+        iface = None
+    elif len(parts) == 3:
+        host, gpus, iface = parts
+    else:
+        raise RuntimeError(
+            f"invalid --member spec {spec!r}: expected HOST:GPUS[:IFACE]"
+        )
+    try:
+        n = int(gpus)
+    except ValueError:
+        raise RuntimeError(f"invalid GPU count in --member {spec!r}: {gpus!r}")
+    if n < 1:
+        raise RuntimeError(f"GPU count must be >= 1 in --member {spec!r}")
+    return host, n, (iface or None)
+
+
+def resolve_host_to_node_id(members, host):
+    """Look up a hostname in the membership table.
+
+    Match priority: exact hostname > address. Returns the matching member dict
+    or raises a clear RuntimeError listing available hostnames.
+    """
+    for m in members:
+        if m.get("hostname") == host:
+            return m
+    for m in members:
+        if m.get("address") == host:
+            return m
+    available = ", ".join(m.get("hostname", "?") for m in members) or "(none)"
+    raise RuntimeError(
+        f"no cluster member matches hostname {host!r}; available: {available}"
+    )
+
+
+def submit_global(client, args, *, project_dir, config, dynamic_args, dataset_source):
+    """Submit a multi-node training fan-out (the `submit --global` core).
+
+    Shared by `forgather submit --global` and the deprecated `forgather cluster
+    submit`. The caller resolves ``dynamic_args`` (submit uses the config
+    schema; cluster's legacy path uses ad-hoc KEY=VAL) and ``dataset_source``;
+    everything else (member resolution, rdzv, the cluster_jobs_submit call,
+    rendering, and --wait polling) lives here. Reads the multi-node knobs off
+    ``args``: member, rdzv_host, rdzv_port, priority, allow_version_mismatch,
+    json, wait, wait_timeout, poll_interval. Returns a process exit code.
+    """
+    import json as _json
+    import os
+    import time
+
+    # A multi-node fan-out resolves the project path on every peer, so a
+    # relative path (or the default ".") resolves against each peer's own
+    # cwd — almost never the same files. Require an absolute path, like the
+    # webui config picker.
+    if not project_dir or project_dir in (".", ""):
+        print(
+            "error: multi-node submit needs an absolute project path. Pass "
+            "`-p <abs-path>` (a global forgather flag, before the subcommand).",
+            file=sys.stderr,
+        )
+        return 1
+    if not os.path.isabs(project_dir):
+        print(
+            f"error: multi-node submit needs an absolute project path; got "
+            f"relative {project_dir!r}. Resolve with `readlink -f` so every "
+            "peer sees the same files.",
+            file=sys.stderr,
+        )
+        return 1
+    if not config:
+        print(
+            "error: multi-node submit needs a config (`-t <config>`, a global "
+            "forgather flag, before the subcommand).",
+            file=sys.stderr,
+        )
+        return 1
+
+    members_payload = client.cluster_members()
+    members = members_payload.get("members") or []
+    if not members:
+        print(
+            "no cluster members visible; is the server running?",
+            file=sys.stderr,
+        )
+        return 1
+
+    # --member specs (comma- or repeat-separated) resolve hostnames; with none,
+    # default to "every reachable peer with all its available GPUs".
+    specs = [s for entry in (args.member or []) for s in entry.split(",") if s]
+    if specs:
+        spec_members = []
+        for spec in specs:
+            host, gpus, iface = parse_member_spec(spec)
+            m = resolve_host_to_node_id(members, host)
+            if not m.get("reachable"):
+                print(
+                    f"warning: member {host} is currently unreachable; submit will fail",
+                    file=sys.stderr,
+                )
+            spec_members.append(
+                {
+                    "node_id": m["node_id"],
+                    "nproc_per_node": gpus,
+                    "nccl_socket_ifname": iface,
+                }
+            )
+    else:
+        try:
+            gpu_payload = client._get("/cluster/gpus").json()
+        except Exception as e:
+            print(
+                f"could not enumerate cluster GPUs to default --member: {e}; "
+                "pass --member explicitly",
+                file=sys.stderr,
+            )
+            return 1
+        nodes = gpu_payload.get("nodes") or []
+        spec_members = []
+        for node in nodes:
+            if not node.get("reachable"):
+                continue
+            count = sum(
+                1
+                for g in (node.get("gpus") or [])
+                if not g.get("disabled") and not g.get("excluded")
+            )
+            if count < 1:
+                continue
+            spec_members.append(
+                {
+                    "node_id": node["node_id"],
+                    "nproc_per_node": count,
+                    "nccl_socket_ifname": None,
+                }
+            )
+        if not spec_members:
+            print(
+                "no reachable cluster member has any usable GPUs; "
+                "pass --member explicitly to override",
+                file=sys.stderr,
+            )
+            return 1
+
+    rdzv_node_id = None
+    if args.rdzv_host:
+        rdzv_node_id = resolve_host_to_node_id(members, args.rdzv_host)["node_id"]
+
+    resp = client.cluster_jobs_submit(
+        project_dir=project_dir,
+        config=config,
+        members=spec_members,
+        dynamic_args=dynamic_args,
+        priority=args.priority,
+        rdzv_node_id=rdzv_node_id,
+        rdzv_port=args.rdzv_port,
+        allow_version_mismatch=args.allow_version_mismatch,
+        dataset_source=dataset_source,
+    )
+
+    bundle = resp.get("cluster_job") or {}
+    warnings = resp.get("warnings") or []
+
+    if args.json:
+        print(_json.dumps(resp, indent=2))
+    else:
+        bid = bundle.get("cluster_job_id")
+        rdzv = bundle.get("rdzv_endpoint")
+        print(f"submitted: {bid}")
+        print(f"rdzv:      {rdzv}")
+        print("members:")
+        for m in bundle.get("members") or []:
+            print(
+                f"  rank {m.get('node_rank')}: "
+                f"{m.get('hostname')} x{m.get('nproc_per_node')}  "
+                f"queue_id={m.get('queue_id')}"
+            )
+        for w in warnings:
+            print(f"warning: {w}", file=sys.stderr)
+
+    if not args.wait:
+        return 0
+
+    # --wait: poll until terminal, exit non-zero on failure.
+    bundle_id = bundle.get("cluster_job_id")
+    if not bundle_id:
+        print("no bundle id in response; cannot wait", file=sys.stderr)
+        return 1
+
+    deadline = time.monotonic() + max(0, args.wait_timeout)
+    last_status = None
+    while time.monotonic() < deadline:
+        time.sleep(args.poll_interval)
+        try:
+            cur = client.cluster_job_get(bundle_id) or {}
+        except Exception as e:
+            print(f"poll error (continuing): {e}", file=sys.stderr)
+            continue
+        rolled = cur.get("rolled_up_status") or cur.get("status")
+        if rolled != last_status:
+            print(f"status: {rolled}")
+            last_status = rolled
+        if rolled in ("done", "failed", "cancelled"):
+            return 0 if rolled == "done" else 2
+    print(
+        f"timed out after {args.wait_timeout}s waiting for terminal status",
+        file=sys.stderr,
+    )
+    return 3
+
+
 def attach_submitted(client, queue_id, *, poll_interval=1.0):
     """Wait for an enqueued job to be dispatched, then stream its TTY.
 
