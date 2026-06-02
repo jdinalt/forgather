@@ -49,7 +49,7 @@ anything absent from both falls back to the defaults shown.
 | `--fs-root PATH`                     | unrestricted (or repo+search roots in `--demo`) | Restrict every path-accepting API to descendants of this directory. Repeatable. Default in `--demo` is the Forgather repo plus the registered search roots, so demo visitors can't browse outside curated content. See [Filesystem allowlist](#filesystem-allowlist---fs-root). |
 | `--regen-token`                      | off                                      | Rotate the persisted bearer token at startup. Invalidates every CLI client using the old token.                       |
 | `--persist-sessions`                 | off                                      | Persist browser session cookies to `<config>/server/sessions.json` (0600) so the webui survives restarts. See [Persisted sessions](#persisted-sessions). |
-| `--cluster NAME`                     | unset                                    | Join the named cluster (mDNS-scoped). Standalone otherwise. See [Cluster mode](#cluster-mode-multi-node-prototype).   |
+| `--cluster NAME`                     | `default`                                | Cluster name to join (mDNS-scoped). Cluster mode is always on; this flag only overrides the name. See [Cluster mode](#cluster-mode-multi-node-prototype). |
 | `--cluster-address IP`               | unset (repeatable)                       | Override the address advertised to cluster peers. Repeatable — useful when running inside a container whose network namespace hides the host NICs from psutil. The first entry also seeds the startup banner's clickable URL when bound to `0.0.0.0`. |
 | `--tls` / `--no-tls`                 | shared config                            | Force-enable / force-disable TLS, overriding `<config>/tls/`'s shared setting. See [docs/operations/tls.md](../../docs/operations/tls.md). |
 | `--tls-cert PATH` / `--tls-key PATH` | resolved from shared config              | Override the certificate / private-key paths for this run.                                                            |
@@ -904,25 +904,28 @@ TLS support is on the roadmap.
 
 ### Cluster mode (multi-node, prototype)
 
-The server can join a peer-to-peer cluster of other forgather servers
-on the same LAN. Cluster mode is **opt-in**: without `--cluster <name>`
-behavior is identical to the single-node prototype.
+The server is always part of a peer-to-peer cluster of other forgather
+servers on the same LAN. The cluster name defaults to `default`;
+`--cluster <name>` overrides it. A single-node setup left on the
+`default` name advertises on mDNS but only ever sees itself, so the
+single-node experience is unchanged — the cluster machinery is simply
+always available for the coordination features that depend on it.
 
 ```bash
-# Standalone (default — no LAN advertisement, no peer membership)
+# Default cluster — name "default", advertises on mDNS, peers with
+# any other server also on "default" reachable on the LAN.
 forgather server
 
-# Multi-node: advertise on mDNS, peer with other servers using the
-# same cluster name. Bind to all interfaces so peers can reach the
-# API across the network.
+# Named cluster: peer only with other servers using the same name.
+# Bind to all interfaces so peers can reach the API across the network.
 forgather server -H 0.0.0.0 --cluster lab
 ```
 
-**Cluster name scoping.** Only servers started with the same
+**Cluster name scoping.** Only servers running with the same
 `--cluster NAME` see each other. Two unrelated clusters on the same
-LAN will not auto-merge. The name is per-invocation (not persisted),
-so a host can move between clusters by restarting with a different
-flag.
+LAN will not auto-merge, and a host left on `default` will not merge
+with a named cluster. The name is per-invocation (not persisted), so a
+host can move between clusters by restarting with a different flag.
 
 **Node identity.** Each host mints a stable UUID at first cluster
 startup, persisted at `~/.config/forgather/cluster/node_id` (mode 0600).
@@ -1007,12 +1010,13 @@ a new tab, the peer's `LoginGate` consumes the token via
 with a session cookie. A leaked URL only exposes a 60 s single-use
 window, not the long-lived bearer.
 
-If you don't trust the operators of every node in your cluster,
-don't enable cluster mode.
+If you don't trust the operators of every node that could reach you
+on the LAN, keep the server on loopback (`-H 127.0.0.1`, the default)
+or give your cluster a private `--cluster NAME` so unrelated nodes on
+`default` never peer with you.
 
-**Cluster view.** When cluster mode is active, a 🖧 **Cluster**
-entry appears in the sidebar (cluster-only — filtered out
-otherwise). The view is a Datasets-style tabbed panel with four
+**Cluster view.** A 🖧 **Cluster** entry appears in the sidebar. The
+view is a Datasets-style tabbed panel with four
 tabs, all kept mounted so scroll position and in-flight queries
 survive switching:
 
@@ -1137,12 +1141,11 @@ by the per-peer "Measuring…" progress feedback in the table).
 
 **Multi-node training submit.** Multi-node submits are folded into
 the regular Run dialog — the same dialog that opens from a config's
-**▶ Run** action in the project tree or config viewer. When the
-server is in cluster mode, a collapsible **Multi-node** panel appears
-above the Dynamic arguments section. The local node is pre-checked
-as the only participant by default, so a cluster-mode webui that
-just clicks Submit gets identical single-node behaviour to a
-standalone server. Adding peers turns it into a fanout.
+**▶ Run** action in the project tree or config viewer. A collapsible
+**Multi-node** panel sits above the Dynamic arguments section. The
+local node is pre-checked as the only participant by default, so a
+webui that just clicks Submit gets identical single-node behaviour to
+a single-host run. Adding peers turns it into a fanout.
 
 In the panel, each row is a cluster member with five columns: a
 **Use** checkbox, the node's hostname/address, a **GPUs** spinner
@@ -1608,8 +1611,8 @@ bottom:
   unreachable) and master/this-server tags. Clicking a peer mints a
   short-lived single-use SSO URL (`/api/cluster/peer_session`) and
   opens that peer's webui in a new tab with no login prompt — same
-  trust model as cluster bearer access. Hidden entirely when the
-  server is in standalone mode.
+  trust model as cluster bearer access. On a single-node `default`
+  cluster the list shows only this server.
 - **Views** (collapsible `<details>`) — vertical tabs with icons:
   🖧 Cluster (cluster-only), 📁 Projects, ✎ Edit, 📚 Docs, 🖥 GPUs,
   📋 Queue, ⚙ Jobs, 🔮 Inference, 🗂 Datasets. Selecting anything
@@ -3196,15 +3199,18 @@ Populates the project-tree sub-groups and detail panels:
 | `POST /api/gpus/{index}/policy` `{disabled?, min_priority?}` | Upsert per-GPU policy; unset fields are left alone                              |
 | `POST /api/gpus/{index}/kill` `{confirmed: true}`           | SIGKILL every compute process on the GPU (returns `{pids, killed, failed}`)      |
 
-### Cluster (multi-node, opt-in via `--cluster`)
+### Cluster (multi-node)
 
-Endpoints in this group return empty / null payloads when the server
-is in standalone mode (no `--cluster` flag), so a webui that polls
-them is safe to mount unconditionally.
+The server is always in cluster mode (name `default` unless
+`--cluster NAME` overrides it), so these endpoints always answer with
+the node's own identity and member table. On a single-node `default`
+cluster the member table is just this node, the master is self, and
+the cross-node aggregation endpoints return only the local snapshot —
+a webui that polls them is safe to mount unconditionally.
 
 | Endpoint                                                           | Auth                       | Purpose                                                                    |
 | ------------------------------------------------------------------ | -------------------------- | -------------------------------------------------------------------------- |
-| `GET /api/cluster/self`                                            | bearer / peer              | This node's identity, or `null` if standalone                              |
+| `GET /api/cluster/self`                                            | bearer / peer              | This node's identity (always populated once the server has started)        |
 | `GET /api/cluster/members`                                         | bearer / peer              | Cluster name, master node_id, full member table                            |
 | `GET /api/cluster/master`                                          | bearer / peer              | Current master_node_id and `is_self_master`                                |
 | `GET /api/cluster/gpus_local`                                      | bearer / peer              | This node's GPU snapshot. Returns `X-Forgather-Node-Id` header for sanity-checking peer responses |

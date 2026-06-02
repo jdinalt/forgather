@@ -125,8 +125,10 @@ peers — they're identified by a CA-signed TLS client certificate
 token. The threat model still assumes the cluster as a whole is
 trusted (consistent with torch.distributed's own assumption — any
 peer can submit jobs on any other peer, which is arbitrary code
-execution). If you don't trust the operators of every node in your
-cluster, don't enable cluster mode.
+execution). If you don't trust the operators of every node that could
+reach you on the LAN, keep the server bound to loopback (the default
+`-H 127.0.0.1`) or give your cluster a private name so unrelated nodes
+on `default` never peer with you.
 
 ### Container PID 1
 

@@ -143,14 +143,16 @@ def main():
     )
     parser.add_argument(
         "--cluster",
-        default=None,
+        default="default",
         metavar="NAME",
         help=(
-            "Join the named cluster (multi-node mode). Without this "
-            "flag, the server runs in single-node / standalone mode "
-            "and does not advertise on the LAN. The cluster name is "
-            "the unit of scoping for mDNS discovery — only servers "
-            "with the same --cluster value will see each other."
+            "Cluster name to join (default: 'default'). The server is "
+            "always in cluster mode and advertises on the LAN; this "
+            "flag only sets the name. The cluster name is the unit of "
+            "scoping for mDNS discovery — only servers with the same "
+            "--cluster value will see each other, so a single-node "
+            "setup left on 'default' stays isolated from a named "
+            "cluster on the same LAN."
         ),
     )
     add_server_tls_args(parser)
@@ -293,8 +295,13 @@ def main():
     _configure_meta_templates(args)
     _configure_eval_search_paths(args)
 
-    if args.cluster:
-        _activate_cluster(args, tls_on=tls_on)
+    # Cluster mode is always on; the name defaults to "default" and
+    # --cluster only overrides it. An empty name would break mDNS
+    # scoping, so fall back to the default rather than running with an
+    # unnamed identity.
+    if not args.cluster:
+        args.cluster = "default"
+    _activate_cluster(args, tls_on=tls_on)
 
     # The docs view reads this at request time to decide the default
     # landing page. Set via module attribute so a hypothetical runtime

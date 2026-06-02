@@ -46,7 +46,7 @@ args:
   # no_auth: false
   # regen_token: false
   # persist_sessions: false   # keep browser sessions across restarts (dev)
-  # cluster: null
+  # cluster: default       # cluster name (always-on; mDNS scoping unit)
   # cluster_address: []
   # lock_inference_proxy: false
   # docs_landing: null        # Path the Docs view opens by default.
