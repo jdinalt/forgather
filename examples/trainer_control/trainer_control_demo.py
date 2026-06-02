@@ -12,10 +12,10 @@ Usage:
   python examples/trainer_control_demo.py
 
   # Terminal 2: Control the training job
-  forgather control list                    # Find your job
-  forgather control status JOB_ID          # Check status
-  forgather control save JOB_ID            # Save checkpoint
-  forgather control stop JOB_ID            # Gracefully stop
+  forgather job list                    # Find your job
+  forgather job status JOB_ID          # Check status
+  forgather job save JOB_ID            # Save checkpoint
+  forgather job stop JOB_ID            # Gracefully stop
 """
 
 import os
@@ -170,19 +170,21 @@ def main():
 
     print("✅ Trainer created successfully!")
     print()
-    print("🎛️  Control Interface Information:")
+    print("Control Interface Information:")
     print(f"   Job ID: {job_id}")
     print(f"   Host: {platform.node()}")
-    print(f"   Discovery: ~/.config/forgather/jobs/{job_id}/endpoint.json")
+    print(f"   Endpoint: ~/.config/forgather/jobs/{job_id}/endpoint.json")
     print()
-    print("📱 Control Commands (run in another terminal):")
-    print(f"   forgather control list                    # List all jobs")
-    print(f"   forgather control status {job_id}       # Get job status")
-    print(f"   forgather control save {job_id}         # Save checkpoint")
-    print(f"   forgather control stop {job_id}         # Graceful stop")
-    print(f"   forgather control save-stop {job_id}    # Save and stop")
+    print("This demo launches the trainer locally, so its control endpoint is")
+    print("driven programmatically via the forgather.trainer_control client")
+    print("(see the README). For CLI control, run training as a server-managed")
+    print("job and use 'forgather job':")
+    print("   forgather submit                     # run via the scheduler")
+    print("   forgather job save <queue_id>        # checkpoint")
+    print("   forgather job stop <queue_id>        # graceful stop")
+    print("   forgather job save-stop <queue_id>   # save and stop")
     print()
-    print("🏃 Starting training... (use control commands to interact)")
+    print("Starting training...")
     print("=" * 60)
 
     try:

@@ -788,18 +788,22 @@ A few quick inference experiments that are fun to run after training:
 
 ## Monitoring and Control
 
-Forgather has a control interface for monitoring and safely stopping
-running jobs. Prefer this over Ctrl-C, which can leave worker processes
-hanging (especially for pipeline-parallel runs).
+`forgather job` monitors and safely stops jobs the forgather server's
+scheduler is managing -- launch the run with `forgather train --schedule`,
+`forgather submit`, or the webui to make it controllable this way. A plain
+foreground `forgather train` is not visible to `forgather job`; stop it
+with Ctrl-C. For a scheduler-launched job, prefer `forgather job stop`
+over Ctrl-C, which can leave worker processes hanging (especially for
+pipeline-parallel runs).
 
 ```bash
-forgather control list                 # discover running jobs
-forgather control status JOB_ID        # inspect a specific job
-forgather control save JOB_ID          # force checkpoint save
-forgather control stop JOB_ID          # graceful stop (saves a final checkpoint)
-forgather control save-stop JOB_ID     # save then exit
-forgather control abort JOB_ID         # kill without saving
-forgather control cleanup              # prune dead job endpoint files
+forgather job list                 # discover server-managed jobs
+forgather job status JOB_ID        # inspect a specific job
+forgather job save JOB_ID          # force checkpoint save
+forgather job stop JOB_ID          # graceful stop (saves a final checkpoint)
+forgather job save-stop JOB_ID     # save then exit
+forgather job abort JOB_ID         # kill without saving
+forgather job cleanup              # prune terminal job records
 ```
 
 ### Training dashboards
@@ -870,7 +874,7 @@ optimizer: &optimizer !partial:torchao.optim:AdamW4bit
 The auto-decay trigger is derived from `ns.total_steps` and
 `ns.annealing_steps`; override the annealing budget via `--annealing-tokens`
 (millions), or force an early decay at any step with
-`forgather control save` followed by `--start-annealing` on resume.
+`forgather job save` followed by `--start-annealing` on resume.
 
 ### Push to Llama-2-7B for the highest context
 

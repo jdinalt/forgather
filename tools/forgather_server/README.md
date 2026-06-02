@@ -564,7 +564,7 @@ layer they're touching.
 - aiohttp middleware gates `/control`, `/status`, `/jobs`. Default bind
   is `127.0.0.1`.
 - `endpoint.json` records the actual bind address. The
-  `HTTPTrainerControlClient` (used by `forgather control` and by the
+  `HTTPTrainerControlClient` (used by `forgather job` and by the
   forgather server's job-control proxy) loads the per-job token
   automatically — no manual configuration needed.
 - Constructor knobs: `host`, `auth_token`, `disable_auth`.
@@ -626,33 +626,36 @@ below is a quick cheat-sheet.
 
 ```bash
 # Inside a project directory
-forgather -t train.yaml train --enqueue
-forgather -t train.yaml train --enqueue --priority 5 --requested-gpus 2
-forgather eval test c4 -M output_models/my_model --enqueue
+forgather -t train.yaml train --schedule              # background submit
+forgather -t train.yaml submit                        # shorthand for train --schedule
+forgather -t train.yaml train --schedule --priority 5 --requested-gpus 2
+forgather eval test c4 -M output_models/my_model --schedule
 forgather tb --enqueue --port 6006
-forgather inf server --enqueue -m output_models/my_model
+# inf server is a long-running service: it submits to the scheduler
+# (background) by default. --local-only runs it in the foreground.
+forgather inf server -m output_models/my_model
 # Multi-model server (one process hosts several models):
-forgather inf server --enqueue -m a=output_models/a -m b=output_models/b
+forgather inf server -m a=output_models/a -m b=output_models/b
 # With every loaded model pinned to GPU (no CPU swap; required on
 # unified-memory hardware like DGX Spark / Grace-Hopper):
-forgather inf server --enqueue -m a=output_models/a -m b=output_models/b --keep-on-gpu
+forgather inf server -m a=output_models/a -m b=output_models/b --keep-on-gpu
 forgather convert --enqueue --src output_models/my_model --dst /tmp/hf_export
 forgather finalize --enqueue --source output_models/my_model --dest /tmp/final
 forgather update --enqueue --src output_models/my_model --dst /tmp/my_model_v2
 forgather mkdocs -f docs/mkdocs.yml --enqueue
 ```
 
-**Queue and scheduler:**
+**Queue and scheduler** (`forgather sched ...` is a deprecated alias):
 
 ```bash
-forgather sched status                   # enabled, queued/running counts, last tick
-forgather sched list                     # table of all queued + active + recent jobs
-forgather sched pause                    # stop dispatching new jobs
-forgather sched resume
-forgather sched cancel <queue_id>        # remove a queued or running job
-forgather sched cleanup                  # bulk-remove terminal job records
-forgather sched cleanup <job_id>         # remove one specific terminal record
-forgather sched gc                       # sweep orphan TTY files (see "State directories and GC")
+forgather job scheduler status           # enabled, queued/running counts, last tick
+forgather job list                       # table of all queued + active + recent jobs
+forgather job scheduler pause            # stop dispatching new jobs
+forgather job scheduler resume
+forgather job cancel <queue_id>          # remove a queued or running job
+forgather job cleanup                    # bulk-remove terminal job records
+forgather job cleanup <job_id>           # remove one specific terminal record
+forgather job gc                         # sweep orphan TTY files (see "State directories and GC")
 ```
 
 **Per-job control and logs:**
@@ -894,7 +897,7 @@ machine):
 ```bash
 ssh -L 8765:127.0.0.1:8765 remote
 FORGATHER_SERVER_TOKEN=$(ssh remote cat .config/forgather/server/auth_token) \
-  forgather sched status
+  forgather job scheduler status
 ```
 
 Binding to a non-loopback host (`-H 0.0.0.0`) is supported but the
@@ -1408,7 +1411,7 @@ To use the router from a training job:
 
 ```bash
 FORGATHER_DATASET_SERVER=auto forgather train …                # CLI
-forgather -p <proj> -t <cfg> cluster submit --dataset-source auto …
+forgather -p <proj> -t <cfg> submit --global --dataset-source auto …
 ```
 
 Or pick `Auto (cluster routing)` in any submit modal. The CLI flag
@@ -1526,7 +1529,7 @@ queued item, mtime older than `FORGATHER_ORPHAN_TTY_TTL_SECONDS`
 (default `3600`). Run it on demand with:
 
 ```bash
-forgather sched gc
+forgather job gc
 ```
 
 #### `~/.config/forgather/jobs/job_<ts>_<host>_<pid>/` (trainer-owned)
@@ -1539,22 +1542,17 @@ listens on. On a clean exit the callback both removes
 `endpoint.json` and `rmdir`s the directory, so well-behaved runs
 leave nothing behind. Crashed runs leak the directory.
 
-`forgather control cleanup` reaps both kinds of leftover:
+The server's periodic GC sweep reaps both kinds of leftover:
 
 - Directories whose `endpoint.json` points at a dead PID (or one that
   the kernel has recycled — verified against `psutil.Process.create_time()`).
 - Directories with no `endpoint.json` and mtime older than the TTL
-  (`--ttl SECONDS`, or `FORGATHER_ORPHAN_JOB_DIR_TTL_SECONDS`,
-  default 3600) — these are crash leftovers.
+  (`FORGATHER_ORPHAN_JOB_DIR_TTL_SECONDS`, default 3600) — these are
+  crash leftovers.
 
-```bash
-# Show counts and prompt before deleting
-forgather control cleanup
-# Skip the prompt
-forgather control cleanup --force
-# Tighter age threshold for orphan directories
-forgather control cleanup --ttl 600
-```
+The same sweep that handles orphan TTY files (daily, plus once at
+server startup) covers these directories; run it on demand with
+`forgather job gc`.
 
 ### Re-attach across restart
 

@@ -73,10 +73,10 @@ Results are written to `output_models/tiny_llama/evals/` as Markdown and JSON.
 | `forgather logs summary` | Print summary statistics for the latest training run |
 | `forgather logs plot` | Generate training metric plots |
 | `forgather -t CONFIG eval test NAME` | Run a named evaluation config on the trained model |
-| `forgather inf server -c -m PATH` | Start the inference server (`-c` = load latest checkpoint) |
+| `forgather inf server -c -m PATH` | Serve a model via the scheduler (`-c` = load latest checkpoint; add `--local-only` to run in the foreground) |
 | `forgather inf client` | Start the interactive inference client |
-| `forgather control list` | List running training jobs |
-| `forgather control stop JOB_ID` | Gracefully stop a running job |
+| `forgather job list` | List queued and running jobs |
+| `forgather job stop JOB_ID` | Gracefully stop a running job |
 | `forgather checkpoint link` | Symlink latest checkpoint for plain `from_pretrained` loading |
 | `forgather -i` | Start an interactive shell with tab completion |
 

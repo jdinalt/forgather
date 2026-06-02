@@ -411,8 +411,9 @@ in the dialog clears everything we cached for this config.
 
 Everything the webui submit dialog does has a corresponding
 terminal command — useful for shell-driven smoke tests, scripted
-deployments, and CI. The `forgather cluster` subcommand mirrors
-the existing `forgather sched` / `job` / `gpu` shape:
+deployments, and CI. Multi-node runs are submitted with
+`forgather submit --global`; the `forgather cluster` subcommand
+mirrors the `forgather job` / `gpu` shape for inspection and cancel:
 
 ```bash
 forgather cluster nodes                      # member table + GPU summary
@@ -421,12 +422,15 @@ forgather cluster jobs <bundle-id>           # bundle detail (per-rank status)
 forgather cluster cancel <bundle-id>         # fan out cancel to every participant
 
 # Submit (note that -p / -t are GLOBAL forgather flags, like train):
-forgather -p <project-dir> -t <config> cluster submit \
+forgather -p <project-dir> -t <config> submit --global \
     [--member host:gpus[:iface] ...]              # repeatable; default = every reachable peer's idle GPUs
     [--rdzv-host hostname] [--rdzv-port 29400]
     [--priority N] [--dynamic-arg KEY=VAL ...]
     [--allow-version-mismatch] [--wait]
 ```
+
+(`forgather cluster submit ...` is a deprecated alias of
+`forgather submit --global ...`.)
 
 All commands accept `--server URL` or `$FORGATHER_SERVER_URL`
 (default `http://127.0.0.1:8765`).
@@ -437,7 +441,7 @@ Hostnames in `--member` resolve to UUIDs via the cluster's
 membership table — you never type a UUID. So:
 
 ```bash
-forgather cluster submit \
+forgather submit --global \
     --member wopr:2 --member muthur:1 \
     --rdzv-host muthur
 ```
@@ -452,7 +456,7 @@ peer with all of its idle GPUs." That's the right call for a
 smoke test or a "use everything you've got" run:
 
 ```bash
-forgather -p <proj> -t <cfg> cluster submit --allow-version-mismatch
+forgather -p <proj> -t <cfg> submit --global --allow-version-mismatch
 ```
 
 ### `--wait` for shell scripts
@@ -462,7 +466,7 @@ forgather -p <proj> -t <cfg> cluster submit --allow-version-mismatch
 scripting:
 
 ```bash
-forgather -p <proj> -t <cfg> cluster submit --wait \
+forgather -p <proj> -t <cfg> submit --global --wait \
     && echo "training succeeded" \
     || echo "training failed"
 ```
@@ -478,10 +482,10 @@ resolves identically on every peer:
 
 ```bash
 # Wrong if ~/ai_assets/forgather is a symlink not visible inside containers:
-forgather -p ~/ai_assets/forgather/examples/foo cluster submit ...
+forgather -p ~/ai_assets/forgather/examples/foo submit --global ...
 
 # Right — canonical NFS path that every peer mounts at the same location:
-forgather -p /mnt/rust/aiassets/forgather/examples/foo cluster submit ...
+forgather -p /mnt/rust/aiassets/forgather/examples/foo submit --global ...
 ```
 
 `readlink -f <path>` resolves a path to its canonical form if you
@@ -623,11 +627,11 @@ from showing up.
 
 ### Trainer control endpoint is local-only
 
-`forgather control list` and the trainer's `save` / `stop` / `abort`
-HTTP endpoint are bound to `127.0.0.1` on whichever node hosts rank
-0. So:
+The trainer's `save` / `stop` / `abort` HTTP endpoint is bound to
+`127.0.0.1` on whichever node hosts rank 0, so `forgather job` can only
+proxy to it from the rank-0 host. So:
 
-- `forgather control list` shows the run on the rank-0 host only
+- `forgather job list` shows the run on the rank-0 host only
   (e.g. muthur in the reference cluster); empty on other nodes.
 - Save/stop/abort commands targeting rank 0 must be issued from a
   shell or webui on the rank-0 host.
@@ -702,7 +706,7 @@ What it does:
 4. Waits up to 90 seconds for the cluster to form (both members
    reachable in the membership table).
 5. Submits Tiny Llama v2 across every reachable GPU using
-   `forgather cluster submit` from inside one of the containers.
+   `forgather submit --global` from inside one of the containers.
 6. Polls the bundle until terminal status; asserts `done`.
 7. Verifies a checkpoint landed on the shared FS with at least one
    shard file.
@@ -805,8 +809,8 @@ loop) are independently useful.
   checkpoint behaviour, resume, sharing patterns.
 - **[Training Performance Metrics](../trainers/training-performance-metrics.md)**
   — how MFU, tok/s, and FLOPs are computed.
-- **[Forgather Server CLI](server-cli.md)** — `--enqueue`,
-  `forgather sched`, `forgather job`, `forgather gpu` from the
+- **[Forgather Server CLI](server-cli.md)** — `--schedule` /
+  `forgather submit`, `forgather job`, `forgather gpu` from the
   terminal. The `forgather cluster` subcommand documented in
   [Driving multi-node from the CLI](#driving-multi-node-from-the-cli)
   is the multi-node counterpart.

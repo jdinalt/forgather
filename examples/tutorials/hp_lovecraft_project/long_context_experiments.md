@@ -323,7 +323,7 @@ built-in callback that retunes θ mid-run; the rotary module computes
 at scheduled steps, or (b) a multi-stage run: train with θ=10 000
 until step N₁ → save-stop → patch `config.json` to θ=50 000 → resume
 → save-stop → patch to θ=500 000 → resume.  The resume path works
-today with `forgather control save-stop` followed by re-launching the
+today with `forgather job save-stop` followed by re-launching the
 same config with an updated `rope_parameters`.  The callback path
 would be a small addition to
 [`src/forgather/ml/trainer/callbacks/`](../../src/forgather/ml/trainer/callbacks/).
@@ -372,7 +372,7 @@ for pair in \
       --output-dir ~/models/${model}_lovecraft_8k \
       --attn-implementation sdpa --log-name $tag \
       -d $gpu
-  # save-stop at step ~400 via `forgather control save-stop JOB_ID`
+  # save-stop at step ~400 via `forgather job save-stop JOB_ID`
 done
 ```
 

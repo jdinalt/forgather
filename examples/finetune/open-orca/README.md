@@ -40,7 +40,7 @@ If you've already worked through the Samantha tutorial, the quick tour:
   decay-start point as `total_steps - annealing_steps` and wire it into
   the scheduler via `decay_start_step`. The result: decay fires
   automatically about 80% of the way through the run -- you don't need
-  to pass `--start-annealing` or send a `forgather control save-stop`
+  to pass `--start-annealing` or send a `forgather job save-stop`
   RPC near the end. Manual triggering is still available for runs where
   you don't know the budget in advance (e.g. epoch-based training); see
   *Triggering the annealing phase* below for the override paths.
@@ -274,7 +274,7 @@ harmonic decay starting automatically at step 25,699 (80% of the
 run) and reaching `min_lr` exactly at `max_steps`. There is a small
 loss drop visible right at the decay boundary — typical behaviour when
 the LR starts coming off its peak. No `--start-annealing` flag or
-`forgather control` RPC was needed; the decay schedule was pre-computed
+`forgather job` RPC was needed; the decay schedule was pre-computed
 from the token budget in `open_orca.yaml`'s `[globals]` block.
 
 **On the max grad norm of 45.5 inside warmup.** That spike isn't a
@@ -304,9 +304,11 @@ rest of the run. No gradient clipping was applied; Adafactor absorbs
 the transient on its own.
 
 The run was interrupted once about 50 minutes in to apply a corrected
-`weight_decay` config, save-stopped cleanly via
-`forgather control save-stop`, then resumed from `checkpoint-2560` with
-the new config. The WSDScheduler's `load_state_dict` correctly picked
+`weight_decay` config: stopped after saving a final checkpoint, then
+resumed from `checkpoint-2560` with the new config. (A graceful,
+save-on-exit stop like this is exactly what `forgather job save-stop`
+does for a scheduler-launched run; see *Triggering the annealing phase*
+below.) The WSDScheduler's `load_state_dict` correctly picked
 up `last_epoch` from the checkpoint but took the newly-computed
 `decay_start_step` from the constructor (per the `_CONFIG_ONLY_KEYS`
 split in `wsd_scheduler.py:110-143`), so the decay schedule fired at
@@ -685,15 +687,21 @@ Monitoring:
 # Follow the live log
 tail -F "${OO_RUN}/long_run.log"
 
-# List running Forgather jobs (uses the trainer control interface)
-forgather control list
-
 # Inspect the training metrics JSON
 forgather logs summary "${OO_RUN}/runs"/*/trainer_logs.json
 
 # Plot the loss curve
 forgather logs plot --loss-curves "${OO_RUN}/runs"/*/trainer_logs.json
 ```
+
+The `nohup ... &` launch above runs the trainer in the foreground (just
+detached from the terminal), so it is *not* registered with the forgather
+server and `forgather job` will not see it -- stop it with `kill` on the
+process, or let it run to completion. If you want live control via
+`forgather job` (status, on-demand checkpoint, graceful stop), launch the
+run through the scheduler instead -- `forgather -t llama3_1b/4gpu_ddp.yaml
+train --schedule -M "${OO_RUN}" -d 0,1,3,4` (or `forgather submit`) -- and
+then use `forgather job list` to find its queue id.
 
 ### Triggering the annealing phase
 
@@ -740,12 +748,15 @@ forgather -t llama3_1b/4gpu_ddp.yaml train --start-annealing \
     -M "${OO_RUN}" -d 0,1,3,4
 
 # (b) React to the loss curve mid-run via the control interface.
+#     This path requires a server-managed run: launch it with
+#     `--schedule` (or `forgather submit`) so `forgather job` can see it.
 #     Save the current state and stop the job, then edit the config
 #     (or pass --decay-start-step on relaunch) and resume with the
 #     new schedule. Auto-resume picks up the checkpoint and the new
 #     constructor decay_start_step takes effect.
-forgather control list                          # find the job id
-forgather control save-stop JOB_ID              # save then exit
+forgather -t llama3_1b/4gpu_ddp.yaml train --schedule -M "${OO_RUN}" -d 0,1,3,4
+forgather job list                          # find the queue id
+forgather job save-stop JOB_ID              # save then exit
 # ... edit decay_start_step in the config, then ...
 forgather -t llama3_1b/4gpu_ddp.yaml train -M "${OO_RUN}" -d 0,1,3,4
 ```

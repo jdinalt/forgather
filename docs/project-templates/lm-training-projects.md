@@ -93,9 +93,12 @@ specific devices.
 ### DDP Notes
 
 - All GPUs are used by default. Restrict with `-d 0` or `-d 0,1`.
-- Stopping DDP with Ctrl-C can leave worker processes running. Use
-  `forgather control list` and `forgather control stop JOB_ID` for a clean
-  shutdown.
+- Stopping DDP with Ctrl-C can leave worker processes running. For a
+  foreground `forgather train` run, Ctrl-C followed by the usual process
+  cleanup applies. If you launch the run through the scheduler
+  (`forgather train --schedule` / `forgather submit`), it becomes a
+  server-managed job and you can shut it down cleanly with `forgather job
+  list` and `forgather job stop JOB_ID`.
 
 ### FSDP2 Notes
 
@@ -479,7 +482,7 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:InfiniteLRScheduler@lr_s
 ```
 
 Both the WSD and infinite schedules in that project plug into the same
-`forgather control` machinery, so you can externally trigger the annealing
+trainer-control machinery, so you can externally trigger the annealing
 phase on a running job (via `--start-annealing` or the control callback)
 and resume pre-training from the resulting checkpoint.
 

@@ -4,26 +4,41 @@ This directory contains examples of using the TrainerControlCallback system for 
 
 ## Files
 
-- `trainer_control_demo.py` - Complete demo showing how to add TrainerControlCallback to your training job and control it from another terminal
+- `trainer_control_demo.py` - Demo showing how to add `TrainerControlCallback` to a training job so it exposes an external control endpoint.
 
 ## Usage
 
-### Running the Demo
+### Running the demo
 
 ```bash
-# Terminal 1: Start training with control enabled
 cd examples/trainer_control
 python trainer_control_demo.py
-
-# Terminal 2: Control the training job
-forgather control list                    # Find your job
-forgather control status JOB_ID          # Check status  
-forgather control save JOB_ID            # Save checkpoint
-forgather control stop JOB_ID            # Gracefully stop
-forgather control abort JOB_ID           # Abort without saving
 ```
 
-The demo creates a simple transformer model and trains it on synthetic data, demonstrating all aspects of the trainer control system.
+The demo trains a small transformer on synthetic data with
+`TrainerControlCallback` enabled, which exposes a control endpoint
+(`~/.config/forgather/jobs/<job_id>/endpoint.json`).
+
+### Controlling a training job
+
+The callback is what makes a job controllable; how you reach it depends on how
+the job was launched:
+
+- **Server-managed jobs (recommended).** Run training through the forgather
+  server's scheduler — `forgather submit`, `forgather train --schedule`, or the
+  webui — and control it with `forgather job`:
+
+  ```bash
+  forgather job list                 # find the queue_id
+  forgather job status <queue_id>    # check status
+  forgather job save <queue_id>      # checkpoint
+  forgather job stop <queue_id>      # graceful stop
+  forgather job abort <queue_id>     # abort without saving
+  ```
+
+- **Locally-launched jobs** (like this standalone demo) aren't registered with
+  the forgather server, so `forgather job` won't see them. Drive their control
+  endpoint programmatically with the `forgather.trainer_control` client.
 
 ## Key Features Demonstrated
 
@@ -59,4 +74,6 @@ trainer = Trainer(
 )
 ```
 
-Then control from another terminal using the `forgather control` commands.
+Then control it from another terminal: run the job through the scheduler
+(`forgather submit`) and use `forgather job`, or drive the local control
+endpoint directly via the `forgather.trainer_control` client.

@@ -154,22 +154,27 @@ compact one-line-per-run table across every run under `output_models/`.
 
 ## 3. Control a Running Job
 
-Forgather attaches a control server to each training process. From a
-second shell while training is in flight:
+`forgather job` controls jobs that the forgather server's scheduler is
+managing -- those launched with `forgather train --schedule`, `forgather
+submit`, or the webui. A plain foreground `forgather train` (the default)
+is not registered with the server and is not visible to `forgather job`;
+stop it with Ctrl-C. To drive a run from a second shell, start it through
+the scheduler, then:
 
 ```bash
-forgather control list                 # see running jobs
-forgather control status JOB_ID        # detailed status for one job
-forgather control save JOB_ID          # force checkpoint save
-forgather control stop JOB_ID          # graceful stop (saves a final checkpoint)
-forgather control save-stop JOB_ID     # save then stop
-forgather control abort JOB_ID         # stop without saving (use for failed experiments)
-forgather control cleanup              # prune dead job endpoint files
+forgather job list                 # see server-managed jobs
+forgather job status JOB_ID        # detailed status for one job
+forgather job save JOB_ID          # force checkpoint save
+forgather job stop JOB_ID          # graceful stop (saves a final checkpoint)
+forgather job save-stop JOB_ID     # save then stop
+forgather job abort JOB_ID         # stop without saving (use for failed experiments)
+forgather job cleanup              # prune terminal job records
 ```
 
-`JOB_ID` is the token printed in the training log (`Trainer control
-endpoint: http://.../jobs/<JOB_ID>`). Prefer these commands over Ctrl-C --
-Ctrl-C can leave worker processes hanging, especially under DDP.
+`JOB_ID` is the queue id reported by `forgather job list` (also shown
+when you submit the job). For a scheduler-launched job, prefer `forgather
+job stop` over killing the process -- it shuts the workers down cleanly,
+which matters under DDP.
 
 ## 4. Evaluate the Model
 

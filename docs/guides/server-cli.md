@@ -71,36 +71,44 @@ could not reach forgather-server at http://127.0.0.1:8765; is it running? (start
 
 and exits 1. No traceback, no five-line stack from `requests`.
 
-## Submitting jobs: `--enqueue`
+## Submitting jobs: `--schedule` and `forgather submit`
 
-Most existing CLI commands grow an `--enqueue` flag that submits the
-job to the server's queue instead of running it locally. The same
-project / config / arguments you'd use for a local run work for a
-queued run — the server picks the GPUs.
+Training and eval submit to the server's queue with `--schedule`
+instead of running locally; the same project / config / arguments you'd
+use for a local run work for a queued run — the server picks the GPUs.
+`forgather submit` is shorthand for `train --schedule`. The
+service/utility wrappers (`tb`, `mkdocs`, `convert`, `finalize`) still
+use `--enqueue` (see below).
 
 ### Training
 
 ```bash
 # Inside a Forgather project directory
-forgather -t train.yaml train --enqueue
-forgather -t train.yaml train --enqueue --priority 5
-forgather -t train.yaml train --enqueue --requested-gpus 2
+forgather -t train.yaml train --schedule              # background submit
+forgather -t train.yaml submit                        # shorthand for the above
+forgather -t train.yaml train --schedule --priority 5
+forgather -t train.yaml train --schedule --requested-gpus 2
+forgather -t train.yaml train --schedule --foreground # attach and stream output
 ```
 
+`forgather train` (no flag) still runs locally in the foreground.
 By default, `--requested-gpus` follows the config's `nproc_per_node`.
 The server's scheduler picks which physical GPU indices to use; trying
-to combine `--enqueue` with the local `-d / --devices` flag is rejected
+to combine `--schedule` with the local `-d / --devices` flag is rejected
 with a clear error.
 
-The command prints `queued: q_<id> (priority=N, gpus=M)` and exits — no
-streaming, no waiting. To follow the run, use `forgather job tail` (see
-below).
+Without `--foreground`, the command prints `queued: q_<id>
+(priority=N, gpus=M)` and exits — no streaming, no waiting. To follow
+the run, use `forgather job tail` (see below).
+
+(The old `--enqueue` flag on `train` / `eval` is a deprecated alias of
+`--schedule`.)
 
 ### Eval
 
 ```bash
-forgather eval test c4 -M output_models/my_model --enqueue
-forgather eval test c4 -M output_models/my_model --enqueue --priority 3 \
+forgather eval test c4 -M output_models/my_model --schedule
+forgather eval test c4 -M output_models/my_model --schedule --priority 3 \
   --batch-size 8 --max-length 2048
 ```
 
@@ -121,27 +129,32 @@ forgather tb --enqueue --port 6007 --bind-all       # explicit port + listen on 
 forgather mkdocs -f docs/mkdocs.yml --enqueue       # default port 8000
 forgather mkdocs -f docs/mkdocs.yml --enqueue --port 8001 --strict
 
-forgather inf server --enqueue -m output_models/my_model           # default port 8137
-forgather inf server --enqueue -m output_models/my_model -p 8138 --dtype float16
+forgather inf server -m output_models/my_model           # default port 8137
+forgather inf server -m output_models/my_model -p 8138 --dtype float16
 
 # Multi-model server: -m is repeatable. NAME=PATH gives an explicit
 # routing name; bare PATH derives the name from the basename.
-forgather inf server --enqueue -m a=output_models/a -m b=output_models/b
+forgather inf server -m a=output_models/a -m b=output_models/b
 
 # Multi-model with all entries pinned to GPU (no CPU swap). Required on
 # unified-memory hardware (DGX Spark, Grace-Hopper).
-forgather inf server --enqueue \
+forgather inf server \
     -m a=output_models/a -m b=output_models/b --keep-on-gpu
 ```
 
-`forgather inf server`, `convert`, and `finalize` use a different
-parsing trick: when `--enqueue` is anywhere on the command line, the
-remaining arguments are parsed as structured flags; otherwise they're
-forwarded verbatim to the underlying script (the existing local
-behavior). To see the structured flag list, just ask for help:
+`forgather inf server` is a long-running service, so it submits to the
+scheduler (background) by **default** — no flag needed. `--local-only`
+runs it in the foreground (the old default); `--local-fallback`
+foregrounds only when the server is unreachable.
+
+`convert` and `finalize` use a different parsing trick: when
+`--enqueue` is anywhere on the command line, the remaining arguments
+are parsed as structured flags; otherwise they're forwarded verbatim to
+the underlying script (the existing local behavior). To see the
+structured flag list, just ask for help:
 
 ```bash
-forgather inf server --enqueue --help
+forgather inf server --help
 forgather convert --enqueue --help
 forgather finalize --enqueue --help
 ```
@@ -176,13 +189,13 @@ When run locally it just shells out to `mkdocs serve --dev-addr
 host:port` with the right flags. When queued, it sends the same
 parameters as the webui's MkDocs modal.
 
-## Watching the queue: `forgather sched`
+## Watching the queue: `forgather job`
 
 ```bash
-forgather sched status
+forgather job scheduler status
 # enabled=True  queued=2  running=3  last_tick=1s ago
 
-forgather sched list
+forgather job list
 # Status     ID                              Type        Priority  GPUs  Project/Config              Time
 # running    q_1738012345_a1b2c3d4           training    0         2     tiny_llama:train.yaml       2m ago
 # running    q_1738012360_e5f6g7h8           inference   0         1     my_model                    1m ago
@@ -191,9 +204,14 @@ forgather sched list
 # queued     q_1738012420_q7r8s9t0           training    0         1     small_llm:train.yaml        4s ago
 ```
 
-`status` is one line; `list` is a wide table that shows queued items
-first (priority-ordered), then active jobs, then the most recent
-terminal records.
+`scheduler status` is one line; `list` is a wide table that shows
+queued items first (priority-ordered), then active jobs, then the most
+recent terminal records.
+
+(`forgather sched ...` is a deprecated alias of `forgather job`:
+`sched status/pause/resume` map to `job scheduler status/pause/resume`,
+and `sched list/cancel/cleanup/gc` map to the corresponding
+`job` subcommands.)
 
 ### Pausing / resuming dispatch
 
@@ -202,12 +220,12 @@ work — for example, before plugging in a GPU, swapping a cable, or
 running an interactive debug session that needs the cards yourself.
 
 ```bash
-forgather sched pause                    # stop dispatching new jobs
-forgather sched resume                   # resume
+forgather job scheduler pause            # stop dispatching new jobs
+forgather job scheduler resume           # resume
 
-forgather sched cancel q_1738012412_m3n4o5p6     # remove a queued or running job
-forgather sched cleanup                          # remove all terminal records
-forgather sched cleanup q_1738012345_a1b2c3d4    # remove one specific terminal record
+forgather job cancel q_1738012412_m3n4o5p6     # remove a queued or running job
+forgather job cleanup                          # remove all terminal records
+forgather job cleanup q_1738012345_a1b2c3d4    # remove one specific terminal record
 ```
 
 `pause` only affects the dispatcher — running jobs continue, and you
@@ -250,10 +268,10 @@ hung or unresponsive (e.g. a wedged dataloader, NCCL deadlock).
 
 ```bash
 # In one terminal
-forgather -t train.yaml train --enqueue --priority 5
+forgather -t train.yaml train --schedule --priority 5
 
 # In another, watch it land
-forgather sched list
+forgather job list
 forgather job tail q_1738012345_a1b2c3d4
 # ... see weird loss spike, decide to abort
 ^C                                            # leaves tail (job keeps running)
@@ -322,24 +340,24 @@ GPU…" button with a confirm dialog.
 
 ```bash
 for lr in 1e-4 3e-4 1e-3; do
-  forgather -t train.yaml train --enqueue \
+  forgather -t train.yaml train --schedule \
     --dynamic-arg learning_rate=$lr
 done
 
-forgather sched list
+forgather job list
 forgather job tail q_<one of the ids printed above>
 ```
 
 ### Reserve GPUs for an interactive session
 
 ```bash
-forgather sched pause
+forgather job scheduler pause
 forgather gpu disable 0
 forgather gpu disable 1
 # ... do interactive work on GPU 0 + 1 ...
 forgather gpu enable 0
 forgather gpu enable 1
-forgather sched resume
+forgather job scheduler resume
 ```
 
 ### Save+stop a slow run, free the slot for the next sweep
@@ -347,7 +365,7 @@ forgather sched resume
 ```bash
 forgather job save-stop q_<long_running_id>
 # Wait for it to land in 'done' state, then:
-forgather sched cleanup            # tidy the record list
+forgather job cleanup            # tidy the record list
 ```
 
 ### Connect to a remote forgather-server over SSH
@@ -361,13 +379,13 @@ ssh -L 8765:localhost:8765 user@training-host
 
 # In another terminal, also on the laptop
 export FORGATHER_SERVER_URL=http://127.0.0.1:8765
-forgather sched status                       # talks to the remote server
+forgather job scheduler status               # talks to the remote server
 forgather job tail q_<id>                    # stream remote logs
 ```
 
 Or pass `--server http://127.0.0.1:8765` to one-shot commands.
 
-## How `--enqueue` chooses GPU count
+## How a scheduled job chooses GPU count
 
 | Job type      | Default `requested_gpus` | Override |
 | ------------- | ------------------------ | --- |
@@ -383,19 +401,29 @@ Zero-GPU jobs run regardless of card availability. GPU-bound jobs wait
 for the scheduler to find a free card whose `disabled=False` and whose
 `min_priority <=` the job's priority.
 
-## Differences from `forgather control`
+## Migrating from `forgather control`
 
-`forgather control` (separate, older) talks directly to a trainer's
-HTTP control endpoint by discovering it from
-`~/.config/forgather/jobs/<job_id>/endpoint.json`. It works for any job that
-has the `TrainerControlCallback` enabled — including jobs you started
-yourself via `forgather train` (no server involved).
+`forgather job` is the single control plane for server-managed jobs. It
+covers both the trainer-level actions (`status`, `save`, `stop`,
+`save-stop`, `abort` — proxied to the trainer's `TrainerControlCallback`
+endpoint) and the queue-aware operations (`list`, `cancel`, log dump,
+status while still queued, server-side SIGTERM/SIGKILL).
 
-`forgather job` only works for jobs the server knows about (queued or
-launched through it), but it adds queue-aware operations (cancel,
-log dump, status while still queued, server-side SIGTERM/SIGKILL).
+The standalone `forgather control` CLI has been removed; map its verbs
+onto `forgather job`:
 
-The two coexist; pick whichever matches the job's discovery model.
+| Old | New |
+| --- | --- |
+| `forgather control list` | `forgather job list` |
+| `forgather control status JOB` | `forgather job status JOB` |
+| `forgather control save JOB` | `forgather job save JOB` |
+| `forgather control stop JOB` | `forgather job stop JOB` |
+| `forgather control save-stop JOB` | `forgather job save-stop JOB` |
+| `forgather control abort JOB` | `forgather job abort JOB` |
+| `forgather control cleanup` | `forgather job cleanup` |
+
+The `forgather.trainer_control` library and `TrainerControlCallback`
+are unchanged — only the CLI verb was removed.
 
 ## Troubleshooting
 
@@ -416,10 +444,10 @@ queue a different job type.
 **`forgather job tail` exits immediately** — either the job has
 already terminated (the stream closes 3 s after the terminal status),
 or the job wasn't server-launched (TTY capture only exists for jobs
-the server spawned). Use `forgather job dump` for a one-shot pull, or
-`forgather control` if it's an externally-launched run.
+the server spawned). Use `forgather job dump` for a one-shot pull.
 
-**`forgather inf server --help` shows the inference server's flags,
-not mine** — that's intentional: without `--enqueue`, the wrapper
-forwards everything to `tools/inference_server/server.py`. To see the
-enqueue flags, type `forgather inf server --enqueue --help`.
+**`forgather inf server --help` shows the inference server's flags** —
+that's expected: the wrapper forwards everything to
+`tools/inference_server/server.py`. `inf server` submits to the
+scheduler (background) by default; pass `--local-only` to run it in the
+foreground.

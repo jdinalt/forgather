@@ -299,7 +299,7 @@ Note: this run was *not* originally launched from `ten_chinchilla.yaml` -
 the config was reverse-engineered afterwards to match what actually ran.
 The run was started from the baseline with `--total-tokens 24970`, and the
 annealing phase was triggered after the fact using the new
-`--start-annealing` / `forgather control` path. The TensorBoard logs
+`--start-annealing` / `forgather job` path. The TensorBoard logs
 appear to have been updated correctly, and the JSON logs should have been
 appended to as well, though that has not been confirmed end-to-end. The
 baseline config would produce an identical training trajectory if
@@ -655,7 +655,10 @@ forgather tb --all -- --bind_all   # all interfaces
 ```
 
 External control of a running job (save / stop / abort / trigger
-annealing) uses the standard `forgather control` commands - see
+annealing) uses the standard `forgather job` commands. The job must be
+server-managed for this -- launch it with `forgather train --schedule`,
+`forgather submit`, or the webui; a plain foreground `forgather train`
+is stopped with Ctrl-C. See
 [Trainer Control](../../../trainers/trainer-control.md).
 
 ## References
