@@ -1,0 +1,9 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Small Deep One"
+    -- set ns.config_description = "A Deep One model (post-LN, Deepnet init, ALiBi; ~38M params)"
+    -- set ns.model_name = "small_deepone"
+    -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'deepone')
+    -- set ns.model_project_config = "small.yaml"

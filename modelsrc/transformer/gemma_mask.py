@@ -58,14 +58,16 @@ def gemma_mask_fn(
             seq_length = input_embeds.shape[1]
         cache_position = torch.arange(0, seq_length, device=device)
 
-    # Pass embed tensor positionally: kwarg name differs across transformers
-    # versions (input_embeds in <=5.1, inputs_embeds in >=5.5 with a deprecation
-    # shim on the old name). past_key_values is keyword-only in 5.5+.
+    # Pass the embed tensor positionally: the kwarg name differs across
+    # transformers versions (input_embeds in <=5.1, inputs_embeds in >=5.5 with
+    # a deprecation shim on the old name). The mask builders take
+    # (config, inputs_embeds, attention_mask, past_key_values, position_ids, ...)
+    # and derive cache positions internally -- there is no cache_position
+    # parameter, so passing one positionally collides with past_key_values.
     full_mask = create_causal_mask(
         config,
         input_embeds,
         attention_mask,
-        cache_position,
         past_key_values=past_key_values,
         position_ids=position_ids,
     )
@@ -73,7 +75,6 @@ def gemma_mask_fn(
         config,
         input_embeds,
         attention_mask,
-        cache_position,
         past_key_values=past_key_values,
         position_ids=position_ids,
     )

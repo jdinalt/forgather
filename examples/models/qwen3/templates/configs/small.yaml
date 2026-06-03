@@ -1,15 +1,15 @@
--- extends "configs/canon.yaml"
+-- extends "configs/default.yaml"
 
 [config_metadata]
     == super()
-    -- set ns.config_name = "LlamaCanon 30M"
-    -- set ns.config_description = "A Llama with 30M parameters"
-    -- set ns.model_name = "llama_canon_30m"
+    -- set ns.config_name = "Qwen3 Small"
+    -- set ns.config_description = "Qwen3 with ~30M parameters"
+    -- set ns.model_name = "qwen3_small"
 
 [model_definition]
-    -- include "config.30M.model"
+    -- include "config.small.model"
 
-#------------- config.30M.model --------------
+#------------- config.small.model --------------
 -- extends "config.default.model"
 
 [model_tokenizer]
@@ -30,7 +30,7 @@ tokenizer: &tokenizer !call:forgather:from_project
 
 [model_config]
     == super()
-    # **30M Overrides**
+    # **Qwen3 Small**
     hidden_size: {{ hidden_size | toyaml(512) }}
     intermediate_size: {{ intermediate_size | toyaml(1280) }}
     num_attention_heads: {{ num_attention_heads | toyaml(8) }}
