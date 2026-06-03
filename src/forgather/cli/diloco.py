@@ -715,8 +715,12 @@ def _worker_cmd(args):
     if args.worker_id:
         env["DILOCO_WORKER_ID"] = args.worker_id
 
-    if args.devices:
-        env["CUDA_VISIBLE_DEVICES"] = args.devices
+    # `forgather submit --diloco` doesn't carry --devices (it's a scheduler
+    # submit command); the direct/foreground worker then inherits the parent
+    # env's CUDA_VISIBLE_DEVICES. The deprecated `diloco worker` still passes it.
+    devices = getattr(args, "devices", None)
+    if devices:
+        env["CUDA_VISIBLE_DEVICES"] = devices
 
     # Build the forgather train command from remaining args
     import shutil

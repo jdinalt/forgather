@@ -108,6 +108,15 @@ def train_cmd(args):
             except ValueError as e:
                 print(str(e), file=sys.stderr)
                 raise SystemExit(1)
+            if args.dry_run:
+                ds = dataset_source or "local"
+                print(
+                    f"[dry-run] would submit training job: "
+                    f"config={args.config_template} gpus={requested_gpus} "
+                    f"priority={args.priority} dataset={ds} "
+                    f"dynamic_args={dynamic_args or {}}"
+                )
+                return
             try:
                 item = submit_orch.submit_single(
                     client,

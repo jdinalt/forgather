@@ -166,20 +166,27 @@ explicit `--output-dir` the operator passes, so workers get distinct
 per-worker dirs for free):
 
 ```bash
-forgather submit --diloco-server 192.168.1.100:8512 \
+forgather submit --diloco \
+    --diloco-server 192.168.1.100:8512 \
     --worker-id w0 \
     -p my_project -t train.yaml \
-    train -d 0
+    train
 ```
 
-Workers launch via `forgather submit --diloco-server <id>`, which makes
-DiLoCo an opt-in dimension on the regular `submit` verb (mirroring the
-webui's single submit modal). `forgather diloco worker` remains as a
-deprecated alias of `submit --diloco-server` and prints a deprecation
-note.
+Workers launch via `forgather submit --diloco`, which makes DiLoCo an
+opt-in dimension on the regular `submit` verb (mirroring the webui's
+single submit modal). Pass `--diloco-server <id>` to pin a specific
+param-server; it implies `--diloco`, so it works on its own, but the
+clear way to request DiLoCo is `--diloco`. With `--diloco` and no
+`--diloco-server`, the single running server is auto-picked.
+`forgather diloco worker` remains as a deprecated alias and prints a
+deprecation note.
 
 Worker arguments:
-- `--diloco-server`: Server address as `host:port`
+- `--diloco`: Opt into DiLoCo mode for this submission.
+- `--diloco-server`: Server address as `host:port` (optional; pins a
+  specific server and implies `--diloco`). Omitted = auto-pick the single
+  running server.
 - `--worker-id`: Unique worker identity. Drives the per-worker output-dir
   suffix the project template appends to `ns.output_dir`, and the
   uniqueness key the server enforces on `/register`. Auto-generated when
@@ -188,7 +195,10 @@ Worker arguments:
 - `--heartbeat-interval`: Seconds between heartbeats for speed reporting
   (default: 30). Client-local; validated against the server's
   `--heartbeat-timeout` at startup.
-- `-d`: CUDA visible devices
+- `--requested-gpus`: GPUs per worker (the same flag single-node submit
+  uses). Per-worker devices are picked by the scheduler from the parent
+  env's `CUDA_VISIBLE_DEVICES`; a scheduler-submit command doesn't pin
+  CUDA devices itself.
 
 **Resuming a worker from its own checkpoint.** A worker's checkpoints live
 under its worker-id-suffixed `output_dir` (`ns.output_dir + "_" +
@@ -331,7 +341,7 @@ unreachable server errors unless you pass `--local-fallback` / `--local-only`.
 
 ### Launching as scheduled jobs
 
-`diloco server` and `forgather submit --diloco-server` **enqueue scheduled
+`diloco server` and `forgather submit --diloco` **enqueue scheduled
 jobs** by default through the forgather server instead of running in the foreground — the
 scheduler picks idle GPUs, captures the TTY, and the jobs show up in the
 webui. As above, an unreachable server errors; `--local-fallback` runs
@@ -349,7 +359,8 @@ forgather diloco server -o path/to/model -n 2 --bulk-cleartext
 # exactly like `forgather train` (built from the config's metadata, shown
 # in `submit --help`).
 forgather -p my_project -t train.yaml submit \
-    --diloco-server local:<queue_id> --count 4 --dataset auto --max-steps 5000
+    --diloco --diloco-server local:<queue_id> \
+    --diloco-worker-count 4 --dataset auto --max-steps 5000
 
 # Bring a worker set back after a server shutdown / manual stop: re-launch
 # every stopped worker the server knows, reusing each id (so each resumes
@@ -357,11 +368,15 @@ forgather -p my_project -t train.yaml submit \
 forgather -p my_project -t train.yaml submit --resume-workers --dataset auto
 ```
 
-Worker launch options (orchestrator path): `--count N` (auto-named via the
-server, guaranteed unique), `--dataset auto|local|server:<id>`,
-`--gpus-per-worker`, `--priority`. A single explicit `--worker-id` is
-honored; `--count > 1` requires the server (you can't foreground N). Add
-`--json` to `server` / `submit` to get the queue ids back for scripting.
+Worker launch options (orchestrator path): `--diloco-worker-count N`
+(auto-named via the server, guaranteed unique),
+`--dataset auto|local|server:<id>`, `--requested-gpus N` (GPUs per
+worker — the same flag single-node submit uses), `--priority`. A single
+explicit `--worker-id` is honored; `--diloco-worker-count > 1` requires
+the server (you can't foreground N). Add `--json` to `server` / `submit`
+to get the queue ids back for scripting, or `--dry-run` (a general
+`submit` flag — works in single-node, `--global`, and DiLoCo modes) to
+print what would be submitted without doing it.
 
 **`--dataset` default is mode-aware**, mirroring the webui Submit-job
 modal: when you don't pass `--dataset`, workers default to `auto` (cluster
@@ -378,9 +393,13 @@ dataset server.
 worker the server's known-worker roster reports (deduped on the pipeline
 `_pp<N>` suffix), reusing each worker id so it resumes its checkpoint. It
 requires the forgather server and can't be combined with `--worker-id` /
-`--count`; it still honors `--dataset` and dynamic args for the relaunched
-jobs. (The flag is named `--resume-workers`, not `--resume`, to avoid
-clashing with a config's own `--resume` dynamic arg.)
+`--diloco-worker-count`; it still honors `--dataset` and dynamic args for
+the relaunched jobs. (The flag is named `--resume-workers`, not `--resume`,
+to avoid clashing with a config's own `--resume` dynamic arg.)
+
+`--resume-workers` currently re-launches *all* stopped workers the server
+knows (the original single-set behavior); selectively resuming a subset,
+and resume semantics for multi-node worker pools, are future work.
 
 Worker launch and `--resume-workers` currently assume the workers run on the
 **same host** as the orchestrator: relaunched jobs are enqueued locally, so a
@@ -650,7 +669,7 @@ Workers adjust their `sync_every` dynamically.
 forgather diloco server -o ./model -n 3 --async --dylu --dylu-base-sync-every 500
 
 # Worker — picks up dylu + sync_every from the server's /info
-forgather submit --diloco-server host:8512 --worker-id w0 -- train
+forgather submit --diloco --diloco-server host:8512 --worker-id w0 -- train
 ```
 
 ### Staleness Tracking
@@ -700,7 +719,8 @@ communication becomes fully overlapped.
 ```bash
 # Streaming fragments are configured on the server, not the worker —
 # the worker reads num_fragments (and sync_every) from /info.
-forgather submit --diloco-server 192.168.1.100:8512 \
+forgather submit --diloco \
+    --diloco-server 192.168.1.100:8512 \
     --worker-id w0 \
     -p my_project -t train.yaml \
     train
@@ -931,7 +951,7 @@ callback = DiLoCoCallback(
     heartbeat_interval=30.0,
 )
 
-# Or rely on environment variables (set by `forgather submit --diloco-server`,
+# Or rely on environment variables (set by `forgather submit --diloco`,
 # or the deprecated `diloco worker`)
 callback = DiLoCoCallback()
 
@@ -1354,7 +1374,7 @@ exposing the server on all interfaces and provides encrypted communication:
 ssh -L 8512:localhost:8512 server-machine
 
 # Then start the worker pointing to localhost:
-forgather submit --diloco-server localhost:8512 ...
+forgather submit --diloco --diloco-server localhost:8512 ...
 ```
 
 The `-L 8512:localhost:8512` flag forwards the worker's local port 8512 to port

@@ -543,13 +543,6 @@ def create_diloco_parser(global_args):
         ),
     )
     worker_parser.add_argument(
-        "-d",
-        "--devices",
-        type=str,
-        default=None,
-        help='CUDA Visible Devices e.g. "0,1"',
-    )
-    worker_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show the generated command without executing (direct path only)",

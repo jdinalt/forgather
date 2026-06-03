@@ -878,9 +878,26 @@ def _enqueue_worker_jobs(client, names, server, args, dynamic_args, dataset_sour
 
     config = _resolve_config_name(args)
     hb = getattr(args, "heartbeat_interval", None)
-    gpus = getattr(args, "gpus_per_worker", 1)
+    # Per-worker GPUs: --requested-gpus (the unified knob on `submit`) wins;
+    # fall back to the deprecated `diloco worker --gpus-per-worker`, else 1.
+    gpus = (
+        getattr(args, "requested_gpus", None)
+        or getattr(args, "gpus_per_worker", None)
+        or 1
+    )
     priority = getattr(args, "priority", 0)
     project_dir = getattr(args, "project_dir", ".")
+
+    if getattr(args, "dry_run", False):
+        print(
+            f"[dry-run] would enqueue {len(names)} DiLoCo worker(s) against "
+            f"{server}: config={config} gpus/worker={gpus} priority={priority}"
+        )
+        for name in names:
+            print(f"  {name}")
+        if dynamic_args:
+            print(f"  dynamic_args={dynamic_args}")
+        return 0
 
     results = []
     for name in names:

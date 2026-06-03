@@ -16,13 +16,12 @@ def _submit_args(**over):
         _dynamic_args={},
         run_global=False,
         # DiLoCo opt-in
+        diloco=False,
         server=None,
         resume_workers=False,
         count=1,
         worker_id=None,
         heartbeat_interval=30.0,
-        gpus_per_worker=1,
-        devices=None,
         dry_run=False,
         # shared
         via_server=None,
@@ -115,9 +114,27 @@ def test_global_knob_without_global_errors():
     assert rc == 1
 
 
-def test_requested_gpus_in_diloco_mode_errors():
+def test_requested_gpus_accepted_in_diloco_mode(monkeypatch):
+    # --requested-gpus is the unified per-worker GPU knob now (no error). Mock
+    # the worker launch so the test never contacts a live server.
+    called = {}
+    monkeypatch.setattr(diloco_mod, "_worker_cmd", _worker_capture(called))
     rc = submit_mod.submit_cmd(_submit_args(server="X", requested_gpus=4))
+    assert rc == 0
+    assert called["args"].requested_gpus == 4
+
+
+def test_requested_gpus_rejected_in_global_mode():
+    rc = submit_mod.submit_cmd(_submit_args(run_global=True, requested_gpus=4))
     assert rc == 1
+
+
+def test_diloco_flag_alone_triggers_diloco_mode(monkeypatch):
+    called = {}
+    monkeypatch.setattr(diloco_mod, "_worker_cmd", _worker_capture(called))
+    rc = submit_mod.submit_cmd(_submit_args(diloco=True))
+    assert rc == 0
+    assert "args" in called  # dispatched to the worker path
 
 
 # --- dynamic-args forwarding (the submit-partition regression) --------------

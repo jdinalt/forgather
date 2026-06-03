@@ -333,6 +333,17 @@ def submit_global(client, args, *, project_dir, config, dynamic_args, dataset_so
     if args.rdzv_host:
         rdzv_node_id = resolve_host_to_node_id(members, args.rdzv_host)["node_id"]
 
+    if getattr(args, "dry_run", False):
+        print(f"[dry-run] would submit multi-node bundle: config={config}")
+        print(f"  project={project_dir}")
+        for m in spec_members:
+            iface = m.get("nccl_socket_ifname")
+            suffix = f" iface={iface}" if iface else ""
+            print(f"  node {m['node_id']} x{m['nproc_per_node']}{suffix}")
+        if dynamic_args:
+            print(f"  dynamic_args={dynamic_args}")
+        return 0
+
     resp = client.cluster_jobs_submit(
         project_dir=project_dir,
         config=config,
