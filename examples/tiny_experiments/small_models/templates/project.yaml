@@ -26,3 +26,10 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_schedule
     == super()
     # Project Overrides
     save_strategy: "steps" # Save models when done
+    ## Gradient clipping as a spike guard. The base leaves max_grad_norm unset
+    ## (no clipping); a bad data batch around ~80M tokens produces a monster
+    ## gradient spike (grad_norm ~39 vs the normal <2) that several models ride
+    ## through but that diverged Qwen3 outright. Clip at 3 -- above the normal
+    ## <2 regime so healthy training is essentially untouched, but tight enough
+    ## to defuse the spike.
+    max_grad_norm: {{ max_grad_norm | toyaml(3.0) }}
