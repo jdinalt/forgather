@@ -18,15 +18,16 @@ import sys
 def submit_cmd(args):
     from . import submit_orch
 
-    diloco_mode = bool(getattr(args, "server", None)) or getattr(
-        args, "resume_workers", False
+    diloco_mode = (
+        getattr(args, "diloco", False)
+        or bool(getattr(args, "diloco_server", None))
+        or getattr(args, "resume_workers", False)
     )
     run_global = getattr(args, "run_global", False)
 
     if diloco_mode and run_global:
         print(
-            "error: --global and the DiLoCo opt-in (--diloco-server / "
-            "--resume-workers) can't be combined — they're different "
+            "error: --global and --diloco can't be combined — they're different "
             "parallelism models (--global is one rendezvous across nodes; "
             "DiLoCo is independent local-SGD replicas). Pick one.",
             file=sys.stderr,
@@ -52,9 +53,9 @@ def submit_cmd(args):
     args.config_template = config
 
     if diloco_mode:
-        # DiLoCo worker(s): the shared worker-launch impl (also reached by the
-        # deprecated `forgather diloco worker`). --diloco-server maps to its
-        # param-server arg (dest="server").
+        # DiLoCo worker(s) via the shared worker-launch impl. --diloco selects
+        # the mode; --diloco-server (dest=diloco_server) pins a param-server;
+        # per-worker GPUs come from --requested-gpus.
         from .diloco import _worker_cmd
 
         return _worker_cmd(args) or 0
@@ -75,27 +76,17 @@ def _check_mode_flags(args, diloco_mode, run_global):
         print(f"error: {', '.join(flags)} {msg}", file=sys.stderr)
         return 1
 
-    # DiLoCo-worker knobs require the DiLoCo opt-in.
+    # DiLoCo-worker knobs require --diloco.
     if not diloco_mode:
         misused = []
         if getattr(args, "count", 1) != 1:
-            misused.append("--count")
+            misused.append("--diloco-worker-count")
         if getattr(args, "worker_id", None):
             misused.append("--worker-id")
         if getattr(args, "heartbeat_interval", 30.0) != 30.0:
             misused.append("--heartbeat-interval")
-        if getattr(args, "gpus_per_worker", 1) != 1:
-            misused.append("--gpus-per-worker")
-        if getattr(args, "devices", None):
-            misused.append("--devices")
-        if getattr(args, "dry_run", False):
-            misused.append("--dry-run")
         if misused:
-            return _err(
-                misused,
-                "apply only to DiLoCo workers; pass --diloco-server <id> "
-                "(or --resume-workers).",
-            )
+            return _err(misused, "— DiLoCo-worker flag(s); pass --diloco.")
 
     # Multi-node knobs require --global.
     if not run_global:
@@ -111,15 +102,15 @@ def _check_mode_flags(args, diloco_mode, run_global):
         if getattr(args, "wait", False):
             misused.append("--wait")
         if misused:
-            return _err(misused, "apply only to multi-node submit; pass --global.")
+            return _err(misused, "— multi-node flag(s); pass --global.")
 
-    # --requested-gpus is the single-node GPU knob; the other modes have their
-    # own (DiLoCo: --gpus-per-worker; --global: per-member counts).
-    if (diloco_mode or run_global) and getattr(
-        args, "requested_gpus", None
-    ) is not None:
-        alt = "--gpus-per-worker" if diloco_mode else "the per-member GPU count"
-        return _err(["--requested-gpus"], f"is single-node only; use {alt}.")
+    # --requested-gpus sizes a single-node job or a DiLoCo worker; --global
+    # sizes nodes via --member instead.
+    if run_global and getattr(args, "requested_gpus", None) is not None:
+        return _err(
+            ["--requested-gpus"],
+            "doesn't apply to --global; size each node with --member HOST:GPUS.",
+        )
 
     return None
 
@@ -130,11 +121,11 @@ def _submit_single(args, submit_orch, config):
 
     # Drive train's scheduled path. submit has no foreground torchrun fallback
     # of its own — --local-only / --local-fallback resolve through train_cmd.
+    # --dry-run flows through (train's schedule path prints the request).
     args.schedule = True
     args.enqueue = False
     args.devices = None
     args.nproc = None
-    args.dry_run = False
     train_cmd(args)
     return 0
 
@@ -143,7 +134,7 @@ def _submit_global(args, submit_orch, config):
     """Multi-node fan-out across the cluster."""
     from .server_client import ServerClient, ServerUnreachable
 
-    client = ServerClient(getattr(args, "via_server", None) or None)
+    client = ServerClient(getattr(args, "server", None) or None)
     try:
         dataset_source = submit_orch.resolve_dataset_source(client, args)
         dynamic_args = submit_orch.collect_dynamic_args(args)

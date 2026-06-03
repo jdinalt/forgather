@@ -124,7 +124,9 @@ def create_dataset_server_parser(global_args):
         ),
     )
     start_parser.add_argument(
+        "--server",
         "--via-server",
+        dest="server",
         metavar="URL",
         default=None,
         help=(

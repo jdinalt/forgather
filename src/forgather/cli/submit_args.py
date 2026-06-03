@@ -32,6 +32,11 @@ def create_submit_parser(global_args):
         help="Attach to the scheduled job and stream its output (single-node).",
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be submitted (or the command) without doing it.",
+    )
+    parser.add_argument(
         "--dataset",
         type=str,
         default=None,
@@ -52,7 +57,11 @@ def create_submit_parser(global_args):
         type=int,
         default=None,
         metavar="N",
-        help="GPUs to request (single-node; default: config's nproc_per_node).",
+        help=(
+            "GPUs to request per job/worker (single-node default: config's\n"
+            "nproc_per_node; DiLoCo default: 1). --global sizes nodes via\n"
+            "--member instead."
+        ),
     )
     add_via_server_arg(parser)
     add_locality_args(parser)
@@ -117,28 +126,36 @@ def create_submit_parser(global_args):
         help="--global / --diloco-server: emit the response as JSON.",
     )
 
-    # DiLoCo worker opt-in (formerly `forgather diloco worker`). Selecting a
-    # DiLoCo param-server (or --resume-workers) submits the project as one or
-    # more DiLoCo workers that join that server, instead of a plain training
-    # job. This is a different parallelism axis from --global (independent
-    # local-SGD replicas vs one rendezvous), so the two are mutually exclusive.
+    # DiLoCo worker opt-in (formerly `forgather diloco worker`). --diloco submits
+    # the project as one or more DiLoCo workers (independent local-SGD replicas
+    # joining a param-server) instead of a plain training job. This is a
+    # different parallelism axis from --global (independent replicas vs one
+    # rendezvous), so the two are mutually exclusive. Per-worker GPUs come from
+    # --requested-gpus (default 1).
     diloco = parser.add_argument_group("DiLoCo worker (opt-in)")
     diloco.add_argument(
+        "--diloco",
+        action="store_true",
+        help="Submit as DiLoCo worker(s) (joins a param-server; see flags below).",
+    )
+    diloco.add_argument(
         "--diloco-server",
-        dest="server",
+        dest="diloco_server",
         type=str,
         default=None,
         metavar="ID",
         help=(
-            "Join this DiLoCo param-server as a worker: a server id/label/\n"
-            "host:port. When omitted but --count/--worker-id is given, the\n"
-            "single running server is used automatically."
+            "DiLoCo param-server to join: a server id/label/host:port. When\n"
+            "omitted, the single running server is used automatically. Implies\n"
+            "--diloco."
         ),
     )
     diloco.add_argument(
-        "--count",
+        "--diloco-worker-count",
+        dest="count",
         type=int,
         default=1,
+        metavar="N",
         help="Launch N identical DiLoCo workers as scheduled jobs (default: 1).",
     )
     diloco.add_argument(
@@ -153,8 +170,8 @@ def create_submit_parser(global_args):
         action="store_true",
         help=(
             "Re-launch every stopped worker the server knows (reusing each id\n"
-            "so it resumes its checkpoint). Can't be combined with\n"
-            "--worker-id / --count."
+            "so it resumes its checkpoint). Implies --diloco; can't be combined\n"
+            "with --worker-id / --diloco-worker-count."
         ),
     )
     diloco.add_argument(
@@ -162,24 +179,6 @@ def create_submit_parser(global_args):
         type=float,
         default=30.0,
         help="Seconds between worker heartbeats to the server (default: 30).",
-    )
-    diloco.add_argument(
-        "--gpus-per-worker",
-        type=int,
-        default=1,
-        help="GPUs the scheduler reserves per DiLoCo worker (default: 1).",
-    )
-    diloco.add_argument(
-        "-d",
-        "--devices",
-        type=str,
-        default=None,
-        help='CUDA_VISIBLE_DEVICES for the direct/foreground worker, e.g. "0,1".',
-    )
-    diloco.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Direct/foreground DiLoCo worker: show the command without running.",
     )
 
     parser.add_argument(

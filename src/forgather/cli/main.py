@@ -396,7 +396,7 @@ def parse_args(args=None):
             and subcommand_args
             and subcommand_args[0] == "start"
         )
-        if subcommand in ["convert", "finalize", "server"]:
+        if subcommand in ["convert", "finalize", "server", "update"]:
             sub_args = argparse.Namespace()
             if subcommand == "convert":
                 sub_args.remainder = (
@@ -416,6 +416,8 @@ def parse_args(args=None):
                     if server_original_args is not None
                     else subcommand_args
                 )
+            else:  # update — forwards everything (incl. --help) to update.py
+                sub_args.remainder = subcommand_args
             sub_args.dummy = ""
         elif ds_is_start:
             # 'dataset-server start' flags were carved out of the global parse

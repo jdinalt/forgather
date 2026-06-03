@@ -336,7 +336,9 @@ def _status_cmd(args):
         # Direct path: no discovery possible, so fall back to the loopback
         # default when --server is omitted. Token + verify_tls are picked up
         # from explicit args / env / loopback per-port file automatically.
-        direct_server = args.server or orch.DEFAULT_DIRECT_SERVER
+        direct_server = (
+            getattr(args, "diloco_server", None) or orch.DEFAULT_DIRECT_SERVER
+        )
         c = DiLoCoClient(
             direct_server,
             timeout=10,
@@ -625,9 +627,8 @@ def _worker_cmd(args):
     """
     Launch training as a DiLoCo worker.
 
-    Shared entry point: reached both by ``forgather diloco worker`` (deprecated)
-    and by ``forgather submit --diloco-server`` (submit_cmd calls this directly).
-    Keep its arg contract stable for both — don't rename or change its signature
+    The worker-launch implementation behind ``forgather submit --diloco``
+    (submit_cmd calls this directly). Don't rename or change its signature
     without updating ``submit.submit_cmd``.
 
     By default the worker(s) are enqueued as scheduled training jobs through
@@ -709,14 +710,20 @@ def _worker_cmd(args):
     env = os.environ.copy()
     # Direct/foreground: no discovery here, so default to loopback when
     # --server is omitted.
-    env["DILOCO_SERVER"] = args.server or orch.DEFAULT_DIRECT_SERVER
+    env["DILOCO_SERVER"] = (
+        getattr(args, "diloco_server", None) or orch.DEFAULT_DIRECT_SERVER
+    )
     env["DILOCO_HEARTBEAT_INTERVAL"] = str(getattr(args, "heartbeat_interval", 30.0))
 
     if args.worker_id:
         env["DILOCO_WORKER_ID"] = args.worker_id
 
-    if args.devices:
-        env["CUDA_VISIBLE_DEVICES"] = args.devices
+    # `forgather submit --diloco` doesn't carry --devices (it's a scheduler
+    # submit command); the direct/foreground worker inherits the parent env's
+    # CUDA_VISIBLE_DEVICES.
+    devices = getattr(args, "devices", None)
+    if devices:
+        env["CUDA_VISIBLE_DEVICES"] = devices
 
     # Build the forgather train command from remaining args
     import shutil
@@ -790,13 +797,6 @@ def diloco_cmd(args):
         return _control_cmd(args)
     elif subcmd == "shutdown":
         return _shutdown_cmd(args)
-    elif subcmd == "worker":
-        print(
-            "note: 'forgather diloco worker' is deprecated; use "
-            "'forgather submit --diloco-server <id>' (the unified submit verb).",
-            file=sys.stderr,
-        )
-        return _worker_cmd(args)
     elif subcmd == "servers":
         from .diloco_orch import servers_cmd
 

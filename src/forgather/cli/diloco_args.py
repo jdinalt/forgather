@@ -2,30 +2,10 @@
 
 import argparse
 import os
-import sys
 from argparse import RawTextHelpFormatter
 
 from forgather.ml.diloco.auth import add_auth_args
 from forgather.tls.runtime import add_server_tls_args
-
-
-def _diloco_subcommand(argv=None):
-    """Best-effort: the ``diloco`` sub-subcommand being invoked (e.g.
-    ``"worker"``), read from argv, or ``None``.
-
-    Used only to decide whether to pay the config load for dynamic-arg
-    discovery: ``create_diloco_parser`` builds every subparser eagerly, but
-    only ``worker`` consumes/forwards a config's dynamic args, so the other
-    verbs (status / servers / logs / control / shutdown) shouldn't load a
-    project just to build their parser. The first non-flag token after
-    ``diloco`` is the sub-subcommand (global flags precede ``diloco``)."""
-    argv = sys.argv[1:] if argv is None else argv
-    if "diloco" not in argv:
-        return None
-    for tok in argv[argv.index("diloco") + 1 :]:
-        if not tok.startswith("-"):
-            return tok
-    return None
 
 
 def create_diloco_parser(global_args):
@@ -256,7 +236,9 @@ def create_diloco_parser(global_args):
     # server is down.
     _add_locality_args(server_parser)
     server_parser.add_argument(
+        "--server",
         "--via-server",
+        dest="server",
         type=str,
         default=None,
         metavar="URL",
@@ -281,7 +263,8 @@ def create_diloco_parser(global_args):
         formatter_class=RawTextHelpFormatter,
     )
     status_parser.add_argument(
-        "--server",
+        "--diloco-server",
+        dest="diloco_server",
         type=str,
         default=None,
         help=(
@@ -342,7 +325,9 @@ def create_diloco_parser(global_args):
         help="Emit the merged status (status + info + workers [+ queues]) as JSON.",
     )
     status_parser.add_argument(
+        "--server",
         "--via-server",
+        dest="server",
         type=str,
         default=None,
         metavar="URL",
@@ -362,7 +347,9 @@ def create_diloco_parser(global_args):
         formatter_class=RawTextHelpFormatter,
     )
     servers_parser.add_argument(
+        "--server",
         "--via-server",
+        dest="server",
         type=str,
         default=None,
         metavar="URL",
@@ -406,7 +393,9 @@ def create_diloco_parser(global_args):
         ),
     )
     logs_parser.add_argument(
+        "--server",
         "--via-server",
+        dest="server",
         type=str,
         default=None,
         metavar="URL",
@@ -416,7 +405,8 @@ def create_diloco_parser(global_args):
     # Shared client-connection args for the control-plane subcommands.
     def _add_client_conn_args(p):
         p.add_argument(
-            "--server",
+            "--diloco-server",
+            dest="diloco_server",
             type=str,
             default=None,
             help=(
@@ -441,7 +431,9 @@ def create_diloco_parser(global_args):
             help="Skip TLS certificate verification on the upstream server.",
         )
         p.add_argument(
+            "--server",
             "--via-server",
+            dest="server",
             type=str,
             default=None,
             metavar="URL",
@@ -504,153 +496,6 @@ def create_diloco_parser(global_args):
     )
     _add_client_conn_args(shutdown_parser)
 
-    # worker subcommand
-    worker_parser = subparsers.add_parser(
-        "worker",
-        help="Run training as a DiLoCo worker",
-        formatter_class=RawTextHelpFormatter,
-    )
-    worker_parser.add_argument(
-        "--server",
-        type=str,
-        default=None,
-        help=(
-            "DiLoCo server the worker connects to: a server id/label/host:port.\n"
-            "When omitted, the single running server is used automatically\n"
-            "(ambiguous if more than one); the direct/foreground path falls\n"
-            "back to localhost:8512."
-        ),
-    )
-    # NOTE: sync_every / bf16_comm / dylu / num_fragments are NOT worker
-    # flags. They must match across the group, so the server is their sole
-    # authority — the worker reads them from /info at startup. See
-    # DiLoCoCallback (server-authoritative settings).
-    worker_parser.add_argument(
-        "--worker-id",
-        type=str,
-        default=None,
-        help="Worker ID (auto-generated if not provided)",
-    )
-    worker_parser.add_argument(
-        "--heartbeat-interval",
-        type=float,
-        default=30.0,
-        help=(
-            "Seconds between heartbeats to server. Enables server-side\n"
-            "health monitoring and DyLU speed reporting. 0 = disabled.\n"
-            "Client-local; validated against the server's heartbeat-timeout.\n"
-            "(default: 30)"
-        ),
-    )
-    worker_parser.add_argument(
-        "-d",
-        "--devices",
-        type=str,
-        default=None,
-        help='CUDA Visible Devices e.g. "0,1"',
-    )
-    worker_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show the generated command without executing (direct path only)",
-    )
-    # Launch-as-scheduled-job knobs (orchestrator path). When the forgather
-    # server is up, the worker is enqueued as a training job; these control
-    # how many, how they're named, and where data comes from.
-    worker_parser.add_argument(
-        "--count",
-        type=int,
-        default=1,
-        help=(
-            "Launch N identical workers as scheduled jobs with auto-generated\n"
-            "names (requires the forgather server). Default: 1."
-        ),
-    )
-    worker_parser.add_argument(
-        "--resume-workers",
-        dest="resume_workers",
-        action="store_true",
-        help=(
-            "Re-launch every stopped worker the server knows (reusing each\n"
-            "id, so it resumes its checkpoint) — the way to bring a worker set\n"
-            "back after a shutdown/stop. Requires the forgather server; can't\n"
-            "be combined with --worker-id / --count. Honors --dataset and\n"
-            "dynamic args for the relaunched jobs. (Named to avoid clashing\n"
-            "with configs' own --resume dynamic arg.)"
-        ),
-    )
-    worker_parser.add_argument(
-        "--dataset",
-        type=str,
-        default=None,
-        metavar="SOURCE",
-        help=(
-            "Dataset source for the worker job(s): 'auto' (cluster routing),\n"
-            "'local' (in-process loader), or 'server:<id>' for a specific\n"
-            "dataset server (id from 'forgather diloco servers' or the\n"
-            "dataset-server registry). When unset, the default is mode-aware\n"
-            "(matching the webui): 'auto' if the forgather server is in\n"
-            "cluster mode, otherwise 'local'."
-        ),
-    )
-    worker_parser.add_argument(
-        "--gpus-per-worker",
-        type=int,
-        default=1,
-        help="GPUs the scheduler reserves per worker job (default: 1).",
-    )
-    worker_parser.add_argument(
-        "--priority",
-        type=int,
-        default=0,
-        help="Scheduler priority for the enqueued worker job(s) (default: 0).",
-    )
-    worker_parser.add_argument(
-        "--via-server",
-        type=str,
-        default=None,
-        metavar="URL",
-        help="forgather-server base URL to enqueue on (default: env / http://127.0.0.1:8765).",
-    )
-    _add_locality_args(worker_parser)
-    worker_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="When enqueuing, emit the launched worker/queue-id list as JSON.",
-    )
-    worker_parser.add_argument(
-        "remainder",
-        nargs=argparse.REMAINDER,
-        help="Remaining arguments forwarded to the training script (direct path)",
-    )
-
-    # Dynamic/template args: build argparse options + help from the config's
-    # ``dynamic_args`` metadata (the established pattern — see train_args.py),
-    # so a config's args show up under `diloco worker --help`, parse, and
-    # forward. Like `forgather train`, this uses the selected config or the
-    # project's DEFAULT config when ``-t`` is omitted (parse_dynamic_args
-    # resolves the default via ``Project(config_name=None)``) — so
-    # ``forgather diloco worker --compile no`` works from a project dir
-    # without an explicit ``-t``.
-    #
-    # Gated to an actual ``worker`` invocation (not just "a config is
-    # selected"): create_diloco_parser builds every subparser eagerly, so
-    # without this gate every `diloco <sub>` (status / servers / logs / …)
-    # would pay a config load — and error noisily ("Loading dynamic args
-    # failed!") when run outside a project. Only `worker` forwards them.
-    #
-    # NOTE: we deliberately do NOT propagate ``_dynamic_arg_names`` to the
-    # top-level diloco parser. main.py's partition is global to the chosen
-    # subcommand, and the dynamic-arg set includes framework-standard names
-    # like ``output_dir`` — smearing them across the namespace would strip
-    # ``--output-dir`` from a sibling like ``diloco server``. ``_worker_cmd``
-    # collects the worker's dynamic args from the config schema itself
-    # (see ``_load_dynamic_schema`` / ``_worker_dynamic_args``).
-    if _diloco_subcommand() == "worker" and not getattr(global_args, "no_dyn", False):
-        from .dynamic_args import parse_dynamic_args
-
-        parse_dynamic_args(worker_parser, global_args)
-
     # register / unregister — manage external DiLoCo servers in the
     # forgather server's registry (orchestrator-only).
     register_parser = subparsers.add_parser(
@@ -681,7 +526,9 @@ def create_diloco_parser(global_args):
         help="Skip TLS chain validation for this entry (SSH-tunneled remotes).",
     )
     register_parser.add_argument(
+        "--server",
         "--via-server",
+        dest="server",
         type=str,
         default=None,
         metavar="URL",
@@ -704,7 +551,9 @@ def create_diloco_parser(global_args):
         help="Registry entry id (accepts the 'registered:<id>' form from 'servers').",
     )
     unregister_parser.add_argument(
+        "--server",
         "--via-server",
+        dest="server",
         type=str,
         default=None,
         metavar="URL",

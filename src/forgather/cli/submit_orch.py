@@ -55,17 +55,20 @@ def add_locality_args(parser):
 
 
 def add_via_server_arg(parser, help=None):
-    """Add the ``--via-server URL`` flag (forgather-server base URL override)."""
+    """Add the ``--server URL`` forgather-server base-URL flag.
+
+    ``--via-server`` is kept as a hidden back-compat alias (the flag used to be
+    spelled that way on submit/diloco/dataset-server/mkdocs).
+    """
     parser.add_argument(
+        "--server",
         "--via-server",
+        dest="server",
         type=str,
         default=None,
         metavar="URL",
         help=help
-        or (
-            "forgather-server base URL to enqueue on "
-            "(default: env / http://127.0.0.1:8765)."
-        ),
+        or "forgather-server base URL (default: env / http://127.0.0.1:8765).",
     )
 
 
@@ -332,6 +335,17 @@ def submit_global(client, args, *, project_dir, config, dynamic_args, dataset_so
     rdzv_node_id = None
     if args.rdzv_host:
         rdzv_node_id = resolve_host_to_node_id(members, args.rdzv_host)["node_id"]
+
+    if getattr(args, "dry_run", False):
+        print(f"[dry-run] would submit multi-node bundle: config={config}")
+        print(f"  project={project_dir}")
+        for m in spec_members:
+            iface = m.get("nccl_socket_ifname")
+            suffix = f" iface={iface}" if iface else ""
+            print(f"  node {m['node_id']} x{m['nproc_per_node']}{suffix}")
+        if dynamic_args:
+            print(f"  dynamic_args={dynamic_args}")
+        return 0
 
     resp = client.cluster_jobs_submit(
         project_dir=project_dir,

@@ -16,13 +16,12 @@ def _submit_args(**over):
         _dynamic_args={},
         run_global=False,
         # DiLoCo opt-in
-        server=None,
+        diloco=False,
+        diloco_server=None,
         resume_workers=False,
         count=1,
         worker_id=None,
         heartbeat_interval=30.0,
-        gpus_per_worker=1,
-        devices=None,
         dry_run=False,
         # shared
         via_server=None,
@@ -57,9 +56,9 @@ def _worker_capture(called):
 def test_diloco_server_dispatches_to_worker(monkeypatch):
     called = {}
     monkeypatch.setattr(diloco_mod, "_worker_cmd", _worker_capture(called))
-    rc = submit_mod.submit_cmd(_submit_args(server="localhost:8512"))
+    rc = submit_mod.submit_cmd(_submit_args(diloco_server="localhost:8512"))
     assert rc == 0
-    assert called["args"].server == "localhost:8512"
+    assert called["args"].diloco_server == "localhost:8512"
 
 
 def test_resume_workers_dispatches_to_worker(monkeypatch):
@@ -75,7 +74,7 @@ def test_global_and_diloco_are_mutually_exclusive(monkeypatch):
     monkeypatch.setattr(
         diloco_mod, "_worker_cmd", lambda args: (_ for _ in ()).throw(AssertionError)
     )
-    rc = submit_mod.submit_cmd(_submit_args(server="X", run_global=True))
+    rc = submit_mod.submit_cmd(_submit_args(diloco_server="X", run_global=True))
     assert rc == 1
 
 
@@ -95,13 +94,6 @@ def test_plain_submit_does_not_dispatch_to_diloco(monkeypatch):
     assert seen.get("train") is True
 
 
-def test_diloco_worker_prints_deprecation(monkeypatch, capsys):
-    monkeypatch.setattr(diloco_mod, "_worker_cmd", lambda args: 0)
-    diloco_mod.diloco_cmd(argparse.Namespace(diloco_subcommand="worker"))
-    err = capsys.readouterr().err
-    assert "deprecated" in err and "submit --diloco-server" in err
-
-
 # --- fail-loud mode-flag validation -----------------------------------------
 
 
@@ -115,9 +107,27 @@ def test_global_knob_without_global_errors():
     assert rc == 1
 
 
-def test_requested_gpus_in_diloco_mode_errors():
-    rc = submit_mod.submit_cmd(_submit_args(server="X", requested_gpus=4))
+def test_requested_gpus_accepted_in_diloco_mode(monkeypatch):
+    # --requested-gpus is the unified per-worker GPU knob now (no error). Mock
+    # the worker launch so the test never contacts a live server.
+    called = {}
+    monkeypatch.setattr(diloco_mod, "_worker_cmd", _worker_capture(called))
+    rc = submit_mod.submit_cmd(_submit_args(diloco_server="X", requested_gpus=4))
+    assert rc == 0
+    assert called["args"].requested_gpus == 4
+
+
+def test_requested_gpus_rejected_in_global_mode():
+    rc = submit_mod.submit_cmd(_submit_args(run_global=True, requested_gpus=4))
     assert rc == 1
+
+
+def test_diloco_flag_alone_triggers_diloco_mode(monkeypatch):
+    called = {}
+    monkeypatch.setattr(diloco_mod, "_worker_cmd", _worker_capture(called))
+    rc = submit_mod.submit_cmd(_submit_args(diloco=True))
+    assert rc == 0
+    assert "args" in called  # dispatched to the worker path
 
 
 # --- dynamic-args forwarding (the submit-partition regression) --------------

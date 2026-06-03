@@ -154,7 +154,7 @@ mirroring the dataset server:
   file path while still confirming auth is enabled.
 - The **server URL**. When bound to a wildcard address (`-H 0.0.0.0`), the
   banner shows the host's primary-interface IP rather than `0.0.0.0`, so the
-  address is copy-pasteable straight onto worker `--server` lines.
+  address is copy-pasteable straight onto worker `--diloco-server` lines.
 
 ### 2. Start Workers
 
@@ -166,20 +166,25 @@ explicit `--output-dir` the operator passes, so workers get distinct
 per-worker dirs for free):
 
 ```bash
-forgather submit --diloco-server 192.168.1.100:8512 \
+forgather submit --diloco \
+    --diloco-server 192.168.1.100:8512 \
     --worker-id w0 \
     -p my_project -t train.yaml \
-    train -d 0
+    train
 ```
 
-Workers launch via `forgather submit --diloco-server <id>`, which makes
-DiLoCo an opt-in dimension on the regular `submit` verb (mirroring the
-webui's single submit modal). `forgather diloco worker` remains as a
-deprecated alias of `submit --diloco-server` and prints a deprecation
-note.
+Workers launch via `forgather submit --diloco`, which makes DiLoCo an
+opt-in dimension on the regular `submit` verb (mirroring the webui's
+single submit modal). Pass `--diloco-server <id>` to pin a specific
+param-server; it implies `--diloco`, so it works on its own, but the
+clear way to request DiLoCo is `--diloco`. With `--diloco` and no
+`--diloco-server`, the single running server is auto-picked.
 
 Worker arguments:
-- `--diloco-server`: Server address as `host:port`
+- `--diloco`: Opt into DiLoCo mode for this submission.
+- `--diloco-server`: Server address as `host:port` (optional; pins a
+  specific server and implies `--diloco`). Omitted = auto-pick the single
+  running server.
 - `--worker-id`: Unique worker identity. Drives the per-worker output-dir
   suffix the project template appends to `ns.output_dir`, and the
   uniqueness key the server enforces on `/register`. Auto-generated when
@@ -188,7 +193,10 @@ Worker arguments:
 - `--heartbeat-interval`: Seconds between heartbeats for speed reporting
   (default: 30). Client-local; validated against the server's
   `--heartbeat-timeout` at startup.
-- `-d`: CUDA visible devices
+- `--requested-gpus`: GPUs per worker (the same flag single-node submit
+  uses). Per-worker devices are picked by the scheduler from the parent
+  env's `CUDA_VISIBLE_DEVICES`; a scheduler-submit command doesn't pin
+  CUDA devices itself.
 
 **Resuming a worker from its own checkpoint.** A worker's checkpoints live
 under its worker-id-suffixed `output_dir` (`ns.output_dir + "_" +
@@ -236,8 +244,8 @@ See the *Work-unit dispatch* section below.
 ### 3. Monitor
 
 ```bash
-forgather diloco status --server localhost:8512            # one-shot
-forgather diloco status --server localhost:8512 --watch    # refresh in place
+forgather diloco status --diloco-server localhost:8512            # one-shot
+forgather diloco status --diloco-server localhost:8512 --watch    # refresh in place
 ```
 
 Shows sync round, registered workers, their hostnames, training speeds, and
@@ -277,14 +285,15 @@ resolves every upstream server's bearer token and TLS verification on your
 behalf (the same path the webui uses), so these commands only need the
 server's own auth (`~/.config/forgather/server/auth_token`, or
 `$FORGATHER_SERVER_TOKEN`). Point at a non-default forgather server with
-`--via-server URL`.
+`--server URL`.
 
 **Picking the DiLoCo server.** The commands that target a DiLoCo server
-(`status`, `control`, `shutdown`, `worker`) take `--server <id|label|host:port>`,
+(`status`, `control`, `shutdown`) take `--diloco-server <id|label|host:port>`,
 but it's optional: with exactly one DiLoCo server running it's selected
 automatically (the common case). With more than one, you must pass
-`--server` (the error lists the choices). When the forgather server can't be
-consulted (e.g. `--local-only`), `--server` defaults to `localhost:8512`.
+`--diloco-server` (the error lists the choices). When the forgather server
+can't be consulted (e.g. `--local-only`), `--diloco-server` defaults to
+`localhost:8512`.
 
 **Locality.** The server is the default, required path: if it isn't
 reachable these commands **error** rather than silently doing something
@@ -302,7 +311,7 @@ forgather diloco servers --json
 # Rich status routed through the server (resolves the upstream token for
 # you). Falls back to a direct connection if the server isn't running or
 # doesn't know this target.
-forgather diloco status --server local:<queue_id> --queues
+forgather diloco status --diloco-server local:<queue_id> --queues
 
 # Dump or follow the captured TTY of any worker/server job. JOB may be a
 # queue_id, a local DiLoCo server id/label, or a worker_id — resolved to
@@ -331,7 +340,7 @@ unreachable server errors unless you pass `--local-fallback` / `--local-only`.
 
 ### Launching as scheduled jobs
 
-`diloco server` and `forgather submit --diloco-server` **enqueue scheduled
+`diloco server` and `forgather submit --diloco` **enqueue scheduled
 jobs** by default through the forgather server instead of running in the foreground — the
 scheduler picks idle GPUs, captures the TTY, and the jobs show up in the
 webui. As above, an unreachable server errors; `--local-fallback` runs
@@ -349,7 +358,8 @@ forgather diloco server -o path/to/model -n 2 --bulk-cleartext
 # exactly like `forgather train` (built from the config's metadata, shown
 # in `submit --help`).
 forgather -p my_project -t train.yaml submit \
-    --diloco-server local:<queue_id> --count 4 --dataset auto --max-steps 5000
+    --diloco --diloco-server local:<queue_id> \
+    --diloco-worker-count 4 --dataset auto --max-steps 5000
 
 # Bring a worker set back after a server shutdown / manual stop: re-launch
 # every stopped worker the server knows, reusing each id (so each resumes
@@ -357,11 +367,15 @@ forgather -p my_project -t train.yaml submit \
 forgather -p my_project -t train.yaml submit --resume-workers --dataset auto
 ```
 
-Worker launch options (orchestrator path): `--count N` (auto-named via the
-server, guaranteed unique), `--dataset auto|local|server:<id>`,
-`--gpus-per-worker`, `--priority`. A single explicit `--worker-id` is
-honored; `--count > 1` requires the server (you can't foreground N). Add
-`--json` to `server` / `submit` to get the queue ids back for scripting.
+Worker launch options (orchestrator path): `--diloco-worker-count N`
+(auto-named via the server, guaranteed unique),
+`--dataset auto|local|server:<id>`, `--requested-gpus N` (GPUs per
+worker — the same flag single-node submit uses), `--priority`. A single
+explicit `--worker-id` is honored; `--diloco-worker-count > 1` requires
+the server (you can't foreground N). Add `--json` to `server` / `submit`
+to get the queue ids back for scripting, or `--dry-run` (a general
+`submit` flag — works in single-node, `--global`, and DiLoCo modes) to
+print what would be submitted without doing it.
 
 **`--dataset` default is mode-aware**, mirroring the webui Submit-job
 modal: when you don't pass `--dataset`, workers default to `auto` (cluster
@@ -378,9 +392,13 @@ dataset server.
 worker the server's known-worker roster reports (deduped on the pipeline
 `_pp<N>` suffix), reusing each worker id so it resumes its checkpoint. It
 requires the forgather server and can't be combined with `--worker-id` /
-`--count`; it still honors `--dataset` and dynamic args for the relaunched
-jobs. (The flag is named `--resume-workers`, not `--resume`, to avoid
-clashing with a config's own `--resume` dynamic arg.)
+`--diloco-worker-count`; it still honors `--dataset` and dynamic args for
+the relaunched jobs. (The flag is named `--resume-workers`, not `--resume`,
+to avoid clashing with a config's own `--resume` dynamic arg.)
+
+`--resume-workers` currently re-launches *all* stopped workers the server
+knows (the original single-set behavior); selectively resuming a subset,
+and resume semantics for multi-node worker pools, are future work.
 
 Worker launch and `--resume-workers` currently assume the workers run on the
 **same host** as the orchestrator: relaunched jobs are enqueued locally, so a
@@ -650,7 +668,7 @@ Workers adjust their `sync_every` dynamically.
 forgather diloco server -o ./model -n 3 --async --dylu --dylu-base-sync-every 500
 
 # Worker — picks up dylu + sync_every from the server's /info
-forgather submit --diloco-server host:8512 --worker-id w0 -- train
+forgather submit --diloco --diloco-server host:8512 --worker-id w0 -- train
 ```
 
 ### Staleness Tracking
@@ -700,7 +718,8 @@ communication becomes fully overlapped.
 ```bash
 # Streaming fragments are configured on the server, not the worker —
 # the worker reads num_fragments (and sync_every) from /info.
-forgather submit --diloco-server 192.168.1.100:8512 \
+forgather submit --diloco \
+    --diloco-server 192.168.1.100:8512 \
     --worker-id w0 \
     -p my_project -t train.yaml \
     train
@@ -848,7 +867,7 @@ server crashes. After restart:
 The status endpoint includes fault tolerance fields:
 
 ```bash
-forgather diloco status --server host:8512
+forgather diloco status --diloco-server host:8512
 ```
 
 Shows `heartbeat_timeout`, `min_workers`, and `total_worker_deaths` (if any
@@ -931,8 +950,7 @@ callback = DiLoCoCallback(
     heartbeat_interval=30.0,
 )
 
-# Or rely on environment variables (set by `forgather submit --diloco-server`,
-# or the deprecated `diloco worker`)
+# Or rely on environment variables (set by `forgather submit --diloco`)
 callback = DiLoCoCallback()
 
 trainer = Trainer(
@@ -1316,15 +1334,15 @@ divergent stop.
 
 ```bash
 # Relay to all registered workers (or one with --worker-id):
-forgather diloco control save        --server host:8512   # checkpoint, keep training
-forgather diloco control save-stop   --server host:8512   # checkpoint, then stop
-forgather diloco control abort       --server host:8512   # stop now, no save
+forgather diloco control save        --diloco-server host:8512   # checkpoint, keep training
+forgather diloco control save-stop   --diloco-server host:8512   # checkpoint, then stop
+forgather diloco control abort       --diloco-server host:8512   # stop now, no save
 
 # Stop the whole run. Clean by default: save-stop every worker, wait for them
 # to exit, checkpoint the server, then stop it.
-forgather diloco shutdown --server host:8512
-forgather diloco shutdown --server host:8512 --timeout 120   # cap the wait
-forgather diloco shutdown --server host:8512 --force         # stop server now, don't wait
+forgather diloco shutdown --diloco-server host:8512
+forgather diloco shutdown --diloco-server host:8512 --timeout 120   # cap the wait
+forgather diloco shutdown --diloco-server host:8512 --force         # stop server now, don't wait
 ```
 
 A clean `shutdown` that times out waiting for a stuck worker leaves the server
@@ -1354,7 +1372,7 @@ exposing the server on all interfaces and provides encrypted communication:
 ssh -L 8512:localhost:8512 server-machine
 
 # Then start the worker pointing to localhost:
-forgather submit --diloco-server localhost:8512 ...
+forgather submit --diloco --diloco-server localhost:8512 ...
 ```
 
 The `-L 8512:localhost:8512` flag forwards the worker's local port 8512 to port

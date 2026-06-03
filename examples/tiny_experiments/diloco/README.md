@@ -90,13 +90,13 @@ worker failure even though the worker never checkpoints it. See
   attached. The callback registers the worker with the server, snapshots the global
   weights, lets the trainer run H local steps, then computes and submits the
   pseudo-gradient and applies the returned global weights. Launching with
-  `forgather diloco worker` sets this up for you.
+  `forgather submit --diloco` sets this up for you.
 
 - **Forgather server** (`forgather server`) — the orchestrator. It schedules the
   DiLoCo/dataset/worker jobs, captures their logs, provisions auth tokens and TLS
-  automatically, and (in cluster mode) lets workers *auto-discover* the dataset
-  server. Using it is optional but strongly recommended — without it you'd wire up
-  discovery, tokens, and certificates by hand.
+  automatically, and lets workers *auto-discover* the dataset server. Using it is
+  optional but strongly recommended — without it you'd wire up discovery, tokens,
+  and certificates by hand.
 
 ### Work-unit dispatch: how the data is split
 
@@ -122,7 +122,7 @@ reference doc.)
 Work-unit dispatch is implemented in the dataset wrapper (`ComposableIterableDataset`)
 and is **agnostic to its backend** — the backend is just a seekable iterator, whether
 it reads from a **local** cache or streams from a remote **dataset server**. This
-example uses a dataset server (and cluster mode) on purpose, because it decouples the
+example uses a dataset server on purpose, because it decouples the
 data from where training runs:
 
 - The dataset only has to be cached on **one** cluster member, not every host — any
@@ -217,10 +217,6 @@ and DiLoCo servers as managed jobs, captures their logs, and provisions their au
 tokens and TLS. Without it you'd have to handle discovery and security by hand on
 the command line.
 
-Use **cluster mode** even on a single node — it enables dataset-server
-auto-discovery (so `auto` dataset routing works), and it's required once you scale to
-multiple nodes.
-
 If you plan to run across multiple machines, complete the
 [TLS setup](../../../docs/operations/tls.md) first so the cluster's control planes
 are encrypted and mutually authenticated.
@@ -228,9 +224,13 @@ are encrypted and mutually authenticated.
 In a secondary terminal session:
 
 ```bash
-# You can also set `cluster: demo` in the server config instead of passing --cluster.
-forgather server --cluster demo
+forgather server
 ```
+
+The server always runs in cluster mode (cluster name `default`), even on a single
+node — that's what enables dataset-server auto-discovery (so `auto` dataset routing
+works) and lets the same commands scale to multiple nodes. Pass `--cluster <name>`
+only if you want to run more than one isolated cluster on the same LAN.
 
 ### 3. Start the Dataset Server
 
@@ -382,16 +382,19 @@ work-unit dispatch:
 
 ```bash
 # torch.compile is disabled here for faster startup; for a real run, leave it enabled.
-forgather diloco worker --count 2 --compile no
+forgather submit --diloco --diloco-worker-count 2 --compile no
 
 # Or, to run on Tiny Stories instead of the ~1 TB Fineweb-Edu dataset:
-forgather -t tiny.yaml diloco worker --count 2 --compile no
+forgather -t tiny.yaml submit --diloco --diloco-worker-count 2 --compile no
 ```
 
+`--diloco` makes `submit` launch DiLoCo worker(s) instead of a plain training job;
+`--diloco-worker-count 2` enqueues two with auto-generated names. (Omit
+`--diloco-server` and the single running DiLoCo server is used automatically.)
 `--compile no` is a dynamic/template argument from the training config (the same ones
-`forgather train` accepts); the worker forwards it to the underlying training job.
-The workers default to `auto` dataset routing in cluster mode, so they find the
-dataset server you started in step 3 automatically.
+`forgather train` accepts); it's forwarded to the underlying training job. The workers
+default to `auto` dataset routing, so they find the dataset server you started in
+step 3 automatically.
 
 ### 7. Monitor
 
@@ -525,7 +528,7 @@ forgather diloco server --output-dir ../../../models/small_llama --num-workers 2
 # Relaunch every stopped worker the server knows about, reusing each id so it
 # resumes from its own checkpoint. (Dropping `--compile no` brings them back with
 # torch.compile enabled.)
-forgather diloco worker --resume-workers
+forgather submit --diloco --resume-workers
 ```
 
 > **Dynamic args are per-launch — re-pass any non-default ones on resume.**
@@ -539,7 +542,7 @@ forgather diloco worker --resume-workers
 > config default. For the halved-budget run above:
 >
 > ```bash
-> forgather -t tiny.yaml diloco worker --resume-workers \
+> forgather -t tiny.yaml submit --diloco --resume-workers \
 >     --total-tokens 250 --warmup-tokens 25 --min-cooldown-tokens 100
 > ```
 
@@ -579,7 +582,7 @@ so the DiLoCo workers were launched with half of `baseline.yaml`'s 500M-token
 budget:
 
 ```bash
-forgather diloco worker --count 2 --compile no \
+forgather submit --diloco --diloco-worker-count 2 --compile no \
     --total-tokens 250 --warmup-tokens 25 --min-cooldown-tokens 100
 ```
 

@@ -55,6 +55,29 @@ def parse_dynamic_args(parser, global_args):
         if "dynamic_args" in proj.config:
             dynamic_args = proj("dynamic_args")
         if dynamic_args:
+            # Render config-derived (dynamic) args under their own argparse
+            # group(s), created here (after the command's native args) so they
+            # appear AFTER the native flags in --help and clearly mark where the
+            # config args begin. Sub-group by each arg's optional ``group``
+            # metadata (the same hierarchical label the webui uses, e.g.
+            # ``Trainer:Schedule``) so long arg lists are easier to scan.
+            config_label = global_args.config_template or "config"
+            _arg_groups = {}
+
+            def _arg_target(group):
+                # str() so a malformed config with a non-string (e.g.
+                # unhashable list) `group` can't abort the whole dynamic-arg
+                # load — at worst it gets an odd group title.
+                key = str(group) if group else ""
+                if key not in _arg_groups:
+                    title = (
+                        f"Config arguments — {group}"
+                        if group
+                        else f"Config arguments (from {config_label})"
+                    )
+                    _arg_groups[key] = parser.add_argument_group(title)
+                return _arg_groups[key]
+
             for dynamic_arg in dynamic_args:
                 # The names in add_args() are positional only
                 # To simplify the interface, we just support a single name
@@ -77,7 +100,7 @@ def parse_dynamic_args(parser, global_args):
                 # (see require_dynamic_args). ``min`` / ``max`` likewise are
                 # webui constraints; the action-time check (validate_dynamic_arg_bounds)
                 # is the canonical CLI enforcement point.
-                dynamic_arg.pop("group", None)
+                group = dynamic_arg.pop("group", None)
                 dynamic_arg.pop("required", None)
                 dynamic_arg.pop("min", None)
                 dynamic_arg.pop("max", None)
@@ -87,7 +110,7 @@ def parse_dynamic_args(parser, global_args):
                     dynamic_arg["type"] = _convert_type_string(dynamic_arg["type"])
 
                 try:
-                    parser.add_argument(
+                    _arg_target(group).add_argument(
                         *names,
                         **dynamic_arg,
                     )
@@ -116,9 +139,21 @@ def parse_dynamic_args(parser, global_args):
                     # No long form, use short form
                     if names and names[0].startswith("-"):
                         dynamic_arg_names.append(names[0][1:])
-    except:
-        print("Loading dynamic args failed!")
-        traceback.print_exc()
+    except Exception as exc:
+        # Running a dynamic-args command (e.g. its `--help`) outside a project
+        # is benign — there's just no config to read args from. Note it on one
+        # line instead of dumping a traceback that looks like a crash. Anything
+        # else is a real error worth the full trace.
+        msg = str(exc).lower()
+        if isinstance(exc, (ValueError, FileNotFoundError)) and "project" in msg:
+            print(
+                "(config args unavailable here — run inside a project "
+                "with -p/-t to list them)",
+                file=sys.stderr,
+            )
+        else:
+            print("Loading dynamic args failed!")
+            traceback.print_exc()
 
     # Attach dynamic arg names to the parser for later use
     parser._dynamic_arg_names = dynamic_arg_names

@@ -40,18 +40,21 @@ forgather -t cfg.yaml train --schedule --foreground   # ...and attach
 forgather -t cfg.yaml submit                # shorthand for `train --schedule` (single-node)
 forgather -p <abs-path> submit --global \
     --member HOST:GPUS[:IFACE] ...          # multi-node fan-out
-forgather -t cfg.yaml submit \
-    --diloco-server <id> --count 4          # DiLoCo worker(s)
+forgather -t cfg.yaml submit --diloco \
+    --diloco-worker-count 4                  # DiLoCo worker(s) (auto-picks the server)
+forgather -t cfg.yaml submit --dry-run      # show what would be submitted, don't
 ```
 
 `forgather submit` is the canonical scheduler entry point (mirrors the webui
 submit modal): single-node by default, `--global` for multi-node rendezvous,
-`--diloco-server`/`--resume-workers` for DiLoCo worker(s). `--global` and the
-DiLoCo opt-in are mutually exclusive (different parallelism axes).
+`--diloco` for DiLoCo worker(s) (`--diloco-server <id>` to pin a server). Per-job
+GPUs come from `--requested-gpus` (single-node / per DiLoCo worker); `--global`
+sizes nodes via `--member`. `--global` and `--diloco` are mutually exclusive
+(different parallelism axes). `--dry-run` works in every mode.
 `forgather cluster submit ...` is a deprecated alias of
-`forgather submit --global ...`; `forgather diloco worker ...` is a deprecated
-alias of `forgather submit --diloco-server ...` (the `diloco server/status/...`
-param-server verbs are unchanged).
+`forgather submit --global ...`. `--server <url>` selects the forgather server
+(the orchestrator URL); `--diloco-server <id>` selects the DiLoCo param-server
+(on `submit --diloco` and the `diloco status/control/shutdown` verbs).
 
 ## Job control (server-managed jobs)
 

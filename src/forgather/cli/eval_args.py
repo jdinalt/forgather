@@ -389,7 +389,7 @@ def create_eval_parser(_global_args):
     test.add_argument(
         "--server",
         "--via-server",
-        dest="via_server",
+        dest="server",
         type=str,
         default=None,
         metavar="URL",

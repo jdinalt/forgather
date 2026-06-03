@@ -21,12 +21,12 @@ import sys
 def _orchestrator(args):
     """Build a ServerClient for the orchestrator.
 
-    ``--via-server URL`` overrides the default discovery (env
+    ``--server URL`` overrides the default discovery (env
     ``FORGATHER_SERVER_URL`` → ``{scheme}://127.0.0.1:8765``).
     """
     from .server_client import ServerClient
 
-    return ServerClient(getattr(args, "via_server", None) or None)
+    return ServerClient(getattr(args, "server", None) or None)
 
 
 def _normalize_target(target):
@@ -80,7 +80,7 @@ def _hosts_equiv(a, b):
 
 
 def match_server(servers, target):
-    """Resolve a ``--server`` value to a known server's ``base_url``.
+    """Resolve a ``--diloco-server`` value to a known server's ``base_url``.
 
     Accepts a server ``id`` (e.g. ``local:<qid>`` / ``registered:<id>``),
     a ``label``, a full ``base_url``, or a bare ``host:port``. Host:port
@@ -131,7 +131,7 @@ def resolve_one(servers, explicit):
 
         choices = ", ".join((s.get("id") or s.get("base_url") or "?") for s in servers)
         raise ServerUnreachable(
-            f"{len(servers)} DiLoCo servers are running — pass --server to "
+            f"{len(servers)} DiLoCo servers are running — pass --diloco-server to "
             f"pick one (e.g. {choices})."
         )
     return None
@@ -201,7 +201,7 @@ def resolve_orchestrator_base(args):
         if _local_fallback(args):
             return None, None
         raise
-    explicit = getattr(args, "server", None)
+    explicit = getattr(args, "diloco_server", None)
     base = resolve_one(servers, explicit)  # may raise on ambiguity
     if base is None:
         if _local_fallback(args):
@@ -214,7 +214,7 @@ def resolve_orchestrator_base(args):
             )
         raise ServerUnreachable(
             "no DiLoCo servers are running — start one "
-            "('forgather diloco server …') or pass --server."
+            "('forgather diloco server …') or pass --diloco-server."
         )
     return client, base
 
@@ -830,7 +830,7 @@ def _resolve_worker_server(client, args):
     (ambiguous / none running)."""
     from .server_client import AuthRequired, ServerUnreachable
 
-    explicit = getattr(args, "server", None)
+    explicit = getattr(args, "diloco_server", None)
     try:
         servers = client.list_diloco_servers()
     except (ServerUnreachable, AuthRequired, RuntimeError):
@@ -844,7 +844,7 @@ def _resolve_worker_server(client, args):
     if not server:
         print(
             "error: no DiLoCo server is running to connect the worker(s) to; "
-            "start one ('forgather diloco server …') or pass --server.",
+            "start one ('forgather diloco server …') or pass --diloco-server.",
             file=sys.stderr,
         )
         return None
@@ -878,9 +878,25 @@ def _enqueue_worker_jobs(client, names, server, args, dynamic_args, dataset_sour
 
     config = _resolve_config_name(args)
     hb = getattr(args, "heartbeat_interval", None)
-    gpus = getattr(args, "gpus_per_worker", 1)
+    # Per-worker GPUs: --requested-gpus (the unified knob on `submit`) wins;
+    # fall back to the deprecated `diloco worker --gpus-per-worker`, else 1.
+    # Use an explicit None check so --requested-gpus 0 (the no-reservation
+    # host-CUDA escape hatch) isn't silently rewritten to 1.
+    rg = getattr(args, "requested_gpus", None)
+    gpus = rg if rg is not None else (getattr(args, "gpus_per_worker", None) or 1)
     priority = getattr(args, "priority", 0)
     project_dir = getattr(args, "project_dir", ".")
+
+    if getattr(args, "dry_run", False):
+        print(
+            f"[dry-run] would enqueue {len(names)} DiLoCo worker(s) against "
+            f"{server}: config={config} gpus/worker={gpus} priority={priority}"
+        )
+        for name in names:
+            print(f"  {name}")
+        if dynamic_args:
+            print(f"  dynamic_args={dynamic_args}")
+        return 0
 
     results = []
     for name in names:
@@ -1018,7 +1034,7 @@ def launch_resume(args, dynamic_args):
         return 1
     # Resume needs a server the forgather server knows — that's where the
     # known-worker roster comes from.
-    explicit = getattr(args, "server", None)
+    explicit = getattr(args, "diloco_server", None)
     try:
         servers = client.list_diloco_servers()
     except (ServerUnreachable, AuthRequired, RuntimeError):
@@ -1031,7 +1047,7 @@ def launch_resume(args, dynamic_args):
     if not base:
         print(
             "error: no DiLoCo server found to resume workers from; start one "
-            "or pass --server.",
+            "or pass --diloco-server.",
             file=sys.stderr,
         )
         return 1
@@ -1112,7 +1128,7 @@ def make_control_ops(args, *, timeout=30):
     # Direct path (--local-only / --local-fallback when down): no discovery
     # is possible, so fall back to the loopback default when --server is
     # omitted.
-    server = getattr(args, "server", None) or DEFAULT_DIRECT_SERVER
+    server = getattr(args, "diloco_server", None) or DEFAULT_DIRECT_SERVER
     c = DiLoCoClient(
         server,
         timeout=timeout,
