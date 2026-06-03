@@ -28,9 +28,11 @@ OUTPUT_MODELS = os.path.join(PROJECT, "output_models")
 # output-model dir -> display label. Order controls legend / bar order.
 MODELS = [
     ("small_causal", "Causal (vanilla)"),
+    ("small_llama", "Llama"),
     ("small_llama_canon", "Llama + Canon"),
     ("small_deepone", "DeepOne (ALiBi)"),
     ("small_qwen3", "Qwen3"),
+    ("small_mistral", "Mistral"),
     ("small_gemma3", "Gemma-3"),
 ]
 

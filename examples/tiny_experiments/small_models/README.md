@@ -23,19 +23,21 @@ The project builds on the **`projects/small.yaml`** base template (DDP trainer,
 
 ## Configurations
 
-All five are Forgather-native model implementations, each ~30M parameters with
+All seven are Forgather-native model implementations, each ~30M parameters with
 the shared wikitext-8K tokenizer:
 
 | Config | Architecture | Key features | Params |
 |--------|-------------|--------------|-------:|
 | `small_causal.yaml` | Vanilla Transformer | Basic decoder-only transformer (MHA, learned PE) | 32M |
+| `small_llama.yaml` | Llama | Pre-layer-norm, RoPE, SiLU GLU, GQA (untied embeddings) | 34M |
 | `small_llama_canon.yaml` | Llama + Canon | Llama with Canon convolutional layers for local token mixing (tied embeddings) | 30M |
 | `small_deepone.yaml` | DeepOne | Post-layer-norm, Deepnet initialization, ALiBi positional encoding | 38M |
 | `small_qwen3.yaml` | Qwen3 | QK-norm, GQA, tied embeddings | 30M |
+| `small_mistral.yaml` | Mistral | Llama variant with sliding-window attention, GQA | 34M |
 | `small_gemma3.yaml` | Gemma-3 | Interleaved sliding/full attention, GLU + gelu-tanh, dual RoPE, tied embeddings | 34M |
 
 Each config points the base template at a model project's `small.yaml`
-definition under [`examples/models/`](../../models/). All five share the same
+definition under [`examples/models/`](../../models/). All seven share the same
 wikitext-8K tokenizer and ~512-hidden / 10-layer shape, so differences in the
 loss curves reflect architecture, not size or vocabulary.
 
@@ -52,8 +54,8 @@ forgather -t small_qwen3.yaml train -d 0
 ### Train all models for comparison
 
 Submit every config to the forgather-server scheduler. Jobs run in the
-background and are placed on GPUs automatically as they free up; with five
-configs and five GPUs they run concurrently:
+background and are placed on GPUs automatically as they free up; with seven
+configs on five GPUs, five run concurrently and the rest start as GPUs free:
 
 ```bash
 # Queue every config at one GPU per job (skips the project template).
@@ -124,5 +126,6 @@ python assets/generate_plots.py
 3. Run `forgather ls` to verify it parses, and
    `forgather -t <cfg> model -r --device cuda:0 test` to confirm the model runs.
 
-Note: five models saturate five GPUs. Adding more runs them in a second wave,
-roughly doubling wall-clock time.
+Note: with five GPUs, the first five models run concurrently and any extras
+start as GPUs free up — so growing the set past five adds roughly one model's
+runtime per extra GPU-wave rather than running everything at once.
