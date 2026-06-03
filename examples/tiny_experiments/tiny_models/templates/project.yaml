@@ -1,4 +1,4 @@
--- extends 'projects/tiny.yaml'
+-- extends 'projects/tinyv2.yaml'
 
 [config_metadata]
     == super()

@@ -1,0 +1,10 @@
+model,family,final_train_loss,final_eval_loss,best_eval_loss,avg_mfu_pct,total_tokens_m
+tiny_causal,fg,1.2890,1.3006,1.3006,7.69,82.6
+tiny_fg_llama,fg,1.3084,1.3209,1.3209,5.96,82.6
+tiny_deepone,fg,1.2628,1.2734,1.2734,5.91,82.6
+tiny_fg_mistral,fg,1.3390,1.3480,1.3480,5.43,82.6
+tiny_fg_qwen3,fg,1.2790,1.2920,1.2920,5.39,82.6
+tiny_llama_canon,fg,1.2356,1.2486,1.2486,4.99,82.6
+tiny_singlehead,fg,1.5449,1.5250,1.5250,2.79,82.8
+tiny_hf_llama,hf,1.9998,1.9500,1.9500,8.32,82.8
+tiny_hf_gpt2,hf,1.9902,1.9500,1.9500,5.25,82.8
