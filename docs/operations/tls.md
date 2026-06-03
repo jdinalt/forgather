@@ -483,8 +483,7 @@ TLS, no bearer), three paths to bring auth online without a flag day:
    `FORGATHER_DILOCO_SERVER_TOKEN=<token>` in the worker process's
    environment. The webui spawner sets this for managed jobs;
    bare-metal workers need to wire it through their launch script
-   (`forgather submit --diloco` — and the deprecated
-   `diloco worker` alias — propagates it via trainer env vars).
+   (`forgather submit --diloco` propagates it via trainer env vars).
 3. **Stay on no-auth.** Add `--no-auth` to the server command. The
    audit log + `weights_only=True` torch.load hardening still apply,
    so an attacker can disrupt training but cannot escalate to RCE.

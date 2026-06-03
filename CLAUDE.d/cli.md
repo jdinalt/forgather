@@ -52,9 +52,9 @@ GPUs come from `--requested-gpus` (single-node / per DiLoCo worker); `--global`
 sizes nodes via `--member`. `--global` and `--diloco` are mutually exclusive
 (different parallelism axes). `--dry-run` works in every mode.
 `forgather cluster submit ...` is a deprecated alias of
-`forgather submit --global ...`; `forgather diloco worker ...` is a deprecated
-alias of `forgather submit --diloco ...` (the `diloco server/status/...`
-param-server verbs are unchanged).
+`forgather submit --global ...`. `--server <url>` selects the forgather server
+(the orchestrator URL); `--diloco-server <id>` selects the DiLoCo param-server
+(on `submit --diloco` and the `diloco status/control/shutdown` verbs).
 
 ## Job control (server-managed jobs)
 

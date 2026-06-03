@@ -154,7 +154,7 @@ mirroring the dataset server:
   file path while still confirming auth is enabled.
 - The **server URL**. When bound to a wildcard address (`-H 0.0.0.0`), the
   banner shows the host's primary-interface IP rather than `0.0.0.0`, so the
-  address is copy-pasteable straight onto worker `--server` lines.
+  address is copy-pasteable straight onto worker `--diloco-server` lines.
 
 ### 2. Start Workers
 
@@ -179,8 +179,6 @@ single submit modal). Pass `--diloco-server <id>` to pin a specific
 param-server; it implies `--diloco`, so it works on its own, but the
 clear way to request DiLoCo is `--diloco`. With `--diloco` and no
 `--diloco-server`, the single running server is auto-picked.
-`forgather diloco worker` remains as a deprecated alias and prints a
-deprecation note.
 
 Worker arguments:
 - `--diloco`: Opt into DiLoCo mode for this submission.
@@ -246,8 +244,8 @@ See the *Work-unit dispatch* section below.
 ### 3. Monitor
 
 ```bash
-forgather diloco status --server localhost:8512            # one-shot
-forgather diloco status --server localhost:8512 --watch    # refresh in place
+forgather diloco status --diloco-server localhost:8512            # one-shot
+forgather diloco status --diloco-server localhost:8512 --watch    # refresh in place
 ```
 
 Shows sync round, registered workers, their hostnames, training speeds, and
@@ -287,14 +285,15 @@ resolves every upstream server's bearer token and TLS verification on your
 behalf (the same path the webui uses), so these commands only need the
 server's own auth (`~/.config/forgather/server/auth_token`, or
 `$FORGATHER_SERVER_TOKEN`). Point at a non-default forgather server with
-`--via-server URL`.
+`--server URL`.
 
 **Picking the DiLoCo server.** The commands that target a DiLoCo server
-(`status`, `control`, `shutdown`, `worker`) take `--server <id|label|host:port>`,
+(`status`, `control`, `shutdown`) take `--diloco-server <id|label|host:port>`,
 but it's optional: with exactly one DiLoCo server running it's selected
 automatically (the common case). With more than one, you must pass
-`--server` (the error lists the choices). When the forgather server can't be
-consulted (e.g. `--local-only`), `--server` defaults to `localhost:8512`.
+`--diloco-server` (the error lists the choices). When the forgather server
+can't be consulted (e.g. `--local-only`), `--diloco-server` defaults to
+`localhost:8512`.
 
 **Locality.** The server is the default, required path: if it isn't
 reachable these commands **error** rather than silently doing something
@@ -312,7 +311,7 @@ forgather diloco servers --json
 # Rich status routed through the server (resolves the upstream token for
 # you). Falls back to a direct connection if the server isn't running or
 # doesn't know this target.
-forgather diloco status --server local:<queue_id> --queues
+forgather diloco status --diloco-server local:<queue_id> --queues
 
 # Dump or follow the captured TTY of any worker/server job. JOB may be a
 # queue_id, a local DiLoCo server id/label, or a worker_id — resolved to
@@ -868,7 +867,7 @@ server crashes. After restart:
 The status endpoint includes fault tolerance fields:
 
 ```bash
-forgather diloco status --server host:8512
+forgather diloco status --diloco-server host:8512
 ```
 
 Shows `heartbeat_timeout`, `min_workers`, and `total_worker_deaths` (if any
@@ -951,8 +950,7 @@ callback = DiLoCoCallback(
     heartbeat_interval=30.0,
 )
 
-# Or rely on environment variables (set by `forgather submit --diloco`,
-# or the deprecated `diloco worker`)
+# Or rely on environment variables (set by `forgather submit --diloco`)
 callback = DiLoCoCallback()
 
 trainer = Trainer(
@@ -1336,15 +1334,15 @@ divergent stop.
 
 ```bash
 # Relay to all registered workers (or one with --worker-id):
-forgather diloco control save        --server host:8512   # checkpoint, keep training
-forgather diloco control save-stop   --server host:8512   # checkpoint, then stop
-forgather diloco control abort       --server host:8512   # stop now, no save
+forgather diloco control save        --diloco-server host:8512   # checkpoint, keep training
+forgather diloco control save-stop   --diloco-server host:8512   # checkpoint, then stop
+forgather diloco control abort       --diloco-server host:8512   # stop now, no save
 
 # Stop the whole run. Clean by default: save-stop every worker, wait for them
 # to exit, checkpoint the server, then stop it.
-forgather diloco shutdown --server host:8512
-forgather diloco shutdown --server host:8512 --timeout 120   # cap the wait
-forgather diloco shutdown --server host:8512 --force         # stop server now, don't wait
+forgather diloco shutdown --diloco-server host:8512
+forgather diloco shutdown --diloco-server host:8512 --timeout 120   # cap the wait
+forgather diloco shutdown --diloco-server host:8512 --force         # stop server now, don't wait
 ```
 
 A clean `shutdown` that times out waiting for a stuck worker leaves the server
