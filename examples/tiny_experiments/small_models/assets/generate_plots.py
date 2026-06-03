@@ -121,6 +121,41 @@ def main():
     fig.savefig(out1, dpi=120)
     print("wrote", out1)
 
+    # --- Figure 1b: end-game zoom (>= ZOOM_TOKENS_M) ------------------------
+    # At full scale the architectures pile on top of each other; zooming the
+    # tail (and letting matplotlib auto-scale y to it) makes the final ordering
+    # and the WSD anneal legible.
+    ZOOM_TOKENS_M = 600.0
+
+    def tail(xs, ys):
+        pairs = [(x, y) for x, y in zip(xs, ys) if x >= ZOOM_TOKENS_M]
+        return ([x for x, _ in pairs], [y for _, y in pairs])
+
+    figz, (zx_tr, zx_ev) = plt.subplots(1, 2, figsize=(13, 5.2))
+    for mdir, (label, recs, color) in data.items():
+        tx, ty = tail(*series(recs, "loss"))
+        zx_tr.plot(tx, ty, "-", color=color, lw=1.4, label=label, alpha=0.9)
+        ex, ey = tail(*series(recs, "eval_loss"))
+        zx_ev.plot(
+            ex, ey, "-", color=color, lw=1.6, marker="o", ms=3, label=label, alpha=0.9
+        )
+
+    zx_tr.set_title(f"Training loss — end-game (>= {ZOOM_TOKENS_M:.0f}M tokens)")
+    zx_ev.set_title(f"Eval loss — end-game (>= {ZOOM_TOKENS_M:.0f}M tokens)")
+    for ax in (zx_tr, zx_ev):
+        ax.set_xlabel("Tokens (millions)")
+        ax.grid(True, alpha=0.3)
+    zx_tr.set_ylabel("Cross-entropy loss")
+    zx_ev.legend(fontsize=9, loc="upper right")
+    figz.suptitle(
+        "Small Models — end-game detail (y-axis auto-scaled to the tail)",
+        fontsize=12,
+    )
+    figz.tight_layout()
+    out1b = os.path.join(HERE, "loss_endgame.png")
+    figz.savefig(out1b, dpi=120)
+    print("wrote", out1b)
+
     # --- Figure 2: best eval loss bar chart --------------------------------
     bars = []
     for mdir, (label, recs, color) in data.items():
@@ -143,9 +178,14 @@ def main():
     ax.invert_yaxis()
     ax.set_xlabel("Best eval loss (lower is better)")
     ax.set_title("Best eval loss by architecture")
+    # Zoom the loss axis to the spread of the values (a 0-based axis hides the
+    # differences). Start just below the best and leave headroom for labels.
+    lo = min(b[1] for b in bars)
+    hi = max(b[1] for b in bars)
+    span = hi - lo
+    ax.set_xlim(lo - 0.20 * span, hi + 0.30 * span)
     for i, b in enumerate(bars):
-        ax.text(b[1] + 0.005, i, f"{b[1]:.3f}", va="center", fontsize=9)
-    ax.set_xlim(0, max(b[1] for b in bars) * 1.12)
+        ax.text(b[1] + 0.02 * span, i, f"{b[1]:.3f}", va="center", fontsize=9)
     ax.grid(True, axis="x", alpha=0.3)
     fig2.tight_layout()
     out2 = os.path.join(HERE, "final_loss_bar.png")

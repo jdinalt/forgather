@@ -122,6 +122,13 @@ size, vocabulary, data, or tuning.
 
 ![Training and eval loss vs. tokens, all architectures](assets/loss_comparison.png)
 
+At full scale the architectures pile on top of each other; the end-game view
+below zooms to the final stretch (≥600M tokens, y-axis auto-scaled) where the
+ordering separates and the WSD anneal pulls every curve down over the last 100M
+tokens:
+
+![End-game detail: loss over the final stretch](assets/loss_endgame.png)
+
 ![Best eval loss by architecture](assets/final_loss_bar.png)
 
 | Model | Best eval | Final train | Avg MFU | Notes |
