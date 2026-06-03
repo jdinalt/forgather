@@ -122,6 +122,16 @@ _PEER_ALLOWED_PATHS = frozenset(
         # Token-stripped: the proxy attaches tokens server-side from
         # the master's snapshot, never via the browser.
         "/api/cluster/inference_servers",
+        # DiLoCo-server inventory: each peer's local list of DiLoCo
+        # parameter servers (JobRecord-spawned + user-registered),
+        # including bearer tokens. Master aggregator polls every ~10s
+        # so a DiLoCo server spawned on any peer surfaces in every
+        # webui without operator token handling. Same cluster-bearer
+        # trust boundary — see cluster_diloco_inventory.py.
+        "/api/cluster/diloco_servers_local",
+        # Master-aggregated DiLoCo inventory. Non-master nodes proxy
+        # here so every webui sees the same picker contents.
+        "/api/cluster/diloco_servers",
         # Cross-node webui SSO. The local node calls this on the target
         # peer over mTLS to obtain the peer's bearer token, which is
         # then folded into a ``?token=...`` URL the browser opens in a
@@ -166,6 +176,10 @@ _PEER_ALLOWED_MUTATIONS = frozenset(
         # Triggered when an inference job starts or stops so the
         # picker converges within ~1s of a state change.
         "/api/cluster/inference_servers/refresh",
+        # Same wake hook for the DiLoCo-server collect loop.
+        # Triggered by scheduler spawn/reap, registry add/delete,
+        # and operator-driven webui refresh.
+        "/api/cluster/diloco_servers/refresh",
         # Bandwidth-test control plane. Opens a one-shot ephemeral
         # TCP listener and returns its (port, token) so the caller
         # can transfer over plain TCP instead of through the

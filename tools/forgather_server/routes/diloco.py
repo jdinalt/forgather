@@ -2,7 +2,8 @@
 
 Backs the DiLoCo view in the webui. Surface:
 
-  GET    /api/diloco/servers          Unified list (local + registered).
+  GET    /api/diloco/servers          Unified list (local + registered
+                                      + cluster).
   GET    /api/diloco/server-status    Proxy to an upstream DiLoCo /status.
   GET    /api/diloco/server-info      Proxy to an upstream DiLoCo /info.
   GET    /api/diloco/known-workers    Proxy to upstream /known_workers.
@@ -18,23 +19,31 @@ Backs the DiLoCo view in the webui. Surface:
                                       (submit-modal batch pool). Local, no
                                       proxy.
 
-SSRF policy mirrors :mod:`routes.dataset_server`: loopback is always
-allowed, registered URLs are allowed (the act of registering is the
-authorization), running locally-spawned diloco_server jobs are allowed
-(their URL is derived from job_params), everything else is refused.
+SSRF policy mirrors :mod:`routes.dataset_server` with a documented
+widening for cluster mode: loopback is always allowed, registered URLs
+are allowed (the act of registering is the authorization), running
+locally-spawned diloco_server jobs are allowed (their URL is derived
+from job_params), and DiLoCo servers attested to by a cluster peer
+via :mod:`cluster_diloco_inventory` are allowed (the act of being
+attested to over an mTLS-authenticated peer pull is the cluster-bearer
+authorization). Everything else is refused. The cluster-attestation
+widening is the price of making peer-spawned DiLoCo servers
+inspectable from any node's webui — see ``docs/design/diloco-security.md``
+"Threat-model deviations" section.
 
-Auth / TLS (issue #90): the proxy now attaches an ``Authorization:
-Bearer <token>`` header (resolved per the precedence below) and honors
-each registry entry's ``verify_tls`` opt-out:
+Auth / TLS: the proxy attaches an ``Authorization: Bearer <token>``
+header (resolved per the precedence below) and honors each registry
+entry's ``verify_tls`` opt-out:
 
   1. Explicit ``X-Diloco-Auth-Token`` request header (operator override).
   2. JobRecord auto-lookup for locally-spawned servers — the scheduler
      persisted the token on the record when spawning.
   3. ``diloco_server_registry.find_token(base)`` for user-added remotes.
-  4. Empty (server is running ``--no-auth``).
-
-Cluster aggregation is deferred to a follow-up slice: the unified list
-sources are local + registered for now.
+  4. ``master_inventory.token_for_url(base)`` for cluster-discovered
+     remotes — the master snapshot carries the upstream bearer, so a
+     remote-peer server can be inspected from any cluster node without
+     operator token handling.
+  5. Empty (server is running ``--no-auth``).
 """
 
 from __future__ import annotations
@@ -102,8 +111,12 @@ class DiLoCoServerModel(BaseModel):
       ``local``      — spawned by us; lookup keyed by ``queue_id``.
       ``registered`` — user-added external entry; lookup keyed by
                        registry ``id``.
-      ``cluster``    — known to a peer; reserved for the follow-up
-                       slice (always absent today).
+      ``cluster``    — spawned / registered on a remote peer and
+                       surfaced via the cluster DiLoCo inventory;
+                       lookup keyed by the master-aggregated
+                       ``server_id``. The proxy resolves tokens
+                       server-side from the master snapshot, so the
+                       browser never sees the upstream bearer.
     """
 
     id: str
@@ -115,9 +128,13 @@ class DiLoCoServerModel(BaseModel):
     # Local-only fields:
     queue_id: Optional[str] = None
     alive: Optional[bool] = None
-    # Registered-only fields:
+    # Registered + cluster: True iff the upstream is bearer-protected.
     has_auth_token: Optional[bool] = None
     verify_tls: Optional[bool] = None
+    # Cluster-only: the peer that attests to this server. ``None`` for
+    # local / registered entries.
+    peer_node_id: Optional[str] = None
+    healthy: Optional[bool] = None
 
 
 def _browser_host(host: Optional[str], routable_host: Optional[str] = None) -> str:
@@ -244,14 +261,71 @@ def _registered_servers() -> List[DiLoCoServerModel]:
     ]
 
 
+async def _cluster_servers() -> List[DiLoCoServerModel]:
+    """DiLoCo servers known via the cluster inventory.
+
+    Sources the master-aggregated list — on master directly from
+    ``master_inventory``; on a non-master via the proxy-to-master
+    route in :mod:`routes.cluster`. (The local ``master_inventory``
+    is empty on non-master nodes by design, so reading it directly
+    would return nothing on every peer except the elected master.)
+
+    Skips entries whose ``base_url`` matches a local JobRecord or a
+    user-registry entry — those are already represented as
+    ``local`` / ``registered`` rows with richer per-source fields.
+    A loopback-flagged entry from another peer is filtered out:
+    a remote peer's loopback URL is unreachable from this node.
+
+    Cluster mode is the prerequisite. When the inventory module isn't
+    loaded (standalone / test fixtures), returns an empty list.
+    """
+    try:
+        from .. import cluster_diloco_inventory
+        from . import cluster as cluster_routes
+    except ImportError:
+        return []
+    try:
+        entries = await cluster_routes.diloco_servers()
+    except Exception:
+        # Master unreachable, transient role-flap, etc. The local list
+        # is still useful — return an empty cluster slice rather than
+        # bubbling the error up to the webui.
+        return []
+    norm = cluster_diloco_inventory._normalize
+    local_bases = {norm(s.base_url) for s in _local_servers()}
+    local_bases.update(norm(s.base_url) for s in _registered_servers())
+    out: List[DiLoCoServerModel] = []
+    for e in entries:
+        if norm(e.base_url) in local_bases:
+            continue
+        if e.loopback:
+            continue
+        out.append(
+            DiLoCoServerModel(
+                id=f"cluster:{e.server_id}",
+                label=e.label,
+                base_url=e.base_url,
+                source="cluster",
+                has_auth_token=bool(e.auth_token),
+                verify_tls=e.verify_tls,
+                peer_node_id=e.peer_node_id,
+                healthy=e.healthy,
+            )
+        )
+    return out
+
+
 @router.get("/diloco/servers", response_model=List[DiLoCoServerModel])
-def list_servers():
+async def list_servers():
     """Unified list of DiLoCo servers known to this node.
 
-    Returns local (forgather_server-spawned) and user-registered
-    entries. Cluster propagation is added in the cluster slice.
+    Sources: locally-spawned JobRecords (``source="local"``), the
+    user-added persistent registry (``"registered"``), and the
+    master-aggregated cluster inventory (``"cluster"``) when cluster
+    mode is active. Cluster entries that duplicate a local or
+    registered URL are dropped — the richer per-source row wins.
     """
-    return _local_servers() + _registered_servers()
+    return _local_servers() + _registered_servers() + await _cluster_servers()
 
 
 # ---------------------------------------------------------------------------
@@ -282,27 +356,78 @@ def _is_loopback(host: str) -> bool:
     return h in ("127.0.0.1", "localhost", "::1") or h.startswith("127.")
 
 
-def _known_base_urls() -> List[str]:
+async def _master_cluster_entries() -> List[Any]:
+    """Master-aggregated DiLoCo inventory, visible from any node.
+
+    On master this reads ``cluster_diloco_inventory.master_inventory``
+    in-process; on a non-master it proxies to the master via the
+    cluster route. Same shape returned by
+    :func:`routes.cluster.diloco_servers` — a list of
+    ``ClusterDiLoCoServerModel`` pydantic instances.
+
+    Empty list on any failure (standalone server, master unreachable
+    during a role transition, etc.) so the proxy degrades to "no
+    cluster knowledge" rather than failing the whole request.
+    """
+    try:
+        from . import cluster as cluster_routes
+    except ImportError:
+        return []
+    try:
+        return await cluster_routes.diloco_servers()
+    except Exception:
+        return []
+
+
+def _known_base_urls(cluster_entries: Optional[List[Any]] = None) -> List[str]:
     """Bases this server is willing to reach (loopback aside).
 
-    Ever-spawned local URLs (running or terminated) and registered
-    URLs together form the SSRF allowlist: the act of registering or
-    spawning is the consent. Terminated-but-still-allowlisted local
-    URLs hit the actual upstream attempt downstream of this check,
-    which produces a 502 on connection-refused — a far more accurate
-    signal than the SSRF guard's 403.
+    Ever-spawned local URLs (running or terminated), registered URLs,
+    and cluster-known URLs (DiLoCo servers attested to by some peer)
+    together form the SSRF allowlist: the act of registering, spawning,
+    or being attested to by an authenticated cluster peer is the
+    consent. Terminated-but-still-allowlisted local URLs hit the
+    actual upstream attempt downstream of this check, which produces
+    a 502 on connection-refused — a far more accurate signal than the
+    SSRF guard's 403.
+
+    ``cluster_entries`` is the master-aggregated view threaded in by
+    the proxy entry points (``_master_cluster_entries()`` is async; this
+    helper is sync to keep the SSRF check usable from anywhere). When
+    omitted, falls back to the local ``master_inventory`` snapshot —
+    correct on master, empty-but-safe on non-master.
     """
     bases: List[str] = list(_ever_local_base_urls())
     for e in diloco_server_registry.list_entries():
         bases.append(e.base_url)
+    if cluster_entries is None:
+        try:
+            from .. import cluster_diloco_inventory
+
+            cluster_entries = (
+                cluster_diloco_inventory.master_inventory.servers_snapshot()
+            )
+        except ImportError:
+            cluster_entries = []
+    for s in cluster_entries:
+        bases.append(s.base_url)
     return bases
 
 
-def _check_ssrf(base: str) -> None:
+def _check_ssrf(base: str, cluster_entries: Optional[List[Any]] = None) -> None:
     parsed = urlparse(base)
     if _is_loopback(parsed.hostname or ""):
         return
-    if base.rstrip("/") in (b.rstrip("/") for b in _known_base_urls()):
+    # Allowlist matching uses ``_normalize_for_lookup`` so SSRF's
+    # decision agrees with the cluster inventory's token / verify_tls
+    # lookups — otherwise a hand-typed URL that differs only in case,
+    # default port, or trailing slash could pass SSRF but miss its
+    # bearer attach (or vice versa).
+    normalized = _normalize_for_lookup(base)
+    if normalized in (
+        _normalize_for_lookup(b)
+        for b in _known_base_urls(cluster_entries=cluster_entries)
+    ):
         return
     raise HTTPException(
         status_code=403,
@@ -398,11 +523,59 @@ def _token_for_local(base: str) -> Optional[str]:
     return None
 
 
-def _auth_headers_for(base: str, request: Request) -> Dict[str, str]:
+def _normalize_for_lookup(base: str) -> str:
+    """Canonical URL form used for *every* base-URL comparison in this
+    module — SSRF allowlist matching, cluster-entry token lookup,
+    verify-TLS lookup. Defers to ``cluster_diloco_inventory._normalize``
+    so the inventory's own ``token_for_url``/``verify_tls_for_url`` and
+    the proxy-side helpers agree on whether two strings refer to the
+    same upstream (case, default ports, trailing slash, IPv6 brackets).
+
+    Returns ``base.rstrip("/")`` when the inventory module isn't loaded
+    (standalone / test fixtures).
+    """
+    try:
+        from .. import cluster_diloco_inventory
+    except ImportError:
+        return (base or "").rstrip("/")
+    return cluster_diloco_inventory._normalize(base)
+
+
+def _token_from_cluster(
+    base: str, cluster_entries: Optional[List[Any]] = None
+) -> Optional[str]:
+    """Bearer token for ``base`` from the master DiLoCo inventory.
+
+    Lets the webui proxy dial a DiLoCo server spawned on a remote peer
+    without the operator handling tokens. ``cluster_entries`` is the
+    master-aggregated view threaded in by the proxy; when omitted,
+    falls back to the local ``master_inventory`` (works on master;
+    empty-but-safe on non-master).
+    """
+    if cluster_entries is not None:
+        normalized = _normalize_for_lookup(base)
+        for s in cluster_entries:
+            if _normalize_for_lookup(s.base_url) == normalized and s.auth_token:
+                return s.auth_token
+        return None
+    try:
+        from .. import cluster_diloco_inventory
+    except ImportError:
+        return None
+    return cluster_diloco_inventory.master_inventory.token_for_url(base)
+
+
+def _auth_headers_for(
+    base: str,
+    request: Request,
+    cluster_entries: Optional[List[Any]] = None,
+) -> Dict[str, str]:
     """Build the upstream Authorization header dict.
 
     Precedence: explicit ``X-Diloco-Auth-Token`` (operator override),
-    JobRecord auto-lookup, registry lookup, empty.
+    JobRecord auto-lookup (locally-spawned), registry lookup (user-
+    added remote), cluster inventory (peer-spawned + master-aggregated),
+    empty.
     """
     override = request.headers.get(_TOKEN_OVERRIDE_HEADER)
     if override:
@@ -413,20 +586,58 @@ def _auth_headers_for(base: str, request: Request) -> Dict[str, str]:
     saved = diloco_server_registry.find_token(base)
     if saved:
         return {"authorization": f"Bearer {saved}"}
+    # Cluster inventory comes last on purpose: a user-registry entry
+    # represents an explicit operator decision (typed in the webui or
+    # via `forgather diloco register`), so it wins over a token the
+    # master happens to be carrying for the same URL.
+    cluster_token = _token_from_cluster(base, cluster_entries=cluster_entries)
+    if cluster_token:
+        return {"authorization": f"Bearer {cluster_token}"}
     return {}
 
 
-def _verify_for(target: str, base: Optional[str] = None) -> object:
+def _verify_for(
+    target: str,
+    base: Optional[str] = None,
+    cluster_entries: Optional[List[Any]] = None,
+) -> object:
     """Pick the right ``verify=`` for an upstream URL.
 
-    Registry entries with ``verify_tls=False`` short-circuit chain
-    validation (used for SSH-tunneled remotes where the upstream cert
-    doesn't match the tunnel hostname). Otherwise we defer to
-    ``httpx_verify_for_url`` which builds an SSLContext from the
-    cluster's CA bundle.
+    Per-entry ``verify_tls=False`` short-circuits chain validation —
+    used for SSH-tunneled remotes whose cert won't match the tunnel
+    hostname. Sources checked, in precedence order:
+
+      1. ``diloco_server_registry.find_verify_tls(base)`` (user
+         registry, escape-hatch path).
+      2. The master-aggregated cluster inventory — when
+         ``cluster_entries`` is threaded in by the proxy, use that;
+         otherwise the local ``master_inventory`` (works on master;
+         empty-but-safe on non-master).
+
+    Otherwise defer to ``httpx_verify_for_url`` which builds an
+    SSLContext from the cluster's CA bundle.
     """
-    if base is not None and not diloco_server_registry.find_verify_tls(base):
-        return False
+    if base is not None:
+        if not diloco_server_registry.find_verify_tls(base):
+            return False
+        cluster_verify: Optional[bool] = None
+        if cluster_entries is not None:
+            normalized = _normalize_for_lookup(base)
+            for s in cluster_entries:
+                if _normalize_for_lookup(s.base_url) == normalized:
+                    cluster_verify = s.verify_tls
+                    break
+        else:
+            try:
+                from .. import cluster_diloco_inventory
+
+                cluster_verify = (
+                    cluster_diloco_inventory.master_inventory.verify_tls_for_url(base)
+                )
+            except ImportError:
+                pass
+        if cluster_verify is False:
+            return False
     try:
         from forgather.tls import httpx_verify_for_url
 
@@ -437,10 +648,16 @@ def _verify_for(target: str, base: Optional[str] = None) -> object:
 
 async def _proxy_get(base: str, path: str, request: Request) -> JSONResponse:
     base = _validate_base(base)
-    _check_ssrf(base)
+    # Fetch the master-aggregated inventory once per request and pass
+    # it through to SSRF / auth / verify lookups — the local
+    # ``master_inventory`` is empty on non-master nodes by design, so
+    # without this hop a non-master would 403 SSRF on every peer-
+    # spawned base URL and 401 the operator for missing the bearer.
+    cluster_entries = await _master_cluster_entries()
+    _check_ssrf(base, cluster_entries=cluster_entries)
     target = base + path
-    headers = _auth_headers_for(base, request)
-    verify = _verify_for(target, base)
+    headers = _auth_headers_for(base, request, cluster_entries=cluster_entries)
+    verify = _verify_for(target, base, cluster_entries=cluster_entries)
     async with httpx.AsyncClient(timeout=_PROXY_TIMEOUT, verify=verify) as client:
         try:
             r = await client.get(target, headers=headers)
@@ -556,10 +773,11 @@ async def proxy_control(
             status_code=400, detail=f"unknown control action: {action!r}"
         )
     base = _validate_base(base)
-    _check_ssrf(base)
+    cluster_entries = await _master_cluster_entries()
+    _check_ssrf(base, cluster_entries=cluster_entries)
     target = f"{base}/control/{action}"
-    headers = _auth_headers_for(base, request)
-    verify = _verify_for(target, base)
+    headers = _auth_headers_for(base, request, cluster_entries=cluster_entries)
+    verify = _verify_for(target, base, cluster_entries=cluster_entries)
     async with httpx.AsyncClient(timeout=_PROXY_TIMEOUT, verify=verify) as client:
         try:
             r = await client.post(target, json=body or {}, headers=headers)
@@ -612,6 +830,22 @@ def list_registry():
     return [_entry_to_model(e) for e in diloco_server_registry.list_entries()]
 
 
+def _wake_cluster_diloco_inventory() -> None:
+    """Latency hint: re-poll the cluster DiLoCo inventory.
+
+    Called after a registry add/delete so the entry surfaces in the
+    cluster-aggregated view within ~1 s instead of one collect tick.
+    Lazy import + swallow so a missing cluster module can't break the
+    registry route.
+    """
+    try:
+        from .. import cluster_diloco_inventory
+
+        cluster_diloco_inventory.wake_loops()
+    except Exception:
+        pass
+
+
 @router.post("/diloco/registry", response_model=RegistryEntryModel)
 def add_registry_entry(req: AddRegistryEntryRequest):
     base_url = (req.base_url or "").strip()
@@ -636,6 +870,7 @@ def add_registry_entry(req: AddRegistryEntryRequest):
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    _wake_cluster_diloco_inventory()
     return _entry_to_model(entry)
 
 
@@ -646,6 +881,7 @@ def delete_registry_entry(entry_id: str):
         raise HTTPException(
             status_code=404, detail=f"no registry entry with id {entry_id!r}"
         )
+    _wake_cluster_diloco_inventory()
     return {"deleted": entry_id}
 
 

@@ -1068,8 +1068,11 @@ export interface IterResponse {
 // ---------------------------------------------------------------------------
 
 /** A DiLoCo server entry returned by ``GET /api/diloco/servers``. The
- *  unified list mixes local (forgather_server-spawned) and user-added
- *  registered entries; future cluster slices add ``source: "cluster"``. */
+ *  unified list mixes local (forgather_server-spawned), user-added
+ *  registered, and cluster (peer-attested via the master DiLoCo
+ *  inventory) entries. Cluster entries surface peer-spawned servers
+ *  from any node in the cluster — the proxy resolves tokens
+ *  server-side so the browser never handles the upstream bearer. */
 export interface DiLoCoServer {
   id: string;
   label: string;
@@ -1080,9 +1083,12 @@ export interface DiLoCoServer {
   // Local-only:
   queue_id?: string | null;
   alive?: boolean | null;
-  // Registered-only:
+  // Registered + cluster:
   has_auth_token?: boolean | null;
   verify_tls?: boolean | null;
+  // Cluster-only:
+  peer_node_id?: string | null;
+  healthy?: boolean | null;
 }
 
 /** A user-added external DiLoCo server entry from ``GET /api/diloco/registry``. */

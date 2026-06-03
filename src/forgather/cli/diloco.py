@@ -715,8 +715,18 @@ def _worker_cmd(args):
     )
     env["DILOCO_HEARTBEAT_INTERVAL"] = str(getattr(args, "heartbeat_interval", 30.0))
 
+    # Always set DILOCO_WORKER_ID — when the operator didn't supply one,
+    # mint a memorable two-word name so the worker doesn't surface as
+    # the worker.py auto-generated ``worker_<hostname>_<8hex>`` fallback.
+    # Same naming convention the orchestrator path uses via
+    # ``client.generate_diloco_worker_names`` and the queue route's
+    # auto-fill for blank submissions.
     if args.worker_id:
         env["DILOCO_WORKER_ID"] = args.worker_id
+    else:
+        from forgather.utils import generate_name
+
+        env["DILOCO_WORKER_ID"] = generate_name()
 
     # `forgather submit --diloco` doesn't carry --devices (it's a scheduler
     # submit command); the direct/foreground worker inherits the parent env's
@@ -770,9 +780,14 @@ def _worker_cmd(args):
     # sync_every / bf16 / dylu / num_fragments come from the server's /info
     # at startup, so they aren't known here — the worker logs them once it
     # negotiates with the server.
-    diloco_info = f"DiLoCo: server={env['DILOCO_SERVER']}"
-    if args.worker_id:
-        diloco_info += f", worker_id={args.worker_id}"
+    # Report DILOCO_WORKER_ID unconditionally so the operator sees the
+    # auto-minted memorable name (when no --worker-id was passed) in the
+    # banner — without this they only learn the name from the running
+    # worker's log line.
+    diloco_info = (
+        f"DiLoCo: server={env['DILOCO_SERVER']}, "
+        f"worker_id={env['DILOCO_WORKER_ID']}"
+    )
 
     print(diloco_info)
     print(f"Command: {cmd_str}")

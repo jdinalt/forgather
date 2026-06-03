@@ -158,10 +158,13 @@ export function DiLoCoPanel({
     refetchIntervalInBackground: false,
   });
   // Forgather-side jobs list. Used to map each DiLoCo worker_id back
-  // to its job_id (the scheduler defaults DILOCO_WORKER_ID = queue_id,
-  // so for webui-spawned workers the mapping is direct). With a
-  // matched Job we can fetch per-worker training status + drive the
-  // per-worker control protocol (Save / Save & Stop / Abort).
+  // to its job_id. The mapping primarily flows through
+  // ``job_params.diloco.worker_id`` (the queue route stamps a
+  // memorable two-word default when the operator doesn't supply one),
+  // with ``output_dir`` as the secondary key for resumes / legacy
+  // records that lack the job_params field. With a matched Job we can
+  // fetch per-worker training status + drive the per-worker control
+  // protocol (Save / Save & Stop / Abort).
   const jobsQuery = useQuery({
     queryKey: ["jobs", "for-diloco"],
     queryFn: () => api.listJobs(false),
@@ -322,6 +325,7 @@ function ServersList({
   const [showAdd, setShowAdd] = useState(false);
   const local = servers.filter((s) => s.source === "local");
   const registered = servers.filter((s) => s.source === "registered");
+  const cluster = servers.filter((s) => s.source === "cluster");
 
   return (
     <div
@@ -418,6 +422,15 @@ function ServersList({
           <ServerGroup
             heading="Registered"
             entries={registered}
+            selectedId={selectedId}
+            onSelect={onSelect}
+            onAfterRegistryChange={onAfterRegistryChange}
+          />
+        )}
+        {cluster.length > 0 && (
+          <ServerGroup
+            heading="Cluster"
+            entries={cluster}
             selectedId={selectedId}
             onSelect={onSelect}
             onAfterRegistryChange={onAfterRegistryChange}
@@ -528,6 +541,29 @@ function ServerRow({
               display: "inline-block",
             }}
             title={server.alive ? "running" : "not running"}
+          />
+        )}
+        {server.source === "cluster" && (
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: 4,
+              background:
+                server.healthy === true
+                  ? "#3a3"
+                  : server.healthy === false
+                  ? "#a33"
+                  : "#888",
+              display: "inline-block",
+            }}
+            title={
+              server.healthy === true
+                ? `healthy (peer ${server.peer_node_id ?? "?"})`
+                : server.healthy === false
+                ? `down (peer ${server.peer_node_id ?? "?"})`
+                : "health unknown"
+            }
           />
         )}
         <strong style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -1357,26 +1393,40 @@ interface GroupView {
 
 /** Correlate a worker group to its forgather job (issue #103).
  *
- *  Two keys identify a candidate job:
- *   - ``queue_id``/``job_id`` == the group id. The scheduler defaults
- *     ``DILOCO_WORKER_ID = queue_id`` for webui-spawned jobs, and pipeline
- *     ranks register as ``<queue_id>_pp<N>`` (the group id strips that
- *     suffix), so this matches both solo and pipeline jobs.
+ *  Three keys identify a candidate job, in priority order:
+ *   - ``job_params.diloco.worker_id`` == the group id. The queue route
+ *     stamps a memorable two-word default into ``job_params.diloco`` for
+ *     every DiLoCo training submission that arrives without an explicit
+ *     id, so this is the authoritative key for any job submitted via the
+ *     route. Pipeline ranks register as ``<base>_pp<N>`` and the group id
+ *     strips that suffix, so the match holds for pipeline groups too.
+ *   - ``queue_id``/``job_id`` == the group id. Catches legacy / pre-
+ *     route-fill jobs (and the rare scheduler-fallback case) where the
+ *     worker ended up registered under the queue_id.
  *   - the worker's reported ``output_dir``. A run that reuses a stable
- *     custom worker-id (e.g. to resume from its checkpoint) registers under
- *     an id != queue_id, so the id key misses; the per-worker output-dir
- *     suffix is kept in lockstep with the job's resolved ``output_dir``, so
- *     this re-links it. Pipeline ranks of one job share a local output_dir,
- *     so any member's value identifies the group.
+ *     custom worker-id (e.g. to resume from its checkpoint) registers
+ *     under an id distinct from both queue_id and any stamped
+ *     worker_id, so the previous keys miss; the per-worker output-dir
+ *     suffix is kept in lockstep with the job's resolved ``output_dir``,
+ *     so this re-links it. Pipeline ranks of one job share a local
+ *     output_dir, so any member's value identifies the group.
  *
- *  We gather candidates by BOTH keys and rank live-first (then most
- *  recently started) rather than short-circuiting on the id key. This is
- *  essential because a worker is often named after a PRIOR run's queue_id
- *  (picked from the restart menu): the old job with that exact queue_id
- *  still lingers in the list, dead, and an id-key-first match would bind
- *  the worker to that corpse — hiding the live job's stats/controls. The
- *  same ranking lets a fresh respawn outrank the stopped job that still
- *  shares its output_dir. */
+ *  We gather candidates by all three keys and rank live-first (then most
+ *  recently started) rather than short-circuiting on the id keys. This is
+ *  essential because a worker is often named after a PRIOR run's id
+ *  (picked from the restart menu): the old job with that exact id still
+ *  lingers in the list, dead, and an id-key-first match would bind the
+ *  worker to that corpse — hiding the live job's stats/controls. The same
+ *  ranking lets a fresh respawn outrank the stopped job that still shares
+ *  its output_dir.
+ *
+ *  Cross-node limitation: ``jobs`` is the local node's ``/api/jobs``
+ *  list. A worker spawned on a peer (cluster-discovered DiLoCo server,
+ *  worker submitted from another node) won't have a JobRecord on this
+ *  node, so correlation returns null and the per-worker stats row
+ *  collapses to the "No correlated forgather job" message. The controls
+ *  (Save / Save & Stop / Abort) still work — they go through the DiLoCo
+ *  server's relay rather than the local trainer-control endpoint. */
 function correlateJob(
   group: GroupView,
   workers: Record<string, DiLoCoWorkerStatus>,
@@ -1386,12 +1436,21 @@ function correlateJob(
   const groupOutputDir = group.members
     .map((m) => workers[m.workerId]?.output_dir)
     .find((d) => d);
-  const candidates = jobs.filter(
-    (j) =>
+  const candidates = jobs.filter((j) => {
+    // Most reliable: the worker_id stamped on the job_params at queue
+    // time. The queue route fills a memorable default for blank
+    // submissions, so non-pool webui submits surface here.
+    const diloco = (j.job_params as { diloco?: { worker_id?: string } } | null)
+      ?.diloco;
+    const stampedWid =
+      typeof diloco?.worker_id === "string" ? diloco.worker_id : null;
+    return (
+      (stampedWid != null && stampedWid === group.groupId) ||
       j.queue_id === group.groupId ||
       j.job_id === group.groupId ||
-      (!!groupOutputDir && j.output_dir === groupOutputDir),
-  );
+      (!!groupOutputDir && j.output_dir === groupOutputDir)
+    );
+  });
   if (candidates.length === 0) return null;
   // Live first, then most recently started — a running respawn outranks a
   // dead job that shares its queue_id (old name reuse) or output_dir.

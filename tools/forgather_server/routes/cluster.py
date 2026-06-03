@@ -26,6 +26,7 @@ from forgather.tls import httpx_peer_kwargs
 from .. import (
     cluster,
     cluster_dataset_inventory,
+    cluster_diloco_inventory,
     cluster_inference_inventory,
     cluster_jobs,
     dataset_source,
@@ -1086,6 +1087,196 @@ async def refresh_inference_servers() -> Response:
         master = _master_member()
         if master is not None:
             url = _peer_url(master, "/api/cluster/inference_servers/refresh")
+            try:
+                async with _peer_client(timeout=2.0) as client:
+                    await client.post(url)
+            except (httpx.HTTPError, OSError):
+                pass
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# DiLoCo-server inventory (master-side aggregation, browser-facing list)
+# ---------------------------------------------------------------------------
+
+
+class LocalDiLoCoServerModel(BaseModel):
+    """DiLoCo server entry returned from ``/diloco_servers_local`` to a
+    known cluster peer. Includes the bearer token — only the mTLS-
+    authenticated peer surface ships this."""
+
+    server_id: str
+    base_url: str
+    auth_token: str
+    label: str
+    source: str  # "local" or "user"
+    peer_node_id: Optional[str] = None
+    verify_tls: bool = True
+    source_id: Optional[str] = None
+    loopback: bool = False
+
+
+class LocalDiLoCoServersResponse(BaseModel):
+    self_node_id: Optional[str] = None
+    servers: List[LocalDiLoCoServerModel] = []
+
+
+class ClusterDiLoCoServerModel(BaseModel):
+    """Master-aggregated DiLoCo-server entry.
+
+    Same shape as :class:`ClusterInferenceServerModel` minus the
+    ``models`` list. Includes ``auth_token`` so the webui proxy at
+    ``/api/diloco/*`` can forward bearer-protected requests to remote-
+    peer DiLoCo servers without the operator pasting tokens. The same
+    token-exposure tradeoff applies as for inference: the per-job token
+    already ships in ``/api/jobs`` for locally-spawned servers; the
+    cluster path extends that surface to peers behind the same trust
+    boundary.
+    """
+
+    server_id: str
+    base_url: str
+    auth_token: str = ""
+    label: str
+    source: str
+    peer_node_id: Optional[str] = None
+    verify_tls: bool = True
+    source_id: Optional[str] = None
+    loopback: bool = False
+    healthy: bool
+    last_health_check: float
+    last_health_error: str
+    total_health_polls: int = 0
+    health_failures: int = 0
+    consecutive_health_failures: int = 0
+
+
+@router.get(
+    "/diloco_servers_local",
+    response_model=LocalDiLoCoServersResponse,
+)
+def diloco_servers_local(response: Response):
+    """Per-peer DiLoCo-server inventory.
+
+    The master fans GETs to this endpoint every aggregation tick to
+    build the cluster-wide picker contents. Carved out of the bearer-
+    token gate for mTLS-authenticated cluster peers — see
+    ``auth._PEER_ALLOWED_PATHS``.
+
+    Tokens are in the body. Same trust boundary as the dataset and
+    inference equivalents: an attacker able to forge a cluster CA
+    cert already has full cluster control.
+    """
+    ident = cluster.self_identity()
+    if ident is not None:
+        response.headers["X-Forgather-Node-Id"] = ident.node_id
+    servers = cluster_diloco_inventory.local_servers()
+    return LocalDiLoCoServersResponse(
+        self_node_id=ident.node_id if ident is not None else None,
+        servers=[
+            LocalDiLoCoServerModel(
+                server_id=s.server_id,
+                base_url=s.base_url,
+                auth_token=s.auth_token,
+                label=s.label,
+                source=s.source,
+                peer_node_id=s.peer_node_id,
+                verify_tls=s.verify_tls,
+                source_id=s.source_id,
+                loopback=s.loopback,
+            )
+            for s in servers
+        ],
+    )
+
+
+def _to_diloco_server_model(
+    e: "cluster_diloco_inventory.MasterServerEntry",
+) -> ClusterDiLoCoServerModel:
+    return ClusterDiLoCoServerModel(
+        server_id=e.server_id,
+        base_url=e.base_url,
+        auth_token=e.auth_token,
+        label=e.label,
+        source=e.source,
+        peer_node_id=e.peer_node_id,
+        verify_tls=e.verify_tls,
+        source_id=e.source_id,
+        loopback=e.loopback,
+        healthy=e.healthy,
+        last_health_check=e.last_health_check,
+        last_health_error=e.last_health_error,
+        total_health_polls=e.total_health_polls,
+        health_failures=e.health_failures,
+        consecutive_health_failures=e.consecutive_health_failures,
+    )
+
+
+async def _proxy_diloco_servers_to_master() -> Optional[List[Dict[str, Any]]]:
+    """Non-master nodes proxy ``/diloco_servers`` to the master so every
+    webui sees the same cluster-wide list."""
+    master = _master_member()
+    if master is None:
+        return None
+    url = _peer_url(master, "/api/cluster/diloco_servers")
+    try:
+        async with _peer_client(timeout=5.0) as client:
+            r = await client.get(url)
+    except (httpx.HTTPError, OSError) as e:
+        log.warning("diloco_servers proxy: %s -> %s", master.hostname, e)
+        return None
+    if r.status_code != 200:
+        log.warning(
+            "diloco_servers proxy non-200: %s status=%d",
+            master.hostname,
+            r.status_code,
+        )
+        return None
+    try:
+        body = r.json()
+    except ValueError:
+        return None
+    return body if isinstance(body, list) else None
+
+
+@router.get(
+    "/diloco_servers", response_model=List[ClusterDiLoCoServerModel]
+)
+async def diloco_servers() -> List[ClusterDiLoCoServerModel]:
+    """Master-aggregated DiLoCo-server list.
+
+    Browser-facing: the DiLoCo view queries this so servers spawned on
+    any cluster peer show up alongside locally-spawned ones. Non-master
+    nodes proxy to master so every webui sees the same set.
+
+    Token exposure mirrors the inference equivalent — see
+    :class:`ClusterDiLoCoServerModel`.
+    """
+    if _self_is_master():
+        return [
+            _to_diloco_server_model(s)
+            for s in cluster_diloco_inventory.master_inventory.servers_snapshot()
+        ]
+    proxied = await _proxy_diloco_servers_to_master()
+    if proxied is None:
+        return []
+    return [ClusterDiLoCoServerModel(**item) for item in proxied]
+
+
+@router.post("/diloco_servers/refresh", status_code=204)
+async def refresh_diloco_servers() -> Response:
+    """Wake the DiLoCo-server collect loop on demand.
+
+    Called by the scheduler when a diloco_server job starts or stops,
+    by the registry add/delete handlers, and by the webui for an
+    operator-driven refresh. Best-effort: 204 regardless of whether
+    the master is reachable.
+    """
+    cluster_diloco_inventory.wake_loops()
+    if not _self_is_master():
+        master = _master_member()
+        if master is not None:
+            url = _peer_url(master, "/api/cluster/diloco_servers/refresh")
             try:
                 async with _peer_client(timeout=2.0) as client:
                     await client.post(url)

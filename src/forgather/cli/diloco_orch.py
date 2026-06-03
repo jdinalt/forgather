@@ -524,7 +524,16 @@ def _worker_progress(stats, bar_width=8):
 
 
 def servers_cmd(args):
-    """List DiLoCo servers the orchestrator knows about (local + registered)."""
+    """List DiLoCo servers the orchestrator knows about.
+
+    Sources surfaced:
+
+      ``local``      — spawned by this forgather server (JobRecord).
+      ``registered`` — user-added persistent registry entry.
+      ``cluster``    — attested to by a cluster peer via the master-
+                       aggregated DiLoCo inventory. Cross-node
+                       discovery; no operator token handling.
+    """
     from .server_client import AuthRequired, ServerUnreachable
 
     client = _orchestrator(args)
@@ -540,8 +549,10 @@ def servers_cmd(args):
 
     if not servers:
         print("No DiLoCo servers known to the forgather server.")
-        print("Start one with 'forgather diloco server …' or register an")
-        print("external one with 'forgather diloco register <url>'.")
+        print("Start one with 'forgather diloco server …', register an")
+        print("external one with 'forgather diloco register <url>',")
+        print("or join a cluster — peer-spawned servers surface here")
+        print("automatically.")
         return 0
 
     print(f"{'ID':<26} {'SOURCE':<11} {'STATE':<18} BASE_URL")
@@ -550,6 +561,17 @@ def servers_cmd(args):
         src = s.get("source", "?")
         if src == "local":
             state = "alive" if s.get("alive") else "stopped"
+        elif src == "cluster":
+            bits = []
+            healthy = s.get("healthy")
+            if healthy is True:
+                bits.append("healthy")
+            elif healthy is False:
+                bits.append("down")
+            else:
+                bits.append("unknown")
+            bits.append("auth" if s.get("has_auth_token") else "no-auth")
+            state = ", ".join(bits)
         else:
             bits = []
             bits.append("auth" if s.get("has_auth_token") else "no-auth")

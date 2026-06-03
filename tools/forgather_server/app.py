@@ -56,6 +56,7 @@ async def lifespan(app: FastAPI):
         # subsystems we don't want loading on standalone servers.
         from . import (
             cluster_dataset_inventory,
+            cluster_diloco_inventory,
             cluster_discovery,
             cluster_inference_inventory,
             cluster_membership,
@@ -90,6 +91,10 @@ async def lifespan(app: FastAPI):
         cluster_membership.register_role_change_listener(
             lambda _prev, _new: cluster_inference_inventory.wake_loops()
         )
+        # And the same hook for the DiLoCo inventory.
+        cluster_membership.register_role_change_listener(
+            lambda _prev, _new: cluster_diloco_inventory.wake_loops()
+        )
         tasks.append(asyncio.create_task(cluster_membership.membership_loop()))
         # Dataset-server cluster-routing inventory. All three loops
         # run on every node but self-gate on master status — failover
@@ -114,6 +119,16 @@ async def lifespan(app: FastAPI):
         )
         tasks.append(
             asyncio.create_task(cluster_inference_inventory.master_health_loop())
+        )
+        # DiLoCo-server cluster inventory. Same two-loop shape as the
+        # inference picker — collect + health, self-gating on master.
+        tasks.append(
+            asyncio.create_task(
+                cluster_diloco_inventory.master_collect_servers_loop()
+            )
+        )
+        tasks.append(
+            asyncio.create_task(cluster_diloco_inventory.master_health_loop())
         )
 
     # Enqueue auto-start services declared in the server config before

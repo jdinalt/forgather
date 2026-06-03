@@ -657,6 +657,33 @@ wrong and the MFU number is meaningless. Workaround: set
 slowest-tier device, or stick to homogeneous training clusters
 until probe-driven aggregation lands.
 
+### Cross-node DiLoCo discovery
+
+DiLoCo parameter servers ride the cluster's existing inventory rail:
+when a DiLoCo server spawns on any peer (locally via the webui or
+`forgather diloco server`), the master node propagates it to every
+peer through `/api/cluster/diloco_servers`. From any peer's webui or
+`forgather diloco servers` CLI you'll see the entry as
+`source=cluster` with a health dot, and any `status` / `control`
+action routes through the proxy with the upstream bearer resolved
+server-side — no operator token copying.
+
+The `forgather diloco register <url>` command is the **escape hatch**
+for endpoints the local cluster can't see (a WAN-hosted server, an
+SSH-tunneled remote). Registered entries surface as `source=registered`;
+when the peer that registered the URL is itself a cluster member, the
+entry propagates to the other peers via the same inventory.
+
+The cluster identity for a DiLoCo server is the master-aggregated
+`server_id` (SHA-256 of the normalized base URL, 12 hex chars). The
+unified `forgather diloco servers` output prefixes it as
+`cluster:<server_id>`, suitable for use with
+`forgather diloco status --diloco-server cluster:<server_id>` and
+similar.
+
+See `docs/design/diloco-security.md#cross-node-discovery-cluster-inventory`
+for the design and end-to-end token-transit walkthrough.
+
 ### Checkpoints on shared FS
 
 When several ranks share a filesystem (NFS, the typical multi-node

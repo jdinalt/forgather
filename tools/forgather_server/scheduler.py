@@ -219,6 +219,8 @@ def _reap_finished() -> None:
             # from the cluster picker promptly when the server stops.
             if updated.job_type == "inference":
                 _wake_inference_inventory()
+            elif updated.job_type == "diloco_server":
+                _wake_diloco_inventory()
         if rc is not None:
             log.info("reaped %s: rc=%d status=%s", qid, rc, new_status)
         else:
@@ -830,9 +832,13 @@ def _diloco_env_from_job_params(
     preprocessing reads ``DILOCO_WORKER_ID`` to derive a unique output
     directory per worker, so a missing value at preprocessing time
     would cause two workers to share an output dir and clobber each
-    other's checkpoints. When the operator leaves ``worker_id`` blank,
-    we fall back to the queue_id (stable, unique per job submission,
-    and already surfaced in the Jobs view so the operator can correlate).
+    other's checkpoints. The queue route at ``routes/queue.py:enqueue``
+    fills in a memorable two-word default for any DiLoCo training
+    submission that arrives without one (matches the pool-style
+    submit-modal behavior); this fallback covers the remaining edge
+    case where a queue item somehow reaches dispatch with an empty
+    worker_id (e.g. a direct ``queue_store.add_item`` from a future
+    code path that bypasses the route).
 
     Expected input shape (all keys optional except ``server_addr``):
         {
@@ -864,10 +870,16 @@ def _diloco_env_from_job_params(
     # submission. Only client-local knobs are forwarded.
     if diloco.get("heartbeat_interval") is not None:
         env["DILOCO_HEARTBEAT_INTERVAL"] = str(float(diloco["heartbeat_interval"]))
-    # Always-set: operator-supplied value if present, otherwise the
-    # queue_id as a stable per-submission fallback.
+    # Always-set: operator-supplied value if present, the route-
+    # filled memorable default otherwise. Last-resort fallback to a
+    # freshly-minted memorable name covers any path that bypasses the
+    # route (no queue_id leak into the worker identity).
     wid = (diloco.get("worker_id") or "").strip()
-    env["DILOCO_WORKER_ID"] = wid or queue_id
+    if not wid:
+        from forgather.utils import generate_name
+
+        wid = generate_name()
+    env["DILOCO_WORKER_ID"] = wid
     return env
 
 
@@ -1275,6 +1287,8 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
     # entry before they can switch tabs.
     if item.job_type == "inference":
         _wake_inference_inventory()
+    elif item.job_type == "diloco_server":
+        _wake_diloco_inventory()
 
 
 def _pid_ancestors(pid: int) -> List[int]:
@@ -1531,6 +1545,8 @@ def _kill_record(queue_id: str, sig: int) -> bool:
         _cleanup_inference_token(updated)
         if updated.job_type == "inference":
             _wake_inference_inventory()
+        elif updated.job_type == "diloco_server":
+            _wake_diloco_inventory()
     return updated is not None
 
 
@@ -1568,6 +1584,21 @@ def _wake_inference_inventory() -> None:
         from . import cluster_inference_inventory
 
         cluster_inference_inventory.wake_loops()
+    except Exception:
+        pass
+
+
+def _wake_diloco_inventory() -> None:
+    """Signal the cluster DiLoCo-server inventory to re-poll.
+
+    Same shape as :func:`_wake_inference_inventory` — lazy import,
+    swallow failures, wake is a latency hint not a correctness
+    requirement.
+    """
+    try:
+        from . import cluster_diloco_inventory
+
+        cluster_diloco_inventory.wake_loops()
     except Exception:
         pass
 

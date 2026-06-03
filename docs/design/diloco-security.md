@@ -1,9 +1,9 @@
-# DiLoCo: full security model (issue #90)
+# DiLoCo: full security model
 
-This doc covers the auth + TLS + audit layer landed by PR
-`feature/diloco-security`. The design mirrors the established
-forgather pattern (dataset_server, inference_server, forgather_server)
-adapted to DiLoCo's stdlib `http.server` stack.
+This doc covers the auth + TLS + audit layer plus the cross-node
+discovery surface. The design mirrors the established forgather
+pattern (dataset_server, inference_server, forgather_server) adapted
+to DiLoCo's stdlib `http.server` stack.
 
 ## Goals
 
@@ -98,6 +98,149 @@ calls can all authenticate via the shared TLS material without any
 extra token plumbing. The bearer path stays available for non-cluster
 callers (e.g. an operator using `curl` from a laptop with a CA-trusted
 client).
+
+## Cross-node discovery (cluster inventory)
+
+Multi-node DiLoCo training requires a peer on host `B` to learn that a
+DiLoCo server is running on host `A` and to obtain its bearer token —
+without an operator hand-pasting both. The forgather server already
+solves this for `dataset_server` and `inference_server` via the
+cluster-inventory pattern (`cluster_dataset_inventory.py`,
+`cluster_inference_inventory.py`); DiLoCo uses the same model.
+
+**Per-peer attestation (`/api/cluster/diloco_servers_local`).** Every
+forgather server exposes a read-only endpoint listing the DiLoCo
+servers it attests to, as a unified list across two sources:
+
+1. `JobRecord(job_type == "diloco_server")` entries currently in
+   `starting` / `running` state (locally-spawned via the webui or
+   `forgather diloco server`).
+2. The user-added registry at
+   `<config>/server/diloco_server_registry.json` — the
+   `forgather diloco register <url> --auth-token <tok>` escape hatch
+   for WAN endpoints / SSH-tunneled remotes / teammate servers that
+   mDNS can't see.
+
+Each entry carries `server_id`, `base_url`, `auth_token`, `label`,
+`source` (`local` / `user`), `peer_node_id`, `source_id`, `loopback`,
+and `verify_tls`. Tokens are in the response body; the endpoint is
+on the mTLS peer-allow-list (`auth._PEER_ALLOWED_PATHS`) and inherits
+the trust boundary the dataset and inference equivalents already
+establish — a peer that presented a valid cluster-CA-signed cert is
+by definition allowed to read cluster state, including the per-server
+bearer tokens it would need to dial the upstream.
+
+**Master aggregation (`/api/cluster/diloco_servers`).** The master
+node runs `master_collect_servers_loop` every ~10 s, GETs
+`/api/cluster/diloco_servers_local` from every reachable peer (and
+includes its own local list), deduplicates by `server_id` (the first
+12 hex chars of SHA-256 over the normalized `base_url`), and exposes
+the aggregated snapshot.
+
+**Health probing.** A `master_health_loop` probes `/health` on each
+server every ~10 s and flips the `healthy` flag, preserving the
+per-server failure-streak counters across collect ticks so a flapping
+upstream stays distinguishable from one that just hasn't been polled
+yet. Browser clients on any node reach the aggregated list through
+the same `/api/cluster/diloco_servers` route — non-master nodes proxy
+upstream to master so every webui sees the same set.
+
+**Wake hooks.** The scheduler signals `wake_loops()` on
+`diloco_server` job spawn/reap/abort and `POST
+/api/cluster/diloco_servers/refresh` lets the webui force a re-poll
+on demand. Membership transitions (a new master elected,
+a peer joining) also wake the loops via
+`cluster_membership.register_role_change_listener`. Steady-state
+convergence is ~1 s after a state change, not the bare-cadence 10 s.
+
+**Loopback / 0.0.0.0 handling.** Same rules as the
+dataset/inference inventories. JobRecords bound to `0.0.0.0` are
+rewritten to the cluster identity's hostname (or to the scheduler-
+stamped `routable_host` when present). Loopback-only binds are kept
+in the inventory with `loopback=True` so the operator still sees
+their node-local DiLoCo servers in the panel, but the cross-node
+candidate-selection logic excludes them.
+
+**Token transit, end-to-end.**
+
+1. Server on `A` writes its bearer to
+   `~/.config/forgather/diloco_server/<port>.token` (mode 0600)
+   and registers the JobRecord with that token.
+2. `A`'s forgather server reports the entry on
+   `/api/cluster/diloco_servers_local` over its TLS+mTLS surface.
+3. `B`'s master (if `B` is master) pulls the entry via the cluster-CA
+   carve-out (no bearer needed — the mTLS client cert is the
+   credential).
+4. `B`'s webui calls `/api/cluster/diloco_servers` and gets the
+   aggregated list; the proxy at `routes/diloco.py` consults
+   `cluster_diloco_inventory.master_inventory.token_for_url(base)`
+   when dialing `A` upstream, so the operator never sees, copies, or
+   pastes the token.
+
+The user-added registry is preserved as an **escape hatch**: it
+covers servers that aren't reachable on the local LAN at all
+(WAN, SSH tunnel, mDNS-suppressed network). The operator types
+the URL and token once, and the entry then flows through the
+cluster inventory identically to a locally-spawned one.
+
+### Why not auto-share via mDNS only?
+
+mDNS advertises the forgather server's bind, not the DiLoCo server's.
+A DiLoCo server is a child process the forgather server spawned; the
+forgather server is the authority for "what DiLoCo servers exist on
+this node" because it holds the `JobRecord` rows and the persistent
+registry. Cluster discovery therefore happens at the forgather-server
+layer (HTTP over the existing peer-pull rail), not at the DiLoCo
+server's own listener.
+
+### Threat-model deviations from the dataset / inference precedents
+
+The DiLoCo cluster inventory follows the dataset/inference patterns
+closely, but two surfaces are wider on purpose; both are operator-
+visible choices, not accidents.
+
+**SSRF allowlist includes peer-attested URLs.** `routes/diloco.py`'s
+`_known_base_urls()` treats any base URL the master aggregates from
+the cluster as a permitted proxy target. The dataset proxy
+(`routes/dataset_server.py`) does *not* — it permits only loopback
+plus locally-registered URLs. The reason for the wider DiLoCo
+posture: cluster-discovered DiLoCo servers must be inspectable from
+*any* peer's webui (otherwise there's no point in surfacing them in
+the cluster panel). The narrower dataset posture works because the
+dataset surface routes through `/api/cluster/dataset_router/resolve`
+on the master, not the per-base proxy.
+
+A credentialed peer can use this to put an arbitrary base URL on
+the master's outbound allowlist; that URL is then probed by the
+health loop every ~10 s and accepted by the webui proxy. Per the
+overall cluster bearer trust model — a peer that holds a CA-signed
+cert already has training-job RCE — this is in-scope. Operators who
+want stricter posture should not put untrusted hosts into the
+cluster's mTLS trust root.
+
+**`verify_tls=False` is gated to `source="user"` on ingest.**
+The escape hatch for SSH-tunneled remotes is honored only when a
+peer reports the entry as a user-registry entry on its own node.
+Spawned (`source="local"`) entries from a peer always run with the
+cluster CA chain — one peer can't downgrade another peer's outbound
+TLS by attesting to a fresh URL with chain validation off. The
+local operator can still register the URL locally with
+`verify_tls=False` if they need it.
+
+This gating happens at ingest in
+`cluster_diloco_inventory._local_server_from_dict`. URLs with
+embedded `userinfo` (`http://user:pass@host`) are dropped at the
+same checkpoint so a peer can't inject Basic-auth credentials into
+the master's outbound calls.
+
+The ingest gate runs on the **master** when it receives a peer's
+`/diloco_servers_local`. On a non-master node, entries returned from
+`/api/cluster/diloco_servers` (proxied from the master) are accepted
+as-is — there is no second `_local_server_from_dict` gate on the
+non-master side, so a compromised master could in principle ship
+`source="user", verify_tls=False` for an arbitrary URL. A compromised
+master already implies cluster-wide RCE per the bearer trust model,
+so the missing second gate doesn't change the threat surface.
 
 ### Identity binding for `group_id` / `pp_rank` — phase 1
 
@@ -215,6 +358,10 @@ When forgather_server spawns a DiLoCo server through the queue:
 | `tests/unit/ml/diloco/test_audit_log.py` | JSONL records + best-effort writer |
 | `tests/unit/forgather_server/test_scheduler_diloco_server_token.py` | Per-port spawn token |
 | `tests/unit/forgather_server/test_routes_diloco_auth.py` | Proxy auth/verify_tls attachment |
+| `tests/unit/forgather_server/test_cluster_diloco_inventory.py` | Local enumeration (JobRecord + user registry); peer-entry validation (URL, userinfo, source-gated verify_tls); master-inventory merge, role transition, token/verify_tls lookup |
+| `tests/unit/forgather_server/test_routes_cluster_diloco.py` | `/api/cluster/diloco_servers_local`, `/diloco_servers`, `/diloco_servers/refresh`; peer-mTLS allow-list membership; non-master proxy-to-master fallback |
+| `tests/unit/forgather_server/test_routes_diloco.py` (cluster-proxy section) | Non-master proxy threads master snapshot into SSRF / auth / verify lookups; cluster-known URL allowed, unknown still 403, cluster `verify_tls=False` honored |
+| `tests/unit/forgather_server/test_scheduler_diloco_env.py` | DILOCO_WORKER_ID memorable-name default + regression that it never equals queue_id |
 
 ## See also
 

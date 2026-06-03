@@ -591,3 +591,94 @@ class TestProxy:
             "terminated-local DiLoCo URL should reach the upstream attempt "
             f"and surface its 502, but got {r.status_code}"
         )
+
+
+class TestProxyClusterEntries:
+    """The webui proxy threads the master-aggregated cluster inventory
+    into the SSRF / auth / verify lookups so a non-master node — whose
+    own ``master_inventory`` is empty by design — can still reach
+    peer-spawned DiLoCo servers from any browser session.
+
+    These tests pin the contract: the proxy fetches the cluster view
+    once per request and uses it for the allowlist, token lookup, and
+    verify decision."""
+
+    class _ClusterStub:
+        """Stand-in for ``ClusterDiLoCoServerModel`` carrying just the
+        fields the proxy helpers read."""
+
+        def __init__(self, base_url, auth_token="", verify_tls=True):
+            self.base_url = base_url
+            self.auth_token = auth_token
+            self.verify_tls = verify_tls
+
+    def _patch_master_entries(self, monkeypatch, entries):
+        async def fake():
+            return list(entries)
+
+        monkeypatch.setattr(diloco_routes, "_master_cluster_entries", fake)
+        # Also stub the JobRecord scan: this test process may share its
+        # home with real running diloco_server records (port 8512 in
+        # particular), and ``_token_for_local`` would happily return
+        # that record's bearer ahead of the cluster snapshot we're
+        # actually trying to exercise.
+        monkeypatch.setattr(
+            diloco_routes.job_records, "list_records", lambda: []
+        )
+
+    def test_ssrf_allowed_for_cluster_known_url(
+        self, client, no_local_servers, monkeypatch
+    ):
+        """A URL only present in the master's cluster snapshot is
+        allowed by SSRF and forwarded upstream. Reproduces the bug
+        where a non-master node 403'd on every peer-attested base URL."""
+        url = "https://192.168.1.27:8512"
+        self._patch_master_entries(
+            monkeypatch, [self._ClusterStub(base_url=url, auth_token="peer-tok")]
+        )
+
+        bearer_seen = []
+
+        def fake_handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/status"
+            bearer_seen.append(request.headers.get("authorization"))
+            return httpx.Response(200, json={"status": "ok"})
+
+        _patch_async_client(monkeypatch, fake_handler)
+        r = client.get("/api/diloco/server-status", params={"base": url})
+        assert r.status_code == 200, r.text
+        # And the cluster-resolved bearer was attached upstream.
+        assert bearer_seen == ["Bearer peer-tok"]
+
+    def test_ssrf_still_refuses_unknown_url_when_cluster_empty(
+        self, client, no_local_servers, monkeypatch
+    ):
+        """No local, no registered, no cluster ⇒ 403 with the usual
+        registry-required message — the cluster-aware path doesn't
+        accidentally open SSRF for arbitrary remote URLs."""
+        self._patch_master_entries(monkeypatch, [])
+        r = client.get(
+            "/api/diloco/server-status",
+            params={"base": "https://10.0.0.99:8512"},
+        )
+        assert r.status_code == 403
+        assert "registry" in r.json()["detail"].lower()
+
+    def test_cluster_verify_tls_false_propagates_through_proxy(
+        self, client, no_local_servers, monkeypatch
+    ):
+        """A cluster entry's verify_tls=False (an SSH-tunneled remote
+        a peer has registered) propagates to the proxy's verify kwarg
+        so chain validation is skipped end-to-end."""
+        url = "https://tunneled:8512"
+        self._patch_master_entries(
+            monkeypatch,
+            [self._ClusterStub(base_url=url, auth_token="", verify_tls=False)],
+        )
+        # Sanity: the verify selector reports False for this base when
+        # threaded the cluster entries the proxy would.
+        entries = [self._ClusterStub(base_url=url, verify_tls=False)]
+        assert (
+            diloco_routes._verify_for(url + "/status", base=url, cluster_entries=entries)
+            is False
+        )
