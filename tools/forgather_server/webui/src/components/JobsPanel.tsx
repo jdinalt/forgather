@@ -776,6 +776,25 @@ function JobCard({
       {job.project_dir && isTraining && (
         <div className="queue-row-meta muted">{job.project_dir}</div>
       )}
+      {isTraining &&
+        typeof (job.job_params as { diloco?: { worker_id?: string } } | null)
+          ?.diloco?.worker_id === "string" && (
+          // Bridge: a DiLoCo training job is named ``q_<timestamp>_<hex>``
+          // here but registers with the DiLoCo server under the memorable
+          // ``worker_id`` the queue route stamped. Surface that name so
+          // the operator can correlate this row with the DiLoCo panel.
+          <div className="queue-dirs muted">
+            <div>
+              <span>worker:</span>{" "}
+              <code>
+                {String(
+                  (job.job_params as { diloco: { worker_id: string } })
+                    .diloco.worker_id,
+                )}
+              </code>
+            </div>
+          </div>
+        )}
       {isEval && job.job_params && (
         <div className="queue-dirs muted">
           <div>

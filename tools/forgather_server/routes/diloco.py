@@ -2,7 +2,8 @@
 
 Backs the DiLoCo view in the webui. Surface:
 
-  GET    /api/diloco/servers          Unified list (local + registered).
+  GET    /api/diloco/servers          Unified list (local + registered
+                                      + cluster).
   GET    /api/diloco/server-status    Proxy to an upstream DiLoCo /status.
   GET    /api/diloco/server-info      Proxy to an upstream DiLoCo /info.
   GET    /api/diloco/known-workers    Proxy to upstream /known_workers.
@@ -18,27 +19,31 @@ Backs the DiLoCo view in the webui. Surface:
                                       (submit-modal batch pool). Local, no
                                       proxy.
 
-SSRF policy mirrors :mod:`routes.dataset_server`: loopback is always
-allowed, registered URLs are allowed (the act of registering is the
-authorization), running locally-spawned diloco_server jobs are allowed
-(their URL is derived from job_params), everything else is refused.
+SSRF policy mirrors :mod:`routes.dataset_server` with a documented
+widening for cluster mode: loopback is always allowed, registered URLs
+are allowed (the act of registering is the authorization), running
+locally-spawned diloco_server jobs are allowed (their URL is derived
+from job_params), and DiLoCo servers attested to by a cluster peer
+via :mod:`cluster_diloco_inventory` are allowed (the act of being
+attested to over an mTLS-authenticated peer pull is the cluster-bearer
+authorization). Everything else is refused. The cluster-attestation
+widening is the price of making peer-spawned DiLoCo servers
+inspectable from any node's webui — see ``docs/design/diloco-security.md``
+"Threat-model deviations" section.
 
-Auth / TLS (issue #90): the proxy now attaches an ``Authorization:
-Bearer <token>`` header (resolved per the precedence below) and honors
-each registry entry's ``verify_tls`` opt-out:
+Auth / TLS: the proxy attaches an ``Authorization: Bearer <token>``
+header (resolved per the precedence below) and honors each registry
+entry's ``verify_tls`` opt-out:
 
   1. Explicit ``X-Diloco-Auth-Token`` request header (operator override).
   2. JobRecord auto-lookup for locally-spawned servers — the scheduler
      persisted the token on the record when spawning.
   3. ``diloco_server_registry.find_token(base)`` for user-added remotes.
-  4. Empty (server is running ``--no-auth``).
-
-Cross-node servers are surfaced through the cluster inventory in
-:mod:`cluster_diloco_inventory`: the unified list at
-``GET /api/diloco/servers`` merges local + registered + cluster
-entries, and the upstream proxy consults
-``master_inventory.token_for_url(base)`` so a remote-peer server can
-be inspected from any cluster node without operator token handling.
+  4. ``master_inventory.token_for_url(base)`` for cluster-discovered
+     remotes — the master snapshot carries the upstream bearer, so a
+     remote-peer server can be inspected from any cluster node without
+     operator token handling.
+  5. Empty (server is running ``--no-auth``).
 """
 
 from __future__ import annotations
@@ -413,8 +418,15 @@ def _check_ssrf(base: str, cluster_entries: Optional[List[Any]] = None) -> None:
     parsed = urlparse(base)
     if _is_loopback(parsed.hostname or ""):
         return
-    if base.rstrip("/") in (
-        b.rstrip("/") for b in _known_base_urls(cluster_entries=cluster_entries)
+    # Allowlist matching uses ``_normalize_for_lookup`` so SSRF's
+    # decision agrees with the cluster inventory's token / verify_tls
+    # lookups — otherwise a hand-typed URL that differs only in case,
+    # default port, or trailing slash could pass SSRF but miss its
+    # bearer attach (or vice versa).
+    normalized = _normalize_for_lookup(base)
+    if normalized in (
+        _normalize_for_lookup(b)
+        for b in _known_base_urls(cluster_entries=cluster_entries)
     ):
         return
     raise HTTPException(
@@ -511,6 +523,24 @@ def _token_for_local(base: str) -> Optional[str]:
     return None
 
 
+def _normalize_for_lookup(base: str) -> str:
+    """Canonical URL form used for *every* base-URL comparison in this
+    module — SSRF allowlist matching, cluster-entry token lookup,
+    verify-TLS lookup. Defers to ``cluster_diloco_inventory._normalize``
+    so the inventory's own ``token_for_url``/``verify_tls_for_url`` and
+    the proxy-side helpers agree on whether two strings refer to the
+    same upstream (case, default ports, trailing slash, IPv6 brackets).
+
+    Returns ``base.rstrip("/")`` when the inventory module isn't loaded
+    (standalone / test fixtures).
+    """
+    try:
+        from .. import cluster_diloco_inventory
+    except ImportError:
+        return (base or "").rstrip("/")
+    return cluster_diloco_inventory._normalize(base)
+
+
 def _token_from_cluster(
     base: str, cluster_entries: Optional[List[Any]] = None
 ) -> Optional[str]:
@@ -523,9 +553,9 @@ def _token_from_cluster(
     empty-but-safe on non-master).
     """
     if cluster_entries is not None:
-        normalized = base.rstrip("/").lower()
+        normalized = _normalize_for_lookup(base)
         for s in cluster_entries:
-            if s.base_url.rstrip("/").lower() == normalized and s.auth_token:
+            if _normalize_for_lookup(s.base_url) == normalized and s.auth_token:
                 return s.auth_token
         return None
     try:
@@ -592,9 +622,9 @@ def _verify_for(
             return False
         cluster_verify: Optional[bool] = None
         if cluster_entries is not None:
-            normalized = base.rstrip("/").lower()
+            normalized = _normalize_for_lookup(base)
             for s in cluster_entries:
-                if s.base_url.rstrip("/").lower() == normalized:
+                if _normalize_for_lookup(s.base_url) == normalized:
                     cluster_verify = s.verify_tls
                     break
         else:

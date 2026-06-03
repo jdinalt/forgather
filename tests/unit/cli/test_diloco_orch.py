@@ -1066,6 +1066,111 @@ class TestWorkerResumeMode:
         assert "requires the forgather server" in capsys.readouterr().err
 
 
+class TestWorkerForegroundDefaults:
+    """The direct/foreground path through ``_worker_cmd`` — runs when
+    the forgather server is unreachable AND ``--local-fallback`` is
+    set, or ``--local-only`` is passed. Default values it stamps into
+    the spawned trainer's env are part of the user contract."""
+
+    def _args(self, **over):
+        base = dict(
+            resume_workers=False,
+            worker_id=None,
+            count=1,
+            project_dir=".",
+            config_template=None,
+            diloco_server=None,
+            heartbeat_interval=30.0,
+            devices=None,
+            dry_run=True,  # Don't actually subprocess.run the child.
+            remainder=[],
+            _dynamic_args={},
+        )
+        base.update(over)
+        return argparse.Namespace(**base)
+
+    def _force_direct_path(self, monkeypatch):
+        # No forgather server; otherwise the orchestrator path takes over
+        # and the foreground env-stamping never runs.
+        monkeypatch.setattr(orch, "use_orchestrator", lambda args: None)
+        # The foreground path validates dynamic args + loads the dynamic
+        # schema from the project; stub both so the test doesn't depend
+        # on having a real project on disk.
+        from forgather.cli import diloco as diloco_mod
+
+        monkeypatch.setattr(diloco_mod, "_load_dynamic_schema", lambda *_: {})
+        monkeypatch.setattr(diloco_mod, "_worker_dynamic_args", lambda *_: {})
+        from forgather.cli import submit_orch
+
+        monkeypatch.setattr(
+            submit_orch, "validate_dynamic_args", lambda *_a, **_k: None
+        )
+
+    def _capture_subprocess_env(self, monkeypatch):
+        captured = {}
+
+        class _Result:
+            returncode = 0
+
+        def fake_run(_argv, env=None):
+            captured["env"] = dict(env or {})
+            return _Result()
+
+        from forgather.cli import diloco as diloco_mod
+
+        monkeypatch.setattr(diloco_mod.subprocess, "run", fake_run)
+        return captured
+
+    def test_no_worker_id_mints_memorable_default(self, monkeypatch):
+        """No ``--worker-id`` → ``DILOCO_WORKER_ID`` set to a generated
+        ``adjective-species`` name (not the worker.py random hex
+        fallback, and definitely not empty)."""
+        self._force_direct_path(monkeypatch)
+        # Pin the generator so the assertion is concrete.
+        from forgather import utils as forgather_utils
+
+        monkeypatch.setattr(forgather_utils, "generate_name", lambda: "merry-otter")
+        captured = self._capture_subprocess_env(monkeypatch)
+
+        from forgather.cli import diloco
+
+        rc = diloco._worker_cmd(self._args(dry_run=False))
+        assert rc == 0
+        assert captured["env"]["DILOCO_WORKER_ID"] == "merry-otter"
+
+    def test_explicit_worker_id_wins(self, monkeypatch):
+        """An explicit ``--worker-id`` is preserved verbatim — the
+        generator is *not* called to mint a replacement."""
+        self._force_direct_path(monkeypatch)
+        from forgather import utils as forgather_utils
+
+        # If the generator runs at all the assertion below would fail
+        # — pin it to something the operator value won't equal.
+        monkeypatch.setattr(forgather_utils, "generate_name", lambda: "should-not-fire")
+        captured = self._capture_subprocess_env(monkeypatch)
+
+        from forgather.cli import diloco
+
+        rc = diloco._worker_cmd(self._args(dry_run=False, worker_id="custom-id"))
+        assert rc == 0
+        assert captured["env"]["DILOCO_WORKER_ID"] == "custom-id"
+
+    def test_generated_name_is_not_queue_id_shaped(self, monkeypatch):
+        """Regression: previously the worker_id default leaked the
+        queue_id (``q_<timestamp>_<hex>``) into the worker identity.
+        The direct path mints a memorable name from a fixed adjective+
+        species pool, so it can never be ``q_…``-shaped."""
+        self._force_direct_path(monkeypatch)
+        captured = self._capture_subprocess_env(monkeypatch)
+
+        from forgather.cli import diloco
+
+        rc = diloco._worker_cmd(self._args(dry_run=False))
+        assert rc == 0
+        wid = captured["env"]["DILOCO_WORKER_ID"]
+        assert wid and not wid.startswith("q_")
+
+
 class TestUseOrchestrator:
     def test_local_only(self):
         assert orch.use_orchestrator(_loc_args(local_only=True)) is None

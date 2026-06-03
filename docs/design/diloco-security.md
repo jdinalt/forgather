@@ -1,9 +1,9 @@
-# DiLoCo: full security model (issue #90)
+# DiLoCo: full security model
 
-This doc covers the auth + TLS + audit layer landed by PR
-`feature/diloco-security`. The design mirrors the established
-forgather pattern (dataset_server, inference_server, forgather_server)
-adapted to DiLoCo's stdlib `http.server` stack.
+This doc covers the auth + TLS + audit layer plus the cross-node
+discovery surface. The design mirrors the established forgather
+pattern (dataset_server, inference_server, forgather_server) adapted
+to DiLoCo's stdlib `http.server` stack.
 
 ## Goals
 
@@ -233,6 +233,15 @@ embedded `userinfo` (`http://user:pass@host`) are dropped at the
 same checkpoint so a peer can't inject Basic-auth credentials into
 the master's outbound calls.
 
+The ingest gate runs on the **master** when it receives a peer's
+`/diloco_servers_local`. On a non-master node, entries returned from
+`/api/cluster/diloco_servers` (proxied from the master) are accepted
+as-is — there is no second `_local_server_from_dict` gate on the
+non-master side, so a compromised master could in principle ship
+`source="user", verify_tls=False` for an arbitrary URL. A compromised
+master already implies cluster-wide RCE per the bearer trust model,
+so the missing second gate doesn't change the threat surface.
+
 ### Identity binding for `group_id` / `pp_rank` — phase 1
 
 **Phase 1 = job-level only.** Holding a valid bearer (or a cluster
@@ -349,6 +358,10 @@ When forgather_server spawns a DiLoCo server through the queue:
 | `tests/unit/ml/diloco/test_audit_log.py` | JSONL records + best-effort writer |
 | `tests/unit/forgather_server/test_scheduler_diloco_server_token.py` | Per-port spawn token |
 | `tests/unit/forgather_server/test_routes_diloco_auth.py` | Proxy auth/verify_tls attachment |
+| `tests/unit/forgather_server/test_cluster_diloco_inventory.py` | Local enumeration (JobRecord + user registry); peer-entry validation (URL, userinfo, source-gated verify_tls); master-inventory merge, role transition, token/verify_tls lookup |
+| `tests/unit/forgather_server/test_routes_cluster_diloco.py` | `/api/cluster/diloco_servers_local`, `/diloco_servers`, `/diloco_servers/refresh`; peer-mTLS allow-list membership; non-master proxy-to-master fallback |
+| `tests/unit/forgather_server/test_routes_diloco.py` (cluster-proxy section) | Non-master proxy threads master snapshot into SSRF / auth / verify lookups; cluster-known URL allowed, unknown still 403, cluster `verify_tls=False` honored |
+| `tests/unit/forgather_server/test_scheduler_diloco_env.py` | DILOCO_WORKER_ID memorable-name default + regression that it never equals queue_id |
 
 ## See also
 

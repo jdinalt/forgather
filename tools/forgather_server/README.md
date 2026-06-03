@@ -2601,6 +2601,17 @@ the aggregated inventory crosses peer boundaries.
 See `docs/design/diloco-security.md#cross-node-discovery-cluster-inventory`
 for the design rationale and end-to-end token-transit walkthrough.
 
+**Operator note on SSRF posture.** Cluster-attested DiLoCo URLs are
+implicitly added to the DiLoCo proxy's outbound allowlist, so any URL
+a cluster peer attests to (via its `/diloco_servers_local`) becomes
+reachable through this node's `/api/diloco/*` proxy. The dataset
+proxy does not do this — DiLoCo widens the surface to make peer-
+spawned servers inspectable from any node's webui without operator
+URL-copying. Operators who don't trust every node that could join
+the cluster's mTLS root should keep that root tight. The threat-model
+deviation is laid out in `docs/design/diloco-security.md`'s
+*Threat-model deviations* section.
+
 **Generation presets** — save/load named JSON presets of the current
 generation params. Served by `/api/generation-configs/*`, which merges
 two layers: bundled examples under `<repo>/generation_config/` (read-
