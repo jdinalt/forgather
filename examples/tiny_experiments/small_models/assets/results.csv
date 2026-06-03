@@ -1,0 +1,8 @@
+model,final_train_loss,final_eval_loss,best_eval_loss,avg_mfu_pct,total_tokens_m
+small_causal,3.1029,3.0040,3.0040,19.86,1041.9
+small_llama,2.9693,2.9391,2.9391,21.10,1041.9
+small_llama_canon,2.8714,2.8369,2.8369,11.42,1041.9
+small_deepone,2.9362,2.9029,2.9029,13.33,1041.9
+small_qwen3,2.8776,2.8457,2.8457,20.32,1041.9
+small_mistral,2.9651,2.9362,2.9362,22.38,1041.9
+small_gemma3,2.8778,2.8460,2.8460,22.75,1041.9

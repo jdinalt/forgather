@@ -113,7 +113,80 @@ python assets/generate_plots.py
 
 ## Experimental results
 
-<!-- RESULTS -->
+All seven configs were trained under an identical recipe — 1B tokens of
+Fineweb-Edu, `seq_len` 4096, per-device batch 8, the WSD schedule (warmup 50M,
+constant LR `~2.1e-4`, anneal over the final 100M), AdamW, gradient clipping at
+3.0, `flex_attention` + `torch.compile` — one GPU each, scheduled across the
+cluster. Differences in the curves therefore reflect **architecture**, not
+size, vocabulary, data, or tuning.
+
+![Training and eval loss vs. tokens, all architectures](assets/loss_comparison.png)
+
+![Best eval loss by architecture](assets/final_loss_bar.png)
+
+| Model | Best eval | Final train | Avg MFU | Notes |
+|-------|----------:|------------:|--------:|-------|
+| `small_llama_canon` | **2.837** | 2.871 | 11.4% | best loss, slowest (Canon convs) |
+| `small_qwen3` | 2.846 | 2.878 | 20.3% | QK-norm, GQA, tied |
+| `small_gemma3` | 2.846 | 2.878 | **22.8%** | best loss/throughput trade-off |
+| `small_deepone` | 2.903 | 2.936 | 13.3% | post-LN + ALiBi |
+| `small_mistral` | 2.936 | 2.965 | 22.4% | sliding-window |
+| `small_llama` | 2.939 | 2.969 | 21.1% | pre-LN RoPE baseline |
+| `small_causal` | 3.004 | 3.103 | 19.9% | vanilla (learned PE, no GLU) |
+
+(Numbers from `assets/results.csv`; regenerate with `python assets/generate_plots.py`.)
+
+### Observations
+
+- **A clear top cluster.** `llama_canon`, `qwen3`, and `gemma3` finish within
+  0.01 of each other (2.837–2.846) — a three-way statistical tie well ahead of
+  the field. All three pair GQA with tied embeddings and modern norm placement
+  (QK-norm in Qwen3/Gemma-3); those ingredients, not any single trick, are what
+  separate the leaders.
+
+- **Gemma-3 is the standout on the efficiency frontier.** It ties for the best
+  loss *and* posts the highest MFU (22.8%), so it reaches a given loss in the
+  fewest FLOPs and the least wall-clock — the interleaved sliding/full attention
+  costs nothing in quality here and helps throughput.
+
+- **Canon layers help, but they aren't free.** Adding Canon convolutional
+  mixing to the Llama backbone improves best eval loss from 2.939 (`llama`) to
+  2.837 (`llama_canon`) — a real, consistent gain — but roughly halves MFU
+  (21.1% → 11.4%). It wins on quality-per-token and loses on quality-per-second.
+
+- **The vanilla transformer is clearly last** (3.004). Learned positional
+  embeddings, MHA, and a plain MLP leave a visible gap to every model with
+  RoPE/ALiBi + GLU + GQA — a clean illustration of how much the now-standard
+  Llama-era ingredients buy at this scale.
+
+- **DeepOne holds the middle** (2.903) despite being the least stable run: its
+  post-LN + DeepNet design let grad-norm creep into the ~1.8–2.6 band mid-run,
+  but the clip guard plus the WSD LR decay brought it home without divergence.
+
+### A note on stability (gradient clipping)
+
+The base `small` template ships with no gradient clipping. On the first attempt,
+**Qwen3 diverged** ~80M tokens in: a single bad data batch produced a monster
+gradient spike (grad-norm ~39 vs the normal <2) that, unclipped, blew up the
+weights and tripped the divergence detector. Several other models spiked at the
+same batch but rode through it. Adding `max_grad_norm: 3.0` to the project (just
+above the healthy grad-norm band, read off the TensorBoard plot) defuses the
+spike while leaving normal training untouched; with it, all seven complete the
+full 1B-token budget. This is a good illustration of why a loose gradient clip
+is cheap insurance for small-model pretraining even when the median step looks
+perfectly stable.
+
+### Reproducing
+
+```bash
+# 1. queue all configs at one GPU each (see "Train all models" above)
+for cfg in $(forgather ls | grep -oP '[\w./-]+\.yaml' | grep -v '^project\.yaml' | tr -d '[]'); do
+    forgather -t "$cfg" submit --requested-gpus 1
+done
+
+# 2. wait for `forgather job list` to show them all `done`, then plot
+python assets/generate_plots.py
+```
 
 ## Adding a new model
 
