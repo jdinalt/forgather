@@ -36,7 +36,14 @@ just not updated by this report):
 
     tokens_total : int    cumulative input tokens seen (num_input_tokens_seen)
     flos_total   : float  cumulative total_flos
-    step_total   : int    cumulative optimizer steps (global_step)
+    step_total   : int    cumulative optimizer steps (global_step, used for
+                          aggregator delta math)
+    global_step  : int    same numeric value as step_total, kept under the
+                          conventional trainer-side name for client consumers
+                          (the webui's per-worker stats row reads this)
+    epoch        : float  latest fractional epoch
+    learning_rate: float  latest scheduled learning rate
+    max_steps    : int    per-worker progress target; passthrough (not aggregated)
     tokens_window: int    tokens since this worker's last log (loss weight)
     loss         : float  latest train loss
     grad_norm    : float  latest grad norm
@@ -45,6 +52,13 @@ just not updated by this report):
     peak_mem     : float  latest peak memory (bytes; summed across devices)
     eval_loss    : float  latest eval loss (only on an eval report)
     eval_step    : int    step at which eval_loss was computed
+
+The ``global_step`` / ``epoch`` / ``learning_rate`` triplet is the same set the
+trainer-control endpoint at ``/api/jobs/<id>/status`` exposes; making them
+available in the worker's heartbeat means the webui's DiLoCo panel can render
+per-worker training-side stats from the DiLoCo server alone, even when the
+trainer process lives on a peer this webui can't reach (multi-node cluster,
+trainer-control bound to loopback on the rank-0 host). See ``issue #163``.
 """
 
 import math
@@ -60,7 +74,22 @@ _DELTA_FIELDS = {
 }
 
 # Keys carried forward as the worker's latest live-gauge values.
-_GAUGE_FIELDS = ("tok_per_sec", "mfu", "peak_mem", "grad_norm", "tokens_window")
+_GAUGE_FIELDS = (
+    "tok_per_sec",
+    "mfu",
+    "peak_mem",
+    "grad_norm",
+    "tokens_window",
+    # Per-worker training-state gauges. Not aggregated across workers in
+    # ``snapshot()`` (they don't have a meaningful cluster-wide sum/avg —
+    # different workers can be at different steps / epochs / LRs) but
+    # surfaced verbatim in the per-worker ``w.stats`` view that ``/status``
+    # serves, so the webui's per-worker stats row can render them without
+    # depending on the local trainer-control endpoint.
+    "global_step",
+    "epoch",
+    "learning_rate",
+)
 
 # The complete normalized schema — every key the aggregator will accept from a
 # worker. Anything else in a heartbeat's ``stats`` dict is dropped.
@@ -68,6 +97,9 @@ _STAT_FIELDS = (
     "tokens_total",
     "flos_total",
     "step_total",
+    "global_step",  # alias of step_total under the conventional trainer name
+    "epoch",
+    "learning_rate",
     "max_steps",  # per-worker progress target; passthrough (not aggregated)
     "tokens_window",
     "loss",

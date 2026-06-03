@@ -778,3 +778,83 @@ class TestStatefulProtocol:
         cb2 = DiLoCoCallback(server_addr="host:8512")
         cb2.load_state_dict(sd)
         assert cb2._pending_state == sd
+
+
+class TestBuildStatsSnapshot:
+    """``DiLoCoCallback._build_stats_snapshot`` maps trainer state + log dict
+    onto the normalized stats schema the server aggregator consumes
+    (``diloco/stats.py``). The fields that mirror the trainer-control
+    endpoint (``global_step`` / ``epoch`` / ``learning_rate``) are required
+    so the webui's per-worker stats row can render from the DiLoCo server
+    alone — without needing a JobRecord on the local node."""
+
+    def _state(self, **over):
+        # TrainerState carries global_step / epoch / max_steps;
+        # num_input_tokens_seen and total_flos may or may not be set.
+        s = _make_state()
+        for k, v in over.items():
+            setattr(s, k, v)
+        return s
+
+    def test_trainer_state_fields_mapped(self):
+        state = self._state(
+            global_step=1234,
+            epoch=1.75,
+            num_input_tokens_seen=99_999,
+            total_flos=1e15,
+            max_steps=8030,
+        )
+        snap = DiLoCoCallback._build_stats_snapshot(state, logs=None)
+        assert snap["step_total"] == 1234
+        # ``global_step`` is the same numeric value under the conventional
+        # trainer-side name — the webui's per-worker stats row reads this
+        # key directly without translating ``step_total``.
+        assert snap["global_step"] == 1234
+        assert snap["epoch"] == 1.75
+        assert snap["tokens_total"] == 99_999
+        assert snap["flos_total"] == 1e15
+        assert snap["max_steps"] == 8030
+
+    def test_log_fields_passed_through(self):
+        state = self._state(global_step=10, epoch=0.5)
+        logs = {
+            "loss": 2.5,
+            "grad_norm": 0.8,
+            "tok_per_sec": 1234.5,
+            "mfu": 0.42,
+            "learning_rate": 1.5e-4,
+            "tokens": 500,
+            "peak_mem": 1_000_000_000,
+        }
+        snap = DiLoCoCallback._build_stats_snapshot(state, logs=logs)
+        assert snap["loss"] == 2.5
+        assert snap["grad_norm"] == 0.8
+        assert snap["tok_per_sec"] == 1234.5
+        assert snap["mfu"] == 0.42
+        # ``learning_rate`` is the trainer-control parity field — webui's
+        # JobStatsRow reads it as the ``lr`` pill.
+        assert snap["learning_rate"] == 1.5e-4
+        assert snap["tokens_window"] == 500
+        assert snap["peak_mem"] == 1_000_000_000.0
+
+    def test_missing_logs_dict_still_yields_state_fields(self):
+        """``on_log`` may pass ``logs=None`` on the first call; the snapshot
+        still needs to carry the trainer-state fields (otherwise progress
+        and step never reach the server until the first log dict arrives)."""
+        state = self._state(global_step=42, epoch=0.1)
+        snap = DiLoCoCallback._build_stats_snapshot(state, logs=None)
+        assert snap["global_step"] == 42
+        assert snap["epoch"] == 0.1
+        assert "loss" not in snap
+
+    def test_eval_path_preserves_learning_rate_absent(self):
+        """The eval path doesn't carry a learning_rate (no log dict). The
+        snapshot must not synthesize one — missing ``learning_rate`` is the
+        signal that the previous gauge value should remain on the server."""
+        state = self._state(global_step=500, epoch=0.5)
+        snap = DiLoCoCallback._build_stats_snapshot(
+            state, logs=None, eval_loss=1.42
+        )
+        assert snap["eval_loss"] == 1.42
+        assert snap["eval_step"] == 500
+        assert "learning_rate" not in snap

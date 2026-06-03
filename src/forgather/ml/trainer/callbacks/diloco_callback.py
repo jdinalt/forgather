@@ -689,6 +689,13 @@ class DiLoCoCallback(TrainerCallback):
         step = getattr(state, "global_step", None)
         if step is not None:
             snap["step_total"] = int(step)
+            # Same value under the conventional trainer-side name so the
+            # webui's per-worker stats row finds it without having to know
+            # about the aggregator's delta-field convention.
+            snap["global_step"] = int(step)
+        epoch = getattr(state, "epoch", None)
+        if epoch is not None:
+            snap["epoch"] = float(epoch)
         # Per-worker progress target (this worker's planned optimizer steps).
         # Reported so the server / `forgather diloco status` can show each
         # worker's global-step / max-steps progress; it's a passthrough
@@ -701,7 +708,7 @@ class DiLoCoCallback(TrainerCallback):
         if logs:
             if logs.get("tokens") is not None:
                 snap["tokens_window"] = logs["tokens"]
-            for key in ("loss", "grad_norm", "tok_per_sec", "mfu"):
+            for key in ("loss", "grad_norm", "tok_per_sec", "mfu", "learning_rate"):
                 if logs.get(key) is not None:
                     snap[key] = logs[key]
             pm = logs.get("peak_mem", logs.get("peak_mem_allocated"))

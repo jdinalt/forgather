@@ -231,6 +231,44 @@ class TestSanitization:
         agg.update("w0", out)
         assert "max_steps" not in agg.snapshot()
 
+    def test_trainer_control_parity_fields_pass_through(self):
+        # ``global_step`` / ``epoch`` / ``learning_rate`` mirror what the
+        # trainer-control endpoint's /status exposes. The webui's per-
+        # worker stats row keys on these names; preserve them verbatim
+        # in the sanitized per-worker dict (they're gauge passthroughs —
+        # not aggregated across workers, who may run different
+        # schedules).
+        out = sanitize_stats(
+            {
+                "global_step": 1234,
+                "epoch": 1.75,
+                "learning_rate": 1.5e-4,
+                "loss": 2.0,
+            }
+        )
+        assert out["global_step"] == 1234
+        assert out["epoch"] == 1.75
+        assert out["learning_rate"] == 1.5e-4
+        # Confirms they aren't promoted into the cluster-aggregate snapshot
+        # (no meaningful sum/mean across heterogeneous schedules).
+        agg = StatsAggregator()
+        agg.update("w0", out)
+        snap = agg.snapshot()
+        assert "global_step" not in snap
+        assert "epoch" not in snap
+        assert "learning_rate" not in snap
+
+    def test_global_step_independent_of_step_total(self):
+        # ``step_total`` feeds the aggregator's delta math; ``global_step``
+        # is a passthrough gauge. They normally carry the same value but
+        # the sanitizer doesn't auto-derive one from the other — the
+        # callback ships both explicitly when it knows the step.
+        out = sanitize_stats({"step_total": 100})
+        assert "global_step" not in out
+        out = sanitize_stats({"global_step": 100})
+        assert "step_total" not in out
+        assert out["global_step"] == 100
+
     def test_nan_loss_does_not_poison_ema(self):
         agg = StatsAggregator()
         agg.update("w0", {"loss": float("nan"), "tokens_window": 100})

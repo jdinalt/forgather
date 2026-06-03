@@ -1120,6 +1120,14 @@ export interface DiLoCoWorkerStatus {
    *  when the worker-id was renamed away from the job's queue_id (e.g. a
    *  resumable run reusing a stable worker name). See issue #103. */
   output_dir?: string | null;
+  /** Latest sanitized training-stats snapshot the worker reported on its
+   *  heartbeat. Shape matches ``forgather.ml.diloco.stats._STAT_FIELDS``;
+   *  every key is optional and numeric. Carries the trainer-control
+   *  parity fields (``global_step`` / ``epoch`` / ``learning_rate``) so
+   *  the per-worker stats row can render without a JobRecord on this
+   *  node — essential for cross-node DiLoCo where the trainer lives on
+   *  a peer. */
+  stats?: Record<string, number> | null;
 }
 
 /** Upstream ``/status`` response. Field set tracks DiLoCoServer._handle_status. */

@@ -1420,13 +1420,14 @@ interface GroupView {
  *  ranking lets a fresh respawn outrank the stopped job that still shares
  *  its output_dir.
  *
- *  Cross-node limitation: ``jobs`` is the local node's ``/api/jobs``
+ *  Cross-node behavior: ``jobs`` is the local node's ``/api/jobs``
  *  list. A worker spawned on a peer (cluster-discovered DiLoCo server,
  *  worker submitted from another node) won't have a JobRecord on this
- *  node, so correlation returns null and the per-worker stats row
- *  collapses to the "No correlated forgather job" message. The controls
- *  (Save / Save & Stop / Abort) still work — they go through the DiLoCo
- *  server's relay rather than the local trainer-control endpoint. */
+ *  node, so correlation returns null — but per-worker training stats
+ *  still render from the DiLoCo server's heartbeat-aggregated
+ *  ``workers[wid].stats`` view. The controls (Save / Save & Stop /
+ *  Abort) work either way; they go through the DiLoCo server's
+ *  trainer-control relay rather than the local trainer-control endpoint. */
 function correlateJob(
   group: GroupView,
   workers: Record<string, DiLoCoWorkerStatus>,
@@ -1584,7 +1585,15 @@ function GroupCard({
     },
   });
 
-  const stats = jobStatusQ.data ?? null;
+  // Same source-preference as ``WorkerCard``: trainer-control endpoint
+  // when a local JobRecord is correlated, else the canonical member's
+  // heartbeat-reported stats from the DiLoCo server. Pipeline-group
+  // members share an output_dir but each rank reports its own per-step
+  // stats; the canonical member (pp_rank=0 by convention) is the source
+  // of truth for the group's progress / loss / lr display.
+  const stats: Record<string, unknown> | null =
+    jobStatusQ.data ??
+    (canonical?.stats ? { ...canonical.stats } : null);
   const ppN = group.members.length;
 
   return (
@@ -1668,10 +1677,11 @@ function GroupCard({
       </div>
 
       {stats && <JobStatsRow stats={stats} />}
-      {!job && (
+      {!stats && (
         <div className="muted" style={{ fontSize: 11 }}>
-          No correlated forgather job — training-side stats unavailable.
-          (Controls below still work: they go through the server relay.)
+          No training-side stats yet — the canonical worker hasn't
+          reported a log step. (Controls below still work: they go
+          through the DiLoCo server relay.)
         </div>
       )}
 
@@ -1811,7 +1821,16 @@ function WorkerCard({
     },
   });
 
-  const stats = jobStatusQ.data ?? null;
+  // Source the stats row from the trainer-control endpoint when a local
+  // JobRecord correlated this worker; fall back to the heartbeat-reported
+  // ``workerStatus.stats`` (sourced by the DiLoCo callback in parallel
+  // with the trainer-control relay) when no correlation is available —
+  // the cross-node case where the trainer lives on a peer this webui
+  // can't reach. Both paths feed the same JobStatsRow keys
+  // (``global_step``, ``max_steps``, ``loss``, ``learning_rate``,
+  // ``grad_norm``, ``epoch``, ``tok_per_sec``, ``tokens``, ``peak_mem``).
+  const stats: Record<string, unknown> | null =
+    jobStatusQ.data ?? (workerStatus.stats ? { ...workerStatus.stats } : null);
 
   return (
     <div
@@ -1879,14 +1898,17 @@ function WorkerCard({
         )}
       </div>
 
-      {/* Middle: training-job progress + stats (when we have a job).
-          Suppressed in compact mode — the per-rank stats are identical
-          to the group's canonical stats already shown on the header. */}
+      {/* Middle: training-side progress + stats. Sourced from the local
+          trainer-control endpoint when a JobRecord is correlated, else
+          from the DiLoCo server's heartbeat-aggregated per-worker view.
+          Suppressed in compact mode — the per-rank stats duplicate the
+          group's canonical stats on the header. */}
       {!compact && stats && <JobStatsRow stats={stats} />}
-      {!compact && !job && (
+      {!compact && !stats && (
         <div className="muted" style={{ fontSize: 11 }}>
-          No correlated forgather job — training-side stats unavailable.
-          (Controls below still work: they go through the server relay.)
+          No training-side stats yet — the worker hasn't reported a log
+          step. (Controls below still work: they go through the DiLoCo
+          server relay.)
         </div>
       )}
 
