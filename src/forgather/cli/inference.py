@@ -160,39 +160,121 @@ def _get_script_path(script_name):
 def _enqueue_inference(args, remainder, local_fallback=False):
     import argparse
 
-    p = argparse.ArgumentParser(prog="forgather inf server", add_help=True)
-    p.add_argument(
+    p = argparse.ArgumentParser(
+        prog="forgather inf server",
+        add_help=True,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Run an OpenAI-compatible inference server for one or more models.\n"
+            "\n"
+            "Disposition: the inference server is a long-running service, so by\n"
+            "default it is SUBMITTED TO THE SCHEDULER and runs in the background\n"
+            "(like dataset-server / the DiLoCo server) — manage it with\n"
+            "`forgather job` (list/logs/stop). Control where it runs with the\n"
+            "locality flags below."
+        ),
+        epilog=(
+            "examples:\n"
+            "  forgather inf server -m ./out/model            # background (scheduler)\n"
+            "  forgather inf server -m ./out/model --local-only   # foreground here\n"
+            "  forgather inf server -m a=./m1 -m b=./m2        # multi-model\n"
+        ),
+    )
+
+    loc = p.add_argument_group("disposition (where it runs)")
+    loc.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Run the server in the foreground here instead of scheduling it.",
+    )
+    loc.add_argument(
+        "--local-fallback",
+        action="store_true",
+        help="Foreground only if the forgather server is unreachable.",
+    )
+    loc.add_argument(
+        "--priority",
+        type=int,
+        default=0,
+        help="Scheduler priority when submitted as a job (default: 0).",
+    )
+    loc.add_argument(
+        "--server",
+        default=None,
+        metavar="URL",
+        help="forgather-server URL to submit to (default: env / 127.0.0.1:8765).",
+    )
+
+    model = p.add_argument_group("model + serving")
+    model.add_argument(
         "-m",
         "--model",
         action="append",
         required=True,
+        metavar="PATH | NAME=PATH",
         help=(
             "Model PATH or NAME=PATH; pass multiple times for multi-model "
             "inference. Requests dispatch by OpenAI 'model' field."
         ),
     )
-    p.add_argument("-p", "--port", type=int, default=8137)
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--dtype", default="bfloat16")
-    p.add_argument(
+    model.add_argument(
+        "-p", "--port", type=int, default=8137, help="Bind port (default: 8137)."
+    )
+    model.add_argument(
+        "--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)."
+    )
+    model.add_argument(
+        "--dtype", default="bfloat16", help="Model dtype (default: bfloat16)."
+    )
+    model.add_argument(
         "--from-checkpoint",
         action=argparse.BooleanOptionalAction,
         default=False,
+        help="Load from a training checkpoint dir rather than a finalized model.",
     )
-    p.add_argument("--compile", action="store_true")
-    p.add_argument("--disable-kv-cache", action="store_true")
-    p.add_argument(
+    model.add_argument(
+        "--checkpoint-path",
+        default=None,
+        metavar="PATH",
+        help="Explicit checkpoint path (single-model; implies --from-checkpoint).",
+    )
+    model.add_argument(
+        "--compile", action="store_true", help="torch.compile the model(s)."
+    )
+    model.add_argument(
+        "--compile-args",
+        default=None,
+        metavar="JSON",
+        help="JSON of kwargs passed to torch.compile.",
+    )
+    model.add_argument(
+        "--disable-kv-cache",
+        action="store_true",
+        help="Disable the KV cache (debugging / memory-constrained).",
+    )
+    model.add_argument(
         "--keep-on-gpu",
         action="store_true",
         help="Multi-model: keep all models GPU-resident (no CPU swap).",
     )
-    p.add_argument("--attn-implementation", default=None)
-    p.add_argument("--cache-implementation", default=None)
-    p.add_argument("--checkpoint-path", default=None)
-    p.add_argument("--chat-template", default=None)
-    p.add_argument("--compile-args", default=None)
-    p.add_argument("--priority", type=int, default=0)
-    p.add_argument("--server", default=None)
+    model.add_argument(
+        "--attn-implementation",
+        default=None,
+        metavar="IMPL",
+        help="Attention impl (e.g. flash_attention_2, sdpa, eager).",
+    )
+    model.add_argument(
+        "--cache-implementation",
+        default=None,
+        metavar="IMPL",
+        help="KV-cache implementation (e.g. static, dynamic).",
+    )
+    model.add_argument(
+        "--chat-template",
+        default=None,
+        metavar="PATH|NAME",
+        help="Override the chat template used to format requests.",
+    )
     sub = p.parse_args(remainder)
 
     # Parse -m args into name/path specs. ``NAME=PATH`` or bare ``PATH``.

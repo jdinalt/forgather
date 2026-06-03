@@ -880,11 +880,10 @@ def _enqueue_worker_jobs(client, names, server, args, dynamic_args, dataset_sour
     hb = getattr(args, "heartbeat_interval", None)
     # Per-worker GPUs: --requested-gpus (the unified knob on `submit`) wins;
     # fall back to the deprecated `diloco worker --gpus-per-worker`, else 1.
-    gpus = (
-        getattr(args, "requested_gpus", None)
-        or getattr(args, "gpus_per_worker", None)
-        or 1
-    )
+    # Use an explicit None check so --requested-gpus 0 (the no-reservation
+    # host-CUDA escape hatch) isn't silently rewritten to 1.
+    rg = getattr(args, "requested_gpus", None)
+    gpus = rg if rg is not None else (getattr(args, "gpus_per_worker", None) or 1)
     priority = getattr(args, "priority", 0)
     project_dir = getattr(args, "project_dir", ".")
 

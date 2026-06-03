@@ -508,6 +508,12 @@ def create_diloco_parser(global_args):
     worker_parser = subparsers.add_parser(
         "worker",
         help="Run training as a DiLoCo worker",
+        description=(
+            "Run training as a DiLoCo worker (deprecated alias of "
+            "`forgather submit --diloco`).\n"
+            "Enqueues worker(s) through the forgather server by default; "
+            "--local-only runs one in the foreground."
+        ),
         formatter_class=RawTextHelpFormatter,
     )
     worker_parser.add_argument(

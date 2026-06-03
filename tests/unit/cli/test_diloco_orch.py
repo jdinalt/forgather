@@ -865,6 +865,16 @@ class TestLaunchWorkers:
         )
         assert rc == 0
         assert not hasattr(client, "gen_call")  # explicit id, count 1 → no generation
+
+    def test_requested_gpus_zero_preserved(self, patch_orchestrator):
+        # --requested-gpus 0 (the no-reservation host-CUDA escape hatch) must
+        # not be rewritten to 1 by the falsy fallback.
+        client = patch_orchestrator(FakeClient(servers=[]))
+        rc = orch.launch_workers(
+            _worker_args(worker_id="w0", server="h:8512", requested_gpus=0), {}
+        )
+        assert rc == 0
+        assert client.enqueued[0]["requested_gpus"] == 0
         assert client.enqueued[0]["job_params"]["diloco"]["worker_id"] == "w0"
         # unknown server passed through verbatim
         assert client.enqueued[0]["job_params"]["diloco"]["server_addr"] == "h:8512"

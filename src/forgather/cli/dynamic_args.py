@@ -65,7 +65,10 @@ def parse_dynamic_args(parser, global_args):
             _arg_groups = {}
 
             def _arg_target(group):
-                key = group or ""
+                # str() so a malformed config with a non-string (e.g.
+                # unhashable list) `group` can't abort the whole dynamic-arg
+                # load — at worst it gets an odd group title.
+                key = str(group) if group else ""
                 if key not in _arg_groups:
                     title = (
                         f"Config arguments — {group}"
@@ -136,9 +139,21 @@ def parse_dynamic_args(parser, global_args):
                     # No long form, use short form
                     if names and names[0].startswith("-"):
                         dynamic_arg_names.append(names[0][1:])
-    except:
-        print("Loading dynamic args failed!")
-        traceback.print_exc()
+    except Exception as exc:
+        # Running a dynamic-args command (e.g. its `--help`) outside a project
+        # is benign — there's just no config to read args from. Note it on one
+        # line instead of dumping a traceback that looks like a crash. Anything
+        # else is a real error worth the full trace.
+        msg = str(exc).lower()
+        if isinstance(exc, (ValueError, FileNotFoundError)) and "project" in msg:
+            print(
+                "(config args unavailable here — run inside a project "
+                "with -p/-t to list them)",
+                file=sys.stderr,
+            )
+        else:
+            print("Loading dynamic args failed!")
+            traceback.print_exc()
 
     # Attach dynamic arg names to the parser for later use
     parser._dynamic_arg_names = dynamic_arg_names
