@@ -93,6 +93,10 @@ forgather job logs <queue_id>
 forgather job stop <queue_id>
 forgather job cancel <queue_id>
 
+# Abort a running job immediately WITHOUT saving a checkpoint. Handy when you
+# spun up a run just to profile throughput and don't want the final save.
+forgather job abort <queue_id>
+
 # Pause / resume the scheduler (running jobs keep going; queued ones wait)
 forgather job scheduler pause
 forgather job scheduler resume
