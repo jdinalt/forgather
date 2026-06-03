@@ -333,7 +333,7 @@ def _enqueue_inference(args, remainder, local_fallback=False):
     # --local-fallback drops to a foreground server when it's down. (--local-only
     # was handled in server_cmd before we got here.)
     locality = argparse.Namespace(
-        via_server=sub.server, local_only=False, local_fallback=local_fallback
+        server=sub.server, local_only=False, local_fallback=local_fallback
     )
     try:
         client = submit_orch.use_orchestrator(locality)

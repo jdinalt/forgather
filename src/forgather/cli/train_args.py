@@ -91,7 +91,7 @@ def create_train_parser(global_args):
     parser.add_argument(
         "--server",
         "--via-server",
-        dest="via_server",
+        dest="server",
         type=str,
         default=None,
         metavar="URL",

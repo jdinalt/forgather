@@ -140,7 +140,7 @@ def create_submit_parser(global_args):
     )
     diloco.add_argument(
         "--diloco-server",
-        dest="server",
+        dest="diloco_server",
         type=str,
         default=None,
         metavar="ID",

@@ -20,7 +20,7 @@ def submit_cmd(args):
 
     diloco_mode = (
         getattr(args, "diloco", False)
-        or bool(getattr(args, "server", None))
+        or bool(getattr(args, "diloco_server", None))
         or getattr(args, "resume_workers", False)
     )
     run_global = getattr(args, "run_global", False)
@@ -53,10 +53,9 @@ def submit_cmd(args):
     args.config_template = config
 
     if diloco_mode:
-        # DiLoCo worker(s): the shared worker-launch impl (also reached by the
-        # deprecated `forgather diloco worker`). --diloco-server maps to its
-        # param-server arg (dest="server"); per-worker GPUs come from
-        # --requested-gpus.
+        # DiLoCo worker(s) via the shared worker-launch impl. --diloco selects
+        # the mode; --diloco-server (dest=diloco_server) pins a param-server;
+        # per-worker GPUs come from --requested-gpus.
         from .diloco import _worker_cmd
 
         return _worker_cmd(args) or 0
@@ -135,7 +134,7 @@ def _submit_global(args, submit_orch, config):
     """Multi-node fan-out across the cluster."""
     from .server_client import ServerClient, ServerUnreachable
 
-    client = ServerClient(getattr(args, "via_server", None) or None)
+    client = ServerClient(getattr(args, "server", None) or None)
     try:
         dataset_source = submit_orch.resolve_dataset_source(client, args)
         dynamic_args = submit_orch.collect_dynamic_args(args)

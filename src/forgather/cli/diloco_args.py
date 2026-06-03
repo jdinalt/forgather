@@ -236,7 +236,9 @@ def create_diloco_parser(global_args):
     # server is down.
     _add_locality_args(server_parser)
     server_parser.add_argument(
+        "--server",
         "--via-server",
+        dest="server",
         type=str,
         default=None,
         metavar="URL",
@@ -261,7 +263,8 @@ def create_diloco_parser(global_args):
         formatter_class=RawTextHelpFormatter,
     )
     status_parser.add_argument(
-        "--server",
+        "--diloco-server",
+        dest="diloco_server",
         type=str,
         default=None,
         help=(
@@ -322,7 +325,9 @@ def create_diloco_parser(global_args):
         help="Emit the merged status (status + info + workers [+ queues]) as JSON.",
     )
     status_parser.add_argument(
+        "--server",
         "--via-server",
+        dest="server",
         type=str,
         default=None,
         metavar="URL",
@@ -342,7 +347,9 @@ def create_diloco_parser(global_args):
         formatter_class=RawTextHelpFormatter,
     )
     servers_parser.add_argument(
+        "--server",
         "--via-server",
+        dest="server",
         type=str,
         default=None,
         metavar="URL",
@@ -386,7 +393,9 @@ def create_diloco_parser(global_args):
         ),
     )
     logs_parser.add_argument(
+        "--server",
         "--via-server",
+        dest="server",
         type=str,
         default=None,
         metavar="URL",
@@ -396,7 +405,8 @@ def create_diloco_parser(global_args):
     # Shared client-connection args for the control-plane subcommands.
     def _add_client_conn_args(p):
         p.add_argument(
-            "--server",
+            "--diloco-server",
+            dest="diloco_server",
             type=str,
             default=None,
             help=(
@@ -421,7 +431,9 @@ def create_diloco_parser(global_args):
             help="Skip TLS certificate verification on the upstream server.",
         )
         p.add_argument(
+            "--server",
             "--via-server",
+            dest="server",
             type=str,
             default=None,
             metavar="URL",
@@ -514,7 +526,9 @@ def create_diloco_parser(global_args):
         help="Skip TLS chain validation for this entry (SSH-tunneled remotes).",
     )
     register_parser.add_argument(
+        "--server",
         "--via-server",
+        dest="server",
         type=str,
         default=None,
         metavar="URL",
@@ -537,7 +551,9 @@ def create_diloco_parser(global_args):
         help="Registry entry id (accepts the 'registered:<id>' form from 'servers').",
     )
     unregister_parser.add_argument(
+        "--server",
         "--via-server",
+        dest="server",
         type=str,
         default=None,
         metavar="URL",

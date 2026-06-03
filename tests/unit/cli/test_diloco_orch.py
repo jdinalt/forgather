@@ -514,7 +514,7 @@ class TestResolveJobId:
 
 def _loc_args(**over):
     base = dict(
-        server="local:q1", via_server=None, local_only=False, local_fallback=False
+        diloco_server="local:q1", server=None, local_only=False, local_fallback=False
     )
     base.update(over)
     return argparse.Namespace(**base)
@@ -553,18 +553,18 @@ class TestResolveOrchestratorBase:
 
         patch_orchestrator(FakeClient(servers=SERVERS))
         with pytest.raises(ServerUnreachable):
-            orch.resolve_orchestrator_base(_loc_args(server="localhost:8512"))
+            orch.resolve_orchestrator_base(_loc_args(diloco_server="localhost:8512"))
 
     def test_up_unknown_target_with_fallback_goes_direct(self, patch_orchestrator):
         patch_orchestrator(FakeClient(servers=SERVERS))
         assert orch.resolve_orchestrator_base(
-            _loc_args(server="localhost:8512", local_fallback=True)
+            _loc_args(diloco_server="localhost:8512", local_fallback=True)
         ) == (None, None)
 
     def test_implicit_single_server(self, patch_orchestrator):
         one = [{"id": "local:q1", "base_url": "http://127.0.0.1:8512"}]
         client = patch_orchestrator(FakeClient(servers=one))
-        c, base = orch.resolve_orchestrator_base(_loc_args(server=None))
+        c, base = orch.resolve_orchestrator_base(_loc_args(diloco_server=None))
         assert c is client and base == "http://127.0.0.1:8512"
 
     def test_implicit_ambiguous_raises(self, patch_orchestrator):
@@ -572,14 +572,14 @@ class TestResolveOrchestratorBase:
 
         patch_orchestrator(FakeClient(servers=SERVERS))
         with pytest.raises(ServerUnreachable):
-            orch.resolve_orchestrator_base(_loc_args(server=None))
+            orch.resolve_orchestrator_base(_loc_args(diloco_server=None))
 
     def test_implicit_zero_servers_raises(self, patch_orchestrator):
         from forgather.cli.server_client import ServerUnreachable
 
         patch_orchestrator(FakeClient(servers=[]))
         with pytest.raises(ServerUnreachable):
-            orch.resolve_orchestrator_base(_loc_args(server=None))
+            orch.resolve_orchestrator_base(_loc_args(diloco_server=None))
 
 
 class TestRegistry:
@@ -635,7 +635,7 @@ class TestControlOps:
         monkeypatch.setattr(
             orch, "resolve_orchestrator_base", lambda args: (client, "http://h:8512")
         )
-        ops, label = orch.make_control_ops(argparse.Namespace(server="local:q1"))
+        ops, label = orch.make_control_ops(argparse.Namespace(diloco_server="local:q1"))
         assert isinstance(ops, orch._OrchestratorOps)
         assert "via forgather server" in label
         ops.relay("save_checkpoint", worker_id="w0")
@@ -651,7 +651,7 @@ class TestControlOps:
             orch, "resolve_orchestrator_base", lambda args: (None, None)
         )
         args = argparse.Namespace(
-            server="localhost:8512", auth_token=None, no_verify_tls=False
+            diloco_server="localhost:8512", auth_token=None, no_verify_tls=False
         )
         ops, label = orch.make_control_ops(args)
         assert isinstance(ops, orch._DirectOps)
@@ -820,7 +820,7 @@ class TestLaunchServer:
 
 def _worker_args(**over):
     base = dict(
-        server="local:q1",
+        diloco_server="local:q1",
         worker_id=None,
         heartbeat_interval=30.0,
         devices=None,
@@ -861,7 +861,7 @@ class TestLaunchWorkers:
     def test_explicit_single_worker_no_generate(self, patch_orchestrator):
         client = patch_orchestrator(FakeClient(servers=[]))
         rc = orch.launch_workers(
-            _worker_args(worker_id="w0", count=1, server="h:8512"), {}
+            _worker_args(worker_id="w0", count=1, diloco_server="h:8512"), {}
         )
         assert rc == 0
         assert not hasattr(client, "gen_call")  # explicit id, count 1 → no generation
@@ -871,7 +871,7 @@ class TestLaunchWorkers:
         # not be rewritten to 1 by the falsy fallback.
         client = patch_orchestrator(FakeClient(servers=[]))
         rc = orch.launch_workers(
-            _worker_args(worker_id="w0", server="h:8512", requested_gpus=0), {}
+            _worker_args(worker_id="w0", diloco_server="h:8512", requested_gpus=0), {}
         )
         assert rc == 0
         assert client.enqueued[0]["requested_gpus"] == 0
@@ -935,7 +935,9 @@ class TestLaunchWorkers:
     def test_implicit_single_server(self, patch_orchestrator):
         one = [{"id": "local:q1", "base_url": "http://127.0.0.1:8512"}]
         client = patch_orchestrator(FakeClient(servers=one))
-        rc = orch.launch_workers(_worker_args(server=None, worker_id="w0", count=1), {})
+        rc = orch.launch_workers(
+            _worker_args(diloco_server=None, worker_id="w0", count=1), {}
+        )
         assert rc == 0
         assert (
             client.enqueued[0]["job_params"]["diloco"]["server_addr"]
@@ -944,13 +946,17 @@ class TestLaunchWorkers:
 
     def test_implicit_no_servers_errors(self, patch_orchestrator, capsys):
         patch_orchestrator(FakeClient(servers=[]))
-        rc = orch.launch_workers(_worker_args(server=None, worker_id="w0", count=1), {})
+        rc = orch.launch_workers(
+            _worker_args(diloco_server=None, worker_id="w0", count=1), {}
+        )
         assert rc == 1
         assert "no DiLoCo server" in capsys.readouterr().err
 
     def test_implicit_ambiguous_errors(self, patch_orchestrator, capsys):
         patch_orchestrator(FakeClient(servers=SERVERS))
-        rc = orch.launch_workers(_worker_args(server=None, worker_id="w0", count=1), {})
+        rc = orch.launch_workers(
+            _worker_args(diloco_server=None, worker_id="w0", count=1), {}
+        )
         assert rc == 1
 
 

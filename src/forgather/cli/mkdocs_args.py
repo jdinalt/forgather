@@ -39,7 +39,7 @@ def create_mkdocs_parser(_global_args):
     parser.add_argument(
         "--server",
         "--via-server",
-        dest="via_server",
+        dest="server",
         default=None,
         help="forgather-server URL (or $FORGATHER_SERVER_URL)",
     )

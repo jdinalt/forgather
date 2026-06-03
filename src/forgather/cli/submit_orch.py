@@ -55,17 +55,20 @@ def add_locality_args(parser):
 
 
 def add_via_server_arg(parser, help=None):
-    """Add the ``--via-server URL`` flag (forgather-server base URL override)."""
+    """Add the ``--server URL`` forgather-server base-URL flag.
+
+    ``--via-server`` is kept as a hidden back-compat alias (the flag used to be
+    spelled that way on submit/diloco/dataset-server/mkdocs).
+    """
     parser.add_argument(
+        "--server",
         "--via-server",
+        dest="server",
         type=str,
         default=None,
         metavar="URL",
         help=help
-        or (
-            "forgather-server base URL to enqueue on "
-            "(default: env / http://127.0.0.1:8765)."
-        ),
+        or "forgather-server base URL (default: env / http://127.0.0.1:8765).",
     )
 
 

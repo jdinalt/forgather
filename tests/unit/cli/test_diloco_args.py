@@ -18,13 +18,18 @@ class TestServersVerb:
     def test_defaults(self, parser):
         ns = parser.parse_args(["servers"])
         assert ns.diloco_subcommand == "servers"
-        assert ns.via_server is None
+        assert ns.server is None
         assert ns.json is False
 
     def test_flags(self, parser):
-        ns = parser.parse_args(["servers", "--json", "--via-server", "https://h:8765"])
+        # --server is the forgather-server URL (--via-server is a legacy alias).
+        ns = parser.parse_args(["servers", "--json", "--server", "https://h:8765"])
         assert ns.json is True
-        assert ns.via_server == "https://h:8765"
+        assert ns.server == "https://h:8765"
+
+    def test_via_server_alias(self, parser):
+        ns = parser.parse_args(["servers", "--via-server", "https://h:8765"])
+        assert ns.server == "https://h:8765"
 
 
 class TestLogsVerb:
@@ -50,15 +55,23 @@ class TestStatusEnrichment:
         assert ns.json is False
         assert ns.local_only is False
         assert ns.local_fallback is False
-        assert ns.via_server is None
-        # --server is now optional (auto-discovered / loopback-default).
+        # forgather-server URL (--server) and the DiLoCo param-server target
+        # (--diloco-server) are both optional / auto-discovered.
         assert ns.server is None
+        assert ns.diloco_server is None
 
     def test_new_flags_parse(self, parser):
         ns = parser.parse_args(
-            ["status", "--server", "h:9000", "--queues", "--json", "--local-only"]
+            [
+                "status",
+                "--diloco-server",
+                "h:9000",
+                "--queues",
+                "--json",
+                "--local-only",
+            ]
         )
-        assert ns.server == "h:9000"
+        assert ns.diloco_server == "h:9000"
         assert ns.queues is True
         assert ns.json is True
         assert ns.local_only is True

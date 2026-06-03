@@ -336,7 +336,9 @@ def _status_cmd(args):
         # Direct path: no discovery possible, so fall back to the loopback
         # default when --server is omitted. Token + verify_tls are picked up
         # from explicit args / env / loopback per-port file automatically.
-        direct_server = args.server or orch.DEFAULT_DIRECT_SERVER
+        direct_server = (
+            getattr(args, "diloco_server", None) or orch.DEFAULT_DIRECT_SERVER
+        )
         c = DiLoCoClient(
             direct_server,
             timeout=10,
@@ -708,7 +710,9 @@ def _worker_cmd(args):
     env = os.environ.copy()
     # Direct/foreground: no discovery here, so default to loopback when
     # --server is omitted.
-    env["DILOCO_SERVER"] = args.server or orch.DEFAULT_DIRECT_SERVER
+    env["DILOCO_SERVER"] = (
+        getattr(args, "diloco_server", None) or orch.DEFAULT_DIRECT_SERVER
+    )
     env["DILOCO_HEARTBEAT_INTERVAL"] = str(getattr(args, "heartbeat_interval", 30.0))
 
     if args.worker_id:
