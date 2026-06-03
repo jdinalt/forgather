@@ -94,13 +94,6 @@ def test_plain_submit_does_not_dispatch_to_diloco(monkeypatch):
     assert seen.get("train") is True
 
 
-def test_diloco_worker_prints_deprecation(monkeypatch, capsys):
-    monkeypatch.setattr(diloco_mod, "_worker_cmd", lambda args: 0)
-    diloco_mod.diloco_cmd(argparse.Namespace(diloco_subcommand="worker"))
-    err = capsys.readouterr().err
-    assert "deprecated" in err and "submit --diloco-server" in err
-
-
 # --- fail-loud mode-flag validation -----------------------------------------
 
 

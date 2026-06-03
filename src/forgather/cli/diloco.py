@@ -625,9 +625,8 @@ def _worker_cmd(args):
     """
     Launch training as a DiLoCo worker.
 
-    Shared entry point: reached both by ``forgather diloco worker`` (deprecated)
-    and by ``forgather submit --diloco-server`` (submit_cmd calls this directly).
-    Keep its arg contract stable for both — don't rename or change its signature
+    The worker-launch implementation behind ``forgather submit --diloco``
+    (submit_cmd calls this directly). Don't rename or change its signature
     without updating ``submit.submit_cmd``.
 
     By default the worker(s) are enqueued as scheduled training jobs through
@@ -716,8 +715,8 @@ def _worker_cmd(args):
         env["DILOCO_WORKER_ID"] = args.worker_id
 
     # `forgather submit --diloco` doesn't carry --devices (it's a scheduler
-    # submit command); the direct/foreground worker then inherits the parent
-    # env's CUDA_VISIBLE_DEVICES. The deprecated `diloco worker` still passes it.
+    # submit command); the direct/foreground worker inherits the parent env's
+    # CUDA_VISIBLE_DEVICES.
     devices = getattr(args, "devices", None)
     if devices:
         env["CUDA_VISIBLE_DEVICES"] = devices
@@ -794,13 +793,6 @@ def diloco_cmd(args):
         return _control_cmd(args)
     elif subcmd == "shutdown":
         return _shutdown_cmd(args)
-    elif subcmd == "worker":
-        print(
-            "note: 'forgather diloco worker' is deprecated; use "
-            "'forgather submit --diloco-server <id>' (the unified submit verb).",
-            file=sys.stderr,
-        )
-        return _worker_cmd(args)
     elif subcmd == "servers":
         from .diloco_orch import servers_cmd
 
