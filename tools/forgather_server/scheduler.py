@@ -219,6 +219,8 @@ def _reap_finished() -> None:
             # from the cluster picker promptly when the server stops.
             if updated.job_type == "inference":
                 _wake_inference_inventory()
+            elif updated.job_type == "diloco_server":
+                _wake_diloco_inventory()
         if rc is not None:
             log.info("reaped %s: rc=%d status=%s", qid, rc, new_status)
         else:
@@ -1275,6 +1277,8 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
     # entry before they can switch tabs.
     if item.job_type == "inference":
         _wake_inference_inventory()
+    elif item.job_type == "diloco_server":
+        _wake_diloco_inventory()
 
 
 def _pid_ancestors(pid: int) -> List[int]:
@@ -1531,6 +1535,8 @@ def _kill_record(queue_id: str, sig: int) -> bool:
         _cleanup_inference_token(updated)
         if updated.job_type == "inference":
             _wake_inference_inventory()
+        elif updated.job_type == "diloco_server":
+            _wake_diloco_inventory()
     return updated is not None
 
 
@@ -1568,6 +1574,21 @@ def _wake_inference_inventory() -> None:
         from . import cluster_inference_inventory
 
         cluster_inference_inventory.wake_loops()
+    except Exception:
+        pass
+
+
+def _wake_diloco_inventory() -> None:
+    """Signal the cluster DiLoCo-server inventory to re-poll.
+
+    Same shape as :func:`_wake_inference_inventory` — lazy import,
+    swallow failures, wake is a latency hint not a correctness
+    requirement.
+    """
+    try:
+        from . import cluster_diloco_inventory
+
+        cluster_diloco_inventory.wake_loops()
     except Exception:
         pass
 

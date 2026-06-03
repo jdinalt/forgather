@@ -322,6 +322,7 @@ function ServersList({
   const [showAdd, setShowAdd] = useState(false);
   const local = servers.filter((s) => s.source === "local");
   const registered = servers.filter((s) => s.source === "registered");
+  const cluster = servers.filter((s) => s.source === "cluster");
 
   return (
     <div
@@ -418,6 +419,15 @@ function ServersList({
           <ServerGroup
             heading="Registered"
             entries={registered}
+            selectedId={selectedId}
+            onSelect={onSelect}
+            onAfterRegistryChange={onAfterRegistryChange}
+          />
+        )}
+        {cluster.length > 0 && (
+          <ServerGroup
+            heading="Cluster"
+            entries={cluster}
             selectedId={selectedId}
             onSelect={onSelect}
             onAfterRegistryChange={onAfterRegistryChange}
@@ -528,6 +538,29 @@ function ServerRow({
               display: "inline-block",
             }}
             title={server.alive ? "running" : "not running"}
+          />
+        )}
+        {server.source === "cluster" && (
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: 4,
+              background:
+                server.healthy === true
+                  ? "#3a3"
+                  : server.healthy === false
+                  ? "#a33"
+                  : "#888",
+              display: "inline-block",
+            }}
+            title={
+              server.healthy === true
+                ? `healthy (peer ${server.peer_node_id ?? "?"})`
+                : server.healthy === false
+                ? `down (peer ${server.peer_node_id ?? "?"})`
+                : "health unknown"
+            }
           />
         )}
         <strong style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>

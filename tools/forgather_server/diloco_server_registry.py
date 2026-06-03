@@ -1,19 +1,19 @@
 """Persistent registry of user-added DiLoCo-server endpoints.
 
-The webui's DiLoCo view lists *running* servers the forgather_server
-itself spawned (and, in cluster mode, servers visible to peers).
-Operators also have *external* servers they hit regularly — a long-lived
-parameter server on another LAN segment, a teammate's server, an
-SSH-tunneled remote — that no cluster knows about.
+The webui's DiLoCo view lists running servers from three sources:
+locally-spawned (this forgather_server's JobRecords), cluster-attested
+(peer-spawned, surfaced via :mod:`cluster_diloco_inventory`), and the
+entries in this module. The escape-hatch role of *this* registry is
+servers that the local cluster can't see — a parameter server on
+another LAN segment, an SSH-tunneled remote, a WAN endpoint — so the
+operator types the URL and bearer once and the forgather_server
+proxies + authenticates upstream on their behalf.
 
-This module mirrors :mod:`inference_server_registry`: a small
-JSON-backed list of (label, base_url, auth_token, verify_tls) entries
-the user can add / remove via the webui, persisted across server
-restarts.
-
-TLS / auth is out of scope for the initial cut; ``auth_token`` and
-``verify_tls`` are reserved fields on the entry so the wire format
-doesn't need to change when TLS lands.
+A small JSON-backed list of (label, base_url, auth_token, verify_tls)
+entries, persisted across server restarts. Mirrors
+:mod:`inference_server_registry` in shape; ``auth_token`` and
+``verify_tls`` are populated end-to-end (the proxy attaches the bearer
+and honours the chain-validation opt-out).
 
 Intentionally a near-clone of the inference flavor rather than a shared
 abstraction: surfaces evolve independently (cluster integration, status
@@ -43,9 +43,9 @@ class RegistryEntry:
     id: str
     label: str
     base_url: str
-    # Reserved for the TLS / auth follow-up. Empty for the unauthenticated
-    # plaintext servers we currently spawn. Kept in the file so the schema
-    # doesn't need to change when auth lands.
+    # Bearer token attached as ``Authorization: Bearer`` on every
+    # upstream call the webui proxy makes to this server. Empty for
+    # ``--no-auth`` servers.
     auth_token: str = ""
     # When False, outbound calls skip TLS chain + hostname validation —
     # used for SSH-tunneled remotes whose certificate won't validate

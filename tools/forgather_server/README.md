@@ -993,6 +993,7 @@ execution). The carve-out is:
 - GET on the read-only inter-node endpoints (members, self,
   master, gpus_local, bandwidth_local, training_status_local,
   dataset_servers_local, dataset_inventory, dataset_servers,
+  diloco_servers_local, diloco_servers,
   dataset_router/resolve, issue_url_token) — see
   `auth._PEER_ALLOWED_PATHS`.
 - POST on a smaller mutation allow-list (`gpu_policy_local`,
@@ -1404,7 +1405,7 @@ GET /api/cluster/dataset_router/resolve?path=<dataset path>
 
 which picks a healthy server at random across the candidate set
 (crude load balance) and returns `{base_url, auth_token, server_id}`.
-Three master-only background loops, started from the lifespan and
+Master-only background loops, started from the lifespan and
 self-gated on `cluster.is_self_master`, keep the inventory live:
 
 | loop                                                    | interval               | what it does                                                                 |
@@ -1414,6 +1415,8 @@ self-gated on `cluster.is_self_master`, keep the inventory live:
 | `cluster_dataset_inventory.master_dataset_refresh_loop` | 10 s (warm-up) / 60 s  | GET `/v1/datasets` + `/v1/local`, rebuild the `local/<name>` routing index   |
 | `cluster_inference_inventory.master_collect_servers_loop` | 10 s                 | GET each peer's `/api/cluster/inference_servers_local` for the picker        |
 | `cluster_inference_inventory.master_health_loop`        | 10 s                   | GET `/health` on every inference server (root-mounted, not `/v1/health`)     |
+| `cluster_diloco_inventory.master_collect_servers_loop`  | 10 s                   | GET each peer's `/api/cluster/diloco_servers_local` for the DiLoCo panel     |
+| `cluster_diloco_inventory.master_health_loop`           | 10 s                   | GET `/health` on every DiLoCo server, flip the per-server healthy flag       |
 
 On a master transition the new master clears its inventory and the
 router returns `503 Retry-After: 5` until the first dataset-refresh
@@ -2547,6 +2550,56 @@ Token-stripping the browser response (so remote-peer tokens never
 leave the master) is tracked as a follow-up; the current behavior
 matches `/api/jobs`, which already ships per-job tokens to the
 authenticated session.
+
+### Cluster DiLoCo inventory
+
+Same pattern as the dataset and inference cluster inventories, applied
+to DiLoCo parameter servers so a server spawned on any cluster peer
+surfaces in every other peer's `forgather diloco servers` output and
+DiLoCo panel — no operator token copying. Implemented in
+`cluster_diloco_inventory.py`:
+
+- `LocalDiLoCo` (per-peer enumeration): two sources merged on
+  `server_id` collision (JobRecord wins):
+  1. `JobRecord(job_type == "diloco_server")` rows in `starting` /
+     `running` state.
+  2. The user-added registry at
+     `<config>/server/diloco_server_registry.json` — the
+     `forgather diloco register <url>` escape hatch for endpoints
+     mDNS can't see (WAN, SSH tunnel).
+  `0.0.0.0` binds are rewritten to the cluster identity's hostname
+  (or the scheduler-stamped `routable_host`); loopback binds stay
+  in the list flagged `loopback=true`.
+- Master aggregation: two async loops self-gating on master role:
+  - `master_collect_servers_loop` every 10 s pulls each peer's
+    `/api/cluster/diloco_servers_local` and merges into the master
+    snapshot.
+  - `master_health_loop` every 10 s probes each server's `/health`
+    (unauthenticated, root-mounted on the DiLoCo server, matching the
+    inference convention).
+- Endpoints (all under `/api/cluster/`):
+  - `GET /diloco_servers_local` — per-peer view, tokens included,
+    peer-mTLS allowed (the master polls this).
+  - `GET /diloco_servers` — master-aggregated browser-facing list.
+    On non-master nodes the route proxies to the master so every
+    webui sees the same set. **Includes the bearer token** — the
+    DiLoCo proxy at `routes/diloco.py` resolves it server-side from
+    the master snapshot when forwarding requests upstream, so the
+    browser never carries the upstream bearer.
+  - `POST /diloco_servers/refresh` — wake hook called by the
+    scheduler on diloco_server-job spawn / reap / abort and by the
+    registry add/delete handlers so the panel reflects the change
+    in ~1 s rather than waiting for the 10 s collect tick.
+
+Auth token surface: `auth.py:_PEER_ALLOWED_PATHS` carves out
+`diloco_servers_local` and `diloco_servers`;
+`auth.py:_PEER_ALLOWED_MUTATIONS` carves out
+`diloco_servers/refresh`. The escape-hatch registry endpoints
+(`/api/diloco/registry`) remain authenticated browser-only — only
+the aggregated inventory crosses peer boundaries.
+
+See `docs/design/diloco-security.md#cross-node-discovery-cluster-inventory`
+for the design rationale and end-to-end token-transit walkthrough.
 
 **Generation presets** — save/load named JSON presets of the current
 generation params. Served by `/api/generation-configs/*`, which merges

@@ -303,8 +303,11 @@ when the server is down, and `--local-only` skips the server entirely. There
 are only a few corner cases where you want local.
 
 ```bash
-# Discover every DiLoCo server the forgather server knows
-# (locally-spawned + externally-registered). --json for scripting.
+# Discover every DiLoCo server the forgather server knows. Sources
+# surfaced: ``local`` (spawned by this forgather server), ``registered``
+# (user-added persistent registry), and ``cluster`` (attested to by a
+# peer via the master DiLoCo inventory — automatic cross-node
+# discovery in cluster mode). --json for scripting.
 forgather diloco servers
 forgather diloco servers --json
 
@@ -325,10 +328,22 @@ tail -f "$(forgather diloco logs spectacular-fox --path)"  # …or tail it yours
 `forgather diloco logs <queue_id>` is a convenience wrapper; the generic
 `forgather job tail <queue_id>` / `forgather job dump <queue_id>` work too.
 
+**Cross-node discovery.** When the forgather server is in cluster mode
+(every server with `--cluster NAME` reachable on the LAN is a peer), a
+DiLoCo server spawned on **any** peer surfaces in `forgather diloco
+servers` on **every** peer with `source=cluster`. The master node
+aggregates the per-peer view by polling `/api/cluster/diloco_servers_local`
+across the cluster, and the webui proxy / CLI resolve the upstream
+bearer token from the master snapshot — the operator never copies or
+pastes the per-server token. See
+`docs/design/diloco-security.md#cross-node-discovery-cluster-inventory`.
+
 ```bash
-# Register an external DiLoCo server so the forgather server (and these
-# CLI commands) can reach it. The token is stored server-side and used to
-# authenticate upstream on your behalf.
+# Register an *external* DiLoCo server — the escape hatch for WAN
+# endpoints, SSH tunnels, or anything mDNS can't see on the local
+# cluster. The token is stored server-side and used to authenticate
+# upstream on your behalf. Servers reachable via the LAN cluster
+# don't need this — they surface automatically as ``source=cluster``.
 forgather diloco register https://gpu-box:8512 --label prod --auth-token <tok>
 forgather diloco unregister registered:<id>     # id shown by `diloco servers`
 ```
