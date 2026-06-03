@@ -2,8 +2,8 @@
 
 [config_metadata]
     == super()
-    -- set ns.config_name = "Llama Small"
-    -- set ns.config_description = "A Llama with 28M parameters"
+    -- set ns.config_name = "Llama Small (Tied)"
+    -- set ns.config_description = "A Llama with 28M parameters; embeddings and output-linear are tied."
     -- set ns.model_name = "llama_small"
 
 [model_definition]

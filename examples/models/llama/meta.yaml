@@ -1,8 +1,7 @@
 -- extends "meta_defaults.yaml"
 
--- block configs
-name: "Dynamic Llama"
+[configs]
+name: "Forgather Llama"
 description: "Llama models, in various sizes"
 config_prefix: "configs"
 default_config: "default.yaml"
-<< endblock configs
