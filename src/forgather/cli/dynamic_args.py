@@ -55,6 +55,26 @@ def parse_dynamic_args(parser, global_args):
         if "dynamic_args" in proj.config:
             dynamic_args = proj("dynamic_args")
         if dynamic_args:
+            # Render config-derived (dynamic) args under their own argparse
+            # group(s), created here (after the command's native args) so they
+            # appear AFTER the native flags in --help and clearly mark where the
+            # config args begin. Sub-group by each arg's optional ``group``
+            # metadata (the same hierarchical label the webui uses, e.g.
+            # ``Trainer:Schedule``) so long arg lists are easier to scan.
+            config_label = global_args.config_template or "config"
+            _arg_groups = {}
+
+            def _arg_target(group):
+                key = group or ""
+                if key not in _arg_groups:
+                    title = (
+                        f"Config arguments — {group}"
+                        if group
+                        else f"Config arguments (from {config_label})"
+                    )
+                    _arg_groups[key] = parser.add_argument_group(title)
+                return _arg_groups[key]
+
             for dynamic_arg in dynamic_args:
                 # The names in add_args() are positional only
                 # To simplify the interface, we just support a single name
@@ -77,7 +97,7 @@ def parse_dynamic_args(parser, global_args):
                 # (see require_dynamic_args). ``min`` / ``max`` likewise are
                 # webui constraints; the action-time check (validate_dynamic_arg_bounds)
                 # is the canonical CLI enforcement point.
-                dynamic_arg.pop("group", None)
+                group = dynamic_arg.pop("group", None)
                 dynamic_arg.pop("required", None)
                 dynamic_arg.pop("min", None)
                 dynamic_arg.pop("max", None)
@@ -87,7 +107,7 @@ def parse_dynamic_args(parser, global_args):
                     dynamic_arg["type"] = _convert_type_string(dynamic_arg["type"])
 
                 try:
-                    parser.add_argument(
+                    _arg_target(group).add_argument(
                         *names,
                         **dynamic_arg,
                     )
