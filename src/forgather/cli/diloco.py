@@ -715,8 +715,18 @@ def _worker_cmd(args):
     )
     env["DILOCO_HEARTBEAT_INTERVAL"] = str(getattr(args, "heartbeat_interval", 30.0))
 
+    # Always set DILOCO_WORKER_ID — when the operator didn't supply one,
+    # mint a memorable two-word name so the worker doesn't surface as
+    # the worker.py auto-generated ``worker_<hostname>_<8hex>`` fallback.
+    # Same naming convention the orchestrator path uses via
+    # ``client.generate_diloco_worker_names`` and the queue route's
+    # auto-fill for blank submissions.
     if args.worker_id:
         env["DILOCO_WORKER_ID"] = args.worker_id
+    else:
+        from forgather.utils import generate_name
+
+        env["DILOCO_WORKER_ID"] = generate_name()
 
     # `forgather submit --diloco` doesn't carry --devices (it's a scheduler
     # submit command); the direct/foreground worker inherits the parent env's

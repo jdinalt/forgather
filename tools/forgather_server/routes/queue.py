@@ -327,6 +327,27 @@ def enqueue(req: EnqueueRequest):
                 merged_env.setdefault(k, v)
             job_params["extra_env"] = merged_env
 
+    # DiLoCo worker_id default: when the caller didn't supply one,
+    # fill it with a memorable two-word name (``spectacular-fox``) so
+    # the worker doesn't surface as the queue_id everywhere — the
+    # webui's DiLoCo panel and the DiLoCo server's ``/known_workers``
+    # roster both key on this. The pool-style submit modal and the
+    # ``forgather diloco worker --count N`` CLI path already mint
+    # memorable names client-side; this default catches the single-
+    # worker submits (webui ``buildRequest(null)``, CLI ``submit
+    # --diloco`` without ``--worker-id``) that previously fell through
+    # to the scheduler's ``queue_id`` fallback.
+    if req.job_type == "training":
+        diloco = job_params.get("diloco")
+        if isinstance(diloco, dict) and diloco.get("server_addr"):
+            wid = (diloco.get("worker_id") or "").strip()
+            if not wid:
+                from forgather.utils import generate_name
+
+                diloco = dict(diloco)
+                diloco["worker_id"] = generate_name()
+                job_params["diloco"] = diloco
+
     item = queue_store.QueueItem.new(
         project_dir=req.project_dir,
         config=req.config,

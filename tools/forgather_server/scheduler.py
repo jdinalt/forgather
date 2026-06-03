@@ -832,9 +832,13 @@ def _diloco_env_from_job_params(
     preprocessing reads ``DILOCO_WORKER_ID`` to derive a unique output
     directory per worker, so a missing value at preprocessing time
     would cause two workers to share an output dir and clobber each
-    other's checkpoints. When the operator leaves ``worker_id`` blank,
-    we fall back to the queue_id (stable, unique per job submission,
-    and already surfaced in the Jobs view so the operator can correlate).
+    other's checkpoints. The queue route at ``routes/queue.py:enqueue``
+    fills in a memorable two-word default for any DiLoCo training
+    submission that arrives without one (matches the pool-style
+    submit-modal behavior); this fallback covers the remaining edge
+    case where a queue item somehow reaches dispatch with an empty
+    worker_id (e.g. a direct ``queue_store.add_item`` from a future
+    code path that bypasses the route).
 
     Expected input shape (all keys optional except ``server_addr``):
         {
@@ -866,10 +870,16 @@ def _diloco_env_from_job_params(
     # submission. Only client-local knobs are forwarded.
     if diloco.get("heartbeat_interval") is not None:
         env["DILOCO_HEARTBEAT_INTERVAL"] = str(float(diloco["heartbeat_interval"]))
-    # Always-set: operator-supplied value if present, otherwise the
-    # queue_id as a stable per-submission fallback.
+    # Always-set: operator-supplied value if present, the route-
+    # filled memorable default otherwise. Last-resort fallback to a
+    # freshly-minted memorable name covers any path that bypasses the
+    # route (no queue_id leak into the worker identity).
     wid = (diloco.get("worker_id") or "").strip()
-    env["DILOCO_WORKER_ID"] = wid or queue_id
+    if not wid:
+        from forgather.utils import generate_name
+
+        wid = generate_name()
+    env["DILOCO_WORKER_ID"] = wid
     return env
 
 
