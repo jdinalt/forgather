@@ -5,6 +5,7 @@ Reads the latest ``trainer_logs.json`` for each model under ``output_models/``
 and emits, into this ``assets/`` directory:
 
   - loss_comparison.png    train + eval loss vs. tokens, all architectures
+  - loss_endgame.png       same, zoomed to the final stretch (>=600M tokens)
   - final_loss_bar.png     best eval loss per architecture (sorted)
   - results.csv            final/best metrics per model
 
