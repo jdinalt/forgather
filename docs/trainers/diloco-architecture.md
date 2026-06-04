@@ -890,6 +890,14 @@ Aggregation rules:
 - **Loss** is a token-weighted EMA (`S = decay·S + w·loss`, `Z = decay·Z + w`,
   `loss = S/Z`); `S`/`Z` persist so smoothing survives a resume. `train_loss`
   uses a stronger decay than the weak-EMA `eval_loss`.
+- **Per-worker training-state gauges** (`global_step`, `epoch`, `learning_rate`)
+  mirror the trainer-control endpoint's `/status` payload. They aren't
+  aggregated across workers (different workers can be at different points in
+  their schedule) — the per-worker `WorkerInfo.stats` carries them verbatim
+  through the heartbeat → server pipeline and the webui's per-worker stats
+  row reads them from `/status`. This is what makes per-worker stats render
+  in the cross-node case where the trainer's loopback-bound control endpoint
+  isn't reachable from the webui's node.
 
 When `output_dir` is set the server logs each aggregate snapshot (throttled to
 one record per advance in total steps) into a per-run directory

@@ -1420,13 +1420,14 @@ interface GroupView {
  *  ranking lets a fresh respawn outrank the stopped job that still shares
  *  its output_dir.
  *
- *  Cross-node limitation: ``jobs`` is the local node's ``/api/jobs``
+ *  Cross-node behavior: ``jobs`` is the local node's ``/api/jobs``
  *  list. A worker spawned on a peer (cluster-discovered DiLoCo server,
  *  worker submitted from another node) won't have a JobRecord on this
- *  node, so correlation returns null and the per-worker stats row
- *  collapses to the "No correlated forgather job" message. The controls
- *  (Save / Save & Stop / Abort) still work — they go through the DiLoCo
- *  server's relay rather than the local trainer-control endpoint. */
+ *  node, so correlation returns null — but per-worker training stats
+ *  still render from the DiLoCo server's heartbeat-aggregated
+ *  ``workers[wid].stats`` view. The controls (Save / Save & Stop /
+ *  Abort) work either way; they go through the DiLoCo server's
+ *  trainer-control relay rather than the local trainer-control endpoint. */
 function correlateJob(
   group: GroupView,
   workers: Record<string, DiLoCoWorkerStatus>,
@@ -1584,7 +1585,15 @@ function GroupCard({
     },
   });
 
-  const stats = jobStatusQ.data ?? null;
+  // Same source-preference as ``WorkerCard``: trainer-control endpoint
+  // when a local JobRecord is correlated, else the canonical member's
+  // heartbeat-reported stats from the DiLoCo server. Pipeline-group
+  // members share an output_dir but each rank reports its own per-step
+  // stats; the canonical member (pp_rank=0 by convention) is the source
+  // of truth for the group's progress / loss / lr display.
+  const stats: Record<string, unknown> | null =
+    jobStatusQ.data ??
+    (canonical?.stats ? { ...canonical.stats } : null);
   const ppN = group.members.length;
 
   return (
@@ -1668,10 +1677,11 @@ function GroupCard({
       </div>
 
       {stats && <JobStatsRow stats={stats} />}
-      {!job && (
+      {!stats && (
         <div className="muted" style={{ fontSize: 11 }}>
-          No correlated forgather job — training-side stats unavailable.
-          (Controls below still work: they go through the server relay.)
+          No training-side stats yet — the canonical worker hasn't
+          reported a log step. (Controls below still work: they go
+          through the DiLoCo server relay.)
         </div>
       )}
 
@@ -1811,7 +1821,16 @@ function WorkerCard({
     },
   });
 
-  const stats = jobStatusQ.data ?? null;
+  // Source the stats row from the trainer-control endpoint when a local
+  // JobRecord correlated this worker; fall back to the heartbeat-reported
+  // ``workerStatus.stats`` (sourced by the DiLoCo callback in parallel
+  // with the trainer-control relay) when no correlation is available —
+  // the cross-node case where the trainer lives on a peer this webui
+  // can't reach. Both paths feed the same JobStatsRow keys
+  // (``global_step``, ``max_steps``, ``loss``, ``learning_rate``,
+  // ``grad_norm``, ``epoch``, ``tok_per_sec``, ``tokens``, ``peak_mem``).
+  const stats: Record<string, unknown> | null =
+    jobStatusQ.data ?? (workerStatus.stats ? { ...workerStatus.stats } : null);
 
   return (
     <div
@@ -1879,14 +1898,17 @@ function WorkerCard({
         )}
       </div>
 
-      {/* Middle: training-job progress + stats (when we have a job).
-          Suppressed in compact mode — the per-rank stats are identical
-          to the group's canonical stats already shown on the header. */}
+      {/* Middle: training-side progress + stats. Sourced from the local
+          trainer-control endpoint when a JobRecord is correlated, else
+          from the DiLoCo server's heartbeat-aggregated per-worker view.
+          Suppressed in compact mode — the per-rank stats duplicate the
+          group's canonical stats on the header. */}
       {!compact && stats && <JobStatsRow stats={stats} />}
-      {!compact && !job && (
+      {!compact && !stats && (
         <div className="muted" style={{ fontSize: 11 }}>
-          No correlated forgather job — training-side stats unavailable.
-          (Controls below still work: they go through the server relay.)
+          No training-side stats yet — the worker hasn't reported a log
+          step. (Controls below still work: they go through the DiLoCo
+          server relay.)
         </div>
       )}
 
@@ -1936,7 +1958,15 @@ function WorkerCard({
 
 /** Per-worker training stats — progress bar from global_step / max_steps
  *  plus a compact pill row mirroring JobsPanel's JobStatusBlock (loss,
- *  lr, tok/s, peak_mem, grad_norm, epoch). */
+ *  lr, tok/s, peak_mem, grad_norm, epoch).
+ *
+ *  Accepts both source shapes:
+ *   - trainer-control endpoint /status: spreads the trainer's raw log dict,
+ *     so the per-window token count is keyed ``tokens``.
+ *   - DiLoCo server per-worker /status (cross-node fallback): the heartbeat
+ *     schema names the same value ``tokens_window`` (see diloco/stats.py).
+ *  Cross-node entries are aliased onto ``tokens`` here so the pill renders
+ *  identically without forcing the wire schema to ship redundant keys. */
 function JobStatsRow({ stats }: { stats: Record<string, unknown> }) {
   const step = typeof stats.global_step === "number" ? stats.global_step : null;
   const max = typeof stats.max_steps === "number" ? stats.max_steps : null;
@@ -1947,26 +1977,28 @@ function JobStatsRow({ stats }: { stats: Record<string, unknown> }) {
   // grad_norm / epoch / tok/s / tokens / peak_mem. Each picker
   // returns null when the field is missing or wrong-shaped so the
   // pill is silently dropped.
-  const pickers: Array<[string, string, (v: unknown) => string | null]> = [
-    ["loss", "loss", (v) => (typeof v === "number" ? v.toFixed(4) : null)],
-    ["lr", "learning_rate", (v) => (typeof v === "number" ? fmtLr(v) : null)],
+  const pickTokens = (s: Record<string, unknown>): unknown =>
+    typeof s.tokens === "number" ? s.tokens : s.tokens_window;
+  const pickers: Array<[string, (s: Record<string, unknown>) => unknown, (v: unknown) => string | null]> = [
+    ["loss", (s) => s.loss, (v) => (typeof v === "number" ? v.toFixed(4) : null)],
+    ["lr", (s) => s.learning_rate, (v) => (typeof v === "number" ? fmtLr(v) : null)],
     [
       "grad_norm",
-      "grad_norm",
+      (s) => s.grad_norm,
       (v) => (typeof v === "number" ? v.toFixed(3) : null),
     ],
-    ["epoch", "epoch", (v) => (typeof v === "number" ? v.toFixed(3) : null)],
+    ["epoch", (s) => s.epoch, (v) => (typeof v === "number" ? v.toFixed(3) : null)],
     [
       "tok/s",
-      "tok_per_sec",
+      (s) => s.tok_per_sec,
       (v) => (typeof v === "number" ? fmtCount(v) : null),
     ],
-    ["tokens", "tokens", (v) => (typeof v === "number" ? fmtCount(v) : null)],
-    ["peak_mem", "peak_mem", (v) => fmtPeakMem(v)],
+    ["tokens", pickTokens, (v) => (typeof v === "number" ? fmtCount(v) : null)],
+    ["peak_mem", (s) => s.peak_mem, (v) => fmtPeakMem(v)],
   ];
   const pills: Array<[string, string]> = [];
-  for (const [label, key, fn] of pickers) {
-    const out = fn(stats[key]);
+  for (const [label, pick, fmt] of pickers) {
+    const out = fmt(pick(stats));
     if (out !== null) pills.push([label, out]);
   }
 
