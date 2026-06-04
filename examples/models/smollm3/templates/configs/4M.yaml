@@ -1,0 +1,37 @@
+-- extends "configs/default.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Tiny SmolLM3 4M"
+    -- set ns.config_description = "A tiny SmolLM3 (Llama + NoPE, GQA) with 4M parameters"
+    -- set ns.model_name = "smollm3_4m"
+
+[model_definition]
+    -- include "config.4M.model"
+
+#------------- config.4M.model --------------
+-- extends "config.default.model"
+
+[model_tokenizer]
+tokenizer: &tokenizer !call:forgather:from_project
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
+    config_template: "2k.yaml"
+    pp_debug: False
+
+[model_config]
+    == super()
+    # **4M Overrides**
+    hidden_size: {{ hidden_size | toyaml(256) }}
+    intermediate_size: {{ intermediate_size | toyaml(768) }}
+    num_attention_heads: {{ num_attention_heads | toyaml(4) }}
+    num_key_value_heads: {{ num_key_value_heads | toyaml(1) }}
+    num_hidden_layers: {{ num_hidden_layers | toyaml(4) }}
+    # Small models are untied by default (comparison parity); see small_tied.yaml.
+    tie_word_embeddings: {{ tie_word_embeddings | toyaml(False) }}
+    ## Regenerate the NoPE schedule for this layer count -- super() emitted a list
+    ## sized for the default (36) layers; the later YAML key wins.
+    -- set _nope = namespace(layers=[])
+    -- for _i in range(num_hidden_layers | default(4) | int)
+    -- set _ = _nope.layers.append(1 if ((_i + 1) % (no_rope_layer_interval | default(4) | int) != 0) else 0)
+    -- endfor
+    no_rope_layers: {{ _nope.layers | toyaml }}

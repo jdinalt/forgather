@@ -35,6 +35,7 @@ MODELS = [
     ("small_qwen3", "Qwen3"),
     ("small_mistral", "Mistral"),
     ("small_gemma3", "Gemma-3"),
+    ("small_smollm3", "SmolLM3 (NoPE)"),
 ]
 
 

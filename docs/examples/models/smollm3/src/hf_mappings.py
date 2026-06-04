@@ -1,0 +1,1 @@
+../../../../../examples/models/smollm3/src/hf_mappings.py
