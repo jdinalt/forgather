@@ -1,28 +1,29 @@
--- extends "project.yaml"
+-- extends "configs/default.yaml"
 
 [config_metadata]
     == super()
-    -- set ns.config_name = "Causal LM Small"
-    -- set ns.config_description = "A very vanilla transformer model with ~34M parameters"
-    -- set ns.model_name = "small"
+    -- set ns.config_name = "Mistral Small"
+    -- set ns.config_description = "A Mistral with ~34M parameters"
+    -- set ns.model_name = "mistral_small"
 
 [model_definition]
     -- include "config.small.model"
 
 #------------- config.small.model --------------
--- extends "models/transformers/dynamic_causal_transformer.yaml"
+-- extends "config.default.model"
 
-## This model does not have a default tokenizer, so add one. Use the shared
-## wikitext 8K tokenizer so this model is comparable to the other small models.
 [model_tokenizer]
 tokenizer: &tokenizer !call:forgather:from_project
     project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
     config_template: "8k.yaml"
+    pp_debug: False
 
 [model_config]
     == super()
-    # **Small Overrides**
+    # **Mistral Small**
     hidden_size: {{ hidden_size | toyaml(512) }}
     intermediate_size: {{ intermediate_size | toyaml(1280) }}
     num_attention_heads: {{ num_attention_heads | toyaml(8) }}
     num_hidden_layers: {{ num_hidden_layers | toyaml(10) }}
+    num_key_value_heads: {{ num_key_value_heads | toyaml(2) }}
+    sliding_window: {{ sliding_window | toyaml(1024) }}

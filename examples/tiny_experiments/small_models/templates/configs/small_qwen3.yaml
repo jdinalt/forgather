@@ -1,0 +1,9 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Small Qwen3"
+    -- set ns.config_description = "A Qwen3 model (QK-norm, GQA, tied embeddings; ~30M params)"
+    -- set ns.model_name = "small_qwen3"
+    -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'qwen3')
+    -- set ns.model_project_config = "small.yaml"

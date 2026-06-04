@@ -1,0 +1,27 @@
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Small Deepone"
+    -- set ns.config_description = "A Deepone with ~34M parameters"
+    -- set ns.model_name = "deepone_small"
+
+[model_definition]
+    -- include "config.model"
+
+#------------- config.model --------------
+-- extends "models/transformers/deepone.yaml"
+
+[model_tokenizer]
+tokenizer: &tokenizer !call:forgather:from_project
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
+    config_template: "8k.yaml"
+    pp_debug: False
+
+[model_config]
+    == super()
+    # **Small Deepone Overrides**
+    hidden_size: {{ hidden_size | toyaml(512) }}
+    intermediate_size: {{ intermediate_size | toyaml(1280) }}
+    num_attention_heads: {{ num_attention_heads | toyaml(8) }}
+    num_hidden_layers: {{ num_hidden_layers | toyaml(10) }}

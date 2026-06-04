@@ -136,8 +136,19 @@ tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@toke
     }) }}
     rms_norm_eps: {{ rms_norm_eps | toyaml(1.0e-06) }}
     tie_word_embeddings: {{ tie_word_embeddings | toyaml(True) }}
-    layer_types: {{ layer_types | toyaml([]) }}
+    ## Generate an explicit per-layer sliding/full pattern of length
+    ## num_hidden_layers (every sliding_window_pattern-th layer is full
+    ## attention, the rest sliding -- Gemma-3's interleaving). This must be a
+    ## correct-length list: an empty list trips transformers v5's
+    ## validate_layer_type, and the Forgather config does not auto-fill it the
+    ## way HF's Gemma3TextConfig does.
+    -- set _gemma = namespace(layer_types=[])
+    -- for _i in range(num_hidden_layers | default(18) | int)
+    -- set _ = _gemma.layer_types.append("full_attention" if ((_i + 1) % (sliding_window_pattern | default(6) | int) == 0) else "sliding_attention")
+    -- endfor
+    layer_types: {{ layer_types | toyaml(_gemma.layer_types) }}
     sliding_window: {{ sliding_window | toyaml(512) }}
+    sliding_window_pattern: {{ sliding_window_pattern | toyaml(6) }}
     hidden_activation: {{ hidden_activation | toyaml('gelu_pytorch_tanh') }}
     final_logit_softcapping: {{ final_logit_softcapping | toyaml(None) }}
 

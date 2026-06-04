@@ -1,0 +1,9 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Small Causal"
+    -- set ns.config_description = "A vanilla decoder-only transformer (~32M params)"
+    -- set ns.model_name = "small_causal"
+    -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'causal_lm')
+    -- set ns.model_project_config = "small.yaml"

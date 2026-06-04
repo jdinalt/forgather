@@ -1,0 +1,7 @@
+-- extends "meta_defaults.yaml"
+
+-- block configs
+name: "Small Models"
+description: "Train and compare different ~30M-parameter language model architectures on Fineweb-Edu"
+default_config: "small_causal.yaml"
+<< endblock configs

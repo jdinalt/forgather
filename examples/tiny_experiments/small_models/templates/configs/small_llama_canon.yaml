@@ -1,0 +1,9 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Small LlamaCanon"
+    -- set ns.config_description = "A Llama with Canon convolutional layers for local token mixing (~30M params)"
+    -- set ns.model_name = "small_llama_canon"
+    -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'llama_canon')
+    -- set ns.model_project_config = "small.yaml"

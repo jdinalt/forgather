@@ -1,0 +1,9 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Small Gemma-3"
+    -- set ns.config_description = "A Gemma-3 (interleaved sliding/full attention, GLU; ~34M params)"
+    -- set ns.model_name = "small_gemma3"
+    -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'gemma3')
+    -- set ns.model_project_config = "small.yaml"
