@@ -114,7 +114,7 @@ python assets/generate_plots.py
 
 ## Experimental results
 
-All seven configs were trained under an identical recipe — 1B tokens of
+All eight configs were trained under an identical recipe — 1B tokens of
 Fineweb-Edu, `seq_len` 4096, per-device batch 8, the WSD schedule (warmup 50M,
 constant LR `~2.1e-4`, anneal over the final 100M), AdamW, gradient clipping at
 3.0, `flex_attention` + `torch.compile` — one GPU each, scheduled across the
@@ -138,6 +138,7 @@ tokens:
 | `small_qwen3` | 2.846 | 2.878 | 20.3% | QK-norm, GQA, tied |
 | `small_gemma3` | 2.846 | 2.878 | **22.8%** | best loss/throughput trade-off |
 | `small_deepone` | 2.903 | 2.936 | 13.3% | post-LN + ALiBi |
+| `small_smollm3` | 2.919 | 2.951 | 21.6% | Llama + NoPE (no RoPE every 4th layer) |
 | `small_mistral` | 2.936 | 2.965 | 22.4% | sliding-window |
 | `small_llama` | 2.939 | 2.969 | 21.1% | pre-LN RoPE baseline |
 | `small_causal` | 3.004 | 3.103 | 19.9% | vanilla (learned PE, no GLU) |
@@ -171,6 +172,13 @@ tokens:
   post-LN + DeepNet design let grad-norm creep into the ~1.8–2.6 band mid-run,
   but the clip guard plus the WSD LR decay brought it home without divergence.
 
+- **SmolLM3's NoPE is a mild net positive here** (2.919). Dropping RoPE from
+  every 4th layer edges out the plain Llama baseline (`small_llama`, 2.939) at
+  the same throughput (~21.6% vs 21.1% MFU). NoPE's headline benefit is *length
+  generalization*, which a 4096-token regime can't exercise — so the takeaway is
+  the gentler one: the position-free layers cost nothing in short-context quality
+  and shave a little off the loss, consistent with the SmolLM3 design rationale.
+
 ### A note on stability (gradient clipping)
 
 The base `small` template ships with no gradient clipping. On the first attempt,
@@ -179,7 +187,7 @@ gradient spike (grad-norm ~39 vs the normal <2) that, unclipped, blew up the
 weights and tripped the divergence detector. Several other models spiked at the
 same batch but rode through it. Adding `max_grad_norm: 3.0` to the project (just
 above the healthy grad-norm band, read off the TensorBoard plot) defuses the
-spike while leaving normal training untouched; with it, all seven complete the
+spike while leaving normal training untouched; with it, all eight complete the
 full 1B-token budget. This is a good illustration of why a loose gradient clip
 is cheap insurance for small-model pretraining even when the median step looks
 perfectly stable.
