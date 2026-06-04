@@ -251,6 +251,59 @@ detects the pipeline trainer via duck-typing on
 The `trainer` kwarg is already threaded through callbacks by
 `BaseTrainer._dispatch_event`.
 
+## Multi-node dispatch (cluster fanout with shared base worker_id)
+
+The pipeline-group semantics above are agnostic to where the per-rank
+processes physically run. A single host launching `torchrun
+--nproc-per-node N` produces N processes that all read the same
+environment (and so the same `DILOCO_WORKER_ID` base, from which the
+callback derives `_pp<rank>`). A multi-node bundle reaches the same
+end state via a different path:
+
+- `forgather submit --global --diloco-server <id>` (or the webui
+  equivalent) builds a cluster bundle of N per-rank training jobs,
+  one per participating host.
+- The master resolves the base `worker_id` **once** (auto-mints a
+  memorable default when the operator didn't supply one) and ships
+  the identical `diloco` block to every peer's `training_local`
+  enqueue. The peer's scheduler translates it into `DILOCO_*` env
+  via `_diloco_env_from_job_params`.
+- The DiLoCo bearer token is resolved on the master from a locally-
+  spawned `diloco_server` JobRecord and forwarded through every
+  peer's `extra_env`. Remote peers don't see that record, so loopback
+  auto-discovery would otherwise fail there.
+- Each peer's `torchrun` rendezvous via the bundle's shared
+  `rdzv_endpoint` / `rdzv_id`. Inside the torchrun world the existing
+  `PipelineTrainer` initialization and `DiLoCoCallback` PP detection
+  run unchanged — the callback registers each rank under
+  `{base}_pp{rank}` and the server collapses them into one group.
+
+Load-bearing invariants the master must hold (and the dispatch tests
+enforce):
+
+- Base `worker_id` is identical across every per-peer payload of a
+  bundle. If two peers ever auto-generate independently the group
+  fragments into N solo workers and parameter averaging silently
+  degrades.
+- The bearer token reaches every peer's `extra_env` (when the master
+  can resolve it locally), so the worker authenticates from the
+  routable server address rather than relying on loopback discovery.
+
+The bundle record persists the resolved `diloco` block
+(`ClusterJob.diloco`) so both the CLI submit output and the webui's
+cluster jobs view can label the bundle as "one DiLoCo worker group"
+without peeking into per-peer queue items.
+
+K > 1 multi-node DiLoCo groups (e.g. two 2-node PP bundles averaged
+via DiLoCo) is achievable today by submitting K separate `forgather
+submit --global` invocations to **non-overlapping** member sets, each
+pinning the same `--diloco-server` but a distinct `--worker-id` base.
+The non-overlap requirement matters: the per-node GPU pool is FIFO,
+so two groups competing for GPUs on the same host serialize, which
+defeats the point. A future `--diloco-count K` flag could partition
+members and mint distinct bases automatically; until then, do it
+manually.
+
 ## Out of scope / future work
 
 - **Security model.** The DiLoCo server's HTTP wire is unauthenticated
