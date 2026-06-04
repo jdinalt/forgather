@@ -184,6 +184,15 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   const [diHeartbeat, setDiHeartbeat] = useState<string>(
     persistedDiLoCo.heartbeatInterval,
   );
+  // Multi-node + DiLoCo composition: the bundle becomes one DiLoCo
+  // worker group, all ranks sharing this base worker_id (the PP
+  // callback appends ``_pp<rank>`` itself). Empty == let the master
+  // auto-mint a memorable name. Not persisted because reusing a base
+  // across runs would collide with the prior group's checkpoint.
+  // Only consulted when ``useClusterFanout`` is true; the picker
+  // hides the input in non-cluster mode (the worker pool covers
+  // that path).
+  const [composeWorkerIdBase, setComposeWorkerIdBase] = useState<string>("");
   // Worker pool (batch submit). A DiLoCo run is often N identical workers
   // differing only by worker_id, so instead of a single worker_id field we
   // maintain a pool: stopped workers the server knows about (toggled on to
@@ -625,6 +634,21 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
         allow_version_mismatch: mnState.allowMismatch,
         dataset_source: datasetSource,
       };
+      // DiLoCo composition: if the picker selected a server, fold the
+      // composition block into the submit so every per-rank job joins
+      // one DiLoCo worker group. The master resolves the base
+      // worker_id (auto-mints when blank) and the bearer token.
+      if (selectedDiLoCoBase) {
+        const trimmedBase = composeWorkerIdBase.trim();
+        const hb = diHeartbeat.trim();
+        const hbNum = hb === "" ? null : Number(hb);
+        req.diloco = {
+          server_addr: selectedDiLoCoBase,
+          worker_id: trimmedBase || null,
+          heartbeat_interval:
+            hbNum !== null && Number.isFinite(hbNum) ? hbNum : null,
+        };
+      }
       submitCluster.mutate(req);
       return;
     }
@@ -880,6 +904,8 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
               infoError={dilocoInfoQ.error}
               info={dilocoInfoQ.data ?? null}
               clusterFanout={useClusterFanout}
+              composeWorkerIdBase={composeWorkerIdBase}
+              setComposeWorkerIdBase={setComposeWorkerIdBase}
             />
           )}
 
@@ -996,7 +1022,7 @@ interface DiLoCoPickerProps {
   onSelectBase: (base: string) => void;
   heartbeatInterval: string;
   setHeartbeatInterval: (v: string) => void;
-  // Worker pool (batch submit).
+  // Worker pool (batch submit; non-cluster only).
   resumableWorkers: ResumableWorker[];
   knownWorkersLoading: boolean;
   disabledStopped: Set<string>;
@@ -1009,6 +1035,12 @@ interface DiLoCoPickerProps {
   infoError: unknown;
   info: DiLoCoInfo | null;
   clusterFanout: boolean;
+  // Multi-node DiLoCo composition: when ``clusterFanout`` is true and
+  // a server is selected, the bundle becomes one DiLoCo group. The
+  // operator can pin a base worker_id here or leave it blank to let
+  // the master auto-mint one.
+  composeWorkerIdBase: string;
+  setComposeWorkerIdBase: (v: string) => void;
 }
 
 /** Radio picker over the unified DiLoCo server list, with the
@@ -1034,6 +1066,8 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
     infoError,
     info,
     clusterFanout,
+    composeWorkerIdBase,
+    setComposeWorkerIdBase,
   } = props;
 
   // Local UI state for the pool's add/generate controls. Hooks must run
@@ -1106,23 +1140,109 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
     }
   };
 
-  // Multi-node fanout + DiLoCo together needs per-peer worker IDs and
-  // dataset sharding that isn't wired yet. Hide the picker (preserving
-  // any in-flight None selection) so the operator can't accidentally
-  // mis-submit. Standalone (no cluster) and single-node-within-cluster
-  // are both fine.
+  // Multi-node composition: the bundle joins the chosen server as ONE
+  // logical DiLoCo worker group, all ranks sharing one base worker_id
+  // (the PP callback appends ``_pp<rank>``). The worker pool doesn't
+  // apply here — composition is one-bundle-one-group; K independent
+  // groups is a follow-up (CLI ``--diloco-worker-count`` + non-overlap
+  // member partitioning). Show the radio + heartbeat + optional base
+  // worker_id, hide the pool.
   if (clusterFanout) {
     return (
-      <details className="submit-section">
+      <details className="submit-section" open>
         <summary>
           <h4 className="dyn-heading">
             DiLoCo{" "}
-            <span className="muted">
-              — disabled in cluster fanout submits (per-peer worker IDs
-              not yet wired)
-            </span>
+            {!selectedBase && (
+              <span className="muted">— none (vanilla PP submit)</span>
+            )}
+            {selectedBase && (
+              <span className="muted">— compose with {selectedBase}</span>
+            )}
           </h4>
         </summary>
+
+        <div style={{ padding: "4px 8px 8px 8px" }}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+              marginBottom: 8,
+            }}
+          >
+            <label>
+              <input
+                type="radio"
+                name="diloco-server"
+                checked={selectedBase === ""}
+                onChange={() => onSelectBase("")}
+              />{" "}
+              <strong>None</strong>{" "}
+              <span className="muted">
+                — submit as a plain multi-node training bundle
+              </span>
+            </label>
+            {servers.map((s) => (
+              <label key={s.id}>
+                <input
+                  type="radio"
+                  name="diloco-server"
+                  checked={selectedBase === s.base_url}
+                  onChange={() => onSelectBase(s.base_url)}
+                />{" "}
+                <strong>{s.label}</strong>{" "}
+                <span className="muted">
+                  — {s.base_url}
+                  {s.source === "registered" && " (external)"}
+                  {s.source === "local" && !s.alive && " (not running)"}
+                </span>
+              </label>
+            ))}
+          </div>
+          {selectedBase && (
+            <>
+              <div
+                className="muted"
+                style={{ fontSize: "smaller", marginBottom: 8 }}
+              >
+                The bundle becomes <strong>one DiLoCo worker group</strong>:
+                every per-rank training job shares the base worker id and
+                the PP callback appends <code>_pp&lt;rank&gt;</code>. The
+                master forwards the server bearer to every peer.
+              </div>
+              <label style={{ display: "block", maxWidth: "20em" }}>
+                base worker_id{" "}
+                <span className="muted">(blank = auto-mint)</span>
+                <input
+                  type="text"
+                  value={composeWorkerIdBase}
+                  onChange={(e) => setComposeWorkerIdBase(e.target.value)}
+                  placeholder="leave blank for memorable default"
+                  style={{ width: "100%" }}
+                />
+              </label>
+              <label
+                style={{
+                  display: "block",
+                  maxWidth: "12em",
+                  marginTop: 8,
+                }}
+              >
+                heartbeat_interval (s)
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={heartbeatInterval}
+                  onChange={(e) => setHeartbeatInterval(e.target.value)}
+                  placeholder="30"
+                  style={{ width: "100%" }}
+                />
+              </label>
+            </>
+          )}
+        </div>
       </details>
     );
   }

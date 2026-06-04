@@ -353,6 +353,18 @@ export interface ClusterJobMember {
   error?: string | null;
 }
 
+/** DiLoCo composition resolved on the master at submit time. When
+ *  present, every per-rank training job in the bundle joins the
+ *  named param-server as one logical worker group (shared base
+ *  ``worker_id``; PP ranks register with ``_pp<rank>`` appended). */
+export interface ClusterJobDiLoCo {
+  server_addr: string;
+  /** The base worker_id shared across every rank. Auto-minted on the
+   *  master when the submitter doesn't supply one. */
+  worker_id: string;
+  heartbeat_interval?: number | null;
+}
+
 export interface ClusterJob {
   cluster_job_id: string;
   project_dir: string;
@@ -368,12 +380,27 @@ export interface ClusterJob {
    *  ``status`` only flips on cancel/done/failed promotions; this
    *  field is always recomputed at read time. */
   rolled_up_status?: string;
+  /** DiLoCo composition (resolved on the master). ``null`` for plain
+   *  multi-node bundles. */
+  diloco?: ClusterJobDiLoCo | null;
 }
 
 export interface ClusterJobMemberSpec {
   node_id: string;
   nproc_per_node: number;
   nccl_socket_ifname?: string | null;
+}
+
+/** DiLoCo composition for a multi-node submit (PR-A).
+ *
+ *  When present, the bundle's per-rank training jobs join one DiLoCo
+ *  worker group via a shared base ``worker_id``. The master resolves
+ *  ``worker_id`` (auto-mints when null) and the bearer token at submit
+ *  time and forwards both to every peer. */
+export interface ClusterJobSubmitDiLoCo {
+  server_addr: string;
+  worker_id?: string | null;
+  heartbeat_interval?: number | null;
 }
 
 export interface ClusterJobSubmitRequest {
@@ -388,6 +415,9 @@ export interface ClusterJobSubmitRequest {
   /** Same shape as ``EnqueueRequest.dataset_source``; resolved once on
    *  the master and merged into every peer's extra_env. */
   dataset_source?: DatasetSource | null;
+  /** Optional DiLoCo composition. When set, the bundle is one logical
+   *  DiLoCo worker group; see ``ClusterJobSubmitDiLoCo``. */
+  diloco?: ClusterJobSubmitDiLoCo | null;
 }
 
 export interface ClusterJobSubmitResponse {

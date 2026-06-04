@@ -487,6 +487,17 @@ function ClusterJobsTab() {
                   </td>
                   <td>
                     <code>{j.project_dir}</code> / <code>{j.config}</code>
+                    {j.diloco && (
+                      <div
+                        className="muted"
+                        style={{ fontSize: "smaller", marginTop: 2 }}
+                      >
+                        DiLoCo group: <code>{j.diloco.worker_id}</code>{" "}
+                        <span className="muted">
+                          → {j.diloco.server_addr}
+                        </span>
+                      </div>
+                    )}
                   </td>
                   <td>
                     <code>{j.rdzv_endpoint}</code>{" "}
