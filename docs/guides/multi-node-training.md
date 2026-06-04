@@ -709,7 +709,7 @@ radio + optional base worker_id). The bundle is submitted as one
 group: every per-rank training job shares the base worker_id, and the
 PP callback appends `_pp<rank>` to register each rank with the
 DiLoCo server. The cluster bundle row in the Cluster Jobs view shows
-the resolved base under the project/config column.
+the resolved base immediately below the project/config row.
 
 Load-bearing behind the scenes (no operator action required):
 
