@@ -88,9 +88,10 @@ export function DiLoCoPanel({
     persistSet(STORAGE_KEY, JSON.stringify(state));
   }, [state]);
 
-  // Server list — refresh every 5s; cluster propagation will keep the
-  // list in flux once that slice lands, but for now this is just the
-  // local + registered union.
+  // Server list — refresh every 5s. The unified list spans every
+  // DiLoCo server this node knows about: locally-spawned, user-
+  // registered, and cluster-attested via the master-aggregated
+  // inventory at ``/api/cluster/diloco_servers``.
   const serversQuery = useQuery({
     queryKey: ["diloco", "servers"],
     queryFn: api.listDiLoCoServers,
@@ -323,9 +324,38 @@ function ServersList({
   onEditService,
 }: ServersListProps) {
   const [showAdd, setShowAdd] = useState(false);
-  const local = servers.filter((s) => s.source === "local");
-  const registered = servers.filter((s) => s.source === "registered");
-  const cluster = servers.filter((s) => s.source === "cluster");
+  // One flat list of every server known to this node. The cluster
+  // mental model is uniform — local-spawn, peer-spawn, and user-
+  // registered entries are all just "DiLoCo servers in this cluster"
+  // from the operator's POV. Per-row badges still mark the origin
+  // (where the server lives and how this node learned about it) so
+  // operator actions like "remove from registry" can attach to the
+  // right rows; nothing surfaces as a separate group.
+  const sortedServers = useMemo(() => {
+    // Liveness tier only — alphabetical-by-label as the secondary
+    // key. Sorting cluster entries last within a tier would re-leak
+    // the local/registered/cluster split the unified list is meant
+    // to hide; "this node" is conveyed by the per-row chip styling,
+    // not by list position. Mirrors ClusterSidebarPanel's pattern
+    // (role + reachability, then alphabetical-by-hostname).
+    const tier = (s: DiLoCoServer): number => {
+      if (s.alive === true || s.healthy === true) return 0;
+      if (s.alive === false || s.healthy === false) return 2;
+      // Registered entries don't expose a health flag *by design*
+      // (the registry stores intent, not liveness) — treat them as
+      // neutral rather than down. Gated on source so an as-yet-
+      // unprobed cluster entry doesn't get the same pass.
+      if (s.source === "registered") return 0;
+      return 1;
+    };
+    return [...servers].sort((a, b) => {
+      const r = tier(a) - tier(b);
+      if (r !== 0) return r;
+      return (a.label || a.base_url || "").localeCompare(
+        b.label || b.base_url || "",
+      );
+    });
+  }, [servers]);
 
   return (
     <div
@@ -373,7 +403,7 @@ function ServersList({
       <div style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
         {/* Defined services — start/stop toggle, edit, delete (same control
             surface as Services → DiLoCo). A running service also appears in
-            the live groups below; this section is for managing the
+            the live list below; this section is for managing the
             definitions. */}
         <div
           className="muted"
@@ -387,16 +417,25 @@ function ServersList({
         </div>
         <ServicesPanel filterType="diloco" onEditService={onEditService} />
 
-        <div
-          className="muted"
-          style={{
-            fontSize: "smaller",
-            padding: "4px 8px",
-            borderBottom: "1px solid var(--border, #333)",
-          }}
-        >
-          Live
-        </div>
+        {/* Divider for the running-server list. "Live" was the
+            pre-cluster wording (the list only carried entries we knew
+            were alive); the unified list also includes user-registered
+            entries with no liveness signal and cluster entries that
+            may be down, so "Known servers" matches what's actually
+            shown. Hidden in the empty state — the empty-state copy
+            below carries the same scope claim. */}
+        {(loading || !!error || sortedServers.length > 0) && (
+          <div
+            className="muted"
+            style={{
+              fontSize: "smaller",
+              padding: "4px 8px",
+              borderBottom: "1px solid var(--border, #333)",
+            }}
+          >
+            Known servers
+          </div>
+        )}
         {loading && <div className="muted" style={{ padding: 8 }}>Loading…</div>}
         {!!error && (
           <div className="muted" style={{ padding: 8, color: "tomato" }}>
@@ -405,80 +444,76 @@ function ServersList({
         )}
         {!loading && servers.length === 0 && (
           <div className="muted" style={{ padding: 8 }}>
-            No servers known.
+            No DiLoCo servers known to this cluster.
           </div>
         )}
 
-        {local.length > 0 && (
-          <ServerGroup
-            heading="Local"
-            entries={local}
-            selectedId={selectedId}
-            onSelect={onSelect}
-            onAfterRegistryChange={onAfterRegistryChange}
-          />
-        )}
-        {registered.length > 0 && (
-          <ServerGroup
-            heading="Registered"
-            entries={registered}
-            selectedId={selectedId}
-            onSelect={onSelect}
-            onAfterRegistryChange={onAfterRegistryChange}
-          />
-        )}
-        {cluster.length > 0 && (
-          <ServerGroup
-            heading="Cluster"
-            entries={cluster}
-            selectedId={selectedId}
-            onSelect={onSelect}
-            onAfterRegistryChange={onAfterRegistryChange}
-          />
+        {sortedServers.length > 0 && (
+          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+            {sortedServers.map((s) => (
+              <ServerRow
+                key={s.id}
+                server={s}
+                selected={s.id === selectedId}
+                onSelect={() => onSelect(s.id)}
+                onAfterRegistryChange={onAfterRegistryChange}
+              />
+            ))}
+          </ul>
         )}
       </div>
     </div>
   );
 }
 
-function ServerGroup({
-  heading,
-  entries,
-  selectedId,
-  onSelect,
-  onAfterRegistryChange,
-}: {
-  heading: string;
-  entries: DiLoCoServer[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
-  onAfterRegistryChange: () => void;
-}) {
-  return (
-    <div>
-      <div
-        className="muted"
-        style={{
-          fontSize: "smaller",
-          padding: "4px 8px",
-          borderBottom: "1px solid var(--border, #333)",
-        }}
-      >
-        {heading}
-      </div>
-      <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-        {entries.map((s) => (
-          <ServerRow
-            key={s.id}
-            server={s}
-            selected={s.id === selectedId}
-            onSelect={() => onSelect(s.id)}
-            onAfterRegistryChange={onAfterRegistryChange}
-          />
-        ))}
-      </ul>
-    </div>
-  );
+/** Health state condensed across the three origin kinds — local /
+ *  registered / cluster — into a single shape the row dot can render.
+ *  Falls through to whichever liveness field is populated so the dot
+ *  and the sort ranker agree on every row. Returns ``null`` for "no
+ *  signal" (the registry stores intent, not liveness). */
+function rowHealth(server: DiLoCoServer): boolean | null {
+  if (typeof server.healthy === "boolean") return server.healthy;
+  if (typeof server.alive === "boolean") return server.alive;
+  return null;
+}
+
+/** Hostname portion of ``base_url``, or null if it can't be parsed.
+ *  Used to label peer-attested rows by hostname rather than by node-id
+ *  prefix — consistent with InferenceModelPanel / DatasetsPanel /
+ *  ClusterPanel, which all surface ``peer <hostname>`` rather than the
+ *  opaque UUID. */
+function hostnameFromUrl(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Where the server runs and how this node learned about it, as a
+ *  compact label suitable for an inline chip. Cluster entries surface
+ *  the hostname parsed from ``base_url`` (which the master rewrites
+ *  from 0.0.0.0 to the cluster identity's hostname); a peer_node_id
+ *  prefix is the last-resort fallback. */
+function originLabel(server: DiLoCoServer): string {
+  if (server.source === "cluster") {
+    const host = hostnameFromUrl(server.base_url);
+    if (host) return `peer ${host}`;
+    return server.peer_node_id ? `peer ${server.peer_node_id.slice(0, 8)}` : "peer";
+  }
+  if (server.source === "registered") {
+    return "registered";
+  }
+  return "this node";
+}
+
+/** Which ``node-tag-*`` modifier matches an origin label — ``-ok`` for
+ *  "this node" (mirrors MultiNodeSubmitPanel's "this node" / "master"
+ *  styling); ``-muted`` for everything else. */
+function originChipClass(server: DiLoCoServer): string {
+  if (server.source === "local") return "node-tag node-tag-ok";
+  return "node-tag node-tag-muted";
 }
 
 function ServerRow({
@@ -507,6 +542,20 @@ function ServerRow({
     },
   });
 
+  // Hoist per-row display values so the health dot, its tooltip, and
+  // the origin chip all share one source of truth (and ``originLabel``
+  // doesn't get called three times per render).
+  const origin = originLabel(server);
+  const health = rowHealth(server);
+  const dotColor =
+    health === true ? "#3a3" : health === false ? "#a33" : "#888";
+  const dotTitle =
+    health === true
+      ? `healthy (${origin})`
+      : health === false
+      ? `down (${origin})`
+      : `health unknown (${origin})`;
+
   return (
     <li
       role="button"
@@ -531,44 +580,26 @@ function ServerRow({
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        {server.source === "local" && (
-          <span
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: 4,
-              background: server.alive ? "#3a3" : "#a33",
-              display: "inline-block",
-            }}
-            title={server.alive ? "running" : "not running"}
-          />
-        )}
-        {server.source === "cluster" && (
-          <span
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: 4,
-              background:
-                server.healthy === true
-                  ? "#3a3"
-                  : server.healthy === false
-                  ? "#a33"
-                  : "#888",
-              display: "inline-block",
-            }}
-            title={
-              server.healthy === true
-                ? `healthy (peer ${server.peer_node_id ?? "?"})`
-                : server.healthy === false
-                ? `down (peer ${server.peer_node_id ?? "?"})`
-                : "health unknown"
-            }
-          />
-        )}
+        <span
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: 4,
+            background: dotColor,
+            display: "inline-block",
+          }}
+          title={dotTitle}
+        />
         <strong style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
           {server.label}
         </strong>
+        <span
+          className={originChipClass(server)}
+          title={`Origin: ${origin}`}
+          style={{ whiteSpace: "nowrap" }}
+        >
+          {origin}
+        </span>
         {server.has_auth_token && (
           <span
             title="Bearer-token auth configured for this server"
