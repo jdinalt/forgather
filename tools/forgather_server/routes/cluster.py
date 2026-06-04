@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from forgather.tls import httpx_peer_kwargs
+from forgather.utils import generate_name
 
 from .. import (
     cluster,
@@ -30,6 +31,7 @@ from .. import (
     cluster_inference_inventory,
     cluster_jobs,
     dataset_source,
+    scheduler,
 )
 from ..dataset_source import DatasetSourceError
 from .gpus import (
@@ -3137,9 +3139,6 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
     _resolved_diloco: Optional[Dict[str, Any]] = None
     _diloco_token: Optional[str] = None
     if req.diloco is not None:
-        from .. import scheduler as _scheduler
-        from forgather.utils import generate_name
-
         _resolved_diloco = {
             "server_addr": req.diloco.server_addr,
             "worker_id": (req.diloco.worker_id or "").strip() or generate_name(),
@@ -3148,7 +3147,7 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
             _resolved_diloco["heartbeat_interval"] = float(
                 req.diloco.heartbeat_interval
             )
-        _diloco_token = _scheduler._diloco_token_for_server_addr(
+        _diloco_token = scheduler._diloco_token_for_server_addr(
             req.diloco.server_addr
         )
 
@@ -3197,6 +3196,14 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
         # here. The peer's scheduler preserves any pre-set token (see
         # ``_diloco_env_from_job_params``) — so this value survives
         # the local resolution pass even on the master.
+        #
+        # The ``not in extra_env`` guard is defensive: today the only
+        # extra_env keys seeded above are NCCL/Gloo/TP iface vars and
+        # the resolved dataset_source env, neither of which sets the
+        # DiLoCo token. The guard exists so a future submit-request
+        # input channel that pre-seeds extra_env (e.g. an operator-
+        # supplied bearer in the webui) wins over the master's local
+        # JobRecord match — same precedence the scheduler enforces.
         if _diloco_token and "FORGATHER_DILOCO_SERVER_TOKEN" not in extra_env:
             extra_env["FORGATHER_DILOCO_SERVER_TOKEN"] = _diloco_token
         payload: Dict[str, Any] = {

@@ -311,6 +311,92 @@ class TestMultiNodeDiLoCoComposition:
             env = entry["payload"]["extra_env"]
             assert "FORGATHER_DILOCO_SERVER_TOKEN" not in env
 
+    def test_peer_handler_persists_diloco_on_job_params(self, monkeypatch):
+        """The peer-side ``/api/cluster/training_local`` handler must
+        spread the ``diloco`` block into the queue item's
+        ``job_params`` (mirroring the existing ``rdzv_args`` /
+        ``extra_env`` propagation). Without this, even if the master
+        ships the block, the peer-side scheduler's
+        ``_diloco_env_from_job_params`` reads an empty dict and the
+        ranks register as solo workers."""
+        # Activate the cluster so the peer-mTLS carve-out admits the
+        # bearer-authed POST.
+        cluster.activate("c", port=8765)
+        from forgather_server import queue_store
+
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        payload = {
+            "project_dir": "/tmp/project",
+            "config": "test.yaml",
+            "rdzv_args": {
+                "nnodes": 2,
+                "node_rank": 1,
+                "rdzv_backend": "c10d",
+                "rdzv_endpoint": "10.0.0.1:29400",
+                "rdzv_id": "rd123",
+                "nproc_per_node": 2,
+                "is_host": False,
+                "local_addr": "10.0.0.2",
+            },
+            "extra_env": {"FORGATHER_DILOCO_SERVER_TOKEN": "tok"},
+            "cluster_job_id": "cj_test",
+            "diloco": {
+                "server_addr": "http://10.0.0.1:8512",
+                "worker_id": "persisted_base",
+                "heartbeat_interval": 5.0,
+            },
+        }
+        r = client.post(
+            "/api/cluster/training_local",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        queue_id = r.json()["queue_id"]
+        item = queue_store.get_item(queue_id)
+        assert item is not None
+        assert item.job_params["diloco"] == payload["diloco"]
+        # Sanity: existing pre-PR fields still present.
+        assert item.job_params["rdzv_args"] == payload["rdzv_args"]
+        assert item.job_params["extra_env"] == payload["extra_env"]
+        assert item.job_params["cluster_job_id"] == "cj_test"
+
+    def test_peer_handler_omits_diloco_when_absent(self, monkeypatch):
+        """Plain (non-DiLoCo) multi-node enqueues land without a
+        ``diloco`` key on ``job_params`` — pre-PR queue items are
+        unaffected."""
+        cluster.activate("c", port=8765)
+        from forgather_server import queue_store
+
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        payload = {
+            "project_dir": "/tmp/project",
+            "config": "test.yaml",
+            "rdzv_args": {
+                "nnodes": 2,
+                "node_rank": 0,
+                "rdzv_backend": "c10d",
+                "rdzv_endpoint": "10.0.0.1:29400",
+                "rdzv_id": "rd123",
+                "nproc_per_node": 2,
+                "is_host": True,
+                "local_addr": "10.0.0.1",
+            },
+            "extra_env": {},
+            "cluster_job_id": "cj_plain",
+        }
+        r = client.post(
+            "/api/cluster/training_local",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        item = queue_store.get_item(r.json()["queue_id"])
+        assert item is not None
+        assert "diloco" not in item.job_params
+
     def test_bundle_record_surfaces_diloco_on_submit_and_get(
         self, monkeypatch
     ):
