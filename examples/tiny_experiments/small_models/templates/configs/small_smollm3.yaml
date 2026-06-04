@@ -1,0 +1,9 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Small SmolLM3"
+    -- set ns.config_description = "A SmolLM3 (Llama + NoPE every 4th layer, GQA; ~30M params)"
+    -- set ns.model_name = "small_smollm3"
+    -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'smollm3')
+    -- set ns.model_project_config = "small.yaml"

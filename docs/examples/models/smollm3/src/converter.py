@@ -1,0 +1,1 @@
+../../../../../examples/models/smollm3/src/converter.py

@@ -23,7 +23,7 @@ The project builds on the **`projects/small.yaml`** base template (DDP trainer,
 
 ## Configurations
 
-All seven are Forgather-native model implementations, each ~30M parameters with
+All eight are Forgather-native model implementations, each ~30M parameters with
 the shared wikitext-8K tokenizer:
 
 | Config | Architecture | Key features | Params |
@@ -35,9 +35,10 @@ the shared wikitext-8K tokenizer:
 | `small_qwen3.yaml` | Qwen3 | QK-norm, GQA, tied embeddings | 30M |
 | `small_mistral.yaml` | Mistral | Llama variant with sliding-window attention, GQA | 34M |
 | `small_gemma3.yaml` | Gemma-3 | Interleaved sliding/full attention, GLU + gelu-tanh, dual RoPE, tied embeddings | 34M |
+| `small_smollm3.yaml` | SmolLM3 | Llama + NoPE (no RoPE on every 4th layer), GQA (untied embeddings) | 34M |
 
 Each config points the base template at a model project's `small.yaml`
-definition under [`examples/models/`](../../models/). All seven share the same
+definition under [`examples/models/`](../../models/). All eight share the same
 wikitext-8K tokenizer and ~512-hidden / 10-layer shape, so differences in the
 loss curves reflect architecture, not size or vocabulary.
 
@@ -54,7 +55,7 @@ forgather -t small_qwen3.yaml train -d 0
 ### Train all models for comparison
 
 Submit every config to the forgather-server scheduler. Jobs run in the
-background and are placed on GPUs automatically as they free up; with seven
+background and are placed on GPUs automatically as they free up; with eight
 configs on five GPUs, five run concurrently and the rest start as GPUs free:
 
 ```bash

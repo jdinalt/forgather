@@ -1,0 +1,72 @@
+-- extends "projects/causal_lm_def.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Default SmolLM3"
+    -- set ns.config_description = "HuggingFaceTB SmolLM3-3B"
+    -- set ns.model_name = model_name | default("smollm3_3b")
+
+[model_definition]
+    -- include "config.default.model"
+
+#------------- config.default.model --------------
+-- extends "models/transformers/dynamic_llama.yaml"
+
+[model_meta_config]
+    == super()
+    -- set ns.model_name = ns.config_name
+    -- set ns.model_description = ns.config_description
+    -- set ns.model_short_name = "smollm3"
+    ## Pin the saved arch tag to the converter's registry key (HuggingFace's
+    ## canonical model_type "smollm3"). `forgather convert` auto-detects the
+    ## converter off this string and `forgather update` looks it up the same way.
+    -- set ns.forgather_arch = "smollm3"
+    -- set ns.forgather_arch_version = "1"
+
+[model_tokenizer]
+tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
+    arg0: {{ tokenizer_id_or_path | toyaml('HuggingFaceTB/SmolLM3-3B') }}
+    model_max_length: {{ max_model_length | toyaml(65536) }}
+    trust_remote_code: True
+
+[layer_factory]
+# SmolLM3 == Llama backbone with NoPE on a periodic subset of layers.
+# SmolLM3DecoderLayer reads config.no_rope_layers (1=RoPE, 0=NoPE) by layer_idx
+# and builds those layers' attention with pos_encoder=None.
+.define: &layer_factory !partial:.smollm3_layer:SmolLM3DecoderLayer@layer_factory
+    feedforward_factory: *feedforward_factory
+    attention_factory: *attention_factory
+    norm_factory: *layer_norm_factory
+    config: !var "config"
+    dropout: !var "layer_dropout"
+    residual_dropout: !var "residual_dropout"
+
+[model_config]
+    == super()
+    # **SmolLM3-3B defaults**
+    hidden_size: {{ hidden_size | toyaml(2048) }}
+    num_attention_heads: {{ num_attention_heads | toyaml(16) }}
+    num_key_value_heads: {{ num_key_value_heads | toyaml(4) }}
+    num_hidden_layers: {{ num_hidden_layers | toyaml(36) }}
+    intermediate_size: {{ intermediate_size | toyaml(11008) }}
+    rope_parameters: {{ rope_parameters | toyaml({'rope_type': 'default', 'rope_theta': 2000000.0}) }}
+    rms_norm_eps: {{ rms_norm_eps | toyaml(1.0e-06) }}
+    tie_word_embeddings: {{ tie_word_embeddings | toyaml(True) }}
+    sliding_window: {{ sliding_window | toyaml(None) }}
+    no_rope_layer_interval: {{ no_rope_layer_interval | toyaml(4) }}
+    ## Generate the per-layer NoPE schedule: 1 = apply RoPE, 0 = NoPE, with every
+    ## no_rope_layer_interval-th layer set to NoPE -- matching HF SmolLM3Config
+    ## ((i + 1) % interval != 0). Must be a correct-length list so
+    ## SmolLM3DecoderLayer can index it by layer_idx. The converter passes
+    ## num_hidden_layers + no_rope_layer_interval from the source config, so the
+    ## regenerated list reproduces the source's pattern exactly.
+    -- set _nope = namespace(layers=[])
+    -- for _i in range(num_hidden_layers | default(36) | int)
+    -- set _ = _nope.layers.append(1 if ((_i + 1) % (no_rope_layer_interval | default(4) | int) != 0) else 0)
+    -- endfor
+    no_rope_layers: {{ no_rope_layers | toyaml(_nope.layers) }}
+
+[model_code_generator]
+    == super()
+    no_split_modules: ["SmolLM3DecoderLayer"]
+    tied_weights_keys: {causal_lm.input_encoder.embedding.weight: "lm_head.weight"}

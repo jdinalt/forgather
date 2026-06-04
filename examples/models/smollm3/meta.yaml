@@ -1,0 +1,8 @@
+-- extends "meta_defaults.yaml"
+
+-- block configs
+name: "SmolLM3"
+description: "HuggingFace SmolLM3 (Llama backbone + NoPE), in various sizes"
+config_prefix: "configs"
+default_config: "default.yaml"
+<< endblock configs
