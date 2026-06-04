@@ -684,6 +684,50 @@ similar.
 See `docs/design/diloco-security.md#cross-node-discovery-cluster-inventory`
 for the design and end-to-end token-transit walkthrough.
 
+### Multi-node PP composed with DiLoCo
+
+A multi-node training bundle can also join a DiLoCo parameter server
+as **one logical worker group** — useful when a model doesn't fit on
+one host (so it has to run multi-node PP) but you still want the
+generalization benefits of DiLoCo averaging across two such bundles.
+
+From the CLI, combine `--global` with `--diloco-server`:
+
+```bash
+# Submit a 2-node PP bundle as one DiLoCo worker:
+forgather -p /abs/path/to/project -t pp_config.yaml \
+    submit --global \
+    --member nodeA:1 --member nodeB:1 \
+    --diloco-server <server_id_or_url> \
+    [--worker-id my_group_a]
+```
+
+From the webui, select two or more nodes in the Multi-Node panel of
+the Submit dialog, then pick a DiLoCo server in the DiLoCo section —
+the picker switches to *compose mode* (no worker pool; just a server
+radio + optional base worker_id). The bundle is submitted as one
+group: every per-rank training job shares the base worker_id, and the
+PP callback appends `_pp<rank>` to register each rank with the
+DiLoCo server. The cluster bundle row in the Cluster Jobs view shows
+the resolved base immediately below the project/config row.
+
+Load-bearing behind the scenes (no operator action required):
+
+- The master resolves the base `worker_id` once and forwards it to
+  every peer (so they share one DiLoCo group, not N solo workers).
+- The DiLoCo bearer token (for a server running on the master) is
+  resolved on the master and shipped to every peer via `extra_env`.
+- A bundle inherits the standard cancel / rollup-status mechanics,
+  so cancelling the bundle stops every rank and the group as a whole.
+
+To compose **K independent multi-node DiLoCo groups** (e.g. two 2-node
+PP bundles averaged together), submit K separate `--global` calls,
+each targeting a non-overlapping `--member` subset and pinning the
+same `--diloco-server` with a distinct `--worker-id`. Non-overlap
+matters: the per-node GPU pool is FIFO, so overlapping groups
+serialize on the same host (no deadlock, but no parallelism either).
+A future `--diloco-count K` flag will automate the partition.
+
 ### Checkpoints on shared FS
 
 When several ranks share a filesystem (NFS, the typical multi-node

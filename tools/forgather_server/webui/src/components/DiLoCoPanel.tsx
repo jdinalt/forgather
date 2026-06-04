@@ -1677,6 +1677,32 @@ function GroupCard({
         >
           PP×{ppN}
         </span>
+        {(() => {
+          // Cluster-bundle origin chip: when the correlated JobRecord
+          // carries a ``cluster_job_id`` (PR-A multi-node DiLoCo
+          // composition), surface it so the operator can correlate
+          // this group with the Cluster Jobs view and the bundle's
+          // per-rank queue items.
+          const cjId =
+            (job?.job_params as { cluster_job_id?: string } | null)
+              ?.cluster_job_id ?? null;
+          if (!cjId) return null;
+          return (
+            <span
+              className="muted"
+              style={{
+                fontSize: 11,
+                padding: "1px 6px",
+                borderRadius: 3,
+                background: "var(--bg-surface, #24283b)",
+                border: "1px solid var(--border, #3b4261)",
+              }}
+              title={`Multi-node cluster bundle: ${cjId}`}
+            >
+              cluster <code style={{ fontSize: 11 }}>{cjId.slice(0, 10)}…</code>
+            </span>
+          );
+        })()}
         <span className="muted" style={{ fontSize: 12 }}>
           Round <b style={{ color: "var(--text, inherit)" }}>{canonical.sync_round ?? 0}</b>
         </span>
