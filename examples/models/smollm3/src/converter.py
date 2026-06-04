@@ -103,6 +103,24 @@ class SmolLM3Converter(HFConverter):
             assert config.mlp_bias == False, "mlp_bias must be False"
             assert config.attention_bias == False, "attention_bias must be False"
 
+            # The Forgather template regenerates the per-layer NoPE schedule from
+            # the scalar no_rope_layer_interval ((i + 1) % interval != 0). A source
+            # whose explicit no_rope_layers deviates from that periodic pattern
+            # would be silently converted into a *different* model (RoPE on layers
+            # the source treats as NoPE and vice-versa). Fail loud rather than
+            # mis-convert; such a model would need explicit no_rope_layers support.
+            interval = getattr(config, "no_rope_layer_interval", None)
+            no_rope = getattr(config, "no_rope_layers", None)
+            if interval and no_rope is not None:
+                expected = [int((i + 1) % interval != 0) for i in range(len(no_rope))]
+                assert list(no_rope) == expected, (
+                    "no_rope_layers does not follow the "
+                    "(i + 1) % no_rope_layer_interval != 0 pattern that Forgather "
+                    "regenerates from the interval; converting this model would "
+                    f"place NoPE on the wrong layers. interval={interval}, "
+                    f"no_rope_layers={list(no_rope)}"
+                )
+
     @override
     def get_project_info(
         self,

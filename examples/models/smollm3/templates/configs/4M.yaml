@@ -28,3 +28,10 @@ tokenizer: &tokenizer !call:forgather:from_project
     num_hidden_layers: {{ num_hidden_layers | toyaml(4) }}
     # Small models are untied by default (comparison parity); see small_tied.yaml.
     tie_word_embeddings: {{ tie_word_embeddings | toyaml(False) }}
+    ## Regenerate the NoPE schedule for this layer count -- super() emitted a list
+    ## sized for the default (36) layers; the later YAML key wins.
+    -- set _nope = namespace(layers=[])
+    -- for _i in range(num_hidden_layers | default(4) | int)
+    -- set _ = _nope.layers.append(1 if ((_i + 1) % (no_rope_layer_interval | default(4) | int) != 0) else 0)
+    -- endfor
+    no_rope_layers: {{ _nope.layers | toyaml }}

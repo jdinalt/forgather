@@ -23,7 +23,7 @@ Llama-3 tokenizer (vocab 128 256) — with a single distinguishing feature:
 | Q/K/V/O biases | None |
 | Embeddings | Tied input/output |
 | Tokenizer | Llama-3 BPE, 128 256 vocab |
-| RoPE base (θ) | 5 000 000 (3B checkpoint), tuned for 64K context |
+| RoPE base (θ) | 5 000 000 in the 3B checkpoint (tuned for 64K context); 2 000 000 `SmolLM3Config` default |
 
 ### NoPE — the one novelty
 

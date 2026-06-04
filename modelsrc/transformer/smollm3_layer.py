@@ -45,12 +45,22 @@ class SmolLM3DecoderLayer(nn.Module):
         super().__init__()
         self.layer_idx = layer_idx
 
-        # 1 -> apply RoPE, 0 -> NoPE. Default to applying RoPE when the config
-        # carries no schedule (e.g. a plain Llama-style config).
+        # 1 -> apply RoPE, 0 -> NoPE.
         no_rope_layers = getattr(config, "no_rope_layers", None)
-        if no_rope_layers and 0 <= layer_idx < len(no_rope_layers):
+        if no_rope_layers:
+            # A schedule is present: it must cover every layer. Silently falling
+            # back to apply_rope for an out-of-range index would quietly disable
+            # NoPE on the tail layers (an architecture mismatch with no error), so
+            # fail loud instead -- the schedule length must equal num_hidden_layers.
+            if not 0 <= layer_idx < len(no_rope_layers):
+                raise ValueError(
+                    f"layer_idx {layer_idx} is out of range for a no_rope_layers "
+                    f"schedule of length {len(no_rope_layers)}; the schedule must "
+                    f"cover every layer (len(no_rope_layers) == num_hidden_layers)."
+                )
             self.apply_rope = bool(no_rope_layers[layer_idx])
         else:
+            # No schedule at all (e.g. a plain Llama-style config): RoPE everywhere.
             self.apply_rope = True
 
         # For NoPE layers, override the bound pos_encoder (apply_rotary_pos_emb)
