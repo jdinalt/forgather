@@ -336,6 +336,28 @@ def submit_global(client, args, *, project_dir, config, dynamic_args, dataset_so
     if args.rdzv_host:
         rdzv_node_id = resolve_host_to_node_id(members, args.rdzv_host)["node_id"]
 
+    # DiLoCo composition: the bundle is one logical DiLoCo worker group.
+    # Resolve the server URL the same way `forgather submit --diloco` does
+    # (auto-pick when one server is running; respect an explicit id/label).
+    # Master-side resolution of the base ``worker_id`` and the server bearer
+    # happens in routes/cluster.py — see ClusterJobSubmitRequest.diloco.
+    diloco_payload = None
+    if getattr(args, "diloco_server", None):
+        from .diloco_orch import _resolve_worker_server
+
+        resolved_server = _resolve_worker_server(client, args)
+        if resolved_server is None:
+            return 1
+        diloco_payload = {"server_addr": resolved_server}
+        wid = (getattr(args, "worker_id", None) or "").strip()
+        if wid:
+            diloco_payload["worker_id"] = wid
+        hb = getattr(args, "heartbeat_interval", None)
+        # The parser default is 30.0; treat that as "no override" so we
+        # don't pin the heartbeat unless the operator actually set it.
+        if hb is not None and hb != 30.0:
+            diloco_payload["heartbeat_interval"] = float(hb)
+
     if getattr(args, "dry_run", False):
         print(f"[dry-run] would submit multi-node bundle: config={config}")
         print(f"  project={project_dir}")
@@ -345,6 +367,8 @@ def submit_global(client, args, *, project_dir, config, dynamic_args, dataset_so
             print(f"  node {m['node_id']} x{m['nproc_per_node']}{suffix}")
         if dynamic_args:
             print(f"  dynamic_args={dynamic_args}")
+        if diloco_payload is not None:
+            print(f"  diloco={diloco_payload}")
         return 0
 
     resp = client.cluster_jobs_submit(
@@ -357,6 +381,7 @@ def submit_global(client, args, *, project_dir, config, dynamic_args, dataset_so
         rdzv_port=args.rdzv_port,
         allow_version_mismatch=args.allow_version_mismatch,
         dataset_source=dataset_source,
+        diloco=diloco_payload,
     )
 
     bundle = resp.get("cluster_job") or {}
@@ -369,6 +394,12 @@ def submit_global(client, args, *, project_dir, config, dynamic_args, dataset_so
         rdzv = bundle.get("rdzv_endpoint")
         print(f"submitted: {bid}")
         print(f"rdzv:      {rdzv}")
+        diloco_info = bundle.get("diloco")
+        if diloco_info:
+            print(
+                f"diloco:    {diloco_info.get('server_addr')} "
+                f"as {diloco_info.get('worker_id')}"
+            )
         print("members:")
         for m in bundle.get("members") or []:
             print(

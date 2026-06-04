@@ -128,10 +128,13 @@ def create_submit_parser(global_args):
 
     # DiLoCo worker opt-in (formerly `forgather diloco worker`). --diloco submits
     # the project as one or more DiLoCo workers (independent local-SGD replicas
-    # joining a param-server) instead of a plain training job. This is a
-    # different parallelism axis from --global (independent replicas vs one
-    # rendezvous), so the two are mutually exclusive. Per-worker GPUs come from
-    # --requested-gpus (default 1).
+    # joining a param-server) instead of a plain training job. Plain --diloco
+    # without --global is a different parallelism axis (independent replicas vs
+    # one rendezvous), so the two are mutually exclusive — but combining --global
+    # with --diloco-server composes them: the multi-node bundle is one logical
+    # DiLoCo worker group (e.g. multi-node Pipeline Parallel averaged with
+    # another such group via DiLoCo). Per-worker GPUs come from --requested-gpus
+    # (default 1).
     diloco = parser.add_argument_group("DiLoCo worker (opt-in)")
     diloco.add_argument(
         "--diloco",
@@ -147,7 +150,8 @@ def create_submit_parser(global_args):
         help=(
             "DiLoCo param-server to join: a server id/label/host:port. When\n"
             "omitted, the single running server is used automatically. Implies\n"
-            "--diloco."
+            "--diloco. Combine with --global to make the multi-node bundle one\n"
+            "logical DiLoCo worker group."
         ),
     )
     diloco.add_argument(
@@ -162,7 +166,11 @@ def create_submit_parser(global_args):
         "--worker-id",
         type=str,
         default=None,
-        help="Worker id (auto-generated if not provided).",
+        help=(
+            "Worker id (auto-generated if not provided). With --global +\n"
+            "--diloco-server this is the *base* id shared by every rank;\n"
+            "the PP callback appends ``_pp<rank>``."
+        ),
     )
     diloco.add_argument(
         "--resume-workers",

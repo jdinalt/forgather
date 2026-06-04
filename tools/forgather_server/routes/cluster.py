@@ -2494,6 +2494,15 @@ class TrainingLocalRequest(BaseModel):
     # item's job_params so the master can correlate per-peer queue ids
     # back to the bundle when listing or cancelling.
     cluster_job_id: Optional[str] = None
+    # DiLoCo composition: optional ``job_params.diloco`` block fanned
+    # out by the master so every per-rank training job joins the same
+    # DiLoCo group (shared base ``worker_id``). The master resolves
+    # ``server_addr`` + ``worker_id`` once and ships an identical dict
+    # to every peer; the peer's scheduler translates this into
+    # ``DILOCO_*`` env via ``_diloco_env_from_job_params``. The bearer
+    # token is forwarded separately via ``extra_env`` (the master is
+    # the only node guaranteed to see the diloco_server JobRecord).
+    diloco: Optional[Dict[str, Any]] = None
 
 
 class TrainingLocalResponse(BaseModel):
@@ -2512,6 +2521,13 @@ def training_local(req: TrainingLocalRequest, response: Response):
     """
     from .. import queue_store
 
+    job_params: Dict[str, Any] = {
+        "rdzv_args": dict(req.rdzv_args),
+        "extra_env": dict(req.extra_env),
+        "cluster_job_id": req.cluster_job_id,
+    }
+    if req.diloco:
+        job_params["diloco"] = dict(req.diloco)
     item = queue_store.QueueItem.new(
         project_dir=req.project_dir,
         config=req.config,
@@ -2519,11 +2535,7 @@ def training_local(req: TrainingLocalRequest, response: Response):
         requested_gpus=req.requested_gpus,
         priority=req.priority,
         job_type="training",
-        job_params={
-            "rdzv_args": dict(req.rdzv_args),
-            "extra_env": dict(req.extra_env),
-            "cluster_job_id": req.cluster_job_id,
-        },
+        job_params=job_params,
     )
     queue_store.add_item(item)
     ident = cluster.self_identity()
@@ -2641,6 +2653,27 @@ class MemberSubmitSpec(BaseModel):
     nccl_socket_ifname: Optional[str] = None
 
 
+class ClusterDiLoCoSpec(BaseModel):
+    """DiLoCo composition for a multi-node submit.
+
+    When present, every per-rank training job in the bundle joins the
+    same DiLoCo group (one logical worker spanning the bundle's ranks)
+    via a shared base ``worker_id``. The PP callback derives the
+    ``_pp{rank}`` suffix itself, so the operator only needs to specify
+    the base — leaving ``worker_id`` unset has the master auto-generate
+    a memorable name.
+
+    The master also resolves the DiLoCo bearer token from a locally-
+    spawned ``diloco_server`` JobRecord and forwards it via each peer's
+    ``extra_env`` so remote peers (which don't see that record) can
+    still authenticate.
+    """
+
+    server_addr: str
+    worker_id: Optional[str] = None
+    heartbeat_interval: Optional[float] = None
+
+
 class ClusterJobSubmitRequest(BaseModel):
     project_dir: str
     config: str
@@ -2660,6 +2693,10 @@ class ClusterJobSubmitRequest(BaseModel):
     # examples from the same dataset_server (typically a dedicated data
     # host the entire LAN can reach).
     dataset_source: Optional[Dict[str, Any]] = None
+    # Optional DiLoCo composition: the bundle is one logical DiLoCo
+    # worker group, all ranks averaging through the same param-server.
+    # See ``ClusterDiLoCoSpec``.
+    diloco: Optional[ClusterDiLoCoSpec] = None
 
 
 class MemberAssignmentModel(BaseModel):
@@ -2703,6 +2740,11 @@ class ClusterJobModel(BaseModel):
     # operator can see "did this bundle actually use auto-routing"
     # without consulting per-rank env logs.
     dataset_source: Optional[Dict[str, Any]] = None
+    # DiLoCo composition (resolved on the master, see
+    # ``ClusterDiLoCoSpec``). ``None`` for plain multi-node bundles.
+    # Surfaced so the UI can label a bundle as "one DiLoCo worker
+    # group" and link to the param-server it joined.
+    diloco: Optional[Dict[str, Any]] = None
 
 
 class ClusterJobSubmitResponse(BaseModel):
@@ -2751,6 +2793,7 @@ def _to_cluster_job_model(
         members=member_models,
         status=job.status,
         dataset_source=job.dataset_source,
+        diloco=job.diloco,
         cancelled_at=job.cancelled_at,
         rolled_up_status=_rollup_cluster_status(
             job, [m.current_status for m in member_models]
@@ -2928,6 +2971,13 @@ async def _fanout_training(
     if self_id is not None and target.node_id == self_id.node_id:
         from .. import queue_store
 
+        job_params: Dict[str, Any] = {
+            "rdzv_args": dict(payload["rdzv_args"]),
+            "extra_env": dict(payload.get("extra_env") or {}),
+            "cluster_job_id": payload.get("cluster_job_id"),
+        }
+        if payload.get("diloco"):
+            job_params["diloco"] = dict(payload["diloco"])
         item = queue_store.QueueItem.new(
             project_dir=payload["project_dir"],
             config=payload["config"],
@@ -2935,11 +2985,7 @@ async def _fanout_training(
             requested_gpus=int(payload.get("requested_gpus", 1)),
             priority=int(payload.get("priority", 0)),
             job_type="training",
-            job_params={
-                "rdzv_args": dict(payload["rdzv_args"]),
-                "extra_env": dict(payload.get("extra_env") or {}),
-                "cluster_job_id": payload.get("cluster_job_id"),
-            },
+            job_params=job_params,
         )
         queue_store.add_item(item)
         return {"queue_id": item.queue_id, "node_id": self_id.node_id}
@@ -3077,6 +3123,35 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
     except DatasetSourceError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    # Resolve the DiLoCo composition (if any) once on the master:
+    # 1) Pin a single base ``worker_id`` so every per-rank training job
+    #    joins the same DiLoCo group. If the operator didn't supply
+    #    one, mint a memorable name here — never let it default per-
+    #    peer at dispatch time, or the group fragments into N solo
+    #    workers and parameter averaging silently degrades.
+    # 2) Resolve the DiLoCo bearer token from a locally-spawned
+    #    diloco_server JobRecord and ship it to every peer via
+    #    extra_env. Remote peers don't see that record, so loopback
+    #    auto-discovery and the scheduler's local match both fail
+    #    there; the master is the only node that can resolve it.
+    _resolved_diloco: Optional[Dict[str, Any]] = None
+    _diloco_token: Optional[str] = None
+    if req.diloco is not None:
+        from .. import scheduler as _scheduler
+        from forgather.utils import generate_name
+
+        _resolved_diloco = {
+            "server_addr": req.diloco.server_addr,
+            "worker_id": (req.diloco.worker_id or "").strip() or generate_name(),
+        }
+        if req.diloco.heartbeat_interval is not None:
+            _resolved_diloco["heartbeat_interval"] = float(
+                req.diloco.heartbeat_interval
+            )
+        _diloco_token = _scheduler._diloco_token_for_server_addr(
+            req.diloco.server_addr
+        )
+
     # Build per-peer payloads. ``node_rank`` is assigned by index in
     # the request order — the operator picks the order in the submit
     # modal, which usually means master = rank 0.
@@ -3117,40 +3192,52 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
         if _dataset_env:
             for k, v in _dataset_env.items():
                 extra_env.setdefault(k, v)
-        fanout_payloads.append(
-            {
-                "project_dir": req.project_dir,
-                "config": req.config,
-                "dynamic_args": dict(req.dynamic_args),
-                "requested_gpus": spec.nproc_per_node,
-                "priority": req.priority,
-                "rdzv_args": {
-                    "nnodes": len(req.members),
-                    "node_rank": idx,
-                    "rdzv_backend": "c10d",
-                    "rdzv_endpoint": rdzv_endpoint,
-                    "rdzv_id": rdzv_id,
-                    "nproc_per_node": spec.nproc_per_node,
-                    # Skip torch's broken hostname-based host autodetection
-                    # (socket.gethostname() resolves to 127.0.1.1 on
-                    # Debian/Ubuntu via /etc/hosts, so neither node would
-                    # ever recognise itself as the rdzv host and the c10d
-                    # store would never bind). Set explicitly per-peer.
-                    "is_host": member.node_id == rdzv_node_id,
-                    # Each peer's own routable IP. Rank 0's elastic
-                    # agent writes this into the c10d store as
-                    # MASTER_ADDR (RendezvousStoreInfo.build falls back
-                    # to socket.getfqdn() otherwise, which yields a
-                    # bare hostname like "hal9000" that peers without
-                    # DNS can't resolve). Setting --local-addr on
-                    # every peer is harmless and keeps the master /
-                    # non-master code paths uniform.
-                    "local_addr": member.address,
-                },
-                "extra_env": extra_env,
-                "cluster_job_id": cluster_job_id,
-            }
-        )
+        # DiLoCo token forwarding: peers (non-master) cannot resolve
+        # the bearer for a server running on the master, so inject it
+        # here. The peer's scheduler preserves any pre-set token (see
+        # ``_diloco_env_from_job_params``) — so this value survives
+        # the local resolution pass even on the master.
+        if _diloco_token and "FORGATHER_DILOCO_SERVER_TOKEN" not in extra_env:
+            extra_env["FORGATHER_DILOCO_SERVER_TOKEN"] = _diloco_token
+        payload: Dict[str, Any] = {
+            "project_dir": req.project_dir,
+            "config": req.config,
+            "dynamic_args": dict(req.dynamic_args),
+            "requested_gpus": spec.nproc_per_node,
+            "priority": req.priority,
+            "rdzv_args": {
+                "nnodes": len(req.members),
+                "node_rank": idx,
+                "rdzv_backend": "c10d",
+                "rdzv_endpoint": rdzv_endpoint,
+                "rdzv_id": rdzv_id,
+                "nproc_per_node": spec.nproc_per_node,
+                # Skip torch's broken hostname-based host autodetection
+                # (socket.gethostname() resolves to 127.0.1.1 on
+                # Debian/Ubuntu via /etc/hosts, so neither node would
+                # ever recognise itself as the rdzv host and the c10d
+                # store would never bind). Set explicitly per-peer.
+                "is_host": member.node_id == rdzv_node_id,
+                # Each peer's own routable IP. Rank 0's elastic
+                # agent writes this into the c10d store as
+                # MASTER_ADDR (RendezvousStoreInfo.build falls back
+                # to socket.getfqdn() otherwise, which yields a
+                # bare hostname like "hal9000" that peers without
+                # DNS can't resolve). Setting --local-addr on
+                # every peer is harmless and keeps the master /
+                # non-master code paths uniform.
+                "local_addr": member.address,
+            },
+            "extra_env": extra_env,
+            "cluster_job_id": cluster_job_id,
+        }
+        # DiLoCo block: identical for every per-rank payload so the
+        # peer-side scheduler emits the same DILOCO_WORKER_ID env on
+        # every rank. The DiLoCo callback's PP-group registration then
+        # collapses all ranks into one logical group.
+        if _resolved_diloco is not None:
+            payload["diloco"] = dict(_resolved_diloco)
+        fanout_payloads.append(payload)
 
     # Fanout. Sequential — N is small (usually 2-3) and serial keeps
     # the diagnostic story simple if one peer's enqueue fails.
@@ -3195,6 +3282,7 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
         rdzv_node_id=rdzv_node_id,
         members=assignments,
         dataset_source=req.dataset_source,
+        diloco=_resolved_diloco,
     )
     cluster_jobs.add_job(job)
     return ClusterJobSubmitResponse(
