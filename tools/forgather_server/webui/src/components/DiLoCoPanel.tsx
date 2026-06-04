@@ -323,9 +323,37 @@ function ServersList({
   onEditService,
 }: ServersListProps) {
   const [showAdd, setShowAdd] = useState(false);
-  const local = servers.filter((s) => s.source === "local");
-  const registered = servers.filter((s) => s.source === "registered");
-  const cluster = servers.filter((s) => s.source === "cluster");
+  // One flat list of every server known to this node. The cluster
+  // mental model is uniform — local-spawn, peer-spawn, and user-
+  // registered entries are all just "DiLoCo servers in this cluster"
+  // from the operator's POV. Per-row badges still mark the origin
+  // (where the server lives and how this node learned about it) so
+  // operator actions like "remove from registry" can attach to the
+  // right rows; nothing surfaces as a separate group.
+  const sortedServers = useMemo(() => {
+    const rank = (s: DiLoCoServer): number => {
+      // Healthy / alive on top; then unknown; then known-down. Within
+      // a tier, locally-spawned servers list first (operator's own
+      // node) then registered, then cluster — matches how the
+      // operator scans the list looking for "where is my server".
+      const isUp =
+        s.alive === true ||
+        s.healthy === true ||
+        // Registered entries don't expose a health flag; treat them
+        // as neutral rather than down.
+        (s.alive == null && s.healthy == null);
+      const tier = isUp ? 0 : s.alive === false || s.healthy === false ? 2 : 1;
+      const originRank = s.source === "local" ? 0 : s.source === "registered" ? 1 : 2;
+      return tier * 10 + originRank;
+    };
+    return [...servers].sort((a, b) => {
+      const r = rank(a) - rank(b);
+      if (r !== 0) return r;
+      return (a.label || a.base_url || "").localeCompare(
+        b.label || b.base_url || "",
+      );
+    });
+  }, [servers]);
 
   return (
     <div
@@ -373,7 +401,7 @@ function ServersList({
       <div style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
         {/* Defined services — start/stop toggle, edit, delete (same control
             surface as Services → DiLoCo). A running service also appears in
-            the live groups below; this section is for managing the
+            the live list below; this section is for managing the
             definitions. */}
         <div
           className="muted"
@@ -409,76 +437,48 @@ function ServersList({
           </div>
         )}
 
-        {local.length > 0 && (
-          <ServerGroup
-            heading="Local"
-            entries={local}
-            selectedId={selectedId}
-            onSelect={onSelect}
-            onAfterRegistryChange={onAfterRegistryChange}
-          />
-        )}
-        {registered.length > 0 && (
-          <ServerGroup
-            heading="Registered"
-            entries={registered}
-            selectedId={selectedId}
-            onSelect={onSelect}
-            onAfterRegistryChange={onAfterRegistryChange}
-          />
-        )}
-        {cluster.length > 0 && (
-          <ServerGroup
-            heading="Cluster"
-            entries={cluster}
-            selectedId={selectedId}
-            onSelect={onSelect}
-            onAfterRegistryChange={onAfterRegistryChange}
-          />
+        {sortedServers.length > 0 && (
+          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+            {sortedServers.map((s) => (
+              <ServerRow
+                key={s.id}
+                server={s}
+                selected={s.id === selectedId}
+                onSelect={() => onSelect(s.id)}
+                onAfterRegistryChange={onAfterRegistryChange}
+              />
+            ))}
+          </ul>
         )}
       </div>
     </div>
   );
 }
 
-function ServerGroup({
-  heading,
-  entries,
-  selectedId,
-  onSelect,
-  onAfterRegistryChange,
-}: {
-  heading: string;
-  entries: DiLoCoServer[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
-  onAfterRegistryChange: () => void;
-}) {
-  return (
-    <div>
-      <div
-        className="muted"
-        style={{
-          fontSize: "smaller",
-          padding: "4px 8px",
-          borderBottom: "1px solid var(--border, #333)",
-        }}
-      >
-        {heading}
-      </div>
-      <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-        {entries.map((s) => (
-          <ServerRow
-            key={s.id}
-            server={s}
-            selected={s.id === selectedId}
-            onSelect={() => onSelect(s.id)}
-            onAfterRegistryChange={onAfterRegistryChange}
-          />
-        ))}
-      </ul>
-    </div>
-  );
+/** Health state condensed across the three origin kinds — local /
+ *  registered / cluster — into a single shape the row dot can render.
+ *  Returns ``null`` for "no signal" (registered entries have no health
+ *  flag), else ``true``/``false`` for healthy/down. */
+function rowHealth(server: DiLoCoServer): boolean | null {
+  if (server.source === "cluster") {
+    return server.healthy ?? null;
+  }
+  if (server.source === "local") {
+    return server.alive ?? null;
+  }
+  return null;
+}
+
+/** Where the server runs and how this node learned about it, as a
+ *  compact label suitable for an inline badge. */
+function originLabel(server: DiLoCoServer): string {
+  if (server.source === "cluster") {
+    return server.peer_node_id ? `peer ${server.peer_node_id.slice(0, 8)}` : "peer";
+  }
+  if (server.source === "registered") {
+    return "registered";
+  }
+  return "this node";
 }
 
 function ServerRow({
@@ -531,44 +531,47 @@ function ServerRow({
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        {server.source === "local" && (
-          <span
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: 4,
-              background: server.alive ? "#3a3" : "#a33",
-              display: "inline-block",
-            }}
-            title={server.alive ? "running" : "not running"}
-          />
-        )}
-        {server.source === "cluster" && (
-          <span
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: 4,
-              background:
-                server.healthy === true
-                  ? "#3a3"
-                  : server.healthy === false
-                  ? "#a33"
-                  : "#888",
-              display: "inline-block",
-            }}
-            title={
-              server.healthy === true
-                ? `healthy (peer ${server.peer_node_id ?? "?"})`
-                : server.healthy === false
-                ? `down (peer ${server.peer_node_id ?? "?"})`
-                : "health unknown"
-            }
-          />
-        )}
+        {(() => {
+          const health = rowHealth(server);
+          const origin = originLabel(server);
+          const bg =
+            health === true ? "#3a3" : health === false ? "#a33" : "#888";
+          const title =
+            health === true
+              ? `healthy (${origin})`
+              : health === false
+              ? `down (${origin})`
+              : `health unknown (${origin})`;
+          return (
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 4,
+                background: bg,
+                display: "inline-block",
+              }}
+              title={title}
+            />
+          );
+        })()}
         <strong style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
           {server.label}
         </strong>
+        <span
+          className="muted"
+          title={`Origin: ${originLabel(server)}`}
+          style={{
+            fontSize: 10,
+            padding: "1px 6px",
+            borderRadius: 3,
+            background: "var(--bg-surface, #24283b)",
+            border: "1px solid var(--border, #3b4261)",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {originLabel(server)}
+        </span>
         {server.has_auth_token && (
           <span
             title="Bearer-token auth configured for this server"
