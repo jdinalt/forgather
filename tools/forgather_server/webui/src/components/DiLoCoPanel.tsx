@@ -1958,7 +1958,15 @@ function WorkerCard({
 
 /** Per-worker training stats — progress bar from global_step / max_steps
  *  plus a compact pill row mirroring JobsPanel's JobStatusBlock (loss,
- *  lr, tok/s, peak_mem, grad_norm, epoch). */
+ *  lr, tok/s, peak_mem, grad_norm, epoch).
+ *
+ *  Accepts both source shapes:
+ *   - trainer-control endpoint /status: spreads the trainer's raw log dict,
+ *     so the per-window token count is keyed ``tokens``.
+ *   - DiLoCo server per-worker /status (cross-node fallback): the heartbeat
+ *     schema names the same value ``tokens_window`` (see diloco/stats.py).
+ *  Cross-node entries are aliased onto ``tokens`` here so the pill renders
+ *  identically without forcing the wire schema to ship redundant keys. */
 function JobStatsRow({ stats }: { stats: Record<string, unknown> }) {
   const step = typeof stats.global_step === "number" ? stats.global_step : null;
   const max = typeof stats.max_steps === "number" ? stats.max_steps : null;
@@ -1969,26 +1977,28 @@ function JobStatsRow({ stats }: { stats: Record<string, unknown> }) {
   // grad_norm / epoch / tok/s / tokens / peak_mem. Each picker
   // returns null when the field is missing or wrong-shaped so the
   // pill is silently dropped.
-  const pickers: Array<[string, string, (v: unknown) => string | null]> = [
-    ["loss", "loss", (v) => (typeof v === "number" ? v.toFixed(4) : null)],
-    ["lr", "learning_rate", (v) => (typeof v === "number" ? fmtLr(v) : null)],
+  const pickTokens = (s: Record<string, unknown>): unknown =>
+    typeof s.tokens === "number" ? s.tokens : s.tokens_window;
+  const pickers: Array<[string, (s: Record<string, unknown>) => unknown, (v: unknown) => string | null]> = [
+    ["loss", (s) => s.loss, (v) => (typeof v === "number" ? v.toFixed(4) : null)],
+    ["lr", (s) => s.learning_rate, (v) => (typeof v === "number" ? fmtLr(v) : null)],
     [
       "grad_norm",
-      "grad_norm",
+      (s) => s.grad_norm,
       (v) => (typeof v === "number" ? v.toFixed(3) : null),
     ],
-    ["epoch", "epoch", (v) => (typeof v === "number" ? v.toFixed(3) : null)],
+    ["epoch", (s) => s.epoch, (v) => (typeof v === "number" ? v.toFixed(3) : null)],
     [
       "tok/s",
-      "tok_per_sec",
+      (s) => s.tok_per_sec,
       (v) => (typeof v === "number" ? fmtCount(v) : null),
     ],
-    ["tokens", "tokens", (v) => (typeof v === "number" ? fmtCount(v) : null)],
-    ["peak_mem", "peak_mem", (v) => fmtPeakMem(v)],
+    ["tokens", pickTokens, (v) => (typeof v === "number" ? fmtCount(v) : null)],
+    ["peak_mem", (s) => s.peak_mem, (v) => fmtPeakMem(v)],
   ];
   const pills: Array<[string, string]> = [];
-  for (const [label, key, fn] of pickers) {
-    const out = fn(stats[key]);
+  for (const [label, pick, fmt] of pickers) {
+    const out = fmt(pick(stats));
     if (out !== null) pills.push([label, out]);
   }
 
