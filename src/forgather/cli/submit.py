@@ -6,9 +6,13 @@ The single entry point for launching a run, mirroring the webui submit modal:
 - `--global`: multi-node rendezvous fan-out (one torchrun world across nodes).
 - `--diloco-server <id>` / `--resume-workers`: DiLoCo worker(s) joining a
   param-server (N independent local-SGD replicas).
+- `--global --diloco-server <id>`: composition — the multi-node bundle is one
+  logical DiLoCo worker group (e.g. multi-node Pipeline Parallel averaged with
+  another such group via DiLoCo). All ranks share one base ``worker_id``; the
+  PP callback registers the group with the param-server.
 
-`--global` and the DiLoCo opt-in are different parallelism axes and are mutually
-exclusive.
+Without ``--diloco-server`` the two axes (``--global`` and ``--diloco``) are
+different parallelism models and remain mutually exclusive.
 """
 
 import os
@@ -24,12 +28,33 @@ def submit_cmd(args):
         or getattr(args, "resume_workers", False)
     )
     run_global = getattr(args, "run_global", False)
-
-    if diloco_mode and run_global:
+    # Composition: --global + --diloco-server is a multi-node bundle whose
+    # ranks join one DiLoCo group. --resume-workers and --diloco-worker-count
+    # are independent-replica modes that don't compose with --global (one
+    # rendezvous = one group; K independent groups is PR-C territory).
+    diloco_compose = run_global and bool(getattr(args, "diloco_server", None))
+    if diloco_compose:
+        if getattr(args, "resume_workers", False):
+            print(
+                "error: --resume-workers can't be combined with --global "
+                "(resume targets the independent-replica DiLoCo flow).",
+                file=sys.stderr,
+            )
+            return 1
+        if (getattr(args, "count", 1) or 1) != 1:
+            print(
+                "error: --diloco-worker-count > 1 doesn't compose with --global "
+                "yet (K independent multi-node DiLoCo groups — coming in a "
+                "follow-up). Submit one group at a time.",
+                file=sys.stderr,
+            )
+            return 1
+    elif diloco_mode and run_global:
         print(
-            "error: --global and --diloco can't be combined — they're different "
-            "parallelism models (--global is one rendezvous across nodes; "
-            "DiLoCo is independent local-SGD replicas). Pick one.",
+            "error: --global only composes with --diloco-server (a multi-node "
+            "bundle joining one DiLoCo group). --diloco / --resume-workers on "
+            "their own are independent-replica modes — pick one or pin a "
+            "param-server with --diloco-server.",
             file=sys.stderr,
         )
         return 1
@@ -52,6 +77,13 @@ def submit_cmd(args):
         return 1
     args.config_template = config
 
+    # Composition takes priority over the bare-DiLoCo dispatch: when both
+    # --global and --diloco-server are set, the multi-node bundle path
+    # builds the DiLoCo block and the fan-out enqueues it as one logical
+    # worker group. Falling through to _worker_cmd here would re-dispatch
+    # as N independent single-node workers.
+    if diloco_compose:
+        return _submit_global(args, submit_orch, config)
     if diloco_mode:
         # DiLoCo worker(s) via the shared worker-launch impl. --diloco selects
         # the mode; --diloco-server (dest=diloco_server) pins a param-server;

@@ -446,6 +446,7 @@ class ServerClient:
         rdzv_port=None,
         allow_version_mismatch=False,
         dataset_source=None,
+        diloco=None,
     ):
         """Fan out a multi-node training submit.
 
@@ -459,6 +460,14 @@ class ServerClient:
         dataset-source choice — e.g. ``{"kind": "auto"}`` for cluster
         auto-routing or ``{"kind": "server", "server_id": "..."}`` to
         pin to a specific known server.
+
+        ``diloco`` (optional) composes the bundle with DiLoCo: every
+        per-rank training job joins the named param-server as one
+        logical worker group (shared base ``worker_id``). Shape:
+        ``{"server_addr": str, "worker_id": str|None,
+        "heartbeat_interval": float|None}``. The master resolves
+        ``worker_id`` (auto-mints a memorable default when None) and
+        the server's bearer token so every peer authenticates uniformly.
         """
         body = {
             "project_dir": project_dir,
@@ -474,6 +483,8 @@ class ServerClient:
             body["rdzv_port"] = rdzv_port
         if dataset_source is not None:
             body["dataset_source"] = dataset_source
+        if diloco is not None:
+            body["diloco"] = diloco
         return self._post("/cluster/jobs/submit", body).json()
 
     def cluster_job_cancel(self, cluster_job_id):

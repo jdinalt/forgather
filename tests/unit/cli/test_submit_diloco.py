@@ -69,12 +69,82 @@ def test_resume_workers_dispatches_to_worker(monkeypatch):
     assert called["args"].resume_workers is True
 
 
-def test_global_and_diloco_are_mutually_exclusive(monkeypatch):
-    # Should error before dispatching to either path.
+def test_global_plus_diloco_server_composes(monkeypatch):
+    """``--global --diloco-server`` is the multi-node DiLoCo composition:
+    one bundle = one DiLoCo worker group. The submit should not error
+    and must take the ``--global`` fan-out path (not the worker path)."""
+
+    def _fail_worker(args):
+        raise AssertionError("compose path must not dispatch to _worker_cmd")
+
+    monkeypatch.setattr(diloco_mod, "_worker_cmd", _fail_worker)
+    # Capture the cluster submit call so we don't need a live server.
+    called = {}
+
+    def _capture_submit_global(client, args, **kwargs):
+        called["kwargs"] = kwargs
+        called["args"] = args
+        return 0
+
+    monkeypatch.setattr(submit_orch, "submit_global", _capture_submit_global)
+    from forgather.cli import server_client
+
     monkeypatch.setattr(
-        diloco_mod, "_worker_cmd", lambda args: (_ for _ in ()).throw(AssertionError)
+        server_client.ServerClient, "__init__", lambda self, base=None: None
     )
-    rc = submit_mod.submit_cmd(_submit_args(diloco_server="X", run_global=True))
+    monkeypatch.setattr(submit_orch, "resolve_dataset_source", lambda c, a: None)
+    monkeypatch.setattr(submit_orch, "collect_dynamic_args", lambda a: {})
+
+    rc = submit_mod.submit_cmd(
+        _submit_args(diloco_server="X", run_global=True)
+    )
+    assert rc == 0
+    assert called["args"].diloco_server == "X"
+
+
+def test_global_plus_bare_diloco_still_errors(monkeypatch):
+    """``--global --diloco`` (no --diloco-server) is still a category
+    error — the bare ``--diloco`` is the independent-replicas mode,
+    which doesn't compose with ``--global`` (one rendezvous = one
+    group). Force the operator to pin a server explicitly."""
+    monkeypatch.setattr(
+        diloco_mod,
+        "_worker_cmd",
+        lambda args: (_ for _ in ()).throw(AssertionError),
+    )
+    rc = submit_mod.submit_cmd(_submit_args(diloco=True, run_global=True))
+    assert rc == 1
+
+
+def test_global_plus_resume_workers_errors(monkeypatch):
+    """``--resume-workers`` is the independent-replica re-launch flow
+    and doesn't compose with ``--global`` (which is one rendezvous
+    group)."""
+    monkeypatch.setattr(
+        diloco_mod,
+        "_worker_cmd",
+        lambda args: (_ for _ in ()).throw(AssertionError),
+    )
+    rc = submit_mod.submit_cmd(
+        _submit_args(
+            diloco_server="X", run_global=True, resume_workers=True
+        )
+    )
+    assert rc == 1
+
+
+def test_global_plus_worker_count_errors(monkeypatch):
+    """K>1 multi-node DiLoCo groups is a follow-up (PR-C). Today: a
+    single bundle = a single group, so ``--diloco-worker-count > 1``
+    with ``--global`` is rejected."""
+    monkeypatch.setattr(
+        diloco_mod,
+        "_worker_cmd",
+        lambda args: (_ for _ in ()).throw(AssertionError),
+    )
+    rc = submit_mod.submit_cmd(
+        _submit_args(diloco_server="X", run_global=True, count=3)
+    )
     assert rc == 1
 
 

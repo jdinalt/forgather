@@ -77,6 +77,16 @@ class ClusterJob:
     # webui can render "what dataset routing did this bundle use"
     # after the fact.
     dataset_source: Optional[Dict[str, Any]] = None
+    # DiLoCo composition: when the bundle's per-rank training jobs join
+    # a DiLoCo param-server as a single grouped worker, the master
+    # resolves the server addr + base ``worker_id`` once and persists
+    # the dict here. Shape mirrors ``job_params.diloco`` —
+    # ``{"server_addr": str, "worker_id": str, "heartbeat_interval":
+    # float|None}``. ``None`` for plain (non-DiLoCo) multi-node bundles.
+    # Surfaced so the CLI / webui can render "this bundle is one DiLoCo
+    # worker group" without having to peek inside each peer's queue
+    # item.
+    diloco: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -101,6 +111,7 @@ class ClusterJob:
             status=data.get("status", "submitted"),
             cancelled_at=data.get("cancelled_at"),
             dataset_source=data.get("dataset_source"),
+            diloco=data.get("diloco"),
         )
 
 
