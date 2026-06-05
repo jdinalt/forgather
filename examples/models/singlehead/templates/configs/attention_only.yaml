@@ -1,0 +1,9 @@
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Singlehead (attention-only)"
+    -- set ns.config_description = "Attention-only single-head ALiBi transformer (no MLP), ~4M params"
+    -- set ns.model_name = model_name | default("singlehead_attn_only")
+    ## Drop the MLP -- the paper-faithful, attention-only transformer.
+    -- set ns.use_mlp = False

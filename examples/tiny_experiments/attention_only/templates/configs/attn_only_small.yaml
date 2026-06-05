@@ -1,0 +1,13 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Attention-Only (small)"
+    -- set ns.config_description = "Attention-only single-head ALiBi transformer, no MLP (~8M params)"
+    -- set ns.model_name = "attn_only_small"
+    -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'singlehead')
+    -- set ns.model_project_config = "small_attention_only.yaml"
+
+[model_constructor_args]
+    == super()
+    attn_implementation: "eager"

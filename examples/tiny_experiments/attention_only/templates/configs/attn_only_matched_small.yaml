@@ -1,0 +1,13 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Attention-only (small, param-matched)"
+    -- set ns.config_description = "Attention-only single-head ALiBi transformer widened+deepened to hidden 960 x 11 layers, so its non-embedding parameter count (~20.3M) matches the +MLP small model (~19.9M)"
+    -- set ns.model_name = "attn_only_matched_small"
+    -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'singlehead')
+    -- set ns.model_project_config = "small_attention_only_matched.yaml"
+
+[model_constructor_args]
+    == super()
+    attn_implementation: "eager"
