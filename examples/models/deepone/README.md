@@ -103,11 +103,13 @@ except flash-attention-2 (fixed-bias, but the fastest for inference).
 | `1_7B.yaml` | wikitext 32k | 2048 / 5376 / 16 / 32 |
 
 DeepOne appears as `small_deepone` in the
-[Small Models](../../tiny_experiments/small_models) comparison, where its
-post-LN + DeepNorm design is the least stable of the eight (grad-norm creeps into
-the ~1.8–2.6 band mid-run) but still finishes mid-pack thanks to the clip guard
-and WSD LR decay — a fair illustration of the post-LN/pre-LN tradeoff DeepNorm is
-trying to thread.
+[Small Models](../../tiny_experiments/small_models) comparison, where it finishes
+mid-pack. DeepNorm is built for stability, and in prior testing DeepOne has
+trained with a notably **low, stable gradient norm — below Llama's**. In that
+particular run, though, it was unexpectedly the *least* stable of the eight
+(grad-norm crept into the ~1.8–2.6 band mid-run before the clip guard and WSD LR
+decay brought it home). That result runs counter to the architecture's track
+record; the cause is still open and worth tracking down.
 
 ## References
 
