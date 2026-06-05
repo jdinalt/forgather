@@ -655,6 +655,51 @@ def test_register_response_full_state_for_solo_worker(server):
     )
 
 
+def test_submit_sync_response_full_state_for_solo_worker(tmp_path):
+    """Symmetric to the register-solo test: a solo worker's sync
+    barrier response is also the full model state, not a sliced view.
+    Sync solo + register solo share the helper's "no group → full
+    state" branch, but pin both so future divergence shows up here."""
+    import io as _io
+    import struct
+
+    ckpt = make_initial_checkpoint(_state_dict(), tmp_path)
+    s = DiLoCoServer(
+        output_dir=str(tmp_path),
+        from_checkpoint=ckpt,
+        num_workers=1,  # solo: barrier releases on this rank alone
+        port=0,
+        heartbeat_timeout=0,
+    )
+    s.start()
+    try:
+        time.sleep(0.2)
+        _register(s, "alpha", _full_shapes())
+
+        header = {"worker_id": "alpha"}
+        header_bytes = json.dumps(header).encode("utf-8")
+        buf = _io.BytesIO()
+        torch.save(
+            {name: torch.zeros(*shape) for name, shape in _full_shapes().items()},
+            buf,
+        )
+        body = struct.pack("!I", len(header_bytes)) + header_bytes + buf.getvalue()
+        req = urllib.request.Request(
+            f"http://localhost:{s.port}/submit_pseudograd",
+            data=body,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            state = torch.load(_io.BytesIO(resp.read()), weights_only=False)
+
+        assert set(state.keys()) == set(_full_shapes().keys()), (
+            "a solo worker's sync response must contain the full model; "
+            f"got: {sorted(state.keys())}"
+        )
+    finally:
+        s.stop()
+
+
 def test_submit_sync_response_sliced_for_pp_group_members(server):
     """Both ranks submit pseudograds in parallel; the sync barrier
     releases and each rank receives back ONLY its slice's averaged

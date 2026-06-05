@@ -172,6 +172,16 @@ typically one rank per group (G groups → G contributors). Tied
 aliases held in multiple ranks contribute identically and average to
 the same value.
 
+After the barrier releases, the post-sync response is filtered to the
+requesting rank's slice on the way out (via `_params_for_worker`).
+Each pp_rank only ever sees its own
+`WorkerGroup.member_param_names[pp_rank]` keys in the response — the
+worker would discard the rest anyway (`PipelineParamView.apply_global`
+silently drops names it doesn't own), but the wire transfer would
+otherwise carry the full averaged model. Solo workers and untracked
+clients still receive the full state, preserving the pre-#84
+ParamView fingerprint contract.
+
 ## Fragments-within-groups
 
 The same model extends to streaming fragments (`num_fragments > 1`).
