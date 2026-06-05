@@ -59,6 +59,30 @@ exactly what makes attention patterns hard to interpret. By segregating the two,
 ALiBi should — in theory — make the learned QK circuit far easier to analyze.
 Here there is a single (optionally trainable) slope per layer.
 
+## Why tied embeddings
+
+Tying the input embedding to the output (unembedding) matrix is also deliberate,
+and it follows the same Transformer Circuits logic.
+
+Consider a **zero-layer** transformer — embed, then unembed, with nothing in
+between. With *separate* matrices, the product `W_U W_E` is exactly a **bigram
+model**: a low-rank (rank-`d_model`) approximation of the full token→next-token
+log-probability matrix, whose column for a given input token holds the
+distribution over tokens that tend to follow it. (A one-hot input just selects
+that column; the two matrices communicate through the residual stream.) So even
+with *no layers*, separate embeddings hand the model a free statistical starting
+point — the bigram prediction. Any layers you then stack in the middle have an
+easy job: **refine** that bigram estimate using information from elsewhere in the
+sequence, writing corrections into the residual stream to shift the prediction.
+
+**Tying the matrices removes that crutch.** When `W_U = W_E^T`, the zero-layer
+model no longer predicts the *next* token — it predicts the *current* one (and,
+to a lesser extent, semantically related tokens), which is useless as a language
+model. There is no bigram fallback to lean on, so the layers in the middle must
+do *all* the work of turning "what is this token" into "what comes next." For a
+model whose entire purpose is to study what the attention layers actually
+compute, that is exactly the point: no cheating via the embeddings.
+
 ## The two variants: attention-only vs. attention + MLP
 
 The model ships in two forms, selected by the `use_mlp` flag in the config:
