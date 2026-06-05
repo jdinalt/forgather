@@ -118,4 +118,4 @@ record; the cause is still open and worth tracking down.
 - Elhage et al. 2021, *A Mathematical Framework for Transformer Circuits* (previous-token heads, induction heads) — <https://transformer-circuits.pub/2021/framework/index.html>
 - Mirzadeh et al. 2023, *ReLU Strikes Back: Exploiting Activation Sparsity in Large Language Models* — [arXiv:2310.04564](https://arxiv.org/abs/2310.04564)
 - Xiong et al. 2020, *On Layer Normalization in the Transformer Architecture* (post-LN vs pre-LN) — [arXiv:2002.04745](https://arxiv.org/abs/2002.04745)
-- Shared backbone references (RMSNorm, GLU) — see [../llama](../llama).
+- Shared *component* references (RMSNorm, GLU — DeepOne reuses these building blocks but not the Llama template) — see [../llama](../llama).

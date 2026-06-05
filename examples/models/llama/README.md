@@ -3,8 +3,10 @@
 A Forgather-native re-implementation of Meta's **Llama** (1 / 2 / 3), with
 HF↔Forgather weight conversion. This is the reference decoder of the repo: the
 shared `models/transformers/dynamic_llama.yaml` template defined here is the
-backbone that Mistral, Qwen3, Gemma-3, SmolLM3, LlamaCanon, and DeepOne extend
-with one or two changes each.
+backbone that the **Llama-family** projects — Mistral, Qwen3, Gemma-3, SmolLM3,
+and LlamaCanon — extend with one or two changes each. (DeepOne and the vanilla
+Causal LM are distinct enough that they sit on their own parallel base templates,
+not this one.)
 
 ## Architecture
 
@@ -23,9 +25,11 @@ transformer with rotary positions and a gated MLP.
 
 Forgather builds this from `dynamic_llama.yaml` (`torch.nn.RMSNorm`,
 `GLUFeedforwardLayer` with `SiLU`, `RotaryEmbedding`, `CausalMultiheadAttn`,
-`PreLNLayer`). The other `examples/models/` projects are mostly this template
-plus a single distinguishing feature — Mistral adds a sliding window, Qwen3 adds
-QK-norm, SmolLM3 adds NoPE, and so on.
+`PreLNLayer`). The Llama-family projects are mostly this template plus a single
+distinguishing feature — Mistral adds a sliding window, Qwen3 adds QK-norm,
+SmolLM3 adds NoPE, and so on. (The DeepOne and Causal LM projects are *not*
+Llama-derived: DeepOne extends `models/transformers/deepone.yaml` and Causal LM
+extends `dynamic_causal_transformer.yaml`.)
 
 ### RoPE and long-context scaling
 
