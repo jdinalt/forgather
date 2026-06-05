@@ -24,12 +24,14 @@ muddies the query/key/value content — see the
 | **Attention-only** | `x = x + attn(norm(x))` | `AttentionOnlyLayer` |
 
 Removing the MLP without compensating drops parameters — at the small width the
-MLP is the *majority* of the model. So the experiment runs two kinds of
-attention-only model: a plain one (MLP simply deleted) and a **param-matched**
-one that re-spends the MLP's capacity as wider, deeper attention (hidden 960 ×
-11 layers) so its *non-embedding* parameter count matches the +MLP model. That
-second arm is the fairer test: it asks whether the MLP does something attention
-*can't*, separated from whether it just adds capacity.
+MLP is the *majority* of the model. So beyond the plain attention-only model (MLP
+simply deleted), the experiment includes **param-matched** attention-only models
+that re-spend the MLP's capacity as more attention, matching the +MLP model's
+*non-embedding* parameter count. There are two, which also lets us ask whether
+**depth or width** is the better way to spend an attention budget:
+
+- a **wide** match — hidden 960 × 11 layers, and
+- a **deep** match — hidden 512 × 38 layers (same width as `mlp_small`).
 
 | Run | hidden / layers / inter | MLP? | Non-emb | Params |
 |---|---|---|---|---|
@@ -37,12 +39,13 @@ second arm is the fairer test: it asks whether the MLP does something attention
 | `attn_only_4m` | 256 / 6 / — | no | 0.8M | 2.8M |
 | `mlp_small` | 512 / 8 / 1280 | yes | 19.9M | 24M |
 | `attn_only_small` | 512 / 8 / — | no | 4.2M | 8.3M |
-| `attn_only_matched_small` | 960 / 11 / — | no | 20.3M | 28M |
+| `attn_only_matched_small` (wide) | 960 / 11 / — | no | 20.3M | 28M |
+| `attn_only_deep_small` (deep) | 512 / 38 / — | no | 19.9M | 24M |
 
-`attn_only_matched_small` matches `mlp_small` on non-embedding parameters (~20M)
-to within ~2%. A naive depth-only match would need ~38 layers at width 512;
-widening to 960 keeps the depth at a stable 11 (very deep attention-only stacks
-get hard to train).
+Both param-matched models match `mlp_small` on non-embedding parameters (~20M);
+the deep one, sharing the 512 width, matches it on *total* parameters too. A
+38-layer single-head stack is deep enough to worry about training stability —
+which turns out to be a non-issue here (see below).
 
 ## Setup
 
@@ -56,12 +59,13 @@ get hard to train).
 
 ## Results
 
-All five runs trained on the same 258M tokens. Best eval loss (cross-entropy):
+All six runs trained on the same 258M tokens. Best eval loss (cross-entropy):
 
 | Run | Non-emb params | Best eval loss |
 |---|---:|---:|
 | `mlp_small` (attn + MLP, ~24M) | 19.9M | **1.162** |
-| `attn_only_matched_small` (attn-only, ~28M) | 20.3M | 1.361 |
+| `attn_only_deep_small` (attn-only, 512×38) | 19.9M | 1.247 |
+| `attn_only_matched_small` (attn-only, 960×11) | 20.3M | 1.361 |
 | `mlp_4m` (attn + MLP, ~4.6M) | 1.7M | 1.391 |
 | `attn_only_small` (attn-only, ~8M) | 4.2M | 1.493 |
 | `attn_only_4m` (attn-only, ~2.8M) | 0.8M | 1.728 |
@@ -70,28 +74,37 @@ All five runs trained on the same 258M tokens. Best eval loss (cross-entropy):
 
 ![Training and eval loss vs tokens](assets/loss_comparison.png)
 
-Three things stand out:
+Four things stand out:
 
-1. **At equal parameters, the MLP wins decisively.** `mlp_small` and
-   `attn_only_matched_small` have the *same* non-embedding budget (~20M), yet the
-   MLP model is **0.20 eval loss** ahead (1.16 vs 1.36). Spending that capacity on
-   wider, deeper attention does **not** reproduce what the MLP does — so the MLP's
-   value is not merely "more parameters."
+1. **At equal parameters the MLP still leads — but a well-shaped attention-only
+   gets close.** `mlp_small` (1.16) beats every attention-only model on its own
+   parameter budget, but the best attention-only model (the deep match, 1.25) is
+   only ~0.085 behind, not the 0.20 the *wide* match (1.36) would suggest. The
+   MLP's edge is real but smaller than the naive ablation implies.
 
-2. **The MLP is strikingly parameter-efficient.** `mlp_4m` carries only **1.7M**
-   non-embedding parameters yet reaches 1.39 — essentially tying the
-   param-matched attention-only model with **20M** non-embedding parameters
-   (1.36), and comfortably beating the 8M attention-only model (1.49). A little
-   MLP compute is worth an order of magnitude more attention compute.
+2. **Depth beats width for attention-only.** At the same ~20M non-embedding
+   budget, stacking attention deep (512 × 38 → 1.25) clearly beats spreading it
+   wide (960 × 11 → 1.36) — a 0.11 gap. Attention composes information *through
+   depth* (an induction head already needs two layers; richer circuits need
+   more), so extra layers buy more than extra width. This is the kind of result
+   the Transformer Circuits view predicts.
 
-3. **Adding attention capacity helps, but with diminishing returns toward the
-   MLP.** Going from the 8M to the 28M attention-only model buys 0.13 eval loss
-   (1.49 → 1.36) — real, but it stalls ~0.20 short of the equal-param MLP model
-   and well short of where the trend would need to continue.
+3. **The MLP is strikingly parameter-efficient.** `mlp_4m` carries only **1.7M**
+   non-embedding parameters yet reaches 1.39 — essentially tying the *wide*
+   attention-only model with **20M** non-embedding parameters (1.36), and beating
+   the 8M attention-only model (1.49). A little MLP compute is worth an order of
+   magnitude more attention compute.
+
+4. **The 38-layer stack trained perfectly stably.** No DeepNet, no gradient
+   clipping, no warmup tricks — just the model's default pre-norm. Grad-norm
+   stayed in the 0.30–1.53 band the entire run (mean 0.41) and never spiked. So
+   the depth that worried us up front was a non-issue: **pre-norm alone carries an
+   attention-only stack to 38 layers**, which is itself the answer to "can it even
+   be trained?"
 
 (MFU is low across the board — the single-head model runs eager-only with no
 `torch.compile` or flash kernels, so these are not throughput-representative
-numbers; the deeper/wider runs simply keep the GPU busier.)
+numbers.)
 
 ## Generation (subjective)
 
@@ -146,6 +159,16 @@ token-soup of its smaller sibling. So a good chunk of what looked like "the MLP
 matters" is really "enough capacity matters"; given equal parameters, attention
 alone can hold a story together.
 
+**`attn_only_deep_small` (attention-only, 512×38) — the best of the attention-only lot:**
+
+> Alice was so tired when she got back home so she went **to the kitchen and found
+> a big jar of cookies. She wanted one, but knew she had to wait for her mommy
+> before she could open it.**
+
+The deep attention-only model reads as cleanly as the wide one and a notch
+sharper — consistent with its lower loss. Same parameter budget as the wide
+match, spent on depth instead of width.
+
 **`mlp_4m` (attn + MLP, 4.6M) — coherent despite being tiny:**
 
 > Jack wanted to read a book, so he went to **find an interesting book. He looked
@@ -171,13 +194,22 @@ Circuits*: **attention moves and copies information; the MLP computes on it.** Y
 can lean hard on attention and still produce fluent TinyStories, but the MLP is a
 much cheaper place to put the "thinking," and at a fixed parameter budget it wins.
 
+The depth result refines this. When you *do* spend the budget on attention,
+spend it on **layers, not width**: each additional layer is another round of
+compositional reading of the residual stream, and that is where attention's power
+lives. The deep attention-only model both trains stably (38 pre-norm layers, no
+special machinery) and lands within ~0.085 of the equal-parameter MLP model —
+the closest any attention-only model gets. Depth doesn't replace the MLP, but it
+narrows the gap far more effectively than width does.
+
 ## Reproducing
 
 ```bash
 cd examples/tiny_experiments/attention_only
 
-# Queue all four runs, one GPU each (needs a running forgather server)
-for cfg in mlp_4m attn_only_4m mlp_small attn_only_small; do
+# Queue all six runs, one GPU each (needs a running forgather server)
+for cfg in mlp_4m attn_only_4m mlp_small attn_only_small \
+           attn_only_matched_small attn_only_deep_small; do
     forgather -t "$cfg.yaml" submit --requested-gpus 1
 done
 

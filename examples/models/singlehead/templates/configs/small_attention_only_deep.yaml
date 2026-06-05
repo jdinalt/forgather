@@ -1,0 +1,27 @@
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Singlehead Small (attention-only, deep)"
+    -- set ns.config_description = "Attention-only single-head ALiBi transformer, no MLP, matched to the +MLP small model by DEPTH (38 layers x 512) rather than width"
+    -- set ns.model_name = model_name | default("singlehead_small_attn_only_deep")
+    ## Drop the MLP, then add depth instead -- a param-matched attention-only model.
+    -- set ns.use_mlp = False
+
+[model_definition]
+    -- include "config.small_deep.model"
+
+#------------- config.small_deep.model --------------
+-- extends "project.model"
+
+[model_config]
+    == super()
+    ## Re-spend the MLP's capacity entirely as DEPTH: 38 attention-only layers at
+    ## the original hidden 512 give ~19.9M non-embedding parameters (and ~24M
+    ## total), matching the 8-layer attention+MLP small model on both counts. The
+    ## counterpoint to the wide (960 x 11) param-match: same budget, depth instead
+    ## of width -- a deliberately deep, thin stack to probe the depth/width and
+    ## stability trade-off for an attention-only model.
+    hidden_size: {{ hidden_size | toyaml(512) }}
+    num_hidden_layers: {{ num_hidden_layers | toyaml(38) }}
+    intermediate_size: {{ intermediate_size | toyaml(1280) }}
