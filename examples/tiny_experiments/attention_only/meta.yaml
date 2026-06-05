@@ -1,0 +1,7 @@
+-- extends "meta_defaults.yaml"
+
+-- block configs
+name: "Attention-Only Ablation"
+description: "Single-head ALiBi transformer with vs without the MLP layer, on TinyStories"
+default_config: "mlp_small.yaml"
+<< endblock configs

@@ -3,6 +3,14 @@
 Forgather model project for Google Gemma-3 text models, supporting
 HuggingFace ↔ Forgather round-trip conversion via `forgather convert`.
 
+Gemma-3 is the [Llama](../llama) backbone with a cluster of distinctive choices.
+The headline one is **interleaved attention**: five local sliding-window layers
+for every global (full-attention) layer (a 5:1 ratio), which keeps the KV cache
+small enough to reach a 128K context. It also replaces Gemma-2's logit
+soft-capping with **QK-norm**, runs two RoPE bases (one per attention type),
+uses four layernorms per block, and decouples `head_dim` from `hidden_size`. The
+sections below map each quirk to the `modelsrc` component that implements it.
+
 ## Architecture notes
 
 Gemma-3 is mostly Llama-shaped but has several quirks that motivate the
@@ -67,3 +75,13 @@ Forgather config during conversion and auto-detected on the way back):
 forgather convert ~/ai_assets/models/fg_gemma-3-270m \
     ~/tmp/hf_gemma-3-270m
 ```
+
+## References
+
+- Gemma Team 2025, *Gemma 3 Technical Report* (interleaved local/global attention, QK-norm, 128K context) — [arXiv:2503.19786](https://arxiv.org/abs/2503.19786)
+- Gemma Team 2024, *Gemma 2 Technical Report* (logit soft-capping, the predecessor design) — [arXiv:2408.00118](https://arxiv.org/abs/2408.00118)
+- Dehghani et al. 2023, *Scaling Vision Transformers to 22 Billion Parameters* (per-head QK-norm) — [arXiv:2302.05442](https://arxiv.org/abs/2302.05442)
+- Beltagy et al. 2020, *Longformer* (local sliding-window attention) — [arXiv:2004.05150](https://arxiv.org/abs/2004.05150)
+- Su et al. 2021, *RoFormer / RoPE* — [arXiv:2104.09864](https://arxiv.org/abs/2104.09864)
+- Shared Llama-backbone references (SwiGLU, RMSNorm, GQA) — see [../llama](../llama).
+

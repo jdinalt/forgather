@@ -168,9 +168,13 @@ tokens:
   RoPE/ALiBi + GLU + GQA — a clean illustration of how much the now-standard
   Llama-era ingredients buy at this scale.
 
-- **DeepOne holds the middle** (2.903) despite being the least stable run: its
-  post-LN + DeepNet design let grad-norm creep into the ~1.8–2.6 band mid-run,
-  but the clip guard plus the WSD LR decay brought it home without divergence.
+- **DeepOne holds the middle** (2.903) but was, surprisingly, the least stable
+  run here: grad-norm crept into the ~1.8–2.6 band mid-run before the clip guard
+  and WSD LR decay brought it home without divergence. This is *unexpected* —
+  DeepOne's DeepNorm design is built for stability and has historically trained
+  with a notably low grad-norm (below Llama's), so the instability in this run
+  runs against its track record and its cause is still open (a follow-up to track
+  down, not a property of the architecture).
 
 - **SmolLM3's NoPE is a mild net positive here** (2.919). Dropping RoPE from
   every 4th layer edges out the plain Llama baseline (`small_llama`, 2.939) at

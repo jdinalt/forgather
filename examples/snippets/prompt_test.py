@@ -31,6 +31,11 @@ def main(args):
         do_sample=True,
         temperature=args.temperature,
         repetition_penalty=args.repetition_penalty,
+        # Some models (e.g. the singlehead ALiBi transformer) do not implement
+        # incremental KV-cache decoding; pass --no-kv-cache to recompute the full
+        # sequence each step instead, which those models require to generate
+        # coherent text.
+        use_cache=not args.no_kv_cache,
         seed=args.seed,
         return_dict_in_generate=True,
     )
@@ -99,6 +104,12 @@ def parse_args():
         "--repetition-penalty", default=1.15, type=float, help="Repetition penalty"
     )
     parser.add_argument("--seed", default=42, type=int, help="Generation seed")
+    parser.add_argument(
+        "--no-kv-cache",
+        action="store_true",
+        help="Disable KV-cache decoding (required by models that do not implement "
+        "it, e.g. the singlehead ALiBi transformer)",
+    )
     return parser.parse_args()
 
 

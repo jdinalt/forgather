@@ -1,0 +1,14 @@
+-- extends 'projects/tinyv2.yaml'
+
+[config_metadata]
+    == super()
+    ## A bit more than the tinyv2 default (80M) so the with-MLP model reaches
+    ## reasonably coherent TinyStories generation for the prompt test.
+    -- set ns.total_tokens = total_tokens | default(250)
+
+[trainer_args]
+    == super()
+    # Project Overrides
+    # tinyv2 defaults save_strategy to "no"; save at the end so the trained
+    # models exist on disk for the generation/prompt test.
+    save_strategy: "steps"

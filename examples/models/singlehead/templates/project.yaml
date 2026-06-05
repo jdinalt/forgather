@@ -5,6 +5,10 @@
     -- set ns.config_name = "Singlehead"
     -- set ns.config_description = "A simple ALiBi transformer with a single head"
     -- set ns.model_name = model_name | default("model")
+    ## When True (default) each block is a standard PreLNLayer (attention + MLP);
+    ## when False, an AttentionOnlyLayer (no MLP) -- the paper-faithful,
+    ## attention-only transformer of Elhage et al. 2021.
+    -- set ns.use_mlp = use_mlp | default(True)
 
 [model_constructor_args]
     == super()
@@ -82,10 +86,17 @@ tokenizer: &tokenizer !call:forgather:from_project
     d_model: !var "hidden_size"
 
     [layer_factory]
+-- if ns.use_mlp
 .define: &layer_factory !partial:.pre_ln_layer:PreLNLayer@layer_factory
     feedforward_factory: *feedforward_factory
     attention_factory: *attention_factory
     norm_factory: *layer_norm_factory
+-- else
+## Attention-only block (no MLP), true to the Transformer Circuits paper.
+.define: &layer_factory !partial:.attention_only_layer:AttentionOnlyLayer@layer_factory
+    attention_factory: *attention_factory
+    norm_factory: *layer_norm_factory
+-- endif
     
     [layer_stack]
 .define: &layer_stack !factory:.checkpoint_layer_stack:LayerStack@layer_stack

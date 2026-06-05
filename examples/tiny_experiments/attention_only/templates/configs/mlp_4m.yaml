@@ -1,0 +1,13 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Single-Head + MLP (4M)"
+    -- set ns.config_description = "Single-head ALiBi transformer with the MLP sub-block (~4.6M params)"
+    -- set ns.model_name = "mlp_4m"
+    -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'singlehead')
+    -- set ns.model_project_config = "4M.yaml"
+
+[model_constructor_args]
+    == super()
+    attn_implementation: "eager"
