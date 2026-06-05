@@ -972,6 +972,82 @@ class DiLoCoServer:
             if name in self._param_name_to_idx
         }
 
+    def _worker_owned_param_names(self, worker_id: str) -> Optional[set]:
+        """Names this worker's slice owns; ``None`` for a solo worker.
+
+        Pipeline-parallel workers register a per-rank slice
+        (``slice_shapes`` at register time, stored in
+        ``WorkerGroup.member_param_names[pp_rank]``) — they only need
+        the parameters their stage holds. Solo workers (degenerate
+        groups of one with ``pp_world_size=1``) cover the full model
+        by construction, so this returns ``None`` for them and the
+        caller skips filtering.
+
+        Returns ``None`` (no filtering) when:
+          - the worker isn't in a group (untracked / pre-#84 client),
+          - the group has ``pp_world_size <= 1`` (solo),
+          - the per-rank ownership set is empty (test path that
+            omitted ``param_shapes`` at register time — the seal-time
+            coverage check is skipped there too).
+
+        Otherwise returns the set of parameter names the worker owns.
+
+        Reads ``_worker_to_group`` and ``_groups`` without holding
+        ``_workers_lock``. The dicts are concurrent-safe at the
+        per-key level (CPython dict ops are GIL-atomic), and a stale
+        read — e.g. the worker was just evicted — falls back to
+        ``None`` → full state, which is safe (the response is moot
+        if the worker is gone). Returning ``None`` on a transient
+        race is preferable to acquiring the lock from inside helper
+        callers that may already hold it (``_workers_lock`` is a
+        non-reentrant ``threading.Lock``).
+        """
+        group_id = self._worker_to_group.get(worker_id)
+        if not group_id:
+            return None
+        group = self._groups.get(group_id)
+        if group is None or group.pp_world_size <= 1:
+            return None
+        # Reverse-lookup pp_rank from members. O(pp_world_size); small.
+        for rank, wid in group.members.items():
+            if wid == worker_id:
+                owned = group.member_param_names.get(rank)
+                if owned:
+                    return owned
+                return None
+        return None
+
+    def _params_for_worker(
+        self,
+        worker_id: str,
+        source: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Return the global parameter state the worker actually needs.
+
+        For a PP-group rank that owns only its slice (issue #84
+        groups), filter the response down to that rank's parameter
+        names — sending the full averaged model to every rank wastes
+        roughly ``(pp_world_size - 1) / pp_world_size`` of the
+        per-rank download bandwidth and the worker discards what it
+        doesn't own anyway (see ``PipelineParamView.apply_global``).
+
+        For solo workers and untracked clients the response is the
+        full model state (unchanged from pre-PP behavior), preserving
+        backward-compat with the pre-#84 ParamView contract.
+
+        ``source`` lets the caller pass an already-built state dict
+        (e.g. ``_completed_rounds[my_round]`` shared across barrier
+        waiters) so we don't re-clone the full model when the source
+        is already cached. ``None`` falls back to a fresh
+        ``get_global_params()`` clone.
+        """
+        owned = self._worker_owned_param_names(worker_id)
+        if owned is None:
+            return source if source is not None else self.get_global_params()
+        if source is not None:
+            return {name: source[name] for name in owned if name in source}
+        return self._get_params_by_names(owned)
+
     def _apply_fragment_outer_optimizer(
         self, pseudograds_list: List[Dict[str, Dict[str, torch.Tensor]]]
     ):
@@ -1516,18 +1592,28 @@ class DiLoCoServer:
             num_registered=num_registered,
         )
 
-        # Return global params. When a bulk listener is configured,
-        # advertise its URL via response header so the worker can
-        # route subsequent submit_pseudograd / global_params calls to
-        # it directly (issue #90). Pass the worker's own view of our
-        # host so a wildcard-bound server advertises a routable URL.
+        # Return global params, filtered to the worker's slice for
+        # PP-group members (the rank only needs its stage's params,
+        # not the full averaged model). Solo workers and untracked
+        # clients still get the full state. See
+        # ``_params_for_worker`` for the load-bearing reason.
+        #
+        # When a bulk listener is configured, advertise its URL via
+        # response header so the worker can route subsequent
+        # submit_pseudograd / global_params calls to it directly
+        # (issue #90). Pass the worker's own view of our host so a
+        # wildcard-bound server advertises a routable URL.
         bulk_url = self.get_bulk_url(_request_host(handler))
         extra = {"X-Forgather-Bulk-Url": bulk_url} if bulk_url else None
         if self.async_mode:
             with self._async_lock:
-                _send_tensor_response(handler, self.get_global_params(), extra)
+                _send_tensor_response(
+                    handler, self._params_for_worker(worker_id), extra
+                )
         else:
-            _send_tensor_response(handler, self.get_global_params(), extra)
+            _send_tensor_response(
+                handler, self._params_for_worker(worker_id), extra
+            )
 
     def _diff_slice_fingerprint(
         self, slice_shapes: Dict[str, List[int]]
@@ -1861,11 +1947,20 @@ class DiLoCoServer:
                     _send_json_response(handler, {"error": "Sync timeout"}, 504)
                     return
 
-            global_params = self._completed_rounds[my_round]
+            # Filter the cached completed-round state down to this
+            # worker's slice for PP-group members; solo workers and
+            # untracked clients get the full state. The barrier
+            # caches one full-model snapshot per round (line 1848 /
+            # line 1162) which is shared across waiters; we slice
+            # per-worker on the way out to avoid duplicating the
+            # full clone N times.
+            response_params = self._params_for_worker(
+                worker_id, source=self._completed_rounds[my_round]
+            )
 
         # _sync_cond released: flush audit records off the barrier path.
         self._audit_many(pending_audit)
-        _send_tensor_response(handler, global_params)
+        _send_tensor_response(handler, response_params)
 
     def _handle_submit_async(self, handler, worker_id, pseudograds):
         """Asynchronous pseudo-gradient submission - apply immediately."""
@@ -1888,7 +1983,9 @@ class DiLoCoServer:
             # Apply this worker's pseudo-gradients immediately
             self._apply_async_pseudograd(worker_id, pseudograds)
 
-            global_params = self.get_global_params()
+            # Filter to this worker's slice for PP-group members;
+            # solo workers get the full state.
+            global_params = self._params_for_worker(worker_id)
 
         _send_tensor_response(handler, global_params)
 

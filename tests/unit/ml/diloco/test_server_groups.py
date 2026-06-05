@@ -579,3 +579,148 @@ def test_tied_alias_across_slices_accepted(tmp_path):
         assert s._groups["alpha"].sealed
     finally:
         s.stop()
+
+
+# ---------------------------------------------------------------------------
+# Slice-aware broadcast (issue-followup to #84)
+# ---------------------------------------------------------------------------
+#
+# The server registers each PP-group member with the names its rank owns
+# (``WorkerGroup.member_param_names[pp_rank]``) but used to send the FULL
+# averaged model back to every rank on register / submit_pseudograd. The
+# worker discarded what it didn't own (``PipelineParamView.apply_global``),
+# but the wire transfer happened anyway — wasting roughly
+# ``(pp_world_size - 1) / pp_world_size`` of the per-rank download band-
+# width. These tests pin the slice-aware response behavior so a future
+# refactor can't silently regress to full-model broadcast.
+
+
+def _register_parse_response(
+    server: DiLoCoServer,
+    worker_id: str,
+    param_shapes: Dict[str, List[int]],
+    group: Optional[dict] = None,
+) -> Dict[str, torch.Tensor]:
+    """Like ``_register`` but parses the tensor response into a state
+    dict so the test can assert on which parameter names came back."""
+    import io as _io
+
+    resp = _register(server, worker_id, param_shapes, group)
+    assert resp.status == 200
+    data = resp.read()
+    return torch.load(_io.BytesIO(data), weights_only=False)
+
+
+def test_register_response_sliced_for_pp_group_member(server):
+    """A PP-group member receives ONLY its slice's params back from
+    register — not the full averaged model. Load-bearing for download
+    bandwidth on multi-node PP+DiLoCo runs (issue: the server used to
+    send every member the full model and the worker discarded what
+    it didn't own)."""
+    # Rank 0 registers first (group not sealed yet).
+    state_a = _register_parse_response(
+        server,
+        "alpha_pp0",
+        _slice_a(),
+        {"group_id": "alpha", "pp_rank": 0, "pp_world_size": 2},
+    )
+    assert set(state_a.keys()) == set(_slice_a().keys()), (
+        "rank 0 must receive only its slice, not the full model; "
+        f"got: {sorted(state_a.keys())}"
+    )
+
+    # Rank 1 registers next (this also seals the group).
+    state_b = _register_parse_response(
+        server,
+        "alpha_pp1",
+        _slice_b(),
+        {"group_id": "alpha", "pp_rank": 1, "pp_world_size": 2},
+    )
+    assert set(state_b.keys()) == set(_slice_b().keys()), (
+        "rank 1 must receive only its slice, not the full model; "
+        f"got: {sorted(state_b.keys())}"
+    )
+
+
+def test_register_response_full_state_for_solo_worker(server):
+    """A solo worker (no group block → degenerate group of one with
+    pp_world_size=1, slice == full model) still receives the FULL
+    averaged state from register, preserving the pre-#84 contract.
+    Backward-compat guard so the slice-aware fast path can never
+    swallow a solo worker's state."""
+    state = _register_parse_response(server, "alpha", _full_shapes())
+    assert set(state.keys()) == set(_full_shapes().keys()), (
+        "a solo worker must receive the full model, not a sliced view; "
+        f"got: {sorted(state.keys())}"
+    )
+
+
+def test_submit_sync_response_sliced_for_pp_group_members(server):
+    """Both ranks submit pseudograds in parallel; the sync barrier
+    releases and each rank receives back ONLY its slice's averaged
+    params — same load-bearing property as register, applied to the
+    sync round response (the hot path that runs every sync_every
+    steps).
+
+    Verifies the post-barrier response is filtered per worker via
+    ``_params_for_worker(worker_id, source=_completed_rounds[my_round])``;
+    the cached snapshot is shared across waiters but each waiter sees
+    only its own slice on the wire."""
+    import io as _io
+    import struct
+    import threading
+
+    # Seal the group.
+    _register(
+        server,
+        "alpha_pp0",
+        _slice_a(),
+        {"group_id": "alpha", "pp_rank": 0, "pp_world_size": 2},
+    )
+    _register(
+        server,
+        "alpha_pp1",
+        _slice_b(),
+        {"group_id": "alpha", "pp_rank": 1, "pp_world_size": 2},
+    )
+
+    def submit(worker_id: str, slice_names: Dict[str, List[int]]):
+        header = {"worker_id": worker_id}
+        header_bytes = json.dumps(header).encode("utf-8")
+        buf = _io.BytesIO()
+        torch.save(
+            {name: torch.zeros(*shape) for name, shape in slice_names.items()},
+            buf,
+        )
+        body = struct.pack("!I", len(header_bytes)) + header_bytes + buf.getvalue()
+        req = urllib.request.Request(
+            f"http://localhost:{server.port}/submit_pseudograd",
+            data=body,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return torch.load(_io.BytesIO(resp.read()), weights_only=False)
+
+    results: Dict[str, Dict[str, torch.Tensor]] = {}
+
+    def run(wid: str, names: Dict[str, List[int]]):
+        results[wid] = submit(wid, names)
+
+    # Submit both ranks in parallel so the barrier serialization
+    # actually executes; either ordering works, both responses
+    # should be slice-only.
+    t0 = threading.Thread(target=run, args=("alpha_pp0", _slice_a()))
+    t1 = threading.Thread(target=run, args=("alpha_pp1", _slice_b()))
+    t0.start()
+    t1.start()
+    t0.join(timeout=15)
+    t1.join(timeout=15)
+
+    assert set(results["alpha_pp0"].keys()) == set(_slice_a().keys()), (
+        "rank 0 sync response must contain only rank 0's slice; "
+        f"got: {sorted(results['alpha_pp0'].keys())}"
+    )
+    assert set(results["alpha_pp1"].keys()) == set(_slice_b().keys()), (
+        "rank 1 sync response must contain only rank 1's slice; "
+        f"got: {sorted(results['alpha_pp1'].keys())}"
+    )
