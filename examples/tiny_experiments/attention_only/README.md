@@ -208,26 +208,33 @@ Does the loss ranking match *subjective* quality? We checked the three ~20M
 models with a blind A/B panel — the same shuffled, position-controlled method
 that [`ab_test.py`](../../snippets/ab_test.py) runs for human judges, here driven
 by independent Claude judges. Each model generated a continuation for all 18
-TinyStories prompts (same seed per prompt); every pairing was judged blind, in
-**both** orderings, by 6 judges (324 votes; side split 159/165, so no position
-bias).
+TinyStories prompts (same seed per prompt; each model loaded in its own process —
+see the loading note below); every pairing was judged blind, in **both**
+orderings, by 6 judges (324 votes; side split 158/166, so no position bias).
 
 | Match-up | Votes | Winner | sign-test p |
 |---|---:|---|---:|
-| `mlp_small` vs deep (512×38) | 69–39 | mlp_small (64%) | 0.005 |
-| `mlp_small` vs wide (960×11) | 87–21 | mlp_small (81%) | 1e-10 |
-| deep (512×38) vs wide (960×11) | 73–35 | deep (68%) | 3e-4 |
+| `mlp_small` vs deep (512×38) | 76–32 | mlp_small (70%) | 3e-5 |
+| `mlp_small` vs wide (960×11) | 86–22 | mlp_small (80%) | 4e-10 |
+| deep (512×38) vs wide (960×11) | 82–26 | deep (76%) | 6e-8 |
 
 - **Subjective ranking = loss ranking.** The panel reproduces the loss order
   exactly — `mlp_small` (1.16) > deep (1.25) > wide (1.36). At this scale, eval
-  loss is a decent predictor of perceived story quality. (Note: the deep-vs-wide
-  gap was a dead heat in a 6-prompt pilot and only separated into a clear 68%
-  preference at 18 prompts — small panels are easy to under-power.)
-- **The MLP wins, but the deep attention-only is genuinely close.** It loses to
-  `mlp_small` only 39–69, versus the wide model's 21–87 — a respectable stand-in
-  for the +MLP model. Individual attention-only samples can be excellent (the
-  generation that motivated this section was one), but across a balanced panel
-  the loss order holds.
+  loss is a decent predictor of perceived story quality, and the deep model's
+  loss edge over the wide one shows up as a clear 76% preference.
+- **The MLP wins; the deep attention-only is the closest challenger.** It takes
+  30% of decisions against `mlp_small` (32–76), versus the wide model's 20%
+  (22–86) — clearly the most competitive attention-only model, but `mlp_small` is
+  the decisive winner. Individual attention-only samples can be excellent (the one
+  that motivated this section was), but across a balanced panel the loss order holds.
+
+> **Loading note.** Each model must be loaded in its **own process**. Both models'
+> generated code uses the dynamic module name `singlehead`, and Hugging Face caches
+> a `trust_remote_code` class by its `auto_map` name — so loading two of them in
+> one process rebuilds the second with the *first's* architecture (an attention-only
+> model silently gets MLP layers, etc.). `ab_test.py` generates each model in a
+> subprocess for exactly this reason; the earlier scratch run that loaded all three
+> in one process produced corrupted attention-only generations and was redone.
 
 *Caveat:* these are Claude judges, not humans, and they were near-unanimous
 within each ordering (so this is a few strong, agreeing readings rather than 6
