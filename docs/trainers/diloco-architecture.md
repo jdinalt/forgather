@@ -328,18 +328,19 @@ Response payloads use `Content-Type: application/octet-stream`.
 ### Sync backend seam
 
 The bulk tensor legs of a sync round — join (register + initial params),
-full-model and per-fragment pseudo-gradient submission, late-join param fetch,
-and leave (deregister) — are routed through an `OuterSyncBackend`
-(`sync_backend.py`) rather than called on the client directly. The worker owns
-everything local (pseudo-gradient computation via `ParamView`, applying the
-returned params, the DDP-rank broadcast, and scheduling); the backend owns *how*
-the worker reaches agreement on the next global params.
+full-model and per-fragment pseudo-gradient submission, and leave (deregister) —
+are routed through an `OuterSyncBackend` (`sync_backend.py`) rather than called
+on the client directly. The seam also exposes a contribute-free
+`current_global_params` fetch for late-join/recovery. The worker owns everything
+local (pseudo-gradient computation via `ParamView`, applying the returned
+params, the DDP-rank broadcast, and scheduling); the backend owns *how* the
+worker reaches agreement on the next global params.
 
 `HttpStarBackend` is the only implementation: a thin adapter over `DiLoCoClient`
-that reproduces the HTTP central-parameter-server behavior exactly. The worker
-defaults to wrapping its own client in one, so there is no behavioral change —
-the seam exists so the transport can later be swapped (e.g. collectives or a
-shared-memory parameter region) without touching the worker's
+providing the HTTP central-parameter-server transport. The worker holds an
+`OuterSyncBackend` — an `HttpStarBackend` wrapping its own client by default.
+The seam lets the transport be a different implementation (e.g. collectives or a
+shared-memory parameter region) without changing the worker's
 `compute → synchronize → apply → broadcast` flow.
 
 The seam is the outer step, not a byte channel: `synchronize` takes a

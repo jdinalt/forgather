@@ -45,7 +45,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Callable, Dict, Literal, Optional
 
 if TYPE_CHECKING:
     import torch
@@ -103,11 +103,12 @@ class OuterSyncBackend(ABC):
       ``"shared-region"`` (it operates in place on a shared parameter region).
     - ``supports_async`` — whether the backend permits apply-immediately /
       DyLU-style asynchronous sync. Bare collectives are strictly synchronous.
-    - ``fault_tolerant`` — whether the backend transparently survives a peer
-      failing mid-round (advisory; documents the failure model).
+    - ``fault_tolerant`` — whether the backend transparently survives a *peer*
+      failing mid-round (the quorum / skip-step axis). This is orthogonal to
+      transport-level retry, which is owned by the caller, not the backend.
     """
 
-    runs_outer_optimizer: str = "central"
+    runs_outer_optimizer: Literal["central", "replicated", "shared-region"] = "central"
     supports_async: bool = False
     fault_tolerant: bool = False
 
@@ -172,10 +173,10 @@ class HttpStarBackend(OuterSyncBackend):
 
     runs_outer_optimizer = "central"
     supports_async = True
-    # The HTTP server tolerates peer churn via its dynamic barrier (it averages
-    # whoever submitted and can evict the dead), so from the worker's side a
-    # peer failing does not break the round. Recoverable transport failures
-    # surface as ConnectionError and are retried by the worker.
+    # Peer/quorum fault tolerance: the HTTP server's dynamic barrier averages
+    # whoever submitted and evicts the dead, so a peer failing mid-round does
+    # not break the round. (Transport-level failures are orthogonal — they
+    # surface as ConnectionError and are retried by the caller, not here.)
     fault_tolerant = True
 
     def __init__(self, client: "DiLoCoClient"):

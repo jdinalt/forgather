@@ -813,7 +813,11 @@ class DiLoCoWorker:
                 fragment_id=fragment_id,
                 pseudograds=pseudograds,
             )
-            self._inflight_result = (fragment_id, result.params)
+            # Gate on commit, same as the full-model path: a non-committed
+            # round contributes no new params (None flows to the apply guard
+            # in _wait_and_apply_inflight_fragment).
+            params = result.params if result.committed else None
+            self._inflight_result = (fragment_id, params)
 
             elapsed = time.time() - start_time
             self._total_sync_time += elapsed
