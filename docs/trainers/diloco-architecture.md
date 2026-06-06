@@ -358,20 +358,19 @@ the tensor legs are pluggable; the coordination plane is a separate surface (see
 
 ### Coordinator surface
 
-The other half of the role split (#154): coordination — everything that is not
-the bulk tensor exchange — is reached through a `CoordinatorClient`
-(`coordinator.py`), distinct from the sync backend. The worker holds both a
-`backend` (parameter authority / transport) and a `coordinator`, so a future
-backend whose parameter authority is not the coordinator (a serverless
-collective, a shared-memory region) can still coordinate over the HTTP server
-while exchanging params elsewhere.
+Coordination — everything that is not the bulk tensor exchange — is reached
+through a `CoordinatorClient` (`coordinator.py`), distinct from the sync backend.
+The worker holds both a `backend` (parameter authority / transport) and a
+`coordinator`, so a backend whose parameter authority is not the coordinator (a
+serverless collective, a shared-memory region) can coordinate over the HTTP
+server while exchanging params elsewhere.
 
 `CoordinatorClient` is a concrete thin facade over `DiLoCoClient` — coordination
 always speaks HTTP regardless of which backend moves the tensors, so it is not an
 ABC (unlike `OuterSyncBackend`). It covers the worker-process bring-up
 coordination: `heartbeat`, `get_info` (`/info` negotiation), and `fetch_model_def`
-(model staging). Two other coordination surfaces keep their own purpose-built
-clients and are not folded in: work-unit dispatch (`register_dataset` /
+(model staging). Two other coordination surfaces use their own `DiLoCoClient`
+instances and are outside this one: work-unit dispatch (`register_dataset` /
 `request_work` / `complete_work`), owned by the dataset layer, and control
 (`relay_command` / `save_state` / `shutdown` / `get_status`), owned by the CLI.
 

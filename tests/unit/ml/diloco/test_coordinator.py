@@ -5,10 +5,13 @@ worker holds a coordinator distinct from its sync backend (default wraps its own
 client; an injected coordinator is honored).
 """
 
+import time
+
 import torch
 import torch.nn as nn
 
 from forgather.ml.diloco.coordinator import CoordinatorClient
+from forgather.ml.diloco.sync_backend import OuterSyncBackend, SyncResult
 from forgather.ml.diloco.worker import DiLoCoWorker
 
 
@@ -70,6 +73,32 @@ class TinyModel(nn.Module):
         return self.linear(x)
 
 
+class _NoNetBackend(OuterSyncBackend):
+    """Backend with no HTTP, so a worker can start()/stop() without a server."""
+
+    runs_outer_optimizer = "central"
+    supports_async = True
+    fault_tolerant = False
+
+    def __init__(self, init_params):
+        self.init_params = init_params
+
+    def join(self, *, worker_id, worker_info=None, outer_opt_factory=None):
+        return self.init_params
+
+    def synchronize(self, *, worker_id, pseudograds):
+        return SyncResult(params=self.init_params, committed=True)
+
+    def synchronize_fragment(self, *, worker_id, fragment_id, pseudograds):
+        return SyncResult(params=self.init_params, committed=True)
+
+    def current_global_params(self):
+        return self.init_params
+
+    def leave(self, *, worker_id):
+        pass
+
+
 class TestWorkerCoordinatorWiring:
     def test_default_coordinator_wraps_worker_client(self):
         model = TinyModel()
@@ -93,3 +122,29 @@ class TestWorkerCoordinatorWiring:
             coordinator=injected,
         )
         assert worker.coordinator is injected
+
+    def test_heartbeat_loop_uses_injected_coordinator(self):
+        """The heartbeat loop must call coordinator.heartbeat, not the raw
+        client — drive the real loop and assert the recording client saw it."""
+        model = TinyModel()
+        init = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        rec = RecordingClient()
+        worker = DiLoCoWorker(
+            model,
+            torch.optim.SGD(model.parameters(), lr=0.01),
+            server_addr="dummy:8512",
+            sync_every=10_000,  # large -> no sync fires during the test
+            heartbeat_interval=0.05,  # start() spins up the heartbeat thread
+            backend=_NoNetBackend(init),  # join/leave without HTTP
+            coordinator=CoordinatorClient(rec),
+        )
+        worker.start()
+        try:
+            deadline = time.time() + 3.0
+            while time.time() < deadline and not any(
+                c[0] == "heartbeat" for c in rec.calls
+            ):
+                time.sleep(0.02)
+        finally:
+            worker.stop()
+        assert any(c[0] == "heartbeat" for c in rec.calls), rec.calls
