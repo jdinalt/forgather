@@ -115,6 +115,46 @@ def test_build_verify_imported_cert_builds_context():
     assert ctx.check_hostname is False
 
 
+# ---- /agent/models route ---------------------------------------------------
+
+
+def test_models_route_maps_401_to_actionable_message(monkeypatch):
+    import httpx
+    from fastapi import HTTPException
+
+    from forgather_server.routes import agent as ar
+
+    def boom(**kw):
+        request = httpx.Request("GET", "https://x/v1/models")
+        response = httpx.Response(401, request=request)
+        raise httpx.HTTPStatusError("401", request=request, response=response)
+
+    monkeypatch.setattr(ar.agent_tls, "list_models", boom)
+    with pytest.raises(HTTPException) as ei:
+        ar.list_agent_models(ar.ModelsRequest(provider="anthropic", base_url="https://x"))
+    assert ei.value.status_code == 400
+    assert "bearer token" in ei.value.detail.lower()
+
+
+def test_models_route_always_skips_tls(monkeypatch):
+    from forgather_server.routes import agent as ar
+
+    captured = {}
+
+    def cap(**kw):
+        captured.update(kw)
+        return ["m1"]
+
+    monkeypatch.setattr(ar.agent_tls, "list_models", cap)
+    out = ar.list_agent_models(
+        ar.ModelsRequest(provider="anthropic", base_url="https://x", api_key="k", verify_tls=True)
+    )
+    assert out == {"models": ["m1"]}
+    # The discovery probe ignores the profile's TLS posture.
+    assert captured["verify_tls"] is False
+    assert captured["ca_cert_pem"] == ""
+
+
 # ---- runtime hot-swap ------------------------------------------------------
 
 

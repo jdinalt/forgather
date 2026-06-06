@@ -3054,6 +3054,13 @@ Leaving the model blank means "auto — first available", resolved at
 activation time. This suits vLLM, which serves one model at a time, so
 swapping the model on the box needs no profile edit.
 
+The model-list probe needs the server's bearer token — enter it in the API
+key field first (for vLLM it's `~/.config/vllm/api-key`); a 401 from "Load
+models" means the token is missing or wrong. The probe always skips TLS
+verification (it only returns model ids, so a not-yet-imported self-signed
+cert never blocks discovery); the actual chat connection still honors the
+profile's TLS setting.
+
 ### Interaction model — propose → approve → commit
 
 Tools are classified by risk and the gate is enforced **server-side**, in

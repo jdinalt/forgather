@@ -26,6 +26,7 @@ import logging
 import os
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -227,8 +228,6 @@ def list_agent_models(req: ModelsRequest):
 
     provider = pick("provider", "anthropic")
     base_url = pick("base_url", "")
-    verify_tls = pick("verify_tls", True)
-    ca_cert_pem = pick("ca_cert_pem", "")
 
     # Resolve the key: explicit > saved profile's key > named env var.
     api_key = req.api_key
@@ -238,13 +237,30 @@ def list_agent_models(req: ModelsRequest):
         api_key = os.environ.get(req.api_key_env)
 
     try:
+        # Model discovery is a low-stakes probe (it returns only model ids),
+        # so always skip TLS verification here — it removes a class of
+        # friction (self-signed cert not yet imported) without exposing
+        # anything sensitive. The actual chat connection still honors the
+        # profile's real TLS posture.
         models = agent_tls.list_models(
             provider=provider,
             base_url=base_url or "",
             api_key=api_key or "",
-            verify_tls=bool(verify_tls),
-            ca_cert_pem=ca_cert_pem or "",
+            verify_tls=False,
+            ca_cert_pem="",
         )
+    except httpx.HTTPStatusError as e:
+        code = e.response.status_code
+        if code in (401, 403):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"the model server returned {code} — it requires a bearer "
+                    "token. Enter the server's API key / token in the API key "
+                    "field (vLLM's is in ~/.config/vllm/api-key)."
+                ),
+            )
+        raise HTTPException(status_code=502, detail=f"upstream {code}: {e}")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
     return {"models": models}
