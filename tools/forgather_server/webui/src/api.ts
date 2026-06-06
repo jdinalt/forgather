@@ -1265,6 +1265,17 @@ export interface DiLoCoInfo {
   expected_client_settings?: {
     sync_every?: number | null;
     dylu?: boolean;
+    /** Wire precision (issue #130). Four server-authoritative knobs
+     *  covering each direction × dtype-vs-SR. Workers adopt these
+     *  verbatim. The dtype enum is currently ``"fp32" | "bf16"``;
+     *  fp8 variants slot in as a future pure-addition. */
+    upload_dtype?: "fp32" | "bf16";
+    upload_sr?: boolean;
+    download_dtype?: "fp32" | "bf16";
+    download_sr?: boolean;
+    /** Deprecated alias kept for older servers that only advertise the
+     *  single boolean (no four-knob keys). The post-#130 server still
+     *  emits this so pre-#130 workers reading it stay compatible. */
     bf16_comm?: boolean;
     num_fragments_min?: number;
     num_fragments_default?: number;

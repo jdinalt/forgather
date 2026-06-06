@@ -199,6 +199,16 @@ def _server_cmd(args):
         dylu_enabled=dylu,
         dylu_base_sync_every=dylu_base,
         sync_every=args.sync_every,
+        # Wire precision (issue #130). The argparse defaults are
+        # ``upload_dtype=None`` / ``bf16_comm=None``, which the
+        # DiLoCoServer constructor reconciles into "neither passed →
+        # use the legacy bf16 default". Passing both raises ValueError
+        # — desirable to surface operator scripts that mix old and
+        # new flags.
+        upload_dtype=args.upload_dtype,
+        upload_sr=args.upload_sr,
+        download_dtype=args.download_dtype,
+        download_sr=args.download_sr,
         bf16_comm=args.bf16_comm,
         num_fragments=args.num_fragments,
         heartbeat_timeout=heartbeat_timeout,

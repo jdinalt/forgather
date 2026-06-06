@@ -1,0 +1,47 @@
+-- extends "projects/small.yaml"
+
+## Tiny Experiments / DiLoCo Low-Precision — shared project base.
+##
+## This is the common project config the leaf experiments inherit. It builds
+## on the same "small" base as the sibling ``diloco`` project (small Llama,
+## Fineweb-Edu Packed, DDP-within-host trainer, WSD schedule) and changes
+## exactly two things relative to it:
+##
+##   1. The inner optimizer is swapped from ``torch.optim.AdamW`` to Forgather's
+##      ``forgather.ml.optim:AdamW``, which does stochastic-rounding (SR)
+##      write-back for pure-bf16 training. On the fp32 AMP master weights the SR
+##      path is a no-op, so this single optimizer is safe across the whole
+##      sweep — it holds the optimizer constant between the AMP and bf16
+##      configs, leaving the precision change as the only variable.
+##
+##   2. ``enable_diloco`` defaults True, so every leaf renders as a DiLoCo
+##      worker (the parent chain owns the actual callback wiring).
+##
+## NB: the *wire precision* knobs (upload/download dtype and SR) are NOT set
+## here — they are server-authoritative, set on ``forgather diloco server`` and
+## adopted by each worker via ``/info``. See this project's README for the
+## experiment matrix.
+##
+## ``enable_diloco`` is a RENDER-TIME signal; running still requires
+## ``DILOCO_SERVER`` in the worker env (the scheduler/launcher sets it).
+
+[config_metadata]
+    == super()
+    -- set ns.enable_diloco = enable_diloco | default(True)
+
+## Forgather's SR-capable AdamW. Same LR-scaling hook (``ns.global_lr``) as the
+## upstream torch.optim.AdamW it replaces; ``bf16_stochastic_round=True`` by
+## default, which only engages when parameters are bf16 (the bf16.yaml config).
+[optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim:AdamW
+    lr: {{ ns.global_lr | toyaml }}
+
+## WSD without decay (warmup -> stable hold), matching the sibling diloco
+## configs. With these token budgets ``decay_start_step`` resolves to -1, so the
+## decay phase is disabled and LR is constant after warmup.
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_scheduler
+    warmup_steps: {{ ns.warmup_steps }}
+    min_lr: {{ ns.min_lr | toyaml }}
+    decay_steps: {{ ns.annealing_steps }}
+    decay_start_step: {{ ns.decay_start_step }}

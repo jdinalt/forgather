@@ -20,6 +20,22 @@ The system supports two operating modes:
   heterogeneous hardware (different GPU types, different numbers of GPUs per
   machine) with Delayed Nesterov (DN) momentum and Dynamic Local Updates (DyLU).
 
+## DiLoCo documentation map
+
+This page is the user-facing reference (concepts, CLI, programmatic API,
+configuration, wire precision, async mode). The rest of the DiLoCo
+documentation lives here:
+
+| Document | What it covers |
+|---|---|
+| **This page** — `docs/trainers/diloco.md` | Concepts, quick start, CLI, programmatic API, server configuration, [wire precision](#wire-precision), async mode |
+| [Architecture & Maintainer Guide](diloco-architecture.md) | Internals: wire protocol, server/worker classes, checkpoint + meta-init, threading model |
+| [Work-Unit Dispatch](../design/diloco-work-unit-dispatch.md) | How workers shard the training set via server-issued row ranges |
+| [Pipeline Groups](../design/diloco-pipeline-groups.md) | DiLoCo + pipeline parallel: per-rank workers and server-aware groups |
+| [Security Model](../design/diloco-security.md) | Auth, mTLS, the endpoint trust split, audit log |
+| Example — [`tiny_experiments/diloco`](../../examples/tiny_experiments/diloco/README.md) | Canonical end-to-end CLI walkthrough; DiLoCo vs DDP / PostLocalSGD sweep |
+| Example — [`tiny_experiments/diloco_lowprec`](../../examples/tiny_experiments/diloco_lowprec/README.md) | Low-precision wire transport (bf16 ± stochastic rounding) experiment sweep |
+
 ## How It Works
 
 Each machine runs any existing Forgather trainer (single GPU, DDP, or pipeline)
@@ -80,16 +96,51 @@ See [Async Mode](#async-mode) for configuration details.
 
 ### Bandwidth Efficiency
 
-Pseudo-gradients are optionally cast to bfloat16 before transmission, halving
-bandwidth with minimal quality impact. With `sync_every=500`, a 1B parameter
-model transfers ~2 GB every 500 training steps, achieving >97% compute
-utilization on 1 Gig Ethernet.
+Each sync round moves the full model twice: workers send their **pseudo-gradient**
+up to the server (upload), and the server sends the new averaged **parameters**
+back down (download). Either leg can be transported in bfloat16 — halving that
+leg's bandwidth — and the fp32→bf16 cast can use **stochastic rounding (SR)** to
+remain unbiased in expectation. This is governed by four server-authoritative
+knobs (see [Wire precision](#wire-precision)); by default the upload is bf16 and
+the download is fp32. With `sync_every=500`, a 1B parameter model transfers ~2 GB
+every 500 training steps, achieving >97% compute utilization on 1 Gig Ethernet.
 
 | Model Size | BF16 Size | Transfer Time (1 Gbps) | H=500 steps @ 1s/step | Utilization |
 |------------|-----------|------------------------|----------------------|-------------|
 | 150M       | 300 MB    | 2.4s                   | 500s compute         | 99.5%       |
 | 1B         | 2 GB      | 16s                    | 500s compute         | 97%         |
 | 7B         | 14 GB     | 112s                   | 500s compute         | 82%         |
+
+### Wire precision
+
+Both transport legs are controlled by four **server-authoritative** knobs (set on
+`forgather diloco server`; every worker adopts them from `/info` at registration,
+so the whole group shares one wire format). The defaults reproduce the historical
+behavior — bf16 upload, fp32 download.
+
+| Knob | Server flag | Default | Effect |
+|---|---|---|---|
+| `upload_dtype` | `--upload-dtype {fp32,bf16}` | `bf16` | worker→server pseudo-gradient dtype |
+| `upload_sr` | `--upload-sr` | off | stochastic-round the fp32→bf16 upload cast |
+| `download_dtype` | `--download-dtype {fp32,bf16}` | `fp32` | server→worker averaged-params dtype (`bf16` halves the return leg) |
+| `download_sr` | `--download-sr` | off | stochastic-round the fp32→bf16 download cast |
+
+`--no-bf16` is a deprecated alias for `--upload-dtype fp32`. **Stochastic
+rounding** (SR) routes the narrowing cast through the same
+`fp32_to_bf16_stochastic_round` the bf16 optimizers use, keeping it unbiased in
+expectation so sub-ULP signal survives across many rounds (it only applies to an
+fp32→bf16 cast; it is a no-op when the source is already bf16).
+
+**Lineage.** Low-precision communication of the **upload** leg (the
+pseudo-gradient / outer gradient) is established prior art: *OpenDiLoCo* first
+all-reduced it in FP16 "without noticeable performance hit," and *Streaming
+DiLoCo* swept the outer-gradient precision through **bf16/fp8/fp4** with "no sign
+of performance regression … even at the billion scale." Both compress only the
+upload. The **download** leg — broadcasting the *averaged parameters* back in
+bf16 — is not covered by that work; the
+[`diloco_lowprec`](../../examples/tiny_experiments/diloco_lowprec/README.md)
+experiment finds bf16 download (± SR) essentially lossless on a small Llama at
+~1B tokens. See [References](#references).
 
 ## Quick Start
 
@@ -136,8 +187,11 @@ server; every worker adopts them from `/info` — there are no worker flags):
   Under `--dylu`, the DyLU base rate is used instead.
 - `--num-fragments N`: Streaming-sync fragments every worker splits the model
   into (1 = no streaming). Default: 1.
-- `--no-bf16`: Send full-precision pseudo-gradients instead of bfloat16
-  (centralized: one wire precision for the whole group). Default: bf16 on.
+- **Wire precision** — `--upload-dtype {fp32,bf16}` / `--upload-sr` /
+  `--download-dtype {fp32,bf16}` / `--download-sr` set the dtype and stochastic
+  rounding of each transport leg (defaults: bf16 upload, fp32 download).
+  `--no-bf16` is a deprecated alias for `--upload-dtype fp32`. See
+  [Wire precision](#wire-precision).
 
 ```bash
 # Load a specific checkpoint and save checkpoints to specified directory.
@@ -226,13 +280,14 @@ fresh ones" is a single action. An empty pool submits a single auto-named
 worker (its id falls back to the queue id), preserving the simple one-worker
 flow.
 
-**Server-authoritative settings.** `sync_every`, `bf16_comm`, `dylu`, and
+**Server-authoritative settings.** `sync_every`, the four wire-precision knobs
+(`upload_dtype`, `upload_sr`, `download_dtype`, `download_sr`), `dylu`, and
 `num_fragments` must match across every worker in the group for the sync
 barrier / outer step / fragment barriers to be coherent. The server is
 their sole authority: the worker fetches them from the server's `/info` at
-startup and logs the values it adopted. There are no `--sync-every` /
-`--no-bf16` / `--dylu` / `--num-fragments` worker flags — set them on the
-**server** instead (`--dylu-base-sync-every`, `--dylu`, etc.).
+startup and logs the values it adopted. There are no worker flags for these —
+set them on the **server** (`--sync-every`, `--upload-dtype` / `--upload-sr` /
+`--download-dtype` / `--download-sr`, `--dylu`, `--num-fragments`).
 
 Dataset partitioning across workers is handled by the server's **work-unit
 dispatch**: each worker registers its train dataset with the DiLoCo server
@@ -442,7 +497,8 @@ with DiLoCoWorker(
     optimizer=optimizer,
     server_addr="192.168.1.100:8512",
     sync_every=500,
-    bf16_comm=True,
+    # Wire precision is server-authoritative; workers normally adopt
+    # upload/download dtype + SR from the server's /info.
 ) as diloco:
     # Train normally - DiLoCo syncs happen automatically every 500 optimizer steps
     for batch in dataloader:
@@ -460,7 +516,11 @@ Key parameters:
 - `optimizer`: The inner optimizer (any `torch.optim.Optimizer`)
 - `server_addr`: Server address as `"host:port"`
 - `sync_every`: Steps between syncs (H in the DiLoCo paper)
-- `bf16_comm`: Cast pseudo-gradients to bfloat16 (default: True)
+- `upload_dtype` / `upload_sr` / `download_dtype` / `download_sr`: wire precision
+  for the pseudo-gradient (upload) and averaged-params (download) legs, with
+  optional stochastic rounding. Normally adopted from the server's `/info`;
+  `bf16_comm=True` is kept as a deprecated alias for `upload_dtype="bf16"`. See
+  [Wire precision](#wire-precision).
 - `worker_id`: Unique ID (auto-generated if None)
 - `dylu`: Enable dynamic sync frequency adjustment (default: False)
 - `heartbeat_interval`: Seconds between heartbeats for DyLU (default: 30)
@@ -986,7 +1046,8 @@ environment variables:
 | `worker_id` | `DILOCO_WORKER_ID` | auto-generated |
 | `heartbeat_interval` | `DILOCO_HEARTBEAT_INTERVAL` | `30.0` |
 
-`sync_every`, `bf16_comm`, `dylu`, and `num_fragments` are **not** callback
+`sync_every`, the wire-precision knobs (`upload_dtype`, `upload_sr`,
+`download_dtype`, `download_sr`), `dylu`, and `num_fragments` are **not** callback
 parameters or env vars — they must match across the group, so the worker
 reads them from the server's `/info` at startup (set them on the server).
 The `DiLoCoWorker` class still accepts them directly for the low-level
@@ -1472,7 +1533,8 @@ See `docs/design/diloco-pipeline-groups.md` for the full design.
 - Douillard et al., "DiLoCo: Distributed Low-Communication Training of Language Models" ([arXiv:2311.08105](https://arxiv.org/abs/2311.08105))
 - Douillard et al., "DiPaCo: Distributed Path Composition" (2024)
 - Liu et al., "Asynchronous Local-SGD Training for Language Modeling" (2024) — Async DiLoCo, Delayed Nesterov, DyLU
-- Douillard et al., "Streaming DiLoCo with Overlapping Communication" (2025) — fragment-based staggered sync
+- Jaghouar, Ong & Hagemann, "OpenDiLoCo: An Open-Source Framework for Globally Distributed Low-Communication Training" (2024, [arXiv:2407.07852](https://arxiv.org/abs/2407.07852)) — first FP16 all-reduce of the pseudo-gradient (the origin of low-precision *upload* communication in the DiLoCo family)
+- Douillard et al., "Streaming DiLoCo with Overlapping Communication" (2025, [arXiv:2501.18512](https://arxiv.org/abs/2501.18512)) — fragment-based staggered sync; §2.4 sweeps the outer-gradient (upload) communication precision through bf16/fp8/fp4 with no observed regression. (Neither paper compresses the server→worker *download* of averaged weights — that is what `download_dtype=bf16` adds.)
 - Charles et al., "Communication-Efficient Language Model Training Scales Reliably and Robustly: Scaling Laws for DiLoCo" ([arXiv:2503.09799](https://arxiv.org/abs/2503.09799))
 - TorchFt (Meta) — fault-tolerant distributed training library
 

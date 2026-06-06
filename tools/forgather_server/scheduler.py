@@ -600,7 +600,14 @@ def _build_diloco_server(item, gpu_indices, tty_path):
         dylu=bool(p.get("dylu", False)),
         dylu_base_sync_every=int(p.get("dylu_base_sync_every", 500) or 500),
         sync_every=int(p.get("sync_every", 500) or 500),
-        bf16_comm=bool(p.get("bf16_comm", True)),
+        # Wire precision (issue #130). Pre-#130 job_params only carry
+        # ``bf16_comm`` (Bool); post-#130 carry the four explicit keys.
+        # When neither is present, falls through to launcher defaults.
+        bf16_comm=p.get("bf16_comm"),
+        upload_dtype=p.get("upload_dtype"),
+        upload_sr=bool(p.get("upload_sr", False)),
+        download_dtype=str(p.get("download_dtype", "fp32") or "fp32"),
+        download_sr=bool(p.get("download_sr", False)),
         num_fragments=int(p.get("num_fragments", 1) or 1),
         from_checkpoint=p.get("from_checkpoint") or None,
         save_every=int(p.get("save_every", 10) or 0),

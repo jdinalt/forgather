@@ -73,6 +73,10 @@ Both dicts are protected by the existing `_workers_lock`.
   "worker_id": "alpha_pp1",
   "hostname": "host42",
   "sync_every": 500,
+  "upload_dtype": "bf16",
+  "upload_sr": false,
+  "download_dtype": "fp32",
+  "download_sr": false,
   "bf16_comm": true,
   "param_shapes": {
     "decoder.layers.4.attn.q_proj.weight": [768, 768],
@@ -181,6 +185,14 @@ silently drops names it doesn't own), but the wire transfer would
 otherwise carry the full averaged model. Solo workers and untracked
 clients still receive the full state, preserving the pre-#84
 ParamView fingerprint contract.
+
+The response is then cast to `download_dtype` (default `fp32`,
+configurable to `bf16` with optional stochastic rounding) by
+`_cast_for_download` — a separate optimization that halves return-path
+bandwidth at the cost of an open research question on convergence
+impact (see issue #130). The PP-group slice filter and the dtype
+cast compose orthogonally: a PP rank in a bf16-download group gets
+its slice in bf16, not the full model in fp32.
 
 ## Fragments-within-groups
 

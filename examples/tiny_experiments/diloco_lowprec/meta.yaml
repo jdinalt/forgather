@@ -1,0 +1,7 @@
+-- extends "meta_defaults.yaml"
+
+[configs]
+name: "DiLoCo Low-Precision"
+description: "DiLoCo with low-precision wire transport + stochastic rounding"
+config_prefix: "configs"
+default_config: "amp.yaml"

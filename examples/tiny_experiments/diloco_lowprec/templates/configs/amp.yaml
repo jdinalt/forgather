@@ -1,0 +1,16 @@
+-- extends "projects/diloco_lowprec.yaml"
+
+## AMP baseline (DiLoCo x2 worker). This is the reference run for the whole
+## low-precision sweep. It inherits ``default_dtype: float32`` +
+## ``mixed_precision: bf16`` from the base (AMP = fp32 master weights, bf16
+## autocast) and is identical to the sibling ``diloco/default.yaml`` except the
+## optimizer is Forgather's SR-capable AdamW.
+##
+## Wire precision is set on the diloco server, not here. Launched with the
+## server's defaults (upload=bf16, download=fp32) this is experiment B0.
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DiLoCo Low-Prec: AMP baseline"
+    -- set ns.config_description = "DiLoCo x2, AMP (fp32 weights + bf16 autocast), Forgather AdamW. Wire precision set on the diloco server."
+    -- set ns.log_name = "diloco_lowprec_amp"

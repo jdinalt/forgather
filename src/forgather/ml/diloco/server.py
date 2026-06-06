@@ -476,7 +476,11 @@ class DiLoCoServer:
         dylu_enabled: bool = False,
         dylu_base_sync_every: int = 500,
         sync_every: int = 500,
-        bf16_comm: bool = True,
+        upload_dtype: Optional[str] = None,
+        upload_sr: bool = False,
+        download_dtype: str = "fp32",
+        download_sr: bool = False,
+        bf16_comm: Optional[bool] = None,
         num_fragments: int = 1,
         heartbeat_timeout: float = 120.0,
         min_workers: int = 1,
@@ -513,12 +517,45 @@ class DiLoCoServer:
         # Group-wide worker settings the server is authoritative for (issue
         # #53 follow-up). These MUST match across the group for the sync /
         # fragment barriers to be coherent, so the operator sets them on
-        # the server and workers adopt them verbatim from /info. ``bf16_comm``
-        # is centralized here too (the server doesn't need it to decode an
-        # upload, but a single operator-facing knob keeps the group's wire
-        # format consistent rather than per-worker).
+        # the server and workers adopt them verbatim from /info.
+        #
+        # Wire precision (issue #130). Four independent server-authoritative
+        # knobs, one per (direction × dtype-cast-vs-SR) cell:
+        #   - ``upload_dtype``  / ``upload_sr``:  worker → server pseudo-grads
+        #   - ``download_dtype`` / ``download_sr``: server → worker params
+        # ``upload_dtype`` defaults to bf16 (today's default) and
+        # ``download_dtype`` to fp32 (today's default); SR is off in both
+        # directions until the operator opts in for the convergence-
+        # compression experiment. The legacy ``bf16_comm`` boolean is
+        # accepted as a deprecated alias for ``upload_dtype`` (passing both
+        # raises). The dtype enum is ``{"fp32","bf16"}``; ``"fp8_e4m3"`` /
+        # ``"fp8_e5m2"`` slot in as a future pure-addition.
         self.sync_every = sync_every
-        self.bf16_comm = bf16_comm
+        if bf16_comm is not None and upload_dtype is not None:
+            raise ValueError(
+                "DiLoCoServer: pass either bf16_comm (deprecated) or "
+                "upload_dtype, not both."
+            )
+        if bf16_comm is not None:
+            upload_dtype = "bf16" if bf16_comm else "fp32"
+        if upload_dtype is None:
+            upload_dtype = "bf16"
+        if upload_dtype not in ("fp32", "bf16"):
+            raise ValueError(
+                f"upload_dtype must be 'fp32' or 'bf16', got {upload_dtype!r}"
+            )
+        if download_dtype not in ("fp32", "bf16"):
+            raise ValueError(
+                f"download_dtype must be 'fp32' or 'bf16', got {download_dtype!r}"
+            )
+        self.upload_dtype = upload_dtype
+        self.upload_sr = bool(upload_sr)
+        self.download_dtype = download_dtype
+        self.download_sr = bool(download_sr)
+        # Legacy mirror — read by log lines, old tests, the deprecated
+        # ``/info`` key. True iff the upload leg is bf16, matching the
+        # pre-refactor semantics of the single ``bf16_comm`` flag.
+        self.bf16_comm = self.upload_dtype == "bf16"
         self.num_fragments = num_fragments
         self.heartbeat_timeout = heartbeat_timeout
         self.default_work_units = default_work_units
@@ -1043,10 +1080,62 @@ class DiLoCoServer:
         """
         owned = self._worker_owned_param_names(worker_id)
         if owned is None:
-            return source if source is not None else self.get_global_params()
-        if source is not None:
-            return {name: source[name] for name in owned if name in source}
-        return self._get_params_by_names(owned)
+            result = source if source is not None else self.get_global_params()
+        elif source is not None:
+            result = {name: source[name] for name in owned if name in source}
+        else:
+            result = self._get_params_by_names(owned)
+        return self._cast_for_download(result)
+
+    def _cast_for_download(self, d: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """Cast a response state dict to the configured ``download_dtype``.
+
+        Three callers — ``_params_for_worker`` (the sync/register hot
+        path) and the two fragment response builders
+        (``_handle_submit_fragment_sync``, ``_handle_submit_fragment_async``).
+        Shared helper so a future fp8 enum extension lands in exactly
+        one place.
+
+        When ``download_dtype == "fp32"`` this is the identity (the
+        server stores params as fp32, so no cast happens). When
+        ``download_dtype == "bf16"`` and ``download_sr`` is set, the
+        cast goes through ``fp32_to_bf16_stochastic_round`` — the same
+        SR helper the optimizers use. Otherwise it's a round-to-
+        nearest cast via ``.bfloat16()``.
+
+        Note on the apply-side counterpart: ``ParamView.apply_global``
+        widens the wire dtype back to the live model dtype with a
+        plain RNE cast. So a true-bf16 worker paired with an
+        fp32-download server still loses sub-ULP signal on every
+        round, with no SR opportunity at the apply step. To capture
+        that signal the operator should set ``download_dtype="bf16"``
+        + ``download_sr=True`` so the SR happens here, on the
+        server, before transmit.
+
+        The cast is applied per-tensor on CPU (the server's master
+        params live on CPU). The returned dict has the same key set
+        as the input.
+        """
+        if self.download_dtype == "fp32":
+            return d
+        if self.download_dtype == "bf16":
+            if self.download_sr:
+                from forgather.ml.optim.rounding_utils import (
+                    fp32_to_bf16_stochastic_round,
+                )
+
+                # SR is fp32-input-only by construction; promote any
+                # non-fp32 tensors to fp32 first so SR is well-defined.
+                # (Currently all server-side tensors are fp32 — see
+                # ``server.py:625`` where they're ``.float()``ed at
+                # load — but the upcast is cheap and future-proofs
+                # against a server-side dtype change.)
+                return {
+                    name: fp32_to_bf16_stochastic_round(t.float())
+                    for name, t in d.items()
+                }
+            return {name: t.bfloat16() for name, t in d.items()}
+        raise ValueError(f"unsupported download_dtype: {self.download_dtype!r}")
 
     def _apply_fragment_outer_optimizer(
         self, pseudograds_list: List[Dict[str, Dict[str, torch.Tensor]]]
@@ -1611,9 +1700,7 @@ class DiLoCoServer:
                     handler, self._params_for_worker(worker_id), extra
                 )
         else:
-            _send_tensor_response(
-                handler, self._params_for_worker(worker_id), extra
-            )
+            _send_tensor_response(handler, self._params_for_worker(worker_id), extra)
 
     def _diff_slice_fingerprint(
         self, slice_shapes: Dict[str, List[int]]
@@ -2200,7 +2287,7 @@ class DiLoCoServer:
 
         # _sync_cond released: flush audit records off the barrier path.
         self._audit_many(pending_audit)
-        _send_tensor_response(handler, result)
+        _send_tensor_response(handler, self._cast_for_download(result))
 
     def _handle_submit_fragment_async(
         self, handler, worker_id, fragment_id, pseudograds
@@ -2232,15 +2319,24 @@ class DiLoCoServer:
 
             result = self._get_params_by_names(frag_param_names)
 
-        _send_tensor_response(handler, result)
+        _send_tensor_response(handler, self._cast_for_download(result))
 
     def _handle_get_global_params(self, handler: BaseHTTPRequestHandler):
-        """Handle request for current global parameters."""
+        """Handle request for current global parameters.
+
+        Respects ``download_dtype`` / ``download_sr`` like the sync /
+        register response paths — a late joiner or recovery client
+        wants the same wire format the rest of the group sees.
+        """
         if self.async_mode:
             with self._async_lock:
-                _send_tensor_response(handler, self.get_global_params())
+                _send_tensor_response(
+                    handler, self._cast_for_download(self.get_global_params())
+                )
         else:
-            _send_tensor_response(handler, self.get_global_params())
+            _send_tensor_response(
+                handler, self._cast_for_download(self.get_global_params())
+            )
 
     def _handle_heartbeat(self, handler: BaseHTTPRequestHandler):
         """Handle worker heartbeat."""
@@ -2666,6 +2762,19 @@ class DiLoCoServer:
                     self.dylu_base_sync_every if self.dylu_enabled else self.sync_every
                 ),
                 "dylu": self.dylu_enabled,
+                # Wire precision (issue #130). Four server-authoritative
+                # knobs covering each direction × dtype-vs-SR. Workers
+                # adopt these verbatim — the group must agree on the
+                # wire format for sync barriers to be coherent.
+                "upload_dtype": self.upload_dtype,
+                "upload_sr": self.upload_sr,
+                "download_dtype": self.download_dtype,
+                "download_sr": self.download_sr,
+                # Deprecated alias kept so pre-#130 workers parsing
+                # ``bf16_comm`` from ``expected_client_settings`` still
+                # negotiate a compatible upload format. True iff the
+                # current ``upload_dtype`` is bf16 — semantically
+                # identical to the pre-refactor flag.
                 "bf16_comm": self.bf16_comm,
                 "num_fragments_min": 1,
                 "num_fragments_default": self.num_fragments,

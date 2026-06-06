@@ -158,14 +158,61 @@ def create_diloco_parser(global_args):
             "set here, not per worker. (default: 1)"
         ),
     )
+    # Wire precision (issue #130). Four server-authoritative knobs
+    # advertised via /info and adopted by every worker. The legacy
+    # ``--no-bf16`` flag is preserved as an alias for
+    # ``--upload-dtype fp32`` so older operator scripts keep working.
+    server_parser.add_argument(
+        "--upload-dtype",
+        dest="upload_dtype",
+        choices=("fp32", "bf16"),
+        default=None,
+        help=(
+            "Wire dtype for the worker → server pseudo-gradient leg.\n"
+            "Centralized: the group's upload precision is set on the\n"
+            "server and adopted by every worker. (default: bf16)"
+        ),
+    )
+    server_parser.add_argument(
+        "--upload-sr",
+        dest="upload_sr",
+        action="store_true",
+        help=(
+            "Use stochastic rounding for the fp32 → bf16 upload cast.\n"
+            "No effect when --upload-dtype=fp32 or when both snapshot\n"
+            "and live weights are already bf16. (default: off)"
+        ),
+    )
+    server_parser.add_argument(
+        "--download-dtype",
+        dest="download_dtype",
+        choices=("fp32", "bf16"),
+        default="fp32",
+        help=(
+            "Wire dtype for the server → worker averaged-params leg.\n"
+            "``bf16`` halves return-path bandwidth — convergence impact\n"
+            "is the open research question (issue #130). (default: fp32)"
+        ),
+    )
+    server_parser.add_argument(
+        "--download-sr",
+        dest="download_sr",
+        action="store_true",
+        help=(
+            "Use stochastic rounding for the fp32 → bf16 download cast\n"
+            "on the server. Only meaningful with --download-dtype=bf16.\n"
+            "(default: off)"
+        ),
+    )
     server_parser.add_argument(
         "--no-bf16",
         dest="bf16_comm",
         action="store_false",
+        default=None,
         help=(
-            "Send full-precision pseudo-gradients instead of bfloat16.\n"
-            "Centralized: the group's wire precision is set on the server\n"
-            "and adopted by every worker. (default: bf16 enabled)"
+            "DEPRECATED alias for ``--upload-dtype fp32``. Kept so older\n"
+            "operator scripts keep working. Mutually exclusive with\n"
+            "--upload-dtype."
         ),
     )
     server_parser.add_argument(

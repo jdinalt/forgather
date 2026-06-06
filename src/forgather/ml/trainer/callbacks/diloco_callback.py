@@ -138,6 +138,14 @@ class DiLoCoCallback(TrainerCallback):
         # /info (resolved in on_load_model_weights) with no client override.
         # They stay None until then.
         self.sync_every: Optional[int] = None
+        # Wire precision (issue #130). Server-authoritative; resolved
+        # in ``_resolve_server_settings`` from ``/info``. ``bf16_comm``
+        # is kept for the deprecated alias path (older /info responses
+        # without the four explicit keys).
+        self.upload_dtype: Optional[str] = None
+        self.upload_sr: Optional[bool] = None
+        self.download_dtype: Optional[str] = None
+        self.download_sr: Optional[bool] = None
         self.bf16_comm: Optional[bool] = None
         self.dylu: Optional[bool] = None
         self.num_fragments: Optional[int] = None
@@ -187,9 +195,24 @@ class DiLoCoCallback(TrainerCallback):
                 f"older server predating server-authoritative settings; "
                 f"upgrade the diloco server."
             )
+        # Wire precision (issue #130). Prefer the four explicit keys
+        # the post-#130 server advertises; fall back to the legacy
+        # ``bf16_comm`` boolean for older servers (mapped to
+        # upload_dtype, with download fields defaulting to today's
+        # behavior — fp32 downlink, no SR). This keeps a fresh worker
+        # talking to an old server safe.
+        legacy_bf16 = bool(ecs.get("bf16_comm", True))
+        upload_dtype = ecs.get("upload_dtype")
+        if upload_dtype is None:
+            upload_dtype = "bf16" if legacy_bf16 else "fp32"
+        download_dtype = ecs.get("download_dtype", "fp32")
         return {
             "sync_every": int(sync_every),
-            "bf16_comm": bool(ecs.get("bf16_comm", True)),
+            "upload_dtype": str(upload_dtype),
+            "upload_sr": bool(ecs.get("upload_sr", False)),
+            "download_dtype": str(download_dtype),
+            "download_sr": bool(ecs.get("download_sr", False)),
+            "bf16_comm": legacy_bf16,
             "dylu": bool(ecs.get("dylu", False)),
             "num_fragments": int(ecs.get("num_fragments_default", 1)),
             "heartbeat_timeout": ecs.get("heartbeat_timeout"),
@@ -371,15 +394,22 @@ class DiLoCoCallback(TrainerCallback):
             raise DiLoCoServerUnreachable(nego_error)
 
         self.sync_every = settings["sync_every"]
+        self.upload_dtype = settings["upload_dtype"]
+        self.upload_sr = settings["upload_sr"]
+        self.download_dtype = settings["download_dtype"]
+        self.download_sr = settings["download_sr"]
         self.bf16_comm = settings["bf16_comm"]
         self.dylu = settings["dylu"]
         self.num_fragments = settings["num_fragments"]
         self._validate_heartbeat(settings["heartbeat_timeout"])
         logger.info(
-            "DiLoCoCallback: using server settings sync_every=%s bf16_comm=%s "
-            "dylu=%s num_fragments=%s",
+            "DiLoCoCallback: using server settings sync_every=%s "
+            "up=%s%s down=%s%s dylu=%s num_fragments=%s",
             self.sync_every,
-            self.bf16_comm,
+            self.upload_dtype,
+            "+SR" if self.upload_sr else "",
+            self.download_dtype,
+            "+SR" if self.download_sr else "",
             self.dylu,
             self.num_fragments,
         )
@@ -390,7 +420,10 @@ class DiLoCoCallback(TrainerCallback):
             server_addr=self.server_addr,
             sync_every=self.sync_every,
             worker_id=worker_id,
-            bf16_comm=self.bf16_comm,
+            upload_dtype=self.upload_dtype,
+            upload_sr=self.upload_sr,
+            download_dtype=self.download_dtype,
+            download_sr=self.download_sr,
             timeout=self.timeout,
             dylu=self.dylu,
             heartbeat_interval=self.heartbeat_interval,

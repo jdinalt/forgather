@@ -96,7 +96,11 @@ class DiLoCoWorker:
         server_addr: str,
         sync_every: int = 500,
         worker_id: Optional[str] = None,
-        bf16_comm: bool = True,
+        upload_dtype: Optional[str] = None,
+        upload_sr: bool = False,
+        download_dtype: str = "fp32",
+        download_sr: bool = False,
+        bf16_comm: Optional[bool] = None,
         timeout: float = 600,
         dylu: bool = False,
         heartbeat_interval: float = 30.0,
@@ -120,7 +124,36 @@ class DiLoCoWorker:
         # the sync protocol.
         self.output_dir = output_dir
         self._initial_sync_every = sync_every
-        self.bf16_comm = bf16_comm
+        # Wire precision (issue #130). Four server-authoritative knobs
+        # advertised via ``/info`` and ratified by the callback; the
+        # worker takes them verbatim from its construction kwargs.
+        # ``bf16_comm`` is a deprecated alias for ``upload_dtype`` and
+        # mutual-exclusive with it. See ``DiLoCoServer.__init__`` for
+        # the matching server-side schema and dtype matrix.
+        if bf16_comm is not None and upload_dtype is not None:
+            raise ValueError(
+                "DiLoCoWorker: pass either bf16_comm (deprecated) or "
+                "upload_dtype, not both."
+            )
+        if bf16_comm is not None:
+            upload_dtype = "bf16" if bf16_comm else "fp32"
+        if upload_dtype is None:
+            upload_dtype = "bf16"
+        if upload_dtype not in ("fp32", "bf16"):
+            raise ValueError(
+                f"upload_dtype must be 'fp32' or 'bf16', got {upload_dtype!r}"
+            )
+        if download_dtype not in ("fp32", "bf16"):
+            raise ValueError(
+                f"download_dtype must be 'fp32' or 'bf16', got {download_dtype!r}"
+            )
+        self.upload_dtype = upload_dtype
+        self.upload_sr = bool(upload_sr)
+        self.download_dtype = download_dtype
+        self.download_sr = bool(download_sr)
+        # Legacy mirror for log lines / older callers reading
+        # ``worker.bf16_comm`` (read-only — write via ``upload_dtype``).
+        self.bf16_comm = self.upload_dtype == "bf16"
         self.worker_id = worker_id or self._generate_worker_id()
         self.dylu = dylu
         self.heartbeat_interval = heartbeat_interval
@@ -420,7 +453,9 @@ class DiLoCoWorker:
         logger.info(
             f"DiLoCoWorker {self.worker_id}: active. "
             f"Syncing every {self.sync_every} steps, "
-            f"bf16_comm={self.bf16_comm}, dylu={self.dylu}{streaming_info}"
+            f"up={self.upload_dtype}{'+SR' if self.upload_sr else ''}, "
+            f"down={self.download_dtype}{'+SR' if self.download_sr else ''}, "
+            f"dylu={self.dylu}{streaming_info}"
         )
 
     def stop(self):
@@ -482,6 +517,15 @@ class DiLoCoWorker:
         info = {
             "hostname": platform.node(),
             "sync_every": self.sync_every,
+            # Report the resolved wire-precision settings (issue #130).
+            # Kept distinct rather than collapsed into ``bf16_comm`` so
+            # the server can log / audit per-direction choices. The
+            # legacy ``bf16_comm`` key is included for older servers
+            # that grep it.
+            "upload_dtype": self.upload_dtype,
+            "upload_sr": self.upload_sr,
+            "download_dtype": self.download_dtype,
+            "download_sr": self.download_sr,
             "bf16_comm": self.bf16_comm,
             "dylu": self.dylu,
             # Optional local output dir, for webui job correlation only
@@ -514,7 +558,22 @@ class DiLoCoWorker:
         return info
 
     def _save_global_params_snapshot(self):
-        """Save a CPU copy of this rank's slice as the global reference point."""
+        """Save a CPU copy of this rank's slice as the global reference point.
+
+        The snapshot dtype follows the live model dtype (see
+        ``ParamView.snapshot``). Issue #130's original design proposed
+        an unconditional fp32 master snapshot on the worker to preserve
+        the server's fp32 master across the round trip; after working
+        through the arithmetic we dropped that: when the server casts
+        to bf16 with SR for download, the "fp32 master" on the worker
+        would hold bf16-quantized values padded with mantissa zeros —
+        same information at twice the storage. The four-knob
+        precision schema + Python's natural promotion in
+        ``compute_pseudograds`` covers the experiment matrix correctly
+        without a forced cast here. See
+        ``docs/design/diloco-pipeline-groups.md`` for the full
+        discussion.
+        """
         self._global_params = self.param_view.snapshot()
 
     def _compute_pseudogradients(self) -> Dict[str, torch.Tensor]:
@@ -529,7 +588,9 @@ class DiLoCoWorker:
         for its own slice; the server aggregates per-name across the
         contributing slices.
         """
-        return self.param_view.compute_pseudograds(self._global_params, self.bf16_comm)
+        return self.param_view.compute_pseudograds(
+            self._global_params, self.upload_dtype, self.upload_sr
+        )
 
     def _apply_global_params(self, global_params: Dict[str, torch.Tensor]):
         """Load updated global params (or this rank's slice of them) into the model."""
@@ -696,7 +757,11 @@ class DiLoCoWorker:
         # slice's portion of fragment_id; the server aggregates per-name
         # across the contributing ranks.
         pseudograds = self._fragment_manager.compute_fragment_pseudogradients(
-            fragment_id, self._global_params, self.param_view, self.bf16_comm
+            fragment_id,
+            self._global_params,
+            self.param_view,
+            self.upload_dtype,
+            self.upload_sr,
         )
 
         send_bytes = sum(p.numel() * p.element_size() for p in pseudograds.values())

@@ -34,7 +34,11 @@ def build_diloco_server_command(
     dylu: bool = False,
     dylu_base_sync_every: int = 500,
     sync_every: int = 500,
-    bf16_comm: bool = True,
+    bf16_comm: Optional[bool] = None,
+    upload_dtype: Optional[str] = None,
+    upload_sr: bool = False,
+    download_dtype: str = "fp32",
+    download_sr: bool = False,
     num_fragments: int = 1,
     from_checkpoint: Optional[str] = None,
     save_every: int = 10,
@@ -90,13 +94,27 @@ def build_diloco_server_command(
         # argv reflects the operator's intent.
         cmd.extend(["--dylu-base-sync-every", str(int(dylu_base_sync_every))])
     # Group-wide worker settings the server is authoritative for (issue
-    # #53 follow-up). sync_every is always meaningful (the non-DyLU
-    # cadence); num_fragments/bf16 only when they diverge from the CLI
-    # default, keeping argv readable.
+    # #53 follow-up + #130 precision refactor). sync_every is always
+    # meaningful (the non-DyLU cadence); precision/fragments knobs only
+    # when they diverge from the CLI default, keeping argv readable.
     cmd.extend(["--sync-every", str(int(sync_every))])
     if num_fragments and int(num_fragments) > 1:
         cmd.extend(["--num-fragments", str(int(num_fragments))])
-    if bf16_comm is False:
+    # Wire precision (issue #130). Prefer the four explicit knobs;
+    # fall back to the legacy ``--no-bf16`` shortcut when only the
+    # deprecated ``bf16_comm`` is set (pre-#130 callers). Surface
+    # ``--upload-dtype`` only when it differs from the CLI default so
+    # argv stays readable on the common path.
+    if upload_dtype is not None and upload_dtype != "bf16":
+        cmd.extend(["--upload-dtype", upload_dtype])
+    if upload_sr:
+        cmd.append("--upload-sr")
+    if download_dtype and download_dtype != "fp32":
+        cmd.extend(["--download-dtype", download_dtype])
+    if download_sr:
+        cmd.append("--download-sr")
+    if upload_dtype is None and bf16_comm is False:
+        # Pre-#130 caller path: surface the deprecated alias.
         cmd.append("--no-bf16")
     if from_checkpoint:
         cmd.extend(["--from-checkpoint", from_checkpoint])
