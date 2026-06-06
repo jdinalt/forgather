@@ -202,6 +202,39 @@ special machinery) and lands within ~0.085 of the equal-parameter MLP model —
 the closest any attention-only model gets. Depth doesn't replace the MLP, but it
 narrows the gap far more effectively than width does.
 
+## Blind A/B evaluation
+
+Does the loss ranking match *subjective* quality? We checked the three ~20M
+models with a blind A/B panel — the same shuffled, position-controlled method
+that [`ab_test.py`](../../snippets/ab_test.py) runs for human judges, here driven
+by independent Claude judges. Each model generated a continuation for all 18
+TinyStories prompts (same seed per prompt); every pairing was judged blind, in
+**both** orderings, by 6 judges (324 votes; side split 159/165, so no position
+bias).
+
+| Match-up | Votes | Winner | sign-test p |
+|---|---:|---|---:|
+| `mlp_small` vs deep (512×38) | 69–39 | mlp_small (64%) | 0.005 |
+| `mlp_small` vs wide (960×11) | 87–21 | mlp_small (81%) | 1e-10 |
+| deep (512×38) vs wide (960×11) | 73–35 | deep (68%) | 3e-4 |
+
+- **Subjective ranking = loss ranking.** The panel reproduces the loss order
+  exactly — `mlp_small` (1.16) > deep (1.25) > wide (1.36). At this scale, eval
+  loss is a decent predictor of perceived story quality. (Note: the deep-vs-wide
+  gap was a dead heat in a 6-prompt pilot and only separated into a clear 68%
+  preference at 18 prompts — small panels are easy to under-power.)
+- **The MLP wins, but the deep attention-only is genuinely close.** It loses to
+  `mlp_small` only 39–69, versus the wide model's 21–87 — a respectable stand-in
+  for the +MLP model. Individual attention-only samples can be excellent (the
+  generation that motivated this section was one), but across a balanced panel
+  the loss order holds.
+
+*Caveat:* these are Claude judges, not humans, and they were near-unanimous
+within each ordering (so this is a few strong, agreeing readings rather than 6
+independent ones). `ab_test.py` exists to gather **human** votes on exactly these
+pairs — run it and pool the JSON logs to put real preferences against the loss
+numbers.
+
 ## Reproducing
 
 ```bash
@@ -220,6 +253,11 @@ python assets/generate_plots.py
 # co-location step and why --no-kv-cache is required.
 python ../../snippets/prompt_test.py output_models/mlp_small \
     ../../../prompts/tiny_stories.yaml --no-kv-cache
+
+# Blind A/B subjective comparison of two models (interactive human judging).
+python ../../snippets/ab_test.py \
+    output_models/mlp_small output_models/attn_only_deep_small \
+    ../../../prompts/tiny_stories.yaml --trials 3 --seed 42 --no-kv-cache
 ```
 
 ## References
