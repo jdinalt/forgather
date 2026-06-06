@@ -82,6 +82,7 @@ src/forgather/ml/diloco/
   server.py          HTTP server, outer optimizer, sync barrier, fragment handling, fault tolerance
   client.py          HTTP client, tensor serialization, request construction, retry logic
   sync_backend.py    OuterSyncBackend seam + HttpStarBackend (the bulk tensor-leg transport)
+  wire_cast.py       cast_for_upload: the HTTP backend's upload wire cast (fp32/bf16 + SR)
   coordinator.py     CoordinatorClient (the coordination surface: heartbeat / info / model-def)
   worker.py          Optimizer hook, pseudo-gradient computation, streaming, reconnection
   fragments.py       FragmentManager: parameter splitting, scheduling
@@ -249,11 +250,12 @@ All communication uses HTTP/1.1 over TCP. The server runs a
 
 **Wire precision.** Four server-authoritative knobs — `upload_dtype`,
 `upload_sr`, `download_dtype`, `download_sr` — are advertised in `/info` and
-adopted by every worker. The **upload** cast happens worker-side in
-`compute_pseudograds` (via `_cast_for_upload`) before `/submit_pseudograd`; the
-**download** cast happens server-side via `_cast_for_download` on the params
-returned by `/register`, `/submit_pseudograd`, and `/submit_fragment_pseudograd`.
-Each cast optionally uses stochastic rounding (`fp32_to_bf16_stochastic_round`).
+adopted by every worker. The **upload** cast happens worker-side in the sync
+backend (`HttpStarBackend`, via `wire_cast.cast_for_upload`) just before
+`/submit_pseudograd`; the **download** cast happens server-side via
+`_cast_for_download` on the params returned by `/register`,
+`/submit_pseudograd`, and `/submit_fragment_pseudograd`. Each cast optionally
+uses stochastic rounding (`fp32_to_bf16_stochastic_round`).
 The server's master parameters and outer-optimizer state always stay fp32;
 incoming tensors are accumulated in fp32 regardless of wire dtype. The legacy
 `bf16_comm` boolean is retained as a deprecated alias for `upload_dtype`.
@@ -346,15 +348,21 @@ The seam lets the transport be a different implementation (e.g. collectives or a
 shared-memory parameter region) without changing the worker's
 `compute → synchronize → apply → broadcast` flow.
 
-The seam is the outer step, not a byte channel: `synchronize` takes a
+The seam is the outer step, not a byte channel: `synchronize` takes a raw
 pseudo-gradient and returns a `SyncResult` carrying the agreed next global
-params, so a backend may run the outer optimizer centrally (HTTP), in a
-replicated copy per worker, or in place on a shared region — the worker is
-agnostic. Backends advertise capability flags (`runs_outer_optimizer`,
-`supports_async`, `fault_tolerant`) that callers honor rather than assume. Only
-the tensor legs are pluggable; the coordination plane is a separate surface (see
-*Coordinator surface* below). The wire-precision casts remain in `ParamView`
-(the worker still passes `upload_dtype` / `download_dtype` through to it).
+params (and the on-wire `sent_bytes` / `recv_bytes`), so a backend may run the
+outer optimizer centrally (HTTP), in a replicated copy per worker, or in place on
+a shared region — the worker is agnostic. Backends advertise capability flags
+(`runs_outer_optimizer`, `supports_async`, `fault_tolerant`) that callers honor
+rather than assume. Only the tensor legs are pluggable; the coordination plane is
+a separate surface (see *Coordinator surface* below).
+
+The backend also owns its **wire representation**: `ParamView` returns the raw
+pseudo-gradient (`snapshot - local`, in the live model dtype) and the upload cast
+to `upload_dtype` (with optional SR) is applied in `HttpStarBackend`, so a future
+backend can use a different representation (no cast for shared-memory, packed
+fp8/fp4 for a collective) without touching `ParamView`. The server-side download
+cast is unchanged.
 
 ### Coordinator surface
 
@@ -1246,10 +1254,12 @@ flags and build the factory accordingly.
 
 ### Adding new communication compression
 
-Currently, bf16 casting happens in the worker (`_compute_pseudogradients`). To
-add quantization (e.g., int8, sparse encoding):
+The upload wire cast lives in the sync backend (`HttpStarBackend`, via
+`wire_cast.cast_for_upload`); `_compute_pseudogradients` returns the raw
+pseudo-gradient. To add quantization (e.g., int8, sparse encoding):
 
-1. Modify `_compute_pseudogradients` to apply the compression
+1. Apply the compression in the backend's `synchronize` / `synchronize_fragment`
+   (extend `wire_cast`, or add a backend that owns a different representation)
 2. Modify the server's deserialization to decompress
 3. Alternatively, implement as a custom serialization format that replaces
    `torch.save` payloads with a compressed format

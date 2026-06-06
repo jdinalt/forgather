@@ -78,11 +78,19 @@ class SyncResult:
     with params, or *raises* ``ConnectionError`` (so the worker's existing
     retry/reconnect loop drives recovery); it does not produce ``committed=False``.
     That path exists for fault-tolerant collective backends (issue #154).
+
+    ``sent_bytes`` / ``recv_bytes`` are the on-wire sizes of this round's
+    upload / download, reported by the backend (which owns the wire
+    representation, so it is the only place that knows the cast size). ``None``
+    when the backend does not measure them; the worker falls back to estimating
+    from the tensors it holds.
     """
 
     params: Optional[StateDict]
     committed: bool
     round: Optional[int] = None
+    sent_bytes: Optional[int] = None
+    recv_bytes: Optional[int] = None
 
 
 class OuterSyncBackend(ABC):
@@ -162,6 +170,11 @@ class OuterSyncBackend(ABC):
         """Leave the synchronization group (best-effort; errors are swallowed)."""
 
 
+def _wire_bytes(d: StateDict) -> int:
+    """On-wire size of a state dict: sum of tensor byte sizes."""
+    return sum(t.numel() * t.element_size() for t in d.values())
+
+
 class HttpStarBackend(OuterSyncBackend):
     """Reference backend: the current HTTP central-parameter-server star.
 
@@ -169,6 +182,11 @@ class HttpStarBackend(OuterSyncBackend):
     HTTP, TLS, bulk-listener and serialization logic stays inside the client.
     This backend exists to prove the seam: it reproduces today's behavior
     exactly while making the worker backend-agnostic.
+
+    It owns the **wire representation** of the upload leg: raw pseudo-gradients
+    handed to ``synchronize`` are cast to ``upload_dtype`` (with optional
+    stochastic rounding) here, immediately before they are sent. The download
+    cast is the server's (the central parameter authority's) concern.
     """
 
     runs_outer_optimizer = "central"
@@ -179,8 +197,24 @@ class HttpStarBackend(OuterSyncBackend):
     # surface as ConnectionError and are retried by the caller, not here.)
     fault_tolerant = True
 
-    def __init__(self, client: "DiLoCoClient"):
+    def __init__(
+        self,
+        client: "DiLoCoClient",
+        upload_dtype: str = "bf16",
+        upload_sr: bool = False,
+    ):
         self.client = client
+        self.upload_dtype = upload_dtype
+        self.upload_sr = bool(upload_sr)
+
+    def _cast_upload(self, pseudograds: StateDict) -> StateDict:
+        # Lazy import keeps this module torch-free at import time.
+        from .wire_cast import cast_for_upload
+
+        return {
+            name: cast_for_upload(pg, self.upload_dtype, self.upload_sr)
+            for name, pg in pseudograds.items()
+        }
 
     def join(
         self,
@@ -193,18 +227,32 @@ class HttpStarBackend(OuterSyncBackend):
         return self.client.register(worker_id, worker_info)
 
     def synchronize(self, *, worker_id: str, pseudograds: StateDict) -> SyncResult:
-        params = self.client.submit_pseudogradients(worker_id, pseudograds)
+        wire = self._cast_upload(pseudograds)
+        params = self.client.submit_pseudogradients(worker_id, wire)
         # The server does not return its round counter on this leg; the worker
         # tracks its own. ConnectionError propagates to the worker's retry loop.
-        return SyncResult(params=params, committed=True, round=None)
+        return SyncResult(
+            params=params,
+            committed=True,
+            round=None,
+            sent_bytes=_wire_bytes(wire),
+            recv_bytes=_wire_bytes(params),
+        )
 
     def synchronize_fragment(
         self, *, worker_id: str, fragment_id: int, pseudograds: StateDict
     ) -> SyncResult:
+        wire = self._cast_upload(pseudograds)
         params = self.client.submit_fragment_pseudogradients(
-            worker_id, fragment_id, pseudograds
+            worker_id, fragment_id, wire
         )
-        return SyncResult(params=params, committed=True, round=None)
+        return SyncResult(
+            params=params,
+            committed=True,
+            round=None,
+            sent_bytes=_wire_bytes(wire),
+            recv_bytes=_wire_bytes(params),
+        )
 
     def current_global_params(self) -> StateDict:
         return self.client.get_global_params()

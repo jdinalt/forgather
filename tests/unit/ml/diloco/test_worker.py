@@ -134,7 +134,9 @@ class TestPseudoGradientComputation:
             ), f"Pseudo-gradient mismatch for {name}"
 
     def test_pseudograd_bf16_casting(self):
-        """Verify pseudo-gradients are cast to bf16 when bf16_comm=True."""
+        """The wire cast lives in the backend now: _compute_pseudogradients
+        returns the raw fp32 difference, and the backend casts to bf16 when
+        upload_dtype=bf16 (bf16_comm=True)."""
         model = TinyModel(dim=4)
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
@@ -150,10 +152,15 @@ class TestPseudoGradientComputation:
             name: p.data.clone().cpu() for name, p in model.named_parameters()
         }
 
-        pseudograds = worker._compute_pseudogradients()
+        raw = worker._compute_pseudogradients()
+        for name, pg in raw.items():
+            assert pg.dtype == torch.float32, f"{name} should be raw fp32"
 
-        for name, pg in pseudograds.items():
-            assert pg.dtype == torch.bfloat16, f"{name} should be bfloat16"
+        # bf16_comm=True -> the default backend casts the wire payload to bf16.
+        assert worker.backend.upload_dtype == "bf16"
+        wire = worker.backend._cast_upload(raw)
+        for name, pg in wire.items():
+            assert pg.dtype == torch.bfloat16, f"{name} should be bfloat16 on wire"
 
     def test_pseudograd_full_precision(self):
         """Verify pseudo-gradients stay float32 when bf16_comm=False."""

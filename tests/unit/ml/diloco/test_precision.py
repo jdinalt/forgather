@@ -40,9 +40,9 @@ from forgather.ml.diloco.client import DiLoCoClient
 from forgather.ml.diloco.param_view import (
     PipelineParamView,
     SimpleModelParamView,
-    _cast_for_upload,
 )
 from forgather.ml.diloco.server import DiLoCoServer
+from forgather.ml.diloco.wire_cast import cast_for_upload as _cast_for_upload
 from forgather.ml.diloco.worker import DiLoCoWorker
 
 from .conftest import make_initial_checkpoint
@@ -211,9 +211,8 @@ class TestInfoAdvertisement:
 
 
 class TestCastForUpload:
-    """`_cast_for_upload` is the shared helper used by both ParamView
-    implementations and the fragment manager. Exercises the dtype
-    matrix without spinning up a server."""
+    """`wire_cast.cast_for_upload` is the upload-leg wire cast owned by the
+    HTTP backend. Exercises the dtype matrix without spinning up a server."""
 
     def test_fp32_passthrough(self):
         x = torch.randn(8)
@@ -433,7 +432,10 @@ class TestTrueBf16WeightsSmoke:
             # bf16-snapshot, bf16-live case must run end-to-end.
             model = TwoLayer()
             view = SimpleModelParamView(model)
-            pg = view.compute_pseudograds(snap, upload_dtype="bf16", upload_sr=False)
+            # Raw diff is in the live model dtype (bf16 here); the backend would
+            # apply the wire cast, but this test submits the raw pg over HTTP
+            # directly to exercise the server's bf16 handling.
+            pg = view.compute_pseudograds(snap)
             for t in pg.values():
                 assert t.dtype == torch.bfloat16
 

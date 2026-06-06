@@ -205,7 +205,9 @@ class DiLoCoWorker:
         # wrapping the client above, so behavior is unchanged. A trainer/config
         # may inject a different backend without the worker knowing the
         # transport.
-        self.backend: OuterSyncBackend = backend or HttpStarBackend(self.client)
+        self.backend: OuterSyncBackend = backend or HttpStarBackend(
+            self.client, upload_dtype=self.upload_dtype, upload_sr=self.upload_sr
+        )
 
         # Coordination surface (issue #154): heartbeat / negotiation, distinct
         # from the sync backend. Defaults to a facade over the same client, so
@@ -612,9 +614,7 @@ class DiLoCoWorker:
         for its own slice; the server aggregates per-name across the
         contributing slices.
         """
-        return self.param_view.compute_pseudograds(
-            self._global_params, self.upload_dtype, self.upload_sr
-        )
+        return self.param_view.compute_pseudograds(self._global_params)
 
     def _apply_global_params(self, global_params: Dict[str, torch.Tensor]):
         """Load updated global params (or this rank's slice of them) into the model."""
@@ -667,12 +667,8 @@ class DiLoCoWorker:
                 f"(round {self._sync_count + 1}, after {self._local_step} local steps)"
             )
 
-            # Compute pseudo-gradients
+            # Compute raw pseudo-gradients (the backend applies the wire cast).
             pseudograds = self._compute_pseudogradients()
-
-            # Track send size
-            send_bytes = sum(p.numel() * p.element_size() for p in pseudograds.values())
-            self._last_sync_send_bytes = send_bytes
 
             # Submit with retry on connection failure
             result = None
@@ -711,10 +707,23 @@ class DiLoCoWorker:
             )
 
             if new_global_params is not None:
-                # Track receive size
-                recv_bytes = sum(
-                    p.numel() * p.element_size() for p in new_global_params.values()
+                # Wire sizes are reported by the backend, which owns the cast and
+                # so is the only place that knows the on-wire (e.g. bf16) size.
+                # Fall back to estimating from the tensors for backends that
+                # don't report them.
+                send_bytes = (
+                    result.sent_bytes
+                    if result.sent_bytes is not None
+                    else sum(p.numel() * p.element_size() for p in pseudograds.values())
                 )
+                recv_bytes = (
+                    result.recv_bytes
+                    if result.recv_bytes is not None
+                    else sum(
+                        p.numel() * p.element_size() for p in new_global_params.values()
+                    )
+                )
+                self._last_sync_send_bytes = send_bytes
                 self._last_sync_recv_bytes = recv_bytes
 
                 # Apply new global params to model
@@ -792,15 +801,11 @@ class DiLoCoWorker:
             fragment_id,
             self._global_params,
             self.param_view,
-            self.upload_dtype,
-            self.upload_sr,
         )
-
-        send_bytes = sum(p.numel() * p.element_size() for p in pseudograds.values())
 
         logger.info(
             f"DiLoCoWorker {self.worker_id}: submitting fragment {fragment_id} "
-            f"({send_bytes / 1e6:.1f} MB, step {self._local_step})"
+            f"(step {self._local_step})"
         )
 
         # Submit in background thread
@@ -832,10 +837,17 @@ class DiLoCoWorker:
 
             elapsed = time.time() - start_time
             self._total_sync_time += elapsed
+            if result.sent_bytes is not None:
+                self._last_sync_send_bytes = result.sent_bytes
 
+            sent_mb = (
+                f"{result.sent_bytes / 1e6:.1f} MB, "
+                if result.sent_bytes is not None
+                else ""
+            )
             logger.debug(
                 f"DiLoCoWorker {self.worker_id}: fragment {fragment_id} "
-                f"sync complete ({elapsed:.1f}s)"
+                f"sync complete ({sent_mb}{elapsed:.1f}s)"
             )
         except Exception as e:
             logger.error(
