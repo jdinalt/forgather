@@ -38,6 +38,7 @@ _LAZY = {
     "OuterSyncBackend": ".sync_backend",
     "HttpStarBackend": ".sync_backend",
     "SyncResult": ".sync_backend",
+    "CoordinatorClient": ".coordinator",
 }
 
 __all__ = [
@@ -49,6 +50,7 @@ __all__ = [
     "OuterSyncBackend",
     "HttpStarBackend",
     "SyncResult",
+    "CoordinatorClient",
     "diloco_is_enabled",
     "diloco_server_addr",
 ]
@@ -73,6 +75,7 @@ if TYPE_CHECKING:
     # Static type checkers / IDEs resolve the real symbols without the
     # runtime import cost.
     from .client import DiLoCoClient
+    from .coordinator import CoordinatorClient
     from .fragments import FragmentManager
     from .health import HealthMonitor
     from .server import DiLoCoServer

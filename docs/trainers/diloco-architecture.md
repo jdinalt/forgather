@@ -77,10 +77,12 @@ The system has three operating dimensions that can be combined:
 ```
 src/forgather/ml/diloco/
   __init__.py        Exports: DiLoCoServer, DiLoCoClient, DiLoCoWorker, FragmentManager,
-                     HealthMonitor, OuterSyncBackend, HttpStarBackend, SyncResult
+                     HealthMonitor, OuterSyncBackend, HttpStarBackend, SyncResult,
+                     CoordinatorClient
   server.py          HTTP server, outer optimizer, sync barrier, fragment handling, fault tolerance
   client.py          HTTP client, tensor serialization, request construction, retry logic
   sync_backend.py    OuterSyncBackend seam + HttpStarBackend (the bulk tensor-leg transport)
+  coordinator.py     CoordinatorClient (the coordination surface: heartbeat / info / model-def)
   worker.py          Optimizer hook, pseudo-gradient computation, streaming, reconnection
   fragments.py       FragmentManager: parameter splitting, scheduling
   health.py          HealthMonitor: background worker liveness detection
@@ -96,6 +98,7 @@ src/forgather/cli/
 tests/unit/ml/diloco/
   test_server.py          Server: outer optimizer correctness, serialization
   test_sync_backend.py    OuterSyncBackend delegation; worker backend-agnosticism
+  test_coordinator.py     CoordinatorClient delegation; worker coordinator wiring
   test_server_client.py   HTTP round-trip: register, submit, status
   test_worker.py          Worker: pseudo-gradients, optimizer hooks, full sync cycle
   test_async.py           Async mode, DN momentum, DyLU
@@ -348,11 +351,28 @@ pseudo-gradient and returns a `SyncResult` carrying the agreed next global
 params, so a backend may run the outer optimizer centrally (HTTP), in a
 replicated copy per worker, or in place on a shared region — the worker is
 agnostic. Backends advertise capability flags (`runs_outer_optimizer`,
-`supports_async`, `fault_tolerant`) that callers honor rather than assume. The
-coordination plane (heartbeat, `/info`, model-def download, control commands)
-stays on `DiLoCoClient` directly; only the tensor legs are pluggable. The
-wire-precision casts remain in `ParamView` (the worker still passes
-`upload_dtype` / `download_dtype` through to it).
+`supports_async`, `fault_tolerant`) that callers honor rather than assume. Only
+the tensor legs are pluggable; the coordination plane is a separate surface (see
+*Coordinator surface* below). The wire-precision casts remain in `ParamView`
+(the worker still passes `upload_dtype` / `download_dtype` through to it).
+
+### Coordinator surface
+
+Coordination — everything that is not the bulk tensor exchange — is reached
+through a `CoordinatorClient` (`coordinator.py`), distinct from the sync backend.
+The worker holds both a `backend` (parameter authority / transport) and a
+`coordinator`, so a backend whose parameter authority is not the coordinator (a
+serverless collective, a shared-memory region) can coordinate over the HTTP
+server while exchanging params elsewhere.
+
+`CoordinatorClient` is a concrete thin facade over `DiLoCoClient` — coordination
+always speaks HTTP regardless of which backend moves the tensors, so it is not an
+ABC (unlike `OuterSyncBackend`). It covers the worker-process bring-up
+coordination: `heartbeat`, `get_info` (`/info` negotiation), and `fetch_model_def`
+(model staging). Two other coordination surfaces use their own `DiLoCoClient`
+instances and are outside this one: work-unit dispatch (`register_dataset` /
+`request_work` / `complete_work`), owned by the dataset layer, and control
+(`relay_command` / `save_state` / `shutdown` / `get_status`), owned by the CLI.
 
 ---
 
