@@ -312,6 +312,15 @@ def main():
         _docs_routes.DOCS_LANDING_OVERRIDE = args.docs_landing
         logging.info("docs landing override: %s", args.docs_landing)
 
+    # Install the agent config block. ``args_defaults`` only normalizes
+    # ``args:``; the ``agent:`` section is read straight off the loaded
+    # config dict, matching the docs-landing / meta-template injection
+    # idiom above. Absent/empty => the agent stays disabled.
+    from .agent import runtime as _agent_runtime
+
+    _agent_cfg = cfg_data.get("agent") if isinstance(cfg_data, dict) else None
+    _agent_runtime.configure(_agent_cfg if isinstance(_agent_cfg, dict) else None)
+
     # The inference proxy reads this flag at request time. Set it via
     # module attribute (rather than env var) so a future `forgather server
     # --lock-inference-proxy=on/off` at runtime would also work cleanly.

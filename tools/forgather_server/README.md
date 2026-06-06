@@ -2974,6 +2974,80 @@ common system roots (`/`, `/home`, `/etc`, …) — the file variant
 relies on the depth floor alone since you can't recursively wipe a
 file.
 
+## AI agent (right-sidebar assistant)
+
+An in-process AI agent that helps inspect projects/configs, answer
+questions about Forgather (with doc citations), and author configs and
+templates. **Disabled until configured** — set an `agent:` block in
+`server_config.yaml`.
+
+### Provider
+
+The agent uses the **Anthropic SDK as a single path** for both Claude and
+local models. vLLM natively serves the Anthropic Messages API
+(`/v1/messages`), so pointing `base_url` at a vLLM server reaches a local
+model (e.g. Qwen3) through the same code path as Claude. A thin internal
+`ChatProvider` seam (`agent/providers/base.py`) keeps the loop
+provider-agnostic; an OpenAI-style adapter can be added later for
+non-Anthropic-API providers.
+
+```yaml
+agent:
+  provider: anthropic        # only adapter today
+  model: claude-sonnet-4-6   # or a vLLM --served-model-name alias
+  base_url: null             # e.g. http://kitt:8000 for local vLLM; null = Claude
+  api_key_env: ANTHROPIC_API_KEY   # env var with the key (or vLLM bearer)
+  # api_key: null            # explicit key/bearer (overrides api_key_env)
+  # max_tokens: 4096
+  # max_iterations: 12       # tool-use loop cap per user message
+```
+
+For a local vLLM model, launch vLLM with
+`--enable-auto-tool-choice --tool-call-parser <parser>` (e.g. `hermes`
+for Qwen3) and a `--served-model-name` alias (the Messages API rejects
+model names containing `/`).
+
+### Interaction model — propose → approve → commit
+
+Tools are classified by risk and the gate is enforced **server-side**, in
+the agent loop, never in the browser:
+
+- **`read`** — inspection / search tools run automatically.
+- **`propose`** — authoring tools compute a *preview only* (a before/after
+  diff) and return it; nothing is written. The turn pauses with a pending
+  action. The actual write runs only when you click **Approve**, replaying
+  the exact previewed content (the model cannot alter it after the fact).
+  Reject feeds a rejection back so the model can adapt. After a write,
+  the config is re-parsed and any error surfaces back into the chat.
+
+Because a paused turn owes a tool-result for every tool call it made, the
+loop refuses to call the model again until every pending action is
+resolved — so a change can never become permanent without approval.
+
+### UI — two surfaces, one conversation
+
+- **Right sidebar** (toggle with **Ctrl/Cmd+J**): the always-on compact
+  thread. Condensed action cards with Approve/Reject and an "Open in Agent
+  view" link for large diffs.
+- **Full "Agent" view** (left-nav 🤖): the same conversation with a Monaco
+  side-by-side diff for reviewing proposed changes, plus full history.
+
+Both share one controller, so an action proposed in the sidebar can be
+approved in the full view and vice-versa.
+
+### Tools (first release)
+
+Read-only: `list_projects`, `inspect_config`, `render_config_pp`,
+`read_file`, `scheduler_status`, `search_docs`, `list_meta_templates`.
+Authoring (propose/commit): `propose_edit_config`, `propose_new_config`,
+`propose_new_config_from_template`.
+
+The registry (`agent/registry.py`) is the single source of truth and is
+designed to be re-exported later by a `forgather mcp` server for external
+MCP clients (Claude Code / Desktop) without duplicating definitions. Job
+submission, scheduler control, and DiLoCo coordination are planned later
+phases.
+
 ## Not yet implemented
 
 - Per-run metrics charts (loss curves, etc. — the data is already in
@@ -3044,6 +3118,17 @@ tools/forgather_server/
 │                              #   CUDA_VISIBLE_DEVICES allow-list
 ├── gpu_policy.py              # Runtime per-GPU policy (disabled,
 │                              #   min_priority) — persisted
+├── agent/                     # In-process AI agent (right-sidebar assistant)
+│   ├── providers/
+│   │   ├── base.py            # ChatProvider seam + normalized events
+│   │   └── anthropic.py       # Anthropic SDK adapter (Claude + vLLM via
+│   │                          #   base_url); tool_use reassembly + tolerance
+│   ├── registry.py            # ToolSpec + risk levels + Proposal (preview)
+│   ├── loop.py                # Provider-agnostic loop + server-side gate
+│   ├── session.py             # In-memory sessions + pending approvals
+│   ├── runtime.py             # Config injection, factories, system prompt
+│   ├── tools_readonly.py      # Phase 0 read tools
+│   └── tools_authoring.py     # Phase 1 propose/commit tools
 ├── routes/
 │   ├── search_roots.py        # GET/POST/DELETE /api/search-roots
 │   ├── projects.py            # /api/projects, /api/project/{readme,asset}
@@ -3061,6 +3146,8 @@ tools/forgather_server/
 │   │                          #   /api/config/dynamic-args
 │   ├── inference_proxy.py     # /api/inference/{health,models,completions,
 │   │                          #   chat/completions} — same-origin SSE proxy
+│   ├── agent.py               # /api/agent/{status,message,approve,reject,
+│   │                          #   sessions} — SSE chat + approval gate
 │   └── generation_configs.py  # /api/generation-configs/{list,get,put,delete}
 └── webui/
     ├── package.json           # Vite, React, TypeScript, Monaco, viz-js,
@@ -3222,6 +3309,20 @@ are WebSockets.
 | `POST /api/workspace/init-here` `{workspace_dir, name, description, forgather_dir, libs?, search_paths?}` | Initialize a workspace in an *existing* directory — used by the Files-tree right-click flow. Refuses if `forgather_workspace/` already exists; requires `workspace_dir` to live at-or-under a configured search root. |
 | `POST /api/project/new-template` `{project_dir, kind: "config"\|"template", name, meta_template?, values?}` | Create a file under the templates dir; refuses overwrite, `.yaml` auto-appended, returns absolute path. With `meta_template` + `values` the file is seeded from a scaffold under `templatelib/meta/`; without them it is created empty |
 | `GET /api/project/meta-templates`              | Tree of available scaffolds discovered under `templatelib/meta/`. Each leaf is a `MetaTemplate` (`id`, `title`, `description`, `target_kind`, `fields[]`); each branch is a `MetaCategory` with `templates[]` + `children[]`. Feeds the New Config / New Template modal's "pick a starting point" step |
+
+### AI agent
+
+Streaming endpoints return `text/event-stream` (`data: {json}\n\n` per
+agent event), consumed by the webui with `fetch` + `ReadableStream` (not
+`EventSource`, so the session cookie authenticates them).
+
+| Endpoint                                          | Purpose                                                        |
+| ------------------------------------------------- | ------------------------------------------------------------- |
+| `GET /api/agent/status`                           | Whether the agent is configured (`{enabled, provider, model, base_url}` — no secrets) |
+| `POST /api/agent/message` `{message, session_id?}`| Send a user message; SSE-streams the turn (text, tool activity, action cards). A leading `session` frame carries the session id |
+| `POST /api/agent/approve` `{action_id}`           | Approve a pending action; runs the stored commit and SSE-streams the resumed turn |
+| `POST /api/agent/reject` `{action_id}`            | Reject a pending action; SSE-streams the resumed turn |
+| `GET /api/agent/sessions/{id}`                    | Conversation history (`{messages, awaiting_approval, …}`) |
 
 ### Config inspection
 

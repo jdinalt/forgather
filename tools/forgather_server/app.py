@@ -13,6 +13,7 @@ from starlette.types import Scope
 
 from . import cluster, cluster_journal, scheduler, search_roots, server_config, services
 from .auth import AuthMiddleware
+from .routes import agent as agent_routes
 from .routes import auth as auth_routes
 from .routes import cluster as cluster_routes
 from .routes import configs as configs_routes
@@ -252,6 +253,7 @@ def create_app() -> FastAPI:
             "identity": hashlib.sha256(repo.encode("utf-8")).hexdigest()[:12],
         }
 
+    app.include_router(agent_routes.router, prefix="/api")
     app.include_router(auth_routes.router, prefix="/api")
     app.include_router(cluster_routes.router, prefix="/api")
     app.include_router(search_roots_routes.router, prefix="/api")
