@@ -76,9 +76,11 @@ The system has three operating dimensions that can be combined:
 
 ```
 src/forgather/ml/diloco/
-  __init__.py        Exports: DiLoCoServer, DiLoCoClient, DiLoCoWorker, FragmentManager, HealthMonitor
+  __init__.py        Exports: DiLoCoServer, DiLoCoClient, DiLoCoWorker, FragmentManager,
+                     HealthMonitor, OuterSyncBackend, HttpStarBackend, SyncResult
   server.py          HTTP server, outer optimizer, sync barrier, fragment handling, fault tolerance
   client.py          HTTP client, tensor serialization, request construction, retry logic
+  sync_backend.py    OuterSyncBackend seam + HttpStarBackend (the bulk tensor-leg transport)
   worker.py          Optimizer hook, pseudo-gradient computation, streaming, reconnection
   fragments.py       FragmentManager: parameter splitting, scheduling
   health.py          HealthMonitor: background worker liveness detection
@@ -93,6 +95,7 @@ src/forgather/cli/
 
 tests/unit/ml/diloco/
   test_server.py          Server: outer optimizer correctness, serialization
+  test_sync_backend.py    OuterSyncBackend delegation; worker backend-agnosticism
   test_server_client.py   HTTP round-trip: register, submit, status
   test_worker.py          Worker: pseudo-gradients, optimizer hooks, full sync cycle
   test_async.py           Async mode, DN momentum, DyLU
@@ -321,6 +324,34 @@ Response payloads use `Content-Type: application/octet-stream`.
   handles retry at a higher level via `_reconnect()` + resubmit.
 - Default timeout: 600 seconds (sync submissions may block for a long time at
   the server barrier)
+
+### Sync backend seam
+
+The bulk tensor legs of a sync round — join (register + initial params),
+full-model and per-fragment pseudo-gradient submission, late-join param fetch,
+and leave (deregister) — are routed through an `OuterSyncBackend`
+(`sync_backend.py`) rather than called on the client directly. The worker owns
+everything local (pseudo-gradient computation via `ParamView`, applying the
+returned params, the DDP-rank broadcast, and scheduling); the backend owns *how*
+the worker reaches agreement on the next global params.
+
+`HttpStarBackend` is the only implementation: a thin adapter over `DiLoCoClient`
+that reproduces the HTTP central-parameter-server behavior exactly. The worker
+defaults to wrapping its own client in one, so there is no behavioral change —
+the seam exists so the transport can later be swapped (e.g. collectives or a
+shared-memory parameter region) without touching the worker's
+`compute → synchronize → apply → broadcast` flow.
+
+The seam is the outer step, not a byte channel: `synchronize` takes a
+pseudo-gradient and returns a `SyncResult` carrying the agreed next global
+params, so a backend may run the outer optimizer centrally (HTTP), in a
+replicated copy per worker, or in place on a shared region — the worker is
+agnostic. Backends advertise capability flags (`runs_outer_optimizer`,
+`supports_async`, `fault_tolerant`) that callers honor rather than assume. The
+coordination plane (heartbeat, `/info`, model-def download, control commands)
+stays on `DiLoCoClient` directly; only the tensor legs are pluggable. The
+wire-precision casts remain in `ParamView` (the worker still passes
+`upload_dtype` / `download_dtype` through to it).
 
 ---
 
