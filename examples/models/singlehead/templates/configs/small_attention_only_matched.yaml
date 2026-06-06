@@ -2,10 +2,10 @@
 
 [config_metadata]
     == super()
-    -- set ns.config_name = "Singlehead Small (attention-only, param-matched)"
-    -- set ns.config_description = "Attention-only single-head ALiBi transformer, no MLP, deepened to ~24M params to match the +MLP small model"
+    -- set ns.config_name = "Singlehead Small (attention-only, param-matched, wide)"
+    -- set ns.config_description = "Attention-only single-head ALiBi transformer, no MLP, widened to 960 x 11 layers (~20M non-embedding) to match the +MLP small model (cf. small_attention_only_deep for the deep counterpart)"
     -- set ns.model_name = model_name | default("singlehead_small_attn_only_matched")
-    ## Drop the MLP, then add depth instead -- a param-matched attention-only model.
+    ## Drop the MLP, then re-spend its capacity as width (cf. ..._deep for depth).
     -- set ns.use_mlp = False
 
 [model_definition]

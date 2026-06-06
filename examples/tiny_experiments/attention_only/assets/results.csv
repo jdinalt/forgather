@@ -1,6 +1,7 @@
 model,final_train_loss,final_eval_loss,best_eval_loss,avg_mfu_pct,total_tokens_m
 mlp_small,1.2321,1.1615,1.1615,11.39,258.7
 attn_only_matched_small,1.4338,1.3611,1.3611,8.09,258.7
+attn_only_deep_small,1.3179,1.2470,1.2470,3.90,258.7
 attn_only_small,1.5654,1.4935,1.4935,3.39,258.7
 mlp_4m,1.4605,1.3905,1.3905,2.81,258.7
 attn_only_4m,1.7994,1.7282,1.7282,0.98,258.7

@@ -28,12 +28,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT = os.path.dirname(HERE)
 OUTPUT_MODELS = os.path.join(PROJECT, "output_models")
 
-BLUE, ORANGE, GREEN = "#1f77b4", "#ff7f0e", "#2ca02c"
+BLUE, ORANGE, GREEN, PURPLE = "#1f77b4", "#ff7f0e", "#2ca02c", "#9467bd"
 
 # output-model dir -> (label, color, linestyle). Order controls legend / bars.
 MODELS = [
     ("mlp_small", "Attn + MLP (small, ~24M)", BLUE, "-"),
-    ("attn_only_matched_small", "Attention-only, param-matched (~28M)", GREEN, "-"),
+    ("attn_only_matched_small", "Attention-only, wide match (960x11)", GREEN, "-"),
+    ("attn_only_deep_small", "Attention-only, deep match (512x38)", PURPLE, "-"),
     ("attn_only_small", "Attention-only (small, ~8M)", ORANGE, "-"),
     ("mlp_4m", "Attn + MLP (4M, ~4.6M)", BLUE, "--"),
     ("attn_only_4m", "Attention-only (4M, ~2.8M)", ORANGE, "--"),
