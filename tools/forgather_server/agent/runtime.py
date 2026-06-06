@@ -173,16 +173,24 @@ def _build_loop(profile) -> AgentLoop:
         )
     from .providers.anthropic import AnthropicProvider
 
-    api_key = _resolve_api_key(profile)
-    model = _resolve_model(profile, api_key)
+    credential = _resolve_api_key(profile)
+    model = _resolve_model(profile, credential)
     verify = agent_tls.build_verify(
         base_url=profile.base_url,
         verify_tls=profile.verify_tls,
         ca_cert_pem=profile.ca_cert_pem,
     )
+    # A custom base_url is a local/self-hosted server (vLLM), which checks
+    # ``Authorization: Bearer`` — send the credential as auth_token. Claude
+    # (no base_url) uses the x-api-key header — send it as api_key.
+    if profile.base_url:
+        api_key, auth_token = None, credential
+    else:
+        api_key, auth_token = credential, None
     provider = AnthropicProvider(
         model=model,
         api_key=api_key,
+        auth_token=auth_token,
         base_url=profile.base_url or None,
         max_tokens=int(profile.max_tokens or profiles_store.DEFAULT_MAX_TOKENS),
         verify=verify,

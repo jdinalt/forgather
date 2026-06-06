@@ -49,13 +49,19 @@ class AnthropicProvider:
         *,
         model: str,
         api_key: Optional[str] = None,
+        auth_token: Optional[str] = None,
         base_url: Optional[str] = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         verify: Any = None,
     ) -> None:
         self.model = model
         self.max_tokens = max_tokens
+        # api_key  -> sent as the ``x-api-key`` header (real Claude).
+        # auth_token -> sent as ``Authorization: Bearer`` (what vLLM's
+        # Anthropic Messages surface checks). They are mutually exclusive;
+        # the runtime picks one based on whether base_url is a local server.
         self._api_key = api_key
+        self._auth_token = auth_token
         self._base_url = base_url
         # httpx ``verify=`` value (False / ssl.SSLContext / path / True). Only
         # injected via a custom http_client when it's a non-default posture —
@@ -73,9 +79,15 @@ class AnthropicProvider:
                     "install it (it is a declared dependency)"
                 ) from e
             kwargs: Dict[str, Any] = {}
-            # The SDK requires *some* api_key; vLLM --no-auth ignores it,
-            # so pass a placeholder rather than failing construction.
-            kwargs["api_key"] = self._api_key or "placeholder"
+            # Prefer a bearer auth_token (vLLM); else x-api-key (Claude). The
+            # SDK requires one credential even when the upstream ignores it
+            # (vLLM --no-auth), so fall back to a placeholder api_key.
+            if self._auth_token:
+                kwargs["auth_token"] = self._auth_token
+            elif self._api_key:
+                kwargs["api_key"] = self._api_key
+            else:
+                kwargs["api_key"] = "placeholder"
             if self._base_url:
                 kwargs["base_url"] = self._base_url
             # Custom TLS posture (self-signed / imported cert) → give the SDK

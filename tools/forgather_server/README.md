@@ -2992,9 +2992,16 @@ provider-agnostic; an OpenAI-style adapter can be added later for
 non-Anthropic-API providers.
 
 For a local vLLM model, launch vLLM with
-`--enable-auto-tool-choice --tool-call-parser <parser>` (e.g. `hermes`
-for Qwen3) and a `--served-model-name` alias (the Messages API rejects
-model names containing `/`).
+`--enable-auto-tool-choice --tool-call-parser <parser>` (e.g.
+`qwen3_coder` for Qwen3.6, `hermes` for older Qwen3) and a
+`--served-model-name` alias (the Messages API rejects model names
+containing `/`).
+
+The credential is sent as the right header automatically: a profile with
+a `base_url` (a local vLLM server) sends `Authorization: Bearer <token>`
+(what vLLM checks), while Claude (no `base_url`) uses the `x-api-key`
+header. So a vLLM bearer goes in the same `api_key` / `api_key_env`
+field.
 
 ### Profiles (multiple agents, hot-swappable)
 
