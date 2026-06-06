@@ -2978,8 +2978,8 @@ file.
 
 An in-process AI agent that helps inspect projects/configs, answer
 questions about Forgather (with doc citations), and author configs and
-templates. **Disabled until configured** — set an `agent:` block in
-`server_config.yaml`.
+templates. **Disabled until a profile is configured** — add one in the
+webui (the agent sidebar's ⚙ button) or seed one from `server_config.yaml`.
 
 ### Provider
 
@@ -2991,21 +2991,61 @@ model (e.g. Qwen3) through the same code path as Claude. A thin internal
 provider-agnostic; an OpenAI-style adapter can be added later for
 non-Anthropic-API providers.
 
-```yaml
-agent:
-  provider: anthropic        # only adapter today
-  model: claude-sonnet-4-6   # or a vLLM --served-model-name alias
-  base_url: null             # e.g. http://kitt:8000 for local vLLM; null = Claude
-  api_key_env: ANTHROPIC_API_KEY   # env var with the key (or vLLM bearer)
-  # api_key: null            # explicit key/bearer (overrides api_key_env)
-  # max_tokens: 4096
-  # max_iterations: 12       # tool-use loop cap per user message
-```
-
 For a local vLLM model, launch vLLM with
 `--enable-auto-tool-choice --tool-call-parser <parser>` (e.g. `hermes`
 for Qwen3) and a `--served-model-name` alias (the Messages API rejects
 model names containing `/`).
+
+### Profiles (multiple agents, hot-swappable)
+
+A **profile** is one named way to reach a model (provider, model,
+base_url, credentials, TLS posture). Manage several from the webui (agent
+sidebar ⚙ → "Agent profiles") and switch the active one from the header
+dropdown — changes take effect on the **next message, no server restart**
+(the runtime rebuilds its loop whenever the profile store's revision
+changes). Profiles persist at `<config>/server/agent_profiles.json` (mode
+0600 — the file holds API keys / bearer tokens).
+
+The `server_config.yaml` `agent:` block is only a **bootstrap**: on first
+run, if no profiles exist, one is seeded from it. Edit profiles in the UI
+thereafter.
+
+```yaml
+agent:
+  provider: anthropic        # only adapter today
+  model: claude-sonnet-4-6   # or a vLLM --served-model-name alias; blank = auto
+  base_url: null             # e.g. https://kitt:8000 for local vLLM; null = Claude
+  api_key_env: ANTHROPIC_API_KEY   # env var with the key (or vLLM bearer)
+  # api_key: null            # explicit key/bearer (overrides api_key_env)
+  # verify_tls: true         # see TLS below
+  # max_tokens: 4096
+  # max_iterations: 12       # tool-use loop cap per user message
+```
+
+### TLS for local (self-signed) servers
+
+A vLLM box on a LAN typically serves TLS with a self-signed cert that the
+system CA check rejects. Two per-profile options (same model as the
+inference registry):
+
+- **Verify TLS off** — accept any certificate. One toggle, but vulnerable
+  to a man-in-the-middle on the path. Fine for a trusted LAN.
+- **Import the certificate** (recommended) — the editor's "Import
+  certificate…" button fetches the server's cert (trust-on-first-use),
+  shows its SHA-256 fingerprint for you to confirm, and stores the PEM in
+  the profile. The agent then verifies against exactly that cert, with
+  hostname checking off (the chain check is the real boundary on a LAN —
+  same posture as forgather's own private-CA peers).
+
+### Model selection (weakly bound)
+
+The model is only weakly bound to a profile. The editor's "Load models"
+button queries the server's live list (Claude via the SDK; vLLM/OpenAI via
+`/v1/models`) and offers a picker. Your choice is remembered; if a saved
+model no longer exists on the server, the first available is auto-selected.
+Leaving the model blank means "auto — first available", resolved at
+activation time. This suits vLLM, which serves one model at a time, so
+swapping the model on the box needs no profile edit.
 
 ### Interaction model — propose → approve → commit
 
@@ -3118,6 +3158,10 @@ tools/forgather_server/
 │                              #   CUDA_VISIBLE_DEVICES allow-list
 ├── gpu_policy.py              # Runtime per-GPU policy (disabled,
 │                              #   min_priority) — persisted
+├── agent_profiles_store.py    # Saved agent connection profiles + active
+│                              #   selection (JSON, 0600); hot-swap revision
+├── agent_tls.py               # Per-profile TLS verify, cert import (TOFU),
+│                              #   model listing (Claude SDK / vLLM /v1/models)
 ├── agent/                     # In-process AI agent (right-sidebar assistant)
 │   ├── providers/
 │   │   ├── base.py            # ChatProvider seam + normalized events
@@ -3323,6 +3367,13 @@ agent event), consumed by the webui with `fetch` + `ReadableStream` (not
 | `POST /api/agent/approve` `{action_id}`           | Approve a pending action; runs the stored commit and SSE-streams the resumed turn |
 | `POST /api/agent/reject` `{action_id}`            | Reject a pending action; SSE-streams the resumed turn |
 | `GET /api/agent/sessions/{id}`                    | Conversation history (`{messages, awaiting_approval, …}`) |
+| `GET /api/agent/profiles`                         | List saved profiles + `active_id` (credentials redacted to `has_api_key` / `has_imported_cert`) |
+| `POST /api/agent/profiles` `{label, provider?, model?, base_url?, api_key?, api_key_env?, verify_tls?, ca_cert_pem?, …}` | Create a profile |
+| `PUT /api/agent/profiles/{id}` `{…same fields…}`  | Update a profile (omitted fields unchanged; empty `api_key`/`ca_cert_pem` clears) |
+| `DELETE /api/agent/profiles/{id}`                 | Remove a profile |
+| `POST /api/agent/profiles/{id}/activate`          | Switch the active profile (hot-swap; no restart) |
+| `POST /api/agent/models` `{profile_id? \| base_url, api_key?, verify_tls?, ca_cert_pem?}` | List available models (Claude SDK, or vLLM `/v1/models`) for the model picker |
+| `POST /api/agent/fetch-cert` `{base_url}`         | Fetch the server's TLS cert (`{pem, sha256, …}`) for the import flow |
 
 ### Config inspection
 

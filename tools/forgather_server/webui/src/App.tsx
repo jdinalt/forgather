@@ -41,6 +41,7 @@ import { SearchRootsPanel } from "./components/SearchRootsPanel";
 import { ShutdownModal } from "./components/ShutdownModal";
 import { AgentPanel } from "./components/AgentPanel";
 import { AgentSidebarPanel } from "./components/AgentSidebarPanel";
+import { AgentSettingsModal } from "./components/AgentSettingsModal";
 import { useAgent } from "./useAgent";
 import { useFilesState } from "./files-state";
 
@@ -250,6 +251,7 @@ export default function App() {
   // toggles it (distinct from the left sidebar's Ctrl+B).
   const agent = useAgent();
   const [agentSidebarCollapsed, setAgentSidebarCollapsed] = useState(true);
+  const [agentSettingsOpen, setAgentSettingsOpen] = useState(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -1545,7 +1547,7 @@ export default function App() {
           className="view-panel"
           style={view === "agent" ? undefined : { display: "none" }}
         >
-          <AgentPanel agent={agent} />
+          <AgentPanel agent={agent} onOpenSettings={() => setAgentSettingsOpen(true)} />
         </div>
       </div>
 
@@ -1565,10 +1567,21 @@ export default function App() {
           <AgentSidebarPanel
             agent={agent}
             onOpenFull={() => setView("agent")}
+            onOpenSettings={() => setAgentSettingsOpen(true)}
             onCollapse={() => setAgentSidebarCollapsed(true)}
           />
         )}
       </aside>
+
+      {agentSettingsOpen && (
+        <AgentSettingsModal
+          onClose={() => setAgentSettingsOpen(false)}
+          onChanged={() => {
+            agent.refreshStatus();
+            agent.refreshProfiles();
+          }}
+        />
+      )}
 
       {startServerOpen && (
         <InferenceModal

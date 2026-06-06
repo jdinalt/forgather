@@ -23,12 +23,15 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import AsyncIterator, Dict, Optional
+import os
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from .. import agent_profiles_store as profiles_store
+from .. import agent_tls
 from ..agent import runtime, session as agent_session
 
 log = logging.getLogger("forgather_server.agent")
@@ -92,6 +95,176 @@ async def agent_reject(req: DecisionRequest):
         raise HTTPException(status_code=503, detail="agent is not configured")
     loop = runtime.get_loop()
     return await _stream(loop.apply_decision(req.action_id, approve=False))
+
+
+# ---- profiles ------------------------------------------------------------
+
+
+class ProfileModel(BaseModel):
+    """Profile as returned to the webui — credentials redacted to flags."""
+
+    id: str
+    label: str
+    provider: str
+    model: str
+    base_url: str
+    api_key_env: str
+    verify_tls: bool
+    has_api_key: bool
+    has_imported_cert: bool
+    max_tokens: int
+    max_iterations: int
+
+
+class ProfileWrite(BaseModel):
+    label: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    base_url: Optional[str] = None
+    # Empty string clears the stored key/cert; omitted (None) leaves it.
+    api_key: Optional[str] = None
+    api_key_env: Optional[str] = None
+    verify_tls: Optional[bool] = None
+    ca_cert_pem: Optional[str] = None
+    max_tokens: Optional[int] = None
+    max_iterations: Optional[int] = None
+
+
+def _to_model(p) -> ProfileModel:
+    return ProfileModel(
+        id=p.id,
+        label=p.label,
+        provider=p.provider,
+        model=p.model,
+        base_url=p.base_url,
+        api_key_env=p.api_key_env,
+        verify_tls=p.verify_tls,
+        has_api_key=bool(p.api_key),
+        has_imported_cert=bool(p.ca_cert_pem),
+        max_tokens=p.max_tokens,
+        max_iterations=p.max_iterations,
+    )
+
+
+@router.get("/agent/profiles")
+def list_profiles():
+    return {
+        "active_id": profiles_store.get_active_id(),
+        "profiles": [_to_model(p) for p in profiles_store.list_profiles()],
+    }
+
+
+@router.post("/agent/profiles", response_model=ProfileModel)
+def create_profile(req: ProfileWrite):
+    kwargs = {k: v for k, v in req.dict().items() if v is not None}
+    if not kwargs.get("label"):
+        raise HTTPException(status_code=400, detail="label is required")
+    try:
+        p = profiles_store.add_profile(**kwargs)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _to_model(p)
+
+
+@router.put("/agent/profiles/{profile_id}", response_model=ProfileModel)
+def update_profile(profile_id: str, req: ProfileWrite):
+    kwargs = {k: v for k, v in req.dict().items() if v is not None}
+    try:
+        p = profiles_store.update_profile(profile_id, **kwargs)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if p is None:
+        raise HTTPException(status_code=404, detail=f"no such profile: {profile_id}")
+    return _to_model(p)
+
+
+@router.delete("/agent/profiles/{profile_id}")
+def delete_profile(profile_id: str):
+    removed = profiles_store.remove_profile(profile_id)
+    if removed is None:
+        raise HTTPException(status_code=404, detail=f"no such profile: {profile_id}")
+    return {"removed": removed.id, "active_id": profiles_store.get_active_id()}
+
+
+@router.post("/agent/profiles/{profile_id}/activate")
+def activate_profile(profile_id: str):
+    if not profiles_store.set_active(profile_id):
+        raise HTTPException(status_code=404, detail=f"no such profile: {profile_id}")
+    return {"active_id": profile_id}
+
+
+# ---- model listing + cert import -----------------------------------------
+
+
+class ModelsRequest(BaseModel):
+    """Connection to query for available models.
+
+    For an unsaved profile the editor sends the fields directly. For a saved
+    profile it can send ``profile_id`` and omit the credentials — the stored
+    key / TLS settings fill in.
+    """
+
+    profile_id: Optional[str] = None
+    provider: Optional[str] = None
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    api_key_env: Optional[str] = None
+    verify_tls: Optional[bool] = None
+    ca_cert_pem: Optional[str] = None
+
+
+@router.post("/agent/models")
+def list_agent_models(req: ModelsRequest):
+    saved = profiles_store.get_profile(req.profile_id) if req.profile_id else None
+
+    def pick(field: str, default: Any):
+        v = getattr(req, field)
+        if v is not None:
+            return v
+        if saved is not None:
+            return getattr(saved, field)
+        return default
+
+    provider = pick("provider", "anthropic")
+    base_url = pick("base_url", "")
+    verify_tls = pick("verify_tls", True)
+    ca_cert_pem = pick("ca_cert_pem", "")
+
+    # Resolve the key: explicit > saved profile's key > named env var.
+    api_key = req.api_key
+    if not api_key and saved is not None:
+        api_key = saved.api_key or os.environ.get(saved.api_key_env or "")
+    if not api_key and req.api_key_env:
+        api_key = os.environ.get(req.api_key_env)
+
+    try:
+        models = agent_tls.list_models(
+            provider=provider,
+            base_url=base_url or "",
+            api_key=api_key or "",
+            verify_tls=bool(verify_tls),
+            ca_cert_pem=ca_cert_pem or "",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
+    return {"models": models}
+
+
+class FetchCertRequest(BaseModel):
+    base_url: str
+
+
+@router.post("/agent/fetch-cert")
+def fetch_cert(req: FetchCertRequest):
+    """Retrieve the server's TLS certificate (PEM + fingerprint) for review.
+
+    Trust-on-first-use import flow: the webui shows the fingerprint, and on
+    confirmation saves the returned ``pem`` into the profile's ca_cert_pem.
+    """
+    try:
+        return agent_tls.fetch_server_cert(req.base_url)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
 
 
 @router.get("/agent/sessions/{session_id}")

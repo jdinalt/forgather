@@ -12,8 +12,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActionCard,
   AgentEvent,
+  AgentProfile,
   AgentStatus,
+  activateProfile,
   getAgentStatus,
+  getProfiles,
   streamDecision,
   streamMessage,
 } from "./agent-client";
@@ -51,11 +54,15 @@ export interface AgentController {
   awaiting: boolean;
   sessionId: string | null;
   pendingActions: ActionCard[];
+  profiles: AgentProfile[];
+  activeProfileId: string | null;
   send: (message: string) => void;
   decide: (actionId: string, approve: boolean) => void;
   stop: () => void;
   reset: () => void;
   refreshStatus: () => void;
+  refreshProfiles: () => void;
+  activate: (profileId: string) => void;
 }
 
 export function useAgent(): AgentController {
@@ -64,6 +71,8 @@ export function useAgent(): AgentController {
   const [busy, setBusy] = useState(false);
   const [awaiting, setAwaiting] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [profiles, setProfiles] = useState<AgentProfile[]>([]);
+  const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
 
   const sessionIdRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -77,9 +86,34 @@ export function useAgent(): AgentController {
       .catch(() => setStatus({ enabled: false, provider: null, model: null, base_url: null }));
   }, []);
 
+  const refreshProfiles = useCallback(() => {
+    getProfiles()
+      .then((r) => {
+        setProfiles(r.profiles);
+        setActiveProfileId(r.active_id);
+      })
+      .catch(() => {
+        setProfiles([]);
+        setActiveProfileId(null);
+      });
+  }, []);
+
+  const activate = useCallback(
+    (profileId: string) => {
+      activateProfile(profileId)
+        .then(() => {
+          refreshStatus();
+          refreshProfiles();
+        })
+        .catch(() => {});
+    },
+    [refreshProfiles, refreshStatus],
+  );
+
   useEffect(() => {
     refreshStatus();
-  }, [refreshStatus]);
+    refreshProfiles();
+  }, [refreshStatus, refreshProfiles]);
 
   const addItem = useCallback((partial: AgentItemInput): string => {
     const id = nextId();
@@ -249,10 +283,14 @@ export function useAgent(): AgentController {
     awaiting,
     sessionId,
     pendingActions,
+    profiles,
+    activeProfileId,
     send,
     decide,
     stop,
     reset,
     refreshStatus,
+    refreshProfiles,
+    activate,
   };
 }

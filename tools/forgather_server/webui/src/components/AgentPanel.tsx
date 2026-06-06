@@ -5,22 +5,45 @@ import { AgentController } from "../useAgent";
 import { AgentComposer } from "./AgentComposer";
 import { AgentThread } from "./AgentThread";
 
-export function AgentPanel({ agent }: { agent: AgentController }) {
+export function AgentPanel({
+  agent,
+  onOpenSettings,
+}: {
+  agent: AgentController;
+  onOpenSettings: () => void;
+}) {
   return (
     <div className="agent-full">
       <header className="agent-full-header">
         <span className="agent-full-title">Agent</span>
         {agent.status?.enabled ? (
           <span className="agent-model-badge" title={agent.status.base_url || "Claude"}>
-            {agent.status.provider}/{agent.status.model}
+            {agent.status.provider}/{agent.status.model ?? "(auto)"}
           </span>
         ) : (
           <span className="agent-disabled-note muted">
-            Not configured — set <code>agent.model</code> in the server config.
+            No profile configured — open profiles to add one.
           </span>
+        )}
+        {agent.profiles.length > 0 && (
+          <select
+            className="agent-profile-switch"
+            value={agent.activeProfileId ?? ""}
+            onChange={(e) => agent.activate(e.target.value)}
+            title="Active profile"
+          >
+            {agent.profiles.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
         )}
         <span className="agent-full-spacer" />
         {agent.awaiting && <span className="agent-awaiting-badge">awaiting approval</span>}
+        <button className="btn-secondary" onClick={onOpenSettings}>
+          Profiles…
+        </button>
         <button className="btn-secondary" onClick={agent.reset}>
           New conversation
         </button>

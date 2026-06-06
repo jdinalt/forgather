@@ -51,11 +51,16 @@ class AnthropicProvider:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        verify: Any = None,
     ) -> None:
         self.model = model
         self.max_tokens = max_tokens
         self._api_key = api_key
         self._base_url = base_url
+        # httpx ``verify=`` value (False / ssl.SSLContext / path / True). Only
+        # injected via a custom http_client when it's a non-default posture —
+        # see agent_tls.build_verify. None/True keeps the SDK's own client.
+        self._verify = verify
         self._client = None  # lazy
 
     def _ensure_client(self):
@@ -73,6 +78,13 @@ class AnthropicProvider:
             kwargs["api_key"] = self._api_key or "placeholder"
             if self._base_url:
                 kwargs["base_url"] = self._base_url
+            # Custom TLS posture (self-signed / imported cert) → give the SDK
+            # an httpx client built with that verify value. Skip for the
+            # default (None/True) so the SDK keeps its own tuned client.
+            if self._verify is not None and self._verify is not True:
+                import httpx
+
+                kwargs["http_client"] = httpx.AsyncClient(verify=self._verify)
             self._client = AsyncAnthropic(**kwargs)
         return self._client
 

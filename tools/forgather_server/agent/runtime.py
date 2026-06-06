@@ -1,10 +1,15 @@
-"""Agent runtime: config injection, the global tool registry, and factories.
+"""Agent runtime: profile-driven loop construction with runtime hot-swap.
 
-``server.py`` calls :func:`configure` at startup with the ``agent:`` block
-from ``server_config`` (which ``args_defaults`` does not touch — it only
-normalizes ``args:``). Everything downstream reads config through here, the
-same module-global injection idiom ``server.py`` uses for
-``DOCS_LANDING_OVERRIDE`` and ``meta_templates.configure_roots``.
+The active connection profile lives in :mod:`agent_profiles_store` (managed
+by the webui). ``get_loop`` builds an ``AgentLoop`` for the active profile
+and caches it keyed by ``(active_id, store_revision)`` — so creating,
+editing, or switching a profile takes effect on the *next* message with no
+server restart (the store bumps its revision on every write, and the route
+calls ``get_loop`` per request).
+
+``configure`` runs at startup with the server-config ``agent:`` block and
+only *seeds* a profile when the store is empty — the store is the source of
+truth thereafter.
 
 The tool registry is built once (read-only + authoring tools) and is the
 single source of truth a future ``forgather mcp`` server would re-export.
@@ -14,21 +19,34 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
+from .. import agent_profiles_store as profiles_store
+from .. import agent_tls
 from .loop import AgentLoop
 from .registry import ToolRegistry
 from . import tools_authoring, tools_readonly
 
 log = logging.getLogger("forgather_server.agent.runtime")
 
-# Populated by configure(). Empty dict => agent disabled (no provider config).
-_config: Dict[str, Any] = {}
 _registry: Optional[ToolRegistry] = None
 _loop: Optional[AgentLoop] = None
+_loop_key: Optional[Tuple[Optional[str], int]] = None
 
-DEFAULT_PROVIDER = "anthropic"
-DEFAULT_API_KEY_ENV = "ANTHROPIC_API_KEY"
+# Keys of the server-config ``agent:`` block we accept when seeding a
+# bootstrap profile (everything an AgentProfile understands except id).
+_SEED_KEYS = {
+    "provider",
+    "model",
+    "base_url",
+    "api_key",
+    "api_key_env",
+    "verify_tls",
+    "ca_cert_pem",
+    "max_tokens",
+    "max_iterations",
+    "label",
+}
 
 SYSTEM_PROMPT = """\
 You are the Forgather assistant, embedded in the Forgather server web UI.
@@ -56,34 +74,53 @@ Operating rules:
 
 
 def configure(cfg: Optional[Dict[str, Any]]) -> None:
-    """Install the ``agent:`` config block. Idempotent; resets factories."""
-    global _config, _registry, _loop
-    _config = dict(cfg or {})
-    _registry = None
+    """Seed a bootstrap profile from the server-config ``agent:`` block.
+
+    Only acts when the profile store is empty (first run). Resets the cached
+    loop so a fresh process picks up the current active profile.
+    """
+    global _loop, _loop_key
     _loop = None
-    if is_enabled():
+    _loop_key = None
+    if cfg:
+        seed = {k: v for k, v in cfg.items() if k in _SEED_KEYS}
+        try:
+            created = profiles_store.seed_if_empty(seed)
+            if created:
+                log.info("seeded agent profile %s from server config", created.id)
+        except Exception:
+            log.exception("failed to seed agent profile from server config")
+    active = profiles_store.get_active()
+    if active:
         log.info(
-            "agent enabled: provider=%s model=%s base_url=%s",
-            _config.get("provider", DEFAULT_PROVIDER),
-            _config.get("model"),
-            _config.get("base_url") or "(default)",
+            "agent enabled: active profile %s (provider=%s model=%s base_url=%s)",
+            active.id,
+            active.provider,
+            active.model or "(auto)",
+            active.base_url or "(default)",
         )
     else:
-        log.info("agent disabled (no agent.model configured)")
+        log.info("agent disabled (no profiles configured)")
 
 
 def is_enabled() -> bool:
-    """The agent is enabled once a model is configured."""
-    return bool(_config.get("model"))
+    return profiles_store.get_active() is not None
 
 
 def status() -> Dict[str, Any]:
-    """Non-secret status for the webui (never includes the API key)."""
+    """Non-secret status for the webui (never includes credentials)."""
+    active = profiles_store.get_active()
+    if active is None:
+        return {"enabled": False, "active_id": None}
     return {
-        "enabled": is_enabled(),
-        "provider": _config.get("provider", DEFAULT_PROVIDER) if is_enabled() else None,
-        "model": _config.get("model") if is_enabled() else None,
-        "base_url": _config.get("base_url") if is_enabled() else None,
+        "enabled": True,
+        "active_id": active.id,
+        "label": active.label,
+        "provider": active.provider,
+        "model": active.model or None,
+        "base_url": active.base_url or None,
+        "verify_tls": active.verify_tls,
+        "has_imported_cert": bool(active.ca_cert_pem),
     }
 
 
@@ -97,44 +134,75 @@ def get_registry() -> ToolRegistry:
     return _registry
 
 
-def _resolve_api_key() -> Optional[str]:
-    # Explicit key wins (handy for local vLLM bearer); otherwise read the
-    # named env var (defaults to ANTHROPIC_API_KEY for Claude).
-    if _config.get("api_key"):
-        return str(_config["api_key"])
-    env_name = _config.get("api_key_env", DEFAULT_API_KEY_ENV)
+def _resolve_api_key(profile) -> Optional[str]:
+    if profile.api_key:
+        return profile.api_key
+    env_name = profile.api_key_env or profiles_store.DEFAULT_API_KEY_ENV
     return os.environ.get(env_name)
 
 
-def _build_provider():
-    provider = _config.get("provider", DEFAULT_PROVIDER)
-    if provider != "anthropic":
+def _resolve_model(profile, api_key: Optional[str]) -> str:
+    """Concrete model name for the provider.
+
+    Honors the profile's stored model; if it is empty ("weak binding"),
+    queries the server's model list and uses the first available — vLLM
+    serves one model, so this auto-tracks a swap on the box.
+    """
+    if profile.model:
+        return profile.model
+    models = agent_tls.list_models(
+        provider=profile.provider,
+        base_url=profile.base_url,
+        api_key=api_key or "",
+        verify_tls=profile.verify_tls,
+        ca_cert_pem=profile.ca_cert_pem,
+    )
+    if not models:
         raise RuntimeError(
-            f"unsupported agent provider {provider!r}; only 'anthropic' is "
-            "implemented (Claude or a local vLLM model via base_url)"
+            "no model is set on this profile and the server returned no "
+            "models — set a model on the agent profile"
+        )
+    return models[0]
+
+
+def _build_loop(profile) -> AgentLoop:
+    if profile.provider != "anthropic":
+        raise RuntimeError(
+            f"unsupported agent provider {profile.provider!r}; only 'anthropic' "
+            "is implemented (Claude or a local vLLM model via base_url)"
         )
     from .providers.anthropic import AnthropicProvider
 
-    kwargs: Dict[str, Any] = {
-        "model": _config["model"],
-        "api_key": _resolve_api_key(),
-        "base_url": _config.get("base_url"),
-    }
-    if _config.get("max_tokens"):
-        kwargs["max_tokens"] = int(_config["max_tokens"])
-    return AnthropicProvider(**kwargs)
+    api_key = _resolve_api_key(profile)
+    model = _resolve_model(profile, api_key)
+    verify = agent_tls.build_verify(
+        base_url=profile.base_url,
+        verify_tls=profile.verify_tls,
+        ca_cert_pem=profile.ca_cert_pem,
+    )
+    provider = AnthropicProvider(
+        model=model,
+        api_key=api_key,
+        base_url=profile.base_url or None,
+        max_tokens=int(profile.max_tokens or profiles_store.DEFAULT_MAX_TOKENS),
+        verify=verify,
+    )
+    return AgentLoop(
+        provider,
+        get_registry(),
+        system=SYSTEM_PROMPT,
+        max_iterations=int(profile.max_iterations or profiles_store.DEFAULT_MAX_ITERATIONS),
+    )
 
 
 def get_loop() -> AgentLoop:
-    """Return the shared loop. Raises if the agent is not configured."""
-    global _loop
-    if not is_enabled():
-        raise RuntimeError("agent is not configured (set agent.model in server config)")
-    if _loop is None:
-        _loop = AgentLoop(
-            _build_provider(),
-            get_registry(),
-            system=_config.get("system_prompt") or SYSTEM_PROMPT,
-            max_iterations=int(_config.get("max_iterations", 12)),
-        )
+    """Return the loop for the active profile, rebuilding on any change."""
+    global _loop, _loop_key
+    active = profiles_store.get_active()
+    if active is None:
+        raise RuntimeError("no agent profile is configured")
+    key = (active.id, profiles_store.revision())
+    if _loop is None or _loop_key != key:
+        _loop = _build_loop(active)
+        _loop_key = key
     return _loop

@@ -9,20 +9,39 @@ import { AgentThread } from "./AgentThread";
 interface Props {
   agent: AgentController;
   onOpenFull: () => void;
+  onOpenSettings: () => void;
   onCollapse: () => void;
 }
 
-export function AgentSidebarPanel({ agent, onOpenFull, onCollapse }: Props) {
+export function AgentSidebarPanel({ agent, onOpenFull, onOpenSettings, onCollapse }: Props) {
   return (
     <div className="agent-sidebar-content">
       <header className="agent-sidebar-header">
         <span className="agent-sidebar-title">Agent</span>
-        {agent.status?.model && (
-          <span className="agent-model-badge" title={agent.status.base_url || "Claude"}>
-            {agent.status.model}
-          </span>
+        {agent.profiles.length > 0 ? (
+          <select
+            className="agent-profile-switch"
+            value={agent.activeProfileId ?? ""}
+            onChange={(e) => agent.activate(e.target.value)}
+            title="Active profile"
+          >
+            {agent.profiles.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        ) : (
+          agent.status?.model && (
+            <span className="agent-model-badge" title={agent.status.base_url || "Claude"}>
+              {agent.status.model}
+            </span>
+          )
         )}
         <span className="agent-sidebar-spacer" />
+        <button className="btn-icon" title="Agent profiles…" onClick={onOpenSettings}>
+          ⚙
+        </button>
         <button className="btn-icon" title="Open full Agent view" onClick={onOpenFull}>
           ⤢
         </button>
