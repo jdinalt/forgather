@@ -1,0 +1,32 @@
+-- extends "projects/diloco_lowprec.yaml"
+
+## bf16-weights variant (DiLoCo x2 worker). Overrides ``default_dtype`` to
+## ``bfloat16`` so the model is constructed and trained in true bf16 — at which
+## point Forgather AdamW's stochastic-rounding write-back engages (the whole
+## point of using that optimizer here). Mirrors
+## ``examples/pretrain/small-llm:bf16.yaml``.
+##
+## LR note: bf16+SR training wants a HIGHER learning rate than AMP. At a small
+## LR the SR quantization penalty dominates and updates stagnate (sub-ULP
+## updates round-trip to no-ops); a larger LR keeps updates large relative to
+## the bf16 ULP and lets the quantization error be absorbed by Adam's
+## convergence bound. We follow the same prescription as small-llm:bf16.yaml —
+## 4.0e-4 vs the inherited 1.5e-4 AMP LR (~2.7x, within the paper's 2-4x range).
+## See Ozkara, Yu & Park (2025), "Stochastic Rounding for LLM Training: Theory
+## and Practice", arXiv:2502.20566, Thm. 1 / Cor. 1 / Table 2.
+##
+## Wire precision is set on the diloco server. Used for experiments E4/E5
+## (bf16 weights + bf16 download, with/without download SR).
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DiLoCo Low-Prec: bf16 weights"
+    -- set ns.config_description = "DiLoCo x2, true bf16 weights, Forgather AdamW + stochastic rounding. Wire precision set on the diloco server."
+    -- set ns.log_name = "diloco_lowprec_bf16"
+    ## https://arxiv.org/pdf/2502.20566
+    -- set ns.base_lr = lr | default(4.0e-4)
+
+[trainer_args]
+    == super()
+    # **bf16**: construct + train the model in bfloat16; engages AdamW SR write-back.
+    default_dtype: "bfloat16"

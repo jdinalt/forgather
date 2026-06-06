@@ -120,6 +120,17 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 - **[Tokenizers](examples/tokenizers/README.md)** - Tokenizer definition examples
 - **[Models](examples/models/README.md)** - Example model definitions
 
+## Design Notes
+
+Subsystem design and architecture documents (audience: contributors and maintainers).
+
+- **[DiLoCo Architecture & Maintainer Guide](trainers/diloco-architecture.md)** - DiLoCo internals: wire protocol, server/worker classes, checkpoint + meta-init, threading model
+- **[DiLoCo: Work-Unit Dispatch](design/diloco-work-unit-dispatch.md)** - How workers shard the training set via server-issued row ranges
+- **[DiLoCo + Pipeline Parallel](design/diloco-pipeline-groups.md)** - Per-rank DiLoCo workers with server-aware pipeline groups
+- **[DiLoCo: Security Model](design/diloco-security.md)** - Auth, mTLS, the endpoint trust split, audit log
+
+(The user-facing DiLoCo reference, with a map of all DiLoCo docs, is [trainers/diloco.md](trainers/diloco.md).)
+
 ## Development
 
 - **[API Reference](api/index.md)** - Auto-generated Python API documentation
@@ -143,6 +154,7 @@ docs/
 ├── configuration/       # Template and configuration system
 ├── project-templates/   # Reusable project templates (LM Training, Auto LR)
 ├── trainers/            # Training system (PP, DiLoCo, control, metrics, FP8)
+├── design/              # Subsystem design & architecture notes
 ├── checkpointing/       # Distributed checkpoint system
 ├── datasets/            # Data loading, packing, and preprocessing
 ├── inference/           # vLLM integration guide

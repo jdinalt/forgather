@@ -744,6 +744,14 @@ def _server_job_params(args):
         "min_workers": args.min_workers,
         "sync_every": args.sync_every,
         "num_fragments": args.num_fragments,
+        # Wire precision (issue #130). Threaded as the four explicit
+        # knobs; the deprecated ``bf16_comm`` is included only when
+        # the operator passed ``--no-bf16`` so the spawned argv carries
+        # an explicit signal.
+        "upload_dtype": getattr(args, "upload_dtype", None),
+        "upload_sr": getattr(args, "upload_sr", False),
+        "download_dtype": getattr(args, "download_dtype", "fp32"),
+        "download_sr": getattr(args, "download_sr", False),
         "bf16_comm": args.bf16_comm,
         "no_auth": getattr(args, "no_auth", False),
         "bulk_cleartext": getattr(args, "bulk_cleartext", False),

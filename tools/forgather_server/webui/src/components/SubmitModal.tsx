@@ -1389,11 +1389,31 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
                     </strong>
                   </span>
                   <span>
-                    bf16_comm:{" "}
+                    {/* Upload leg (worker → server pseudo-grads). Prefer
+                        the four-knob format when the server advertises
+                        it; fall back to the legacy ``bf16_comm`` so old
+                        servers still render. */}
+                    upload:{" "}
                     <strong>
-                      {info.expected_client_settings?.bf16_comm === false
-                        ? "off"
-                        : "on"}
+                      {(() => {
+                        const ecs = info.expected_client_settings;
+                        const dt =
+                          ecs?.upload_dtype ??
+                          (ecs?.bf16_comm === false ? "fp32" : "bf16");
+                        const sr = ecs?.upload_sr ? " + SR" : "";
+                        return `${dt}${sr}`;
+                      })()}
+                    </strong>
+                  </span>
+                  <span>
+                    download:{" "}
+                    <strong>
+                      {(() => {
+                        const ecs = info.expected_client_settings;
+                        const dt = ecs?.download_dtype ?? "fp32";
+                        const sr = ecs?.download_sr ? " + SR" : "";
+                        return `${dt}${sr}`;
+                      })()}
                     </strong>
                   </span>
                 </div>

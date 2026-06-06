@@ -102,7 +102,7 @@ def test_simple_view_compute_pseudograds_is_difference():
         for _name, p in model.named_parameters(remove_duplicate=False):
             p.data.add_(delta)
 
-    pg = view.compute_pseudograds(snap, bf16=False)
+    pg = view.compute_pseudograds(snap, upload_dtype="fp32")
     for name, t in pg.items():
         assert t.shape == snap[name].shape
         # snap - current = -delta everywhere
@@ -113,7 +113,7 @@ def test_simple_view_compute_pseudograds_bf16():
     model = _tiny_model()
     view = SimpleModelParamView(model)
     snap = view.snapshot()
-    pg = view.compute_pseudograds(snap, bf16=True)
+    pg = view.compute_pseudograds(snap, upload_dtype="bf16")
     for t in pg.values():
         assert t.dtype == torch.bfloat16
 
@@ -203,7 +203,7 @@ def test_pipeline_view_compute_pseudograds_only_slice():
     stages = _split_into_stages(full, 3)
     view_mid = PipelineParamView([stages[1]])
     snap = view_mid.snapshot()
-    pg = view_mid.compute_pseudograds(snap, bf16=False)
+    pg = view_mid.compute_pseudograds(snap, upload_dtype="fp32")
 
     assert set(pg.keys()) == set(snap.keys())
 

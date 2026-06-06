@@ -153,7 +153,7 @@ class TestFragmentManager(unittest.TestCase):
 
         # Compute pseudo-grads for fragment 0 only
         pseudograds = fm.compute_fragment_pseudogradients(
-            0, global_params, model, bf16_comm=False
+            0, global_params, model, upload_dtype="fp32"
         )
 
         # Only fragment 0's params should be present

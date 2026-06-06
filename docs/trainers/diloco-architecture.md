@@ -241,6 +241,17 @@ All communication uses HTTP/1.1 over TCP. The server runs a
 | GET | `/info` | (none) | JSON: negotiation facts + `model_hash` |
 | GET | `/model_def` | (none) | tar: model definition (config + code + tokenizer, no weights); `X-Forgather-Model-Hash` header |
 
+**Wire precision.** Four server-authoritative knobs — `upload_dtype`,
+`upload_sr`, `download_dtype`, `download_sr` — are advertised in `/info` and
+adopted by every worker. The **upload** cast happens worker-side in
+`compute_pseudograds` (via `_cast_for_upload`) before `/submit_pseudograd`; the
+**download** cast happens server-side via `_cast_for_download` on the params
+returned by `/register`, `/submit_pseudograd`, and `/submit_fragment_pseudograd`.
+Each cast optionally uses stochastic rounding (`fp32_to_bf16_stochastic_round`).
+The server's master parameters and outer-optimizer state always stay fp32;
+incoming tensors are accumulated in fp32 regardless of wire dtype. The legacy
+`bf16_comm` boolean is retained as a deprecated alias for `upload_dtype`.
+
 `/known_workers` returns every `worker_id` the server has ever seen — the
 roster `self._known_workers`, persisted with the server's checkpoints (see
 "Server state persistence" below). Each entry carries the worker's
@@ -980,13 +991,16 @@ environment variables and spawns a subprocess running `forgather train`:
 
 ```
 DILOCO_SERVER       -> server address
-DILOCO_SYNC_EVERY   -> sync interval
-DILOCO_BF16_COMM    -> "0" or "1"
-DILOCO_DYLU         -> "0" or "1"
 DILOCO_HEARTBEAT_INTERVAL -> seconds
-DILOCO_NUM_FRAGMENTS -> number of fragments
 DILOCO_WORKER_ID    -> optional worker ID
 ```
+
+Group-wide settings — `sync_every`, the four wire-precision knobs
+(`upload_dtype`, `upload_sr`, `download_dtype`, `download_sr`), `dylu`, and
+`num_fragments` — are **not** forwarded via env. They are server-authoritative:
+the worker fetches them from `/info` at startup so the whole group shares one
+format. (`DILOCO_BF16_COMM` is a legacy single-boolean fallback for pre-#130
+servers that don't advertise the four keys.)
 
 The training script reads these environment variables and constructs a
 `DiLoCoWorker` internally. This keeps the CLI layer thin and avoids
@@ -1094,12 +1108,20 @@ hook is installed (verify `len(diloco._hooks) > 0`).
 parameter values.
 
 **Cause:** BFloat16 has ~3 digits of precision. Very small pseudo-gradients
-(difference between global and local params) may be rounded to zero.
+(difference between global and local params) may be rounded to zero under
+round-to-nearest, biasing the cast in a consistent direction across rounds.
 
-**Mitigation:** Disable bf16 communication by starting the server with
-`--no-bf16`. `bf16_comm` is server-authoritative (the whole group shares one
-wire precision), so every worker adopts it from `/info` — there is no worker
-flag. This doubles bandwidth usage.
+**Mitigation (preferred):** enable **stochastic rounding** on the affected leg —
+`--upload-sr` for the worker→server pseudo-gradient and/or `--download-sr` for
+the server→worker averaged params (only meaningful with the corresponding
+`--*-dtype bf16`). SR keeps the fp32→bf16 cast unbiased in expectation, so
+sub-ULP signal survives without giving up the bandwidth saving.
+
+**Mitigation (fallback):** drop the affected leg back to full precision —
+`--upload-dtype fp32` (the deprecated `--no-bf16` alias) and/or the default
+`--download-dtype fp32`. This doubles that leg's bandwidth. All four wire knobs
+are server-authoritative (the whole group shares one wire format) and adopted
+from `/info`; there are no worker flags.
 
 ### Fragment sync deadlock
 

@@ -250,11 +250,16 @@ class TestServerAuthoritativeSettings:
         _, kwargs = MockWorker.call_args
         assert kwargs["sync_every"] == 250
         assert kwargs["dylu"] is True
-        assert kwargs["bf16_comm"] is False
+        # The legacy ``bf16_comm=False`` from /info maps to the
+        # post-#130 ``upload_dtype="fp32"`` via the callback's
+        # back-compat shim in ``_resolve_server_settings``.
+        assert kwargs["upload_dtype"] == "fp32"
         assert kwargs["num_fragments"] == 3
         # And the callback's own copies were updated.
         assert cb.sync_every == 250
         assert cb.dylu is True
+        assert cb.upload_dtype == "fp32"
+        assert cb.bf16_comm is False  # legacy mirror, still reported
 
     @patch(_CLIENT_PATCH)
     @patch(_WORKER_PATCH)
@@ -336,7 +341,10 @@ class TestWorkerLifecycle:
             server_addr="host:8512",
             sync_every=500,  # from /info
             worker_id=None,
-            bf16_comm=True,
+            upload_dtype="bf16",
+            upload_sr=False,
+            download_dtype="fp32",
+            download_sr=False,
             timeout=600,
             dylu=False,
             heartbeat_interval=30.0,
@@ -469,7 +477,12 @@ class TestWorkerLifecycle:
             server_addr="remote:9999",
             sync_every=200,  # from /info
             worker_id="test_worker",
-            bf16_comm=False,  # from /info
+            # bf16_comm=False on the legacy /info path maps to
+            # upload_dtype="fp32" via the callback's back-compat shim.
+            upload_dtype="fp32",
+            upload_sr=False,
+            download_dtype="fp32",
+            download_sr=False,
             timeout=300,
             dylu=True,  # from /info
             heartbeat_interval=10.0,
@@ -852,9 +865,7 @@ class TestBuildStatsSnapshot:
         snapshot must not synthesize one — missing ``learning_rate`` is the
         signal that the previous gauge value should remain on the server."""
         state = self._state(global_step=500, epoch=0.5)
-        snap = DiLoCoCallback._build_stats_snapshot(
-            state, logs=None, eval_loss=1.42
-        )
+        snap = DiLoCoCallback._build_stats_snapshot(state, logs=None, eval_loss=1.42)
         assert snap["eval_loss"] == 1.42
         assert snap["eval_step"] == 500
         assert "learning_rate" not in snap

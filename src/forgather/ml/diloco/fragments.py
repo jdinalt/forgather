@@ -135,32 +135,41 @@ class FragmentManager:
         fragment_id: int,
         global_params: Dict[str, torch.Tensor],
         model,
-        bf16_comm: bool = True,
+        upload_dtype: str = "bf16",
+        upload_sr: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
         Compute pseudo-gradients for a single fragment.
 
         pseudo_grad = global_params - local_params for each parameter in the
-        fragment. Optionally cast to bfloat16 for bandwidth reduction.
+        fragment, then cast to ``upload_dtype`` for the wire. Mirrors
+        :meth:`ParamView.compute_pseudograds` — the dtype matrix and the
+        meaning of ``upload_sr`` are the same. See
+        :func:`forgather.ml.diloco.param_view._cast_for_upload` for the
+        shared cast helper.
 
         Args:
             fragment_id: Which fragment to compute pseudo-gradients for.
             global_params: CPU snapshot of global parameters.
             model: The model being trained (with current local params).
-            bf16_comm: If True, cast pseudo-gradients to bfloat16.
+            upload_dtype: Wire dtype for the cast (``"fp32"`` or
+                ``"bf16"``). Server-authoritative; passed through from
+                the worker.
+            upload_sr: When ``upload_dtype="bf16"``, use stochastic
+                rounding for the fp32 → bf16 cast.
 
         Returns:
             Dict mapping parameter names to pseudo-gradient tensors.
         """
+        from .param_view import _cast_for_upload
+
         param_names = set(self.fragments[fragment_id])
         pseudograds = {}
 
         for name, p in model.named_parameters():
             if name in param_names:
                 pg = global_params[name] - p.data.cpu()
-                if bf16_comm:
-                    pg = pg.to(torch.bfloat16)
-                pseudograds[name] = pg
+                pseudograds[name] = _cast_for_upload(pg, upload_dtype, upload_sr)
 
         return pseudograds
 
