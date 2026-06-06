@@ -184,10 +184,11 @@ The MLP plays two separable roles here:
   ~65% of the model. Give that capacity back as attention (the param-matched run)
   and the worst symptom, degenerate generation, disappears entirely.
 - **A qualitative, efficiency role that capacity does *not* buy back** — at equal
-  non-embedding parameters the MLP model is still 0.20 nats ahead and reads as
-  sharper and more on-topic, and a 1.7M-parameter MLP model rivals a 20M-parameter
-  attention-only one. The per-token nonlinear computation an MLP provides is
-  something attention depth and width approximate only inefficiently.
+  non-embedding parameters the MLP model is still 0.20 nats ahead, and a
+  1.7M-parameter MLP model rivals a 20M-parameter attention-only one. The per-token
+  nonlinear computation an MLP provides is something attention depth and width
+  approximate only inefficiently. (That 0.20-nat edge is clear on the loss curve
+  but, per the blind A/B test below, hard for a human to actually perceive.)
 
 The tidy reading, consistent with *A Mathematical Framework for Transformer
 Circuits*: **attention moves and copies information; the MLP computes on it.** You
@@ -202,15 +203,29 @@ special machinery) and lands within ~0.085 of the equal-parameter MLP model —
 the closest any attention-only model gets. Depth doesn't replace the MLP, but it
 narrows the gap far more effectively than width does.
 
-## Blind A/B evaluation
+## Blind A/B evaluation: humans vs. an LLM-judge panel
 
-Does the loss ranking match *subjective* quality? We checked the three ~20M
-models with a blind A/B panel — the same shuffled, position-controlled method
-that [`ab_test.py`](../../snippets/ab_test.py) runs for human judges, here driven
-by independent Claude judges. Each model generated a continuation for all 18
-TinyStories prompts (same seed per prompt; each model loaded in its own process —
-see the loading note below); every pairing was judged blind, in **both**
-orderings, by 6 judges (324 votes; side split 158/166, so no position bias).
+Does the loss ranking match *subjective* quality? We judged the ~20M models with a
+blind, shuffled, position-controlled A/B method — both as a **human** (via
+[`ab_test.py`](../../snippets/ab_test.py)) and as a panel of independent **Claude
+judges** — and they disagree sharply. The disagreement is the result.
+
+### Human (so far: one participant, `mlp_small` vs the wide attention-only model)
+
+| | wins | |
+|---|---:|---:|
+| `mlp_small` (+MLP, lowest loss) | 32 | 59% |
+| wide attention-only (960×11) | 22 | 41% |
+
+Two-sided sign test **p = 0.22 — not significant**, and that *overstates* the
+preference: many pairs were *both* badly flawed and got decided by "a weak
+gut-feeling and an arbitrary coin flip." A forced binary choice turns near-ties
+into coin-flips — unbiased noise that inflates the apparent split while the real
+signal stays near 50/50. The honest read: **to a human, these two models are about
+indistinguishable**, even though `mlp_small` has 0.20 nat lower eval loss. That
+gap is real on the loss curve and invisible across the desk.
+
+### LLM-judge panel (6 Claude judges, both orderings, 18 prompts, 108 votes/pair)
 
 | Match-up | Votes | Winner | sign-test p |
 |---|---:|---|---:|
@@ -218,29 +233,30 @@ orderings, by 6 judges (324 votes; side split 158/166, so no position bias).
 | `mlp_small` vs wide (960×11) | 86–22 | mlp_small (80%) | 4e-10 |
 | deep (512×38) vs wide (960×11) | 82–26 | deep (76%) | 6e-8 |
 
-- **Subjective ranking = loss ranking.** The panel reproduces the loss order
-  exactly — `mlp_small` (1.16) > deep (1.25) > wide (1.36). At this scale, eval
-  loss is a decent predictor of perceived story quality, and the deep model's
-  loss edge over the wide one shows up as a clear 76% preference.
-- **The MLP wins; the deep attention-only is the closest challenger.** It takes
-  30% of decisions against `mlp_small` (32–76), versus the wide model's 20%
-  (22–86) — clearly the most competitive attention-only model, but `mlp_small` is
-  the decisive winner. Individual attention-only samples can be excellent (the one
-  that motivated this section was), but across a balanced panel the loss order holds.
+The panel confidently reproduces the loss order (`mlp_small` > deep > wide). But on
+the one pair we have human data for, it called an **80–20 rout where the human saw
+a coin flip**. Whatever the LLM judges reward — coherence/completeness, which
+`mlp_small` produces cleanly — it is *not* what a person picks between two flawed
+tiny-model stories. **The LLM-judge panel is a cheap but badly miscalibrated proxy
+here; it over-predicts the gap and should not be read as ground truth.** (It's also
+near-unanimous within each ordering, so it's a few strong, agreeing readings, not 6
+independent ones.)
 
-> **Loading note.** Each model must be loaded in its **own process**. Both models'
-> generated code uses the dynamic module name `singlehead`, and Hugging Face caches
-> a `trust_remote_code` class by its `auto_map` name — so loading two of them in
-> one process rebuilds the second with the *first's* architecture (an attention-only
-> model silently gets MLP layers, etc.). `ab_test.py` generates each model in a
-> subprocess for exactly this reason; the earlier scratch run that loaded all three
-> in one process produced corrupted attention-only generations and was redone.
+### Status / contribute
 
-*Caveat:* these are Claude judges, not humans, and they were near-unanimous
-within each ordering (so this is a few strong, agreeing readings rather than 6
-independent ones). `ab_test.py` exists to gather **human** votes on exactly these
-pairs — run it and pool the JSON logs to put real preferences against the loss
-numbers.
+This is one human run on one pair — preliminary. We're pooling more (`mlp_small` vs
+deep, and additional participants) in [`human_eval/`](human_eval/): run
+`ab_test.py`, drop the JSON there, and aggregate with `ab_aggregate.py`. The numbers
+will firm up as data accrues.
+
+> **Loading note (important).** Each model must be loaded in its **own process**.
+> Both models' generated code uses the dynamic module name `singlehead`, and Hugging
+> Face caches a `trust_remote_code` class by its `auto_map` name — so loading two of
+> them in one process rebuilds the second with the *first's* architecture (an
+> attention-only model silently gets MLP layers, its checkpoint then reporting
+> `MISSING` feedforward weights). `ab_test.py` generates each model in a subprocess
+> for exactly this reason. This is a general gotcha for loading multiple same-arch
+> Forgather models in one process.
 
 ## Reproducing
 

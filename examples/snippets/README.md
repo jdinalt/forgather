@@ -18,3 +18,6 @@ A place for short code examples and debugging tools.
   prompt set (shuffled, randomized pairs, JSON log for pooling participants). See
   the [attention_only experiment](../tiny_experiments/attention_only) for the
   motivating use case.
+- **ab_aggregate.py** - Pool multiple `ab_test.py` JSON logs into combined
+  statistics (per-participant breakdown, pooled win counts, sign test, position-bias
+  check), grouped by model pair + seed.
