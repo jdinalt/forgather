@@ -281,6 +281,7 @@ class DiLoCoCallback(TrainerCallback):
             DiLoCoRegisterCollisionError,
             DiLoCoServerUnreachable,
         )
+        from forgather.ml.diloco.coordinator import CoordinatorClient
         from forgather.ml.diloco.worker import DiLoCoWorker
 
         if not self.active:
@@ -365,11 +366,14 @@ class DiLoCoCallback(TrainerCallback):
         settings: Optional[Dict[str, Any]] = None
         nego_error: Optional[str] = None
         if is_leader:
-            probe = DiLoCoClient(
-                self.server_addr,
-                timeout=min(self.timeout, 10.0),
-                token=self.auth_token,
-                verify_tls=self.verify_tls,
+            # /info negotiation goes through the coordinator surface (#154).
+            probe = CoordinatorClient(
+                DiLoCoClient(
+                    self.server_addr,
+                    timeout=min(self.timeout, 10.0),
+                    token=self.auth_token,
+                    verify_tls=self.verify_tls,
+                )
             )
             try:
                 info = probe.get_info()

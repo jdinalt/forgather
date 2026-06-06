@@ -84,13 +84,16 @@ def stage_model_def(
     # by template materialization where keeping the import local avoids a
     # torch import on paths that never stage.
     from forgather.ml.diloco.client import DiLoCoClient
+    from forgather.ml.diloco.coordinator import CoordinatorClient
 
     output_dir = os.path.abspath(output_dir)
     local_dir = os.path.join(output_dir, STAGE_SUBDIR)
     stamp_path = os.path.join(local_dir, STAMP_NAME)
 
-    client = DiLoCoClient(
-        server_addr, timeout=timeout, token=token, verify_tls=verify_tls
+    # Model staging (get_info + fetch_model_def) is coordination, not bulk
+    # transport — go through the coordinator surface (#154).
+    client = CoordinatorClient(
+        DiLoCoClient(server_addr, timeout=timeout, token=token, verify_tls=verify_tls)
     )
     # The authoritative bundle identity for this server right now.
     want_hash = client.get_info().get("model_hash") or ""

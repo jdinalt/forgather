@@ -43,6 +43,7 @@ import torch.distributed as dist
 import torch.nn as nn
 
 from .client import DiLoCoClient
+from .coordinator import CoordinatorClient
 from .fragments import FragmentManager
 from .param_view import ParamView, SimpleModelParamView
 from .sync_backend import HttpStarBackend, OuterSyncBackend
@@ -115,6 +116,7 @@ class DiLoCoWorker:
         verify_tls: bool = True,
         output_dir: Optional[str] = None,
         backend: Optional[OuterSyncBackend] = None,
+        coordinator: Optional[CoordinatorClient] = None,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -204,6 +206,15 @@ class DiLoCoWorker:
         # may inject a different backend without the worker knowing the
         # transport.
         self.backend: OuterSyncBackend = backend or HttpStarBackend(self.client)
+
+        # Coordination surface (issue #154): heartbeat / negotiation, distinct
+        # from the sync backend. Defaults to a facade over the same client, so
+        # behavior is unchanged. A future backend whose parameter authority is
+        # not the coordinator (serverless collective, shared-mem) can inject a
+        # coordinator pointing at the HTTP server while syncing peer-to-peer.
+        self.coordinator: CoordinatorClient = coordinator or CoordinatorClient(
+            self.client
+        )
 
         # DDP rank-awareness. When running inside a torch-distributed
         # group (e.g. ``torchrun`` with WORLD_SIZE > 1, or a Forgather
@@ -858,7 +869,7 @@ class DiLoCoWorker:
                 break
             try:
                 speed = self.get_steps_per_second()
-                response = self.client.heartbeat(
+                response = self.coordinator.heartbeat(
                     self.worker_id,
                     steps_per_second=speed,
                     stats=self._consume_stats(),
