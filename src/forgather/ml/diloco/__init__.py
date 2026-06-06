@@ -26,13 +26,18 @@ from typing import TYPE_CHECKING
 # Lightweight, stdlib-only — safe to import eagerly and frequently hot-pathed.
 from .env import diloco_is_enabled, diloco_server_addr
 
-# name -> submodule (relative). Each pulls in torch; load on first access only.
+# name -> submodule (relative). Most pull in torch; load on first access only.
+# (``sync_backend`` is torch-free at import, but is deferred here too for a
+# uniform public surface.)
 _LAZY = {
     "DiLoCoClient": ".client",
     "DiLoCoServer": ".server",
     "DiLoCoWorker": ".worker",
     "FragmentManager": ".fragments",
     "HealthMonitor": ".health",
+    "OuterSyncBackend": ".sync_backend",
+    "HttpStarBackend": ".sync_backend",
+    "SyncResult": ".sync_backend",
 }
 
 __all__ = [
@@ -41,6 +46,9 @@ __all__ = [
     "DiLoCoWorker",
     "FragmentManager",
     "HealthMonitor",
+    "OuterSyncBackend",
+    "HttpStarBackend",
+    "SyncResult",
     "diloco_is_enabled",
     "diloco_server_addr",
 ]
@@ -68,4 +76,5 @@ if TYPE_CHECKING:
     from .fragments import FragmentManager
     from .health import HealthMonitor
     from .server import DiLoCoServer
+    from .sync_backend import HttpStarBackend, OuterSyncBackend, SyncResult
     from .worker import DiLoCoWorker

@@ -45,6 +45,7 @@ import torch.nn as nn
 from .client import DiLoCoClient
 from .fragments import FragmentManager
 from .param_view import ParamView, SimpleModelParamView
+from .sync_backend import HttpStarBackend, OuterSyncBackend
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,7 @@ class DiLoCoWorker:
         auth_token: Optional[str] = None,
         verify_tls: bool = True,
         output_dir: Optional[str] = None,
+        backend: Optional[OuterSyncBackend] = None,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -193,6 +195,15 @@ class DiLoCoWorker:
             token=auth_token,
             verify_tls=verify_tls,
         )
+
+        # Outer-synchronization backend (issue #154). The bulk tensor legs
+        # (join / synchronize / synchronize_fragment / leave) route through a
+        # pluggable backend; the coordination plane (heartbeat, /info, control)
+        # stays on ``self.client`` directly. Defaults to the HTTP star backend
+        # wrapping the client above, so behavior is unchanged. A trainer/config
+        # may inject a different backend without the worker knowing the
+        # transport.
+        self.backend: OuterSyncBackend = backend or HttpStarBackend(self.client)
 
         # DDP rank-awareness. When running inside a torch-distributed
         # group (e.g. ``torchrun`` with WORLD_SIZE > 1, or a Forgather
@@ -398,9 +409,11 @@ class DiLoCoWorker:
                 f"(DDP rank {self._ddp_rank}/{self._ddp_world_size})"
             )
 
-            # Register and get global params
+            # Register and get global params (via the sync backend)
             worker_info = self._get_worker_info()
-            global_params = self.client.register(self.worker_id, worker_info)
+            global_params = self.backend.join(
+                worker_id=self.worker_id, worker_info=worker_info
+            )
 
             # Load global params into model
             self._apply_global_params(global_params)
@@ -485,7 +498,7 @@ class DiLoCoWorker:
 
         # Deregister (leader only)
         if self._is_leader:
-            self.client.deregister(self.worker_id)
+            self.backend.leave(worker_id=self.worker_id)
 
         self._active = False
 
@@ -651,12 +664,12 @@ class DiLoCoWorker:
             self._last_sync_send_bytes = send_bytes
 
             # Submit with retry on connection failure
-            new_global_params = None
+            result = None
             retry_delay = 2.0
             for attempt in range(self.max_sync_retries + 1):
                 try:
-                    new_global_params = self.client.submit_pseudogradients(
-                        self.worker_id, pseudograds
+                    result = self.backend.synchronize(
+                        worker_id=self.worker_id, pseudograds=pseudograds
                     )
                     break
                 except ConnectionError as e:
@@ -679,6 +692,12 @@ class DiLoCoWorker:
                             f"{self.max_sync_retries + 1} attempts: {e}. "
                             f"Skipping this sync round."
                         )
+
+            # A committed round yields the next global params; a skipped/failed
+            # round (or exhausted retries) leaves them unset.
+            new_global_params = (
+                result.params if result is not None and result.committed else None
+            )
 
             if new_global_params is not None:
                 # Track receive size
@@ -729,7 +748,9 @@ class DiLoCoWorker:
         logger.info(f"DiLoCoWorker {self.worker_id}: attempting reconnection...")
         try:
             worker_info = self._get_worker_info()
-            global_params = self.client.register(self.worker_id, worker_info)
+            global_params = self.backend.join(
+                worker_id=self.worker_id, worker_info=worker_info
+            )
             self._apply_global_params(global_params)
             self._save_global_params_snapshot()
             self._reconnections += 1
@@ -787,10 +808,16 @@ class DiLoCoWorker:
     ):
         """Background thread: submit fragment pseudo-gradients to server."""
         try:
-            result = self.client.submit_fragment_pseudogradients(
-                self.worker_id, fragment_id, pseudograds
+            result = self.backend.synchronize_fragment(
+                worker_id=self.worker_id,
+                fragment_id=fragment_id,
+                pseudograds=pseudograds,
             )
-            self._inflight_result = (fragment_id, result)
+            # Gate on commit, same as the full-model path: a non-committed
+            # round contributes no new params (None flows to the apply guard
+            # in _wait_and_apply_inflight_fragment).
+            params = result.params if result.committed else None
+            self._inflight_result = (fragment_id, params)
 
             elapsed = time.time() - start_time
             self._total_sync_time += elapsed
