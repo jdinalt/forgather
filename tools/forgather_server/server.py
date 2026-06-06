@@ -24,18 +24,21 @@ from argparse import RawTextHelpFormatter
 from pathlib import Path
 
 # Support both `python -m forgather_server.server` and standalone execution.
+#
+# Keep this import set LIGHT: ``server.py --help`` must not drag in the
+# whole ML stack. The heavy ``create_app`` (→ routes → scheduler →
+# dataset_server → transformers/torch, ~9s) and ``uvicorn`` are imported
+# lazily inside ``main()`` *after* argparse has handled ``--help`` and
+# exited. Only modules needed to *build the parser* and read the config
+# file are imported here.
 if __name__ == "__main__" and __package__ is None:
     script_dir = Path(__file__).resolve().parent
     parent_dir = script_dir.parent
     if str(parent_dir) not in sys.path:
         sys.path.insert(0, str(parent_dir))
     from forgather_server import auth, cluster, paths, search_roots, server_config
-    from forgather_server.app import create_app
 else:
     from . import auth, cluster, paths, search_roots, server_config
-    from .app import create_app
-
-import uvicorn
 
 from forgather.tls import (
     TLSRequiredError,
@@ -48,6 +51,15 @@ from forgather.tls.runtime import (
     add_server_tls_args,
 )
 from forgather.tls.runtime import is_tls_active as tls_is_active
+
+
+def _import_create_app():
+    """Import the FastAPI app factory lazily (see the import note above)."""
+    try:
+        from .app import create_app
+    except ImportError:
+        from forgather_server.app import create_app  # type: ignore
+    return create_app
 
 
 def main():
@@ -315,8 +327,15 @@ def main():
     # Install the agent config block. ``args_defaults`` only normalizes
     # ``args:``; the ``agent:`` section is read straight off the loaded
     # config dict, matching the docs-landing / meta-template injection
-    # idiom above. Absent/empty => the agent stays disabled.
-    from .agent import runtime as _agent_runtime
+    # idiom above. Absent/empty => the agent stays disabled (the server
+    # config block only seeds a profile on first run; profiles managed via
+    # the webui are the source of truth thereafter). The dual import guard
+    # mirrors ``_configure_meta_templates`` so standalone ``python
+    # server.py`` (no package context) works as well as ``-m``.
+    try:
+        from .agent import runtime as _agent_runtime
+    except ImportError:
+        from forgather_server.agent import runtime as _agent_runtime  # type: ignore
 
     _agent_cfg = cfg_data.get("agent") if isinstance(cfg_data, dict) else None
     _agent_runtime.configure(_agent_cfg if isinstance(_agent_cfg, dict) else None)
@@ -330,6 +349,10 @@ def main():
         _inf_proxy.LOCK_TO_LOCALHOST = True
         logging.info("inference proxy: locked to localhost upstreams")
 
+    # Heavy imports, deferred until after argparse so ``--help`` stays cheap.
+    import uvicorn
+
+    create_app = _import_create_app()
     app = create_app()
 
     scheme = "https" if tls_on else "http"
