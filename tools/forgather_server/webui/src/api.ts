@@ -763,6 +763,20 @@ export interface DocsFile {
   cells: IpynbCell[] | null;
 }
 
+export interface DocsSearchHit {
+  /** Absolute source path, openable via docsFile / onNavigate. */
+  path: string;
+  /** Path relative to docs/ (display label). */
+  rel: string;
+  score: number;
+  excerpt: string;
+}
+
+export interface DocsSearchResult {
+  query: string;
+  hits: DocsSearchHit[];
+}
+
 /** Thrown by ``putTemplateSource`` when the on-disk mtime is newer
  *  than the ``expected_mtime`` the client sent — i.e. someone else
  *  (or another tool) modified the file since the editor opened it.
@@ -2322,6 +2336,10 @@ export const api = {
 
   docsFile: (path: string) =>
     fetchJson<DocsFile>(`/api/docs/file?path=${encodeURIComponent(path)}`),
+  docsSearch: (q: string, limit = 8) =>
+    fetchJson<DocsSearchResult>(
+      `/api/docs/search?q=${encodeURIComponent(q)}&limit=${limit}`,
+    ),
   docsAssetUrl: (path: string): string =>
     `/api/docs/asset?path=${encodeURIComponent(path)}`,
   projectAssetUrl: (project_dir: string, asset: string): string =>

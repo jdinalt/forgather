@@ -5,7 +5,7 @@ import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSlug from "rehype-slug";
 
-import { api, IpynbCell } from "../api";
+import { api, DocsSearchHit, IpynbCell } from "../api";
 import { ContextMenu } from "./ContextMenu";
 
 interface Props {
@@ -356,6 +356,7 @@ export function DocsPanel({
         <span className="docs-pane-path" title={headerPath}>
           {headerPath}
         </span>
+        <DocsSearchBox onNavigate={onNavigate} />
       </div>
       <div className="docs-pane-split">
         {toc.length > 1 && (
@@ -394,6 +395,104 @@ export function DocsPanel({
             Edit "{menu.path.split("/").pop()}"
           </button>
         </ContextMenu>
+      )}
+    </div>
+  );
+}
+
+/** Keyword search over the docs corpus, surfaced in the Docs header. Submits
+ *  to /api/docs/search (debounced) and shows ranked excerpts; clicking one
+ *  navigates the Docs view to that page. */
+function DocsSearchBox({ onNavigate }: { onNavigate: (path: string) => void }) {
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<DocsSearchHit[] | null>(null);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const boxRef = useRef<HTMLDivElement | null>(null);
+
+  // Debounced search; min 2 chars. A request token guards against
+  // out-of-order responses clobbering a newer query's results.
+  const seqRef = useRef(0);
+  useEffect(() => {
+    const term = q.trim();
+    if (term.length < 2) {
+      setHits(null);
+      setBusy(false);
+      setOpen(false); // don't leave an empty results box floating
+      return;
+    }
+    setBusy(true);
+    const mySeq = ++seqRef.current;
+    const t = setTimeout(() => {
+      api
+        .docsSearch(term)
+        .then((r) => {
+          if (seqRef.current !== mySeq) return; // a newer query superseded us
+          setHits(r.hits);
+          setOpen(true);
+        })
+        .catch(() => {
+          if (seqRef.current === mySeq) setHits([]);
+        })
+        .finally(() => {
+          if (seqRef.current === mySeq) setBusy(false);
+        });
+    }, 250);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  // Close the results when clicking outside the box.
+  useEffect(() => {
+    if (!open) return;
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [open]);
+
+  const choose = (path: string) => {
+    setOpen(false);
+    setQ("");
+    setHits(null);
+    onNavigate(path);
+  };
+
+  return (
+    <div className="docs-search" ref={boxRef}>
+      <input
+        className="docs-search-input"
+        type="search"
+        placeholder="Search docs…"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        onFocus={() => hits && setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") setOpen(false);
+        }}
+        aria-label="Search docs"
+      />
+      {open && (
+        <div className="docs-search-results">
+          {busy && <div className="docs-search-state muted">Searching…</div>}
+          {!busy && hits && hits.length === 0 && (
+            <div className="docs-search-state muted">No matches.</div>
+          )}
+          {hits &&
+            hits.map((h) => (
+              <button
+                key={h.path}
+                className="docs-search-hit"
+                onClick={() => choose(h.path)}
+                title={h.rel}
+              >
+                <span className="docs-search-hit-rel">{h.rel}</span>
+                <span className="docs-search-hit-excerpt">{h.excerpt}</span>
+              </button>
+            ))}
+        </div>
       )}
     </div>
   );
