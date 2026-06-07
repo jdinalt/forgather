@@ -38,3 +38,29 @@ def diloco_server_addr() -> str:
     ``diloco_is_enabled()`` and ``os.environ[...]``.
     """
     return os.environ.get("DILOCO_SERVER", "").strip()
+
+
+def diloco_backend() -> str:
+    """Return the sync-backend selector: ``"http"`` (default) or
+    ``"shared_memory"``. Set via ``DILOCO_BACKEND``."""
+    return os.environ.get("DILOCO_BACKEND", "http").strip().lower() or "http"
+
+
+def diloco_shm_group_dir() -> str:
+    """Shared-memory group directory (the per-host rendezvous), or ``""``."""
+    return os.environ.get("DILOCO_SHM_GROUP_DIR", "").strip()
+
+
+def diloco_shm_group_size() -> int:
+    """Number of co-located workers in the shared-memory group, or ``0`` if
+    unset. Raises ``ValueError`` if set to a non-integer."""
+    raw = os.environ.get("DILOCO_SHM_GROUP_SIZE", "").strip()
+    return int(raw) if raw else 0
+
+
+def diloco_shm_init_checkpoint() -> str:
+    """Optional override for the shared-memory init checkpoint dir, or ``""``.
+
+    When unset, the aggregator seeds the region from the checkpoint the
+    coordinator advertises in ``/info`` (``model_checkpoint_dir``)."""
+    return os.environ.get("DILOCO_SHM_INIT_CHECKPOINT", "").strip()

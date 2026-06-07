@@ -350,6 +350,7 @@ class TestWorkerLifecycle:
             heartbeat_interval=30.0,
             num_fragments=1,
             max_sync_retries=3,
+            backend=None,
             param_view=None,
             auth_token=None,
             verify_tls=True,
@@ -488,6 +489,7 @@ class TestWorkerLifecycle:
             heartbeat_interval=10.0,
             num_fragments=4,  # from /info
             max_sync_retries=5,
+            backend=None,
             param_view=None,
             auth_token=None,
             verify_tls=True,

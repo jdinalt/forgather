@@ -476,6 +476,56 @@ worker's per-worker checkpoint resume is only correct when it lands back on
 the host that holds that checkpoint. Cross-host launch and resume are tracked
 in [issue #118](https://github.com/jdinalt/forgather/issues/118).
 
+## Shared-memory backend (single-host)
+
+On a single host, co-located worker processes can exchange the sync tensors
+through a **shared CPU master-weights region** instead of the HTTP parameter
+server — one shared master per host, no serialization, the outer optimizer
+applied in place. This makes DiLoCo a DDP alternative: sync every `H` steps at a
+fraction of DDP's per-step all-reduce. The HTTP server stays on as the
+**coordinator** (it provides `/info` negotiation and work-unit dispatch); only
+the tensor legs move to shared memory, so the workers never submit
+pseudo-gradients over the wire (`diloco/last_send_mb` is 0).
+
+Select it per worker with environment variables:
+
+| Variable | Meaning |
+|---|---|
+| `DILOCO_BACKEND` | `shared_memory` (default `http`) |
+| `DILOCO_SHM_GROUP_DIR` | a per-host directory the co-located group shares (the rendezvous) |
+| `DILOCO_SHM_GROUP_SIZE` | number of co-located workers in the group |
+| `DILOCO_SHM_INIT_CHECKPOINT` | optional; overrides the init checkpoint (default: the dir the coordinator advertises in `/info`) |
+
+The first worker to arrive creates the region and seeds it from the coordinator's
+checkpoint; the rest attach. The aggregator also reproduces the coordinator's
+outer optimizer (advertised in `/info`), so the group's outer step matches the
+server's. The default init checkpoint is the coordinator's local filesystem path,
+so the coordinator and workers must share a filesystem (the single-host case);
+use `DILOCO_SHM_INIT_CHECKPOINT` if they don't. Each worker is one process (one
+GPU) — not a multi-GPU DDP job.
+
+Run a coordinator, then launch the group (one process per GPU):
+
+```bash
+# Coordinator (no tensor role for a shared-memory group; provides /info + dispatch)
+forgather diloco server --local-only --output-dir <init-checkpoint-dir> \
+    --num-workers 2 --sync-every 100 -H 127.0.0.1 --port 8512
+
+# Two co-located workers sharing one region
+GROUP=$(mktemp -d)
+for w in 0 1; do
+  DILOCO_SERVER=https://127.0.0.1:8512 DILOCO_WORKER_ID=shm-w$w \
+  DILOCO_BACKEND=shared_memory DILOCO_SHM_GROUP_DIR=$GROUP DILOCO_SHM_GROUP_SIZE=2 \
+    forgather -t <config>.yaml train -d $w &
+done
+wait
+```
+
+All co-located workers must agree on `DILOCO_SHM_GROUP_DIR` and
+`DILOCO_SHM_GROUP_SIZE`. Streaming-fragment sync (`num_fragments > 1`) is not
+supported for this backend. For the internals see
+[`diloco-architecture.md`](diloco-architecture.md#shared-memory-backend).
+
 ## Programmatic API
 
 The DiLoCo system can also be used directly in Python, independent of the CLI.
