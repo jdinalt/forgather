@@ -5,7 +5,7 @@ import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSlug from "rehype-slug";
 
-import { api, DocsSearchHit, IpynbCell } from "../api";
+import { api, DocsSearchHit, DocsSearchMode, IpynbCell } from "../api";
 import { ContextMenu } from "./ContextMenu";
 
 interface Props {
@@ -400,24 +400,50 @@ export function DocsPanel({
   );
 }
 
-/** Keyword search over the docs corpus, surfaced in the Docs header. Submits
- *  to /api/docs/search (debounced) and shows ranked excerpts; clicking one
- *  navigates the Docs view to that page. */
+const DOCS_SEARCH_MODE_KEY = "forgather.docs.searchMode";
+
+function loadSearchMode(): DocsSearchMode {
+  try {
+    const v = localStorage.getItem(DOCS_SEARCH_MODE_KEY);
+    if (v === "keyword" || v === "vector" || v === "hybrid") return v;
+  } catch {
+    /* ignore */
+  }
+  return "keyword";
+}
+
+/** Search the docs corpus from the Docs header. Submits to /api/docs/search
+ *  (debounced) and shows ranked excerpts; clicking one navigates the Docs view.
+ *  A mode toggle (keyword / vector / hybrid) lets the user A/B the rankers;
+ *  vector/hybrid are gated on a prebuilt index and fall back to keyword. */
 function DocsSearchBox({ onNavigate }: { onNavigate: (path: string) => void }) {
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<DocsSearchHit[] | null>(null);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<DocsSearchMode>(loadSearchMode);
+  const [ranMode, setRanMode] = useState<DocsSearchMode | null>(null);
+  const [vectorAvailable, setVectorAvailable] = useState<boolean | null>(null);
   const boxRef = useRef<HTMLDivElement | null>(null);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(DOCS_SEARCH_MODE_KEY, mode);
+    } catch {
+      /* ignore */
+    }
+  }, [mode]);
+
   // Debounced search; min 2 chars. A request token guards against
-  // out-of-order responses clobbering a newer query's results.
+  // out-of-order responses clobbering a newer query's results. Re-runs when
+  // the mode changes so the user can A/B the same query.
   const seqRef = useRef(0);
   useEffect(() => {
     const term = q.trim();
     if (term.length < 2) {
       setHits(null);
       setBusy(false);
+      setRanMode(null);
       setOpen(false); // don't leave an empty results box floating
       return;
     }
@@ -425,10 +451,12 @@ function DocsSearchBox({ onNavigate }: { onNavigate: (path: string) => void }) {
     const mySeq = ++seqRef.current;
     const t = setTimeout(() => {
       api
-        .docsSearch(term)
+        .docsSearch(term, mode)
         .then((r) => {
           if (seqRef.current !== mySeq) return; // a newer query superseded us
           setHits(r.hits);
+          setRanMode(r.mode);
+          setVectorAvailable(r.vector_available);
           setOpen(true);
         })
         .catch(() => {
@@ -439,7 +467,7 @@ function DocsSearchBox({ onNavigate }: { onNavigate: (path: string) => void }) {
         });
     }, 250);
     return () => clearTimeout(t);
-  }, [q]);
+  }, [q, mode]);
 
   // Close the results when clicking outside the box.
   useEffect(() => {
@@ -460,6 +488,9 @@ function DocsSearchBox({ onNavigate }: { onNavigate: (path: string) => void }) {
     onNavigate(path);
   };
 
+  // Vector/hybrid requested but keyword ran => no index built yet.
+  const fellBack = ranMode !== null && ranMode !== mode;
+
   return (
     <div className="docs-search" ref={boxRef}>
       <input
@@ -474,9 +505,30 @@ function DocsSearchBox({ onNavigate }: { onNavigate: (path: string) => void }) {
         }}
         aria-label="Search docs"
       />
+      <select
+        className="docs-search-mode"
+        value={mode}
+        onChange={(e) => setMode(e.target.value as DocsSearchMode)}
+        title={
+          vectorAvailable === false
+            ? "Vector/hybrid need a prebuilt index (forgather docs index)"
+            : "Search mode"
+        }
+        aria-label="Search mode"
+      >
+        <option value="keyword">Keyword</option>
+        <option value="vector">Vector</option>
+        <option value="hybrid">Hybrid</option>
+      </select>
       {open && (
         <div className="docs-search-results">
           {busy && <div className="docs-search-state muted">Searching…</div>}
+          {fellBack && (
+            <div className="docs-search-state muted">
+              No vector index — showing keyword results. Build one with
+              <code> forgather docs index</code>.
+            </div>
+          )}
           {!busy && hits && hits.length === 0 && (
             <div className="docs-search-state muted">No matches.</div>
           )}

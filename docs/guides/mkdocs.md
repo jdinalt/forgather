@@ -56,6 +56,35 @@ source files each page resolved against in a `.deps.json` sidecar so
 edits to the underlying source invalidate just the affected pages on the
 next rebuild.
 
+## Docs search (keyword + optional vector / hybrid)
+
+The webui Docs view has a search box (and the in-process agent has a
+`search_docs` tool) backed by a shared corpus walk that prefers the rendered
+`.built/<page>` overlay per page when it's present and not older than source.
+
+Keyword search works out of the box. A **vector** and **hybrid** mode are
+available once you build an embedding index:
+
+```bash
+forgather docs index            # build docs/.built/.vector/ (downloads the model)
+forgather docs index --model <hf-id>   # use a different sentence-transformers model
+forgather docs index --check    # exit non-zero if missing/stale (CI)
+forgather docs index --clean    # rebuild from scratch
+```
+
+The index embeds heading-aware chunks with
+[sentence-transformers](https://www.sbert.net/) (default
+`all-MiniLM-L6-v2`). The Docs search box has a **mode toggle**
+(Keyword / Vector / Hybrid) so you can A/B the rankers; hybrid fuses the two
+with reciprocal-rank fusion. Vector/hybrid require the index — without it (or
+if sentence-transformers can't load) the search transparently falls back to
+keyword, and the toggle notes that no index is built. The index lives under
+`docs/.built/.vector/` (gitignored) and is rebuilt by re-running the command;
+`--check` reports staleness against the corpus + model.
+
+Prebuilt runtime images build the index (and cache the model) by default; pass
+`--build-arg BUILD_DOCS_INDEX=0` to skip it (e.g. a network-less build).
+
 ## Launch from the webui
 
 Sidebar menu: **Services -> MkDocs…** opens a modal that enqueues an
