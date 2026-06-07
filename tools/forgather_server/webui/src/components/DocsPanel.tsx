@@ -418,6 +418,7 @@ function DocsSearchBox({ onNavigate }: { onNavigate: (path: string) => void }) {
     if (term.length < 2) {
       setHits(null);
       setBusy(false);
+      setOpen(false); // don't leave an empty results box floating
       return;
     }
     setBusy(true);

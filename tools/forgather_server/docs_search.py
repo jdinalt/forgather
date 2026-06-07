@@ -25,6 +25,9 @@ from . import search_roots
 _DOC_SUFFIXES = (".md", ".markdown")
 DEFAULT_MAX_HITS = 8
 DEFAULT_EXCERPT_RADIUS = 240
+# Skip pathologically large docs so a single huge file can't blow up a search
+# request (matches the /docs/file read cap).
+_MAX_DOC_BYTES = 25 * 1024 * 1024
 
 
 def _repo_root() -> Path:
@@ -32,9 +35,21 @@ def _repo_root() -> Path:
 
 
 def _built_overlay(rel: Path, docs_dir: Path, built_dir: Path) -> Path:
-    """Prefer the rendered ``.built/<rel>`` page when present, else source."""
+    """Prefer the rendered ``.built/<rel>`` page when present AND not stale.
+
+    Mirrors ``routes/docs.py::_maybe_built_variant``: if the source was edited
+    after the last build, search the source so a hit always matches the page the
+    viewer will actually open (which makes the same stale-check).
+    """
     candidate = built_dir / rel
-    return candidate if candidate.is_file() else docs_dir / rel
+    source = docs_dir / rel
+    if candidate.is_file():
+        try:
+            if candidate.stat().st_mtime >= source.stat().st_mtime:
+                return candidate
+        except OSError:
+            pass
+    return source
 
 
 def iter_doc_files(*, include_agent_docs: bool) -> List[Tuple[Path, str]]:
@@ -90,6 +105,8 @@ def search(
     scored: List[Dict[str, Any]] = []
     for path, rel in iter_doc_files(include_agent_docs=include_agent_docs):
         try:
+            if path.stat().st_size > _MAX_DOC_BYTES:
+                continue
             text = path.read_text(errors="replace")
         except OSError:
             continue

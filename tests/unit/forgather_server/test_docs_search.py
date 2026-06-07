@@ -105,3 +105,18 @@ def test_docs_search_endpoint_blank_query(repo):
 
     resp = docs_routes.docs_search_endpoint(q="   ")
     assert resp.query == "" and resp.hits == []
+
+
+def test_overlay_skipped_when_source_newer_than_built(repo):
+    # If the source was edited after the last build, search the source (so a hit
+    # always matches the page the viewer opens, which makes the same check).
+    import os
+
+    src = repo / "docs" / "api" / "widget.md"
+    built = repo / "docs" / ".built" / "api" / "widget.md"
+    bt = built.stat().st_mtime
+    os.utime(src, (bt + 10, bt + 10))  # source newer than built
+    # "frobnicates" lives only in the built copy; with the overlay skipped it
+    # is no longer matched (source has the unexpanded ::: directive).
+    rels = [h["rel"] for h in docs_search.search("frobnicates")["hits"]]
+    assert "api/widget.md" not in rels
