@@ -1158,6 +1158,20 @@ export interface DiLoCoWorkerStatus {
    *  node — essential for cross-node DiLoCo where the trainer lives on
    *  a peer. */
   stats?: Record<string, number> | null;
+  /** Worker-reported DiLoCo sync metrics, sanitized server-side by
+   *  ``sanitize_sync_state`` (schema = ``stats._SYNC_STATE_FIELDS``). Present
+   *  when the worker reports sync-state on its heartbeat (default on;
+   *  ``DILOCO_REPORT_SYNC_STATE=0`` to omit). For an off-server backend like
+   *  shared-memory the server's own per-worker ``sync_round`` stays 0 — these
+   *  are the only progress signal, so ``sync_count`` is the round counter. */
+  sync_state?: {
+    sync_count?: number;
+    last_sync_time?: number;
+    total_sync_time?: number;
+    last_send_mb?: number;
+    last_recv_mb?: number;
+    sync_every?: number;
+  } | null;
 }
 
 /** Upstream ``/status`` response. Field set tracks DiLoCoServer._handle_status. */
