@@ -23,9 +23,58 @@ log = logging.getLogger("forgather_server.agent.tools_readonly")
 # ---- handlers --------------------------------------------------------------
 
 
-def _list_projects(_args: Dict[str, Any]) -> Any:
+def _list_workspaces(_args: Dict[str, Any]) -> Any:
+    """Top level of the navigation tree: workspaces (no projects/configs)."""
     clusters = discovery.discover_projects()
-    return [dataclasses.asdict(c) for c in clusters]
+    return [
+        {
+            "workspace_root": c.workspace_root,
+            "name": c.name,
+            "description": c.description,
+            "parent_workspace_root": c.parent_workspace_root,
+            "project_count": len(c.projects),
+        }
+        for c in clusters
+    ]
+
+
+def _project_summary(p) -> Dict[str, Any]:
+    # Deliberately omit the per-project config list — fetch it with
+    # list_configs so a broad listing stays small.
+    return {
+        "project_dir": p.project_dir,
+        "name": p.name,
+        "description": p.description,
+        "default_config": p.default_config,
+        "workspace_root": p.workspace_root,
+        "config_count": len(p.configs),
+        "parse_error": p.parse_error,
+    }
+
+
+def _list_projects(args: Dict[str, Any]) -> Any:
+    """Project summaries (no config lists). Filter to one workspace with
+    ``workspace_root``; omit it to summarize every project."""
+    ws = args.get("workspace_root")
+    out = []
+    for c in discovery.discover_projects():
+        if ws and c.workspace_root != ws:
+            continue
+        out.extend(_project_summary(p) for p in c.projects)
+    return out
+
+
+def _list_configs(args: Dict[str, Any]) -> Any:
+    """The configs of one project (the leaf level of the nav tree)."""
+    pi = discovery.load_project_info(args["project_dir"])
+    return {
+        "project_dir": pi.project_dir,
+        "name": pi.name,
+        "description": pi.description,
+        "default_config": pi.default_config,
+        "parse_error": pi.parse_error,
+        "configs": [dataclasses.asdict(c) for c in pi.configs],
+    }
 
 
 def _inspect_config(args: Dict[str, Any]) -> Any:
@@ -137,14 +186,57 @@ def _search_docs(args: Dict[str, Any]) -> Any:
 def register_all(reg: ToolRegistry) -> None:
     reg.register(
         ToolSpec(
-            name="list_projects",
+            name="list_workspaces",
             description=(
-                "List all discovered Forgather workspaces and projects with "
-                "their configs. Use this to find the project_dir and "
-                "config_name values other tools need."
+                "List Forgather workspaces (top of the navigation tree) — name, "
+                "description, and project_count, no projects/configs. Start here, "
+                "then list_projects(workspace_root) and list_configs(project_dir). "
+                "Mirrors the Projects sidebar; keeps listings small."
             ),
             json_schema={"type": "object", "properties": {}},
+            handler=_list_workspaces,
+            risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="list_projects",
+            description=(
+                "List project summaries (project_dir, name, description, "
+                "default_config, config_count) — NOT their config lists. Pass "
+                "workspace_root to list one workspace's projects; omit it to "
+                "summarize all. Use list_configs(project_dir) for a project's "
+                "configs."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "workspace_root": {
+                        "type": "string",
+                        "description": "Optional: limit to this workspace (from list_workspaces).",
+                    }
+                },
+            },
             handler=_list_projects,
+            risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="list_configs",
+            description=(
+                "List the configs of one project (name, path, is_default). Use "
+                "the project_dir from list_projects, then inspect_config for "
+                "details on a specific config."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "project_dir": {"type": "string", "description": "Absolute project directory."}
+                },
+                "required": ["project_dir"],
+            },
+            handler=_list_configs,
             risk=READ,
         )
     )
