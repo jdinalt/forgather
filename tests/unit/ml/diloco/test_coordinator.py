@@ -168,3 +168,79 @@ class TestWorkerCoordinatorWiring:
         finally:
             worker.stop()
         assert any(c[0] == "heartbeat" for c in rec.calls), rec.calls
+
+
+class _NoRegBackend(_NoNetBackend):
+    """A backend whose join does NOT register with the coordinator (the
+    shared-memory case): the worker must register separately for membership."""
+
+    registers_with_coordinator = False
+
+
+def _membership_worker(backend_cls, rec, **kw):
+    model = TinyModel()
+    init = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    return DiLoCoWorker(
+        model,
+        torch.optim.SGD(model.parameters(), lr=0.01),
+        server_addr="dummy:8512",
+        heartbeat_interval=0,  # no heartbeat thread; isolate register/deregister
+        backend=backend_cls(init),
+        coordinator=CoordinatorClient(rec),
+        **kw,
+    )
+
+
+class TestCoordinatorMembership:
+    def test_non_registering_backend_registers_for_membership(self):
+        rec = RecordingClient()
+        worker = _membership_worker(_NoRegBackend, rec)
+        worker.start()
+        assert any(c[0] == "register" for c in rec.calls), rec.calls
+        worker.stop()
+        assert any(c[0] == "deregister" for c in rec.calls), rec.calls
+
+    def test_registering_backend_does_not_double_register(self):
+        # _NoNetBackend inherits registers_with_coordinator=True, so the worker
+        # must NOT separately register/deregister via the coordinator.
+        rec = RecordingClient()
+        worker = _membership_worker(_NoNetBackend, rec)
+        worker.start()
+        worker.stop()
+        assert not any(c[0] in ("register", "deregister") for c in rec.calls), rec.calls
+
+
+class TestSyncStateReporting:
+    def _one_heartbeat_sync_state(self, report_sync_state):
+        model = TinyModel()
+        init = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        rec = RecordingClient()
+        worker = DiLoCoWorker(
+            model,
+            torch.optim.SGD(model.parameters(), lr=0.01),
+            server_addr="dummy:8512",
+            sync_every=10_000,
+            heartbeat_interval=0.05,
+            backend=_NoNetBackend(init),
+            coordinator=CoordinatorClient(rec),
+            report_sync_state=report_sync_state,
+        )
+        worker.start()
+        try:
+            deadline = time.time() + 3.0
+            while time.time() < deadline and not any(
+                c[0] == "heartbeat" for c in rec.calls
+            ):
+                time.sleep(0.02)
+        finally:
+            worker.stop()
+        hb = [c for c in rec.calls if c[0] == "heartbeat"]
+        assert hb, rec.calls
+        return hb[0][4]  # the sync_state element of (name, wid, sps, stats, sync_state)
+
+    def test_reports_sync_state_when_enabled(self):
+        ss = self._one_heartbeat_sync_state(True)
+        assert isinstance(ss, dict) and "sync_count" in ss
+
+    def test_omits_sync_state_when_disabled(self):
+        assert self._one_heartbeat_sync_state(False) is None

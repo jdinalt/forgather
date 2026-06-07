@@ -221,6 +221,36 @@ class TestSanitization:
         assert sanitize_stats("oops") == {}
         assert sanitize_stats(42) == {}
 
+
+class TestSanitizeSyncState:
+    def test_keeps_known_keys_and_preserves_int(self):
+        from forgather.ml.diloco.stats import sanitize_sync_state
+
+        out = sanitize_sync_state(
+            {"sync_count": 7, "last_send_mb": 0.0, "last_sync_time": 0.3}
+        )
+        assert out == {"sync_count": 7, "last_send_mb": 0.0, "last_sync_time": 0.3}
+        assert isinstance(out["sync_count"], int)  # not coerced to float
+
+    def test_drops_unknown_nonfinite_and_bool(self):
+        from forgather.ml.diloco.stats import sanitize_sync_state
+
+        out = sanitize_sync_state(
+            {
+                "sync_count": 3,
+                "loss": 1.0,  # training stat — not a sync-state field
+                "last_sync_time": float("inf"),
+                "last_send_mb": True,  # bool rejected
+            }
+        )
+        assert out == {"sync_count": 3}
+
+    def test_non_dict_returns_empty(self):
+        from forgather.ml.diloco.stats import sanitize_sync_state
+
+        assert sanitize_sync_state(None) == {}
+        assert sanitize_sync_state([1, 2]) == {}
+
     def test_max_steps_retained_per_worker_but_not_aggregated(self):
         # max_steps is a per-worker progress target (#125): kept in the
         # sanitized per-worker stats, but never folded into the aggregate

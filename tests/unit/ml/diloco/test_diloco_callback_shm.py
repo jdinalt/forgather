@@ -124,3 +124,13 @@ class TestMakeSyncBackend:
         )
         with pytest.raises(ValueError):
             cb._make_sync_backend(_settings(outer={"name": "Adam", "lr": 1e-3}))
+
+
+class TestReportSyncStateKnob:
+    def test_default_on(self, monkeypatch):
+        monkeypatch.delenv("DILOCO_REPORT_SYNC_STATE", raising=False)
+        assert _make_cb(monkeypatch).report_sync_state is True
+
+    def test_disabled(self, monkeypatch):
+        monkeypatch.setenv("DILOCO_REPORT_SYNC_STATE", "0")
+        assert _make_cb(monkeypatch).report_sync_state is False
