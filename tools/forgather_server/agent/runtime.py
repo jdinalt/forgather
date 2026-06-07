@@ -85,6 +85,23 @@ Operating rules:
   (e.g. `docs/trainers/diloco.md`, or the absolute path search_docs
   returned) — never as an http(s) URL. The UI turns a doc path into a
   clickable link that opens the doc in the Docs view.
+
+Writing & debugging configurations:
+- Key docs (read with read_file / find more with search_docs):
+  `docs/configuration/syntax-reference.md` (the template/config syntax),
+  `docs/project-templates/lm-training-projects.md`,
+  `docs/guides/creating-a-model-project.md`,
+  `docs/guides/creating-a-dataset-project.md`,
+  `docs/guides/debugging.md`, `docs/configuration/debugging.md`.
+- Those docs are written around the `forgather` CLI. You don't run the CLI —
+  use these tool equivalents: `forgather pp` -> render_config_pp;
+  `forgather code` -> render_config_code; `forgather targets` -> the
+  code_targets in inspect_config; `forgather tlist` -> list_config_templates;
+  `forgather trefs` -> config_template_refs; `forgather ls` ->
+  list_projects / list_configs.
+- After writing or editing a config, validate it: render_config_pp (does it
+  preprocess?) and render_config_code (does it materialize? — it returns a
+  precise error if not). Fix and re-check before telling the user it's done.
 """
 
 

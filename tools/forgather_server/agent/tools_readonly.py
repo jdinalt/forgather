@@ -101,6 +101,26 @@ def _render_config_pp(args: Dict[str, Any]) -> Any:
     return config_ops.render_pp(project_dir, config_name)
 
 
+def _render_config_code(args: Dict[str, Any]) -> Any:
+    # forgather code: generated Python for a target ("main" by default; pass
+    # null/"" for the whole config). Raises the same structured diagnostics
+    # the CLI does on a broken config — exactly what helps the agent debug.
+    target = args.get("target") or "main"
+    return config_ops.render_code(args["project_dir"], args["config_name"], target=target)
+
+
+def _list_config_templates(args: Dict[str, Any]) -> Any:
+    # forgather tlist: every template on the project's search path, grouped by
+    # search-root — the set a config can `extends`/`include`.
+    return [dataclasses.asdict(g) for g in config_ops.list_project_templates(args["project_dir"])]
+
+
+def _config_template_refs(args: Dict[str, Any]) -> Any:
+    # forgather trefs: the templates a config actually pulls in (inheritance
+    # chain), as a readable tree.
+    return config_ops.render_trefs_tree(args["project_dir"], args["config_name"])
+
+
 def _read_file(args: Dict[str, Any]) -> Any:
     path = args["path"]
     if not os.path.isabs(path):
@@ -277,6 +297,68 @@ def register_all(reg: ToolRegistry) -> None:
                 "required": ["project_dir", "config_name"],
             },
             handler=_render_config_pp,
+            risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="render_config_code",
+            description=(
+                "Generate the Python a config materializes to (forgather code). "
+                "The best validation that a config is well-formed: it raises a "
+                "structured error pinpointing what's wrong, so use it to debug "
+                "a config you wrote or edited. target defaults to \"main\"."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "project_dir": {"type": "string"},
+                    "config_name": {"type": "string"},
+                    "target": {"type": "string", "description": "Output target (default \"main\"; see list via inspect_config code_targets)."},
+                },
+                "required": ["project_dir", "config_name"],
+            },
+            handler=_render_config_code,
+            risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="list_config_templates",
+            description=(
+                "List every template on a project's search path (forgather "
+                "tlist), grouped by search-root — the templates a config can "
+                "`extends`/`include`. Use before writing a config to find the "
+                "right base template to inherit from."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "project_dir": {"type": "string", "description": "Absolute project directory."}
+                },
+                "required": ["project_dir"],
+            },
+            handler=_list_config_templates,
+            risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="config_template_refs",
+            description=(
+                "Show the templates a config actually pulls in — its inheritance "
+                "chain (forgather trefs) — as a tree. Use to understand or debug "
+                "where a config's values come from."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "project_dir": {"type": "string"},
+                    "config_name": {"type": "string"},
+                },
+                "required": ["project_dir", "config_name"],
+            },
+            handler=_config_template_refs,
             risk=READ,
         )
     )
