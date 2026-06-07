@@ -103,10 +103,20 @@ def _render_config_pp(args: Dict[str, Any]) -> Any:
 
 def _render_config_code(args: Dict[str, Any]) -> Any:
     # forgather code: generated Python for a target ("main" by default; pass
-    # null/"" for the whole config). Raises the same structured diagnostics
-    # the CLI does on a broken config — exactly what helps the agent debug.
+    # null/"" for the whole config). A debug aid for understanding what a
+    # config builds — NOT a normal pipeline stage. To merely check a config is
+    # well-formed, use check_config (cheaper, and the right tool for it).
     target = args.get("target") or "main"
     return config_ops.render_code(args["project_dir"], args["config_name"], target=target)
+
+
+def _check_config(args: Dict[str, Any]) -> Any:
+    # forgather graph (validate-only): preprocess + YAML parse + build the node
+    # graph, no materialization, no code. Returns {ok, targets} or {ok:false,
+    # error}.
+    return config_ops.check_config(
+        args["project_dir"], args["config_name"], target=args.get("target") or None
+    )
 
 
 def _list_config_templates(args: Dict[str, Any]) -> Any:
@@ -284,9 +294,12 @@ def register_all(reg: ToolRegistry) -> None:
         ToolSpec(
             name="render_config_pp",
             description=(
-                "Render a config's preprocessor output (the fully-materialized "
-                "configuration after template inheritance). Use to understand "
-                "exactly what a config resolves to."
+                "Render a config's preprocessor output: the configuration text "
+                "after template inheritance (stage 1 of the pipeline, Jinja2 "
+                "only). Use to see exactly what templates resolve to. NOTE: this "
+                "is a pure text render — it does NOT parse the YAML, validate the "
+                "`!` tags, or check that the config compiles. For that, use "
+                "check_config."
             ),
             json_schema={
                 "type": "object",
@@ -304,10 +317,14 @@ def register_all(reg: ToolRegistry) -> None:
         ToolSpec(
             name="render_config_code",
             description=(
-                "Generate the Python a config materializes to (forgather code). "
-                "The best validation that a config is well-formed: it raises a "
-                "structured error pinpointing what's wrong, so use it to debug "
-                "a config you wrote or edited. target defaults to \"main\"."
+                "Translate a config into the equivalent stand-alone Python "
+                "(forgather code) — the code that, if run, would build the same "
+                "objects, with no Forgather dependency. This is a DEBUG / export "
+                "tool, not a pipeline stage: use it to understand what a config "
+                "actually builds, or to export a config as plain Python. Do NOT "
+                "use it just to check whether a config is valid — that is what "
+                "check_config is for (cheaper and purpose-built). target "
+                "defaults to \"main\"."
             ),
             json_schema={
                 "type": "object",
@@ -319,6 +336,33 @@ def register_all(reg: ToolRegistry) -> None:
                 "required": ["project_dir", "config_name"],
             },
             handler=_render_config_code,
+            risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="check_config",
+            description=(
+                "Validate that a config compiles to a valid node graph "
+                "(forgather graph, validate-only). Runs the real pipeline up "
+                "to the graph stage: preprocess the templates, parse the YAML, "
+                "and build the node graph (resolving the `!` tags). It does NOT "
+                "construct any objects and does NOT generate code. This is the "
+                "right, cheapest way to answer \"does this config compile?\" "
+                "after you write or edit one. Returns {ok:true, targets:[...]} "
+                "on success, or {ok:false, error, error_type} with a structured "
+                "diagnostic on a malformed config."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "project_dir": {"type": "string"},
+                    "config_name": {"type": "string"},
+                    "target": {"type": "string", "description": "Optional: also verify this target key exists in the graph."},
+                },
+                "required": ["project_dir", "config_name"],
+            },
+            handler=_check_config,
             risk=READ,
         )
     )

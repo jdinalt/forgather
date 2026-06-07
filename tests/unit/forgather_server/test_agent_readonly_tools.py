@@ -18,6 +18,7 @@ def test_expected_read_tools_registered():
         "inspect_config",
         "render_config_pp",
         "render_config_code",
+        "check_config",
         "list_config_templates",
         "config_template_refs",
         "search_docs",
@@ -37,6 +38,26 @@ def test_render_config_code_delegates(monkeypatch):
     )
     assert out == "CODE"
     assert seen["target"] == "main"  # defaults when omitted/blank
+
+
+def test_check_config_delegates(monkeypatch):
+    seen = {}
+
+    def fake(pd, cn, target=None):
+        seen.update(project_dir=pd, config_name=cn, target=target)
+        return {"ok": True, "targets": ["main"]}
+
+    monkeypatch.setattr(config_ops, "check_config", fake)
+    out = tools_readonly._check_config(
+        {"project_dir": "/p", "config_name": "c.yaml"}
+    )
+    assert out == {"ok": True, "targets": ["main"]}
+    assert seen["target"] is None  # optional; None when omitted/blank
+    # A blank target string is normalized to None (not passed through as "").
+    tools_readonly._check_config(
+        {"project_dir": "/p", "config_name": "c.yaml", "target": ""}
+    )
+    assert seen["target"] is None
 
 
 def test_config_template_refs_delegates(monkeypatch):

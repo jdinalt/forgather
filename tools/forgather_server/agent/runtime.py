@@ -95,13 +95,23 @@ Writing & debugging configurations:
   `docs/guides/debugging.md`, `docs/configuration/debugging.md`.
 - Those docs are written around the `forgather` CLI. You don't run the CLI —
   use these tool equivalents: `forgather pp` -> render_config_pp;
-  `forgather code` -> render_config_code; `forgather targets` -> the
-  code_targets in inspect_config; `forgather tlist` -> list_config_templates;
+  `forgather graph` (validate) -> check_config; `forgather code` ->
+  render_config_code; `forgather targets` -> the code_targets in
+  inspect_config; `forgather tlist` -> list_config_templates;
   `forgather trefs` -> config_template_refs; `forgather ls` ->
   list_projects / list_configs.
-- After writing or editing a config, validate it: render_config_pp (does it
-  preprocess?) and render_config_code (does it materialize? — it returns a
-  precise error if not). Fix and re-check before telling the user it's done.
+- The config pipeline has three stages: (1) preprocess the templates (Jinja2
+  inheritance) -> render_config_pp; (2) parse the result into a node graph
+  (YAML + `!` tags) -> check_config; (3) materialize the objects (runs
+  constructors — not exposed). render_config_code is a separate DEBUG/export
+  tool (the equivalent stand-alone Python), NOT a pipeline stage.
+- After writing or editing a config, validate it with check_config: it runs
+  the preprocess + parse-to-node-graph stages and returns {ok:true, targets}
+  or a precise {ok:false, error}. That is the correct "does it compile?"
+  check — do NOT reach for render_config_code to validate (it is overkill and
+  only a debug aid). Use render_config_pp to inspect the resolved text, and
+  render_config_code only when you actually want to see/export the Python.
+  Fix and re-check before telling the user it's done.
 """
 
 
