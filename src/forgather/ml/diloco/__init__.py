@@ -25,8 +25,11 @@ from typing import TYPE_CHECKING
 
 # Lightweight, stdlib-only — safe to import eagerly and frequently hot-pathed.
 from .env import (
+    diloco_apply_collective_worker_id,
     diloco_backend,
+    diloco_init_checkpoint,
     diloco_is_enabled,
+    diloco_replicate,
     diloco_report_sync_state,
     diloco_server_addr,
     diloco_shm_group_dir,
@@ -47,6 +50,7 @@ _LAZY = {
     "HttpStarBackend": ".sync_backend",
     "SyncResult": ".sync_backend",
     "SharedMemoryBackend": ".shared_memory_backend",
+    "CollectiveBackend": ".collective_backend",
     "CoordinatorClient": ".coordinator",
 }
 
@@ -60,10 +64,14 @@ __all__ = [
     "HttpStarBackend",
     "SyncResult",
     "SharedMemoryBackend",
+    "CollectiveBackend",
     "CoordinatorClient",
     "diloco_is_enabled",
     "diloco_server_addr",
+    "diloco_apply_collective_worker_id",
     "diloco_backend",
+    "diloco_init_checkpoint",
+    "diloco_replicate",
     "diloco_shm_group_dir",
     "diloco_shm_group_size",
     "diloco_shm_init_checkpoint",
@@ -90,6 +98,7 @@ if TYPE_CHECKING:
     # Static type checkers / IDEs resolve the real symbols without the
     # runtime import cost.
     from .client import DiLoCoClient
+    from .collective_backend import CollectiveBackend
     from .coordinator import CoordinatorClient
     from .fragments import FragmentManager
     from .health import HealthMonitor

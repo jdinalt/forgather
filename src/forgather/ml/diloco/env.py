@@ -41,9 +41,55 @@ def diloco_server_addr() -> str:
 
 
 def diloco_backend() -> str:
-    """Return the sync-backend selector: ``"http"`` (default) or
-    ``"shared_memory"``. Set via ``DILOCO_BACKEND``."""
+    """Return the sync-backend selector: ``"http"`` (default),
+    ``"shared_memory"``, or ``"collective"``. Set via ``DILOCO_BACKEND``."""
     return os.environ.get("DILOCO_BACKEND", "http").strip().lower() or "http"
+
+
+def diloco_replicate() -> int:
+    """The collective backend's replicate degree (number of replicas in the
+    ``diloco`` mesh axis), or 1 if unset. Set via ``DILOCO_REPLICATE``; the
+    launch sizes one torchrun world as ``replicate × inner``. Raises
+    ``ValueError`` if set to a non-integer."""
+    raw = os.environ.get("DILOCO_REPLICATE", "").strip()
+    return int(raw) if raw else 1
+
+
+def diloco_apply_collective_worker_id() -> None:
+    """In the collective regime (``DILOCO_REPLICATE`` > 1), rewrite
+    ``DILOCO_WORKER_ID`` to a per-replica-distinct ``{base}_r{diloco_rank}``.
+
+    The N collective replicas run as one torchrun world and share the env, so a
+    single ``DILOCO_WORKER_ID`` would put every replica on the same output dir /
+    run logs / checkpoints and the same dataset shard. Making it distinct here —
+    once, at the torchrun entrypoint, BEFORE config preprocessing reads it for
+    the output-dir derivation — is the single source of per-replica identity:
+    the config, the ``DiLoCoCallback``, and the work-unit dispatch all then read
+    the same distinct id. Idempotent; a no-op when the degree is 1 or the base
+    is unset (the downstream 'unset' guidance still fires)."""
+    replicate = diloco_replicate()
+    if replicate <= 1:
+        return
+    base = os.environ.get("DILOCO_WORKER_ID", "").strip()
+    if not base:
+        return
+    world = int(os.environ.get("WORLD_SIZE", "1") or "1")
+    rank = int(os.environ.get("RANK", "0") or "0")
+    inner = max(1, world // replicate)
+    suffix = f"_r{rank // inner}"
+    if not base.endswith(suffix):
+        os.environ["DILOCO_WORKER_ID"] = f"{base}{suffix}"
+
+
+def diloco_init_checkpoint() -> str:
+    """Optional override for a non-HTTP backend's init checkpoint dir, or ``""``.
+
+    Used by the collective backend (the worker-process replicas seed from this
+    dir on rank 0). When unset, the backend seeds from the checkpoint the
+    coordinator advertises in ``/info`` (``model_checkpoint_dir``). The
+    shared-memory backend has its own ``DILOCO_SHM_INIT_CHECKPOINT`` for the same
+    role."""
+    return os.environ.get("DILOCO_INIT_CHECKPOINT", "").strip()
 
 
 def diloco_shm_group_dir() -> str:

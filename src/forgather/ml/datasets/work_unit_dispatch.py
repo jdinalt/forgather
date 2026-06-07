@@ -106,6 +106,12 @@ def maybe_enable_work_dispatch(
         # Nothing to dispatch.
         return ds
 
+    # DILOCO_WORKER_ID is per-replica-distinct already: the scheduler/CLI emits a
+    # unique id per worker job, and for the collective backend the torchrun
+    # entrypoint (diloco_apply_collective_worker_id) rewrites it to
+    # ``{base}_r{diloco_rank}`` before the config is preprocessed. So each
+    # replica keys the server-side work queue distinctly and gets a disjoint
+    # shard with no special-casing here.
     worker_id = os.environ.get("DILOCO_WORKER_ID", "").strip()
     if not worker_id:
         raise DiLoCoWorkDispatchUnavailable(

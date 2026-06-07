@@ -160,6 +160,14 @@ def main():
     args = parse_args()
     init_logging(args)
 
+    # Collective DiLoCo (issue #154): the N replicas share this torchrun world's
+    # env, so make DILOCO_WORKER_ID per-replica-distinct BEFORE the Project below
+    # preprocesses the config (the output dir is derived from it). No-op unless
+    # DILOCO_REPLICATE > 1.
+    from forgather.ml.diloco import diloco_apply_collective_worker_id
+
+    diloco_apply_collective_worker_id()
+
     # Parse dynamic args from JSON if provided
     dynamic_args = {}
     if args.dynamic_args:

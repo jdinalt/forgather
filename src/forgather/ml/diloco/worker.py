@@ -226,6 +226,14 @@ class DiLoCoWorker:
         # only sync-progress signal for an off-server backend (shared-memory).
         self.report_sync_state = bool(report_sync_state)
 
+        # Replicated/collective backends (CollectiveBackend) make every rank an
+        # independent DiLoCo replica that participates symmetrically in the outer
+        # step: each rank computes its own pseudo-gradient and the backend's
+        # all-reduce *is* the cross-rank agreement, so there is no leader/follower
+        # split and no post-sync broadcast. Detected from the capability flag and
+        # used below to make every rank its own worker (like a pipeline rank).
+        self._symmetric = self.backend.runs_outer_optimizer == "replicated"
+
         # DDP rank-awareness. When running inside a torch-distributed
         # group (e.g. ``torchrun`` with WORLD_SIZE > 1, or a Forgather
         # DDP trainer), the whole DDP job is ONE DiLoCo worker —
@@ -250,6 +258,17 @@ class DiLoCoWorker:
             self._is_dist = False
             self._ddp_rank = 0
             self._ddp_world_size = 1
+        if self._symmetric and self.pp_world_size > 1:
+            # Collective + pipeline is incompatible: a collective all-reduce
+            # covers the *full* model, but each pipeline rank owns only its
+            # slice. Fail loud rather than mismatch the collective.
+            raise ValueError(
+                "DiLoCo collective backend (replicated outer optimizer) is not "
+                "compatible with pipeline parallel (pp_world_size="
+                f"{self.pp_world_size}): the all-reduce spans the full model "
+                "while each pipeline rank holds only its slice. Use the HTTP "
+                "backend for pipeline groups."
+            )
         if self.pp_world_size > 1:
             # Every pipeline rank is its own DiLoCo worker (each owns
             # one DDP-group-of-one); we are always the leader of that
@@ -297,6 +316,14 @@ class DiLoCoWorker:
                     "restart the diloco server without --dylu, or use a "
                     "non-pipeline trainer."
                 )
+        elif self._symmetric:
+            # Collective backend: every rank is its own independent DiLoCo
+            # replica (owns the full model, unlike a pipeline rank's slice).
+            # Every rank registers, heartbeats, and syncs; the backend's
+            # all-reduce is the barrier, so there is no leader/follower split or
+            # post-sync broadcast. Mirrors the pipeline "every rank is its own
+            # worker" model above.
+            self._is_leader = True
         else:
             self._is_leader = self._ddp_rank == 0
 
@@ -405,6 +432,11 @@ class DiLoCoWorker:
         this will broadcast across the within-stage DDP sub-group only.
         """
         if not self._is_dist:
+            return
+        if self._symmetric:
+            # Collective backend: every rank already ran the replicated outer
+            # step and holds identical params (and started from the same
+            # rank-0-broadcast init), so there is no leader to broadcast from.
             return
         if self.pp_world_size > 1:
             # Each rank IS the leader of its own DDP-group-of-one; no

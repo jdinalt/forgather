@@ -84,6 +84,7 @@ src/forgather/ml/diloco/
   sync_backend.py    OuterSyncBackend seam + HttpStarBackend (the bulk tensor-leg transport)
   wire_cast.py       cast_for_upload: the HTTP backend's upload wire cast (fp32/bf16 + SR)
   shared_memory_backend.py  SharedMemoryBackend: single-host shared-memory OuterSyncBackend
+  collective_backend.py  CollectiveBackend: all-reduce + replicated outer optimizer
   coordinator.py     CoordinatorClient (the coordination surface: heartbeat / info / model-def)
   worker.py          Optimizer hook, pseudo-gradient computation, streaming, reconnection
   fragments.py       FragmentManager: parameter splitting, scheduling
@@ -102,6 +103,7 @@ tests/unit/ml/diloco/
   test_sync_backend.py    OuterSyncBackend delegation; worker backend-agnosticism
   test_coordinator.py     CoordinatorClient delegation; worker coordinator wiring
   test_shared_memory_backend.py  SharedMemoryBackend: multi-process outer-step equivalence
+  test_collective_backend.py  CollectiveBackend: multi-process all-reduce outer-step + cross-rank identity
   test_server_client.py   HTTP round-trip: register, submit, status
   test_worker.py          Worker: pseudo-gradients, optimizer hooks, full sync cycle
   test_async.py           Async mode, DN momentum, DyLU
@@ -343,12 +345,12 @@ local (pseudo-gradient computation via `ParamView`, applying the returned
 params, the DDP-rank broadcast, and scheduling); the backend owns *how* the
 worker reaches agreement on the next global params.
 
-`HttpStarBackend` is the only implementation: a thin adapter over `DiLoCoClient`
-providing the HTTP central-parameter-server transport. The worker holds an
-`OuterSyncBackend` — an `HttpStarBackend` wrapping its own client by default.
-The seam lets the transport be a different implementation (e.g. collectives or a
-shared-memory parameter region) without changing the worker's
-`compute → synchronize → apply → broadcast` flow.
+`HttpStarBackend` is the reference implementation: a thin adapter over
+`DiLoCoClient` providing the HTTP central-parameter-server transport, held by the
+worker by default. Two non-HTTP siblings exist — `SharedMemoryBackend` (a CPU
+master region) and `CollectiveBackend` (an all-reduce + replicated outer
+optimizer), both detailed below. The seam lets the transport be any of these
+without changing the worker's `compute → synchronize → apply → broadcast` flow.
 
 The seam is the outer step, not a byte channel: `synchronize` takes a raw
 pseudo-gradient and returns a `SyncResult` carrying the agreed next global
@@ -409,7 +411,55 @@ omitting a name fails loud (the average divides by the group size). The averagin
 contributors, fp32, SGD-Nesterov). The HTTP coordinator still handles membership,
 `/info`, heartbeat, and work-unit dispatch — only the tensor legs are
 shared-memory. The backend is constructed directly with its rendezvous parameters
-(`group_dir`, `group_size`, `init_checkpoint`); there is no trainer/CLI wiring.
+(`group_dir`, `group_size`, `init_checkpoint`); the trainer/CLI wiring
+(`DILOCO_BACKEND=shared_memory`, `forgather submit --backend shared_memory`)
+selects it.
+
+### Collective backend
+
+`CollectiveBackend` (`collective_backend.py`) is the first *collective*
+`OuterSyncBackend` — the other single-host DDP-alternative path. Every worker is
+an **independent DiLoCo replica** (its own data shard, no per-step DDP gradient
+all-reduce) sharing one `torch.distributed` process group. `runs_outer_optimizer`
+is `"replicated"`: each round, every rank `all_reduce(SUM)`s its raw
+pseudo-gradient in a fixed name order, divides by the group size to get the mean,
+sets it as the `.grad` on a private CPU fp32 master `ParameterList`, and steps an
+**identical outer optimizer** — reproducing `_apply_outer_optimizer` exactly. The
+stepped master is the new global; because every rank reduced the same inputs and
+stepped an identical optimizer over identical weights, the results are
+bit-identical across ranks, so `synchronize` returns them **without a result
+broadcast** (a `broadcast_result` flag is a one-line safety valve). `join` has
+rank 0 load the init checkpoint and broadcast it so every replica starts
+identical — the precondition for the replicated step staying in lockstep. The
+collective runs on the group's native device (CUDA for NCCL, the NVLink fast
+path; CPU for gloo); the master + optimizer stay on CPU.
+
+The backend borrows its process group from the launcher and never creates or
+destroys one. That group is the **`diloco` axis of a device mesh**:
+`ForgatherParallelDims` (`distributed_mesh.py`) splits the torchrun world into a
+`(diloco, inner)` mesh (`init_device_mesh((diloco, inner), ("diloco",
+inner_axis))`), and `DistributedEnvironment._apply_diloco_split` (driven by
+`DILOCO_REPLICATE`) reports the **inner** view (`world_size`/`rank`) to the
+trainer — so the trainer's per-step collectives span one replica only — while
+exposing `diloco_group`/`diloco_rank`/`diloco_size` for the
+`DiLoCoCallback._make_collective_backend` to hand the backend. The first cut
+targets `inner == 1` (N single-device replicas, trainer `world_size == 1`);
+composing the `diloco` axis with pipeline/DDP inner parallelism is a follow-up.
+Modeled on torchtitan's `ParallelDims`.
+
+`fault_tolerant` is `False` (a dead peer hangs the all-reduce — quorum/skip-step
+is a follow-up) and `registers_with_coordinator` is `False` (each replica
+registers separately for the coordinator's diagnostics; the tensor path is
+off-server). The worker treats a replicated backend as **symmetric**: every rank
+is its own leader (like a pipeline rank), computes its own pseudo-gradient, and
+participates in the all-reduce — the leader-only sync + post-sync DDP broadcast is
+skipped. Per-replica identity (output dir, run logs, work-unit data shard, the
+distinct worker-id) all derive from one source: the torchrun entrypoint rewrites
+`DILOCO_WORKER_ID` to `{base}_r{diloco_rank}` (`diloco_apply_collective_worker_id`)
+before the config is preprocessed. Selected by `DILOCO_BACKEND=collective` +
+`DILOCO_REPLICATE`; the model must not be DDP-wrapped (with `inner == 1` the
+trainer sees `world_size == 1` and never wraps; the callback also fails loud on a
+`DistributedDataParallel` model).
 
 ---
 
