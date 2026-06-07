@@ -61,11 +61,15 @@ class AgentLoop:
         *,
         system: Optional[str] = None,
         max_iterations: int = 12,
+        disclosure_mode: str = "inline",
     ) -> None:
         self.provider = provider
         self.registry = registry
         self.system = system
         self.max_iterations = max_iterations
+        # "inline" (all tools in the array) or "deferred" (core+meta only;
+        # extended tools reached via the call_tool dispatcher).
+        self.disclosure_mode = disclosure_mode
 
     # ---- public entry points -------------------------------------------
 
@@ -238,7 +242,7 @@ class AgentLoop:
     # ---- core loop -----------------------------------------------------
 
     async def _run_turns(self, conv: Conversation) -> AsyncIterator[Dict[str, Any]]:
-        tools = self.registry.anthropic_tools()
+        tools = self.registry.anthropic_tools(self.disclosure_mode)
         for _ in range(self.max_iterations):
             text_parts: List[str] = []
             tool_calls: List[ToolCall] = []
@@ -338,7 +342,33 @@ class AgentLoop:
             ):
                 yield ev
             return
-        missing = self._missing_required(spec.json_schema, tc.arguments)
+
+        # Deferred-mode dispatch: a call_tool invocation names an inner tool and
+        # its args. Resolve to the inner (spec, args) and run under the inner
+        # tool's own risk, so a confirm/propose inner tool still gates. The
+        # transcript keeps the original call_tool tool_use (tc) — only execution
+        # is rebound; results stay keyed by tc.id.
+        args = tc.arguments
+        if getattr(spec, "dispatch", False):
+            inner_name = (tc.arguments or {}).get("name")
+            inner = self.registry.get(inner_name) if inner_name else None
+            if inner is None:
+                async for ev in self._record_error(
+                    tc, pending_turn,
+                    f"call_tool: unknown tool {inner_name!r} (use list_tools)",
+                ):
+                    yield ev
+                return
+            if getattr(inner, "dispatch", False):
+                async for ev in self._record_error(
+                    tc, pending_turn, "call_tool cannot dispatch call_tool"
+                ):
+                    yield ev
+                return
+            spec = inner
+            args = (tc.arguments or {}).get("args") or {}
+
+        missing = self._missing_required(spec.json_schema, args)
         if missing:
             async for ev in self._record_error(
                 tc, pending_turn, f"missing required argument(s): {', '.join(missing)}"
@@ -348,7 +378,7 @@ class AgentLoop:
 
         if spec.risk == READ:
             try:
-                out = await self._call(spec.handler, tc.arguments)
+                out = await self._call(spec.handler, args)
             except Exception as e:
                 log.exception("read tool %s failed", tc.name)
                 async for ev in self._record_error(
@@ -387,7 +417,7 @@ class AgentLoop:
 
         # propose / confirm — compute the preview only, gate the commit.
         try:
-            proposal = await self._call(spec.handler, tc.arguments)
+            proposal = await self._call(spec.handler, args)
         except Exception as e:
             log.exception("propose tool %s failed", tc.name)
             async for ev in self._record_error(tc, pending_turn, f"{type(e).__name__}: {e}"):
@@ -406,7 +436,7 @@ class AgentLoop:
                 action_id=action_id,
                 session_id=conv.session_id,
                 tool_use_id=tc.id,
-                tool_name=tc.name,
+                tool_name=spec.name,
                 risk=spec.risk,
                 proposal=proposal,
             )

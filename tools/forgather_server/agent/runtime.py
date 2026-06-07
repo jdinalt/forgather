@@ -26,7 +26,7 @@ from .. import agent_profiles_store as profiles_store
 from .. import agent_tls
 from .loop import AgentLoop
 from .registry import ToolRegistry
-from . import tools_authoring, tools_jobs, tools_readonly
+from . import tools_authoring, tools_jobs, tools_meta, tools_readonly
 
 log = logging.getLogger("forgather_server.agent.runtime")
 
@@ -47,6 +47,7 @@ _SEED_KEYS = {
     "max_tokens",
     "max_iterations",
     "prompt_caching",
+    "disclosure_mode",
     "label",
 }
 
@@ -172,6 +173,38 @@ Datasets workflow (creating / smoke-testing a dataset project):
   the user to start one.
 """
 
+# Appended to the system prompt per disclosure mode. ``inline`` lists every
+# tool (extended ones summarized); ``deferred`` lists only core tools and
+# reaches the rest through call_tool.
+_DISCLOSURE_NOTE = {
+    "inline": (
+        "\n\nTool descriptions: some tools (extended) show only a brief "
+        "summary. Call tool_help(name) for the full description and argument "
+        "schema before using one you are unsure about; list_tools shows the "
+        "full catalog.\n"
+    ),
+    "deferred": (
+        "\n\nTool discovery: only core tools are listed directly. To use any "
+        "other capability, call list_tools to find the right tool, tool_help"
+        "(name) to learn its arguments, then call_tool(name=..., args={...}) "
+        "to run it (it still asks for approval if it makes changes).\n"
+    ),
+}
+
+
+def _resolve_disclosure_mode(profile) -> str:
+    """Resolve the tool-disclosure mode for a profile.
+
+    Explicit "inline"/"deferred" on the profile wins; "auto" (or anything
+    else) picks deferred for a custom base_url (local/vLLM, limited context)
+    and inline for Claude (large context, prompt caching keeps the static
+    tool block cheap).
+    """
+    pref = (getattr(profile, "disclosure_mode", "") or "auto").lower()
+    if pref in ("inline", "deferred"):
+        return pref
+    return "deferred" if profile.base_url else "inline"
+
 
 def configure(cfg: Optional[Dict[str, Any]]) -> None:
     """Seed a bootstrap profile from the server-config ``agent:`` block.
@@ -226,6 +259,7 @@ def status() -> Dict[str, Any]:
         "base_url": active.base_url or None,
         "verify_tls": active.verify_tls,
         "has_imported_cert": bool(active.ca_cert_pem),
+        "disclosure_mode": _resolve_disclosure_mode(active),
         # Per-Mtok USD rates for the four token categories so the meter can show
         # an estimated cost; None for an unpriced / self-hosted model.
         "pricing": agent_pricing.price_for(active.model),
@@ -236,6 +270,9 @@ def get_registry() -> ToolRegistry:
     global _registry
     if _registry is None:
         reg = ToolRegistry()
+        # Meta/disclosure tools first so list_tools / tool_help / call_tool are
+        # always present regardless of mode.
+        tools_meta.register_all(reg)
         tools_readonly.register_all(reg)
         tools_authoring.register_all(reg)
         tools_jobs.register_all(reg)
@@ -362,6 +399,9 @@ def _build_loop(profile) -> AgentLoop:
     prompt_caching = {"on": True, "off": False}.get(
         caching_pref, not bool(profile.base_url)
     )
+    # Disclosure mode: "auto" -> deferred for a custom base_url (local/vLLM,
+    # limited context), inline for Claude (large context + prompt caching).
+    disclosure_mode = _resolve_disclosure_mode(profile)
     provider = AnthropicProvider(
         model=model,
         api_key=api_key,
@@ -375,8 +415,9 @@ def _build_loop(profile) -> AgentLoop:
     return AgentLoop(
         provider,
         get_registry(),
-        system=SYSTEM_PROMPT,
+        system=SYSTEM_PROMPT + _DISCLOSURE_NOTE[disclosure_mode],
         max_iterations=int(profile.max_iterations or profiles_store.DEFAULT_MAX_ITERATIONS),
+        disclosure_mode=disclosure_mode,
     )
 
 

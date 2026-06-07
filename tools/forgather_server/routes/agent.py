@@ -190,6 +190,7 @@ class ProfileModel(BaseModel):
     max_tokens: int
     max_iterations: int
     prompt_caching: str
+    disclosure_mode: str
 
 
 class ProfileWrite(BaseModel):
@@ -205,6 +206,7 @@ class ProfileWrite(BaseModel):
     max_tokens: Optional[int] = None
     max_iterations: Optional[int] = None
     prompt_caching: Optional[str] = None
+    disclosure_mode: Optional[str] = None
 
 
 def _to_model(p) -> ProfileModel:
@@ -221,6 +223,7 @@ def _to_model(p) -> ProfileModel:
         max_tokens=p.max_tokens,
         max_iterations=p.max_iterations,
         prompt_caching=getattr(p, "prompt_caching", "auto"),
+        disclosure_mode=getattr(p, "disclosure_mode", "auto"),
     )
 
 
