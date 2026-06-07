@@ -578,12 +578,14 @@ work-unit dispatch that shards rows across replicas; no tensor role).
 The replicas are a **device-mesh axis**. `DILOCO_REPLICATE=N` splits the torchrun
 world into a `(diloco, inner)` mesh: the `diloco` axis is the N replicas (the
 collective all-reduces across it); the `inner` axis is whatever the trainer
-parallelizes over (pipeline / DDP). The trainer is reported its **inner** view of
-the world, so its per-step collectives span one replica only — never across
-replicas, which is the whole point. This first cut targets `inner = 1` (N
-single-device replicas, so the trainer sees `world_size == 1` and does no
-gradient sync); composing the `diloco` axis with pipeline / DDP inner parallelism
-is a follow-up. Modeled on torchtitan's `ParallelDims`.
+parallelizes over. The trainer is reported its **inner** view of the world, so its
+per-step collectives span one replica only — never across replicas, which is the
+whole point. `inner = 1` gives N single-device replicas (the trainer sees
+`world_size == 1` and does no gradient sync). `inner > 1` with
+`DILOCO_INNER_AXIS=pipeline_parallel` makes each replica a multi-rank **pipeline**
+— see [Composing with pipeline parallel](#composing-with-pipeline-parallel).
+Data-parallel inner (`diloco × DDP/FSDP`) is rejected for now — DiLoCo largely
+replaces DDP. Modeled on torchtitan's `ParallelDims`.
 
 Select it with environment variables (the launch sizes one torchrun world as
 `DILOCO_REPLICATE × inner`):
@@ -592,6 +594,7 @@ Select it with environment variables (the launch sizes one torchrun world as
 |---|---|
 | `DILOCO_BACKEND` | `collective` (default `http`) |
 | `DILOCO_REPLICATE` | number of replicas on the `diloco` axis (the replicate degree) |
+| `DILOCO_INNER_AXIS` | the inner parallelism axis: `data_parallel` (default, `inner` must be 1) or `pipeline_parallel` |
 | `DILOCO_WORKER_ID` | base worker id; the entrypoint makes it per-replica (`{base}_r{n}`) so each replica gets its own output dir, run logs, and data shard |
 | `DILOCO_INIT_CHECKPOINT` | optional; overrides the init checkpoint (default: the dir the coordinator advertises in `/info`) |
 | `DILOCO_REPORT_SYNC_STATE` | optional; report per-worker sync-state to the coordinator (default on) |
@@ -642,7 +645,33 @@ Unlike the shared-memory backend (which enqueues N worker jobs), collective is
 entrypoint). Because the backend is single-host, `--backend collective` can't be
 combined with `--global`.
 
-Pipeline / DDP composition on the `inner` axis, the webui selector, the
+### Composing with pipeline parallel
+
+Set `DILOCO_INNER_AXIS=pipeline_parallel` to make each replica a `P`-rank
+pipeline. The mesh is `(diloco=R, pipeline_parallel=P)` over one torchrun world of
+`R×P` ranks: the `R` replicas at the same pipeline position all-reduce *their
+slice* of the model across the `diloco` sub-group, while each replica's `P` ranks
+run the pipeline among themselves. Each pipeline rank is its own DiLoCo worker
+owning only its parameter slice; the outer step runs per-slice and the union is
+the full model. Launch with `--nproc-per-node = R×P`:
+
+```bash
+# Coordinator (R*P workers register; each pipeline rank is one worker)
+forgather diloco server --local-only --output-dir <init-checkpoint-dir> \
+    --num-workers 4 --sync-every 100 -H 127.0.0.1 --port 8512
+
+# R=2 replicas x P=2 pipeline stages = 4 ranks in one torchrun world
+DILOCO_SERVER=https://127.0.0.1:8512 DILOCO_BACKEND=collective \
+  DILOCO_REPLICATE=2 DILOCO_INNER_AXIS=pipeline_parallel DILOCO_WORKER_ID=run1 \
+  torchrun --standalone --nproc-per-node 4 \
+    scripts/train_script.py -p <project-dir> <pipeline-config>.yaml
+```
+
+The config must select the pipeline trainer (`P` stages). Each replica gets a
+distinct data shard (keyed on `{base}_r{replica}`), shared by its `P` pipeline
+ranks; the per-replica worker ids are `{base}_r{replica}_pp{stage}`.
+
+The scheduler-driven (`forgather submit`) pipeline sizing, the webui selector, the
 streaming-fragment path, and a fault-tolerant quorum (a dead peer currently hangs
 the all-reduce) are follow-ups; for the internals see
 [`diloco-architecture.md`](diloco-architecture.md#collective-backend).

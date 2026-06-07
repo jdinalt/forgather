@@ -14,9 +14,17 @@ _KEYS = ("DILOCO_REPLICATE", "WORLD_SIZE", "RANK", "DILOCO_WORKER_ID")
 
 @pytest.fixture
 def clean_env(monkeypatch):
+    import os
+
     for k in _KEYS:
         monkeypatch.delenv(k, raising=False)
-    return monkeypatch
+    yield monkeypatch
+    # ``diloco_apply_collective_worker_id`` mutates ``os.environ`` directly
+    # (it runs at the torchrun entrypoint), so monkeypatch's record-at-setup
+    # restore can leave the rewritten DILOCO_WORKER_ID behind. Scrub the keys
+    # on teardown so the value can't leak into env-sensitive tests elsewhere.
+    for k in _KEYS:
+        os.environ.pop(k, None)
 
 
 def test_degree_one_is_noop(clean_env):

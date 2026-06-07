@@ -195,10 +195,26 @@ class CollectiveBackend(OuterSyncBackend):
 
         factory = outer_opt_factory or self.outer_opt_factory
 
+        # A worker contributes only the param names it owns. For an inner
+        # pipeline each rank owns a *slice* (PipelineParamView); the master and
+        # the per-round all-reduce must be over exactly that slice, or
+        # ``synchronize`` would fail loud on the names this rank doesn't hold.
+        # ``worker_info["param_shapes"]`` carries the slice's names; for a
+        # non-pipeline worker that is the full model, so the filter is a no-op.
+        slice_names = None
+        if worker_info and isinstance(worker_info.get("param_shapes"), dict):
+            slice_names = set(worker_info["param_shapes"].keys())
+
         master: Dict[str, torch.Tensor] = {}
         if self.rank == 0:
             init = load_checkpoint(self.init_checkpoint, module=None, device="cpu")
-            master = {k: v.detach().float().cpu().contiguous() for k, v in init.items()}
+            # Preserve the checkpoint's name order (the canonical order the
+            # replicated outer step relies on), filtered to this slice.
+            master = {
+                k: v.detach().float().cpu().contiguous()
+                for k, v in init.items()
+                if slice_names is None or k in slice_names
+            }
             names = list(master.keys())
         else:
             names = None

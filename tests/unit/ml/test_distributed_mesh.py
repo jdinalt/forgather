@@ -48,7 +48,7 @@ class TestDegreeValidation:
             )
 
 
-def _mesh_worker(rank, world_size, port, diloco, inner, result_path):
+def _mesh_worker(rank, world_size, port, diloco, inner, result_path, inner_axis):
     """Child: init gloo, build the mesh, report this rank's coordinates + the
     global ranks of its diloco and inner sub-groups."""
     import os
@@ -67,7 +67,7 @@ def _mesh_worker(rank, world_size, port, diloco, inner, result_path):
         pd = ForgatherParallelDims(
             diloco=diloco,
             inner=inner,
-            inner_axis="data_parallel",
+            inner_axis=inner_axis,
             world_size=world_size,
             device_type="cpu",
         )
@@ -84,7 +84,7 @@ def _mesh_worker(rank, world_size, port, diloco, inner, result_path):
 
 
 class TestMultiProcessMesh:
-    def _run(self, tmp_path, diloco, inner):
+    def _run(self, tmp_path, diloco, inner, inner_axis="data_parallel"):
         import torch
 
         world_size = diloco * inner
@@ -95,7 +95,8 @@ class TestMultiProcessMesh:
             rp = str(tmp_path / f"mesh_{r}.pt")
             paths.append(rp)
             p = ctx.Process(
-                target=_mesh_worker, args=(r, world_size, port, diloco, inner, rp)
+                target=_mesh_worker,
+                args=(r, world_size, port, diloco, inner, rp, inner_axis),
             )
             p.start()
             procs.append(p)
@@ -131,3 +132,19 @@ class TestMultiProcessMesh:
             assert r["inner_rank"] == 0
             assert r["diloco_rank"] == r["rank"]
             assert r["diloco_ranks"] == [0, 1, 2]
+
+    def test_diloco_x_pipeline_grouping(self, tmp_path):
+        # (diloco=2, pipeline_parallel=2), world=4 — the priority composition.
+        # The inner axis name differs but the rank arithmetic is identical to
+        # the data_parallel case: pp group is contiguous within a replica, the
+        # diloco group strides across replicas at the same pp position.
+        results = self._run(tmp_path, diloco=2, inner=2, inner_axis="pipeline_parallel")
+        by_rank = {r["rank"]: r for r in results}
+        assert by_rank[0]["diloco_rank"] == 0 and by_rank[0]["inner_rank"] == 0
+        assert by_rank[3]["diloco_rank"] == 1 and by_rank[3]["inner_rank"] == 1
+        # Each pp rank all-reduces its slice across its replicas at that pp pos.
+        assert by_rank[0]["diloco_ranks"] == [0, 2]
+        assert by_rank[1]["diloco_ranks"] == [1, 3]
+        # The pipeline runs on the contiguous inner sub-group.
+        assert by_rank[0]["inner_ranks"] == [0, 1]
+        assert by_rank[2]["inner_ranks"] == [2, 3]

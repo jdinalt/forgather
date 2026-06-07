@@ -55,6 +55,16 @@ def diloco_replicate() -> int:
     return int(raw) if raw else 1
 
 
+def diloco_inner_axis() -> str:
+    """The inner parallelism axis composed with the ``diloco`` replicate axis:
+    ``"data_parallel"`` (default) or ``"pipeline_parallel"``. Set via
+    ``DILOCO_INNER_AXIS`` for a pipeline run (mesh =
+    ``(diloco, pipeline_parallel)``); the trainer parallelizes over the inner
+    sub-mesh while the collective runs over the diloco axis."""
+    raw = os.environ.get("DILOCO_INNER_AXIS", "").strip().lower()
+    return raw or "data_parallel"
+
+
 def diloco_apply_collective_worker_id() -> None:
     """In the collective regime (``DILOCO_REPLICATE`` > 1), rewrite
     ``DILOCO_WORKER_ID`` to a per-replica-distinct ``{base}_r{diloco_rank}``.

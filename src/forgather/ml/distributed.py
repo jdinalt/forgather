@@ -647,7 +647,7 @@ class DistributedEnvironment(DistributedEnvInterface):
         always: bool = True,
         no_accelerator: bool = False,
         diloco_replicate: int | None = None,
-        diloco_inner_axis: str = "data_parallel",
+        diloco_inner_axis: str | None = None,
     ):
         """
         Initialize the distributed environment.
@@ -700,14 +700,26 @@ class DistributedEnvironment(DistributedEnvInterface):
         if diloco_replicate is None:
             diloco_replicate = int(os.environ.get("DILOCO_REPLICATE", "1") or "1")
         self._diloco_replicate = int(diloco_replicate)
+        # The inner parallelism axis composed with the diloco axis:
+        # "data_parallel" (DDP/FSDP) or "pipeline_parallel". Resolved from the
+        # arg, else DILOCO_INNER_AXIS env (via the shared, torch-free helper),
+        # else "data_parallel".
+        if diloco_inner_axis is None:
+            from forgather.ml.diloco.env import diloco_inner_axis as _inner_axis_env
+
+            diloco_inner_axis = _inner_axis_env()
         self._diloco_inner_axis = diloco_inner_axis
-        # Always present so callers (the DiLoCo callback) can read them; the
-        # split below overwrites them when the degree > 1.
+        # Always present so callers (the DiLoCo callback, the trainer) can read
+        # them; the split below overwrites them when the degree > 1.
         self.diloco_degree = 1
         self.diloco_rank = 0
         self.diloco_size = 1
         self.diloco_group = None
         self.world_mesh = None
+        # The inner sub-mesh / sub-group the trainer parallelizes over (the
+        # mesh[inner_axis] of this rank's replica). None when there's no split.
+        self.inner_mesh = None
+        self.inner_group = None
         self._init_distributed()
 
     def __repr__(self):
@@ -828,23 +840,22 @@ class DistributedEnvironment(DistributedEnvInterface):
                 f"WORLD_SIZE={global_world}."
             )
         inner = global_world // degree
-        if inner != 1:
-            # Phase 1 supports inner=1 only (N single-device replicas). Composing
-            # the diloco axis with pipeline/DDP inner parallelism (inner>1) needs
-            # the trainer to consume the inner sub-group, which is not yet wired —
-            # a flat trainer mesh over the inner world_size would build the wrong
-            # group. Fail loud rather than mis-parallelize.
+        if inner != 1 and self._diloco_inner_axis != "pipeline_parallel":
+            # inner>1 needs the trainer to consume the inner sub-group; only the
+            # pipeline trainer is wired for that so far. data_parallel inner>1
+            # (diloco × DDP/FSDP) is a deprioritized follow-up — DiLoCo largely
+            # replaces DDP. Fail loud rather than mis-parallelize.
             raise ValueError(
                 f"DILOCO_REPLICATE={degree} with WORLD_SIZE={global_world} implies "
-                f"inner={inner} (inner parallelism per replica), which is not yet "
-                "supported. Set DILOCO_REPLICATE == WORLD_SIZE so each replica is "
-                "a single device (inner=1)."
+                f"inner={inner} on the {self._diloco_inner_axis!r} axis, which is "
+                "not yet supported. Use DILOCO_INNER_AXIS=pipeline_parallel for an "
+                "inner pipeline, or set DILOCO_REPLICATE == WORLD_SIZE (inner=1)."
             )
         from forgather.ml.distributed_mesh import ForgatherParallelDims
 
         pdims = ForgatherParallelDims(
             diloco=degree,
-            inner=global_world // degree,
+            inner=inner,
             inner_axis=self._diloco_inner_axis,
             world_size=global_world,
             device_type=self.device_type,
@@ -854,6 +865,11 @@ class DistributedEnvironment(DistributedEnvInterface):
         self.diloco_group = pdims.diloco_group()
         self.diloco_rank = pdims.diloco_rank()
         self.diloco_size = pdims.diloco_size()
+        # The inner sub-mesh / sub-group the trainer parallelizes over (the
+        # mesh[inner_axis] of this rank's replica). For inner=1 these are a
+        # size-1 mesh/group (the trainer runs its single-process path).
+        self.inner_mesh = pdims.inner_mesh()
+        self.inner_group = pdims.inner_group()
         # Hand the trainer its inner view. local_rank (the device index) is
         # unchanged — each process still owns its own GPU.
         self.rank = pdims.inner_rank()

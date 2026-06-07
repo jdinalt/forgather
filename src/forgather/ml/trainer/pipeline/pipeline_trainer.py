@@ -388,18 +388,25 @@ class PipelineTrainer(
         # Calculate total number of pipeline stages
         self.n_pipeline_stages = self.args.stages_per_rank * self.dist.world_size
 
-        # Create device mesh for pipeline parallel (pure MP - all ranks get same batch)
-        # This mesh is used for batch distribution via DataloaderDispatcher
-        self.mesh = init_device_mesh(
-            self.dist.device_type,
-            (self.dist.world_size,),
-            mesh_dim_names=("pipeline_parallel",),
-        )
-
-        # Create pipeline parallel process group
-        # For now, includes all ranks, but this allows future support for
-        # hybrid parallelism where PP is a subset of ranks
-        self.pp_group = self.mesh.get_group(0)
+        # Pipeline process group + mesh. Under a DiLoCo collective split
+        # (DILOCO_REPLICATE>1, DILOCO_INNER_AXIS=pipeline_parallel) the
+        # DistributedEnvironment built a (diloco, pipeline_parallel) mesh and
+        # exposes THIS replica's inner sub-mesh/sub-group — the pipeline must run
+        # on that, not a fresh flat mesh over the (now inner) world_size, which
+        # would build groups over the wrong global ranks for replicas > 0. The
+        # diloco axis (the replicas) is handled off to the side by the collective
+        # backend; the pipeline only ever talks within its replica.
+        inner_mesh = getattr(self.dist, "inner_mesh", None)
+        if inner_mesh is not None:
+            self.mesh = inner_mesh
+            self.pp_group = self.dist.inner_group
+        else:
+            self.mesh = init_device_mesh(
+                self.dist.device_type,
+                (self.dist.world_size,),
+                mesh_dim_names=("pipeline_parallel",),
+            )
+            self.pp_group = self.mesh.get_group(0)
 
     def _print_modules(self, modules):
         if self.args.debug_model_params:
@@ -424,13 +431,22 @@ class PipelineTrainer(
         ``DataloaderDispatcher`` is created with ``dp_mesh_dim=None`` to
         signal pure model-parallelism — no data-parallel dimension exists, so
         rank 0 broadcasts the full batch to every participant.
+
+        Under a DiLoCo collective split ``self.mesh`` is the **inner** (per-
+        replica) pipeline sub-mesh, so this is unchanged: each replica's stage-0
+        broadcasts to its own pipeline. The diloco axis is NOT a dataloader
+        dimension — per-replica data divergence is owned by the DiLoCo work-unit
+        dispatch at the dataset level (keyed on the per-replica ``DILOCO_WORKER_ID``,
+        ``{base}_r{diloco_rank}``), so each replica iterates a distinct shard while
+        its pipeline ranks share it. Treating the diloco axis as a data-parallel
+        scatter dimension here would double-shard and cross replica boundaries.
         """
         if self.train_dataloader:
             self.train_dataloader = DataloaderDispatcher(
                 cast(DataLoader, self.train_dataloader),
                 self.mesh,
                 torch.device(self.dist.device),
-                dp_mesh_dim=None,  # Pure MP: all ranks get same batch
+                dp_mesh_dim=None,
             )
 
         if self.eval_dataloader:
@@ -438,7 +454,7 @@ class PipelineTrainer(
                 cast(DataLoader, self.eval_dataloader),
                 self.mesh,
                 torch.device(self.dist.device),
-                dp_mesh_dim=None,  # Pure MP: all ranks get same batch
+                dp_mesh_dim=None,
             )
 
     @override
@@ -818,7 +834,10 @@ class PipelineTrainer(
                         p = init_state_dict[name].to(self.dist.device)
                         if self.args.debug_model_init:
                             logger.debug(f"rank0: Sending {name} to rank{dst_rank}")
-                        distributed.send(p, dst=dst_rank)
+                        # group_dst (not dst): dst_rank is an inner/group-local
+                        # rank from the stage→rank map, so the send must run on
+                        # the pipeline group (= this replica's ranks).
+                        distributed.send(p, group_dst=dst_rank, group=self.pp_group)
                         p = None
         else:
             # Load the parameters from rank 0
@@ -831,7 +850,8 @@ class PipelineTrainer(
                 for name, p in make_state_dict(mod, missing_buf_only).items():
                     if self.args.debug_model_init:
                         logger.debug(f"rank{self.dist.rank}: Receiving {name}")
-                    distributed.recv(p, src=0)
+                    # group_src=0: rank 0 of this replica's pipeline group.
+                    distributed.recv(p, group_src=0, group=self.pp_group)
 
     @override
     def _forward_backward_step(
@@ -960,7 +980,10 @@ class PipelineTrainer(
                             op = distributed.P2POp(
                                 distributed.isend,
                                 hidden_states.contiguous(),
-                                peer=rank_k,
+                                # group_peer (not peer): rank_k is an inner/
+                                # group-local rank, so the peer must be resolved
+                                # within pp_group (this replica), not globally.
+                                group_peer=rank_k,
                                 group=self.pp_group,
                             )
                             for w in distributed.batch_isend_irecv([op]):
@@ -976,7 +999,7 @@ class PipelineTrainer(
                             op = distributed.P2POp(
                                 distributed.irecv,
                                 recv_buf,
-                                peer=rank_prev,
+                                group_peer=rank_prev,
                                 group=self.pp_group,
                             )
                             for w in distributed.batch_isend_irecv([op]):
@@ -1129,7 +1152,11 @@ class PipelineTrainer(
                         batch_size, dtype=torch.long, device=self.dist.device
                     )
 
-                distributed.broadcast(next_tokens, src=self.pp_last_stage_rank)
+                distributed.broadcast(
+                    next_tokens,
+                    group_src=self.pp_last_stage_rank,
+                    group=self.pp_group,
+                )
 
                 done = done | (next_tokens == eos_token_id)
                 next_tokens = next_tokens.masked_fill(done, pad_token_id)
@@ -1144,7 +1171,9 @@ class PipelineTrainer(
                     )
                 else:
                     stop = torch.zeros(1, dtype=torch.long, device=self.dist.device)
-                distributed.broadcast(stop, src=self.pp_last_stage_rank)
+                distributed.broadcast(
+                    stop, group_src=self.pp_last_stage_rank, group=self.pp_group
+                )
                 if stop.item():
                     break
         finally:
@@ -1380,8 +1409,7 @@ class PipelineTrainer(
         )
         return checkpoint_manager
 
-    @staticmethod
-    def _all_reduce_norm(total_norm, norm_type):
+    def _all_reduce_norm(self, total_norm, norm_type):
         """All-reduce local gradient norms to compute the global norm.
 
         Each rank has computed a local norm over its pipeline stage parameters.
@@ -1406,10 +1434,10 @@ class PipelineTrainer(
             Global gradient norm after all-reduce, same value on all ranks.
         """
         if math.isinf(norm_type):
-            dist.all_reduce(total_norm, op=dist.ReduceOp.MAX)
+            dist.all_reduce(total_norm, op=dist.ReduceOp.MAX, group=self.pp_group)
         else:
             total_norm **= norm_type
-            dist.all_reduce(total_norm, op=dist.ReduceOp.SUM)
+            dist.all_reduce(total_norm, op=dist.ReduceOp.SUM, group=self.pp_group)
             total_norm **= 1.0 / norm_type
         return total_norm
 
@@ -1527,7 +1555,7 @@ class PipelineTrainer(
         Tensor
             Total token count summed across all pipeline ranks.
         """
-        dist.all_reduce(tokens, op=dist.ReduceOp.SUM)
+        dist.all_reduce(tokens, op=dist.ReduceOp.SUM, group=self.pp_group)
         return tokens
 
     @override
@@ -1549,7 +1577,9 @@ class PipelineTrainer(
         Tensor
             Loss value from the last stage, same on all ranks after broadcast.
         """
-        distributed.broadcast(loss, src=self.pp_last_stage_rank)
+        distributed.broadcast(
+            loss, group_src=self.pp_last_stage_rank, group=self.pp_group
+        )
         return loss
 
     @override
@@ -1575,7 +1605,7 @@ class PipelineTrainer(
             [int(local_peak)], dtype=torch.long, device=self.args.device
         )
         gathered = [torch.zeros_like(value) for _ in range(self.dist.world_size)]
-        dist.all_gather(gathered, value)
+        dist.all_gather(gathered, value, group=self.pp_group)
         return [int(t.item()) for t in gathered]
 
     @override

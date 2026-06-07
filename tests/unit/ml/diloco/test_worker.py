@@ -653,6 +653,54 @@ class TestPipelineGroupGuards:
                     pp_world_size=2,
                 )
 
+    def test_collective_plus_pipeline_is_allowed(self, server_with_model, tmp_path):
+        """diloco x pipeline (the priority composition): a CollectiveBackend is
+        ``_symmetric`` (replicated outer step), so the within-stage-DDP guard must
+        NOT fire even though the global world (diloco x pp = 4) exceeds
+        pp_world_size (2) — the extra ranks are DiLoCo replicas on the diloco axis,
+        all-reduced via the backend's injected sub-group, not within-stage DDP."""
+        from unittest.mock import patch
+
+        from forgather.ml.diloco.collective_backend import CollectiveBackend
+        from forgather.ml.diloco.param_view import PipelineParamView
+
+        from .conftest import make_initial_checkpoint
+
+        server, model = server_with_model
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+        view = PipelineParamView([model])
+        ckpt = make_initial_checkpoint(
+            {k: v.detach().clone() for k, v in model.state_dict().items()},
+            str(tmp_path),
+        )
+        # group_size=1 short-circuits the all_reduce; the backend is still
+        # ``runs_outer_optimizer == "replicated"`` so the worker sees _symmetric.
+        backend = CollectiveBackend(init_checkpoint=ckpt, group_size=1, rank=0)
+
+        with (
+            patch("forgather.ml.diloco.worker.dist.is_available", return_value=True),
+            patch("forgather.ml.diloco.worker.dist.is_initialized", return_value=True),
+            patch("forgather.ml.diloco.worker.dist.get_rank", return_value=0),
+            # global world = diloco(2) x pp(2) = 4 > pp_world_size(2).
+            patch("forgather.ml.diloco.worker.dist.get_world_size", return_value=4),
+        ):
+            # Must not raise — the guard is skipped for symmetric backends.
+            worker = DiLoCoWorker(
+                model,
+                optimizer,
+                server_addr=f"localhost:{server.port}",
+                sync_every=1000,
+                bf16_comm=False,
+                heartbeat_interval=0,
+                param_view=view,
+                backend=backend,
+                group_id="alpha_r0",
+                pp_rank=0,
+                pp_world_size=2,
+            )
+            assert worker._symmetric is True
+            assert worker._is_leader is True
+
     def test_pipeline_plus_dylu_is_rejected(self, server_with_model):
         """DyLU + pipeline groups would desync the group barrier."""
         from forgather.ml.diloco.param_view import PipelineParamView
