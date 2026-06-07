@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 
 from forgather_server.agent.loop import AgentLoop
 from forgather_server.agent.providers.base import Done, TextDelta, ToolCall
-from forgather_server.agent.registry import Proposal, ToolRegistry, ToolSpec
+from forgather_server.agent.registry import Proposal, ToolRegistry, ToolSpec, UiDirective
 from forgather_server.agent.session import Conversation
 
 
@@ -310,6 +310,117 @@ def test_incomplete_done_on_length_stop_reason():
     events = _collect(loop.run_user_message(conv, "go"))
     done = [e for e in events if e["type"] == "done"]
     assert done and done[-1]["incomplete"] is True  # vLLM "length" == truncated
+
+
+def test_action_resolved_echoes_reveal_for_create():
+    # A create proposal carries reveal_kind; on approval the loop echoes
+    # created_kind + created_path so the webui can refresh + reveal the item.
+    state = {"read_calls": 0, "commit_calls": 0}
+    reg = ToolRegistry()
+
+    def make_project(args):
+        return Proposal(
+            title="New project: demo",
+            path="/ws/demo",
+            reveal_kind="project",
+            commit=lambda: "created project at /ws/demo",
+        )
+
+    reg.register(
+        ToolSpec(
+            name="make_project",
+            description="create a project",
+            json_schema={"type": "object", "properties": {}},
+            handler=make_project,
+            risk="propose",
+        )
+    )
+    provider = FakeProvider(
+        [
+            [ToolCall(id="t1", name="make_project", arguments={}), Done()],
+            [TextDelta("done"), Done()],
+        ]
+    )
+    loop = AgentLoop(provider, reg)
+    conv = Conversation(session_id="rev")
+    from forgather_server.agent import session as sess
+
+    with sess._state._lock:
+        sess._state.sessions[conv.session_id] = conv
+
+    first = _collect(loop.run_user_message(conv, "make a project"))
+    action_id = [e for e in first if e["type"] == "action_card"][0]["action_id"]
+    resumed = _collect(loop.apply_decision(action_id, approve=True))
+
+    resolved = [e for e in resumed if e["type"] == "action_resolved"]
+    assert resolved
+    assert resolved[0]["created_kind"] == "project"
+    assert resolved[0]["created_path"] == "/ws/demo"
+
+
+def test_action_resolved_reveal_none_for_edit():
+    # A non-create proposal (make_change has no reveal_kind) reports
+    # created_kind None so the webui knows not to refresh/reveal.
+    state = {"read_calls": 0, "commit_calls": 0}
+    reg = _make_registry(state)
+    provider = FakeProvider(
+        [
+            [ToolCall(id="t1", name="make_change", arguments={"path": "f.yaml"}), Done()],
+            [TextDelta("applied"), Done()],
+        ]
+    )
+    loop = AgentLoop(provider, reg)
+    conv = Conversation(session_id="rev2")
+    from forgather_server.agent import session as sess
+
+    with sess._state._lock:
+        sess._state.sessions[conv.session_id] = conv
+
+    first = _collect(loop.run_user_message(conv, "change f.yaml"))
+    action_id = [e for e in first if e["type"] == "action_card"][0]["action_id"]
+    resumed = _collect(loop.apply_decision(action_id, approve=True))
+    resolved = [e for e in resumed if e["type"] == "action_resolved"]
+    assert resolved and resolved[0]["created_kind"] is None
+
+
+def test_read_tool_ui_directive_is_emitted():
+    # A read tool may return a UiDirective: the loop emits a ui_directive event
+    # for the webui and feeds the directive's message back to the model.
+    reg = ToolRegistry()
+
+    def reveal(args):
+        return UiDirective(
+            action="reveal",
+            payload={"path": "/p/x", "where": "projects"},
+            message="revealed /p/x",
+        )
+
+    reg.register(
+        ToolSpec(
+            name="reveal",
+            description="reveal",
+            json_schema={"type": "object", "properties": {}},
+            handler=reveal,
+            risk="read",
+        )
+    )
+    provider = FakeProvider(
+        [
+            [ToolCall(id="t1", name="reveal", arguments={}), Done()],
+            [TextDelta("ok"), Done()],
+        ]
+    )
+    loop = AgentLoop(provider, reg)
+    conv = Conversation(session_id="ui")
+    events = _collect(loop.run_user_message(conv, "show me"))
+
+    directives = [e for e in events if e["type"] == "ui_directive"]
+    assert directives and directives[0]["action"] == "reveal"
+    assert directives[0]["payload"] == {"path": "/p/x", "where": "projects"}
+    results = [e for e in events if e["type"] == "tool_result"]
+    assert results and results[0]["content"] == "revealed /p/x"
+    assert results[0]["is_error"] is False
+    assert events[-1]["type"] == "done"
 
 
 def test_unknown_tool_is_error_not_crash():

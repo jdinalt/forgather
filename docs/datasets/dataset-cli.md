@@ -94,8 +94,14 @@ options:
   --histogram-samples N Number of samples to use for histogram
   -c, --chat-template   Path to chat template
   -n, --examples N      Number of examples to print
+  --truncate N          Truncate each printed feature to N characters
+  --features F [F ...]   Which features to print (default: the config's main feature)
   -s, --tokenized       The split is already tokenized (decode input_ids instead of reading text)
 ```
+
+(Run `forgather dataset -h` for the full set, including `--example-stride`,
+`--select-range`, `--seed`, and the `--num-shards`/`--shard-index` sharding
+flags.)
 
 ### Examples
 
@@ -119,3 +125,38 @@ forgather -t samantha.yaml dataset --target train_dataset \
 forgather -t openorca-packed.yaml dataset --target train_dataset \
     -T ~/models/fg_llama_1b --max-length 2048 -s -n 2
 ```
+
+### Smoke-testing a new dataset config
+
+A good sequence after writing a dataset config:
+
+```bash
+# 1. Build the raw data. Materializing train_dataset_split triggers the
+#    download + build. The FIRST run can take a long time for a large dataset
+#    (it downloads from the Hub and writes the Arrow cache); later runs are fast.
+forgather -t my-dataset.yaml dataset --target train_dataset_split
+
+# 2. Spot-check each raw split (no tokenizer needed), truncating long text.
+forgather -t my-dataset.yaml dataset --target train_dataset_split -n 3 --truncate 64
+forgather -t my-dataset.yaml dataset --target validation_dataset_split -n 3 --truncate 64
+forgather -t my-dataset.yaml dataset --target test_dataset_split -n 3 --truncate 64
+
+# 3. Spot-check the tokenized splits (need a tokenizer via -T).
+forgather -t my-dataset.yaml dataset --target train_dataset \
+    -T ../../../tokenizers/wikitext_32k --truncate 64 -n 3
+# Repeat for eval_dataset and test_dataset.
+```
+
+If a source dataset only has a single `train` split, slice it into the others
+in the config (e.g. `validation_dataset_split: split: "train[0:1000]"`).
+
+To discover a dataset's splits, example counts, and feature names (needed when
+writing the split blocks and `main_feature`), build the raw data as in step 1
+and inspect it through a running **dataset server** (see
+[dataset-projects.md](dataset-projects.md)).
+
+> **In the webui agent.** The agent submits these as scheduler jobs rather than
+> running the CLI: `run_dataset` is the equivalent of `forgather ... dataset
+> --target ...` (watch it with `list_jobs` / `read_job_output`), and
+> `dataset_info` returns the splits / #examples / features from a dataset
+> server (`list_dataset_servers`).

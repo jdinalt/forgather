@@ -335,6 +335,58 @@ forgather -p examples/datasets/roneneldan dataset \
     -H --histogram-samples 2000
 ```
 
+### Building the Raw Data First
+
+Materializing `train_dataset_split` is what triggers the actual **download and
+build** of the underlying dataset:
+
+```bash
+forgather -p examples/datasets/roneneldan dataset --target train_dataset_split
+```
+
+The first build downloads from the HuggingFace Hub and writes the Arrow cache.
+For a large, uncached dataset this can take a **long time** — let it finish
+before anything that reads the dataset (loading examples, generating a
+histogram, or asking a dataset server for its metadata). Subsequent loads use
+the cached files and are fast.
+
+The raw splits — `train_dataset_split`, `validation_dataset_split`,
+`test_dataset_split` — need no tokenizer. The tokenized splits —
+`train_dataset`, `eval_dataset`, `test_dataset` — require one (`-T`). Verify
+that every split your project defines materializes. If a source dataset only
+has a single `train` split, slice it into the others in the config (e.g.
+`validation_dataset_split: split: "train[0:1000]"`).
+
+### Discovering Splits, Counts, and Features
+
+When you are *defining* a dataset project you need to know the dataset's split
+names, how many examples each holds, and which feature holds the text (the
+`main_feature`). These are often not obvious from the dataset card. Build the
+raw data (above), then read the metadata from a running **dataset server**,
+which reports, per dataset:
+
+- the **splits** and the **number of examples** in each, and
+- the **feature/column names**.
+
+A dataset server can be a local instance or any instance in the cluster (see
+the dataset-server documentation for starting one). It reads this from the HF
+cache it shares, so a dataset you just built shows up there.
+
+> **In the webui agent.** The agent doesn't run the CLI — it submits jobs and
+> queries servers through tools. Equivalents:
+>
+> | CLI | Agent tool |
+> |---|---|
+> | `forgather ... dataset --target ...` | `run_dataset` (a scheduler job; watch with `list_jobs` / `read_job_output`) |
+> | splits / #examples / features | `dataset_info` (queries a dataset server; `list_dataset_servers` to pick one) |
+> | `forgather ls` | `list_projects` / `list_configs` |
+> | `forgather pp` | `render_config_pp` |
+> | `forgather graph` (validate) | `check_config` |
+>
+> `run_dataset` is gated on user approval and returns immediately; the build
+> runs in the background, so the agent reports progress by polling rather than
+> blocking.
+
 ## Example Dataset Projects
 
 Forgather ships with several example dataset projects under `examples/datasets/`:

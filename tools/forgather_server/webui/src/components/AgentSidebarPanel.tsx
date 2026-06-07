@@ -56,8 +56,8 @@ export function AgentSidebarPanel({
         <button className="btn-icon" title="Open full Agent view" onClick={onOpenFull}>
           ⤢
         </button>
-        <button className="btn-icon" title="New conversation" onClick={agent.reset}>
-          ✎
+        <button className="btn-icon" title="New conversation" onClick={agent.newConversation}>
+          ＋
         </button>
         <button className="btn-icon" title="Collapse" onClick={onCollapse}>
           ›

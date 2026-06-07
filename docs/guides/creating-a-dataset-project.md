@@ -128,27 +128,63 @@ forgather -t my-dataset.yaml pp           # Preview expanded config
 forgather -t my-dataset.yaml targets      # List materializable targets
 ```
 
-After verifying the config parses, test that it can actually load data. Start
-with the raw splits (no tokenizer needed):
+After verifying the config parses, test that it can actually load data. A
+dataset config exposes two tiers of split targets:
+
+- **Raw splits** — `train_dataset_split`, `validation_dataset_split`,
+  `test_dataset_split` — the source data with no tokenization. These need no
+  tokenizer.
+- **Tokenized splits** — `train_dataset`, `eval_dataset`, `test_dataset` —
+  the preprocessed/tokenized data. These require a tokenizer (`-T`).
+
+All of these should materialize cleanly; verify each.
+
+**Build the raw data first.** Materializing `train_dataset_split` is what
+triggers the actual download and build of the underlying dataset:
 
 ```bash
-# Test raw train split
-forgather -t my-dataset.yaml dataset --target train_dataset_split -n 2
-
-# Test validation and test splits too
-forgather -t my-dataset.yaml dataset --target validation_dataset_split -n 2
-forgather -t my-dataset.yaml dataset --target test_dataset_split -n 2
+# Triggers the download + build of the dataset.
+forgather -t my-dataset.yaml dataset --target train_dataset_split
 ```
 
-Then test the tokenized split with any available tokenizer:
+> The first build downloads from the HuggingFace Hub and writes the Arrow
+> cache. For a large dataset this can take a **long time** — let it finish
+> before doing anything that reads the dataset's metadata. Subsequent loads use
+> the cached files and are fast.
+
+Once it's built, load a few examples from each raw split, truncating long text
+so the output stays readable:
 
 ```bash
-forgather -t my-dataset.yaml dataset --target train_dataset -s \
-    -T path/to/tokenizer -n 2
+# Print the first 3 examples, truncating each feature to 64 characters.
+forgather -t my-dataset.yaml dataset --target train_dataset_split -n 3 --truncate 64
+forgather -t my-dataset.yaml dataset --target validation_dataset_split -n 3 --truncate 64
+forgather -t my-dataset.yaml dataset --target test_dataset_split -n 3 --truncate 64
 ```
 
-The first time a dataset is loaded, it will be downloaded from HuggingFace Hub.
-Subsequent loads use the cached Arrow files.
+Then test the tokenized splits with a tokenizer:
+
+```bash
+forgather -t my-dataset.yaml dataset --target train_dataset \
+    -T ../../../tokenizers/wikitext_32k --truncate 64 -n 3
+# Repeat for eval_dataset and test_dataset.
+```
+
+**Finding the splits, example counts, and feature names.** When you don't
+already know a dataset's splits or which feature holds the text (needed to
+write the split blocks and `main_feature`), build the raw data as above, then
+inspect it through a running **dataset server** — which reports the splits,
+the number of examples per split, and the feature/column names. (Some source
+datasets only have a single `train` split; in that case slice it into the
+others in the config, e.g. `validation = "train[0:1000]"`, as shown in Step 1.)
+
+> **In the webui agent.** The agent doesn't run the CLI; it uses the
+> equivalent tools: `run_dataset` (submits the build/inspect as a scheduler
+> job — it returns immediately, so watch it with `list_jobs` /
+> `read_job_output`), and `dataset_info` (splits / #examples / features from a
+> dataset server; see `list_dataset_servers`). `forgather ls` →
+> `list_projects` / `list_configs`; `forgather pp` → `render_config_pp`;
+> `forgather graph` (validate) → `check_config`.
 
 For interleaved and packed configs, perform the same tests to verify the
 composition works end-to-end.

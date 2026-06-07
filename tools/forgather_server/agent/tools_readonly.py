@@ -9,13 +9,14 @@ scheduler state, and find relevant documentation.
 from __future__ import annotations
 
 import dataclasses
+import fnmatch
 import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List
 
 from .. import config_ops, discovery, paths, scheduler, search_roots
-from .registry import READ, ToolRegistry, ToolSpec
+from .registry import READ, ToolRegistry, ToolSpec, UiDirective
 
 log = logging.getLogger("forgather_server.agent.tools_readonly")
 
@@ -103,10 +104,20 @@ def _render_config_pp(args: Dict[str, Any]) -> Any:
 
 def _render_config_code(args: Dict[str, Any]) -> Any:
     # forgather code: generated Python for a target ("main" by default; pass
-    # null/"" for the whole config). Raises the same structured diagnostics
-    # the CLI does on a broken config — exactly what helps the agent debug.
+    # null/"" for the whole config). A debug aid for understanding what a
+    # config builds — NOT a normal pipeline stage. To merely check a config is
+    # well-formed, use check_config (cheaper, and the right tool for it).
     target = args.get("target") or "main"
     return config_ops.render_code(args["project_dir"], args["config_name"], target=target)
+
+
+def _check_config(args: Dict[str, Any]) -> Any:
+    # forgather graph (validate-only): preprocess + YAML parse + build the node
+    # graph, no materialization, no code. Returns {ok, targets} or {ok:false,
+    # error}.
+    return config_ops.check_config(
+        args["project_dir"], args["config_name"], target=args.get("target") or None
+    )
 
 
 def _list_config_templates(args: Dict[str, Any]) -> Any:
@@ -121,6 +132,51 @@ def _config_template_refs(args: Dict[str, Any]) -> Any:
     return config_ops.render_trefs_tree(args["project_dir"], args["config_name"])
 
 
+def _known_projects_path(path: str) -> bool:
+    """True if ``path`` is a known workspace root, project dir, or config file
+    in the current discovery — i.e. something the Projects tree can reveal."""
+    norm = path.rstrip("/")
+    for cluster in discovery.discover_projects():
+        if cluster.workspace_root and cluster.workspace_root.rstrip("/") == norm:
+            return True
+        for proj in cluster.projects:
+            if proj.project_dir.rstrip("/") == norm:
+                return True
+            for cfg in proj.configs:
+                if cfg.path.rstrip("/") == norm:
+                    return True
+    return False
+
+
+def _reveal_in_ui(args: Dict[str, Any]) -> Any:
+    # Steer the webui to expand to + highlight a path. Returns a UiDirective
+    # the loop forwards to the client; no server-side side effect.
+    path = args["path"]
+    where = (args.get("where") or "projects").lower()
+    if where not in ("projects", "files"):
+        raise ValueError("where must be 'projects' or 'files'")
+    if not os.path.isabs(path):
+        raise ValueError("path must be absolute")
+    if not paths.is_path_in_fs_root(path):
+        raise PermissionError(
+            f"path is outside the configured filesystem roots: {path}"
+        )
+    if not os.path.exists(path):
+        raise ValueError(f"path does not exist: {path}")
+    if where == "projects" and not _known_projects_path(path):
+        raise ValueError(
+            f"path is not a known workspace, project, or config: {path}. Use "
+            "list_workspaces / list_projects / list_configs to get a valid "
+            "target, or reveal it in the file explorer with where='files'."
+        )
+    label = "Projects tree" if where == "projects" else "file explorer"
+    return UiDirective(
+        action="reveal",
+        payload={"path": path, "where": where},
+        message=f"revealed {path} in the {label}.",
+    )
+
+
 def _read_file(args: Dict[str, Any]) -> Any:
     path = args["path"]
     if not os.path.isabs(path):
@@ -128,6 +184,144 @@ def _read_file(args: Dict[str, Any]) -> Any:
     if not paths.is_path_in_fs_root(path):
         raise PermissionError(f"path is outside the configured filesystem roots: {path}")
     return config_ops.read_raw(path)
+
+
+# ---- filesystem browse / find ----------------------------------------------
+
+# Directories never worth walking into for find/browse purposes.
+_FS_SKIP_DIRS = {
+    ".git",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ipynb_checkpoints",
+}
+_FIND_MAX_RESULTS = 100
+_FIND_DIR_BUDGET = 50000  # cap directories walked, so a huge tree can't run away
+_FIND_SCAN_BUDGET = 300000  # cap total entries examined (one huge flat dir too)
+
+
+def _starting_roots() -> List[str]:
+    """The places worth starting a browse/find from: the project search roots
+    (where projects, tokenizers, datasets live) plus any configured fs-root
+    sandbox dirs. Deduped, existing only."""
+    out: List[str] = []
+    for r in search_roots.list_roots():
+        if r.exists and r.path not in out:
+            out.append(r.path)
+    for p in paths.fs_roots():
+        s = str(p)
+        if s not in out:
+            out.append(s)
+    return out
+
+
+def _list_directory(args: Dict[str, Any]) -> Any:
+    # No path -> hand back the starting roots so the agent knows where to look.
+    path = (args.get("path") or "").strip()
+    if not path:
+        return {
+            "roots": _starting_roots(),
+            "note": "Pass one of these (or any absolute path within them) as "
+            "'path' to list its contents; use find_files to search by name.",
+        }
+    if not os.path.isabs(path):
+        raise ValueError("path must be absolute")
+    if not paths.is_path_in_fs_root(path):
+        raise PermissionError(f"path is outside the configured filesystem roots: {path}")
+    p = Path(path)
+    if not p.exists():
+        raise ValueError(f"path does not exist: {path}")
+    if not p.is_dir():
+        raise ValueError(f"not a directory: {path}")
+    entries: List[Dict[str, Any]] = []
+    try:
+        children = list(p.iterdir())
+    except PermissionError as e:
+        raise PermissionError(str(e))
+    for child in sorted(children, key=lambda c: c.name.lower()):
+        if child.name.startswith("."):
+            continue
+        try:
+            is_dir = child.is_dir()
+            resolved = child.resolve()
+        except OSError:
+            continue
+        if not paths.is_path_in_fs_root(resolved):  # symlink escape guard
+            continue
+        e: Dict[str, Any] = {"name": child.name, "path": str(resolved), "is_dir": is_dir}
+        if not is_dir:
+            try:
+                e["size"] = child.stat().st_size
+            except OSError:
+                pass
+        entries.append(e)
+    # Directories first, then files, each alphabetical.
+    entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
+    return {"path": str(p.resolve()), "entries": entries}
+
+
+def _find_files(args: Dict[str, Any]) -> Any:
+    pattern = (args.get("pattern") or "").strip()
+    if not pattern:
+        raise ValueError("pattern is required (e.g. 'wikitext*' or 'tokenizer')")
+    # A bare word (no glob metachars) is treated as a substring match — the
+    # find-like behavior most callers expect.
+    glob = pattern if any(ch in pattern for ch in "*?[") else f"*{pattern}*"
+    glob = glob.lower()
+    max_results = args.get("max_results")
+    max_results = _FIND_MAX_RESULTS if max_results in (None, "") else int(max_results)
+    max_results = max(1, min(max_results, 500))
+
+    root = (args.get("root") or "").strip()
+    if root:
+        if not os.path.isabs(root):
+            raise ValueError("root must be absolute")
+        if not paths.is_path_in_fs_root(root):
+            raise PermissionError(
+                f"path is outside the configured filesystem roots: {root}"
+            )
+        search_dirs = [root]
+    else:
+        search_dirs = _starting_roots()
+
+    matches: List[Dict[str, Any]] = []
+    walked = 0
+    examined = 0  # total entries fnmatch'd — bounds CPU on one huge flat dir
+    truncated = False
+    for base in search_dirs:
+        for dirpath, dirnames, filenames in os.walk(base):
+            # Prune noise + hidden dirs from the descent (in place).
+            dirnames[:] = [
+                d for d in dirnames if d not in _FS_SKIP_DIRS and not d.startswith(".")
+            ]
+            walked += 1
+            if walked > _FIND_DIR_BUDGET:
+                truncated = True
+                break
+            for name in dirnames + filenames:
+                examined += 1
+                if examined > _FIND_SCAN_BUDGET:
+                    truncated = True
+                    break
+                if name.startswith("."):
+                    continue
+                if not fnmatch.fnmatch(name.lower(), glob):
+                    continue
+                full = os.path.join(dirpath, name)
+                if not paths.is_path_in_fs_root(full):
+                    continue
+                matches.append({"path": full, "is_dir": os.path.isdir(full)})
+                if len(matches) >= max_results:
+                    truncated = True
+                    break
+            if truncated:
+                break
+        if truncated:
+            break
+    return {"pattern": pattern, "matches": matches, "truncated": truncated}
 
 
 def _scheduler_status(_args: Dict[str, Any]) -> Any:
@@ -284,9 +478,12 @@ def register_all(reg: ToolRegistry) -> None:
         ToolSpec(
             name="render_config_pp",
             description=(
-                "Render a config's preprocessor output (the fully-materialized "
-                "configuration after template inheritance). Use to understand "
-                "exactly what a config resolves to."
+                "Render a config's preprocessor output: the configuration text "
+                "after template inheritance (stage 1 of the pipeline, Jinja2 "
+                "only). Use to see exactly what templates resolve to. NOTE: this "
+                "is a pure text render — it does NOT parse the YAML, validate the "
+                "`!` tags, or check that the config compiles. For that, use "
+                "check_config."
             ),
             json_schema={
                 "type": "object",
@@ -304,10 +501,14 @@ def register_all(reg: ToolRegistry) -> None:
         ToolSpec(
             name="render_config_code",
             description=(
-                "Generate the Python a config materializes to (forgather code). "
-                "The best validation that a config is well-formed: it raises a "
-                "structured error pinpointing what's wrong, so use it to debug "
-                "a config you wrote or edited. target defaults to \"main\"."
+                "Translate a config into the equivalent stand-alone Python "
+                "(forgather code) — the code that, if run, would build the same "
+                "objects, with no Forgather dependency. This is a DEBUG / export "
+                "tool, not a pipeline stage: use it to understand what a config "
+                "actually builds, or to export a config as plain Python. Do NOT "
+                "use it just to check whether a config is valid — that is what "
+                "check_config is for (cheaper and purpose-built). target "
+                "defaults to \"main\"."
             ),
             json_schema={
                 "type": "object",
@@ -319,6 +520,59 @@ def register_all(reg: ToolRegistry) -> None:
                 "required": ["project_dir", "config_name"],
             },
             handler=_render_config_code,
+            risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="check_config",
+            description=(
+                "Validate that a config compiles to a valid node graph "
+                "(forgather graph, validate-only). Runs the real pipeline up "
+                "to the graph stage: preprocess the templates, parse the YAML, "
+                "and build the node graph (resolving the `!` tags). It does NOT "
+                "construct any objects and does NOT generate code. This is the "
+                "right, cheapest way to answer \"does this config compile?\" "
+                "after you write or edit one. Returns {ok:true, targets:[...]} "
+                "on success, or {ok:false, error, error_type} with a structured "
+                "diagnostic on a malformed config."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "project_dir": {"type": "string"},
+                    "config_name": {"type": "string"},
+                    "target": {"type": "string", "description": "Optional: also verify this target key exists in the graph."},
+                },
+                "required": ["project_dir", "config_name"],
+            },
+            handler=_check_config,
+            risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="reveal_in_ui",
+            description=(
+                "Reveal a workspace, project, or config to the user by "
+                "expanding the UI to it and selecting it — useful after you "
+                "locate something they asked for (e.g. \"show me a project "
+                "that does X\"). where=\"projects\" (default) expands the "
+                "Projects tree to the item; where=\"files\" expands the file "
+                "explorer and highlights the path. Give an absolute path from "
+                "list_workspaces / list_projects / list_configs (for "
+                "\"projects\") or read_file results. This only navigates the "
+                "UI; it changes nothing."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to the workspace dir, project dir, or config file."},
+                    "where": {"type": "string", "enum": ["projects", "files"], "description": "Which view to reveal in (default \"projects\")."},
+                },
+                "required": ["path"],
+            },
+            handler=_reveal_in_ui,
             risk=READ,
         )
     )
@@ -375,6 +629,57 @@ def register_all(reg: ToolRegistry) -> None:
                 "required": ["path"],
             },
             handler=_read_file,
+            risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="list_directory",
+            description=(
+                "List the contents of a directory (names, whether each is a "
+                "dir, file sizes). Use to walk the filesystem — e.g. to find a "
+                "tokenizer under tokenizers/, a model output dir, or a data "
+                "file — when it isn't a Forgather project/config (those use "
+                "list_projects / list_configs). Call with no path to get the "
+                "starting roots (the project search roots + any fs-root "
+                "sandbox), then drill in. Paths must be within the configured "
+                "filesystem roots."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute directory path; omit to list the starting roots."},
+                },
+            },
+            handler=_list_directory,
+            risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="find_files",
+            description=(
+                "Find files and directories by name, recursively (like UNIX "
+                "find). pattern is a glob (e.g. 'wikitext*', '*.yaml') or a "
+                "bare word, which matches as a substring (e.g. 'tokenizer' "
+                "finds anything containing 'tokenizer'). Searches under root if "
+                "given, else across all starting roots (project search roots + "
+                "fs-root sandbox). Matches directories too — a tokenizer is a "
+                "directory. Results are capped (max_results, default 100; "
+                "truncated=true means there were more). Use to locate a "
+                "tokenizer, dataset, model, or config when you don't know its "
+                "exact path."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Glob (e.g. 'wikitext*') or a bare word matched as a substring."},
+                    "root": {"type": "string", "description": "Absolute dir to search under (default: all starting roots)."},
+                    "max_results": {"type": "integer", "description": "Cap on matches (default 100, max 500)."},
+                },
+                "required": ["pattern"],
+            },
+            handler=_find_files,
             risk=READ,
         )
     )

@@ -1,5 +1,5 @@
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, CheckpointEntry, ConfigInfo, EvalEntry, ModelEntry, ProjectInfo, RunEntry, WorkspaceCluster } from "../api";
 import { CleanOutputModal } from "./CleanOutputModal";
 import { ConstructModal } from "./ConstructModal";
@@ -109,6 +109,25 @@ interface WorkspaceMenuTarget {
   workspace: WorkspaceCluster;
 }
 
+/** A request to expand the tree to ``path`` and select it. ``nonce`` lets the
+ *  same path re-reveal (equality on path alone wouldn't refire the effect). */
+export type RevealRequest = { path: string; nonce: number } | null;
+
+/** True when ``child`` is ``parent`` itself or nested beneath it. Trailing
+ *  slashes are normalized so "/a/b" and "/a/b/" compare equal. */
+function isPathUnder(parent: string | null | undefined, child: string): boolean {
+  if (!parent || !child) return false;
+  const p = parent.replace(/\/+$/, "");
+  const c = child.replace(/\/+$/, "");
+  return c === p || c.startsWith(p + "/");
+}
+
+/** True when two paths are the same (trailing slashes normalized). */
+function samePath(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  return a.replace(/\/+$/, "") === b.replace(/\/+$/, "");
+}
+
 interface Props {
   onSelect: (project: ProjectInfo, config: ConfigInfo) => void;
   onProjectOpen: (project: ProjectInfo, defaultConfig: ConfigInfo) => void;
@@ -122,6 +141,10 @@ interface Props {
   /** Expand the sidebar Files tree to the given path and highlight the
    *  row. Wired by App.tsx to the corresponding ``FilesTree`` prop. */
   onRevealInFiles?: (path: string) => void;
+  /** Expand the tree to a workspace / project / config path and select it.
+   *  Driven by App when the agent creates a new item (and, later, when the
+   *  agent is asked to point one out). */
+  revealRequest?: RevealRequest;
 }
 
 export function ProjectTree({
@@ -132,6 +155,7 @@ export function ProjectTree({
   onEditTemplate,
   onJobSubmitted,
   onRevealInFiles,
+  revealRequest,
 }: Props) {
   const qc = useQueryClient();
   const projectsQ = useQuery({
@@ -571,6 +595,7 @@ export function ProjectTree({
         {projectsQ.data && (
           <WorkspaceForest
             clusters={projectsQ.data}
+            reveal={revealRequest ?? null}
             onSelect={handleConfigSelect}
             onProjectOpen={onProjectOpen}
             selection={selection}
@@ -1237,6 +1262,7 @@ type WorkspaceMenuRequest = (
 
 function WorkspaceForest({
   clusters,
+  reveal,
   onSelect,
   onProjectOpen,
   selection,
@@ -1249,6 +1275,7 @@ function WorkspaceForest({
   onGroupMenu,
 }: {
   clusters: WorkspaceCluster[];
+  reveal: RevealRequest;
   onSelect: (p: ProjectInfo, c: ConfigInfo) => void;
   onProjectOpen: (p: ProjectInfo, c: ConfigInfo) => void;
   selection: Selection;
@@ -1292,6 +1319,7 @@ function WorkspaceForest({
           key={ws.workspace_root || "unaffiliated"}
           ws={ws}
           childrenByParent={byParent}
+          reveal={reveal}
           onSelect={onSelect}
           onProjectOpen={onProjectOpen}
           selection={selection}
@@ -1312,6 +1340,7 @@ function WorkspaceForest({
 function WorkspaceBlock({
   ws,
   childrenByParent,
+  reveal,
   onSelect,
   onProjectOpen,
   selection,
@@ -1326,6 +1355,7 @@ function WorkspaceBlock({
 }: {
   ws: WorkspaceCluster;
   childrenByParent: Map<string, WorkspaceCluster[]>;
+  reveal: RevealRequest;
   onSelect: (p: ProjectInfo, c: ConfigInfo) => void;
   onProjectOpen: (p: ProjectInfo, c: ConfigInfo) => void;
   selection: Selection;
@@ -1349,8 +1379,19 @@ function WorkspaceBlock({
   const children = childrenByParent.get(ws.workspace_root) ?? [];
   const totalProjects =
     ws.projects.length + countNestedProjects(ws, childrenByParent);
+  // Controlled open state so a reveal can force this workspace open when the
+  // target lives inside it; the user can still toggle it freely afterward.
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (reveal && isPathUnder(ws.workspace_root, reveal.path)) setOpen(true);
+  }, [reveal, ws.workspace_root]);
   return (
-    <details className="workspace" style={{ marginLeft: depth ? 10 : 0 }}>
+    <details
+      className="workspace"
+      style={{ marginLeft: depth ? 10 : 0 }}
+      open={open}
+      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
+    >
       <summary
         title={ws.workspace_root}
         onContextMenu={
@@ -1368,6 +1409,7 @@ function WorkspaceBlock({
           <ProjectBlock
             key={p.project_dir}
             project={p}
+            reveal={reveal}
             onSelect={onSelect}
             onProjectOpen={onProjectOpen}
             selection={selection}
@@ -1385,6 +1427,7 @@ function WorkspaceBlock({
           key={child.workspace_root}
           ws={child}
           childrenByParent={childrenByParent}
+          reveal={reveal}
           onSelect={onSelect}
           onProjectOpen={onProjectOpen}
           selection={selection}
@@ -1416,6 +1459,7 @@ function countNestedProjects(
 
 function ProjectBlock({
   project,
+  reveal,
   onSelect,
   onProjectOpen,
   selection,
@@ -1427,6 +1471,7 @@ function ProjectBlock({
   onGroupMenu,
 }: {
   project: ProjectInfo;
+  reveal: RevealRequest;
   onSelect: (p: ProjectInfo, c: ConfigInfo) => void;
   onProjectOpen: (p: ProjectInfo, c: ConfigInfo) => void;
   selection: Selection;
@@ -1449,9 +1494,15 @@ function ProjectBlock({
     project.default_config != null
       ? project.configs.find((c) => c.name === project.default_config)
       : undefined;
+  // Force the project open when a reveal targets it or one of its configs;
+  // ProjectConfigs (below) then selects the specific config.
+  useEffect(() => {
+    if (reveal && isPathUnder(project.project_dir, reveal.path)) setExpanded(true);
+  }, [reveal, project.project_dir]);
   return (
     <li className="project">
       <details
+        open={expanded}
         onToggle={(e) => {
           const isOpen = (e.target as HTMLDetailsElement).open;
           setExpanded(isOpen);
@@ -1480,6 +1531,7 @@ function ProjectBlock({
         {expanded && (
           <ProjectConfigs
             project={project}
+            reveal={reveal}
             onSelect={onSelect}
             selection={selection}
             onContextRequest={onContextRequest}
@@ -1496,6 +1548,7 @@ function ProjectBlock({
 
 function ProjectConfigs({
   project,
+  reveal,
   onSelect,
   selection,
   onContextRequest,
@@ -1505,6 +1558,7 @@ function ProjectConfigs({
   onGroupMenu,
 }: {
   project: ProjectInfo;
+  reveal: RevealRequest;
   onSelect: (p: ProjectInfo, c: ConfigInfo) => void;
   selection: Selection;
   onContextRequest: ContextRequest;
@@ -1521,6 +1575,30 @@ function ProjectConfigs({
   onGroupMenu: (t: GroupMenuTarget) => void;
 }) {
   const [expandedConfigs, setExpandedConfigs] = useState<Set<string>>(new Set());
+
+  // Resolve a reveal request to the config it should land on: the config whose
+  // file the path points at, or — for a project-level reveal (path IS the
+  // project dir, e.g. a just-created project) — the default config. The
+  // project-level fallback uses an exact path match, not "under": otherwise a
+  // config in a physically-nested project would also make this (outer) project
+  // select its default.
+  const revealRowRef = useRef<HTMLLIElement | null>(null);
+  const revealTarget = reveal
+    ? project.configs.find((c) => isPathUnder(c.path, reveal.path)) ??
+      (samePath(project.project_dir, reveal.path)
+        ? project.configs.find((c) => c.name === project.default_config) ??
+          project.configs[0]
+        : undefined)
+    : undefined;
+  // Keyed on the reveal nonce + the resolved target's path: a freshly-created
+  // config only appears after the projects query refetches, so the target can
+  // transition undefined -> found; this refires the effect once it exists.
+  useEffect(() => {
+    if (!reveal || !revealTarget) return;
+    onSelect(project, revealTarget);
+    revealRowRef.current?.scrollIntoView({ block: "nearest" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reveal, revealTarget?.path]);
 
   const metaQs = useQueries({
     queries: project.configs.map((c) => ({
@@ -1584,6 +1662,7 @@ function ProjectConfigs({
         return (
           <li
             key={c.path}
+            ref={c === revealTarget ? revealRowRef : undefined}
             className={
               "config " +
               (configSelected ? "selected " : "") +

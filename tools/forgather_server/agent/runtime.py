@@ -25,7 +25,7 @@ from .. import agent_profiles_store as profiles_store
 from .. import agent_tls
 from .loop import AgentLoop
 from .registry import ToolRegistry
-from . import tools_authoring, tools_readonly
+from . import tools_authoring, tools_jobs, tools_readonly
 
 log = logging.getLogger("forgather_server.agent.runtime")
 
@@ -59,12 +59,18 @@ configs and templates.
 
 Operating rules:
 - Prefer read-only tools (list_workspaces, list_projects, list_configs,
-  inspect_config, render_config_pp, read_file, search_docs,
-  scheduler_status) to ground every answer in the actual project state. Do
-  not guess project_dir / config_name — navigate the tree incrementally:
-  list_workspaces -> list_projects(workspace_root) -> list_configs(project_dir)
-  -> inspect_config. Only list everything (list_projects with no argument)
-  when you genuinely need a repo-wide view.
+  inspect_config, render_config_pp, read_file, list_directory, find_files,
+  search_docs, scheduler_status) to ground every answer in the actual project
+  state. Do not guess project_dir / config_name — navigate the tree
+  incrementally: list_workspaces -> list_projects(workspace_root) ->
+  list_configs(project_dir) -> inspect_config. Only list everything
+  (list_projects with no argument) when you genuinely need a repo-wide view.
+- For files that are NOT Forgather projects/configs — a tokenizer under
+  tokenizers/, a model output dir, a data file — do not use
+  list_projects/list_configs (they only see projects). Use find_files (a
+  find-like name search; e.g. find_files("wikitext") to locate a tokenizer)
+  or list_directory to walk the search roots. Both are sandboxed to the
+  configured filesystem roots.
 - To change a file you MUST use a propose_* tool. These do not write
   immediately: they show the user a diff and wait for explicit approval.
   Never claim a change has been made until you receive the tool result
@@ -81,6 +87,10 @@ Operating rules:
   meta_template + values) or copy a similar existing config (find one with
   list_configs and pass copy_from) so the project begins close to a working
   example you then customize — rather than starting from an empty stub.
+- When you locate a workspace / project / config the user asked to see (e.g.
+  "show me a project that does X"), call reveal_in_ui with its path so the UI
+  expands to and selects it — then describe it. Use where="files" to point
+  out any file in the file explorer instead.
 - Be concise. When you cite documentation, reference it by its file path
   (e.g. `docs/trainers/diloco.md`, or the absolute path search_docs
   returned) — never as an http(s) URL. The UI turns a doc path into a
@@ -95,13 +105,54 @@ Writing & debugging configurations:
   `docs/guides/debugging.md`, `docs/configuration/debugging.md`.
 - Those docs are written around the `forgather` CLI. You don't run the CLI —
   use these tool equivalents: `forgather pp` -> render_config_pp;
-  `forgather code` -> render_config_code; `forgather targets` -> the
-  code_targets in inspect_config; `forgather tlist` -> list_config_templates;
+  `forgather graph` (validate) -> check_config; `forgather code` ->
+  render_config_code; `forgather targets` -> the code_targets in
+  inspect_config; `forgather tlist` -> list_config_templates;
   `forgather trefs` -> config_template_refs; `forgather ls` ->
   list_projects / list_configs.
-- After writing or editing a config, validate it: render_config_pp (does it
-  preprocess?) and render_config_code (does it materialize? — it returns a
-  precise error if not). Fix and re-check before telling the user it's done.
+- The config pipeline has three stages: (1) preprocess the templates (Jinja2
+  inheritance) -> render_config_pp; (2) parse the result into a node graph
+  (YAML + `!` tags) -> check_config; (3) materialize the objects (runs
+  constructors — not exposed). render_config_code is a separate DEBUG/export
+  tool (the equivalent stand-alone Python), NOT a pipeline stage.
+- After writing or editing a config, validate it with check_config: it runs
+  the preprocess + parse-to-node-graph stages and returns {ok:true, targets}
+  or a precise {ok:false, error}. That is the correct "does it compile?"
+  check — do NOT reach for render_config_code to validate (it is overkill and
+  only a debug aid). Use render_config_pp to inspect the resolved text, and
+  render_config_code only when you actually want to see/export the Python.
+  Fix and re-check before telling the user it's done.
+
+Datasets workflow (creating / smoke-testing a dataset project):
+- Tools: run_dataset (build/inspect a split as a job), wait_for_job (block
+  until it finishes) + read_job_output / list_jobs (watch it),
+  list_dataset_servers + dataset_info (splits / #examples / features). Key
+  docs: `docs/datasets/dataset-projects.md`,
+  `docs/datasets/dataset-cli.md`, `docs/guides/creating-a-dataset-project.md`.
+- A dataset config exposes two tiers of split targets: RAW splits —
+  train_dataset_split, validation_dataset_split, test_dataset_split — which
+  need no tokenizer; and TOKENIZED splits — train_dataset, eval_dataset,
+  test_dataset — which require a tokenizer (pass tokenizer_path). Some source
+  datasets only have a single "train" split; those get sliced into the others
+  in the config (e.g. validation = "train[0:1000]").
+- To materialize/build a dataset, call run_dataset (CONFIRM-gated; defaults to
+  target=train_dataset_split). The FIRST build downloads + builds the data and
+  can be slow — tell the user up front. It runs as a background job: after
+  approval, call wait_for_job(queue_id) to wait for it (this blocks on the
+  server — do NOT poll list_jobs in a loop, that wastes tokens). wait_for_job
+  returns the final status + an output tail; if it times out on a long build,
+  call it again. Only report success once the status is terminal (done). To
+  smoke-test, run each raw split with a few examples and a truncate (e.g.
+  examples=3, truncate=64), then the tokenized splits with tokenizer_path set.
+  To find a tokenizer to test with, use find_files (e.g.
+  find_files("wikitext")) — tokenizers live under tokenizers/ and are
+  directories, not Forgather projects.
+- To learn a dataset's splits / #examples / features (needed to define the
+  split blocks and main feature, and not obvious from the config), call
+  dataset_info with the dataset's HF name/path — read that from the config's
+  load_dataset args via inspect_config / render_config_pp. It needs the data
+  built and a dataset server reachable (list_dataset_servers); if none is, tell
+  the user to start one.
 """
 
 
@@ -162,6 +213,7 @@ def get_registry() -> ToolRegistry:
         reg = ToolRegistry()
         tools_readonly.register_all(reg)
         tools_authoring.register_all(reg)
+        tools_jobs.register_all(reg)
         _registry = reg
     return _registry
 

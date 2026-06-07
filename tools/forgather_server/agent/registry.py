@@ -54,6 +54,12 @@ class Proposal:
     pp_preview: Optional[str] = None
     # Arbitrary extra structured preview for non-file changes.
     extra: Dict[str, Any] = field(default_factory=dict)
+    # When this proposal *creates* a navigable artifact, the kind of thing it
+    # creates ("workspace" | "project" | "config"). On approval the loop
+    # echoes this plus ``path`` so the webui can refresh the Projects tree and
+    # reveal/expand to the new item (mirroring what a user-driven create does).
+    # ``None`` for edits / non-creating changes.
+    reveal_kind: Optional[str] = None
     # The actual side-effecting action, run only on approval. Returns a
     # result string fed back to the model as the tool_result.
     commit: Optional[Callable[[], Union[str, Awaitable[str]]]] = None
@@ -71,6 +77,23 @@ class Proposal:
             "pp_preview": self.pp_preview,
             "extra": self.extra,
         }
+
+
+@dataclass
+class UiDirective:
+    """A client-side action a ``read`` tool asks the webui to perform.
+
+    Some read tools are useful precisely because they steer the UI — e.g.
+    revealing a project the agent just located. The handler returns a
+    ``UiDirective`` instead of plain data; the loop emits it as a
+    ``ui_directive`` event for the webui and feeds ``message`` back to the
+    model as the tool result (so the model knows it succeeded). It carries no
+    side effect on the server and so needs no approval gate.
+    """
+
+    action: str  # e.g. "reveal"
+    payload: Dict[str, Any] = field(default_factory=dict)
+    message: str = "done"
 
 
 @dataclass

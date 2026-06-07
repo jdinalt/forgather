@@ -120,11 +120,24 @@ export interface AgentController {
   /** Set when the last turn ended truncated (max_tokens / iteration cap), so
    *  the UI can offer "Continue". Cleared when a new turn starts. */
   incompleteReason: string | null;
+  /** Set when the agent just *created* a navigable artifact (an approved
+   *  workspace / project / config commit). The app watches this to refresh
+   *  the Projects tree and reveal the new item. ``nonce`` lets the same path
+   *  fire a reveal more than once. */
+  lastArtifact: { kind: string; path: string; nonce: number } | null;
+  /** Set when the agent asks the UI to reveal a path (the reveal_in_ui tool),
+   *  e.g. after locating a project the user asked about. ``where`` is
+   *  "projects" or "files". The app routes it to the matching tree. */
+  lastReveal: { path: string; where: string; nonce: number } | null;
   send: (message: string) => void;
   decide: (actionId: string, approve: boolean) => void;
   continueTurn: () => void;
   stop: () => void;
   reset: () => void;
+  /** reset() guarded by a confirmation when a conversation exists, so a
+   *  stray click on the "New conversation" control can't silently discard
+   *  the current thread. */
+  newConversation: () => void;
   refreshStatus: () => void;
   refreshProfiles: () => void;
   activate: (profileId: string) => void;
@@ -145,6 +158,12 @@ export function useAgent(): AgentController {
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const [usage, setUsage] = useState<AgentUsage | null>(null);
   const [incompleteReason, setIncompleteReason] = useState<string | null>(null);
+  const [lastArtifact, setLastArtifact] = useState<
+    { kind: string; path: string; nonce: number } | null
+  >(null);
+  const [lastReveal, setLastReveal] = useState<
+    { path: string; where: string; nonce: number } | null
+  >(null);
 
   const sessionIdRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -327,8 +346,31 @@ export function useAgent(): AgentController {
                 : it,
             ),
           );
+          // A successful create commit: tell the app to refresh the Projects
+          // tree and reveal the new workspace / project / config.
+          if (ev.approved && !ev.error && ev.created_kind && ev.created_path) {
+            setLastArtifact({
+              kind: ev.created_kind as string,
+              path: ev.created_path as string,
+              nonce: Date.now(),
+            });
+          }
           break;
         }
+        case "ui_directive":
+          // The agent asked the UI to do something (reveal a path). No
+          // conversation item — just surface it for the app to act on.
+          if (ev.action === "reveal") {
+            const p = (ev.payload as Record<string, unknown>) ?? {};
+            if (typeof p.path === "string") {
+              setLastReveal({
+                path: p.path,
+                where: (p.where as string) || "projects",
+                nonce: Date.now(),
+              });
+            }
+          }
+          break;
         case "usage":
           setUsage({
             inputTokens: (ev.input_tokens as number) ?? 0,
@@ -425,6 +467,16 @@ export function useAgent(): AgentController {
     }
   }, []);
 
+  const newConversation = useCallback(() => {
+    if (
+      items.length > 0 &&
+      !window.confirm("Start a new conversation? The current one will be cleared.")
+    ) {
+      return;
+    }
+    reset();
+  }, [items.length, reset]);
+
   const dumpConversation = useCallback(async (): Promise<Record<string, unknown>> => {
     let messages: Array<{ role: string; content: unknown }> = [];
     const sid = sessionIdRef.current;
@@ -510,11 +562,14 @@ export function useAgent(): AgentController {
     activeProfileId,
     usage,
     incompleteReason,
+    lastArtifact,
+    lastReveal,
     send,
     decide,
     continueTurn,
     stop,
     reset,
+    newConversation,
     refreshStatus,
     refreshProfiles,
     activate,

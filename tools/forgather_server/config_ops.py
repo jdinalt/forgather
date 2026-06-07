@@ -199,6 +199,44 @@ def list_code_targets(project_dir: str, config_name: str) -> List[str]:
     return list(config.keys())
 
 
+def check_config(
+    project_dir: str, config_name: str, target: Optional[str] = None
+) -> Dict[str, Any]:
+    """Validate that a config compiles to a valid node graph, without
+    materializing it or generating any code.
+
+    This is the *graph* pipeline stage (what ``forgather graph`` parses) with
+    no output representation: preprocess the templates, parse the result as
+    YAML, and build the node graph (resolving the custom ``!`` tags). It does
+    NOT construct any objects (no constructors run) and does NOT generate
+    Python — it is the cheapest "is this config well-formed?" check.
+
+    Returns ``{"ok": True, "targets": [...]}`` on success (``targets`` are the
+    top-level materializable keys). On a malformed config, catches the
+    structured :class:`ConfigDiagnostic` and returns
+    ``{"ok": False, "error": ..., "error_type": ...}`` rather than raising, so
+    the caller gets a clean pass/fail plus the diagnostic. ``target``, if
+    given, additionally checks that key exists in the graph.
+    """
+    from collections.abc import Mapping as _Mapping
+
+    try:
+        loaded = load_env(project_dir, config_name)
+        merged = _merged_kwargs(project_dir, config_name, {})
+        config = loaded.env.load(loaded.config_path, **merged).config
+        targets = list(config.keys()) if isinstance(config, _Mapping) else []
+        if target is not None and target not in targets:
+            return {
+                "ok": False,
+                "error": f"target {target!r} is not in the config; available targets: {targets}",
+                "error_type": "TargetNotFound",
+                "targets": targets,
+            }
+        return {"ok": True, "targets": targets}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "error_type": type(e).__name__}
+
+
 def render_pp_trace(
     project_dir: str, config_name: str, **kwargs
 ) -> List[DebugTraceItem]:

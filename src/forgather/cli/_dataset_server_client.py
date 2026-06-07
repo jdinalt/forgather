@@ -147,6 +147,7 @@ class DatasetServerClient:
         url: Optional[str] = None,
         token: Optional[str] = None,
         insecure: bool = False,
+        timeout: float = 30.0,
     ):
         self.url = resolve_server_url(url).rstrip("/")
         self.token = resolve_token(self.url, token)
@@ -154,6 +155,9 @@ class DatasetServerClient:
         # validation. Operator-asserted "I trust this channel"; used
         # for SSH-tunneled and otherwise out-of-band-secured remotes.
         self.insecure = insecure
+        # Per-request timeout. A small value is useful for cheap
+        # reachability probes (e.g. health() across many servers).
+        self.timeout = timeout
 
     @classmethod
     def from_args(cls, args) -> "DatasetServerClient":
@@ -167,7 +171,11 @@ class DatasetServerClient:
 
     def health(self) -> Dict[str, Any]:
         return _request(
-            "GET", f"{self.url}/v1/health", token=self.token, insecure=self.insecure
+            "GET",
+            f"{self.url}/v1/health",
+            token=self.token,
+            insecure=self.insecure,
+            timeout=self.timeout,
         )
 
     def auth_status(self) -> Dict[str, Any]:
@@ -176,19 +184,45 @@ class DatasetServerClient:
             f"{self.url}/v1/auth/status",
             token=self.token,
             insecure=self.insecure,
+            timeout=self.timeout,
         )
 
     def list_datasets(self) -> Dict[str, Any]:
         return _request(
-            "GET", f"{self.url}/v1/datasets", token=self.token, insecure=self.insecure
+            "GET",
+            f"{self.url}/v1/datasets",
+            token=self.token,
+            insecure=self.insecure,
+            timeout=self.timeout,
         )
 
     def list_local(self) -> Dict[str, Any]:
         return _request(
-            "GET", f"{self.url}/v1/local", token=self.token, insecure=self.insecure
+            "GET",
+            f"{self.url}/v1/local",
+            token=self.token,
+            insecure=self.insecure,
+            timeout=self.timeout,
         )
 
     def list_hf_cache(self) -> Dict[str, Any]:
         return _request(
-            "GET", f"{self.url}/v1/cache/hf", token=self.token, insecure=self.insecure
+            "GET",
+            f"{self.url}/v1/cache/hf",
+            token=self.token,
+            insecure=self.insecure,
+            timeout=self.timeout,
+        )
+
+    def load(self, load_args: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /v1/load — load a dataset by path/name (+ split) and return
+        ``{handle, length, column_names, ...}``. Note: this triggers an actual
+        load on the server, so it can be slow / has side effects."""
+        return _request(
+            "POST",
+            f"{self.url}/v1/load",
+            token=self.token,
+            body=load_args,
+            insecure=self.insecure,
+            timeout=self.timeout,
         )
