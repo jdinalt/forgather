@@ -3224,7 +3224,7 @@ Grouped by risk (the gate in `agent/registry.py`):
   `wait_for_job`; datasets: `list_dataset_servers`, `dataset_info`; UI:
   `reveal_in_ui`.
 - **Authoring** (`propose` → preview → commit) — `propose_edit_config`,
-  `propose_new_config`, `propose_new_config_from_template`,
+  `propose_new_config` (scaffold / copy / inline content),
   `propose_new_project`, `propose_new_workspace`.
 - **Run-as-job** (`confirm` → approve → enqueue) — submit a config to the
   scheduler: `run_dataset` (build/inspect a dataset split), `run_construct`
@@ -3543,8 +3543,8 @@ Tool inventory by area:
   `render_config_code`, `check_config`, `list_config_templates`,
   `config_template_refs`, `resolve_output_dir`, `read_file`,
   `list_directory`, `find_files`, `search_docs`, `reveal_in_ui`.
-- **Author** (propose): `propose_edit_config`, `propose_new_config`,
-  `propose_new_config_from_template`, `propose_new_project`,
+- **Author** (propose): `propose_edit_config`, `propose_new_config`
+  (scaffold / copy-from / inline content), `propose_new_project`,
   `propose_new_workspace` (+ `list_meta_templates`).
 - **Run jobs** (confirm): `run_dataset`, `run_construct`, `run_train`,
   `run_eval` — plus `list_jobs`, `read_job_output`, `wait_for_job`,

@@ -101,51 +101,54 @@ def _propose_new_config(args: Dict[str, Any]) -> Proposal:
     project_dir = args["project_dir"]
     name = args["name"]
     kind = args.get("kind", "config")
-    content = args.get("content", "")
+    content = args.get("content")
+    meta_template = args.get("meta_template")
+    values = args.get("values") or {}
+    copy_from = args.get("copy_from")
 
-    # Resolve (and validate name/containment/no-overwrite) without writing.
-    target, _empty = config_ops.resolve_new_template_target(project_dir, kind, name)
+    # Three starting points, at most one (mirrors propose_new_project): a
+    # scaffold (meta_template), a copy of an existing config (copy_from), or
+    # inline content (content, default empty stub).
+    chosen = [
+        k for k, v in (("meta_template", meta_template), ("copy_from", copy_from),
+                       ("content", content))
+        if v
+    ]
+    if len(chosen) > 1:
+        raise ValueError(
+            "choose at most one starting point — meta_template, copy_from, or "
+            f"content (got {chosen})"
+        )
+
+    if meta_template:
+        # Pure render + path resolution (MissingFieldsError if a required field
+        # is absent, FileExistsError if the target exists).
+        target, body = config_ops.resolve_new_template_target(
+            project_dir, kind, name, meta_template=meta_template, values=values
+        )
+        starting_point = f"scaffold: {meta_template}"
+    elif copy_from:
+        _enforce_readable_path(copy_from)  # fs-root gate before the read
+        body = config_ops.read_raw(copy_from)  # validates it exists/readable
+        target, _ = config_ops.resolve_new_template_target(project_dir, kind, name)
+        starting_point = f"copy: {copy_from}"
+    else:
+        target, _ = config_ops.resolve_new_template_target(project_dir, kind, name)
+        body = content or ""
+        starting_point = "inline content" if body else "empty stub"
 
     def commit() -> str:
-        config_ops.write_template_file(target, content)
+        config_ops.write_template_file(target, body)
         check = _validate_after_write(project_dir, name)
-        return f"created {target}. {check}"
+        return f"created {target} ({starting_point}). {check}"
 
     return Proposal(
         title=f"New {kind}: {name}",
         summary=f"Create {target}",
         path=target,
         before=None,
-        after=content,
-        reveal_kind="config",
-        commit=commit,
-    )
-
-
-def _propose_new_config_from_template(args: Dict[str, Any]) -> Proposal:
-    project_dir = args["project_dir"]
-    name = args["name"]
-    kind = args.get("kind", "config")
-    meta_template = args["meta_template"]
-    values = args.get("values") or {}
-
-    # Pure render + path resolution (raises MissingFieldsError if a required
-    # template field is absent, FileExistsError if the target exists).
-    target, content = config_ops.resolve_new_template_target(
-        project_dir, kind, name, meta_template=meta_template, values=values
-    )
-
-    def commit() -> str:
-        config_ops.write_template_file(target, content)
-        check = _validate_after_write(project_dir, name)
-        return f"created {target} from meta-template {meta_template!r}. {check}"
-
-    return Proposal(
-        title=f"New {kind} from template: {name}",
-        summary=f"Create {target} from meta-template {meta_template!r}",
-        path=target,
-        before=None,
-        after=content,
+        after=body,
+        extra={"starting_point": starting_point},
         reveal_kind="config",
         commit=commit,
     )
@@ -244,8 +247,9 @@ def register_all(reg: ToolRegistry) -> None:
             name="list_meta_templates",
             description=(
                 "List available meta-templates (config/workspace scaffolds) "
-                "and their fields. Use before propose_new_config_from_template "
-                "to learn the meta_template id and which values it accepts."
+                "and their fields. Use before propose_new_config / "
+                "propose_new_project to learn the meta_template id and which "
+                "values it accepts."
             ),
             json_schema={"type": "object", "properties": {}},
             handler=_list_meta_templates,
@@ -341,9 +345,16 @@ def register_all(reg: ToolRegistry) -> None:
         ToolSpec(
             name="propose_new_config",
             description=(
-                "Propose creating a new config/template file with the given "
-                "content. Refuses to overwrite an existing file. Approval "
-                "required before the file is written."
+                "Propose creating a new config/template file in an existing "
+                "project. Like propose_new_project's default config, it has three "
+                "starting points (pick at most one): (1) a scaffold — set "
+                "meta_template to an id from list_meta_templates (+ values); "
+                "(2) copy an existing config — set copy_from to an absolute "
+                "config path (find one via list_configs on a similar example, so "
+                "the new config starts close to a working example you then "
+                "customize with propose_edit_config); (3) inline content — pass "
+                "content (or omit all three for an empty stub). Refuses to "
+                "overwrite an existing file. Approval required before the write."
             ),
             json_schema={
                 "type": "object",
@@ -351,34 +362,14 @@ def register_all(reg: ToolRegistry) -> None:
                     "project_dir": {"type": "string"},
                     "name": {"type": "string", "description": "Relative file name (\".yaml\" appended if omitted)."},
                     "kind": {"type": "string", "enum": ["config", "template"], "description": "Default \"config\"."},
-                    "content": {"type": "string", "description": "Full file content (default empty)."},
+                    "content": {"type": "string", "description": "Full file content (mutually exclusive with meta_template / copy_from; omit for an empty stub)."},
+                    "meta_template": {"type": "string", "description": "Scaffold id from list_meta_templates (mutually exclusive with copy_from / content)."},
+                    "values": {"type": "object", "description": "Field values for the meta-template scaffold."},
+                    "copy_from": {"type": "string", "description": "Absolute path to an existing config to copy (mutually exclusive with meta_template / content). Get paths from list_configs."},
                 },
                 "required": ["project_dir", "name"],
             },
             handler=_propose_new_config,
-            risk=PROPOSE,
-        )
-    )
-    reg.register(
-        ToolSpec(
-            name="propose_new_config_from_template",
-            description=(
-                "Propose creating a new config/template file scaffolded from a "
-                "meta-template (see list_meta_templates for ids and fields). "
-                "Approval required before the file is written."
-            ),
-            json_schema={
-                "type": "object",
-                "properties": {
-                    "project_dir": {"type": "string"},
-                    "name": {"type": "string"},
-                    "kind": {"type": "string", "enum": ["config", "template"]},
-                    "meta_template": {"type": "string", "description": "Meta-template id from list_meta_templates."},
-                    "values": {"type": "object", "description": "Field values for the meta-template."},
-                },
-                "required": ["project_dir", "name", "meta_template"],
-            },
-            handler=_propose_new_config_from_template,
             risk=PROPOSE,
         )
     )
