@@ -24,8 +24,8 @@ class RecordingClient:
         self.hb = {"sync_round": 3, "num_workers": 1}
         self.model_hash = "abc123"
 
-    def heartbeat(self, worker_id, steps_per_second=0.0, stats=None):
-        self.calls.append(("heartbeat", worker_id, steps_per_second, stats))
+    def heartbeat(self, worker_id, steps_per_second=0.0, stats=None, sync_state=None):
+        self.calls.append(("heartbeat", worker_id, steps_per_second, stats, sync_state))
         return self.hb
 
     def get_info(self):
@@ -36,20 +36,40 @@ class RecordingClient:
         self.calls.append(("fetch_model_def", dest_dir))
         return self.model_hash
 
+    def register(self, worker_id, worker_info=None):
+        self.calls.append(("register", worker_id, worker_info))
+        return {}
+
+    def deregister(self, worker_id):
+        self.calls.append(("deregister", worker_id))
+
 
 class TestCoordinatorDelegation:
     def test_heartbeat_forwards_args_and_return(self):
         client = RecordingClient()
         coord = CoordinatorClient(client)
         stats = {"loss": 1.5}
-        out = coord.heartbeat("w0", steps_per_second=4.2, stats=stats)
+        sync_state = {"sync_count": 3}
+        out = coord.heartbeat(
+            "w0", steps_per_second=4.2, stats=stats, sync_state=sync_state
+        )
         assert out is client.hb
-        assert client.calls == [("heartbeat", "w0", 4.2, stats)]
+        assert client.calls == [("heartbeat", "w0", 4.2, stats, sync_state)]
 
     def test_heartbeat_defaults(self):
         client = RecordingClient()
         CoordinatorClient(client).heartbeat("w0")
-        assert client.calls == [("heartbeat", "w0", 0.0, None)]
+        assert client.calls == [("heartbeat", "w0", 0.0, None, None)]
+
+    def test_register_deregister_delegate(self):
+        client = RecordingClient()
+        coord = CoordinatorClient(client)
+        coord.register("w0", {"hostname": "h"})
+        coord.deregister("w0")
+        assert client.calls == [
+            ("register", "w0", {"hostname": "h"}),
+            ("deregister", "w0"),
+        ]
 
     def test_get_info_delegates(self):
         client = RecordingClient()

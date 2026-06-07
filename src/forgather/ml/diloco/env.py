@@ -64,3 +64,12 @@ def diloco_shm_init_checkpoint() -> str:
     When unset, the aggregator seeds the region from the checkpoint the
     coordinator advertises in ``/info`` (``model_checkpoint_dir``)."""
     return os.environ.get("DILOCO_SHM_INIT_CHECKPOINT", "").strip()
+
+
+def diloco_report_sync_state() -> bool:
+    """Whether to report per-worker sync-state on the heartbeat (default True).
+
+    Set ``DILOCO_REPORT_SYNC_STATE`` to a falsy value (0/false/no/off) to omit it
+    — a small payload trim if the coordinator's diagnostics aren't needed."""
+    raw = os.environ.get("DILOCO_REPORT_SYNC_STATE", "").strip().lower()
+    return raw not in ("0", "false", "no", "off")

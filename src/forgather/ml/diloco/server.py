@@ -88,6 +88,12 @@ class WorkerInfo:
     # (normalized schema, see diloco/stats.py). Surfaced per-worker in
     # /status; folded into the server's StatsAggregator for the aggregate view.
     stats: Dict[str, Any] = field(default_factory=dict)
+    # Latest per-worker DiLoCo sync-state from the heartbeat (sync_count,
+    # last_sync_time, last send/recv MB). For an off-server backend
+    # (shared-memory) this is the only progress signal — the server-side
+    # ``sync_round`` above stays 0 since the worker never submits. Surfaced in
+    # /status.
+    sync_state: Dict[str, Any] = field(default_factory=dict)
     # Trainer-control command queued for this worker, delivered on its next
     # heartbeat and cleared on delivery (the relay channel for collective
     # save / save-and-stop / abort issued via /control/command). One of
@@ -2372,11 +2378,18 @@ class DiLoCoServer:
             # non-finite / non-numeric values out of the aggregate and the
             # wire JSON. Done under the workers lock so a concurrent status
             # read sees a consistent worker record.
-            from .stats import sanitize_stats
+            from .stats import sanitize_stats, sanitize_sync_state
 
             worker_stats = sanitize_stats(info.get("stats"))
             if worker_stats:
                 self._workers[worker_id].stats = worker_stats
+            # Per-worker DiLoCo sync-state (issue #154): the worker's own view of
+            # its sync progress, so the server can show it even for an off-server
+            # backend (shared-memory) that never submits. Its own whitelist (not
+            # the training-stats schema) — worker-supplied, bound to finite numbers.
+            worker_sync_state = sanitize_sync_state(info.get("sync_state"))
+            if worker_sync_state:
+                self._workers[worker_id].sync_state = worker_sync_state
             # Read (don't yet clear) any queued trainer-control command. We
             # clear it only *after* the response is successfully sent below,
             # so a dropped/failed heartbeat response doesn't silently lose the
@@ -2639,6 +2652,7 @@ class DiLoCoServer:
                     "steps_per_second": w.steps_per_second,
                     "output_dir": w.output_dir,
                     "stats": w.stats,
+                    "sync_state": w.sync_state,
                 }
                 for wid, w in self._workers.items()
             }

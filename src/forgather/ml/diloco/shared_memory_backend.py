@@ -89,6 +89,9 @@ class SharedMemoryBackend(OuterSyncBackend):
     runs_outer_optimizer = "shared-region"
     supports_async = False
     fault_tolerant = False  # single host: a dead process kills the group
+    # join attaches to the region, not the HTTP server — the worker registers
+    # separately for coordinator membership / diagnostics.
+    registers_with_coordinator = False
 
     def __init__(
         self,

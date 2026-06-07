@@ -151,6 +151,36 @@ def sanitize_stats(raw: Any) -> Dict[str, Any]:
     return out
 
 
+#: Per-worker DiLoCo sync-state keys (issue #154) — a worker's own view of its
+#: sync progress, reported on the heartbeat so the server can surface it even for
+#: an off-server backend (shared-memory) that never submits pseudo-gradients.
+_SYNC_STATE_FIELDS = (
+    "sync_count",
+    "last_sync_time",
+    "total_sync_time",
+    "last_send_mb",
+    "last_recv_mb",
+    "sync_every",
+)
+
+
+def sanitize_sync_state(raw: Any) -> Dict[str, Any]:
+    """Whitelist a worker-reported sync-state dict to finite numbers.
+
+    Same bounding rationale as :func:`sanitize_stats` (the dict is
+    worker-supplied), but a distinct schema — these are DiLoCo sync metrics, not
+    training stats, and must not leak into the aggregate training view."""
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for key in _SYNC_STATE_FIELDS:
+        if key in raw:
+            num = _finite_number(raw[key])
+            if num is not None:
+                out[key] = num
+    return out
+
+
 class StatsAggregator:
     """Aggregate per-worker training metrics into a server-level view.
 

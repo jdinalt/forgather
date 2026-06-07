@@ -115,11 +115,17 @@ class OuterSyncBackend(ABC):
     - ``fault_tolerant`` — whether the backend transparently survives a *peer*
       failing mid-round (the quorum / skip-step axis). This is orthogonal to
       transport-level retry, which is owned by the caller, not the backend.
+    - ``registers_with_coordinator`` — whether ``join`` already registers the
+      worker with the HTTP coordinator (HTTP's ``join`` *is* ``register``). When
+      ``False`` (a backend whose join is purely a tensor-path op, e.g.
+      shared-memory), the worker registers separately for coordinator membership
+      so it stays visible in the server's diagnostics.
     """
 
     runs_outer_optimizer: Literal["central", "replicated", "shared-region"] = "central"
     supports_async: bool = False
     fault_tolerant: bool = False
+    registers_with_coordinator: bool = True
 
     @abstractmethod
     def join(

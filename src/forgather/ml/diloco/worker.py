@@ -117,6 +117,7 @@ class DiLoCoWorker:
         output_dir: Optional[str] = None,
         backend: Optional[OuterSyncBackend] = None,
         coordinator: Optional[CoordinatorClient] = None,
+        report_sync_state: bool = True,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -220,6 +221,10 @@ class DiLoCoWorker:
         self.coordinator: CoordinatorClient = coordinator or CoordinatorClient(
             self.client
         )
+        # Report per-worker DiLoCo sync-state on the heartbeat so the
+        # coordinator can show this worker's progress in its diagnostics — the
+        # only sync-progress signal for an off-server backend (shared-memory).
+        self.report_sync_state = bool(report_sync_state)
 
         # DDP rank-awareness. When running inside a torch-distributed
         # group (e.g. ``torchrun`` with WORLD_SIZE > 1, or a Forgather
@@ -421,15 +426,30 @@ class DiLoCoWorker:
 
         if self._is_leader:
             logger.info(
-                f"DiLoCoWorker {self.worker_id}: registering with server "
-                f"(DDP rank {self._ddp_rank}/{self._ddp_world_size})"
+                f"DiLoCoWorker {self.worker_id}: joining sync backend "
+                f"({type(self.backend).__name__}, DDP rank "
+                f"{self._ddp_rank}/{self._ddp_world_size})"
             )
 
-            # Register and get global params (via the sync backend)
+            # Join the backend and get the initial global params.
             worker_info = self._get_worker_info()
             global_params = self.backend.join(
                 worker_id=self.worker_id, worker_info=worker_info
             )
+
+            # If the backend's join didn't register us with the HTTP coordinator
+            # (e.g. shared-memory, whose join is a region attach), register
+            # separately for coordinator membership so the server tracks us in
+            # its diagnostics. The returned params are ignored — the backend is
+            # our source of truth.
+            if not self.backend.registers_with_coordinator:
+                try:
+                    self.coordinator.register(self.worker_id, worker_info)
+                except Exception as exc:  # best-effort: diagnostics, not sync
+                    logger.warning(
+                        f"DiLoCoWorker {self.worker_id}: coordinator "
+                        f"registration failed (diagnostics only): {exc}"
+                    )
 
             # Load global params into model
             self._apply_global_params(global_params)
@@ -512,9 +532,15 @@ class DiLoCoWorker:
             hook.remove()
         self._hooks.clear()
 
-        # Deregister (leader only)
+        # Leave the backend (leader only), and the coordinator too if we
+        # registered there separately for membership.
         if self._is_leader:
             self.backend.leave(worker_id=self.worker_id)
+            if not self.backend.registers_with_coordinator:
+                try:
+                    self.coordinator.deregister(self.worker_id)
+                except Exception:  # best-effort
+                    pass
 
         self._active = False
 
@@ -888,6 +914,11 @@ class DiLoCoWorker:
                     self.worker_id,
                     steps_per_second=speed,
                     stats=self._consume_stats(),
+                    sync_state=(
+                        self._sync_state_for_heartbeat()
+                        if self.report_sync_state
+                        else None
+                    ),
                 )
 
                 # Apply DyLU recommendation if present
@@ -963,6 +994,21 @@ class DiLoCoWorker:
         if duration <= 0:
             return 0.0
         return (len(self._step_timestamps) - 1) / duration
+
+    def _sync_state_for_heartbeat(self) -> dict:
+        """Curated per-worker sync metrics for the coordinator's diagnostics.
+
+        Flat numeric dict (the server sanitizes it). For an off-server backend
+        (shared-memory) this is the only signal of the worker's sync progress —
+        its server-side ``sync_round`` stays 0 since it never submits."""
+        return {
+            "sync_count": self._sync_count,
+            "last_sync_time": self._last_sync_time,
+            "total_sync_time": self._total_sync_time,
+            "last_send_mb": self._last_sync_send_bytes / 1e6,
+            "last_recv_mb": self._last_sync_recv_bytes / 1e6,
+            "sync_every": self.sync_every,
+        }
 
     @property
     def sync_metrics(self) -> dict:

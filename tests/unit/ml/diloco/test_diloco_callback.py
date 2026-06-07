@@ -351,6 +351,7 @@ class TestWorkerLifecycle:
             num_fragments=1,
             max_sync_retries=3,
             backend=None,
+            report_sync_state=True,
             param_view=None,
             auth_token=None,
             verify_tls=True,
@@ -490,6 +491,7 @@ class TestWorkerLifecycle:
             num_fragments=4,  # from /info
             max_sync_retries=5,
             backend=None,
+            report_sync_state=True,
             param_view=None,
             auth_token=None,
             verify_tls=True,
