@@ -30,6 +30,7 @@ from . import (
     tools_advanced,
     tools_authoring,
     tools_diloco,
+    tools_fs,
     tools_jobs,
     tools_meta,
     tools_models,
@@ -323,6 +324,7 @@ def get_registry() -> ToolRegistry:
         tools_services.register_all(reg)
         tools_diloco.register_all(reg)
         tools_advanced.register_all(reg)
+        tools_fs.register_all(reg)
         _registry = reg
     return _registry
 

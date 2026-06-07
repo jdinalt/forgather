@@ -3563,6 +3563,11 @@ Tool inventory by area:
 - **Inference / cluster / overrides**: `list_inference_servers`,
   `query_model` (confirm), `cluster_status`, `get_config_overrides`,
   `set_config_overrides` (confirm).
+- **Filesystem** (`stat_path` read; `delete_path` / `move_path` /
+  `copy_path` confirm) — general file management for cleanup /
+  reorganizing; reuses the `/api/fs/*` guards (fs-root, symlink-chain
+  rejection, depth floor, denylist). `delete_path` is recursive for
+  directories and irreversible.
 - **Meta**: `list_tools`, `tool_help`, `call_tool` (see disclosure
   below).
 
