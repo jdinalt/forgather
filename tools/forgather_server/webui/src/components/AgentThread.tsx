@@ -26,6 +26,64 @@ function isDocPath(p: string): boolean {
   return /\.(md|markdown|ipynb)$/i.test(p);
 }
 
+// A doc path with at least one directory segment (so a bare "README.md"
+// mention in prose isn't linkified, but "docs/trainers/diloco.md",
+// "CLAUDE.d/architecture.md", and absolute paths are). Optional leading
+// slash covers absolute fs paths and /docs/... URL paths.
+const DOC_PATH_SRC = "\\/?(?:[\\w.@+-]+\\/)+[\\w.@+-]+\\.(?:md|markdown|ipynb)";
+
+function splitTextForDocPaths(value: string): any[] | null {
+  const re = new RegExp(DOC_PATH_SRC, "g");
+  const out: any[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(value)) !== null) {
+    if (m.index > last) out.push({ type: "text", value: value.slice(last, m.index) });
+    out.push({ type: "link", url: m[0], children: [{ type: "text", value: m[0] }] });
+    last = m.index + m[0].length;
+  }
+  if (!out.length) return null;
+  if (last < value.length) out.push({ type: "text", value: value.slice(last) });
+  return out;
+}
+
+function isWholeDocPath(v: string): boolean {
+  return new RegExp("^" + DOC_PATH_SRC + "$").test(v);
+}
+
+// remark plugin: the agent cites docs as bare paths (plain text or inline
+// code), which markdown leaves un-clickable. Turn doc-path tokens into link
+// nodes so the custom `a` renderer below opens them in the Docs view. Skips
+// existing links and fenced code blocks; an inline-code path becomes a link
+// wrapping the code (stays monospace, now clickable).
+function remarkDocPaths() {
+  const transform = (node: any) => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "link" || node.type === "code") return;
+    const children = node.children;
+    if (!Array.isArray(children)) return;
+    for (let i = children.length - 1; i >= 0; i--) {
+      const child = children[i];
+      if (!child) continue;
+      if (child.type === "text") {
+        const repl = splitTextForDocPaths(String(child.value ?? ""));
+        if (repl) children.splice(i, 1, ...repl);
+      } else if (child.type === "inlineCode") {
+        if (isWholeDocPath(String(child.value ?? ""))) {
+          children[i] = {
+            type: "link",
+            url: child.value,
+            children: [{ type: "inlineCode", value: child.value }],
+          };
+        }
+      } else {
+        transform(child);
+      }
+    }
+  };
+  return (tree: any) => transform(tree);
+}
+
 /** Resolve a link href the agent emitted to an absolute doc path, or null if
  *  it isn't a doc reference. Handles: an absolute fs path under the repo, a
  *  URL-style absolute path (``/docs/x.md``), an http(s) URL (even one the
@@ -113,7 +171,7 @@ export function AgentThread({ agent, compact, onOpenFull, onOpenDoc, repoRoot }:
           return (
             <div key={it.id} className="agent-msg assistant">
               <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
+                remarkPlugins={[remarkGfm, remarkDocPaths]}
                 components={mdComponents}
                 urlTransform={(url) => url}
               >
