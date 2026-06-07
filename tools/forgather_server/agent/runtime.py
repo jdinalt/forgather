@@ -28,6 +28,7 @@ from .loop import AgentLoop
 from .registry import ToolRegistry
 from . import (
     tools_authoring,
+    tools_diloco,
     tools_jobs,
     tools_meta,
     tools_models,
@@ -285,6 +286,7 @@ def get_registry() -> ToolRegistry:
         tools_jobs.register_all(reg)
         tools_models.register_all(reg)
         tools_services.register_all(reg)
+        tools_diloco.register_all(reg)
         _registry = reg
     return _registry
 
