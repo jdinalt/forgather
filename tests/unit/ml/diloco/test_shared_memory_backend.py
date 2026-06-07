@@ -104,6 +104,59 @@ class TestSingleProcess:
             assert torch.allclose(result.params[k], ref[k], atol=1e-6), k
         backend.leave(worker_id="w0")
 
+    def test_multi_round_single_process_matches_server(self, tmp_path):
+        """Several rounds in one process — catches a momentum-across-rounds bug
+        in the aggregator's optimizer reuse without needing multiprocessing."""
+        _sd, ckpt = _make_checkpoint(tmp_path)
+        backend = SharedMemoryBackend(
+            group_dir=str(tmp_path / "g"), group_size=1, init_checkpoint=ckpt
+        )
+        init = backend.join(worker_id="w0")  # canonical order
+        names = list(init.keys())
+        num_rounds = 3
+        last = None
+        for r in range(num_rounds):
+            pg = {
+                name: torch.full_like(init[name], _pg_value(0, r, j))
+                for j, name in enumerate(names)
+            }
+            last = backend.synchronize(worker_id="w0", pseudograds=pg).params
+        ref = _reference_master(init, group_size=1, num_rounds=num_rounds)
+        for name in names:
+            assert torch.allclose(last[name], ref[name], atol=1e-6), name
+        backend.leave(worker_id="w0")
+
+    def test_current_global_params_returns_master(self, tmp_path):
+        _sd, ckpt = _make_checkpoint(tmp_path)
+        backend = SharedMemoryBackend(
+            group_dir=str(tmp_path / "g"), group_size=1, init_checkpoint=ckpt
+        )
+        init = backend.join(worker_id="w0")
+        names = list(init.keys())
+        pg = {
+            name: torch.full_like(init[name], _pg_value(0, 0, j))
+            for j, name in enumerate(names)
+        }
+        result = backend.synchronize(worker_id="w0", pseudograds=pg)
+        current = backend.current_global_params()
+        for name in names:
+            assert torch.allclose(current[name], result.params[name])
+        backend.leave(worker_id="w0")
+
+    def test_missing_name_fails_loud(self, tmp_path):
+        """A worker omitting a name must raise, not silently under-weight the
+        average (the backend divides by group_size)."""
+        _sd, ckpt = _make_checkpoint(tmp_path)
+        backend = SharedMemoryBackend(
+            group_dir=str(tmp_path / "g"), group_size=1, init_checkpoint=ckpt
+        )
+        init = backend.join(worker_id="w0")
+        names = list(init.keys())
+        partial = {names[0]: torch.zeros_like(init[names[0]])}  # missing the rest
+        with pytest.raises(ValueError):
+            backend.synchronize(worker_id="w0", pseudograds=partial)
+        backend.leave(worker_id="w0")
+
     def test_capability_flags(self, tmp_path):
         _sd, ckpt = _make_checkpoint(tmp_path)
         backend = SharedMemoryBackend(

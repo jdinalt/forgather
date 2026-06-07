@@ -390,8 +390,9 @@ instances and are outside this one: work-unit dispatch (`register_dataset` /
 `OuterSyncBackend` — the single-host regime, positioning DiLoCo as a DDP
 alternative. Co-located worker processes on one machine share a CPU
 master-weights region (a memory-mapped file under a per-group dir) instead of
-round-tripping a central HTTP parameter server: one master copy per host, no
-serialization, the outer optimizer applied in place. Because the worker hands the
+round-tripping a central HTTP parameter server: one shared master region per host
+(the aggregator additionally holds a working param copy + optimizer momentum, like
+the server does), no serialization on the wire. Because the worker hands the
 backend the raw pseudo-gradient, this backend operates in fp32 with no wire cast,
 and reports `sent_bytes`/`recv_bytes` of 0.
 
@@ -401,13 +402,14 @@ momentum stays in that process, so it is consistent across rounds exactly like
 the server — and each round averages the contributions, steps, and publishes the
 new master into the region); later arrivers are **followers** that attach and
 read. Each round, every worker adds its raw pseudo-gradient (upcast to fp32) into
-a shared accumulator under a `file_lock_build` critical section; a `generation`
-counter gates the barrier so no worker races into the next round. The averaging +
-outer step reproduce `DiLoCoServer._apply_outer_optimizer` exactly (per-name mean
-over contributors, fp32, SGD-Nesterov). The HTTP coordinator still handles
-membership, `/info`, heartbeat, and work-unit dispatch — only the tensor legs are
-shared-memory. (Trainer/CLI integration and the co-located-group rendezvous are a
-follow-up; the backend is constructed with the rendezvous params directly.)
+a shared accumulator under a persistent-`flock` critical section; a `generation`
+counter gates the barrier so no worker races into the next round, and a worker
+omitting a name fails loud (the average divides by the group size). The averaging
++ outer step reproduce `DiLoCoServer._apply_outer_optimizer` (per-name mean over
+contributors, fp32, SGD-Nesterov). The HTTP coordinator still handles membership,
+`/info`, heartbeat, and work-unit dispatch — only the tensor legs are
+shared-memory. The backend is constructed directly with its rendezvous parameters
+(`group_dir`, `group_size`, `init_checkpoint`); there is no trainer/CLI wiring.
 
 ---
 

@@ -3,10 +3,11 @@ Single-host shared-memory DiLoCo backend (issue #154).
 
 The first non-HTTP :class:`~forgather.ml.diloco.sync_backend.OuterSyncBackend`.
 Instead of round-tripping a central HTTP parameter server, co-located worker
-processes on one machine share a CPU master-weights region: one master copy per
-host, zero serialization, the outer optimizer applied in place. This is the
-single-host regime from #154 — DiLoCo as a *DDP alternative*, syncing every H
-steps at a fraction of DDP's per-step all-reduce.
+processes on one machine share a CPU master-weights region: one shared master
+region per host (the aggregator additionally holds a working param copy +
+optimizer momentum, like the server), zero serialization on the wire. This is
+the single-host regime from #154 — DiLoCo as a *DDP alternative*, syncing every
+H steps at a fraction of DDP's per-step all-reduce.
 
 Because the worker hands the backend the **raw** pseudo-gradient (the upload cast
 moved into the backend in #157), this backend operates entirely in fp32 with no
@@ -24,8 +25,8 @@ Roles (same class; decided at join — first arriver wins):
 Every worker (aggregator included) trains locally and contributes its own
 pseudo-gradient into a shared accumulator.
 
-Shared region (a memory-mapped file under a per-group dir — reuses
-``file_lock_build`` for the critical section, with the path as the rendezvous):
+Shared region (a memory-mapped file under a per-group dir, guarded by a
+persistent ``flock``, with the path as the rendezvous):
 
 * ``manifest.json`` — canonical param names / shapes / fp32 offsets, written once
   by the aggregator; followers poll for it.
@@ -39,6 +40,8 @@ rendezvous, and streaming-fragment support are follow-ups.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import mmap
 import os
@@ -107,7 +110,8 @@ class SharedMemoryBackend(OuterSyncBackend):
         self._shm_dir = os.path.join(self.group_dir, _SHM_SUBDIR)
         self._region_path = os.path.join(self._shm_dir, _REGION)
         self._manifest_path = os.path.join(self._shm_dir, _MANIFEST)
-        self._lock_target = os.path.join(self._shm_dir, "region")  # -> region.lock
+        self._lock_path = os.path.join(self._shm_dir, "region.lock")
+        self._lock_fd: Optional[int] = None
 
         # Set at join().
         self._is_aggregator = False
@@ -125,12 +129,23 @@ class SharedMemoryBackend(OuterSyncBackend):
 
     # ----- region helpers ---------------------------------------------------
 
-    def _lock(self):
-        from forgather.ml.construct import file_lock_build
-
-        return file_lock_build(
-            self._lock_target, timeout=self.lock_timeout, force_lock=True
-        )
+    @contextlib.contextmanager
+    def _locked(self):
+        """A real cross-process mutex: a persistent ``flock`` on a long-lived
+        lock fd. (Deliberately NOT ``construct.file_lock_build`` — that unlinks
+        the lock file on release, which breaks ``flock`` mutual exclusion under
+        the high-frequency re-acquisition this backend does every round.) The
+        fd is opened once and never unlinked; the OS releases the lock if the
+        holder dies, so a crashed peer cannot deadlock the survivors.
+        """
+        if self._lock_fd is None:
+            os.makedirs(self._shm_dir, exist_ok=True)
+            self._lock_fd = os.open(self._lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(self._lock_fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
 
     def _build_layout(self, state_dict: "StateDict") -> None:
         names = list(state_dict.keys())
@@ -195,7 +210,7 @@ class SharedMemoryBackend(OuterSyncBackend):
         factory = outer_opt_factory or self.outer_opt_factory
         os.makedirs(self._shm_dir, exist_ok=True)
 
-        with self._lock():
+        with self._locked():
             if os.path.exists(self._manifest_path):
                 self._attach_as_follower()
             else:
@@ -224,6 +239,7 @@ class SharedMemoryBackend(OuterSyncBackend):
         self._is_aggregator = False
         self._map_region()
         if int(self._ctrl[_W_MAGIC]) != _MAGIC:
+            self._close_region()
             raise RuntimeError("SharedMemoryBackend: region magic mismatch")
 
     def _create_as_aggregator(self, load_checkpoint, factory) -> None:
@@ -278,12 +294,20 @@ class SharedMemoryBackend(OuterSyncBackend):
         averaged-and-outer-optimized master once all co-located workers have."""
         # Phase 1: add my pseudo-grad (upcast to fp32, matching the server) into
         # the shared accumulator and record the round I contributed to.
-        with self._lock():
+        with self._locked():
             my_gen = int(self._ctrl[_W_GENERATION])
             for name in self._names:
                 pg = pseudograds.get(name)
                 if pg is None:
-                    continue
+                    # Fail loud rather than under-weight the average: this
+                    # backend divides by group_size, which is only correct when
+                    # every co-located worker contributes the full param set
+                    # (the single-host, non-pipeline regime it targets).
+                    raise ValueError(
+                        f"SharedMemoryBackend: pseudograds missing '{name}'; "
+                        "every co-located worker must contribute the full "
+                        "parameter set."
+                    )
                 self._slice(self._accum_t, name).add_(pg.detach().float().reshape(-1))
             self._ctrl[_W_ARRIVALS] = int(self._ctrl[_W_ARRIVALS]) + 1
 
@@ -297,6 +321,10 @@ class SharedMemoryBackend(OuterSyncBackend):
 
     def _aggregate_when_ready(self, my_gen: int) -> None:
         deadline = time.time() + self.lock_timeout
+        # Lock-free poll: the control words are only written under _locked(), and
+        # an aligned int64 read is atomic on the platforms we target — so an
+        # unsynchronized read here can at worst cost an extra poll, never a wrong
+        # value. (Keep these reads single-word.)
         while True:
             if int(self._ctrl[_W_ARRIVALS]) >= self.group_size:
                 break
@@ -308,9 +336,11 @@ class SharedMemoryBackend(OuterSyncBackend):
                 )
             time.sleep(_POLL_INTERVAL)
 
-        with self._lock():
-            # Average over contributors (== group_size here) and outer-step,
-            # reproducing DiLoCoServer._apply_outer_optimizer.
+        with self._locked():
+            # Average over the contributors and outer-step, reproducing
+            # DiLoCoServer._apply_outer_optimizer. Phase 1 fails loud if any
+            # worker omits a name, so the contributor count is exactly
+            # group_size for every name here.
             for i, name in enumerate(self._names):
                 avg = self._slice(self._accum_t, name).clone() / self.group_size
                 self._master_params[i].grad = avg.reshape(self._layout[name][2])
@@ -334,7 +364,7 @@ class SharedMemoryBackend(OuterSyncBackend):
                     f"{target_gen}"
                 )
             time.sleep(_POLL_INTERVAL)
-        with self._lock():
+        with self._locked():
             return self._read_master_snapshot()
 
     def synchronize_fragment(
@@ -346,12 +376,11 @@ class SharedMemoryBackend(OuterSyncBackend):
         )
 
     def current_global_params(self) -> "StateDict":
-        with self._lock():
+        with self._locked():
             return self._read_master_snapshot()
 
-    def leave(self, *, worker_id: str) -> None:
-        # Best-effort teardown of this process's handles. Region-file lifecycle
-        # (unlink) is the integration layer's concern (increment 2).
+    def _close_region(self) -> None:
+        """Close this process's mmap + region fd (not the lock fd)."""
         try:
             if self._mm is not None:
                 self._ctrl = None
@@ -362,5 +391,16 @@ class SharedMemoryBackend(OuterSyncBackend):
             if self._fd is not None:
                 os.close(self._fd)
                 self._fd = None
+        except OSError:
+            pass
+
+    def leave(self, *, worker_id: str) -> None:
+        # Best-effort teardown of this process's handles. Region-file lifecycle
+        # (unlink) is the integration layer's concern.
+        self._close_region()
+        try:
+            if self._lock_fd is not None:
+                os.close(self._lock_fd)
+                self._lock_fd = None
         except OSError:
             pass
