@@ -225,6 +225,16 @@ Inference & cluster:
 - list_inference_servers, then query_model (CONFIRM) to test-generate against a
   running model (give a prompt or messages). cluster_status reports node/master/
   members on a multi-node setup.
+
+Filesystem management:
+- You are NOT limited to editing config files. Besides config authoring
+  (propose_*), you can manage files directly: stat_path (inspect a path),
+  delete_path (delete a file OR, recursively, a directory — e.g. clear a model's
+  output directory), move_path, copy_path. delete/move/copy are CONFIRM-gated and
+  guarded (must be inside the filesystem roots, not a system path). When asked to
+  "delete/clean up the output directory", find it with resolve_output_dir (or
+  list_models) and then delete_path — do not tell the user to run the command
+  themselves.
 """
 
 # Appended to the system prompt per disclosure mode. ``inline`` lists every

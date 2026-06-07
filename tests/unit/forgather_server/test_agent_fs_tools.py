@@ -21,9 +21,18 @@ def _reg():
 
 def test_registration_risk_and_tier():
     by = {s.name: s for s in _reg().specs()}
-    assert by["stat_path"].risk == READ and by["stat_path"].tier == EXTENDED
+    # File management is core (always in the array, incl. deferred mode).
+    assert by["stat_path"].risk == READ and by["stat_path"].tier != EXTENDED
     for name in ("delete_path", "move_path", "copy_path"):
-        assert by[name].risk == CONFIRM and by[name].tier == EXTENDED
+        assert by[name].risk == CONFIRM and by[name].tier != EXTENDED
+
+
+def test_system_prompt_mentions_filesystem_tools():
+    from forgather_server.agent import runtime
+
+    sp = runtime.SYSTEM_PROMPT
+    for token in ("delete_path", "move_path", "copy_path", "stat_path"):
+        assert token in sp
 
 
 # ---- stat ------------------------------------------------------------------

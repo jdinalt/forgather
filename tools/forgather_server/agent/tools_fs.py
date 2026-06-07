@@ -15,7 +15,8 @@ feedback and gather scope (size / entry count), but never touch disk;
 the route handler re-runs every guard at commit. ``HTTPException`` from a
 guard is translated to ``ValueError`` so the agent gets a clean message.
 
-All extended-tier. Everything but ``stat_path`` is CONFIRM-gated.
+Core-tier (file management is a common operation, so these stay in the tool
+array even in deferred mode). Everything but ``stat_path`` is CONFIRM-gated.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .. import paths as fs_paths
-from .registry import CONFIRM, EXTENDED, READ, Proposal, ToolRegistry, ToolSpec
+from .registry import CONFIRM, READ, Proposal, ToolRegistry, ToolSpec
 
 log = logging.getLogger("forgather_server.agent.tools_fs")
 
@@ -219,7 +220,6 @@ def register_all(reg: ToolRegistry) -> None:
                 "there before delete/move/copy, or to inspect a non-project file "
                 "(read_file/list_directory cover content)."
             ),
-            summary="Stat a path (type/size/mtime/mode).",
             json_schema={
                 "type": "object",
                 "properties": {"path": {"type": "string"}},
@@ -227,7 +227,6 @@ def register_all(reg: ToolRegistry) -> None:
             },
             handler=_stat_path,
             risk=READ,
-            tier=EXTENDED,
         )
     )
     reg.register(
@@ -241,7 +240,6 @@ def register_all(reg: ToolRegistry) -> None:
                 "filesystem roots, not a system path, and at least 4 path "
                 "components deep."
             ),
-            summary="Delete a file or directory (recursive). Irreversible (CONFIRM).",
             json_schema={
                 "type": "object",
                 "properties": {"path": {"type": "string"}},
@@ -249,7 +247,6 @@ def register_all(reg: ToolRegistry) -> None:
             },
             handler=_delete_path,
             risk=CONFIRM,
-            tier=EXTENDED,
         )
     )
     reg.register(
@@ -260,7 +257,6 @@ def register_all(reg: ToolRegistry) -> None:
                 "dest_dir/basename(src)). Approval required. Refuses to overwrite "
                 "an existing destination; same fs-root / depth guards as delete."
             ),
-            summary="Move a file/dir into another directory (CONFIRM).",
             json_schema={
                 "type": "object",
                 "properties": {
@@ -271,7 +267,6 @@ def register_all(reg: ToolRegistry) -> None:
             },
             handler=_move_path,
             risk=CONFIRM,
-            tier=EXTENDED,
         )
     )
     reg.register(
@@ -283,7 +278,6 @@ def register_all(reg: ToolRegistry) -> None:
                 "required. Refuses overwrite unless auto_rename is set (then it "
                 "appends ' (copy)'). Same fs-root / depth guards as delete."
             ),
-            summary="Copy a file/dir into another directory (CONFIRM).",
             json_schema={
                 "type": "object",
                 "properties": {
@@ -296,6 +290,5 @@ def register_all(reg: ToolRegistry) -> None:
             },
             handler=_copy_path,
             risk=CONFIRM,
-            tier=EXTENDED,
         )
     )
