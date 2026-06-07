@@ -86,6 +86,46 @@ def test_propose_edit_config_previews_then_commits(tmp_path):
     assert "wrote" in result.lower()
 
 
+def test_propose_new_project_previews_and_commits(tmp_path, monkeypatch):
+    from forgather_server import project_ops
+
+    captured = {}
+
+    def fake_create(**kw):
+        captured.update(kw)
+        return str(tmp_path / "demo")
+
+    monkeypatch.setattr(project_ops, "create_project", fake_create)
+    p = tools_authoring._propose_new_project(
+        {"workspace_dir": str(tmp_path), "name": "Demo", "description": "d"}
+    )
+    assert isinstance(p, Proposal)
+    assert p.path == str(tmp_path / "demo")  # previewed target (slug of name)
+    assert p.before is None and p.after is None  # no diff for a scaffold
+    res = p.commit()
+    assert captured["name"] == "Demo" and captured["workspace_dir"] == str(tmp_path)
+    assert "created project" in res.lower()
+
+
+def test_propose_new_workspace_previews_and_commits(tmp_path, monkeypatch):
+    from forgather_server import project_ops
+
+    captured = {}
+
+    def fake_create_ws(**kw):
+        captured.update(kw)
+        return str(tmp_path / "my_ws")
+
+    monkeypatch.setattr(project_ops, "create_workspace", fake_create_ws)
+    p = tools_authoring._propose_new_workspace(
+        {"parent_dir": str(tmp_path), "name": "My WS", "description": "d"}
+    )
+    assert p.path == str(tmp_path / "my_ws")
+    res = p.commit()
+    assert captured["parent_dir"] == str(tmp_path)
+    assert "created workspace" in res.lower()
+
+
 def test_propose_new_config_refuses_existing(tmp_path):
     # resolve_new_template_target needs a real project; here we only assert
     # the propose handler surfaces validation by hitting a missing project,

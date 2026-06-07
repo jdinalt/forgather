@@ -521,80 +521,32 @@ def new_project(req: NewProjectRequest):
     can right-click any workspace they can see, and `discovery.py` treats
     "workspace" as anything with a `forgather_workspace/` sibling.
     """
-    from types import SimpleNamespace
+    from .. import project_ops
 
-    from forgather.cli.project import project_create_cmd
-
-    if not req.name.strip():
-        raise HTTPException(status_code=400, detail="name is required")
-    if not req.description.strip():
-        raise HTTPException(status_code=400, detail="description is required")
-
-    # Allow nested project_dir_name (``a/b/c``) so the user can place the
-    # new project inside an existing subdirectory of the workspace —
-    # ``project_create_cmd`` calls ``os.makedirs`` which already creates
-    # intermediate parents. Reject only obvious traversal.
-    project_dir_name = req.project_dir_name or req.name.replace(" ", "_").lower()
-    if not project_dir_name:
-        raise HTTPException(status_code=400, detail="empty project_dir_name")
-    if os.path.isabs(project_dir_name):
-        raise HTTPException(status_code=400, detail="project_dir_name must be relative")
-    parts = project_dir_name.replace("\\", "/").strip("/").split("/")
-    if any(p in ("", "..", ".") for p in parts):
-        raise HTTPException(
-            status_code=400, detail="project_dir_name has invalid path segments"
-        )
-
-    workspace_dir = os.path.abspath(req.workspace_dir)
-    _enforce_fs_root(workspace_dir)
-    target_dir = os.path.abspath(os.path.join(workspace_dir, *parts))
-    if os.path.commonpath([workspace_dir, target_dir]) != workspace_dir:
-        raise HTTPException(
-            status_code=400, detail="project_dir_name escapes workspace_dir"
-        )
-    if os.path.exists(target_dir):
-        raise HTTPException(
-            status_code=409,
-            detail=f"already exists: {target_dir}",
-        )
-    if req.copy_from and req.meta_template:
-        raise HTTPException(
-            status_code=400,
-            detail="copy_from and meta_template are mutually exclusive",
-        )
-    if req.copy_from:
-        _enforce_fs_root(req.copy_from)
-    if req.copy_from and not os.path.isfile(req.copy_from):
-        raise HTTPException(
-            status_code=400,
-            detail=f"copy_from is not a file: {req.copy_from}",
-        )
-
-    seed_text: Optional[str] = None
-    if req.meta_template:
-        try:
-            seed_text = meta_templates.render(req.meta_template, req.values or {})
-        except meta_templates.MissingFieldsError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except KeyError as e:
-            raise HTTPException(status_code=404, detail=f"meta-template not found: {e}")
-
-    args = SimpleNamespace(
-        project_dir=req.workspace_dir,
-        project_dir_name=req.project_dir_name,
-        name=req.name,
-        description=req.description,
-        config_prefix=req.config_prefix or "configs",
-        default_config=req.default_config or "default.yaml",
-        copy_from=req.copy_from,
-        seed_text=seed_text,
-    )
     try:
-        rc = project_create_cmd(args)
+        target_dir = project_ops.create_project(
+            workspace_dir=req.workspace_dir,
+            name=req.name,
+            description=req.description,
+            project_dir_name=req.project_dir_name,
+            config_prefix=req.config_prefix,
+            default_config=req.default_config,
+            copy_from=req.copy_from,
+            meta_template=req.meta_template,
+            values=req.values,
+        )
+    except meta_templates.MissingFieldsError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=f"meta-template not found: {e}")
+    except FileExistsError as e:
+        raise HTTPException(status_code=409, detail=f"already exists: {e}")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    if rc not in (0, None):
-        raise HTTPException(status_code=500, detail=f"project_create_cmd returned {rc}")
     return NewProjectResponse(project_dir=target_dir)
 
 

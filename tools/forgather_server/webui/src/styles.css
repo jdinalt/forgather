@@ -6284,3 +6284,21 @@ li.config.selected button.link:hover {
   padding: 6px 2px;
   font-size: 12px;
 }
+
+/* Agent action card: details for no-diff proposals (create project/workspace) */
+.agent-action-extra {
+  margin: 2px 0;
+  font-size: 12px;
+}
+.agent-action-extra > div {
+  display: flex;
+  gap: 8px;
+}
+.agent-action-extra dt {
+  color: var(--fg-muted);
+  min-width: 110px;
+}
+.agent-action-extra dd {
+  margin: 0;
+  word-break: break-word;
+}

@@ -60,8 +60,14 @@ export function AgentActionCard({
   onReject,
   onOpenFull,
 }: Props) {
+  const hasDiff = card.before != null || card.after != null;
   const { added, removed } = lineDelta(card.before, card.after);
   const isPending = status === "pending";
+  // Non-file actions (e.g. create project/workspace) carry no diff — show the
+  // planned details from ``extra`` instead of an empty diff editor.
+  const extraEntries = Object.entries(card.extra ?? {}).filter(
+    ([, v]) => v !== null && v !== undefined && v !== "",
+  );
 
   return (
     <div className={"agent-action-card" + (compact ? " compact" : "")} data-status={status}>
@@ -72,11 +78,24 @@ export function AgentActionCard({
       {card.summary && <div className="agent-action-summary">{card.summary}</div>}
       {card.path && <div className="agent-action-path">{card.path}</div>}
 
-      <div className="agent-diff-stat">
-        <span className="diff-added">+{added}</span> <span className="diff-removed">−{removed}</span>
-      </div>
+      {hasDiff && (
+        <div className="agent-diff-stat">
+          <span className="diff-added">+{added}</span> <span className="diff-removed">−{removed}</span>
+        </div>
+      )}
 
-      {!compact && isPending && (
+      {!hasDiff && extraEntries.length > 0 && (
+        <dl className="agent-action-extra">
+          {extraEntries.map(([k, v]) => (
+            <div key={k}>
+              <dt>{k}</dt>
+              <dd>{String(v)}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+
+      {hasDiff && !compact && isPending && (
         <div className="agent-diff-editor">
           <DiffEditor
             height="320px"
