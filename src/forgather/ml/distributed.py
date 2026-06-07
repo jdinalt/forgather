@@ -702,12 +702,12 @@ class DistributedEnvironment(DistributedEnvInterface):
         self._diloco_replicate = int(diloco_replicate)
         # The inner parallelism axis composed with the diloco axis:
         # "data_parallel" (DDP/FSDP) or "pipeline_parallel". Resolved from the
-        # arg, else DILOCO_INNER_AXIS env, else "data_parallel".
+        # arg, else DILOCO_INNER_AXIS env (via the shared, torch-free helper),
+        # else "data_parallel".
         if diloco_inner_axis is None:
-            diloco_inner_axis = (
-                os.environ.get("DILOCO_INNER_AXIS", "").strip().lower()
-                or "data_parallel"
-            )
+            from forgather.ml.diloco.env import diloco_inner_axis as _inner_axis_env
+
+            diloco_inner_axis = _inner_axis_env()
         self._diloco_inner_axis = diloco_inner_axis
         # Always present so callers (the DiLoCo callback, the trainer) can read
         # them; the split below overwrites them when the degree > 1.
