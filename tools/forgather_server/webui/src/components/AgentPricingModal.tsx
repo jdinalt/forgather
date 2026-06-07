@@ -29,17 +29,24 @@ export function AgentPricingModal({
   const [text, setText] = useState("{}");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Only allow Save once the current overrides loaded — otherwise a failed GET
+  // leaves the textarea at "{}" and Save would wipe all overrides on the server.
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     getAgentPricing()
       .then((t: PricingTables) => {
         setDefaults(t.defaults || {});
         setText(JSON.stringify(t.overrides || {}, null, 2));
+        setLoaded(true);
       })
-      .catch((e) => setErr(String(e)));
+      .catch((e) =>
+        setErr(`Couldn't load current prices (not saving until reload): ${e}`),
+      );
   }, []);
 
   const save = async () => {
+    if (!loaded) return; // never overwrite with the unloaded "{}" placeholder
     setErr(null);
     let parsed: unknown;
     try {
@@ -126,7 +133,7 @@ export function AgentPricingModal({
           <button className="btn-secondary" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn-send" disabled={busy} onClick={save}>
+          <button className="btn-send" disabled={busy || !loaded} onClick={save}>
             {busy ? "Saving…" : "Save"}
           </button>
         </footer>

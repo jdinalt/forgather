@@ -111,6 +111,17 @@ def test_configure_loads_existing_file(tmp_path):
     assert agent_pricing.price_for("claude-opus-4-8")["output"] == 26.0
 
 
+def test_runtime_configure_loads_file_without_cfg(tmp_path):
+    # Regression: the real startup path calls runtime.configure(None) when there
+    # is no agent: block; saved price overrides must still load (not just when
+    # agent_pricing.configure is called directly).
+    from forgather_server.agent import runtime
+
+    (tmp_path / "agent_pricing.json").write_text(json.dumps({"claude-opus-4-8": [6, 26]}))
+    runtime.configure(None)
+    assert agent_pricing.price_for("claude-opus-4-8")["input"] == 6.0
+
+
 # ---- route wrappers --------------------------------------------------------
 
 

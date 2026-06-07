@@ -431,7 +431,6 @@ export function useAgent(): AgentController {
           setAwaiting(false);
           addItem({ type: "error", message: ev.message as string });
           break;
-        // "usage" intentionally ignored for now.
       }
     },
     [addItem, appendAssistant],
@@ -568,7 +567,10 @@ export function useAgent(): AgentController {
       setItems(restored);
       idRef.current = restored.length;
       setUsage((data.usage as AgentUsage) ?? null);
-      setSessionCost((data.sessionCost as AgentSessionCost) ?? null);
+      // Loading mints a *new* backend session (messages are re-imported), so the
+      // cumulative "billed this session" tally starts fresh — restoring the old
+      // total would conflate two distinct billing sessions.
+      setSessionCost(null);
       setAwaiting(false);
       setIncompleteReason(null);
     },

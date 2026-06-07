@@ -182,9 +182,12 @@ def configure(cfg: Optional[Dict[str, Any]]) -> None:
     global _loop, _loop_key
     _loop = None
     _loop_key = None
+    # Price-table overrides (agent.pricing) are global, not a profile field, and
+    # configure() also (re)loads the webui-edited override file — so it must run
+    # even with no agent: block (the common webui-managed case), or saved price
+    # overrides would silently vanish on restart.
+    agent_pricing.configure(cfg.get("pricing") if cfg else None)
     if cfg:
-        # Price-table overrides (agent.pricing) are global, not a profile field.
-        agent_pricing.configure(cfg.get("pricing"))
         seed = {k: v for k, v in cfg.items() if k in _SEED_KEYS}
         try:
             created = profiles_store.seed_if_empty(seed)
