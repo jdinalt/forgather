@@ -144,10 +144,20 @@ def _read_job_output(args: Dict[str, Any]) -> Any:
 
 
 async def _wait_for_job(args: Dict[str, Any]) -> Any:
-    # Block server-side (not on the model) until the job is terminal or the
-    # timeout elapses. asyncio.sleep yields the event loop, so the scheduler
-    # keeps advancing the job while we wait.
+    # Block server-side (not on the model) until the job reaches the target
+    # state or the timeout elapses. asyncio.sleep yields the event loop, so the
+    # scheduler keeps advancing the job while we wait.
+    #
+    # until="terminal" (default): wait for done/failed/aborted — for jobs that
+    #   complete (run_dataset / run_construct / run_train / run_eval).
+    # until="running": wait for the job to come UP — for long-running services
+    #   (a dataset / inference / diloco server) that never go terminal while
+    #   healthy. A job that fails before coming up still returns (terminal),
+    #   so the agent learns it failed instead of waiting out the timeout.
     queue_id = args["queue_id"]
+    until = (args.get("until") or "terminal").strip().lower()
+    if until not in ("terminal", "running"):
+        raise ValueError(f"until must be 'terminal' or 'running', got {until!r}")
     raw = args.get("timeout_seconds")
     timeout = _WAIT_DEFAULT_TIMEOUT if raw in (None, "") else float(raw)
     timeout = max(1.0, min(timeout, _WAIT_MAX_TIMEOUT))
@@ -156,18 +166,24 @@ async def _wait_for_job(args: Dict[str, Any]) -> Any:
         raise ValueError(
             f"no job with queue_id {queue_id!r} (use list_jobs to find one)"
         )
+
+    def _reached(rec) -> bool:
+        if rec.status in job_records.TERMINAL_STATUSES:
+            return True
+        return until == "running" and rec.status == "running"
+
     waited = 0.0
     while True:
         rec = job_records.get_record(queue_id)
         if rec is None:
             raise ValueError(f"job {queue_id} disappeared while waiting")
-        terminal = rec.status in job_records.TERMINAL_STATUSES
-        if terminal or waited >= timeout:
+        reached = _reached(rec)
+        if reached or waited >= timeout:
             return {
                 "queue_id": queue_id,
                 "status": rec.status,
                 "exit_code": rec.exit_code,
-                "timed_out": not terminal,
+                "timed_out": not reached,
                 "waited_seconds": round(waited, 1),
                 "tail": read_tty_tail(
                     rec.tty_log_path,
@@ -567,19 +583,28 @@ def register_all(reg: ToolRegistry) -> None:
         ToolSpec(
             name="wait_for_job",
             description=(
-                "Wait for a job to finish, blocking on the server (NOT by "
-                "repeatedly calling list_jobs — that wastes tokens). Polls "
-                "internally until the job reaches a terminal status "
-                "(done/failed/aborted) or timeout_seconds elapses (default "
-                "120, max 600). Returns the final status, exit_code, "
-                "timed_out, and a tail of the output. If it times out (e.g. a "
-                "long first build), call it again to keep waiting. Use this "
-                "after run_dataset instead of looping on list_jobs."
+                "Wait for a job to reach a target state, blocking on the server "
+                "(NOT by repeatedly calling list_jobs — that wastes tokens). "
+                "until='terminal' (default) waits for done/failed/aborted — use "
+                "for jobs that COMPLETE (run_dataset / run_construct / run_train "
+                "/ run_eval). until='running' waits for the job to come UP — use "
+                "for long-running SERVICES started with start_service (a dataset "
+                "/ inference / diloco server never goes terminal while healthy, "
+                "so waiting for 'terminal' would just time out). Either way a job "
+                "that fails returns immediately. Polls until the target state or "
+                "timeout_seconds (default 120, max 600); returns status, "
+                "exit_code, timed_out, and an output tail. If it times out, call "
+                "it again to keep waiting."
             ),
             json_schema={
                 "type": "object",
                 "properties": {
                     "queue_id": {"type": "string"},
+                    "until": {
+                        "type": "string",
+                        "enum": ["terminal", "running"],
+                        "description": "terminal = wait for completion (default); running = wait for a service to come up.",
+                    },
                     "timeout_seconds": {"type": "number", "description": "Max seconds to wait this call (default 120, capped at 600)."},
                 },
                 "required": ["queue_id"],

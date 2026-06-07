@@ -200,7 +200,10 @@ Evaluation & job control:
 Services (Sidebar -> Services):
 - list_services shows the long-running services and whether each is running.
   start_service (CONFIRM) starts one (dataset / inference / tensorboard / mkdocs /
-  diloco) and persists it so it shows in the panel; stop_service stops it.
+  diloco) and persists it so it shows in the panel; stop_service stops it. After
+  start_service, wait for the service to come UP with
+  wait_for_job(queue_id, until="running") — a healthy service never reaches a
+  terminal status, so the default until="terminal" would just time out.
 - IMPORTANT: when dataset_info reports no dataset server is reachable, offer to
   run start_service(type="dataset") — it brings up a default dataset server.
   inference needs args.model_path; diloco needs args.output_dir + args.num_workers.

@@ -191,6 +191,57 @@ def test_wait_for_job_unknown(monkeypatch):
         asyncio.run(tools_jobs._wait_for_job({"queue_id": "nope"}))
 
 
+def test_wait_for_job_until_running_returns_when_up(monkeypatch):
+    # A service: starting -> running, and never terminal. until="running"
+    # must return as soon as it's up (not wait out the timeout).
+    seq = iter(["starting", "starting", "running"])
+    state = {"status": "starting"}
+
+    def fake_get(qid):
+        try:
+            state["status"] = next(seq)
+        except StopIteration:
+            pass
+        return _rec(queue_id=qid, status=state["status"], tty_log_path=None)
+
+    monkeypatch.setattr(job_records, "get_record", fake_get)
+    monkeypatch.setattr(tools_jobs, "_WAIT_POLL_SECONDS", 0.01)
+    out = asyncio.run(
+        tools_jobs._wait_for_job({"queue_id": "q1", "until": "running", "timeout_seconds": 60})
+    )
+    assert out["status"] == "running" and out["timed_out"] is False
+
+
+def test_wait_for_job_until_running_returns_on_early_failure(monkeypatch):
+    # A service that dies before coming up still returns (terminal), so the
+    # agent learns it failed instead of waiting out the timeout.
+    seq = iter(["starting", "failed"])
+    state = {"status": "starting"}
+
+    def fake_get(qid):
+        try:
+            state["status"] = next(seq)
+        except StopIteration:
+            pass
+        return _rec(queue_id=qid, status=state["status"], exit_code=1, tty_log_path=None)
+
+    monkeypatch.setattr(job_records, "get_record", fake_get)
+    monkeypatch.setattr(tools_jobs, "_WAIT_POLL_SECONDS", 0.01)
+    out = asyncio.run(
+        tools_jobs._wait_for_job({"queue_id": "q1", "until": "running", "timeout_seconds": 60})
+    )
+    assert out["status"] == "failed" and out["timed_out"] is False
+
+
+def test_wait_for_job_invalid_until(monkeypatch):
+    monkeypatch.setattr(
+        job_records, "get_record",
+        lambda qid: _rec(queue_id=qid, status="running", tty_log_path=None),
+    )
+    with pytest.raises(ValueError, match="until"):
+        asyncio.run(tools_jobs._wait_for_job({"queue_id": "q1", "until": "bogus"}))
+
+
 def test_run_dataset_preview_builds_command_no_enqueue(monkeypatch):
     captured = {}
 

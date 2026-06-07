@@ -93,8 +93,10 @@ def _start_service(args: Dict[str, Any]) -> Proposal:
         queue_store.add_item(item)
         return (
             f"started {svc_type} service {name!r} as job {item.queue_id}. "
-            f"Watch it with list_jobs / read_job_output('{item.queue_id}'); it "
-            "takes a moment to come up before it's reachable."
+            f"It takes a moment to come up; wait for it with "
+            f"wait_for_job('{item.queue_id}', until='running') (NOT the default "
+            "'terminal' — a healthy service never goes terminal), then verify "
+            "it's reachable (e.g. list_dataset_servers / list_inference_servers)."
         )
 
     return Proposal(
