@@ -120,3 +120,22 @@ def test_overlay_skipped_when_source_newer_than_built(repo):
     # is no longer matched (source has the unexpanded ::: directive).
     rels = [h["rel"] for h in docs_search.search("frobnicates")["hits"]]
     assert "api/widget.md" not in rels
+
+
+# ---- agent search_docs mode passthrough ------------------------------------
+
+
+def test_agent_search_docs_forwards_mode(monkeypatch):
+    from forgather_server import docs_search as ds
+    from forgather_server.agent import tools_readonly
+
+    seen = {}
+    monkeypatch.setattr(
+        ds, "search", lambda q, **kw: seen.update(query=q, **kw) or {"hits": []}
+    )
+    tools_readonly._search_docs({"query": "x", "mode": "hybrid"})
+    assert seen["mode"] == "hybrid"
+    # Unknown mode is sanitized to keyword (never reaches the backend raw).
+    seen.clear()
+    tools_readonly._search_docs({"query": "x", "mode": "bogus"})
+    assert seen["mode"] == "keyword"
