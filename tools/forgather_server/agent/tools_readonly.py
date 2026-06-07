@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List
 
-from .. import config_ops, discovery, paths, scheduler, search_roots
+from .. import config_ops, discovery, docs_search, paths, scheduler, search_roots
 from .registry import READ, ToolRegistry, ToolSpec, UiDirective
 
 log = logging.getLogger("forgather_server.agent.tools_readonly")
@@ -337,61 +337,16 @@ def _scheduler_status(_args: Dict[str, Any]) -> Any:
 
 # ---- docs search -----------------------------------------------------------
 
-_DOC_SUFFIXES = (".md", ".markdown")
-_MAX_HITS = 8
-_EXCERPT_RADIUS = 240
-
-
-def _doc_roots() -> List[Path]:
-    repo = Path(search_roots.forgather_repo_root())
-    return [repo / "docs", repo / "CLAUDE.d", repo / "CLAUDE.md"]
-
-
-def _iter_doc_files() -> List[Path]:
-    files: List[Path] = []
-    for root in _doc_roots():
-        if root.is_file() and root.suffix.lower() in _DOC_SUFFIXES:
-            files.append(root)
-        elif root.is_dir():
-            for p in root.rglob("*"):
-                if p.is_file() and p.suffix.lower() in _DOC_SUFFIXES:
-                    files.append(p)
-    return files
-
 
 def _search_docs(args: Dict[str, Any]) -> Any:
-    """Keyword search over docs/ + CLAUDE.d/ returning ranked excerpts.
+    """Keyword search over docs/ (+ CLAUDE.d/CLAUDE.md) returning ranked excerpts.
 
-    Deliberately simple (substring scoring, no embeddings): the model reads
-    the excerpts and decides what's relevant / which file to point the user
-    to. Embeddings can replace this later without changing the tool contract.
+    Delegates to the shared ``docs_search`` backend (also used by the webui
+    Docs-view search), which prefers the rendered ``.built`` overlay per page.
+    The model reads the excerpts and decides relevance; embeddings can replace
+    the scorer later without changing this tool's contract.
     """
-    query = (args.get("query") or "").strip()
-    if not query:
-        raise ValueError("query is empty")
-    terms = [t.lower() for t in query.split() if t]
-
-    scored = []
-    for path in _iter_doc_files():
-        try:
-            text = path.read_text(errors="replace")
-        except OSError:
-            continue
-        low = text.lower()
-        score = sum(low.count(t) for t in terms)
-        if score == 0:
-            continue
-        # Build an excerpt around the first matching term.
-        idx = min((low.find(t) for t in terms if low.find(t) >= 0), default=-1)
-        if idx < 0:
-            continue
-        start = max(0, idx - _EXCERPT_RADIUS)
-        end = min(len(text), idx + _EXCERPT_RADIUS)
-        excerpt = text[start:end].strip()
-        scored.append({"path": str(path), "score": score, "excerpt": excerpt})
-
-    scored.sort(key=lambda h: h["score"], reverse=True)
-    return {"query": query, "hits": scored[:_MAX_HITS]}
+    return docs_search.search((args.get("query") or "").strip())
 
 
 # ---- registration ----------------------------------------------------------
