@@ -123,6 +123,22 @@ def get_conversation(session_id: str) -> Optional[Conversation]:
         return _state.sessions.get(session_id)
 
 
+def import_conversation(
+    messages: List[Dict[str, Any]], session_id: Optional[str] = None
+) -> Conversation:
+    """Create a conversation seeded with ``messages`` and return it.
+
+    Backs the Import-conversation flow: loading a dumped JSON re-establishes
+    the model's context server-side (so a continued turn picks up where the
+    dump left off). Mints a fresh id by default.
+    """
+    with _state._lock:
+        sid = session_id or new_session_id()
+        conv = Conversation(session_id=sid, messages=list(messages))
+        _state.sessions[sid] = conv
+        return conv
+
+
 def register_pending(approval: PendingApproval) -> None:
     with _state._lock:
         _state.pending[approval.action_id] = approval

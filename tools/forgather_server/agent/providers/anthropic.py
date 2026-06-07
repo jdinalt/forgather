@@ -138,12 +138,25 @@ class AnthropicProvider:
 
         # Per-index accumulators for tool_use blocks. index -> {id, name, json}
         tool_blocks: Dict[int, Dict[str, Any]] = {}
+        # Prompt token count arrives on message_start; output accrues on the
+        # message_delta events. Carry input forward so each emitted Usage has
+        # both (the UI shows context occupancy = input + output / window).
+        input_tokens = 0
+        # Why the turn ended (end_turn / max_tokens / tool_use); carried on the
+        # final Done so the loop can flag a truncated turn for "Continue".
+        stop_reason: Optional[str] = None
 
         stream = await client.messages.create(**create_kwargs)
         async for event in stream:
             etype = getattr(event, "type", None)
 
-            if etype == "content_block_start":
+            if etype == "message_start":
+                msg = getattr(event, "message", None)
+                u = getattr(msg, "usage", None) if msg is not None else None
+                if u is not None:
+                    input_tokens = getattr(u, "input_tokens", 0) or 0
+
+            elif etype == "content_block_start":
                 block = event.content_block
                 if getattr(block, "type", None) == "tool_use":
                     tool_blocks[event.index] = {
@@ -168,17 +181,24 @@ class AnthropicProvider:
                     yield self._finalize_tool_call(acc)
 
             elif etype == "message_delta":
+                delta = getattr(event, "delta", None)
+                if delta is not None and getattr(delta, "stop_reason", None):
+                    stop_reason = delta.stop_reason
                 usage = getattr(event, "usage", None)
                 if usage is not None:
+                    # Some servers also echo input_tokens here; prefer the
+                    # message_start value, fall back to the delta's.
+                    if not input_tokens:
+                        input_tokens = getattr(usage, "input_tokens", 0) or 0
                     yield Usage(
-                        input_tokens=getattr(usage, "input_tokens", 0) or 0,
+                        input_tokens=input_tokens,
                         output_tokens=getattr(usage, "output_tokens", 0) or 0,
+                        context_window=self._max_model_len,
                     )
 
             elif etype == "message_stop":
-                # stop_reason is carried on the message_delta in the raw
-                # stream; surface a Done regardless so the loop terminates.
-                yield Done(stop_reason=None)
+                # stop_reason was captured from the message_delta above.
+                yield Done(stop_reason=stop_reason)
 
     def _effective_max_tokens(self, messages: List[Dict[str, Any]]) -> int:
         """Clamp the output budget so prompt + output fits the context.

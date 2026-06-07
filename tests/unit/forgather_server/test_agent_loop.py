@@ -237,6 +237,81 @@ def test_malformed_tool_json_is_error_not_crash():
     assert events[-1]["type"] == "done"
 
 
+def test_iteration_cap_yields_incomplete_done():
+    # A provider that keeps calling a read tool never finishes; the loop should
+    # stop at the cap with an *incomplete* done (so the UI offers Continue),
+    # not an error.
+    state = {"read_calls": 0, "commit_calls": 0}
+    reg = _make_registry(state)
+
+    class LoopingProvider:
+        calls = 0
+
+        async def stream_turn(self, messages, tools, *, system=None):
+            LoopingProvider.calls += 1
+            yield ToolCall(id=f"t{LoopingProvider.calls}", name="echo_read", arguments={"x": 1})
+            yield Done()
+
+        def format_tool_result(self, tool_use_id, content, *, is_error=False):
+            return {"type": "tool_result", "tool_use_id": tool_use_id, "content": content, "is_error": is_error}
+
+    loop = AgentLoop(LoopingProvider(), reg, max_iterations=2)
+    conv = Conversation(session_id="cap")
+    events = _collect(loop.run_user_message(conv, "go"))
+
+    done = [e for e in events if e["type"] == "done"]
+    assert done and done[-1]["incomplete"] is True
+    assert done[-1]["reason"] == "max_iterations"
+
+
+def test_continue_turn_resumes():
+    state = {"read_calls": 0, "commit_calls": 0}
+    reg = _make_registry(state)
+    # Conversation ended on an assistant message (e.g. truncated). Continue
+    # should nudge with a user turn and produce more output.
+    provider = FakeProvider([[TextDelta("more"), Done()]])
+    loop = AgentLoop(provider, reg)
+    conv = Conversation(session_id="cont")
+    conv.messages.append({"role": "assistant", "content": [{"type": "text", "text": "partial"}]})
+
+    events = _collect(loop.continue_turn(conv))
+    assert events[-1]["type"] == "done"
+    # A user "continue" nudge was appended before the assistant's new turn.
+    assert any(
+        m["role"] == "user"
+        and any(b.get("text") == "Please continue." for b in m["content"])
+        for m in conv.messages
+    )
+
+
+def test_continue_turn_refuses_dangling_tool_use():
+    state = {"read_calls": 0, "commit_calls": 0}
+    reg = _make_registry(state)
+    provider = FakeProvider([])  # must not be called
+    loop = AgentLoop(provider, reg)
+    conv = Conversation(session_id="dangle")
+    conv.messages.append({"role": "user", "content": [{"type": "text", "text": "hi"}]})
+    conv.messages.append(
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "x", "input": {}}]}
+    )
+    events = _collect(loop.continue_turn(conv))
+    assert events[-1]["type"] == "error"
+    assert "mid-tool-call" in events[-1]["message"]
+    assert conv.messages[-1]["role"] == "assistant"  # no user nudge appended
+    assert provider.calls == 0
+
+
+def test_incomplete_done_on_length_stop_reason():
+    state = {"read_calls": 0, "commit_calls": 0}
+    reg = _make_registry(state)
+    provider = FakeProvider([[TextDelta("cut off"), Done(stop_reason="length")]])
+    loop = AgentLoop(provider, reg)
+    conv = Conversation(session_id="len")
+    events = _collect(loop.run_user_message(conv, "go"))
+    done = [e for e in events if e["type"] == "done"]
+    assert done and done[-1]["incomplete"] is True  # vLLM "length" == truncated
+
+
 def test_unknown_tool_is_error_not_crash():
     state = {"read_calls": 0, "commit_calls": 0}
     reg = _make_registry(state)

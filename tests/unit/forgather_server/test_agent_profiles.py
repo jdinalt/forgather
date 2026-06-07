@@ -371,3 +371,44 @@ def _self_signed_pem() -> str:
         .sign(key, hashes.SHA256())
     )
     return cert.public_bytes(serialization.Encoding.PEM).decode()
+
+
+# ---- /agent/import validation ---------------------------------------------
+
+
+def test_agent_import_rejects_unbalanced_tool_calls(monkeypatch):
+    from fastapi import HTTPException
+
+    from forgather_server.routes import agent as ar
+
+    monkeypatch.setattr(ar.runtime, "is_enabled", lambda: True)
+    msgs = [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "x", "input": {}}]}
+    ]  # tool_use with no matching tool_result
+    with pytest.raises(HTTPException) as ei:
+        ar.agent_import(ar.ImportRequest(messages=msgs))
+    assert ei.value.status_code == 400
+
+
+def test_agent_import_accepts_balanced(monkeypatch):
+    from forgather_server.routes import agent as ar
+
+    monkeypatch.setattr(ar.runtime, "is_enabled", lambda: True)
+    msgs = [
+        {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "x", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]},
+    ]
+    out = ar.agent_import(ar.ImportRequest(messages=msgs))
+    assert out["session_id"]
+
+
+def test_agent_import_requires_enabled(monkeypatch):
+    from fastapi import HTTPException
+
+    from forgather_server.routes import agent as ar
+
+    monkeypatch.setattr(ar.runtime, "is_enabled", lambda: False)
+    with pytest.raises(HTTPException) as ei:
+        ar.agent_import(ar.ImportRequest(messages=[]))
+    assert ei.value.status_code == 503

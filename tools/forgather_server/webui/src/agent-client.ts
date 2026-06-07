@@ -144,6 +144,20 @@ export async function fetchServerCert(base_url: string): Promise<CertInfo> {
   return jsonReq("/api/agent/fetch-cert", "POST", { base_url });
 }
 
+export interface SessionHistory {
+  session_id: string;
+  /** Canonical content-block messages (role + content[]); rebuilt into UI
+   *  items on the client. */
+  messages: Array<{ role: string; content: unknown }>;
+  awaiting_approval: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export async function getSession(id: string): Promise<SessionHistory> {
+  return jsonReq(`/api/agent/sessions/${encodeURIComponent(id)}`, "GET");
+}
+
 async function* streamAgent(
   url: string,
   body: Record<string, unknown>,
@@ -204,4 +218,19 @@ export function streamDecision(
 ): AsyncIterable<AgentEvent> {
   const url = approve ? "/api/agent/approve" : "/api/agent/reject";
   return streamAgent(url, { action_id: actionId }, signal);
+}
+
+export function streamContinue(
+  sessionId: string,
+  signal: AbortSignal,
+): AsyncIterable<AgentEvent> {
+  return streamAgent("/api/agent/continue", { session_id: sessionId }, signal);
+}
+
+/** Seed a conversation server-side from a dumped message log; returns the new
+ *  session id (so a continued turn has the restored context). */
+export async function importConversation(
+  messages: Array<{ role: string; content: unknown }>,
+): Promise<{ session_id: string }> {
+  return jsonReq("/api/agent/import", "POST", { messages });
 }

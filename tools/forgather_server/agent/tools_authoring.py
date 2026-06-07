@@ -22,7 +22,7 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
-from .. import config_ops, meta_templates, paths
+from .. import config_ops, meta_templates, paths, project_ops
 from .registry import PROPOSE, READ, Proposal, ToolRegistry, ToolSpec
 
 log = logging.getLogger("forgather_server.agent.tools_authoring")
@@ -140,6 +140,84 @@ def _propose_new_config_from_template(args: Dict[str, Any]) -> Proposal:
     )
 
 
+def _propose_new_workspace(args: Dict[str, Any]) -> Proposal:
+    parent_dir = args["parent_dir"]
+    name = args["name"]
+    description = args["description"]
+    workspace_dir_name = args.get("workspace_dir_name")
+    forgather_dir = args.get("forgather_dir")
+    # Validate + compute the target up front (no creation) so the preview
+    # shows the path and obvious errors surface before approval.
+    target = project_ops.resolve_new_workspace_target(parent_dir, name, workspace_dir_name)
+
+    def commit() -> str:
+        created = project_ops.create_workspace(
+            parent_dir=parent_dir,
+            name=name,
+            description=description,
+            workspace_dir_name=workspace_dir_name,
+            forgather_dir=forgather_dir,
+        )
+        return f"created workspace at {created}"
+
+    return Proposal(
+        title=f"New workspace: {name}",
+        summary=f"Create workspace at {target}",
+        path=target,
+        extra={"name": name, "description": description, "parent_dir": parent_dir},
+        commit=commit,
+    )
+
+
+def _propose_new_project(args: Dict[str, Any]) -> Proposal:
+    workspace_dir = args["workspace_dir"]
+    name = args["name"]
+    description = args["description"]
+    project_dir_name = args.get("project_dir_name")
+    config_prefix = args.get("config_prefix", "configs")
+    default_config = args.get("default_config", "default.yaml")
+    meta_template = args.get("meta_template")
+    values = args.get("values")
+    copy_from = args.get("copy_from")
+    target, _ = project_ops.resolve_new_project_target(workspace_dir, name, project_dir_name)
+
+    def commit() -> str:
+        created = project_ops.create_project(
+            workspace_dir=workspace_dir,
+            name=name,
+            description=description,
+            project_dir_name=project_dir_name,
+            config_prefix=config_prefix,
+            default_config=default_config,
+            meta_template=meta_template,
+            values=values,
+            copy_from=copy_from,
+        )
+        return f"created project at {created} (default config: {default_config})"
+
+    # Show the chosen starting point in the preview.
+    starting_point = (
+        f"scaffold: {meta_template}"
+        if meta_template
+        else f"copy: {copy_from}"
+        if copy_from
+        else "empty stub"
+    )
+    return Proposal(
+        title=f"New project: {name}",
+        summary=f"Create project at {target}",
+        path=target,
+        extra={
+            "name": name,
+            "description": description,
+            "config_prefix": config_prefix,
+            "default_config": default_config,
+            "starting_point": starting_point,
+        },
+        commit=commit,
+    )
+
+
 def _list_meta_templates(_args: Dict[str, Any]) -> Any:
     return [dataclasses.asdict(c) for c in meta_templates.discover()]
 
@@ -184,6 +262,65 @@ def register_all(reg: ToolRegistry) -> None:
                 "required": ["project_dir", "config_name", "path", "new_content"],
             },
             handler=_propose_edit_config,
+            risk=PROPOSE,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="propose_new_workspace",
+            description=(
+                "Propose creating a new Forgather workspace (a directory with "
+                "forgather_workspace/ metadata) under parent_dir. Approval "
+                "required before anything is written. Create a workspace when "
+                "there isn't one to hold a new project."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "parent_dir": {"type": "string", "description": "Absolute directory to create the workspace under."},
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "workspace_dir_name": {"type": "string", "description": "Directory name (default: slug of name)."},
+                },
+                "required": ["parent_dir", "name", "description"],
+            },
+            handler=_propose_new_workspace,
+            risk=PROPOSE,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="propose_new_project",
+            description=(
+                "Propose creating a new Forgather project (directory + "
+                "meta.yaml + a default config) inside an existing workspace. "
+                "Scaffold a project before adding configs — "
+                "propose_new_config/propose_edit_config require it to exist. "
+                "The default config has three starting points (pick at most "
+                "one of meta_template / copy_from): (1) a scaffold — set "
+                "meta_template to an id from list_meta_templates (+ values); "
+                "(2) copy an existing config — set copy_from to an absolute "
+                "config path (find one via list_configs on a similar example "
+                "project, so the new project starts close to a working "
+                "example you then customize with propose_edit_config); "
+                "(3) neither — an empty stub. Approval required."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "workspace_dir": {"type": "string", "description": "Absolute workspace directory to create the project in."},
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "project_dir_name": {"type": "string", "description": "Project directory name (default: slug of name); may be nested a/b/c."},
+                    "config_prefix": {"type": "string", "description": "Configs sub-dir (default \"configs\")."},
+                    "default_config": {"type": "string", "description": "Default config file name (default \"default.yaml\")."},
+                    "meta_template": {"type": "string", "description": "Scaffold id from list_meta_templates to seed the default config (mutually exclusive with copy_from)."},
+                    "values": {"type": "object", "description": "Field values for the meta-template scaffold."},
+                    "copy_from": {"type": "string", "description": "Absolute path to an existing config to seed the default config from (mutually exclusive with meta_template). Get paths from list_configs."},
+                },
+                "required": ["workspace_dir", "name", "description"],
+            },
+            handler=_propose_new_project,
             risk=PROPOSE,
         )
     )

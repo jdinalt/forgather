@@ -4,6 +4,7 @@
 
 import { AgentController } from "../useAgent";
 import { AgentComposer } from "./AgentComposer";
+import { AgentContextMeter } from "./AgentContextMeter";
 import { AgentThread } from "./AgentThread";
 
 interface Props {
@@ -11,9 +12,18 @@ interface Props {
   onOpenFull: () => void;
   onOpenSettings: () => void;
   onCollapse: () => void;
+  onOpenDoc?: (absPath: string) => void;
+  repoRoot?: string;
 }
 
-export function AgentSidebarPanel({ agent, onOpenFull, onOpenSettings, onCollapse }: Props) {
+export function AgentSidebarPanel({
+  agent,
+  onOpenFull,
+  onOpenSettings,
+  onCollapse,
+  onOpenDoc,
+  repoRoot,
+}: Props) {
   return (
     <div className="agent-sidebar-content">
       <header className="agent-sidebar-header">
@@ -39,6 +49,7 @@ export function AgentSidebarPanel({ agent, onOpenFull, onOpenSettings, onCollaps
           )
         )}
         <span className="agent-sidebar-spacer" />
+        <AgentContextMeter usage={agent.usage} />
         <button className="btn-icon" title="Agent profiles…" onClick={onOpenSettings}>
           ⚙
         </button>
@@ -52,7 +63,13 @@ export function AgentSidebarPanel({ agent, onOpenFull, onOpenSettings, onCollaps
           ›
         </button>
       </header>
-      <AgentThread agent={agent} compact onOpenFull={onOpenFull} />
+      <AgentThread
+        agent={agent}
+        compact
+        onOpenFull={onOpenFull}
+        onOpenDoc={onOpenDoc}
+        repoRoot={repoRoot}
+      />
       <AgentComposer agent={agent} />
     </div>
   );

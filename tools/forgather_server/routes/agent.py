@@ -132,6 +132,21 @@ async def agent_reject(req: DecisionRequest):
     return await _stream(loop.apply_decision(req.action_id, approve=False))
 
 
+class ContinueRequest(BaseModel):
+    session_id: str
+
+
+@router.post("/agent/continue")
+async def agent_continue(req: ContinueRequest):
+    if not runtime.is_enabled():
+        raise HTTPException(status_code=503, detail="agent is not configured")
+    conv = agent_session.get_conversation(req.session_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail=f"no such session: {req.session_id}")
+    loop = await _get_loop()
+    return await _stream(loop.continue_turn(conv), session_id=conv.session_id)
+
+
 # ---- profiles ------------------------------------------------------------
 
 
@@ -332,6 +347,55 @@ def fetch_cert(req: FetchCertRequest):
         return agent_tls.fetch_server_cert(req.base_url)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
+
+
+class ImportRequest(BaseModel):
+    messages: List[Dict[str, Any]]
+    session_id: Optional[str] = None
+
+
+@router.post("/agent/import")
+def agent_import(req: ImportRequest):
+    """Seed a conversation from a dumped message log; returns its session id.
+
+    Used by the webui's Import-conversation control to restore context (e.g.
+    to re-test after a fix). The messages are the canonical content-block
+    log from a prior export / GET /agent/sessions/{id}.
+    """
+    if not runtime.is_enabled():
+        raise HTTPException(status_code=503, detail="agent is not configured")
+    if not isinstance(req.messages, list):
+        raise HTTPException(status_code=400, detail="messages must be a list")
+    tool_use_ids: set = set()
+    tool_result_ids: set = set()
+    for m in req.messages:
+        if not isinstance(m, dict) or "role" not in m or "content" not in m:
+            raise HTTPException(
+                status_code=400,
+                detail="each message must be an object with 'role' and 'content'",
+            )
+        content = m.get("content")
+        if isinstance(content, list):
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "tool_use" and b.get("id"):
+                    tool_use_ids.add(b["id"])
+                elif b.get("type") == "tool_result" and b.get("tool_use_id"):
+                    tool_result_ids.add(b["tool_use_id"])
+    # Every tool_use must be answered by a tool_result (and vice-versa), or the
+    # provider rejects the conversation on the next turn. Reject a malformed /
+    # truncated log here with a clear error instead of failing mid-stream later.
+    if tool_use_ids != tool_result_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "malformed conversation: every tool_use must have a matching "
+                "tool_result (the log appears truncated or hand-edited)"
+            ),
+        )
+    conv = agent_session.import_conversation(req.messages, req.session_id)
+    return {"session_id": conv.session_id}
 
 
 @router.get("/agent/sessions/{session_id}")

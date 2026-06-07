@@ -6242,3 +6242,63 @@ li.config.selected button.link:hover {
   gap: 8px;
   margin-top: 4px;
 }
+
+/* Agent: context meter + continue row -------------------------------- */
+
+.agent-ctx-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.agent-ctx-bar {
+  display: inline-block;
+  width: 48px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-pane);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.agent-ctx-fill {
+  display: block;
+  height: 100%;
+  background: #3fb950;
+}
+.agent-ctx-fill.warn {
+  background: var(--warn);
+}
+.agent-ctx-fill.hot {
+  background: #f85149;
+}
+.agent-ctx-text {
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-continue-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 2px;
+  font-size: 12px;
+}
+
+/* Agent action card: details for no-diff proposals (create project/workspace) */
+.agent-action-extra {
+  margin: 2px 0;
+  font-size: 12px;
+}
+.agent-action-extra > div {
+  display: flex;
+  gap: 8px;
+}
+.agent-action-extra dt {
+  color: var(--fg-muted);
+  min-width: 110px;
+}
+.agent-action-extra dd {
+  margin: 0;
+  word-break: break-word;
+}
