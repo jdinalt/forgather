@@ -101,8 +101,16 @@ def chunk_markdown(
                 chunks.append(Chunk(rel=rel, heading=breadcrumb(), text=piece, order=order))
                 order += 1
 
+    in_fence = False
     for line in text.splitlines():
-        m = _HEADING_RE.match(line)
+        stripped = line.lstrip()
+        # Toggle fenced-code state; a `#` line inside a fence is a comment, not
+        # a heading, and must not split the chunk or pollute the breadcrumb.
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            body_lines.append(line)
+            continue
+        m = None if in_fence else _HEADING_RE.match(line)
         if m:
             flush()  # close the section that was accumulating
             level = len(m.group(1))

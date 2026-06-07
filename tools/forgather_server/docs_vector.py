@@ -25,7 +25,7 @@ log = logging.getLogger("forgather_server.docs_vector")
 _RRF_K = 60
 _EXCERPT_CAP = 480  # hard cap on a chunk excerpt for display
 
-_cache: Dict[str, Any] = {"mtime": None, "index": None, "embedder": None}
+_cache: Dict[str, Any] = {"key": None, "index": None, "embedder": None}
 
 
 def _repo_root() -> Path:
@@ -33,7 +33,7 @@ def _repo_root() -> Path:
 
 
 def reset_cache() -> None:
-    _cache.update(mtime=None, index=None, embedder=None)
+    _cache.update(key=None, index=None, embedder=None)
 
 
 def index_available() -> bool:
@@ -43,15 +43,18 @@ def index_available() -> bool:
 
 def _load() -> Optional[docs_index.LoadedIndex]:
     """Return the loaded index, reloading when the on-disk meta changes."""
-    meta = docs_index.index_dir(_repo_root()) / "meta.json"
+    repo = _repo_root()
+    meta = docs_index.index_dir(repo) / "meta.json"
     try:
         mtime = meta.stat().st_mtime
     except OSError:
         reset_cache()
         return None
-    if _cache["index"] is None or _cache["mtime"] != mtime:
-        idx = docs_index.load_index(_repo_root())
-        _cache.update(mtime=mtime, index=idx, embedder=None)
+    # Key on (repo_root, mtime) so a repo-root change can't serve a stale index.
+    key = (str(repo), mtime)
+    if _cache["index"] is None or _cache["key"] != key:
+        idx = docs_index.load_index(repo)
+        _cache.update(key=key, index=idx, embedder=None)
     return _cache["index"]
 
 

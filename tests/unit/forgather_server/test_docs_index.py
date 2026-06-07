@@ -60,6 +60,22 @@ def test_chunk_markdown_heading_breadcrumb():
     assert "Top > Sub" in headings and "sub body" in headings["Top > Sub"]
 
 
+def test_chunk_markdown_ignores_headings_in_code_fences():
+    text = (
+        "# Real Heading\n\nintro\n\n"
+        "```python\n# this is a comment, not a heading\ndef foo():\n    pass\n```\n\n"
+        "more body under Real Heading\n"
+    )
+    chunks = docs_index.chunk_markdown("p.md", text)
+    headings = {c.heading for c in chunks}
+    # The comment must NOT have become a heading/breadcrumb.
+    assert headings == {"Real Heading"}
+    assert not any("comment" in h for h in headings)
+    # The fenced code stays intact within the section's chunk(s).
+    joined = "\n".join(c.text for c in chunks)
+    assert "def foo()" in joined and "# this is a comment" in joined
+
+
 def test_chunk_markdown_splits_long_sections():
     body = "\n\n".join(f"paragraph number {i} " + "x" * 200 for i in range(10))
     chunks = docs_index.chunk_markdown("p.md", f"# H\n\n{body}\n", max_chars=400)
