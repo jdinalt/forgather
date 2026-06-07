@@ -117,6 +117,8 @@ def _check_mode_flags(args, diloco_mode, run_global):
             misused.append("--worker-id")
         if getattr(args, "heartbeat_interval", 30.0) != 30.0:
             misused.append("--heartbeat-interval")
+        if getattr(args, "backend", "http") != "http":
+            misused.append("--backend")
         if misused:
             return _err(misused, "— DiLoCo-worker flag(s); pass --diloco.")
 
@@ -142,6 +144,14 @@ def _check_mode_flags(args, diloco_mode, run_global):
         return _err(
             ["--requested-gpus"],
             "doesn't apply to --global; size each node with --member HOST:GPUS.",
+        )
+
+    # The shared-memory backend has the co-located workers share a CPU master
+    # region on one host; it can't span a multi-node fan-out.
+    if run_global and getattr(args, "backend", "http") == "shared_memory":
+        return _err(
+            ["--backend shared_memory"],
+            "is single-host; not compatible with --global.",
         )
 
     return None

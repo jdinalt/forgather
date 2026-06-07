@@ -37,6 +37,7 @@ def _submit_args(**over):
         wait=False,
         wait_timeout=3600,
         poll_interval=10,
+        backend="http",
         remainder=[],
     )
     base.update(over)
@@ -87,6 +88,26 @@ def test_global_delegates_to_submit_global(monkeypatch):
     assert captured["config"] == "ddp.yaml"
     assert captured["dynamic_args"] == {"x": 1}
     assert captured["dataset_source"] == {"kind": "auto"}
+
+
+def test_backend_requires_diloco(monkeypatch, capsys):
+    # --backend is a DiLoCo-worker knob; without --diloco it's a misuse.
+    rc = submit_mod.submit_cmd(_submit_args(backend="shared_memory"))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "--backend" in err and "--diloco" in err
+
+
+def test_shared_memory_backend_rejects_global(monkeypatch, capsys):
+    # The shared-memory backend is single-host; it can't span a --global fan-out.
+    # Use the composition form (--global + --diloco-server) so the run reaches the
+    # mode-flag validation rather than the earlier --global/--diloco gate.
+    rc = submit_mod.submit_cmd(
+        _submit_args(run_global=True, diloco_server="srv1", backend="shared_memory")
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "shared_memory" in err and "single-host" in err
 
 
 def test_no_config_errors(monkeypatch):

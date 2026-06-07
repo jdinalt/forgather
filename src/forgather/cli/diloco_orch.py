@@ -16,6 +16,7 @@ import json
 import os
 import re
 import sys
+import uuid
 
 
 def _orchestrator(args):
@@ -917,10 +918,24 @@ def _enqueue_worker_jobs(client, names, server, args, dynamic_args, dataset_sour
     priority = getattr(args, "priority", 0)
     project_dir = getattr(args, "project_dir", ".")
 
+    # Shared-memory backend (issue #154): one group id for this submit; every
+    # worker shares it (and the size), so the scheduler derives a single
+    # per-host region dir + group size into DILOCO_SHM_* env. Per-worker
+    # DILOCO_WORKER_ID stays distinct.
+    backend = (getattr(args, "backend", None) or "http").strip().lower()
+    shm_group = None
+    if backend == "shared_memory":
+        shm_group = {
+            "backend": "shared_memory",
+            "shm_group_id": uuid.uuid4().hex[:16],
+            "shm_group_size": len(names),
+        }
+
     if getattr(args, "dry_run", False):
         print(
             f"[dry-run] would enqueue {len(names)} DiLoCo worker(s) against "
-            f"{server}: config={config} gpus/worker={gpus} priority={priority}"
+            f"{server}: config={config} gpus/worker={gpus} priority={priority} "
+            f"backend={backend}"
         )
         for name in names:
             print(f"  {name}")
@@ -933,6 +948,8 @@ def _enqueue_worker_jobs(client, names, server, args, dynamic_args, dataset_sour
         diloco = {"server_addr": server, "worker_id": name}
         if hb is not None:
             diloco["heartbeat_interval"] = hb
+        if shm_group is not None:
+            diloco.update(shm_group)
         try:
             item = client.enqueue_job(
                 project_dir=project_dir,

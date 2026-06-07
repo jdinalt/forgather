@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from forgather_server.scheduler import _diloco_env_from_job_params
 
 # Stable queue_id used in most tests. Distinct from the worker_id default
@@ -132,3 +131,58 @@ def test_worker_id_default_does_not_contain_queue_id():
     assert env["DILOCO_WORKER_ID"] != QID
     # The default also shouldn't be empty / whitespace.
     assert env["DILOCO_WORKER_ID"].strip()
+
+
+# --- shared-memory backend (issue #154): submit declares structured intent,
+# the scheduler derives the per-host DILOCO_SHM_* env ----------------------
+
+
+def test_shared_memory_backend_derives_shm_env():
+    # The submission carries backend + group id + size; the scheduler turns
+    # those into the three env vars the worker reads, deriving a per-submit
+    # region dir from the group id under the host temp dir.
+    import os
+    import tempfile
+
+    env = _diloco_env_from_job_params(
+        {
+            "server_addr": "h:1",
+            "worker_id": "w1",
+            "backend": "shared_memory",
+            "shm_group_id": "abc123def456",
+            "shm_group_size": 3,
+        },
+        QID,
+    )
+    assert env["DILOCO_BACKEND"] == "shared_memory"
+    assert env["DILOCO_SHM_GROUP_DIR"] == os.path.join(
+        tempfile.gettempdir(), "diloco_shm_abc123def456"
+    )
+    assert env["DILOCO_SHM_GROUP_SIZE"] == "3"
+    # The coordination-plane keys are still set.
+    assert env["DILOCO_SERVER"] == "h:1"
+    assert env["DILOCO_WORKER_ID"] == "w1"
+
+
+def test_http_backend_emits_no_shm_env():
+    # The default / explicit http backend is a no-op for the shm derivation.
+    for diloco in (
+        {"server_addr": "h:1"},
+        {"server_addr": "h:1", "backend": "http"},
+    ):
+        env = _diloco_env_from_job_params(diloco, QID)
+        assert "DILOCO_BACKEND" not in env
+        assert "DILOCO_SHM_GROUP_DIR" not in env
+        assert "DILOCO_SHM_GROUP_SIZE" not in env
+
+
+def test_shared_memory_without_group_id_omits_dir():
+    # Defensive: a malformed shm submission missing the group id still flags
+    # the backend + size but can't derive a region dir (no rendezvous).
+    env = _diloco_env_from_job_params(
+        {"server_addr": "h:1", "backend": "shared_memory", "shm_group_size": 2},
+        QID,
+    )
+    assert env["DILOCO_BACKEND"] == "shared_memory"
+    assert env["DILOCO_SHM_GROUP_SIZE"] == "2"
+    assert "DILOCO_SHM_GROUP_DIR" not in env
