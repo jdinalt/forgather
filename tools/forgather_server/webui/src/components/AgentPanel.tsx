@@ -107,7 +107,7 @@ export function AgentPanel({
         <button className="btn-secondary" onClick={onOpenSettings}>
           Profiles…
         </button>
-        <button className="btn-secondary" onClick={agent.reset}>
+        <button className="btn-secondary" onClick={agent.newConversation}>
           New conversation
         </button>
       </header>

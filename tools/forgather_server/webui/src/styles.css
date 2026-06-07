@@ -5831,6 +5831,26 @@ li.config.selected button.link:hover {
   color: var(--fg);
 }
 
+/* In the agent headers the control buttons (settings / full / new /
+   collapse) must never be squeezed out: the profile select and context
+   meter give up space first. Without this the rightmost button (Collapse)
+   overflowed the 420px sidebar and got clipped. */
+.agent-sidebar-header .btn-icon,
+.agent-full-header .btn-icon {
+  flex: 0 0 auto;
+}
+.agent-sidebar-header .agent-profile-switch,
+.agent-full-header .agent-profile-switch {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.agent-sidebar-header .agent-ctx-meter,
+.agent-full-header .agent-ctx-meter {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+}
+
 /* Thread ----------------------------------------------------------- */
 
 .agent-thread {
