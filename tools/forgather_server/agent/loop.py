@@ -258,6 +258,8 @@ class AgentLoop:
                             "type": "usage",
                             "input_tokens": ev.input_tokens,
                             "output_tokens": ev.output_tokens,
+                            "cache_read_input_tokens": ev.cache_read_input_tokens,
+                            "cache_creation_input_tokens": ev.cache_creation_input_tokens,
                             "context_window": ev.context_window,
                         }
                     elif isinstance(ev, Done):

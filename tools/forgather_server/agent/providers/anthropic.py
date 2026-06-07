@@ -138,10 +138,14 @@ class AnthropicProvider:
 
         # Per-index accumulators for tool_use blocks. index -> {id, name, json}
         tool_blocks: Dict[int, Dict[str, Any]] = {}
-        # Prompt token count arrives on message_start; output accrues on the
-        # message_delta events. Carry input forward so each emitted Usage has
-        # both (the UI shows context occupancy = input + output / window).
+        # Prompt token counts arrive on message_start; output accrues on the
+        # message_delta events. Carry input + cache counts forward so each
+        # emitted Usage carries the full per-request breakdown (the UI shows
+        # context occupancy = input + output / window, and accumulates the
+        # billed total = input + cache_read + cache_creation + output).
         input_tokens = 0
+        cache_read = 0
+        cache_creation = 0
         # Why the turn ended (end_turn / max_tokens / tool_use); carried on the
         # final Done so the loop can flag a truncated turn for "Continue".
         stop_reason: Optional[str] = None
@@ -155,6 +159,10 @@ class AnthropicProvider:
                 u = getattr(msg, "usage", None) if msg is not None else None
                 if u is not None:
                     input_tokens = getattr(u, "input_tokens", 0) or 0
+                    cache_read = getattr(u, "cache_read_input_tokens", 0) or 0
+                    cache_creation = (
+                        getattr(u, "cache_creation_input_tokens", 0) or 0
+                    )
 
             elif etype == "content_block_start":
                 block = event.content_block
@@ -186,13 +194,34 @@ class AnthropicProvider:
                     stop_reason = delta.stop_reason
                 usage = getattr(event, "usage", None)
                 if usage is not None:
-                    # Some servers also echo input_tokens here; prefer the
-                    # message_start value, fall back to the delta's.
+                    # Some servers also echo input/cache counts here; prefer the
+                    # message_start values, fall back to the delta's.
                     if not input_tokens:
                         input_tokens = getattr(usage, "input_tokens", 0) or 0
+                    if not cache_read:
+                        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+                    if not cache_creation:
+                        cache_creation = (
+                            getattr(usage, "cache_creation_input_tokens", 0) or 0
+                        )
+                    output_tokens = getattr(usage, "output_tokens", 0) or 0
+                    # Per-request breakdown in the server log: this is what
+                    # reconciles with the billing dashboard (each loop iteration
+                    # re-sends the prefix). cache_read>0 confirms caching works.
+                    log.info(
+                        "agent request usage: input=%d cache_read=%d "
+                        "cache_write=%d output=%d (billed_in=%d)",
+                        input_tokens,
+                        cache_read,
+                        cache_creation,
+                        output_tokens,
+                        input_tokens + cache_read + cache_creation,
+                    )
                     yield Usage(
                         input_tokens=input_tokens,
-                        output_tokens=getattr(usage, "output_tokens", 0) or 0,
+                        output_tokens=output_tokens,
+                        cache_read_input_tokens=cache_read,
+                        cache_creation_input_tokens=cache_creation,
                         context_window=self._max_model_len,
                     )
 

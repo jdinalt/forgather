@@ -6293,8 +6293,20 @@ li.config.selected button.link:hover {
 .agent-ctx-fill.hot {
   background: #f85149;
 }
+.agent-ctx-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .agent-ctx-text {
   font-variant-numeric: tabular-nums;
+}
+/* Cumulative session-billed readout, set apart from context occupancy. */
+.agent-ctx-billed {
+  font-variant-numeric: tabular-nums;
+  padding-left: 6px;
+  border-left: 1px solid var(--border);
+  cursor: help;
 }
 
 .agent-continue-row {

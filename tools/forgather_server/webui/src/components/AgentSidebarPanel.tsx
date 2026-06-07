@@ -49,7 +49,7 @@ export function AgentSidebarPanel({
           )
         )}
         <span className="agent-sidebar-spacer" />
-        <AgentContextMeter usage={agent.usage} />
+        <AgentContextMeter usage={agent.usage} sessionCost={agent.sessionCost} />
         <button className="btn-icon" title="Agent profiles…" onClick={onOpenSettings}>
           ⚙
         </button>

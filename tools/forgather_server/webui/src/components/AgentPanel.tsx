@@ -80,7 +80,7 @@ export function AgentPanel({
             ))}
           </select>
         )}
-        <AgentContextMeter usage={agent.usage} />
+        <AgentContextMeter usage={agent.usage} sessionCost={agent.sessionCost} />
         <span className="agent-full-spacer" />
         {agent.awaiting && <span className="agent-awaiting-badge">awaiting approval</span>}
         <button className="btn-secondary" onClick={onExport} title="Download this conversation as JSON">
