@@ -134,11 +134,32 @@ def get_registry() -> ToolRegistry:
     return _registry
 
 
+def resolve_credential(
+    api_key: Optional[str], api_key_env: Optional[str], base_url: Optional[str]
+) -> Optional[str]:
+    """Resolve a profile credential, guarding high-value model API keys.
+
+    An explicit ``api_key`` wins. Otherwise read ``api_key_env`` from the
+    environment — EXCEPT we refuse to auto-read the well-known
+    ``ANTHROPIC_API_KEY`` when a custom ``base_url`` is set (i.e. a local or
+    third-party server). A real Anthropic key has monetary value and must
+    never be silently sent as a bearer to anything but Claude; a local
+    server needs an explicit key in the profile or a deliberately-named env
+    var. This prevents, e.g., a blank-key vLLM profile from forwarding the
+    operator's Anthropic key to the local box.
+    """
+    if api_key:
+        return api_key
+    env_name = (api_key_env or "").strip()
+    if not env_name:
+        return None
+    if base_url and env_name == profiles_store.DEFAULT_API_KEY_ENV:
+        return None
+    return os.environ.get(env_name) or None
+
+
 def _resolve_api_key(profile) -> Optional[str]:
-    if profile.api_key:
-        return profile.api_key
-    env_name = profile.api_key_env or profiles_store.DEFAULT_API_KEY_ENV
-    return os.environ.get(env_name)
+    return resolve_credential(profile.api_key, profile.api_key_env, profile.base_url)
 
 
 def _resolve_model(profile, api_key: Optional[str]) -> str:

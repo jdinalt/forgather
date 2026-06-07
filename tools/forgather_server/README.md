@@ -3058,7 +3058,12 @@ The model-list probe needs the server's bearer token. Credential
 resolution for a profile is self-contained: the profile's own key → its
 `api_key_env` env var. (Agent profiles do not silently borrow tokens from
 other panels — enter the token in the API key field; for vLLM it's
-`~/.config/vllm/api-key`.) A 401 from "Load models" means the token is
+`~/.config/vllm/api-key`.) **High-value-key guard:** the well-known
+`ANTHROPIC_API_KEY` env var is only auto-read for Claude (no `base_url`) —
+it is never forwarded to a custom `base_url`, so a blank-key local/vLLM
+profile can't leak your Anthropic key to the local box; a local server
+needs an explicit key or a deliberately-named env var. A 401 from "Load
+models" means the token is
 missing or wrong. The probe always skips TLS verification (it only returns
 model ids, so a not-yet-imported self-signed cert never blocks discovery);
 the actual chat connection still honors the profile's TLS setting.

@@ -155,6 +155,34 @@ def test_models_route_always_skips_tls(monkeypatch):
     assert captured["ca_cert_pem"] == ""
 
 
+# ---- credential resolution (high-value-key guard) --------------------------
+
+
+def test_anthropic_key_not_sent_to_custom_base_url(monkeypatch):
+    from forgather_server.agent import runtime
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+    # Local/third-party server, blank key, default env name -> must NOT
+    # forward the Anthropic key.
+    assert (
+        runtime.resolve_credential("", "ANTHROPIC_API_KEY", "https://kitt:8000") is None
+    )
+    # Claude (no base_url) -> the env key is fine to use.
+    assert runtime.resolve_credential("", "ANTHROPIC_API_KEY", "") == "sk-ant-secret"
+    # Explicit key always wins, even for a custom base_url.
+    assert runtime.resolve_credential("tok", "ANTHROPIC_API_KEY", "https://kitt:8000") == "tok"
+
+
+def test_custom_env_var_allowed_for_local_server(monkeypatch):
+    from forgather_server.agent import runtime
+
+    monkeypatch.setenv("VLLM_TOKEN", "bearer-xyz")
+    # A deliberately-named env var (not the Anthropic default) is honored.
+    assert (
+        runtime.resolve_credential("", "VLLM_TOKEN", "https://kitt:8000") == "bearer-xyz"
+    )
+
+
 # ---- runtime hot-swap ------------------------------------------------------
 
 

@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
@@ -229,12 +228,14 @@ def list_agent_models(req: ModelsRequest):
     provider = pick("provider", "anthropic")
     base_url = pick("base_url", "")
 
-    # Resolve the key: explicit > saved profile's key > named env var.
+    # Resolve the key: explicit > saved profile's key/env > in-editor env.
+    # runtime.resolve_credential applies the high-value-key guard (never
+    # auto-send ANTHROPIC_API_KEY to a custom base_url).
     api_key = req.api_key
     if not api_key and saved is not None:
-        api_key = saved.api_key or os.environ.get(saved.api_key_env or "")
-    if not api_key and req.api_key_env:
-        api_key = os.environ.get(req.api_key_env)
+        api_key = runtime.resolve_credential(saved.api_key, saved.api_key_env, base_url)
+    if not api_key:
+        api_key = runtime.resolve_credential(None, req.api_key_env, base_url)
 
     try:
         # Model discovery is a low-stakes probe (it returns only model ids),
