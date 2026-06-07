@@ -16,6 +16,17 @@ export interface AgentStatus {
   base_url?: string | null;
   verify_tls?: boolean;
   has_imported_cert?: boolean;
+  /** Per-million-token USD rates for the four token categories (estimate),
+   *  or null/absent for an unpriced / self-hosted model. */
+  pricing?: AgentPricing | null;
+}
+
+/** USD per million tokens for each billed category (estimate). */
+export interface AgentPricing {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
 }
 
 /** A saved connection profile (credentials redacted to flags). */

@@ -8,6 +8,7 @@
  *    typically many times the occupancy and is what reconciles with the
  *    provider's billing dashboard. */
 
+import { AgentPricing } from "../agent-client";
 import { AgentSessionCost, AgentUsage } from "../useAgent";
 
 function fmtTokens(n: number): string {
@@ -16,12 +17,19 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
+function fmtUsd(n: number): string {
+  // Sub-cent runs are common; show enough digits to be meaningful.
+  return "$" + n.toFixed(n < 1 ? 4 : 2);
+}
+
 export function AgentContextMeter({
   usage,
   sessionCost,
+  pricing,
 }: {
   usage: AgentUsage | null;
   sessionCost?: AgentSessionCost | null;
+  pricing?: AgentPricing | null;
 }) {
   if (!usage && !sessionCost) return null;
 
@@ -63,6 +71,22 @@ export function AgentContextMeter({
       `reused (caching works); low means it is being re-created.`;
   }
 
+  // --- estimated cost (cumulative tokens x per-Mtok rates) ---
+  let estUsd: number | null = null;
+  if (sessionCost && pricing) {
+    const per = 1_000_000;
+    const cIn = (sessionCost.inputTokens / per) * pricing.input;
+    const cRead = (sessionCost.cacheReadTokens / per) * pricing.cache_read;
+    const cWrite = (sessionCost.cacheCreationTokens / per) * pricing.cache_write;
+    const cOut = (sessionCost.outputTokens / per) * pricing.output;
+    estUsd = cIn + cRead + cWrite + cOut;
+    billedTitle +=
+      `\nestimated cost ${fmtUsd(estUsd)} ` +
+      `(input ${fmtUsd(cIn)} · cache read ${fmtUsd(cRead)} · ` +
+      `cache write ${fmtUsd(cWrite)} · output ${fmtUsd(cOut)}) — ESTIMATE from a ` +
+      `built-in price table; the billing dashboard is authoritative.`;
+  }
+
   return (
     <span className="agent-ctx-meter">
       {used > 0 && (
@@ -83,6 +107,7 @@ export function AgentContextMeter({
         <span className="agent-ctx-billed" title={billedTitle}>
           billed {fmtTokens(billed)}
           {hitPct != null ? ` · ${hitPct}% cached` : ""}
+          {estUsd != null ? ` · ~${fmtUsd(estUsd)}` : ""}
         </span>
       )}
     </span>

@@ -21,6 +21,7 @@ import logging
 import os
 from typing import Any, Dict, Optional, Tuple
 
+from .. import agent_pricing
 from .. import agent_profiles_store as profiles_store
 from .. import agent_tls
 from .loop import AgentLoop
@@ -182,6 +183,8 @@ def configure(cfg: Optional[Dict[str, Any]]) -> None:
     _loop = None
     _loop_key = None
     if cfg:
+        # Price-table overrides (agent.pricing) are global, not a profile field.
+        agent_pricing.configure(cfg.get("pricing"))
         seed = {k: v for k, v in cfg.items() if k in _SEED_KEYS}
         try:
             created = profiles_store.seed_if_empty(seed)
@@ -220,6 +223,9 @@ def status() -> Dict[str, Any]:
         "base_url": active.base_url or None,
         "verify_tls": active.verify_tls,
         "has_imported_cert": bool(active.ca_cert_pem),
+        # Per-Mtok USD rates for the four token categories so the meter can show
+        # an estimated cost; None for an unpriced / self-hosted model.
+        "pricing": agent_pricing.price_for(active.model),
     }
 
 

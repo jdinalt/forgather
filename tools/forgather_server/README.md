@@ -3158,6 +3158,22 @@ Two mechanisms make this visible and cheap:
   `base_url`, since vLLM does its own automatic prefix caching and may reject
   `cache_control`), `on`, or `off`. Watch `cache_read` climb in the meter to
   confirm it's working.
+- **Cost estimate.** The meter also shows `~$N` next to the billed total — the
+  cumulative token categories multiplied by a per-model price table
+  (`agent_pricing.py`, USD per million tokens; cache read 0.1x / write 1.25x of
+  the input rate). It is an **estimate**, not a billing source of truth: the
+  per-message API never returns a dollar figure, and Anthropic's dashboard /
+  Cost Admin API (`/v1/organizations/cost_report`, Admin key) is authoritative.
+  A model not in the table (e.g. a self-hosted vLLM model) shows no cost. The
+  built-in rates are as of 2026-01; override them when they drift via the
+  server-config `agent.pricing` block (keyed by model-id prefix):
+
+  ```yaml
+  agent:
+    pricing:
+      claude-opus-4: [15.0, 75.0]     # [input, output] USD per Mtok
+      claude-haiku-4: [1.0, 5.0]
+  ```
 
 ### Interaction model — propose → approve → commit
 
