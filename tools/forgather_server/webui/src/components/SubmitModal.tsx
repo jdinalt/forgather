@@ -1548,17 +1548,17 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
               </label>
             ) : (
               <WorkerPool
-              resumableWorkers={resumableWorkers}
-              knownWorkersLoading={knownWorkersLoading}
-              disabledStopped={disabledStopped}
-              newWorkers={newWorkers}
-              poolWorkerIds={poolWorkerIds}
-              addName={addName}
-              setAddName={setAddName}
-              genCount={genCount}
-              setGenCount={setGenCount}
-              generating={generating}
-              poolError={poolError}
+                resumableWorkers={resumableWorkers}
+                knownWorkersLoading={knownWorkersLoading}
+                disabledStopped={disabledStopped}
+                newWorkers={newWorkers}
+                poolWorkerIds={poolWorkerIds}
+                addName={addName}
+                setAddName={setAddName}
+                genCount={genCount}
+                setGenCount={setGenCount}
+                generating={generating}
+                poolError={poolError}
                 onToggleStopped={toggleStopped}
                 onAddWorker={addWorker}
                 onRemoveNewWorker={removeNewWorker}
