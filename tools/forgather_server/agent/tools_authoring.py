@@ -195,6 +195,14 @@ def _propose_new_project(args: Dict[str, Any]) -> Proposal:
         )
         return f"created project at {created} (default config: {default_config})"
 
+    # Show the chosen starting point in the preview.
+    starting_point = (
+        f"scaffold: {meta_template}"
+        if meta_template
+        else f"copy: {copy_from}"
+        if copy_from
+        else "empty stub"
+    )
     return Proposal(
         title=f"New project: {name}",
         summary=f"Create project at {target}",
@@ -204,7 +212,7 @@ def _propose_new_project(args: Dict[str, Any]) -> Proposal:
             "description": description,
             "config_prefix": config_prefix,
             "default_config": default_config,
-            "meta_template": meta_template or None,
+            "starting_point": starting_point,
         },
         commit=commit,
     )
@@ -286,10 +294,16 @@ def register_all(reg: ToolRegistry) -> None:
             description=(
                 "Propose creating a new Forgather project (directory + "
                 "meta.yaml + a default config) inside an existing workspace. "
-                "Use this to scaffold a project before adding configs — "
-                "propose_new_config/propose_edit_config require the project to "
-                "exist first. Optionally seed the default config from a "
-                "meta-template (see list_meta_templates). Approval required."
+                "Scaffold a project before adding configs — "
+                "propose_new_config/propose_edit_config require it to exist. "
+                "The default config has three starting points (pick at most "
+                "one of meta_template / copy_from): (1) a scaffold — set "
+                "meta_template to an id from list_meta_templates (+ values); "
+                "(2) copy an existing config — set copy_from to an absolute "
+                "config path (find one via list_configs on a similar example "
+                "project, so the new project starts close to a working "
+                "example you then customize with propose_edit_config); "
+                "(3) neither — an empty stub. Approval required."
             ),
             json_schema={
                 "type": "object",
@@ -300,8 +314,9 @@ def register_all(reg: ToolRegistry) -> None:
                     "project_dir_name": {"type": "string", "description": "Project directory name (default: slug of name); may be nested a/b/c."},
                     "config_prefix": {"type": "string", "description": "Configs sub-dir (default \"configs\")."},
                     "default_config": {"type": "string", "description": "Default config file name (default \"default.yaml\")."},
-                    "meta_template": {"type": "string", "description": "Optional scaffold id for the default config."},
-                    "values": {"type": "object", "description": "Field values for the meta-template."},
+                    "meta_template": {"type": "string", "description": "Scaffold id from list_meta_templates to seed the default config (mutually exclusive with copy_from)."},
+                    "values": {"type": "object", "description": "Field values for the meta-template scaffold."},
+                    "copy_from": {"type": "string", "description": "Absolute path to an existing config to seed the default config from (mutually exclusive with meta_template). Get paths from list_configs."},
                 },
                 "required": ["workspace_dir", "name", "description"],
             },

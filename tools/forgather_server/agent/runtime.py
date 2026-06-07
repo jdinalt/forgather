@@ -76,7 +76,11 @@ Operating rules:
   directory, meta.yaml, and a default config for you. Do NOT try to write a
   config into a project directory that doesn't exist yet (propose_new_config
   needs the project to already exist). If there's no workspace to hold it,
-  use propose_new_workspace first.
+  use propose_new_workspace first. For a better starting point, seed the
+  default config from a scaffold (call list_meta_templates, then pass
+  meta_template + values) or copy a similar existing config (find one with
+  list_configs and pass copy_from) so the project begins close to a working
+  example you then customize — rather than starting from an empty stub.
 - Be concise. When you cite documentation, reference it by its file path
   (e.g. `docs/trainers/diloco.md`, or the absolute path search_docs
   returned) — never as an http(s) URL. The UI turns a doc path into a

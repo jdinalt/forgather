@@ -107,6 +107,26 @@ def test_propose_new_project_previews_and_commits(tmp_path, monkeypatch):
     assert "created project" in res.lower()
 
 
+def test_propose_new_project_copy_from_passthrough(tmp_path, monkeypatch):
+    from forgather_server import project_ops
+
+    captured = {}
+    monkeypatch.setattr(
+        project_ops, "create_project", lambda **kw: (captured.update(kw), str(tmp_path / "demo"))[1]
+    )
+    p = tools_authoring._propose_new_project(
+        {
+            "workspace_dir": str(tmp_path),
+            "name": "Demo",
+            "description": "d",
+            "copy_from": "/abs/example/configs/default.yaml",
+        }
+    )
+    assert "copy:" in p.extra["starting_point"]
+    p.commit()
+    assert captured["copy_from"] == "/abs/example/configs/default.yaml"
+
+
 def test_propose_new_workspace_previews_and_commits(tmp_path, monkeypatch):
     from forgather_server import project_ops
 
