@@ -169,11 +169,13 @@ class DiLoCoCallback(TrainerCallback):
         # checkpoint the coordinator advertises in /info, with an env override.
         from forgather.ml.diloco import (
             diloco_backend,
+            diloco_report_sync_state,
             diloco_shm_group_dir,
             diloco_shm_group_size,
             diloco_shm_init_checkpoint,
         )
 
+        self.report_sync_state = diloco_report_sync_state()
         self.backend_kind = diloco_backend()
         if self.backend_kind not in ("http", "shared_memory"):
             raise ValueError(
@@ -553,6 +555,7 @@ class DiLoCoCallback(TrainerCallback):
             num_fragments=self.num_fragments,
             max_sync_retries=self.max_sync_retries,
             backend=self._make_sync_backend(settings),
+            report_sync_state=self.report_sync_state,
             param_view=param_view,
             auth_token=self.auth_token,
             verify_tls=self.verify_tls,

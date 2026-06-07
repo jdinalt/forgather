@@ -24,8 +24,8 @@ class RecordingClient:
         self.hb = {"sync_round": 3, "num_workers": 1}
         self.model_hash = "abc123"
 
-    def heartbeat(self, worker_id, steps_per_second=0.0, stats=None):
-        self.calls.append(("heartbeat", worker_id, steps_per_second, stats))
+    def heartbeat(self, worker_id, steps_per_second=0.0, stats=None, sync_state=None):
+        self.calls.append(("heartbeat", worker_id, steps_per_second, stats, sync_state))
         return self.hb
 
     def get_info(self):
@@ -36,20 +36,40 @@ class RecordingClient:
         self.calls.append(("fetch_model_def", dest_dir))
         return self.model_hash
 
+    def register(self, worker_id, worker_info=None):
+        self.calls.append(("register", worker_id, worker_info))
+        return {}
+
+    def deregister(self, worker_id):
+        self.calls.append(("deregister", worker_id))
+
 
 class TestCoordinatorDelegation:
     def test_heartbeat_forwards_args_and_return(self):
         client = RecordingClient()
         coord = CoordinatorClient(client)
         stats = {"loss": 1.5}
-        out = coord.heartbeat("w0", steps_per_second=4.2, stats=stats)
+        sync_state = {"sync_count": 3}
+        out = coord.heartbeat(
+            "w0", steps_per_second=4.2, stats=stats, sync_state=sync_state
+        )
         assert out is client.hb
-        assert client.calls == [("heartbeat", "w0", 4.2, stats)]
+        assert client.calls == [("heartbeat", "w0", 4.2, stats, sync_state)]
 
     def test_heartbeat_defaults(self):
         client = RecordingClient()
         CoordinatorClient(client).heartbeat("w0")
-        assert client.calls == [("heartbeat", "w0", 0.0, None)]
+        assert client.calls == [("heartbeat", "w0", 0.0, None, None)]
+
+    def test_register_deregister_delegate(self):
+        client = RecordingClient()
+        coord = CoordinatorClient(client)
+        coord.register("w0", {"hostname": "h"})
+        coord.deregister("w0")
+        assert client.calls == [
+            ("register", "w0", {"hostname": "h"}),
+            ("deregister", "w0"),
+        ]
 
     def test_get_info_delegates(self):
         client = RecordingClient()
@@ -148,3 +168,79 @@ class TestWorkerCoordinatorWiring:
         finally:
             worker.stop()
         assert any(c[0] == "heartbeat" for c in rec.calls), rec.calls
+
+
+class _NoRegBackend(_NoNetBackend):
+    """A backend whose join does NOT register with the coordinator (the
+    shared-memory case): the worker must register separately for membership."""
+
+    registers_with_coordinator = False
+
+
+def _membership_worker(backend_cls, rec, **kw):
+    model = TinyModel()
+    init = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    return DiLoCoWorker(
+        model,
+        torch.optim.SGD(model.parameters(), lr=0.01),
+        server_addr="dummy:8512",
+        heartbeat_interval=0,  # no heartbeat thread; isolate register/deregister
+        backend=backend_cls(init),
+        coordinator=CoordinatorClient(rec),
+        **kw,
+    )
+
+
+class TestCoordinatorMembership:
+    def test_non_registering_backend_registers_for_membership(self):
+        rec = RecordingClient()
+        worker = _membership_worker(_NoRegBackend, rec)
+        worker.start()
+        assert any(c[0] == "register" for c in rec.calls), rec.calls
+        worker.stop()
+        assert any(c[0] == "deregister" for c in rec.calls), rec.calls
+
+    def test_registering_backend_does_not_double_register(self):
+        # _NoNetBackend inherits registers_with_coordinator=True, so the worker
+        # must NOT separately register/deregister via the coordinator.
+        rec = RecordingClient()
+        worker = _membership_worker(_NoNetBackend, rec)
+        worker.start()
+        worker.stop()
+        assert not any(c[0] in ("register", "deregister") for c in rec.calls), rec.calls
+
+
+class TestSyncStateReporting:
+    def _one_heartbeat_sync_state(self, report_sync_state):
+        model = TinyModel()
+        init = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        rec = RecordingClient()
+        worker = DiLoCoWorker(
+            model,
+            torch.optim.SGD(model.parameters(), lr=0.01),
+            server_addr="dummy:8512",
+            sync_every=10_000,
+            heartbeat_interval=0.05,
+            backend=_NoNetBackend(init),
+            coordinator=CoordinatorClient(rec),
+            report_sync_state=report_sync_state,
+        )
+        worker.start()
+        try:
+            deadline = time.time() + 3.0
+            while time.time() < deadline and not any(
+                c[0] == "heartbeat" for c in rec.calls
+            ):
+                time.sleep(0.02)
+        finally:
+            worker.stop()
+        hb = [c for c in rec.calls if c[0] == "heartbeat"]
+        assert hb, rec.calls
+        return hb[0][4]  # the sync_state element of (name, wid, sps, stats, sync_state)
+
+    def test_reports_sync_state_when_enabled(self):
+        ss = self._one_heartbeat_sync_state(True)
+        assert isinstance(ss, dict) and "sync_count" in ss
+
+    def test_omits_sync_state_when_disabled(self):
+        assert self._one_heartbeat_sync_state(False) is None

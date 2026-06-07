@@ -51,11 +51,18 @@ class CoordinatorClient:
         worker_id: str,
         steps_per_second: float = 0.0,
         stats: Optional[dict] = None,
+        sync_state: Optional[dict] = None,
     ) -> dict:
         """Periodic liveness + speed report; returns server status (sync round,
-        worker count, optional relayed command / DyLU ``recommended_sync_every``)."""
+        worker count, optional relayed command / DyLU ``recommended_sync_every``).
+
+        ``sync_state`` carries the worker's own DiLoCo sync metrics so the server
+        can show its progress even when it syncs off-server (shared-memory)."""
         return self._client.heartbeat(
-            worker_id, steps_per_second=steps_per_second, stats=stats
+            worker_id,
+            steps_per_second=steps_per_second,
+            stats=stats,
+            sync_state=sync_state,
         )
 
     def get_info(self) -> dict:
@@ -65,3 +72,17 @@ class CoordinatorClient:
     def fetch_model_def(self, dest_dir: str) -> str:
         """Download the model-definition bundle into ``dest_dir``; returns its hash."""
         return self._client.fetch_model_def(dest_dir)
+
+    def register(self, worker_id: str, worker_info: Optional[dict] = None):
+        """Register the worker with the coordinator for membership / diagnostics.
+
+        Used by a worker whose sync backend does not itself register (its
+        ``join`` is a tensor-path op, e.g. shared-memory). The returned global
+        params are irrelevant to such a worker — the region is its source of
+        truth — but registration makes it visible in the server's worker
+        registry and lets its heartbeats be accepted."""
+        return self._client.register(worker_id, worker_info)
+
+    def deregister(self, worker_id: str) -> None:
+        """Deregister the worker from the coordinator (best-effort)."""
+        self._client.deregister(worker_id)

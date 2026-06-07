@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 from .env import (
     diloco_backend,
     diloco_is_enabled,
+    diloco_report_sync_state,
     diloco_server_addr,
     diloco_shm_group_dir,
     diloco_shm_group_size,
@@ -66,6 +67,7 @@ __all__ = [
     "diloco_shm_group_dir",
     "diloco_shm_group_size",
     "diloco_shm_init_checkpoint",
+    "diloco_report_sync_state",
 ]
 
 

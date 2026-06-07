@@ -495,6 +495,16 @@ Select it per worker with environment variables:
 | `DILOCO_SHM_GROUP_DIR` | a per-host directory the co-located group shares (the rendezvous) |
 | `DILOCO_SHM_GROUP_SIZE` | number of co-located workers in the group |
 | `DILOCO_SHM_INIT_CHECKPOINT` | optional; overrides the init checkpoint (default: the dir the coordinator advertises in `/info`) |
+| `DILOCO_REPORT_SYNC_STATE` | optional; report per-worker sync-state to the coordinator for diagnostics (default on; set `0`/`false` to omit) |
+
+Shared-memory workers register with the coordinator for membership and report
+their sync-state (`sync_count`, send/recv MB, sync time) on the heartbeat, so the
+group's progress is exposed in the server's `/status` (for the dashboard/CLI to
+surface) even though the tensor exchange is off-server. The server-side per-worker
+`sync_round` stays 0 for these workers — they never submit — so the reported
+`sync_state.sync_count` is their progress indicator. (`DILOCO_REPORT_SYNC_STATE`
+applies to any backend; it is most useful for an off-server one like this, where
+the server has no other progress signal.)
 
 The first worker to arrive creates the region and seeds it from the coordinator's
 checkpoint; the rest attach. The aggregator also reproduces the coordinator's

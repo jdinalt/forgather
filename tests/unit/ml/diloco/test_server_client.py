@@ -114,6 +114,28 @@ class TestRegistration:
         status = client.get_status()
         assert status["workers"]["worker_0"]["output_dir"] is None
 
+    def test_heartbeat_sync_state_surfaces_in_status(self, server_and_client):
+        """A worker reports its own DiLoCo sync-state on the heartbeat (the only
+        progress signal for an off-server backend); /status surfaces it, while
+        the server-side sync_round stays 0 since the worker never submitted."""
+        server, client, sd = server_and_client
+
+        client.register("worker_0", {"hostname": "h"})
+        client.heartbeat(
+            "worker_0",
+            sync_state={
+                "sync_count": 5,
+                "last_send_mb": 0.0,
+                "last_sync_time": 0.3,
+                "bogus": "dropped",  # non-schema / non-numeric -> filtered
+            },
+        )
+        w = client.get_status()["workers"]["worker_0"]
+        assert w["sync_state"]["sync_count"] == 5
+        assert w["sync_state"]["last_send_mb"] == 0.0
+        assert "bogus" not in w["sync_state"]
+        assert w["sync_round"] == 0  # never submitted; worker-reported fills in
+
     def test_known_workers_endpoint_tracks_running(self, server_and_client):
         """A registered worker appears in /known_workers as running; after
         it deregisters it stays in the roster but flips to not-running, so

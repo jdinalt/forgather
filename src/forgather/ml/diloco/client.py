@@ -658,6 +658,7 @@ class DiLoCoClient:
         worker_id: str,
         steps_per_second: float = 0.0,
         stats: Optional[dict] = None,
+        sync_state: Optional[dict] = None,
     ) -> dict:
         """
         Send heartbeat to server.
@@ -668,6 +669,10 @@ class DiLoCoClient:
             stats: Optional unified-stats snapshot (normalized schema, see
                 ``diloco/stats.py``) the server folds into its aggregate view.
                 Omitted from the request when ``None``.
+            sync_state: Optional per-worker DiLoCo sync metrics (sync_count,
+                last_sync_time, last send/recv MB). Lets the server surface a
+                worker's sync progress even when the worker syncs off-server
+                (e.g. shared-memory) and never submits pseudo-gradients.
 
         Returns:
             Server status dict with sync_round, num_workers, etc.
@@ -678,6 +683,8 @@ class DiLoCoClient:
         }
         if stats:
             body["stats"] = stats
+        if sync_state:
+            body["sync_state"] = sync_state
         return self._request_json("POST", "/heartbeat", body)
 
     def deregister(self, worker_id: str):
