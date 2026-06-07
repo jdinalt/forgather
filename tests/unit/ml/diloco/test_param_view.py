@@ -102,20 +102,22 @@ def test_simple_view_compute_pseudograds_is_difference():
         for _name, p in model.named_parameters(remove_duplicate=False):
             p.data.add_(delta)
 
-    pg = view.compute_pseudograds(snap, upload_dtype="fp32")
+    pg = view.compute_pseudograds(snap)
     for name, t in pg.items():
         assert t.shape == snap[name].shape
         # snap - current = -delta everywhere
         assert torch.allclose(t, torch.full_like(t, -delta), atol=1e-5)
 
 
-def test_simple_view_compute_pseudograds_bf16():
+def test_simple_view_compute_pseudograds_is_raw_model_dtype():
+    # The wire cast now lives in the backend; compute_pseudograds returns the
+    # raw difference in the live model dtype (fp32 here), never bf16.
     model = _tiny_model()
     view = SimpleModelParamView(model)
     snap = view.snapshot()
-    pg = view.compute_pseudograds(snap, upload_dtype="bf16")
+    pg = view.compute_pseudograds(snap)
     for t in pg.values():
-        assert t.dtype == torch.bfloat16
+        assert t.dtype == torch.float32
 
 
 def test_simple_view_apply_global_overwrites_live_params():
@@ -203,7 +205,7 @@ def test_pipeline_view_compute_pseudograds_only_slice():
     stages = _split_into_stages(full, 3)
     view_mid = PipelineParamView([stages[1]])
     snap = view_mid.snapshot()
-    pg = view_mid.compute_pseudograds(snap, upload_dtype="fp32")
+    pg = view_mid.compute_pseudograds(snap)
 
     assert set(pg.keys()) == set(snap.keys())
 

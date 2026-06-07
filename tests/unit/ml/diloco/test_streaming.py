@@ -151,10 +151,8 @@ class TestFragmentManager(unittest.TestCase):
             for p in model.parameters():
                 p.add_(torch.ones_like(p) * 0.5)
 
-        # Compute pseudo-grads for fragment 0 only
-        pseudograds = fm.compute_fragment_pseudogradients(
-            0, global_params, model, upload_dtype="fp32"
-        )
+        # Compute pseudo-grads for fragment 0 only (raw; the backend casts)
+        pseudograds = fm.compute_fragment_pseudogradients(0, global_params, model)
 
         # Only fragment 0's params should be present
         frag0_names = set(fm.fragments[0])

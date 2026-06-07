@@ -48,41 +48,6 @@ import torch
 from torch import nn
 
 
-def _cast_for_upload(
-    pg: torch.Tensor, upload_dtype: str, upload_sr: bool
-) -> torch.Tensor:
-    """Cast a single pseudo-gradient tensor to the configured wire dtype.
-
-    Shared by :class:`SimpleModelParamView`, :class:`PipelineParamView`,
-    and the fragment-streaming code in
-    :mod:`forgather.ml.diloco.fragments`. Centralising the cast means a
-    future fp8 enum extension lands in exactly one place.
-
-    Semantics:
-
-    * ``upload_dtype == "fp32"``: pass through (no cast). Any input
-      dtype is accepted; tensors smaller than fp32 are silently
-      upcast by ``_send_tensor_response``'s serialisation if needed.
-    * ``upload_dtype == "bf16"``: cast to bf16. With
-      ``upload_sr=True`` and an fp32-resolution input, route through
-      :func:`fp32_to_bf16_stochastic_round` to preserve sub-ULP signal
-      in expectation; otherwise use round-to-nearest via
-      ``.bfloat16()``. When the input is already bf16 the cast is
-      identity and SR has no effect.
-    """
-    if upload_dtype == "fp32":
-        return pg
-    if upload_dtype == "bf16":
-        if upload_sr and pg.dtype == torch.float32:
-            from forgather.ml.optim.rounding_utils import (
-                fp32_to_bf16_stochastic_round,
-            )
-
-            return fp32_to_bf16_stochastic_round(pg)
-        return pg.to(torch.bfloat16)
-    raise ValueError(f"unsupported upload_dtype: {upload_dtype!r}")
-
-
 class ParamView:
     """Read/write abstraction over a worker's parameter set.
 
@@ -111,31 +76,16 @@ class ParamView:
     def compute_pseudograds(
         self,
         global_snapshot: Dict[str, torch.Tensor],
-        upload_dtype: str = "bf16",
-        upload_sr: bool = False,
     ) -> Dict[str, torch.Tensor]:
-        """Return ``{name: snapshot[name] - current_param.cpu()}``.
+        """Return the raw pseudo-gradient ``{name: snapshot[name] - param.cpu()}``.
 
-        Both operands' dtypes are determined by the **live model
-        dtype**: ``snapshot()`` clones the live params, and
-        ``apply_global`` writes server responses back into the same
-        live storage (any wire-side bf16 bytes get padded to the model
-        dtype at ``apply_global``-time via ``.to(p.dtype)``). So the
-        subtraction's dtype is whatever dtype the model carries — fp32
-        for AMP / fp32-weight workers, bf16 for ``default_dtype=
-        bfloat16`` workers — independent of ``download_dtype``.
-
-        The result is then cast to ``upload_dtype`` for the wire —
-        ``"bf16"`` halves submission bandwidth at the cost of
-        precision; the server upcasts back to float32 before applying
-        the outer optimizer step.
-
-        When ``upload_dtype="bf16"`` and ``upload_sr=True`` and the
-        subtraction landed in fp32 (AMP), the cast goes through
-        :func:`forgather.ml.optim.rounding_utils.fp32_to_bf16_stochastic_round`
-        — preserving sub-ULP signal in expectation. When the
-        subtraction is already bf16 (true-bf16 worker) the cast is an
-        identity and ``upload_sr`` has no effect.
+        The result's dtype is the **live model dtype**: ``snapshot()`` clones the
+        live params, so the subtraction lands in fp32 for AMP / fp32-weight
+        workers and bf16 for ``default_dtype=bfloat16`` workers. This is
+        model-level math only — the wire-precision cast (to ``upload_dtype``,
+        with optional SR) is the backend's concern and is applied in
+        :class:`~forgather.ml.diloco.sync_backend.HttpStarBackend` before the
+        bytes leave, not here (issue #154).
         """
         raise NotImplementedError
 
@@ -196,20 +146,14 @@ class SimpleModelParamView(ParamView):
     def compute_pseudograds(
         self,
         global_snapshot: Dict[str, torch.Tensor],
-        upload_dtype: str = "bf16",
-        upload_sr: bool = False,
     ) -> Dict[str, torch.Tensor]:
         out: Dict[str, torch.Tensor] = {}
         for name, p in self.named_parameters():
-            # ``global_snapshot`` was built by ``snapshot()``, which
-            # clones live params — so its dtype tracks the live model
-            # dtype, not the wire dtype. The subtraction lands in fp32
-            # when the live model is fp32 (AMP) and in bf16 when the
-            # live model is bf16 (true-bf16). ``_cast_for_upload``
-            # then either preserves (fp32 → fp32, bf16 → bf16) or
-            # truncates (fp32 → bf16, optionally with SR).
-            pg = global_snapshot[name] - p.data.cpu()
-            out[name] = _cast_for_upload(pg, upload_dtype, upload_sr)
+            # ``global_snapshot`` was built by ``snapshot()``, which clones
+            # live params — so the subtraction's dtype tracks the live model
+            # dtype (fp32 for AMP, bf16 for true-bf16). The wire-precision cast
+            # is the backend's job; this returns the raw difference.
+            out[name] = global_snapshot[name] - p.data.cpu()
         return out
 
     def apply_global(self, global_params: Dict[str, torch.Tensor]) -> None:
@@ -270,16 +214,12 @@ class PipelineParamView(ParamView):
     def compute_pseudograds(
         self,
         global_snapshot: Dict[str, torch.Tensor],
-        upload_dtype: str = "bf16",
-        upload_sr: bool = False,
     ) -> Dict[str, torch.Tensor]:
         out: Dict[str, torch.Tensor] = {}
         for name, p in self.named_parameters():
-            # Same dtype rules as ``SimpleModelParamView`` — snapshot
-            # dtype tracks live model dtype, the subtraction inherits,
-            # ``_cast_for_upload`` is the wire boundary.
-            pg = global_snapshot[name] - p.data.cpu()
-            out[name] = _cast_for_upload(pg, upload_dtype, upload_sr)
+            # Same as SimpleModelParamView: raw difference in the live model
+            # dtype; the backend owns the wire-precision cast.
+            out[name] = global_snapshot[name] - p.data.cpu()
         return out
 
     def apply_global(self, global_params: Dict[str, torch.Tensor]) -> None:

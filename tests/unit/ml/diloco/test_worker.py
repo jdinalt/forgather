@@ -134,7 +134,9 @@ class TestPseudoGradientComputation:
             ), f"Pseudo-gradient mismatch for {name}"
 
     def test_pseudograd_bf16_casting(self):
-        """Verify pseudo-gradients are cast to bf16 when bf16_comm=True."""
+        """The wire cast lives in the backend now: _compute_pseudogradients
+        returns the raw fp32 difference, and the backend casts to bf16 when
+        upload_dtype=bf16 (bf16_comm=True)."""
         model = TinyModel(dim=4)
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
@@ -150,10 +152,15 @@ class TestPseudoGradientComputation:
             name: p.data.clone().cpu() for name, p in model.named_parameters()
         }
 
-        pseudograds = worker._compute_pseudogradients()
+        raw = worker._compute_pseudogradients()
+        for name, pg in raw.items():
+            assert pg.dtype == torch.float32, f"{name} should be raw fp32"
 
-        for name, pg in pseudograds.items():
-            assert pg.dtype == torch.bfloat16, f"{name} should be bfloat16"
+        # bf16_comm=True -> the default backend casts the wire payload to bf16.
+        assert worker.backend.upload_dtype == "bf16"
+        wire = worker.backend._cast_upload(raw)
+        for name, pg in wire.items():
+            assert pg.dtype == torch.bfloat16, f"{name} should be bfloat16 on wire"
 
     def test_pseudograd_full_precision(self):
         """Verify pseudo-gradients stay float32 when bf16_comm=False."""
@@ -407,6 +414,35 @@ class TestWorkerMetrics:
             assert metrics["diloco/sync_count"] == 1
             assert metrics["diloco/local_step"] == 0
             assert metrics["diloco/last_sync_time"] > 0
+            # The backend-reported sent_bytes flows into last_send_mb. fp32
+            # upload -> wire size == raw size (4 bytes/param).
+            n_params = sum(p.numel() for p in model.parameters())
+            assert metrics["diloco/last_send_mb"] == pytest.approx(n_params * 4 / 1e6)
+
+    def test_last_send_mb_reflects_bf16_wire_size(self, server_with_model):
+        """End-to-end: with bf16 upload, the cast happens in the backend and the
+        metric reports the bf16 wire size (half the fp32 raw size) — proving
+        result.sent_bytes flows into diloco/last_send_mb."""
+        server, model = server_with_model
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+        n_params = sum(p.numel() for p in model.parameters())
+
+        with DiLoCoWorker(
+            model,
+            optimizer,
+            server_addr=f"localhost:{server.port}",
+            sync_every=3,
+            bf16_comm=True,
+        ) as worker:
+            for _ in range(3):
+                x = torch.randn(2, 8)
+                model(x).sum().backward()
+                optimizer.step()
+                optimizer.zero_grad()
+
+            assert worker.sync_metrics["diloco/last_send_mb"] == pytest.approx(
+                n_params * 2 / 1e6
+            )
 
     def test_force_sync(self, server_with_model):
         server, model = server_with_model

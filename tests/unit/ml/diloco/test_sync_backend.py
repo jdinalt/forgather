@@ -79,14 +79,18 @@ class TestHttpStarBackendDelegation:
 
     def test_synchronize_delegates_and_shapes_result(self):
         client = RecordingClient(ret={"w": torch.ones(3)})
-        backend = HttpStarBackend(client)
+        # fp32 upload so the submitted tensors match the input (no narrowing).
+        backend = HttpStarBackend(client, upload_dtype="fp32")
         pg = {"w": torch.zeros(3)}
         result = backend.synchronize(worker_id="w0", pseudograds=pg)
         assert isinstance(result, SyncResult)
         assert result.params is client.ret
         assert result.committed is True
         assert result.round is None
-        assert client.calls == [("submit", "w0", pg)]
+        assert len(client.calls) == 1
+        name, wid, submitted = client.calls[0]
+        assert (name, wid) == ("submit", "w0")
+        assert set(submitted.keys()) == set(pg.keys())
 
     def test_synchronize_propagates_connection_error(self):
         # The worker's retry/reconnect loop relies on ConnectionError surfacing.
@@ -97,14 +101,17 @@ class TestHttpStarBackendDelegation:
 
     def test_synchronize_fragment_delegates(self):
         client = RecordingClient(ret={"w": torch.ones(3)})
-        backend = HttpStarBackend(client)
+        backend = HttpStarBackend(client, upload_dtype="fp32")
         pg = {"w": torch.zeros(3)}
         result = backend.synchronize_fragment(
             worker_id="w0", fragment_id=2, pseudograds=pg
         )
         assert result.params is client.ret
         assert result.committed is True
-        assert client.calls == [("submit_fragment", "w0", 2, pg)]
+        assert len(client.calls) == 1
+        name, wid, fid, submitted = client.calls[0]
+        assert (name, wid, fid) == ("submit_fragment", "w0", 2)
+        assert set(submitted.keys()) == set(pg.keys())
 
     def test_current_global_params_delegates(self):
         client = RecordingClient(ret={"w": torch.ones(3)})
@@ -117,6 +124,48 @@ class TestHttpStarBackendDelegation:
         backend = HttpStarBackend(client)
         backend.leave(worker_id="w0")
         assert client.calls == [("deregister", "w0")]
+
+
+class TestHttpStarBackendCast:
+    """The backend owns the upload wire cast and reports wire-byte sizes."""
+
+    def test_synchronize_casts_to_bf16_and_reports_wire_bytes(self):
+        client = RecordingClient(ret={"w": torch.zeros(4, dtype=torch.bfloat16)})
+        backend = HttpStarBackend(client, upload_dtype="bf16", upload_sr=False)
+        raw = {"w": torch.randn(4, dtype=torch.float32)}  # raw fp32 pseudograd
+        result = backend.synchronize(worker_id="w0", pseudograds=raw)
+        submitted = client.calls[-1][2]
+        assert submitted["w"].dtype == torch.bfloat16  # cast happened in backend
+        assert result.sent_bytes == 4 * 2  # bf16 = 2 bytes/elem
+        assert result.recv_bytes == 4 * 2  # ret is bf16
+
+    def test_synchronize_fp32_passthrough_bytes(self):
+        client = RecordingClient(ret={"w": torch.zeros(4, dtype=torch.float32)})
+        backend = HttpStarBackend(client, upload_dtype="fp32")
+        raw = {"w": torch.randn(4, dtype=torch.float32)}
+        result = backend.synchronize(worker_id="w0", pseudograds=raw)
+        assert client.calls[-1][2]["w"].dtype == torch.float32
+        assert result.sent_bytes == 4 * 4  # fp32 = 4 bytes/elem
+
+    def test_upload_sr_honored(self):
+        # SR correctness is covered in test_precision; here just assert the
+        # backend routes upload_sr through the cast (result is bf16).
+        client = RecordingClient(ret={"w": torch.zeros(4, dtype=torch.bfloat16)})
+        backend = HttpStarBackend(client, upload_dtype="bf16", upload_sr=True)
+        raw = {"w": torch.randn(4, dtype=torch.float32)}
+        backend.synchronize(worker_id="w0", pseudograds=raw)
+        assert client.calls[-1][2]["w"].dtype == torch.bfloat16
+
+    def test_fragment_casts_and_reports_bytes(self):
+        client = RecordingClient(ret={"w": torch.zeros(4, dtype=torch.bfloat16)})
+        backend = HttpStarBackend(client, upload_dtype="bf16")
+        raw = {"w": torch.randn(4, dtype=torch.float32)}
+        result = backend.synchronize_fragment(
+            worker_id="w0", fragment_id=1, pseudograds=raw
+        )
+        # submit_fragment records (name, worker_id, fragment_id, pseudograds)
+        assert client.calls[-1][3]["w"].dtype == torch.bfloat16
+        assert result.sent_bytes == 4 * 2
 
 
 class FakeBackend(OuterSyncBackend):

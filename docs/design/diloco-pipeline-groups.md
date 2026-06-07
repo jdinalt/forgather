@@ -229,7 +229,7 @@ The worker's five model-touching call sites route through the view:
 |---|---|
 | `_get_worker_info` (registration `param_shapes`) | `param_shapes()` |
 | `_save_global_params_snapshot` | `snapshot()` |
-| `_compute_pseudogradients` | `compute_pseudograds(snap, bf16)` |
+| `_compute_pseudogradients` | `compute_pseudograds(snap)` |
 | `_apply_global_params` | `apply_global(global_params)` |
 | `_broadcast_params_from_leader` (no-op when `pp_world_size > 1`) | `named_parameters()` |
 
