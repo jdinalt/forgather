@@ -32,6 +32,7 @@ from . import (
     tools_meta,
     tools_models,
     tools_readonly,
+    tools_services,
 )
 
 log = logging.getLogger("forgather_server.agent.runtime")
@@ -283,6 +284,7 @@ def get_registry() -> ToolRegistry:
         tools_authoring.register_all(reg)
         tools_jobs.register_all(reg)
         tools_models.register_all(reg)
+        tools_services.register_all(reg)
         _registry = reg
     return _registry
 
