@@ -61,7 +61,29 @@ router = APIRouter(tags=["inference-proxy"])
 _TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
 
 
-def _verify_for(target: str, base: Optional[str] = None) -> object:
+def _same_inference_base(a: str, b: str) -> bool:
+    """True if two base URLs address the same upstream (scheme+host+port+path).
+
+    Used to confirm that an entry-bound credential / TLS posture is only
+    applied when the request actually targets that entry's own server —
+    never when ``X-Inference-Server-Id`` names entry A but ``base`` points
+    elsewhere. Tolerates trailing-slash and host-case differences.
+    """
+    try:
+        pa, pb = urlparse((a or "").rstrip("/")), urlparse((b or "").rstrip("/"))
+    except ValueError:
+        return False
+    return (pa.scheme, (pa.hostname or "").lower(), pa.port, pa.path) == (
+        pb.scheme,
+        (pb.hostname or "").lower(),
+        pb.port,
+        pb.path,
+    )
+
+
+def _verify_for(
+    target: str, base: Optional[str] = None, request: Optional[Request] = None
+) -> object:
     """Pick ``verify=`` for an upstream URL.
 
     When the inference server runs with TLS (auto-on from the shared
@@ -71,13 +93,25 @@ def _verify_for(target: str, base: Optional[str] = None) -> object:
     ``CERTIFICATE_VERIFY_FAILED``. For plain ``http://`` upstreams we
     short-circuit to ``True`` (no-op).
 
-    If ``base`` matches a user-registered entry whose ``verify_tls``
-    is ``False``, returns ``False`` — chain validation is off and
-    the upstream cert is trusted purely on the operator's say-so
-    (used for SSH-tunneled remotes where the upstream cert doesn't
-    match the tunnel's local hostname).
+    When a request carries ``X-Inference-Server-Id``, the ``verify_tls``
+    flag is taken from *that* registry entry (entry-bound, consistent with
+    the token resolution in ``_auth_headers_for``) so two entries sharing a
+    base_url stay independent. Otherwise it falls back to a URL-based
+    lookup. A ``verify_tls=False`` entry returns ``False`` — chain
+    validation off, the upstream cert trusted on the operator's say-so
+    (SSH-tunneled remotes whose cert doesn't match the tunnel hostname).
     """
-    if base is not None and not inference_server_registry.find_verify_tls(base):
+    skip_verify = False
+    server_id = request.headers.get(_SERVER_ID_HEADER) if request is not None else None
+    if server_id:
+        entry = inference_server_registry.find_by_id(server_id)
+        # Only honor the entry's posture when it actually addresses this
+        # target; a mismatched id falls through to verification ON (safe).
+        if entry is not None and _same_inference_base(base or "", entry.base_url):
+            skip_verify = not entry.verify_tls
+    elif base is not None and not inference_server_registry.find_verify_tls(base):
+        skip_verify = True
+    if skip_verify:
         return False
     try:
         from forgather.tls import httpx_verify_for_url
@@ -299,11 +333,30 @@ def _auth_headers_for(base: str, request: Optional[Request] = None) -> Dict[str,
         server_id = request.headers.get(_SERVER_ID_HEADER)
         if server_id:
             entry = inference_server_registry.find_by_id(server_id)
-            if entry is not None and entry.auth_token:
+            # Attach the entry's token ONLY when the request actually targets
+            # that entry's own server. A mismatched base (id names entry A but
+            # base points to host B) must never forward A's token to B — that
+            # is the very token-misdelivery this binding exists to prevent.
+            if (
+                entry is not None
+                and entry.auth_token
+                and _same_inference_base(base, entry.base_url)
+            ):
                 return {"authorization": f"Bearer {entry.auth_token}"}
-            # Selected entry exists with no token, or was removed: send
-            # nothing. The selection is authoritative — do not guess a token
-            # from the URL.
+            if (
+                entry is not None
+                and entry.auth_token
+                and not _same_inference_base(base, entry.base_url)
+            ):
+                log.warning(
+                    "refusing to attach entry %s token: request base %r does "
+                    "not match entry base_url %r",
+                    server_id,
+                    base,
+                    entry.base_url,
+                )
+            # No token: selected entry has none, was removed, or the base
+            # doesn't match it. Authoritative — never guess from the URL.
             return {}
     token = _token_for(base)
     if token:
@@ -330,7 +383,7 @@ async def proxy_health(base: str, request: Request) -> JSONResponse:
     target = _root_of(_validate_base(base)) + "/health"
     headers = _auth_headers_for(base, request)
     async with httpx.AsyncClient(
-        timeout=_TIMEOUT, verify=_verify_for(target, base=base)
+        timeout=_TIMEOUT, verify=_verify_for(target, base=base, request=request)
     ) as client:
         try:
             r = await client.get(target, headers=headers or None)
@@ -349,7 +402,7 @@ async def proxy_models(base: str, request: Request) -> JSONResponse:
     target = _validate_base(base) + "/models"
     headers = _auth_headers_for(base, request)
     async with httpx.AsyncClient(
-        timeout=_TIMEOUT, verify=_verify_for(target, base=base)
+        timeout=_TIMEOUT, verify=_verify_for(target, base=base, request=request)
     ) as client:
         try:
             r = await client.get(target, headers=headers or None)
@@ -379,7 +432,7 @@ async def _proxy_streaming_post(
     target = _validate_base(base) + upstream_path
     body = await request.body()
 
-    client = httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target, base=base))
+    client = httpx.AsyncClient(timeout=_TIMEOUT, verify=_verify_for(target, base=base, request=request))
     # Send our own Content-Type; drop hop-by-hop and origin headers that
     # would confuse the upstream or reflect browser trust scope. We also
     # drop the user's Authorization (if any) and re-add a per-job token
@@ -461,7 +514,7 @@ async def proxy_tokenize(base: str, request: Request) -> JSONResponse:
     upstream_headers = {"content-type": "application/json"}
     upstream_headers.update(_auth_headers_for(base, request))
     async with httpx.AsyncClient(
-        timeout=_TIMEOUT, verify=_verify_for(target, base=base)
+        timeout=_TIMEOUT, verify=_verify_for(target, base=base, request=request)
     ) as client:
         try:
             r = await client.post(target, content=body, headers=upstream_headers)
@@ -489,7 +542,7 @@ async def proxy_detokenize(base: str, request: Request) -> JSONResponse:
     upstream_headers = {"content-type": "application/json"}
     upstream_headers.update(_auth_headers_for(base, request))
     async with httpx.AsyncClient(
-        timeout=_TIMEOUT, verify=_verify_for(target, base=base)
+        timeout=_TIMEOUT, verify=_verify_for(target, base=base, request=request)
     ) as client:
         try:
             r = await client.post(target, content=body, headers=upstream_headers)

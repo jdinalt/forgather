@@ -48,6 +48,30 @@ def test_unknown_entry_id_sends_nothing(registry):
     assert h == {}
 
 
+def test_entry_token_not_sent_to_mismatched_base(registry):
+    # serverId names entry A (for h:8000), but the request targets a
+    # different host: A's token must NOT be forwarded there (#163 review #1).
+    authed = registry.add_entry(label="authed", base_url="https://h:8000/v1", auth_token="TOK")
+    h = ip._auth_headers_for(
+        "https://evil:8000/v1", _req({ip._SERVER_ID_HEADER: authed.id})
+    )
+    assert h == {}
+    # Trailing-slash / matching base still works.
+    h2 = ip._auth_headers_for("https://h:8000/v1/", _req({ip._SERVER_ID_HEADER: authed.id}))
+    assert h2 == {"authorization": "Bearer TOK"}
+
+
+def test_verify_tls_bound_to_entry_not_url(registry):
+    # Two entries share a URL with different verify_tls. The probe must use
+    # the SELECTED entry's posture, not whichever entry is first by URL.
+    a = registry.add_entry(label="verify-on", base_url="https://h:8000/v1", auth_token="A", verify_tls=True)
+    b = registry.add_entry(label="verify-off", base_url="https://h:8000/v1", auth_token="B", verify_tls=False)
+    # Selecting B (verify off) → verification skipped (False).
+    assert ip._verify_for("https://h:8000/v1", base="https://h:8000/v1", request=_req({ip._SERVER_ID_HEADER: b.id})) is False
+    # Selecting A (verify on) → not skipped (truthy verify, not False).
+    assert ip._verify_for("https://h:8000/v1", base="https://h:8000/v1", request=_req({ip._SERVER_ID_HEADER: a.id})) is not False
+
+
 def test_explicit_token_override_still_wins(registry):
     authed = registry.add_entry(label="authed", base_url="https://h:8000/v1", auth_token="TOK")
     h = ip._auth_headers_for(

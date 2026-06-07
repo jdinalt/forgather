@@ -417,6 +417,25 @@ export function InferenceModelPanel({
     setHealth({ kind: "unknown" });
   }, [pickedRow, userServers, setState]);
 
+  // Reconcile a serverId restored from localStorage with pickedRow (which
+  // isn't persisted). Without this, after a reload the entry token is still
+  // sent (serverId is restored + threaded) but tokenLocation reads
+  // "unknown" because pickedRow is null — the auth indicator would lie. If
+  // the entry was removed between sessions, clear the stale binding.
+  useEffect(() => {
+    if (!state.serverId) return;
+    if (pickedRow?.kind === "user" && pickedRow.id === state.serverId) return;
+    if (!userServersQ.data) return; // wait until the registry list has loaded
+    const entry = userServers.find((s) => s.id === state.serverId);
+    if (entry) {
+      setPickedRow({ kind: "user", id: entry.id });
+      setState((prev) => ({ ...prev, baseUrl: entry.base_url }));
+    } else {
+      setPickedRow(null);
+      setState((prev) => ({ ...prev, baseUrl: "", authToken: "", serverId: undefined }));
+    }
+  }, [state.serverId, userServersQ.data, userServers, pickedRow, setState]);
+
   return (
     <div className="inference-model-panel">
       {/* Running inference servers — top of the list because the typical
