@@ -3390,7 +3390,7 @@ li.config.selected button.link:hover {
   text-overflow: ellipsis;
 }
 
-.docs-pane-back {
+.docs-pane-nav {
   flex: 0 0 auto;
   background: var(--bg-alt);
   border: 1px solid var(--fg-muted);
@@ -3403,11 +3403,11 @@ li.config.selected button.link:hover {
   line-height: 1;
   cursor: pointer;
 }
-.docs-pane-back:hover:not(:disabled) {
+.docs-pane-nav:hover:not(:disabled) {
   background: var(--bg);
   border-color: var(--fg);
 }
-.docs-pane-back:disabled {
+.docs-pane-nav:disabled {
   opacity: 0.35;
   cursor: default;
 }

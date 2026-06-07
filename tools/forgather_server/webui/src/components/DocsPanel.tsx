@@ -23,6 +23,9 @@ interface Props {
   canGoBack: boolean;
   /** Pop the parent's docs-history stack. */
   onBack: () => void;
+  /** Navigate to the landing page, pushing the current doc onto the back-stack
+   *  (so Back returns here). Disabled when already at the landing page. */
+  onHome: () => void;
   /** When the parent pops a Back-stack entry it captures the saved
    *  scrollTop here. ``DocsPanel`` applies it once the popped page's
    *  content has finished rendering (so the scrollable area is tall
@@ -146,6 +149,7 @@ export function DocsPanel({
   onEdit,
   canGoBack,
   onBack,
+  onHome,
   restoreScrollTop,
   onScrollRestored,
 }: Props) {
@@ -345,7 +349,16 @@ export function DocsPanel({
     >
       <div className="docs-pane-header">
         <button
-          className="docs-pane-back"
+          className="docs-pane-nav"
+          onClick={onHome}
+          disabled={path === null}
+          title={path === null ? "Already at the docs home" : "Docs home"}
+          aria-label="Docs home"
+        >
+          ⌂
+        </button>
+        <button
+          className="docs-pane-nav docs-pane-back"
           onClick={onBack}
           disabled={!canGoBack}
           title={canGoBack ? "Back" : "No previous doc"}
@@ -482,9 +495,9 @@ function DocsSearchBox({ onNavigate }: { onNavigate: (path: string) => void }) {
   }, [open]);
 
   const choose = (path: string) => {
+    // Keep the query + results so the user can explore multiple hits without
+    // retyping — just close the dropdown (re-focusing the input reopens it).
     setOpen(false);
-    setQ("");
-    setHits(null);
     onNavigate(path);
   };
 

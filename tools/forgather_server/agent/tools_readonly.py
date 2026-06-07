@@ -339,14 +339,19 @@ def _scheduler_status(_args: Dict[str, Any]) -> Any:
 
 
 def _search_docs(args: Dict[str, Any]) -> Any:
-    """Keyword search over docs/ (+ CLAUDE.d/CLAUDE.md) returning ranked excerpts.
+    """Search docs/ (+ CLAUDE.d/CLAUDE.md) returning ranked excerpts.
 
     Delegates to the shared ``docs_search`` backend (also used by the webui
     Docs-view search), which prefers the rendered ``.built`` overlay per page.
-    The model reads the excerpts and decides relevance; embeddings can replace
-    the scorer later without changing this tool's contract.
+    ``mode`` selects the ranker (keyword / vector / hybrid); vector and hybrid
+    need a prebuilt index and fall back to keyword when it's absent — the
+    returned ``mode`` reflects what actually ran. The model reads the excerpts
+    and decides relevance.
     """
-    return docs_search.search((args.get("query") or "").strip())
+    mode = (args.get("mode") or "keyword").strip().lower()
+    if mode not in ("keyword", "vector", "hybrid"):
+        mode = "keyword"
+    return docs_search.search((args.get("query") or "").strip(), mode=mode)
 
 
 # ---- registration ----------------------------------------------------------
@@ -653,11 +658,24 @@ def register_all(reg: ToolRegistry) -> None:
             description=(
                 "Search Forgather documentation (docs/, CLAUDE.d/, CLAUDE.md) "
                 "for a query and return ranked excerpts with file paths. Use to "
-                "answer questions about Forgather and to cite the right doc."
+                "answer questions about Forgather and to cite the right doc. "
+                "mode selects the ranker: keyword (default; exact terms — best "
+                "for an identifier/flag like 'DiLoCo' or 'qwen3_coder'), vector "
+                "(semantic — best for a concept/paraphrase like 'resume training "
+                "after a crash'), or hybrid (both, fused). vector/hybrid need a "
+                "prebuilt index and silently fall back to keyword when absent; "
+                "the result's 'mode' field shows what actually ran."
             ),
             json_schema={
                 "type": "object",
-                "properties": {"query": {"type": "string", "description": "Search terms."}},
+                "properties": {
+                    "query": {"type": "string", "description": "Search terms."},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["keyword", "vector", "hybrid"],
+                        "description": "Ranker (default keyword). vector/hybrid need an index; they fall back to keyword.",
+                    },
+                },
                 "required": ["query"],
             },
             handler=_search_docs,

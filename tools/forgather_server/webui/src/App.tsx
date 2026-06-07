@@ -571,6 +571,19 @@ export default function App() {
     },
     [docsPath],
   );
+  // Home button: jump to the landing page (docsPath = null resolves the root
+  // doc). Pushed onto the back-stack like any navigation, so Back returns to
+  // where you were rather than the trek the user would otherwise face.
+  const docsHome = useCallback(() => {
+    if (docsPath === null) return; // already home
+    const scrollTop = readDocsScrollTop();
+    setDocsBackStack((s) => [
+      ...s,
+      { kind: "doc", path: docsPath, scrollTop },
+    ]);
+    setDocsPath(null);
+    setPendingDocsScroll(null);
+  }, [docsPath]);
 
   const schedQ = useQuery({
     queryKey: ["scheduler-status"],
@@ -1511,6 +1524,7 @@ export default function App() {
             onEdit={openFileForEdit}
             canGoBack={docsBackStack.length > 0}
             onBack={docsBack}
+            onHome={docsHome}
             restoreScrollTop={pendingDocsScroll}
             onScrollRestored={() => setPendingDocsScroll(null)}
           />
