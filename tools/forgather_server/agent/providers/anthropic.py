@@ -34,6 +34,17 @@ log = logging.getLogger("forgather_server.agent.anthropic")
 # max_tokens, and vLLM rejects values above the served model's context.
 DEFAULT_MAX_TOKENS = 4096
 
+# Per-request budgeting (only when max_model_len is known, i.e. vLLM):
+# vLLM enforces prompt_tokens + max_tokens <= max_model_len, so the output
+# budget must leave room for the (growing) prompt. We clamp max_tokens to
+# the remaining context on every request using a cheap, deliberately
+# *over*-estimated prompt size (bias toward a smaller, safe output budget
+# rather than a hard "context length exceeded" error).
+_MIN_OUTPUT_TOKENS = 512
+_CONTEXT_SAFETY_MARGIN = 512
+# Rough chars-per-token; intentionally low so the prompt estimate runs high.
+_CHARS_PER_TOKEN = 3.0
+
 
 class AnthropicProvider:
     """ChatProvider backed by the Anthropic SDK.
@@ -52,10 +63,15 @@ class AnthropicProvider:
         auth_token: Optional[str] = None,
         base_url: Optional[str] = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        max_model_len: Optional[int] = None,
         verify: Any = None,
     ) -> None:
         self.model = model
+        # Upper bound on output tokens. When max_model_len is known, the
+        # effective value is clamped per request to fit the remaining
+        # context (see _effective_max_tokens).
         self.max_tokens = max_tokens
+        self._max_model_len = max_model_len
         # api_key  -> sent as the ``x-api-key`` header (real Claude).
         # auth_token -> sent as ``Authorization: Bearer`` (what vLLM's
         # Anthropic Messages surface checks). They are mutually exclusive;
@@ -111,7 +127,7 @@ class AnthropicProvider:
 
         create_kwargs: Dict[str, Any] = {
             "model": self.model,
-            "max_tokens": self.max_tokens,
+            "max_tokens": self._effective_max_tokens(messages),
             "messages": messages,
             "stream": True,
         }
@@ -163,6 +179,44 @@ class AnthropicProvider:
                 # stop_reason is carried on the message_delta in the raw
                 # stream; surface a Done regardless so the loop terminates.
                 yield Done(stop_reason=None)
+
+    def _effective_max_tokens(self, messages: List[Dict[str, Any]]) -> int:
+        """Clamp the output budget so prompt + output fits the context.
+
+        No-op when max_model_len is unknown (e.g. Claude) — the upstream
+        enforces its own output limits there. For vLLM, keep
+        ``estimated_prompt + max_tokens <= max_model_len``.
+        """
+        if not self._max_model_len:
+            return self.max_tokens
+        est_prompt = self._estimate_prompt_tokens(messages)
+        avail = self._max_model_len - est_prompt - _CONTEXT_SAFETY_MARGIN
+        if avail < _MIN_OUTPUT_TOKENS:
+            # Conversation nearly fills the window; ask for the floor and let
+            # the server return its diagnostic if it truly can't fit.
+            return _MIN_OUTPUT_TOKENS
+        return max(_MIN_OUTPUT_TOKENS, min(self.max_tokens, avail))
+
+    @staticmethod
+    def _estimate_prompt_tokens(messages: List[Dict[str, Any]]) -> int:
+        """Cheap, deliberately-high estimate of the prompt's token count."""
+        chars = 0
+        for m in messages:
+            content = m.get("content")
+            if isinstance(content, str):
+                chars += len(content)
+                continue
+            for block in content or []:
+                if not isinstance(block, dict):
+                    chars += len(str(block))
+                    continue
+                if block.get("text"):
+                    chars += len(str(block["text"]))
+                if block.get("content"):  # tool_result payload
+                    chars += len(str(block["content"]))
+                if block.get("input") is not None:  # tool_use args
+                    chars += len(json.dumps(block["input"], default=str))
+        return int(chars / _CHARS_PER_TOKEN) + 8 * len(messages)
 
     @staticmethod
     def _finalize_tool_call(acc: Dict[str, Any]) -> ToolCall:

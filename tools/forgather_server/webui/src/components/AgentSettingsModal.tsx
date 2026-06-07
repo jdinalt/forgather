@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import {
   AgentProfile,
   AgentProfileWrite,
+  ModelInfo,
   activateProfile,
   createProfile,
   deleteProfile,
@@ -15,6 +16,14 @@ import {
   listAgentModels,
   updateProfile,
 } from "../agent-client";
+
+/** Compact a context length: 131072 -> "128K", 1048576 -> "1M". */
+function fmtCtx(n: number | null): string {
+  if (!n) return "";
+  if (n >= 1024 * 1024) return `${Math.round(n / (1024 * 1024))}M`;
+  if (n >= 1024) return `${Math.round(n / 1024)}K`;
+  return String(n);
+}
 import { ModalBackdrop } from "./ModalBackdrop";
 
 interface Props {
@@ -42,7 +51,7 @@ const BLANK: FormState = {
   api_key: "",
   api_key_env: "ANTHROPIC_API_KEY",
   verify_tls: true,
-  max_tokens: 4096,
+  max_tokens: 0, // 0 = auto (sized from the model's context window)
   max_iterations: 12,
 };
 
@@ -65,7 +74,7 @@ export function AgentSettingsModal({ onClose, onChanged }: Props) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null); // null = new
   const [form, setForm] = useState<FormState>(BLANK);
-  const [models, setModels] = useState<string[]>([]);
+  const [models, setModels] = useState<ModelInfo[]>([]);
   const [pendingCertPem, setPendingCertPem] = useState<string | null>(null);
   const [hasImportedCert, setHasImportedCert] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -185,10 +194,11 @@ export function AgentSettingsModal({ onClose, onChanged }: Props) {
       });
       setModels(list);
       // Remember last selection; auto-select first if it's gone (weak binding).
-      if (form.model && !list.includes(form.model)) {
-        set("model", list[0] ?? "");
-      } else if (!form.model && list.length) {
-        set("model", list[0]);
+      const ids = list.map((m) => m.id);
+      if (form.model && !ids.includes(form.model)) {
+        set("model", ids[0] ?? "");
+      } else if (!form.model && ids.length) {
+        set("model", ids[0]);
       }
       setNote(`${list.length} model(s) available.`);
     } catch (e: any) {
@@ -234,7 +244,14 @@ export function AgentSettingsModal({ onClose, onChanged }: Props) {
   };
 
   const isHttps = form.base_url.toLowerCase().startsWith("https");
-  const modelOptions = form.model && !models.includes(form.model) ? [form.model, ...models] : models;
+  const AUTO_MAX_TOKENS_CAP = 32768;
+  const ids = models.map((m) => m.id);
+  const modelOptions: ModelInfo[] =
+    form.model && !ids.includes(form.model)
+      ? [{ id: form.model, max_model_len: null }, ...models]
+      : models;
+  const selectedCtx = models.find((m) => m.id === form.model)?.max_model_len ?? null;
+  const autoMaxTokens = selectedCtx ? Math.min(selectedCtx, AUTO_MAX_TOKENS_CAP) : null;
 
   return (
     <ModalBackdrop onClose={onClose}>
@@ -283,7 +300,10 @@ export function AgentSettingsModal({ onClose, onChanged }: Props) {
                 <select value={form.model} onChange={(e) => set("model", e.target.value)}>
                   <option value="">(auto — first available)</option>
                   {modelOptions.map((m) => (
-                    <option key={m} value={m}>{m}</option>
+                    <option key={m.id} value={m.id}>
+                      {m.id}
+                      {m.max_model_len ? ` — ${fmtCtx(m.max_model_len)} ctx` : ""}
+                    </option>
                   ))}
                 </select>
               </label>
@@ -315,13 +335,26 @@ export function AgentSettingsModal({ onClose, onChanged }: Props) {
             )}
 
             <div className="agent-num-row">
-              <label>Max tokens
-                <input type="number" value={form.max_tokens} onChange={(e) => set("max_tokens", Number(e.target.value))} />
+              <label>Max output tokens <span className="muted">(blank = auto)</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={form.max_tokens === 0 ? "" : form.max_tokens}
+                  placeholder={autoMaxTokens ? `auto (${autoMaxTokens})` : "auto (from model context)"}
+                  onChange={(e) => set("max_tokens", e.target.value === "" ? 0 : Number(e.target.value))}
+                />
               </label>
               <label>Max tool iterations
                 <input type="number" value={form.max_iterations} onChange={(e) => set("max_iterations", Number(e.target.value))} />
               </label>
             </div>
+            {form.max_tokens === 0 && (
+              <div className="agent-note">
+                {selectedCtx
+                  ? `Auto: up to ${autoMaxTokens} output tokens (model context ${fmtCtx(selectedCtx)}), clamped per request to fit the prompt.`
+                  : "Auto: output budget sized from the model's context window once known."}
+              </div>
+            )}
 
             {err && <div className="err pad"><pre>{err}</pre></div>}
             {note && <div className="agent-note">{note}</div>}

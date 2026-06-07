@@ -39,7 +39,6 @@ _lock = Lock()
 
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_API_KEY_ENV = "ANTHROPIC_API_KEY"
-DEFAULT_MAX_TOKENS = 4096
 DEFAULT_MAX_ITERATIONS = 12
 
 
@@ -64,7 +63,11 @@ class AgentProfile:
     #   verify_tls False                    -> skip verification (accept any cert)
     verify_tls: bool = True
     ca_cert_pem: str = ""
-    max_tokens: int = DEFAULT_MAX_TOKENS
+    # Output-token budget. 0 = "auto": size it from the model's context
+    # window (queried), capped at a sensible default. A reasoning model
+    # like Qwen easily burns through 4K, so auto is preferred over a
+    # hardcoded number; set a positive value to pin an explicit cap.
+    max_tokens: int = 0
     max_iterations: int = DEFAULT_MAX_ITERATIONS
 
 

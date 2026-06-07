@@ -3054,6 +3054,26 @@ Leaving the model blank means "auto — first available", resolved at
 activation time. This suits vLLM, which serves one model at a time, so
 swapping the model on the box needs no profile edit.
 
+### Output budget (`max_tokens`)
+
+`max_tokens` defaults to **auto** (leave the field blank). vLLM enforces
+`prompt_tokens + max_tokens ≤ max_model_len`, and a verbose reasoning model
+easily burns through a small cap, so a hardcoded number is the wrong
+default. Auto:
+
+- reads the model's context window (`max_model_len`) from the server's
+  model card — the same query that backs the picker, so you never look it
+  up per model;
+- sizes the output budget to `min(context, 32768)` (32K is a sensible
+  ceiling even on huge-context models — Gemma 256K, NVIDIA 1M — leaving the
+  rest of the window for the prompt);
+- **clamps per request** so the output budget always fits the remaining
+  context as the conversation grows (a deliberately high prompt estimate
+  biases toward a smaller, safe budget rather than a "context length
+  exceeded" error).
+
+Set a positive value to pin an explicit cap instead.
+
 The model-list probe needs the server's bearer token. Credential
 resolution for a profile is self-contained: the profile's own key → its
 `api_key_env` env var. (Agent profiles do not silently borrow tokens from

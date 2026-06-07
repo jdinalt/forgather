@@ -162,28 +162,55 @@ def _resolve_api_key(profile) -> Optional[str]:
     return resolve_credential(profile.api_key, profile.api_key_env, profile.base_url)
 
 
-def _resolve_model(profile, api_key: Optional[str]) -> str:
-    """Concrete model name for the provider.
+# Auto output-token budget. 32K is a sensible default for a verbose
+# reasoning model (the Qwen card recommends ~32K general) and is the cap
+# even on huge-context models (Gemma 256K, NVIDIA 1M) — the rest of the
+# window stays available for the prompt. Overridable per profile.
+AUTO_MAX_TOKENS_CAP = 32768
+# Used when the context window is unknown (e.g. Claude, which doesn't
+# report max_model_len).
+AUTO_MAX_TOKENS_FALLBACK = 8192
 
-    Honors the profile's stored model; if it is empty ("weak binding"),
-    queries the server's model list and uses the first available — vLLM
-    serves one model, so this auto-tracks a swap on the box.
+
+def _resolve_model_and_context(profile, credential):
+    """Return ``(model_id, max_model_len)`` for the active profile.
+
+    Queries the server's model list to (a) pick the model when the profile
+    leaves it blank ("weak binding" — vLLM serves one model, so this
+    auto-tracks a swap on the box) and (b) learn the context window so the
+    output budget can be sized automatically. The probe always skips TLS
+    (discovery only). Context length is best-effort (``None`` when the
+    server/provider doesn't report it); only a total inability to determine
+    a model raises.
     """
+    try:
+        models = agent_tls.list_models(
+            provider=profile.provider,
+            base_url=profile.base_url,
+            api_key=credential or "",
+            verify_tls=False,
+            ca_cert_pem="",
+        )
+    except Exception:
+        models = []
     if profile.model:
-        return profile.model
-    models = agent_tls.list_models(
-        provider=profile.provider,
-        base_url=profile.base_url,
-        api_key=api_key or "",
-        verify_tls=profile.verify_tls,
-        ca_cert_pem=profile.ca_cert_pem,
-    )
+        for m in models:
+            if m.get("id") == profile.model:
+                return profile.model, m.get("max_model_len")
+        return profile.model, None
     if not models:
         raise RuntimeError(
             "no model is set on this profile and the server returned no "
             "models — set a model on the agent profile"
         )
-    return models[0]
+    first = models[0]
+    return str(first["id"]), first.get("max_model_len")
+
+
+def _auto_max_tokens(max_model_len: Optional[int]) -> int:
+    if max_model_len:
+        return min(int(max_model_len), AUTO_MAX_TOKENS_CAP)
+    return AUTO_MAX_TOKENS_FALLBACK
 
 
 def _build_loop(profile) -> AgentLoop:
@@ -195,7 +222,7 @@ def _build_loop(profile) -> AgentLoop:
     from .providers.anthropic import AnthropicProvider
 
     credential = _resolve_api_key(profile)
-    model = _resolve_model(profile, credential)
+    model, max_model_len = _resolve_model_and_context(profile, credential)
     verify = agent_tls.build_verify(
         base_url=profile.base_url,
         verify_tls=profile.verify_tls,
@@ -208,12 +235,18 @@ def _build_loop(profile) -> AgentLoop:
         api_key, auth_token = None, credential
     else:
         api_key, auth_token = credential, None
+    # max_tokens: explicit (>0) on the profile, else auto from the model's
+    # context window. The provider further clamps per request so output
+    # never collides with the (growing) prompt.
+    explicit = int(profile.max_tokens or 0)
+    base_max_tokens = explicit if explicit > 0 else _auto_max_tokens(max_model_len)
     provider = AnthropicProvider(
         model=model,
         api_key=api_key,
         auth_token=auth_token,
         base_url=profile.base_url or None,
-        max_tokens=int(profile.max_tokens or profiles_store.DEFAULT_MAX_TOKENS),
+        max_tokens=base_max_tokens,
+        max_model_len=max_model_len,
         verify=verify,
     )
     return AgentLoop(

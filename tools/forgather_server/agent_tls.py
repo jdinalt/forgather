@@ -97,14 +97,19 @@ def list_models(
     api_key: str,
     verify_tls: bool,
     ca_cert_pem: str,
-) -> List[str]:
-    """Return available model ids for a connection.
+) -> List[Dict[str, Any]]:
+    """Return available models for a connection.
+
+    Each entry is ``{"id": str, "max_model_len": Optional[int]}``.
+    ``max_model_len`` is the server-reported context window (vLLM includes
+    it in the model card) and is ``None`` when the provider doesn't report
+    it (e.g. Claude via the SDK). The agent uses it to size ``max_tokens``
+    so the operator doesn't have to look the context up per model.
 
     - Claude (anthropic provider, no base_url): the Anthropic SDK's
-      ``models.list()``.
-    - Any base_url (vLLM / OpenAI-compatible, which is what local boxes
-      expose): GET ``<base_url>/v1/models`` with a bearer, parse ``data[].id``.
-      vLLM serves exactly one model, so this is typically a single entry.
+      ``models.list()`` (no context length available → ``None``).
+    - Any base_url (vLLM / OpenAI-compatible): GET ``<base_url>/v1/models``
+      with a bearer; each card carries ``id`` and ``max_model_len``.
     """
     base_url = (base_url or "").rstrip("/")
     if provider == "anthropic" and not base_url:
@@ -113,7 +118,7 @@ def list_models(
         except ImportError as e:
             raise RuntimeError("the 'anthropic' package is required") from e
         client = Anthropic(api_key=api_key or "placeholder")
-        return [m.id for m in client.models.list().data]
+        return [{"id": m.id, "max_model_len": None} for m in client.models.list().data]
 
     # OpenAI-compatible /v1/models (vLLM and friends).
     verify = build_verify(base_url=base_url, verify_tls=verify_tls, ca_cert_pem=ca_cert_pem)
@@ -128,4 +133,14 @@ def list_models(
     items = data.get("data") if isinstance(data, dict) else None
     if not isinstance(items, list):
         return []
-    return [str(it.get("id")) for it in items if isinstance(it, dict) and it.get("id")]
+    out: List[Dict[str, Any]] = []
+    for it in items:
+        if isinstance(it, dict) and it.get("id"):
+            ctx = it.get("max_model_len")
+            out.append(
+                {
+                    "id": str(it["id"]),
+                    "max_model_len": int(ctx) if isinstance(ctx, int) else None,
+                }
+            )
+    return out

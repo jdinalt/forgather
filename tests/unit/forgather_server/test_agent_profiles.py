@@ -143,13 +143,13 @@ def test_models_route_always_skips_tls(monkeypatch):
 
     def cap(**kw):
         captured.update(kw)
-        return ["m1"]
+        return [{"id": "m1", "max_model_len": 4096}]
 
     monkeypatch.setattr(ar.agent_tls, "list_models", cap)
     out = ar.list_agent_models(
         ar.ModelsRequest(provider="anthropic", base_url="https://x", api_key="k", verify_tls=True)
     )
-    assert out == {"models": ["m1"]}
+    assert out == {"models": [{"id": "m1", "max_model_len": 4096}]}
     # The discovery probe ignores the profile's TLS posture.
     assert captured["verify_tls"] is False
     assert captured["ca_cert_pem"] == ""
@@ -181,6 +181,40 @@ def test_custom_env_var_allowed_for_local_server(monkeypatch):
     assert (
         runtime.resolve_credential("", "VLLM_TOKEN", "https://kitt:8000") == "bearer-xyz"
     )
+
+
+# ---- max_tokens auto budgeting --------------------------------------------
+
+
+def test_auto_max_tokens_caps_and_fallback():
+    from forgather_server.agent import runtime
+
+    assert runtime._auto_max_tokens(131072) == 32768  # capped
+    assert runtime._auto_max_tokens(8192) == 8192  # below cap → full context
+    assert runtime._auto_max_tokens(1048576) == 32768  # 1M context still capped
+    assert runtime._auto_max_tokens(None) == runtime.AUTO_MAX_TOKENS_FALLBACK
+
+
+def test_provider_clamps_max_tokens_to_remaining_context():
+    # No anthropic client needed: budgeting is pure (client is lazy).
+    from forgather_server.agent.providers.anthropic import AnthropicProvider
+
+    def msg(text):
+        return [{"role": "user", "content": [{"type": "text", "text": text}]}]
+
+    # Unknown context (Claude) → base returned unchanged.
+    p_none = AnthropicProvider(model="m", max_tokens=32768, max_model_len=None)
+    assert p_none._effective_max_tokens(msg("hi")) == 32768
+
+    p = AnthropicProvider(model="m", max_tokens=32768, max_model_len=131072)
+    # Small prompt → full base budget.
+    assert p._effective_max_tokens(msg("hello")) == 32768
+    # Medium prompt (~100k tokens) → reduced to fit remaining context.
+    eff_med = p._effective_max_tokens(msg("y" * (100_000 * 3)))
+    assert 512 <= eff_med < 32768
+    # Prompt nearly fills the window → output floored, never negative.
+    eff_full = p._effective_max_tokens(msg("x" * (131_000 * 3)))
+    assert eff_full == 512
 
 
 # ---- runtime hot-swap ------------------------------------------------------

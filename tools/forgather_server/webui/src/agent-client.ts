@@ -129,8 +129,14 @@ export interface ModelsQuery {
   ca_cert_pem?: string;
 }
 
-export async function listAgentModels(q: ModelsQuery): Promise<string[]> {
-  const r = await jsonReq<{ models: string[] }>("/api/agent/models", "POST", q);
+export interface ModelInfo {
+  id: string;
+  /** Server-reported context window (vLLM); null when not reported (Claude). */
+  max_model_len: number | null;
+}
+
+export async function listAgentModels(q: ModelsQuery): Promise<ModelInfo[]> {
+  const r = await jsonReq<{ models: ModelInfo[] }>("/api/agent/models", "POST", q);
   return r.models;
 }
 
