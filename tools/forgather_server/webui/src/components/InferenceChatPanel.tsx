@@ -284,6 +284,7 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
           ac.signal,
           reqOpts,
           state.authToken || undefined,
+          state.serverId,
         )) {
           tokenCount += 1;
           setMessages((prev) => {
@@ -355,6 +356,7 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
           ac.signal,
           reqOpts,
           state.authToken || undefined,
+          state.serverId,
         );
         setMessages([
           ...msgs,
@@ -553,6 +555,7 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
         payload,
         undefined,
         state.authToken || undefined,
+        state.serverId,
       );
       const rendered = (r.prompt ?? "").toString();
       if (rendered) {
@@ -569,6 +572,7 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
             state.model,
             r.tokens,
             state.authToken || undefined,
+            state.serverId,
           );
           const recovered = (d.prompt ?? "").toString();
           if (recovered) {

@@ -157,6 +157,22 @@ def remove_entry(entry_id: str) -> Optional[RegistryEntry]:
         return removed
 
 
+def find_by_id(entry_id: str) -> Optional[RegistryEntry]:
+    """Return the entry with the given id, or None.
+
+    Used by the inference proxy's entry-bound auth path: the webui names the
+    exact registry entry it selected (by id), so the proxy attaches that
+    entry's token rather than guessing from the URL. This is what lets two
+    entries for the same base_url carry independent auth.
+    """
+    if not entry_id:
+        return None
+    for e in list_entries():
+        if e.id == entry_id:
+            return e
+    return None
+
+
 def find_token(base_url: str) -> Optional[str]:
     """Look up the bearer token for an exact base_url match.
 

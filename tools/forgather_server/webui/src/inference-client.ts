@@ -116,17 +116,25 @@ function proxyUrl(
  *  user's Authorization on these requests is the *forgather-server's*
  *  bearer (same-origin) and must not leak to the upstream. */
 const TOKEN_HEADER = "X-Inference-Auth-Token";
+// Names the selected user-registry entry so the proxy attaches that exact
+// entry's token (entry-bound auth) instead of guessing from the URL. The
+// browser never holds the registry token — only the id. See issue #158.
+const SERVER_ID_HEADER = "X-Inference-Server-Id";
 
-function authHeaders(authToken?: string): Record<string, string> {
-  return authToken ? { [TOKEN_HEADER]: authToken } : {};
+function authHeaders(authToken?: string, serverId?: string): Record<string, string> {
+  const h: Record<string, string> = {};
+  if (authToken) h[TOKEN_HEADER] = authToken;
+  if (serverId) h[SERVER_ID_HEADER] = serverId;
+  return h;
 }
 
 export async function listModels(
   baseUrl: string,
   authToken?: string,
+  serverId?: string,
 ): Promise<ModelEntry[]> {
   const r = await fetch(proxyUrl("models", baseUrl), {
-    headers: authHeaders(authToken),
+    headers: authHeaders(authToken, serverId),
   });
   if (!r.ok) {
     throw new Error(`${r.status} ${r.statusText}: ${await r.text()}`);
@@ -138,9 +146,10 @@ export async function listModels(
 export async function checkHealth(
   baseUrl: string,
   authToken?: string,
+  serverId?: string,
 ): Promise<boolean> {
   const r = await fetch(proxyUrl("health", baseUrl), {
-    headers: authHeaders(authToken),
+    headers: authHeaders(authToken, serverId),
   });
   return r.ok;
 }
@@ -162,9 +171,10 @@ export type ServerCheckResult =
 export async function checkServer(
   baseUrl: string,
   authToken?: string,
+  serverId?: string,
 ): Promise<ServerCheckResult> {
   const r = await fetch(proxyUrl("models", baseUrl), {
-    headers: authHeaders(authToken),
+    headers: authHeaders(authToken, serverId),
   });
   if (r.ok) return { kind: "ok" };
   if (r.status === 401 || r.status === 403) {
@@ -218,6 +228,7 @@ export async function runCompletion(
   params: GenerationParams,
   signal: AbortSignal,
   authToken?: string,
+  serverId?: string,
 ): Promise<string> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
@@ -228,7 +239,7 @@ export async function runCompletion(
   };
   const r = await fetch(proxyUrl("completions", baseUrl), {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken, serverId) },
     body: JSON.stringify(body),
     signal,
   });
@@ -248,6 +259,7 @@ export async function* streamCompletion(
   params: GenerationParams,
   signal: AbortSignal,
   authToken?: string,
+  serverId?: string,
 ): AsyncIterable<string> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
@@ -265,6 +277,7 @@ export async function* streamCompletion(
       return typeof t === "string" && t.length > 0 ? t : undefined;
     },
     authToken,
+    serverId,
   );
 }
 
@@ -305,6 +318,7 @@ export async function* streamChatCompletion(
   signal: AbortSignal,
   options?: ChatRequestOptions,
   authToken?: string,
+  serverId?: string,
 ): AsyncIterable<ChatDelta> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
@@ -331,6 +345,7 @@ export async function* streamChatCompletion(
       return undefined;
     },
     authToken,
+    serverId,
   );
 }
 
@@ -373,6 +388,7 @@ export async function scorePrompt(
   topK: number,
   signal: AbortSignal,
   authToken?: string,
+  serverId?: string,
   maxLength?: number,
 ): Promise<TokenScores> {
   const body: Record<string, unknown> = {
@@ -388,7 +404,7 @@ export async function scorePrompt(
   }
   const r = await fetch(proxyUrl("completions", baseUrl), {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken, serverId) },
     body: JSON.stringify(body),
     signal,
   });
@@ -430,6 +446,7 @@ export async function tokenizeChat(
     continueFinalMessage?: boolean;
   },
   authToken?: string,
+  serverId?: string,
 ): Promise<TokenizeResponse> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
@@ -444,7 +461,7 @@ export async function tokenizeChat(
   }
   const r = await fetch(proxyUrl("tokenize", baseUrl), {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken, serverId) },
     body: JSON.stringify(body),
   });
   if (!r.ok) {
@@ -466,10 +483,11 @@ export async function detokenizeTokens(
   model: string,
   tokens: number[],
   authToken?: string,
+  serverId?: string,
 ): Promise<DetokenizeResponse> {
   const r = await fetch(proxyUrl("detokenize", baseUrl), {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken, serverId) },
     body: JSON.stringify({
       model: model || "inference-server",
       tokens,
@@ -501,6 +519,7 @@ export async function runChatCompletion(
   signal: AbortSignal,
   options?: ChatRequestOptions,
   authToken?: string,
+  serverId?: string,
 ): Promise<ChatResult> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
@@ -511,7 +530,7 @@ export async function runChatCompletion(
   if (options?.nextRole) body.next_role = options.nextRole;
   const r = await fetch(proxyUrl("chat/completions", baseUrl), {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken, serverId) },
     body: JSON.stringify(body),
     signal,
   });
@@ -545,10 +564,11 @@ async function* streamSse<T>(
   signal: AbortSignal,
   extract: (frame: any) => T | undefined,
   authToken?: string,
+  serverId?: string,
 ): AsyncIterable<T> {
   const r = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken, serverId) },
     body: JSON.stringify(body),
     signal,
   });

@@ -3605,9 +3605,23 @@ tokens never round-trip back to the browser after the initial save.
 | `DELETE /api/inference-servers/user/{entry_id}`                                         | Remove a registry entry                                              |
 
 Token resolution order for every inference-proxy call: explicit
-`X-Inference-Auth-Token` header → JobRecord auto-lookup (for spawned
-local servers) → cluster-inventory lookup (for off-host peer servers
-on master nodes) → registry lookup (for user-added entries) → none.
+`X-Inference-Auth-Token` header → **`X-Inference-Server-Id` (entry-bound)**
+→ JobRecord auto-lookup (for spawned local servers) → cluster-inventory
+lookup (for off-host peer servers on master nodes) → registry lookup by
+URL (for a raw typed URL) → none.
+
+**Entry-bound auth (`X-Inference-Server-Id`).** When the webui talks to a
+*registered* server it sends the entry's id, and the proxy attaches exactly
+that entry's token — or nothing if the entry has none — with **no** URL
+fallback. This keeps the token server-side (the browser only holds the id),
+lets two entries share a `base_url` with independent auth, and makes the
+model view's auth indicator authoritative: a "No auth" entry never inherits
+a sibling entry's token. The entry's `verify_tls` posture is bound the same
+way. The entry's token is attached **only** when the request actually
+targets that entry's own `base_url` — naming entry A while forwarding to a
+different host sends no token. The URL-based lookups remain only for callers
+that don't name an entry (a hand-typed URL, a spawned-local or cluster
+server).
 
 ### Dataset_server registry + proxy
 

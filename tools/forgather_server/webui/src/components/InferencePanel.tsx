@@ -17,6 +17,13 @@ export interface InferenceState {
    *  from a JobRecord when picking a local server; user-editable for
    *  external OpenAI-compatible servers. Empty = no upstream auth. */
   authToken: string;
+  /** Id of the selected user-registry entry, when the active server is a
+   *  saved entry. Sent as ``X-Inference-Server-Id`` so the proxy attaches
+   *  that exact entry's token (entry-bound auth — two entries can share a
+   *  base_url with different auth). Undefined for running/cluster/raw-URL
+   *  servers, which use ``authToken`` / URL lookup. Not a secret, so unlike
+   *  ``authToken`` it is persisted across reloads. */
+  serverId?: string;
   model: string;
   params: GenerationParams;
 }
@@ -70,6 +77,8 @@ function loadState(): InferenceState {
       // action window the reveal design intends. Returning sessions
       // pay one re-pick or one Show click — cheap in exchange.
       authToken: "",
+      serverId:
+        typeof parsed.serverId === "string" ? parsed.serverId : undefined,
       model: typeof parsed.model === "string" ? parsed.model : "",
       params,
     };
