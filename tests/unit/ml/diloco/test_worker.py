@@ -414,6 +414,35 @@ class TestWorkerMetrics:
             assert metrics["diloco/sync_count"] == 1
             assert metrics["diloco/local_step"] == 0
             assert metrics["diloco/last_sync_time"] > 0
+            # The backend-reported sent_bytes flows into last_send_mb. fp32
+            # upload -> wire size == raw size (4 bytes/param).
+            n_params = sum(p.numel() for p in model.parameters())
+            assert metrics["diloco/last_send_mb"] == pytest.approx(n_params * 4 / 1e6)
+
+    def test_last_send_mb_reflects_bf16_wire_size(self, server_with_model):
+        """End-to-end: with bf16 upload, the cast happens in the backend and the
+        metric reports the bf16 wire size (half the fp32 raw size) — proving
+        result.sent_bytes flows into diloco/last_send_mb."""
+        server, model = server_with_model
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+        n_params = sum(p.numel() for p in model.parameters())
+
+        with DiLoCoWorker(
+            model,
+            optimizer,
+            server_addr=f"localhost:{server.port}",
+            sync_every=3,
+            bf16_comm=True,
+        ) as worker:
+            for _ in range(3):
+                x = torch.randn(2, 8)
+                model(x).sum().backward()
+                optimizer.step()
+                optimizer.zero_grad()
+
+            assert worker.sync_metrics["diloco/last_send_mb"] == pytest.approx(
+                n_params * 2 / 1e6
+            )
 
     def test_force_sync(self, server_with_model):
         server, model = server_with_model

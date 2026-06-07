@@ -26,19 +26,20 @@ This module is the step-1 strangler refactor (see issue #154): it defines the
 interface and reimplements *current* HTTP behavior behind :class:`HttpStarBackend`,
 byte-for-byte unchanged. It does not add any new transport.
 
-Scope boundary (intentional, for now):
+The seam is intentionally narrow:
 
 - The **coordination plane** — heartbeat, ``/info`` negotiation, model-def
-  download, control commands, work-unit dispatch — stays on the
-  :class:`~forgather.ml.diloco.client.DiLoCoClient` directly. Only the bulk
-  tensor legs route through a backend. A later step extracts a coordinator
-  client (the #154 role decomposition).
-- **Wire-precision casts** (``upload_dtype`` / ``download_dtype`` and their
-  stochastic-rounding flags) remain in
-  :meth:`~forgather.ml.diloco.param_view.ParamView.compute_pseudograds` /
-  ``apply_global``, where issue #130 placed them. A later step moves cast
-  ownership into the backend so non-HTTP backends can define their own wire
-  representation (shared-mem = no cast; collective-fp8 = packed).
+  download, control commands, work-unit dispatch — is not part of this seam; the
+  worker-process coordination has its own surface
+  (:class:`~forgather.ml.diloco.coordinator.CoordinatorClient`).
+- The backend owns its **wire representation**.
+  :meth:`~forgather.ml.diloco.param_view.ParamView.compute_pseudograds` returns
+  the raw pseudo-gradient (live model dtype); :class:`HttpStarBackend` applies
+  the upload cast (``upload_dtype`` / ``upload_sr``, with optional stochastic
+  rounding) via :func:`~forgather.ml.diloco.wire_cast.cast_for_upload` before
+  sending, so a non-HTTP backend can define its own representation (shared-mem =
+  no cast; collective = packed fp8/fp4). The **download** cast is the server's
+  (the central parameter authority's) concern and stays server-side.
 """
 
 from __future__ import annotations
@@ -82,8 +83,8 @@ class SyncResult:
     ``sent_bytes`` / ``recv_bytes`` are the on-wire sizes of this round's
     upload / download, reported by the backend (which owns the wire
     representation, so it is the only place that knows the cast size). ``None``
-    when the backend does not measure them; the worker falls back to estimating
-    from the tensors it holds.
+    when the backend does not measure them; the worker then estimates from the
+    tensors it holds, which is exact only for a backend that does not cast.
     """
 
     params: Optional[StateDict]

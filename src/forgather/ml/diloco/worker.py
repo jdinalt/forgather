@@ -204,7 +204,10 @@ class DiLoCoWorker:
         # stays on ``self.client`` directly. Defaults to the HTTP star backend
         # wrapping the client above, so behavior is unchanged. A trainer/config
         # may inject a different backend without the worker knowing the
-        # transport.
+        # transport. The backend owns the upload wire representation: the
+        # default takes the worker's negotiated ``upload_dtype`` / ``upload_sr``,
+        # but for an injected backend the backend is authoritative and the
+        # worker's copies (used for the /info report and log line) are advisory.
         self.backend: OuterSyncBackend = backend or HttpStarBackend(
             self.client, upload_dtype=self.upload_dtype, upload_sr=self.upload_sr
         )
