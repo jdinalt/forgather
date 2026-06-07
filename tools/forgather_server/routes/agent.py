@@ -362,14 +362,38 @@ def agent_import(req: ImportRequest):
     to re-test after a fix). The messages are the canonical content-block
     log from a prior export / GET /agent/sessions/{id}.
     """
+    if not runtime.is_enabled():
+        raise HTTPException(status_code=503, detail="agent is not configured")
     if not isinstance(req.messages, list):
         raise HTTPException(status_code=400, detail="messages must be a list")
+    tool_use_ids: set = set()
+    tool_result_ids: set = set()
     for m in req.messages:
         if not isinstance(m, dict) or "role" not in m or "content" not in m:
             raise HTTPException(
                 status_code=400,
                 detail="each message must be an object with 'role' and 'content'",
             )
+        content = m.get("content")
+        if isinstance(content, list):
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "tool_use" and b.get("id"):
+                    tool_use_ids.add(b["id"])
+                elif b.get("type") == "tool_result" and b.get("tool_use_id"):
+                    tool_result_ids.add(b["tool_use_id"])
+    # Every tool_use must be answered by a tool_result (and vice-versa), or the
+    # provider rejects the conversation on the next turn. Reject a malformed /
+    # truncated log here with a clear error instead of failing mid-stream later.
+    if tool_use_ids != tool_result_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "malformed conversation: every tool_use must have a matching "
+                "tool_result (the log appears truncated or hand-edited)"
+            ),
+        )
     conv = agent_session.import_conversation(req.messages, req.session_id)
     return {"session_id": conv.session_id}
 

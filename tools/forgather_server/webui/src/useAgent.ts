@@ -81,7 +81,15 @@ function itemsFromMessages(messages: Array<{ role: string; content: unknown }>):
         toolIdx.set(String(block.id), items.length - 1);
       } else if (block.type === "tool_result") {
         const idx = toolIdx.get(String(block.tool_use_id));
-        const c = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
+        // tool_result content is usually a string, but the canonical form can
+        // be a block array ([{type:'text',text:...}]); join its text so the
+        // restored tool card matches what was shown live, not raw JSON.
+        const raw = block.content;
+        const c = typeof raw === "string"
+          ? raw
+          : Array.isArray(raw)
+            ? raw.map((p: any) => (p && typeof p === "object" && "text" in p ? p.text : JSON.stringify(p))).join("")
+            : JSON.stringify(raw);
         if (idx !== undefined) {
           const it = items[idx];
           if (it.type === "tool") items[idx] = { ...it, content: c, isError: !!block.is_error };
@@ -216,8 +224,14 @@ export function useAgent(): AgentController {
           return; // keep cached items (they include the pending action card)
         }
         const rebuilt = itemsFromMessages(h.messages);
-        setItems(rebuilt);
-        idRef.current = rebuilt.length;
+        // Only replace the cached items when the backend log actually
+        // reconstructs to something; an empty/non-renderable log (e.g. a
+        // session recreated empty after a restart) must not wipe the cache
+        // (which the idle persist effect would then make permanent).
+        if (rebuilt.length) {
+          setItems(rebuilt);
+          idRef.current = rebuilt.length;
+        }
       })
       .catch(() => {
         /* backend session gone — keep the cached items for display */
@@ -438,13 +452,16 @@ export function useAgent(): AgentController {
       const messages = Array.isArray(data.messages)
         ? (data.messages as Array<{ role: string; content: unknown }>)
         : [];
-      let sid = (data.session_id as string) || null;
-      // Reseed the backend so a continued turn has the restored context.
+      // Don't trust the file's session_id — it names a session on whatever
+      // machine produced the dump, not this backend. Only adopt a session id
+      // we just minted by reseeding here; otherwise leave it null so the next
+      // message starts a fresh backend conversation (display-only restore).
+      let sid: string | null = null;
       if (messages.length) {
         try {
           sid = (await importConversation(messages)).session_id;
         } catch {
-          /* fall back to display-only restore below */
+          /* reseed failed (backend down/rejected) — display-only restore */
         }
       }
       const restored =

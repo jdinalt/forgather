@@ -114,7 +114,24 @@ class AgentLoop:
             if not conv.messages:
                 yield {"type": "error", "message": "nothing to continue"}
                 return
-            if conv.messages[-1].get("role") == "assistant":
+            last = conv.messages[-1]
+            if last.get("role") == "assistant":
+                # If the last assistant turn ended on an unanswered tool_use
+                # (e.g. an imported/edited log truncated mid-tool-call),
+                # appending a user message would leave a tool_use with no
+                # tool_result and the provider would 400. Refuse cleanly
+                # rather than corrupting the conversation.
+                if any(
+                    isinstance(b, dict) and b.get("type") == "tool_use"
+                    for b in (last.get("content") or [])
+                ):
+                    yield {
+                        "type": "error",
+                        "message": "can't continue: the conversation ended "
+                        "mid-tool-call (an unanswered tool_use). Send a new "
+                        "message instead.",
+                    }
+                    return
                 conv.messages.append(
                     {"role": "user", "content": [{"type": "text", "text": "Please continue."}]}
                 )
@@ -259,7 +276,9 @@ class AgentLoop:
                     "type": "done",
                     "session_id": conv.session_id,
                     "reason": stop_reason,
-                    "incomplete": stop_reason == "max_tokens",
+                    # "max_tokens" (Claude) and "length" (vLLM/OpenAI-style)
+                    # both mean the output was cut off by the token budget.
+                    "incomplete": stop_reason in ("max_tokens", "length"),
                 }
                 return
 

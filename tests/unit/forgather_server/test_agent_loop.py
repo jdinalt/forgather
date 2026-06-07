@@ -284,6 +284,34 @@ def test_continue_turn_resumes():
     )
 
 
+def test_continue_turn_refuses_dangling_tool_use():
+    state = {"read_calls": 0, "commit_calls": 0}
+    reg = _make_registry(state)
+    provider = FakeProvider([])  # must not be called
+    loop = AgentLoop(provider, reg)
+    conv = Conversation(session_id="dangle")
+    conv.messages.append({"role": "user", "content": [{"type": "text", "text": "hi"}]})
+    conv.messages.append(
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "x", "input": {}}]}
+    )
+    events = _collect(loop.continue_turn(conv))
+    assert events[-1]["type"] == "error"
+    assert "mid-tool-call" in events[-1]["message"]
+    assert conv.messages[-1]["role"] == "assistant"  # no user nudge appended
+    assert provider.calls == 0
+
+
+def test_incomplete_done_on_length_stop_reason():
+    state = {"read_calls": 0, "commit_calls": 0}
+    reg = _make_registry(state)
+    provider = FakeProvider([[TextDelta("cut off"), Done(stop_reason="length")]])
+    loop = AgentLoop(provider, reg)
+    conv = Conversation(session_id="len")
+    events = _collect(loop.run_user_message(conv, "go"))
+    done = [e for e in events if e["type"] == "done"]
+    assert done and done[-1]["incomplete"] is True  # vLLM "length" == truncated
+
+
 def test_unknown_tool_is_error_not_crash():
     state = {"read_calls": 0, "commit_calls": 0}
     reg = _make_registry(state)

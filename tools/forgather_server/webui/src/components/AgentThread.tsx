@@ -92,14 +92,24 @@ function docAbsPath(href: string, repoRoot?: string): string | null {
   if (!href || !repoRoot) return null;
   const root = repoRoot.replace(/\/+$/, "");
   if (href.startsWith("/")) {
-    if (href.startsWith(root + "/") && isDocPath(href)) return href; // /mnt/.../docs/x.md
-    if (isDocPath(href) || href.includes("/docs/")) return root + href; // /docs/x.md
+    // An absolute fs path under the repo, or a URL-style absolute doc path
+    // (/docs/x.md) we map under the repo root. Require a doc extension — a
+    // bare "/docs/" substring on some other absolute path (e.g.
+    // /srv/docs/data.csv) must NOT be rewritten.
+    if (href.startsWith(root + "/") && isDocPath(href)) return href;
+    if (isDocPath(href)) return root + href;
     return null;
   }
   if (/^https?:\/\//i.test(href)) {
+    // Only intercept a URL the model fabricated against THIS server's origin
+    // (e.g. https://<this-host>:<port>/docs/x.md). A genuine external doc
+    // link (different origin) opens in a new tab — never hijacked into the
+    // local Docs view.
     try {
       const u = new URL(href);
-      if (isDocPath(u.pathname) || u.pathname.includes("/docs/")) return root + u.pathname;
+      if (u.origin === window.location.origin && isDocPath(u.pathname)) {
+        return root + u.pathname;
+      }
     } catch {
       /* not a parseable URL */
     }

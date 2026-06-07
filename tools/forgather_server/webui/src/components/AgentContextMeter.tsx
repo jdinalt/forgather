@@ -23,7 +23,7 @@ export function AgentContextMeter({ usage }: { usage: AgentUsage | null }) {
     (win ? ` · context ${win}` : " · context window unknown");
   return (
     <span className="agent-ctx-meter" title={title}>
-      {win != null && (
+      {win && pct != null && (
         <span className="agent-ctx-bar">
           <span className={"agent-ctx-fill" + cls} style={{ width: `${pct}%` }} />
         </span>

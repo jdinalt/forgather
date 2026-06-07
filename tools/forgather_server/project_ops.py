@@ -152,6 +152,11 @@ def create_workspace(
     parent = os.path.abspath(parent_dir)
     workspace_dir = resolve_new_workspace_target(parent_dir, name, workspace_dir_name)
 
+    # An explicit forgather_dir is fs-root-checked (a caller/agent could point
+    # it anywhere); the default (repo root, where the install lives) is trusted
+    # even if it sits outside a narrowed fs-root allowlist.
+    if forgather_dir is not None:
+        _enforce_fs_root(forgather_dir)
     fdir = forgather_dir or search_roots.forgather_repo_root()
     if not fdir or not os.path.isdir(fdir):
         raise ValueError(f"forgather_dir is not a directory: {fdir}")
