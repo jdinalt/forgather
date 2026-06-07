@@ -3187,17 +3187,31 @@ resolved — so a change can never become permanent without approval.
 Both share one controller, so an action proposed in the sidebar can be
 approved in the full view and vice-versa.
 
-### Tools (first release)
+### Tools
 
-Read-only: `list_projects`, `inspect_config`, `render_config_pp`,
-`read_file`, `scheduler_status`, `search_docs`, `list_meta_templates`.
-Authoring (propose/commit): `propose_edit_config`, `propose_new_config`,
-`propose_new_config_from_template`.
+Grouped by risk (the gate in `agent/registry.py`):
+
+- **Read-only** (`read`, run automatically) — project/config inspection:
+  `list_workspaces`, `list_projects`, `list_configs`, `inspect_config`,
+  `check_config`, `render_config_pp`, `render_config_code`,
+  `list_config_templates`, `config_template_refs`, `list_meta_templates`;
+  filesystem: `read_file`, `list_directory`, `find_files`, `search_docs`;
+  scheduler/jobs: `scheduler_status`, `list_jobs`, `read_job_output`,
+  `wait_for_job`; datasets: `list_dataset_servers`, `dataset_info`; UI:
+  `reveal_in_ui`.
+- **Authoring** (`propose` → preview → commit) — `propose_edit_config`,
+  `propose_new_config`, `propose_new_config_from_template`,
+  `propose_new_project`, `propose_new_workspace`.
+- **Run-as-job** (`confirm` → approve → enqueue) — submit a config to the
+  scheduler: `run_dataset` (build/inspect a dataset split), `run_construct`
+  (materialize a named target, e.g. the model or a tokenizer), `run_train`
+  (train the model — long-running, reserves GPUs). All three go through the
+  same validated path as the HTTP enqueue route (`queue_ops.validate_and_enqueue`).
 
 The registry (`agent/registry.py`) is the single source of truth and is
 designed to be re-exported later by a `forgather mcp` server for external
-MCP clients (Claude Code / Desktop) without duplicating definitions. Job
-submission, scheduler control, and DiLoCo coordination are planned later
+MCP clients (Claude Code / Desktop) without duplicating definitions.
+Scheduler control (abort/kill) and DiLoCo coordination are planned later
 phases.
 
 ## Not yet implemented

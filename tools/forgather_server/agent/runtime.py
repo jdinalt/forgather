@@ -124,6 +124,21 @@ Writing & debugging configurations:
   render_config_code only when you actually want to see/export the Python.
   Fix and re-check before telling the user it's done.
 
+Running configs as scheduler jobs:
+- A config can be run three ways, each its own CONFIRM-gated tool (all execute
+  config code, so each needs the user's approval and each returns immediately
+  with a queue_id for a background job): run_dataset (build/inspect a dataset
+  split), run_construct (materialize + inspect a named target, e.g. the model or
+  a tokenizer — the equivalent of `forgather construct --target ...`), and
+  run_train (TRAIN the model — `forgather train`, long-running, reserves GPUs).
+- Pick run_construct for "build/check this target" inspection (defaults to
+  target=main, gpus=0); pick run_train only when the user actually wants to
+  train. Pass dynamic_args (from inspect_config) for configs that require them.
+- Watch any job with list_jobs / read_job_output, or block with
+  wait_for_job(queue_id). For a short job (dataset build, construct) wait_for_job
+  is fine; for a full training run do NOT block — check on it periodically.
+  Never report a job finished until its status is terminal (done/failed/aborted).
+
 Datasets workflow (creating / smoke-testing a dataset project):
 - Tools: run_dataset (build/inspect a split as a job), wait_for_job (block
   until it finishes) + read_job_output / list_jobs (watch it),
