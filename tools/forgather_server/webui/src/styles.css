@@ -3312,6 +3312,71 @@ li.config.selected button.link:hover {
   min-width: 0;
 }
 
+/* Docs-view keyword search (header, right-aligned). */
+.docs-search {
+  margin-left: auto;
+  position: relative;
+  flex: 0 0 auto;
+}
+.docs-search-input {
+  width: 200px;
+  max-width: 40vw;
+  height: 24px;
+  box-sizing: border-box;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--fg);
+  padding: 0 8px;
+  font-size: 12px;
+}
+.docs-search-results {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  width: min(440px, 70vw);
+  max-height: 50vh;
+  overflow-y: auto;
+  background: var(--bg-pane);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  z-index: 50;
+}
+.docs-search-state {
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.docs-search-hit {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 6px 10px;
+  cursor: pointer;
+  color: var(--fg);
+}
+.docs-search-hit:hover {
+  background: var(--bg-alt);
+}
+.docs-search-hit-rel {
+  display: block;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--accent, #58a6ff);
+  margin-bottom: 2px;
+}
+.docs-search-hit-excerpt {
+  display: block;
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .docs-pane-back {
   flex: 0 0 auto;
   background: var(--bg-alt);

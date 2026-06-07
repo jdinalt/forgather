@@ -74,3 +74,34 @@ def test_built_tree_not_double_counted(repo):
     # Walking docs/ must skip the .built subtree, so api/widget.md appears once.
     rels = [h["rel"] for h in docs_search.search("frobnicate")["hits"]]
     assert rels.count("api/widget.md") <= 1
+
+
+# ---- /api/docs/search endpoint ---------------------------------------------
+
+
+def test_docs_search_endpoint_returns_source_paths(repo):
+    from forgather_server.routes import docs as docs_routes
+
+    resp = docs_routes.docs_search_endpoint(q="frobnicates", limit=8)
+    assert resp.query == "frobnicates"
+    hit = next(h for h in resp.hits if h.rel == "api/widget.md")
+    # Endpoint returns the SOURCE path (viewer serves the .built variant itself).
+    assert hit.path.endswith("/docs/api/widget.md")
+    assert ".built" not in hit.path
+    # Excerpt content came from the rendered overlay.
+    assert "flux capacitor" in hit.excerpt
+
+
+def test_docs_search_endpoint_excludes_agent_docs(repo):
+    from forgather_server.routes import docs as docs_routes
+
+    rels = [h.rel for h in docs_routes.docs_search_endpoint(q="frobnicate").hits]
+    assert "CLAUDE.md" not in rels
+    assert "guides/intro.md" in rels
+
+
+def test_docs_search_endpoint_blank_query(repo):
+    from forgather_server.routes import docs as docs_routes
+
+    resp = docs_routes.docs_search_endpoint(q="   ")
+    assert resp.query == "" and resp.hits == []

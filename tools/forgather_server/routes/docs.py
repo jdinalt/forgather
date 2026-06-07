@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
+from .. import docs_search
 from .. import paths as fs_paths
 from .. import search_roots as sr
 
@@ -172,6 +173,45 @@ def docs_root():
         if candidate.is_file():
             return DocsRootResponse(path=str(candidate))
     return DocsRootResponse(path=None)
+
+
+class DocsSearchHit(BaseModel):
+    path: str  # absolute SOURCE path, openable via /api/docs/file
+    rel: str  # path relative to docs/
+    score: int
+    excerpt: str
+
+
+class DocsSearchResponse(BaseModel):
+    query: str
+    hits: List[DocsSearchHit]
+
+
+@router.get("/docs/search", response_model=DocsSearchResponse)
+def docs_search_endpoint(q: str, limit: int = 8):
+    """Keyword search over the docs corpus (user-facing — excludes CLAUDE.*).
+
+    Returns ranked excerpts. ``path`` is the absolute *source* path so the Docs
+    viewer opens it through the normal /docs/file flow (which serves the rendered
+    .built variant and resolves relative assets correctly). A blank query yields
+    an empty result rather than an error so the UI can call it freely.
+    """
+    if not (q or "").strip():
+        return DocsSearchResponse(query="", hits=[])
+    result = docs_search.search(
+        q, include_agent_docs=False, max_hits=max(1, min(int(limit), 50))
+    )
+    docs_dir = Path(sr.forgather_repo_root()) / "docs"
+    hits = [
+        DocsSearchHit(
+            path=str(docs_dir / h["rel"]),
+            rel=h["rel"],
+            score=h["score"],
+            excerpt=h["excerpt"],
+        )
+        for h in result["hits"]
+    ]
+    return DocsSearchResponse(query=result["query"], hits=hits)
 
 
 @router.get("/docs/repo-root", response_model=DocsRepoRootResponse)
