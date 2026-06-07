@@ -21,6 +21,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
@@ -40,6 +41,27 @@ router = APIRouter(tags=["agent"])
 
 def _sse(event: Dict) -> bytes:
     return f"data: {json.dumps(event)}\n\n".encode("utf-8")
+
+
+def _same_base(a: str, b: str) -> bool:
+    """True if two base URLs address the same server (scheme+host+port).
+
+    Tolerates trailing-slash / path differences so we compare the endpoint,
+    not the exact string. Used to refuse redirecting a saved credential to a
+    different URL than the one it was stored for.
+    """
+    from urllib.parse import urlparse
+
+    try:
+        pa, pb = urlparse((a or "").rstrip("/")), urlparse((b or "").rstrip("/"))
+    except ValueError:
+        return False
+    return (pa.scheme, pa.hostname, pa.port) == (pb.scheme, pb.hostname, pb.port)
+
+
+def _looks_like_cert_error(message: str) -> bool:
+    m = message.lower()
+    return "certificate" in m or "ssl" in m or "cert_" in m
 
 
 async def _stream(events: AsyncIterator[Dict], *, session_id: Optional[str] = None) -> StreamingResponse:
@@ -70,11 +92,24 @@ def agent_status():
     return runtime.status()
 
 
+async def _get_loop():
+    """Build/fetch the active loop off the event loop.
+
+    get_loop() may do blocking network I/O on a rebuild (querying the model
+    list / context), so run it in a worker thread rather than freezing the
+    asyncio loop (and every other webui request) for the duration.
+    """
+    try:
+        return await asyncio.to_thread(runtime.get_loop)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"agent unavailable: {e}")
+
+
 @router.post("/agent/message")
 async def agent_message(req: MessageRequest):
     if not runtime.is_enabled():
         raise HTTPException(status_code=503, detail="agent is not configured")
-    loop = runtime.get_loop()
+    loop = await _get_loop()
     conv = agent_session.get_or_create(req.session_id)
     return await _stream(
         loop.run_user_message(conv, req.message), session_id=conv.session_id
@@ -85,7 +120,7 @@ async def agent_message(req: MessageRequest):
 async def agent_approve(req: DecisionRequest):
     if not runtime.is_enabled():
         raise HTTPException(status_code=503, detail="agent is not configured")
-    loop = runtime.get_loop()
+    loop = await _get_loop()
     return await _stream(loop.apply_decision(req.action_id, approve=True))
 
 
@@ -93,7 +128,7 @@ async def agent_approve(req: DecisionRequest):
 async def agent_reject(req: DecisionRequest):
     if not runtime.is_enabled():
         raise HTTPException(status_code=503, detail="agent is not configured")
-    loop = runtime.get_loop()
+    loop = await _get_loop()
     return await _stream(loop.apply_decision(req.action_id, approve=False))
 
 
@@ -227,28 +262,33 @@ def list_agent_models(req: ModelsRequest):
 
     provider = pick("provider", "anthropic")
     base_url = pick("base_url", "")
+    verify_tls = pick("verify_tls", True)
+    ca_cert_pem = pick("ca_cert_pem", "")
 
-    # Resolve the key: explicit > saved profile's key/env > in-editor env.
-    # runtime.resolve_credential applies the high-value-key guard (never
-    # auto-send ANTHROPIC_API_KEY to a custom base_url).
+    # Resolve the key. Only reuse a saved profile's stored credential when
+    # the request targets that profile's OWN base_url — never redirect a
+    # stored token to a different URL supplied in the request (that would
+    # exfiltrate the token to an attacker-chosen host). An edited base_url
+    # must carry its own key.
     api_key = req.api_key
-    if not api_key and saved is not None:
+    same_server = saved is not None and _same_base(base_url, saved.base_url)
+    if not api_key and same_server:
         api_key = runtime.resolve_credential(saved.api_key, saved.api_key_env, base_url)
     if not api_key:
         api_key = runtime.resolve_credential(None, req.api_key_env, base_url)
 
     try:
-        # Model discovery is a low-stakes probe (it returns only model ids),
-        # so always skip TLS verification here — it removes a class of
-        # friction (self-signed cert not yet imported) without exposing
-        # anything sensitive. The actual chat connection still honors the
-        # profile's real TLS posture.
+        # Honor the profile's TLS posture (verify on / imported cert / off).
+        # We do NOT silently disable verification: sending a bearer over an
+        # unverified channel is the user's explicit call (the UI warns), and
+        # importing the cert is the low-friction preferred path. See the
+        # threat model's note on LAN TLS for local model servers.
         models = agent_tls.list_models(
             provider=provider,
             base_url=base_url or "",
             api_key=api_key or "",
-            verify_tls=False,
-            ca_cert_pem="",
+            verify_tls=bool(verify_tls),
+            ca_cert_pem=ca_cert_pem or "",
         )
     except httpx.HTTPStatusError as e:
         code = e.response.status_code
@@ -263,7 +303,17 @@ def list_agent_models(req: ModelsRequest):
             )
         raise HTTPException(status_code=502, detail=f"upstream {code}: {e}")
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
+        msg = f"{type(e).__name__}: {e}"
+        if _looks_like_cert_error(msg):
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"{msg} — the server's TLS certificate isn't trusted. "
+                    "Import it (Import certificate…), or turn off 'Verify TLS "
+                    "certificate' for this LAN server."
+                ),
+            )
+        raise HTTPException(status_code=502, detail=msg)
     return {"models": models}
 
 

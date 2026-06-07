@@ -3044,6 +3044,42 @@ inference registry):
   hostname checking off (the chain check is the real boundary on a LAN —
   same posture as forgather's own private-CA peers).
 
+Both model-listing and the chat connection use the profile's chosen
+posture (we do not silently disable verification anywhere).
+
+> **Security stance (intentional — please don't "harden" this away).**
+> For a self-hosted model server on a LAN, verify-off is a *supported,
+> warned* posture, and importing the cert is one click. We deliberately
+> keep the friction low: a local LLM's bearer token has little resale
+> value (these tokens are often plaintext in a config file anyway), and
+> capturing it requires actively MITM-ing the LAN without being noticed —
+> a high bar that even verify-off raises far above plain HTTP (which stops
+> packet-sniffing outright). Making LAN TLS painful is counter-productive:
+> it pushes people to plain HTTP, which is strictly worse. **Real Anthropic
+> (Claude) keys are different** — high value, real theft market — so the
+> agent never sends them over an unverified channel: Claude always goes
+> over the SDK's verified TLS, and `ANTHROPIC_API_KEY` is never
+> auto-forwarded to a custom `base_url` (see *Credential safety* below). A
+> token is also only ever sent to the exact server its profile names; it is
+> never resolved by URL match or borrowed from another panel.
+
+### Credential safety
+
+- Agent profiles are **self-contained**: a profile's token is sent only to
+  that profile's own `base_url`. The agent never resolves a token by URL
+  match or borrows one stored in another panel (e.g. the inference
+  registry), so a blank key never silently authenticates from an unrelated
+  config.
+- `/api/agent/models` will not redirect a saved profile's token to a
+  different `base_url` supplied in the request — an edited URL must carry
+  its own key.
+- `ANTHROPIC_API_KEY` (the well-known env var) is auto-read only for Claude
+  (no `base_url`); it is never forwarded to a custom `base_url`. A local
+  server needs an explicit key or a deliberately-named env var.
+- Authoring tools enforce the filesystem-root allowlist at **propose** time
+  (before any read), so `propose_edit_config` can't read a file outside the
+  configured roots into the preview; writes are re-checked at commit.
+
 ### Model selection (weakly bound)
 
 The model is only weakly bound to a profile. The editor's "Load models"

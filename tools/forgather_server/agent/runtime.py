@@ -178,18 +178,18 @@ def _resolve_model_and_context(profile, credential):
     Queries the server's model list to (a) pick the model when the profile
     leaves it blank ("weak binding" — vLLM serves one model, so this
     auto-tracks a swap on the box) and (b) learn the context window so the
-    output budget can be sized automatically. The probe always skips TLS
-    (discovery only). Context length is best-effort (``None`` when the
-    server/provider doesn't report it); only a total inability to determine
-    a model raises.
+    output budget can be sized automatically. The probe honors the profile's
+    TLS posture (verify / imported cert / off). Context length is best-effort
+    (``None`` when the server/provider doesn't report it); only a total
+    inability to determine a model raises.
     """
     try:
         models = agent_tls.list_models(
             provider=profile.provider,
             base_url=profile.base_url,
             api_key=credential or "",
-            verify_tls=False,
-            ca_cert_pem="",
+            verify_tls=profile.verify_tls,
+            ca_cert_pem=profile.ca_cert_pem,
         )
     except Exception:
         models = []
@@ -222,7 +222,15 @@ def _build_loop(profile) -> AgentLoop:
     from .providers.anthropic import AnthropicProvider
 
     credential = _resolve_api_key(profile)
-    model, max_model_len = _resolve_model_and_context(profile, credential)
+    # Only query the server's model list when we actually need it: to pick
+    # the model (profile leaves it blank) or to size auto max_tokens. When
+    # both model and max_tokens are explicitly pinned, skip the network probe
+    # entirely (avoids a per-activation round-trip that can also block).
+    explicit_tokens = int(profile.max_tokens or 0)
+    if profile.model and explicit_tokens > 0:
+        model, max_model_len = profile.model, None
+    else:
+        model, max_model_len = _resolve_model_and_context(profile, credential)
     verify = agent_tls.build_verify(
         base_url=profile.base_url,
         verify_tls=profile.verify_tls,
@@ -238,8 +246,7 @@ def _build_loop(profile) -> AgentLoop:
     # max_tokens: explicit (>0) on the profile, else auto from the model's
     # context window. The provider further clamps per request so output
     # never collides with the (growing) prompt.
-    explicit = int(profile.max_tokens or 0)
-    base_max_tokens = explicit if explicit > 0 else _auto_max_tokens(max_model_len)
+    base_max_tokens = explicit_tokens if explicit_tokens > 0 else _auto_max_tokens(max_model_len)
     provider = AnthropicProvider(
         model=model,
         api_key=api_key,

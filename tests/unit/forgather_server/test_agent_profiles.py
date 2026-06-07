@@ -136,7 +136,7 @@ def test_models_route_maps_401_to_actionable_message(monkeypatch):
     assert "bearer token" in ei.value.detail.lower()
 
 
-def test_models_route_always_skips_tls(monkeypatch):
+def test_models_route_honors_tls_posture(monkeypatch):
     from forgather_server.routes import agent as ar
 
     captured = {}
@@ -150,9 +150,88 @@ def test_models_route_always_skips_tls(monkeypatch):
         ar.ModelsRequest(provider="anthropic", base_url="https://x", api_key="k", verify_tls=True)
     )
     assert out == {"models": [{"id": "m1", "max_model_len": 4096}]}
-    # The discovery probe ignores the profile's TLS posture.
+    # The probe honors the requested TLS posture (no silent skip).
+    assert captured["verify_tls"] is True
+    # And passes verify_tls=False through when the caller opts out.
+    ar.list_agent_models(
+        ar.ModelsRequest(provider="anthropic", base_url="https://x", api_key="k", verify_tls=False)
+    )
     assert captured["verify_tls"] is False
-    assert captured["ca_cert_pem"] == ""
+
+
+def test_models_route_does_not_redirect_saved_token_to_other_url(store_file, monkeypatch):
+    from forgather_server.routes import agent as ar
+
+    p = store.add_profile(label="A", base_url="https://A:8000", api_key="SECRET", verify_tls=False)
+
+    captured = {}
+
+    def cap(**kw):
+        captured.update(kw)
+        return [{"id": "m", "max_model_len": None}]
+
+    monkeypatch.setattr(ar.agent_tls, "list_models", cap)
+
+    # Same server → the saved token is used.
+    ar.list_agent_models(ar.ModelsRequest(profile_id=p.id, base_url="https://A:8000"))
+    assert captured["api_key"] == "SECRET"
+
+    # Different URL with the same profile_id → token must NOT be sent there.
+    captured.clear()
+    ar.list_agent_models(ar.ModelsRequest(profile_id=p.id, base_url="https://evil:8000"))
+    assert captured.get("api_key") in (None, "")
+
+
+def test_propose_edit_config_enforces_fs_root(tmp_path, monkeypatch):
+    from forgather_server import paths
+    from forgather_server.agent import tools_authoring
+
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("token=hunter2\n")
+    monkeypatch.setattr(paths, "is_path_in_fs_root", lambda pth: str(pth).startswith(str(allowed)))
+
+    with pytest.raises(PermissionError):
+        tools_authoring._propose_edit_config(
+            {
+                "project_dir": str(allowed),
+                "config_name": "x.yaml",
+                "path": str(outside),
+                "new_content": "x",
+            }
+        )
+
+
+def test_write_template_file_refuses_overwrite(tmp_path):
+    f = tmp_path / "new.yaml"
+    config_ops_write = __import__(
+        "forgather_server.config_ops", fromlist=["write_template_file"]
+    ).write_template_file
+    config_ops_write(str(f), "first\n")
+    assert f.read_text() == "first\n"
+    with pytest.raises(FileExistsError):
+        config_ops_write(str(f), "second\n")
+    assert f.read_text() == "first\n"  # not clobbered
+
+
+def test_build_loop_skips_probe_when_fully_pinned(store_file, monkeypatch):
+    from forgather_server.agent import runtime
+
+    called = {"n": 0}
+
+    def boom(**kw):
+        called["n"] += 1
+        raise AssertionError("list_models should not be called when fully pinned")
+
+    monkeypatch.setattr(runtime.agent_tls, "list_models", boom)
+    p = store.add_profile(
+        label="pinned", base_url="https://kitt:8000", model="qwen", max_tokens=8192, verify_tls=False
+    )
+    loop = runtime._build_loop(store.get_profile(p.id))
+    assert called["n"] == 0
+    assert loop.provider.model == "qwen"
+    assert loop.provider.max_tokens == 8192
 
 
 # ---- credential resolution (high-value-key guard) --------------------------

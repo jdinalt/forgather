@@ -208,6 +208,10 @@ export function useAgent(): AgentController {
           setAwaiting(false);
           break;
         case "error":
+          // A turn can error after awaiting_approval (e.g. the resumed turn
+          // hits the iteration cap); clear awaiting so the UI doesn't stay
+          // stuck showing "awaiting approval" with no actionable card.
+          setAwaiting(false);
           addItem({ type: "error", message: ev.message as string });
           break;
         // "usage" intentionally ignored for now.

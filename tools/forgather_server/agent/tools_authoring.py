@@ -19,12 +19,29 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 from typing import Any, Dict, Optional
 
-from .. import config_ops, meta_templates
+from .. import config_ops, meta_templates, paths
 from .registry import PROPOSE, READ, Proposal, ToolRegistry, ToolSpec
 
 log = logging.getLogger("forgather_server.agent.tools_authoring")
+
+
+def _enforce_readable_path(path: str) -> None:
+    """Gate file reads the agent does at propose time to the fs-root allowlist.
+
+    Without this, ``propose_edit_config`` could read any server-readable file
+    (the read happens during preview, before approval, and its contents are
+    streamed into the action card and the conversation). Mirrors the
+    ``read_file`` tool's guard so the propose path can't bypass the chroot.
+    """
+    if not os.path.isabs(path):
+        raise ValueError("path must be absolute")
+    if not paths.is_path_in_fs_root(path):
+        raise PermissionError(
+            f"path is outside the configured filesystem roots: {path}"
+        )
 
 
 def _validate_after_write(project_dir: str, config_name: str) -> str:
@@ -48,6 +65,7 @@ def _propose_edit_config(args: Dict[str, Any]) -> Proposal:
     new_content = args["new_content"]
     expected_mtime: Optional[float] = args.get("expected_mtime")
 
+    _enforce_readable_path(path)  # fs-root gate before any read (see above)
     before = config_ops.read_raw(path)  # also validates the file exists/readable
 
     def commit() -> str:

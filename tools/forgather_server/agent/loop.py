@@ -37,7 +37,10 @@ from .session import (
     Conversation,
     PendingApproval,
     PendingTurn,
+    get_conversation,
+    get_turn_lock,
     new_action_id,
+    peek_pending,
     pop_pending,
     register_pending,
 )
@@ -69,18 +72,26 @@ class AgentLoop:
     async def run_user_message(
         self, conv: Conversation, text: str
     ) -> AsyncIterator[Dict[str, Any]]:
-        """Append a user message and run the agentic loop to a stopping point."""
-        if conv.pending_turn is not None:
-            yield {
-                "type": "error",
-                "message": "this conversation is awaiting approval of a "
-                "proposed change; approve or reject it first",
-            }
-            return
-        conv.messages.append({"role": "user", "content": [{"type": "text", "text": text}]})
-        conv.touch()
-        async for ev in self._run_turns(conv):
-            yield ev
+        """Append a user message and run the agentic loop to a stopping point.
+
+        Holds the per-conversation turn lock for the whole turn so a
+        concurrent request on the same session (sidebar + full view share a
+        session_id) can't interleave mutations of the message list.
+        """
+        async with get_turn_lock(conv.session_id):
+            if conv.pending_turn is not None:
+                yield {
+                    "type": "error",
+                    "message": "this conversation is awaiting approval of a "
+                    "proposed change; approve or reject it first",
+                }
+                return
+            conv.messages.append(
+                {"role": "user", "content": [{"type": "text", "text": text}]}
+            )
+            conv.touch()
+            async for ev in self._run_turns(conv):
+                yield ev
 
     async def apply_decision(
         self, action_id: str, *, approve: bool
@@ -92,18 +103,39 @@ class AgentLoop:
         tool_result back so the model can adapt. Either way, once the turn
         has no outstanding approvals, the loop resumes and streams the
         continuation; otherwise it emits a ``recorded`` event and stops.
+
+        Peeks the approval first and only *consumes* it once it holds the
+        turn lock and has re-confirmed the conversation still awaits it — so
+        a racing reset bails out without dropping a still-valid approval.
         """
-        approval = pop_pending(action_id)
+        approval = peek_pending(action_id)
         if approval is None:
             yield {"type": "error", "message": f"no such pending action: {action_id}"}
             return
-        from .session import get_conversation
-
         conv = get_conversation(approval.session_id)
         if conv is None or conv.pending_turn is None:
             yield {"type": "error", "message": "the conversation is no longer awaiting this action"}
             return
 
+        async with get_turn_lock(conv.session_id):
+            # Re-validate under the lock, then consume the approval.
+            approval = pop_pending(action_id)
+            if approval is None:
+                yield {"type": "error", "message": f"no such pending action: {action_id}"}
+                return
+            tool_use_id = approval.tool_use_id
+            if conv.pending_turn is None or tool_use_id not in conv.pending_turn.outstanding:
+                yield {
+                    "type": "error",
+                    "message": "the conversation is no longer awaiting this action",
+                }
+                return
+            async for ev in self._resolve_one(conv, action_id, approval, approve):
+                yield ev
+
+    async def _resolve_one(
+        self, conv, action_id: str, approval, approve: bool
+    ) -> AsyncIterator[Dict[str, Any]]:
         tool_use_id = approval.tool_use_id
         if approve:
             try:

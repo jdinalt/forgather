@@ -22,20 +22,13 @@ interface Props {
   onOpenFull?: () => void;
 }
 
+/** Multiset line delta for the summary chip: lines in `after` not matched in
+ *  `before` are additions, and vice versa. Two passes, each consuming the
+ *  other side's counts. */
 function lineDelta(before: string | null, after: string | null): { added: number; removed: number } {
   const b = (before ?? "").split("\n");
   const a = (after ?? "").split("\n");
-  // Cheap symmetric-difference estimate — good enough for a summary chip.
-  const bSet = new Map<string, number>();
-  for (const l of b) bSet.set(l, (bSet.get(l) ?? 0) + 1);
-  let removed = 0;
-  for (const l of b) {
-    const c = bSet.get(l) ?? 0;
-    if (c > 0) bSet.set(l, c - 1);
-  }
-  const aSet = new Map<string, number>();
-  for (const l of a) aSet.set(l, (aSet.get(l) ?? 0) + 1);
-  // Recount properly: count lines in after not matched in before and vice versa.
+
   const bCount = new Map<string, number>();
   for (const l of b) bCount.set(l, (bCount.get(l) ?? 0) + 1);
   let added = 0;
@@ -44,14 +37,16 @@ function lineDelta(before: string | null, after: string | null): { added: number
     if (c > 0) bCount.set(l, c - 1);
     else added += 1;
   }
+
   const aCount = new Map<string, number>();
   for (const l of a) aCount.set(l, (aCount.get(l) ?? 0) + 1);
-  removed = 0;
+  let removed = 0;
   for (const l of b) {
     const c = aCount.get(l) ?? 0;
     if (c > 0) aCount.set(l, c - 1);
     else removed += 1;
   }
+
   return { added, removed };
 }
 

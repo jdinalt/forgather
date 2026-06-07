@@ -782,13 +782,25 @@ def resolve_new_template_target(
 
 
 def write_template_file(target: str, content: str) -> str:
-    """Atomically write ``content`` to ``target`` and return ``target``.
+    """Atomically create a new file at ``target`` and return ``target``.
 
     The write step paired with :func:`resolve_new_template_target`. Uses
     the crash-atomic helper (tmp + fsync + rename) rather than a bare
     ``open(..., "w")`` so a freshly-created file is never visible
     half-written.
+
+    Re-checks the no-overwrite and fs-root invariants **at write time**, not
+    just in the resolver: for the agent's propose→approve flow there is a gap
+    between previewing (resolve) and committing (write), during which the
+    file could come to exist; refusing here keeps the no-clobber guarantee
+    across the approval gate.
     """
+    if not paths.is_path_in_fs_root(target):
+        raise PermissionError(
+            f"path is outside the configured filesystem roots: {target}"
+        )
+    if os.path.exists(target):
+        raise FileExistsError(target)
     os.makedirs(os.path.dirname(target), exist_ok=True)
     _atomic.atomic_write_text(Path(target), content)
     return target

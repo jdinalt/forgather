@@ -14,6 +14,7 @@ explicitly out of scope for the first build.
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -72,9 +73,26 @@ class AgentState:
 
 _state = AgentState()
 
+# Per-session asyncio locks serialize turns on one conversation. The
+# sidebar and the full Agent view share a session_id, so without this two
+# concurrent requests (e.g. a message and an approve) could interleave their
+# mutations of conv.messages / pending_turn and produce a malformed message
+# list (a tool_use with no matching tool_result). Separate from _state._lock
+# (which only guards the dict bookkeeping below).
+_turn_locks: Dict[str, asyncio.Lock] = {}
+
 
 def get_state() -> AgentState:
     return _state
+
+
+def get_turn_lock(session_id: str) -> asyncio.Lock:
+    with _state._lock:
+        lock = _turn_locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _turn_locks[session_id] = lock
+        return lock
 
 
 def new_session_id() -> str:
@@ -108,6 +126,18 @@ def get_conversation(session_id: str) -> Optional[Conversation]:
 def register_pending(approval: PendingApproval) -> None:
     with _state._lock:
         _state.pending[approval.action_id] = approval
+
+
+def peek_pending(action_id: str) -> Optional[PendingApproval]:
+    """Look up a pending approval WITHOUT removing it.
+
+    Lets ``apply_decision`` validate (conversation still awaiting, lock
+    acquired) before committing to consume the approval, so a bail-out on a
+    racing reset leaves the still-valid approval in place rather than
+    dropping it.
+    """
+    with _state._lock:
+        return _state.pending.get(action_id)
 
 
 def pop_pending(action_id: str) -> Optional[PendingApproval]:
