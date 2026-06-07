@@ -248,6 +248,14 @@ def _root_of(base: str) -> str:
 # not leak past the proxy.
 _TOKEN_OVERRIDE_HEADER = "x-inference-auth-token"
 
+# Header naming the exact user-registry entry the webui selected. When
+# present, the proxy attaches *that entry's* token (or none) and does NOT
+# fall back to URL-based lookup — see _auth_headers_for. This keeps the
+# token server-side (the browser only holds the id) while letting two
+# entries for the same base_url carry independent auth, and makes the UI's
+# auth indicator authoritative. See issue #158.
+_SERVER_ID_HEADER = "x-inference-server-id"
+
 # Tag we attach to upstream auth failures so the webui's global 401
 # handler can distinguish "upstream rejected the inference token" from
 # "your forgather-server session expired." Without this, a wrong
@@ -272,16 +280,31 @@ def _upstream_auth_headers(status: int) -> Dict[str, str]:
 def _auth_headers_for(base: str, request: Optional[Request] = None) -> Dict[str, str]:
     """Build the upstream auth header dict.
 
-    Precedence: explicit ``X-Inference-Auth-Token`` from the caller
-    (used by the webui's Server-URL panel and any CLI client that
-    knows the token), then JobRecord / cluster auto-lookup, then
-    user-added registry lookup for a saved external server, then
-    empty (server is running --no-auth).
+    Precedence:
+      1. explicit ``X-Inference-Auth-Token`` from the caller (the token
+         itself — used by the cluster picker and CLI clients that hold it);
+      2. ``X-Inference-Server-Id`` — entry-bound: attach exactly that
+         registry entry's token (or none), with NO URL fallback, so two
+         entries sharing a base_url stay independent and a "no auth" entry
+         never inherits another entry's token (issue #158);
+      3. JobRecord / cluster auto-lookup by URL (locally-spawned + cluster
+         servers that weren't named by id);
+      4. user-registry lookup by exact URL (a raw URL the user typed);
+      5. empty (server is running --no-auth).
     """
     if request is not None:
         override = request.headers.get(_TOKEN_OVERRIDE_HEADER)
         if override:
             return {"authorization": f"Bearer {override}"}
+        server_id = request.headers.get(_SERVER_ID_HEADER)
+        if server_id:
+            entry = inference_server_registry.find_by_id(server_id)
+            if entry is not None and entry.auth_token:
+                return {"authorization": f"Bearer {entry.auth_token}"}
+            # Selected entry exists with no token, or was removed: send
+            # nothing. The selection is authoritative — do not guess a token
+            # from the URL.
+            return {}
     token = _token_for(base)
     if token:
         return {"authorization": f"Bearer {token}"}

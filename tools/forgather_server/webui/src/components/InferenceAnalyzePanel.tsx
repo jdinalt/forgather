@@ -265,6 +265,7 @@ export function InferenceAnalyzePanel({
         topK,
         ac.signal,
         state.authToken || undefined,
+        state.serverId,
         maxLength,
       );
       setScores(result);

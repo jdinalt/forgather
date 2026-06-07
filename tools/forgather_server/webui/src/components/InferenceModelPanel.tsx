@@ -229,8 +229,9 @@ export function InferenceModelPanel({
     // user doesn't have to click "Fetch models" first; that omission
     // used to leave ``state.model`` empty and some upstreams (vLLM)
     // reject requests without an explicit ``model`` field.
-    queryKey: ["inference-models", state.baseUrl, state.authToken],
-    queryFn: () => listModels(state.baseUrl, state.authToken || undefined),
+    queryKey: ["inference-models", state.baseUrl, state.authToken, state.serverId],
+    queryFn: () =>
+      listModels(state.baseUrl, state.authToken || undefined, state.serverId),
     enabled: !!state.baseUrl,
   });
 
@@ -251,7 +252,7 @@ export function InferenceModelPanel({
 
   const healthM = useMutation({
     mutationFn: (): Promise<ServerCheckResult> =>
-      checkServer(state.baseUrl, state.authToken || undefined),
+      checkServer(state.baseUrl, state.authToken || undefined, state.serverId),
     onSuccess: (result) => {
       if (result.kind === "ok") setHealth({ kind: "ok" });
       else if (result.kind === "auth-failed")
@@ -275,6 +276,10 @@ export function InferenceModelPanel({
       ...prev,
       baseUrl: row.url,
       authToken: row.authToken,
+      // Running/cluster servers carry their token in row.authToken (sent as
+      // X-Inference-Auth-Token); they are not user-registry entries, so
+      // clear any entry-bound id from a previous pick.
+      serverId: undefined,
     }));
     setHealth({ kind: "unknown" });
     setPickedRow({ kind: "running", id: row.id });
@@ -311,15 +316,16 @@ export function InferenceModelPanel({
 
   // User-added entries don't carry the bearer token in the listing
   // (tokens stay server-side; the listing only exposes ``has_auth_token``).
-  // The proxy resolves the token from the registry by base_url match —
-  // see ``_auth_headers_for`` in routes/inference_proxy.py. We still
-  // set authToken to "" so the local state doesn't carry a stale token
-  // from a previously-picked entry.
+  // We send the entry's id (X-Inference-Server-Id) so the proxy attaches
+  // exactly THAT entry's token — see ``_auth_headers_for`` in
+  // routes/inference_proxy.py. authToken stays "" so the browser never
+  // holds the registry token and two same-URL entries stay independent.
   const pickUserServer = (s: InferenceServerUser) => {
     setState((prev) => ({
       ...prev,
       baseUrl: s.base_url,
       authToken: "",
+      serverId: s.id,
     }));
     setHealth({ kind: "unknown" });
     setPickedRow({ kind: "user", id: s.id });
@@ -407,7 +413,7 @@ export function InferenceModelPanel({
     if (pickedRow?.kind !== "user") return;
     if (userServers.some((s) => s.id === pickedRow.id)) return;
     setPickedRow(null);
-    setState((prev) => ({ ...prev, baseUrl: "", authToken: "" }));
+    setState((prev) => ({ ...prev, baseUrl: "", authToken: "", serverId: undefined }));
     setHealth({ kind: "unknown" });
   }, [pickedRow, userServers, setState]);
 
