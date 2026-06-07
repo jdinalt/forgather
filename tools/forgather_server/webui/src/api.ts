@@ -1159,7 +1159,8 @@ export interface DiLoCoWorkerStatus {
    *  a peer. */
   stats?: Record<string, number> | null;
   /** Worker-reported DiLoCo sync metrics, sanitized server-side by
-   *  ``sanitize_sync_state`` (schema = ``stats._SYNC_STATE_FIELDS``). Present
+   *  ``sanitize_sync_state`` (schema =
+   *  ``forgather.ml.diloco.stats._SYNC_STATE_FIELDS``). Present
    *  when the worker reports sync-state on its heartbeat (default on;
    *  ``DILOCO_REPORT_SYNC_STATE=0`` to omit). For an off-server backend like
    *  shared-memory the server's own per-worker ``sync_round`` stays 0 — these
