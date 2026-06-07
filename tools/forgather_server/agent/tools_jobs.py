@@ -17,6 +17,7 @@ validated path the HTTP route uses (``queue_ops.validate_and_enqueue``).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shlex
 from typing import Any, Dict, List, Optional
@@ -33,6 +34,12 @@ log = logging.getLogger("forgather_server.agent.tools_jobs")
 _OUTPUT_MAX_BYTES = 16 * 1024
 _DEFAULT_TAIL_LINES = 200
 _DEFAULT_JOBS_LIMIT = 50
+
+# wait_for_job: poll server-side so the model doesn't burn tokens polling.
+_WAIT_POLL_SECONDS = 3.0
+_WAIT_DEFAULT_TIMEOUT = 120.0
+_WAIT_MAX_TIMEOUT = 600.0
+_WAIT_TAIL_LINES = 80
 
 _ALL_STATUSES = job_records.RUNNING_STATUSES | job_records.TERMINAL_STATUSES
 
@@ -123,6 +130,43 @@ def _read_job_output(args: Dict[str, Any]) -> Any:
         "exit_code": rec.exit_code,
         "tail": tail,
     }
+
+
+async def _wait_for_job(args: Dict[str, Any]) -> Any:
+    # Block server-side (not on the model) until the job is terminal or the
+    # timeout elapses. asyncio.sleep yields the event loop, so the scheduler
+    # keeps advancing the job while we wait.
+    queue_id = args["queue_id"]
+    raw = args.get("timeout_seconds")
+    timeout = _WAIT_DEFAULT_TIMEOUT if raw in (None, "") else float(raw)
+    timeout = max(1.0, min(timeout, _WAIT_MAX_TIMEOUT))
+
+    if job_records.get_record(queue_id) is None:
+        raise ValueError(
+            f"no job with queue_id {queue_id!r} (use list_jobs to find one)"
+        )
+    waited = 0.0
+    while True:
+        rec = job_records.get_record(queue_id)
+        if rec is None:
+            raise ValueError(f"job {queue_id} disappeared while waiting")
+        terminal = rec.status in job_records.TERMINAL_STATUSES
+        if terminal or waited >= timeout:
+            return {
+                "queue_id": queue_id,
+                "status": rec.status,
+                "exit_code": rec.exit_code,
+                "timed_out": not terminal,
+                "waited_seconds": round(waited, 1),
+                "tail": read_tty_tail(
+                    rec.tty_log_path,
+                    max_bytes=_OUTPUT_MAX_BYTES,
+                    tail_lines=_WAIT_TAIL_LINES,
+                ),
+            }
+        step = min(_WAIT_POLL_SECONDS, timeout - waited)
+        await asyncio.sleep(step)
+        waited += step
 
 
 # ---- run a dataset job (CONFIRM) -------------------------------------------
@@ -251,6 +295,31 @@ def register_all(reg: ToolRegistry) -> None:
                 "required": ["queue_id"],
             },
             handler=_read_job_output,
+            risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="wait_for_job",
+            description=(
+                "Wait for a job to finish, blocking on the server (NOT by "
+                "repeatedly calling list_jobs — that wastes tokens). Polls "
+                "internally until the job reaches a terminal status "
+                "(done/failed/aborted) or timeout_seconds elapses (default "
+                "120, max 600). Returns the final status, exit_code, "
+                "timed_out, and a tail of the output. If it times out (e.g. a "
+                "long first build), call it again to keep waiting. Use this "
+                "after run_dataset instead of looping on list_jobs."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "queue_id": {"type": "string"},
+                    "timeout_seconds": {"type": "number", "description": "Max seconds to wait this call (default 120, capped at 600)."},
+                },
+                "required": ["queue_id"],
+            },
+            handler=_wait_for_job,
             risk=READ,
         )
     )

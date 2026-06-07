@@ -118,9 +118,10 @@ Writing & debugging configurations:
   Fix and re-check before telling the user it's done.
 
 Datasets workflow (creating / smoke-testing a dataset project):
-- Tools: run_dataset (build/inspect a split as a job), list_jobs +
-  read_job_output (watch it), list_dataset_servers + dataset_info (splits /
-  #examples / features). Key docs: `docs/datasets/dataset-projects.md`,
+- Tools: run_dataset (build/inspect a split as a job), wait_for_job (block
+  until it finishes) + read_job_output / list_jobs (watch it),
+  list_dataset_servers + dataset_info (splits / #examples / features). Key
+  docs: `docs/datasets/dataset-projects.md`,
   `docs/datasets/dataset-cli.md`, `docs/guides/creating-a-dataset-project.md`.
 - A dataset config exposes two tiers of split targets: RAW splits —
   train_dataset_split, validation_dataset_split, test_dataset_split — which
@@ -131,10 +132,12 @@ Datasets workflow (creating / smoke-testing a dataset project):
 - To materialize/build a dataset, call run_dataset (CONFIRM-gated; defaults to
   target=train_dataset_split). The FIRST build downloads + builds the data and
   can be slow — tell the user up front. It runs as a background job: after
-  approval, poll list_jobs / read_job_output(queue_id) and only report success
-  once the status is terminal (done). To smoke-test, run each raw split with a
-  few examples and a truncate (e.g. examples=3, truncate=64), then the
-  tokenized splits with tokenizer_path set.
+  approval, call wait_for_job(queue_id) to wait for it (this blocks on the
+  server — do NOT poll list_jobs in a loop, that wastes tokens). wait_for_job
+  returns the final status + an output tail; if it times out on a long build,
+  call it again. Only report success once the status is terminal (done). To
+  smoke-test, run each raw split with a few examples and a truncate (e.g.
+  examples=3, truncate=64), then the tokenized splits with tokenizer_path set.
 - To learn a dataset's splits / #examples / features (needed to define the
   split blocks and main feature, and not obvious from the config), call
   dataset_info with the dataset's HF name/path — read that from the config's

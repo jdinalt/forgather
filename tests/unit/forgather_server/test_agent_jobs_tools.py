@@ -3,6 +3,8 @@ TTY-tail reader they reuse from the jobs route."""
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from forgather_server import dataset_ops, job_records, queue_ops, queue_store
@@ -35,9 +37,10 @@ def test_jobs_tools_registered():
     reg = ToolRegistry()
     tools_jobs.register_all(reg)
     by_name = {s.name: s for s in reg.specs()}
-    assert {"list_jobs", "read_job_output", "run_dataset"} <= set(by_name)
+    assert {"list_jobs", "read_job_output", "wait_for_job", "run_dataset"} <= set(by_name)
     assert by_name["list_jobs"].risk == READ
     assert by_name["read_job_output"].risk == READ
+    assert by_name["wait_for_job"].risk == READ
     assert by_name["run_dataset"].risk == CONFIRM  # gated: runs code + downloads
 
 
@@ -121,6 +124,48 @@ def test_read_job_output_errors(monkeypatch):
     )
     with pytest.raises(ValueError, match="no console output"):
         tools_jobs._read_job_output({"queue_id": "q1"})
+
+
+def test_wait_for_job_returns_on_terminal(monkeypatch, tmp_path):
+    # Job is "running" for two polls, then "done".
+    f = tmp_path / "tty.log"
+    f.write_text("built ok\n")
+    seq = iter(["running", "running", "done"])
+    state = {"status": "running"}
+
+    def fake_get(qid):
+        try:
+            state["status"] = next(seq)
+        except StopIteration:
+            pass
+        return _rec(queue_id=qid, status=state["status"], exit_code=0, tty_log_path=str(f))
+
+    monkeypatch.setattr(job_records, "get_record", fake_get)
+    monkeypatch.setattr(tools_jobs, "_WAIT_POLL_SECONDS", 0.01)  # tiny real delay
+
+    out = asyncio.run(tools_jobs._wait_for_job({"queue_id": "q1", "timeout_seconds": 60}))
+    assert out["status"] == "done"
+    assert out["timed_out"] is False
+    assert out["exit_code"] == 0
+    assert "built ok" in out["tail"]
+
+
+def test_wait_for_job_times_out(monkeypatch):
+    # Never terminal -> returns timed_out once the deadline passes.
+    monkeypatch.setattr(
+        job_records, "get_record",
+        lambda qid: _rec(queue_id=qid, status="running", tty_log_path=None),
+    )
+    monkeypatch.setattr(tools_jobs, "_WAIT_POLL_SECONDS", 0.01)
+    out = asyncio.run(tools_jobs._wait_for_job({"queue_id": "q1", "timeout_seconds": 0.05}))
+    assert out["status"] == "running"
+    assert out["timed_out"] is True
+
+
+def test_wait_for_job_unknown(monkeypatch):
+    monkeypatch.setattr(job_records, "get_record", lambda qid: None)
+    with pytest.raises(ValueError, match="no job"):
+        asyncio.run(tools_jobs._wait_for_job({"queue_id": "nope"}))
 
 
 def test_run_dataset_preview_builds_command_no_enqueue(monkeypatch):
