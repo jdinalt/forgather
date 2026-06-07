@@ -18,6 +18,8 @@ import {
   getAgentStatus,
   getProfiles,
   getSession,
+  importConversation,
+  streamContinue,
   streamDecision,
   streamMessage,
 } from "./agent-client";
@@ -90,6 +92,12 @@ function itemsFromMessages(messages: Array<{ role: string; content: unknown }>):
   return items;
 }
 
+export interface AgentUsage {
+  inputTokens: number;
+  outputTokens: number;
+  contextWindow: number | null;
+}
+
 export interface AgentController {
   status: AgentStatus | null;
   items: AgentItem[];
@@ -99,13 +107,24 @@ export interface AgentController {
   pendingActions: ActionCard[];
   profiles: AgentProfile[];
   activeProfileId: string | null;
+  /** Latest token accounting (context occupancy), or null until a turn runs. */
+  usage: AgentUsage | null;
+  /** Set when the last turn ended truncated (max_tokens / iteration cap), so
+   *  the UI can offer "Continue". Cleared when a new turn starts. */
+  incompleteReason: string | null;
   send: (message: string) => void;
   decide: (actionId: string, approve: boolean) => void;
+  continueTurn: () => void;
   stop: () => void;
   reset: () => void;
   refreshStatus: () => void;
   refreshProfiles: () => void;
   activate: (profileId: string) => void;
+  /** Build a JSON-serializable dump of the conversation (incl. the backend
+   *  message log) for diagnostics / context restore. */
+  dumpConversation: () => Promise<Record<string, unknown>>;
+  /** Load a dumped conversation: reseeds the backend session + the UI. */
+  loadConversation: (data: Record<string, unknown>) => Promise<void>;
 }
 
 export function useAgent(): AgentController {
@@ -116,6 +135,8 @@ export function useAgent(): AgentController {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
+  const [usage, setUsage] = useState<AgentUsage | null>(null);
+  const [incompleteReason, setIncompleteReason] = useState<string | null>(null);
 
   const sessionIdRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -172,7 +193,7 @@ export function useAgent(): AgentController {
       raw = null;
     }
     if (!raw) return;
-    let cached: { sessionId?: string; items?: AgentItem[] } = {};
+    let cached: { sessionId?: string; items?: AgentItem[]; usage?: AgentUsage } = {};
     try {
       cached = JSON.parse(raw);
     } catch {
@@ -186,6 +207,7 @@ export function useAgent(): AgentController {
       setItems(cached.items);
       idRef.current = cached.items.length; // continue ids past restored ones
     }
+    if (cached.usage) setUsage(cached.usage);
     if (!cached.sessionId) return;
     getSession(cached.sessionId)
       .then((h) => {
@@ -293,8 +315,17 @@ export function useAgent(): AgentController {
           );
           break;
         }
+        case "usage":
+          setUsage({
+            inputTokens: (ev.input_tokens as number) ?? 0,
+            outputTokens: (ev.output_tokens as number) ?? 0,
+            contextWindow: (ev.context_window as number) ?? null,
+          });
+          break;
         case "done":
           setAwaiting(false);
+          // A truncated turn (max_tokens / iteration cap) flags Continue.
+          setIncompleteReason(ev.incomplete ? ((ev.reason as string) || "incomplete") : null);
           break;
         case "error":
           // A turn can error after awaiting_approval (e.g. the resumed turn
@@ -333,6 +364,7 @@ export function useAgent(): AgentController {
       if (!text || busy) return;
       addItem({ type: "user", text });
       setAwaiting(false);
+      setIncompleteReason(null);
       const ac = new AbortController();
       abortRef.current = ac;
       void consume(streamMessage(text, sessionIdRef.current, ac.signal));
@@ -350,6 +382,14 @@ export function useAgent(): AgentController {
     [busy, consume],
   );
 
+  const continueTurn = useCallback(() => {
+    if (busy || !sessionIdRef.current) return;
+    setIncompleteReason(null);
+    const ac = new AbortController();
+    abortRef.current = ac;
+    void consume(streamContinue(sessionIdRef.current, ac.signal));
+  }, [busy, consume]);
+
   const stop = useCallback(() => {
     abortRef.current?.abort();
   }, []);
@@ -362,12 +402,65 @@ export function useAgent(): AgentController {
     setItems([]);
     setAwaiting(false);
     setBusy(false);
+    setUsage(null);
+    setIncompleteReason(null);
     try {
       persistRemove(STORAGE_KEY);
     } catch {
       /* ignore */
     }
   }, []);
+
+  const dumpConversation = useCallback(async (): Promise<Record<string, unknown>> => {
+    let messages: Array<{ role: string; content: unknown }> = [];
+    const sid = sessionIdRef.current;
+    if (sid) {
+      try {
+        messages = (await getSession(sid)).messages;
+      } catch {
+        /* backend session gone — export UI items only */
+      }
+    }
+    return {
+      version: 1,
+      kind: "forgather-agent-conversation",
+      exported_at: new Date().toISOString(),
+      session_id: sid,
+      messages,
+      items,
+      usage,
+    };
+  }, [items, usage]);
+
+  const loadConversation = useCallback(
+    async (data: Record<string, unknown>) => {
+      abortRef.current?.abort();
+      const messages = Array.isArray(data.messages)
+        ? (data.messages as Array<{ role: string; content: unknown }>)
+        : [];
+      let sid = (data.session_id as string) || null;
+      // Reseed the backend so a continued turn has the restored context.
+      if (messages.length) {
+        try {
+          sid = (await importConversation(messages)).session_id;
+        } catch {
+          /* fall back to display-only restore below */
+        }
+      }
+      const restored =
+        Array.isArray(data.items) && data.items.length
+          ? (data.items as AgentItem[])
+          : itemsFromMessages(messages);
+      sessionIdRef.current = sid;
+      setSessionId(sid);
+      setItems(restored);
+      idRef.current = restored.length;
+      setUsage((data.usage as AgentUsage) ?? null);
+      setAwaiting(false);
+      setIncompleteReason(null);
+    },
+    [],
+  );
 
   // Persist the conversation so a reload / accidental navigation doesn't lose
   // it. Only write when idle (not mid-stream) to avoid a localStorage write
@@ -377,12 +470,12 @@ export function useAgent(): AgentController {
     if (busy) return;
     try {
       if (sessionId || items.length) {
-        persistSet(STORAGE_KEY, JSON.stringify({ sessionId, items }));
+        persistSet(STORAGE_KEY, JSON.stringify({ sessionId, items, usage }));
       }
     } catch {
       /* ignore quota / serialization errors */
     }
-  }, [busy, items, sessionId]);
+  }, [busy, items, sessionId, usage]);
 
   const pendingActions = items
     .filter((it): it is Extract<AgentItem, { type: "action" }> => it.type === "action")
@@ -398,12 +491,17 @@ export function useAgent(): AgentController {
     pendingActions,
     profiles,
     activeProfileId,
+    usage,
+    incompleteReason,
     send,
     decide,
+    continueTurn,
     stop,
     reset,
     refreshStatus,
     refreshProfiles,
     activate,
+    dumpConversation,
+    loadConversation,
   };
 }

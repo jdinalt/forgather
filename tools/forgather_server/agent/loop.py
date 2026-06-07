@@ -93,6 +93,35 @@ class AgentLoop:
             async for ev in self._run_turns(conv):
                 yield ev
 
+    async def continue_turn(
+        self, conv: Conversation
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """Resume a turn that ended incomplete (max_tokens / iteration cap).
+
+        If the conversation ended on an assistant message (output truncated),
+        nudge it forward with a minimal user turn; if it ended on tool results
+        (iteration cap), just re-run the loop. No-op error if there's nothing
+        to continue or an approval is pending.
+        """
+        async with get_turn_lock(conv.session_id):
+            if conv.pending_turn is not None:
+                yield {
+                    "type": "error",
+                    "message": "this conversation is awaiting approval; "
+                    "approve or reject it first",
+                }
+                return
+            if not conv.messages:
+                yield {"type": "error", "message": "nothing to continue"}
+                return
+            if conv.messages[-1].get("role") == "assistant":
+                conv.messages.append(
+                    {"role": "user", "content": [{"type": "text", "text": "Please continue."}]}
+                )
+            conv.touch()
+            async for ev in self._run_turns(conv):
+                yield ev
+
     async def apply_decision(
         self, action_id: str, *, approve: bool
     ) -> AsyncIterator[Dict[str, Any]]:
@@ -192,6 +221,7 @@ class AgentLoop:
         for _ in range(self.max_iterations):
             text_parts: List[str] = []
             tool_calls: List[ToolCall] = []
+            stop_reason: Optional[str] = None
 
             try:
                 async for ev in self.provider.stream_turn(
@@ -207,8 +237,10 @@ class AgentLoop:
                             "type": "usage",
                             "input_tokens": ev.input_tokens,
                             "output_tokens": ev.output_tokens,
+                            "context_window": ev.context_window,
                         }
                     elif isinstance(ev, Done):
+                        stop_reason = ev.stop_reason
                         break
             except Exception as e:
                 log.exception("provider stream failed")
@@ -220,7 +252,15 @@ class AgentLoop:
             if not tool_calls:
                 conv.messages.append(assistant_msg)
                 conv.touch()
-                yield {"type": "done", "session_id": conv.session_id}
+                # ``incomplete`` lets the UI offer a "Continue" control when the
+                # model's output was cut off by the token budget rather than
+                # finishing on its own (max_tokens vs end_turn).
+                yield {
+                    "type": "done",
+                    "session_id": conv.session_id,
+                    "reason": stop_reason,
+                    "incomplete": stop_reason == "max_tokens",
+                }
                 return
 
             pending_turn = PendingTurn(assistant_message=assistant_msg)
@@ -249,9 +289,14 @@ class AgentLoop:
             conv.messages.append(self._results_message(assistant_msg, pending_turn.results))
             conv.touch()
 
+        # Hit the tool-iteration cap mid-work. Not an error — surface it as an
+        # incomplete turn so the UI can offer "Continue" (which resumes the
+        # loop from the tool results already in the conversation).
         yield {
-            "type": "error",
-            "message": f"reached the tool-iteration cap ({self.max_iterations})",
+            "type": "done",
+            "session_id": conv.session_id,
+            "reason": "max_iterations",
+            "incomplete": True,
         }
 
     async def _handle_tool_call(

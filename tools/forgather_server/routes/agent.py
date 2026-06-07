@@ -132,6 +132,21 @@ async def agent_reject(req: DecisionRequest):
     return await _stream(loop.apply_decision(req.action_id, approve=False))
 
 
+class ContinueRequest(BaseModel):
+    session_id: str
+
+
+@router.post("/agent/continue")
+async def agent_continue(req: ContinueRequest):
+    if not runtime.is_enabled():
+        raise HTTPException(status_code=503, detail="agent is not configured")
+    conv = agent_session.get_conversation(req.session_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail=f"no such session: {req.session_id}")
+    loop = await _get_loop()
+    return await _stream(loop.continue_turn(conv), session_id=conv.session_id)
+
+
 # ---- profiles ------------------------------------------------------------
 
 
@@ -332,6 +347,31 @@ def fetch_cert(req: FetchCertRequest):
         return agent_tls.fetch_server_cert(req.base_url)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
+
+
+class ImportRequest(BaseModel):
+    messages: List[Dict[str, Any]]
+    session_id: Optional[str] = None
+
+
+@router.post("/agent/import")
+def agent_import(req: ImportRequest):
+    """Seed a conversation from a dumped message log; returns its session id.
+
+    Used by the webui's Import-conversation control to restore context (e.g.
+    to re-test after a fix). The messages are the canonical content-block
+    log from a prior export / GET /agent/sessions/{id}.
+    """
+    if not isinstance(req.messages, list):
+        raise HTTPException(status_code=400, detail="messages must be a list")
+    for m in req.messages:
+        if not isinstance(m, dict) or "role" not in m or "content" not in m:
+            raise HTTPException(
+                status_code=400,
+                detail="each message must be an object with 'role' and 'content'",
+            )
+    conv = agent_session.import_conversation(req.messages, req.session_id)
+    return {"session_id": conv.session_id}
 
 
 @router.get("/agent/sessions/{session_id}")

@@ -219,3 +219,18 @@ export function streamDecision(
   const url = approve ? "/api/agent/approve" : "/api/agent/reject";
   return streamAgent(url, { action_id: actionId }, signal);
 }
+
+export function streamContinue(
+  sessionId: string,
+  signal: AbortSignal,
+): AsyncIterable<AgentEvent> {
+  return streamAgent("/api/agent/continue", { session_id: sessionId }, signal);
+}
+
+/** Seed a conversation server-side from a dumped message log; returns the new
+ *  session id (so a continued turn has the restored context). */
+export async function importConversation(
+  messages: Array<{ role: string; content: unknown }>,
+): Promise<{ session_id: string }> {
+  return jsonReq("/api/agent/import", "POST", { messages });
+}

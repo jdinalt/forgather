@@ -4,6 +4,7 @@
 
 import { AgentController } from "../useAgent";
 import { AgentComposer } from "./AgentComposer";
+import { AgentContextMeter } from "./AgentContextMeter";
 import { AgentThread } from "./AgentThread";
 
 interface Props {
@@ -48,6 +49,7 @@ export function AgentSidebarPanel({
           )
         )}
         <span className="agent-sidebar-spacer" />
+        <AgentContextMeter usage={agent.usage} />
         <button className="btn-icon" title="Agent profiles…" onClick={onOpenSettings}>
           ⚙
         </button>

@@ -216,6 +216,20 @@ export function AgentThread({ agent, compact, onOpenFull, onOpenDoc, repoRoot }:
         );
       })}
       {agent.busy && <div className="agent-typing muted">…</div>}
+      {!agent.busy && agent.incompleteReason && (
+        <div className="agent-continue-row">
+          <span className="muted">
+            {agent.incompleteReason === "max_tokens"
+              ? "Response hit the output-token limit."
+              : agent.incompleteReason === "max_iterations"
+                ? "Reached the tool-step limit for this turn."
+                : "Turn ended early."}
+          </span>
+          <button className="btn-secondary" onClick={agent.continueTurn}>
+            Continue
+          </button>
+        </div>
+      )}
       <div ref={endRef} />
     </div>
   );

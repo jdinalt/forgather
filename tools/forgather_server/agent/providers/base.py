@@ -58,10 +58,16 @@ class ToolCall:
 
 @dataclass
 class Usage:
-    """Token accounting for one turn (best-effort; may be partial)."""
+    """Token accounting for one turn (best-effort; may be partial).
+
+    ``input_tokens`` is the prompt size of the request (the conversation's
+    current context occupancy); ``context_window`` is the model's max context
+    (``None`` when the provider doesn't report it, e.g. Claude).
+    """
 
     input_tokens: int = 0
     output_tokens: int = 0
+    context_window: Optional[int] = None
 
 
 @dataclass
