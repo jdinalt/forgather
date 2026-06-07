@@ -424,24 +424,30 @@ class SharedMemoryBackend(OuterSyncBackend):
                 pass
 
     def leave(self, *, worker_id: str) -> None:
-        # Decrement the attach count under the lock; the last worker out unlinks
-        # the region. Read the count while the region is still mapped (ctrl is
-        # cleared by _close_region below).
-        last_out = False
+        # Decrement the attach count and, if last out, unlink the region — all
+        # under the held flock, in one critical section. Doing the unlink under
+        # the lock (rather than after releasing it) closes the window where a
+        # peer racing the last leaver could see a half-removed region. We also
+        # clear the magic word first so that any out-of-lifecycle joiner that
+        # still maps the region fails loud on the magic check (the intended
+        # lifecycle is: every worker joins during rendezvous, then all leave at
+        # teardown — no join arrives after the first leave).
         if self._ctrl is not None:
             try:
                 with self._locked():
                     remaining = max(0, int(self._ctrl[_W_ATTACH]) - 1)
                     self._ctrl[_W_ATTACH] = remaining
-                    last_out = remaining == 0
+                    if remaining == 0:
+                        self._ctrl[_W_MAGIC] = 0
+                        # Unlinking the lock file while still holding its flock
+                        # is fine: the lock lives on the open fd, released when
+                        # we close it below.
+                        self._cleanup_region_files()
             except OSError:
                 pass
 
         # Best-effort teardown of this process's handles.
         self._close_region()
-
-        if last_out:
-            self._cleanup_region_files()
 
         try:
             if self._lock_fd is not None:

@@ -851,13 +851,20 @@ def _diloco_env_from_job_params(
     Expected input shape (all keys optional except ``server_addr``):
         {
           "server_addr": "host:port",
-          "sync_every": int,
-          "num_fragments": int,
-          "dylu": bool,
-          "bf16_comm": bool,
           "heartbeat_interval": float,
           "worker_id": str,
+          # Shared-memory backend (issue #154); absent for the default http
+          # backend. ``shm_group_id`` is uniform across the workers of one
+          # submit; ``shm_group_size`` is the worker count.
+          "backend": "http" | "shared_memory",
+          "shm_group_id": str,
+          "shm_group_size": int,
         }
+
+    The server-authoritative settings (``sync_every`` / ``num_fragments`` /
+    ``dylu`` / ``bf16_comm``) are deliberately NOT forwarded — the worker reads
+    them from the server's ``/info`` so the whole group agrees; a stale
+    submission carrying them is ignored here.
     """
     env: Dict[str, str] = {}
     server = diloco.get("server_addr")
