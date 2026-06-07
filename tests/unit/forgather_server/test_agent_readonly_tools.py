@@ -24,6 +24,8 @@ def test_expected_read_tools_registered():
         "list_config_templates",
         "config_template_refs",
         "reveal_in_ui",
+        "list_directory",
+        "find_files",
         "search_docs",
     } <= names
 
@@ -84,6 +86,68 @@ def test_check_config_delegates(monkeypatch):
         {"project_dir": "/p", "config_name": "c.yaml", "target": ""}
     )
     assert seen["target"] is None
+
+
+def test_list_directory_lists_and_starts_from_roots(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths, "is_path_in_fs_root", lambda p: True)
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a.txt").write_text("hi")
+    (tmp_path / ".hidden").write_text("x")
+
+    # No path -> the starting roots.
+    monkeypatch.setattr(
+        tools_readonly, "_starting_roots", lambda: [str(tmp_path)]
+    )
+    roots_out = tools_readonly._list_directory({})
+    assert roots_out["roots"] == [str(tmp_path)]
+
+    out = tools_readonly._list_directory({"path": str(tmp_path)})
+    names = [e["name"] for e in out["entries"]]
+    assert ".hidden" not in names  # hidden skipped
+    assert names == ["sub", "a.txt"]  # dirs first, then files
+    assert out["entries"][0]["is_dir"] is True
+    assert out["entries"][1]["size"] == 2
+
+
+def test_list_directory_fs_root_and_errors(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths, "is_path_in_fs_root", lambda p: False)
+    with pytest.raises(PermissionError, match="outside"):
+        tools_readonly._list_directory({"path": str(tmp_path)})
+    monkeypatch.setattr(paths, "is_path_in_fs_root", lambda p: True)
+    with pytest.raises(ValueError, match="does not exist"):
+        tools_readonly._list_directory({"path": str(tmp_path / "nope")})
+    f = tmp_path / "f.txt"
+    f.write_text("x")
+    with pytest.raises(ValueError, match="not a directory"):
+        tools_readonly._list_directory({"path": str(f)})
+
+
+def test_find_files_substring_and_glob(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths, "is_path_in_fs_root", lambda p: True)
+    (tmp_path / "tokenizers" / "wikitext_32k").mkdir(parents=True)
+    (tmp_path / "tokenizers" / "wikitext_32k" / "tokenizer.json").write_text("{}")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "wikitext_junk").write_text("x")  # pruned dir, not matched
+    monkeypatch.setattr(tools_readonly, "_starting_roots", lambda: [str(tmp_path)])
+
+    # Bare word -> substring match; finds both the dir and the file.
+    out = tools_readonly._find_files({"pattern": "wikitext"})
+    found = {m["path"]: m["is_dir"] for m in out["matches"]}
+    assert any(p.endswith("wikitext_32k") and is_dir for p, is_dir in found.items())
+    # The .git tree is pruned, so its wikitext_junk is not returned.
+    assert not any(".git" in p for p in found)
+
+    # Glob is honored verbatim.
+    out2 = tools_readonly._find_files({"pattern": "*.json"})
+    assert any(p["path"].endswith("tokenizer.json") for p in out2["matches"])
+
+
+def test_find_files_respects_root_and_fs_root(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths, "is_path_in_fs_root", lambda p: False)
+    with pytest.raises(PermissionError, match="outside"):
+        tools_readonly._find_files({"pattern": "x", "root": str(tmp_path)})
+    with pytest.raises(ValueError, match="pattern is required"):
+        tools_readonly._find_files({"pattern": "  "})
 
 
 def test_config_template_refs_delegates(monkeypatch):

@@ -9,6 +9,7 @@ scheduler state, and find relevant documentation.
 from __future__ import annotations
 
 import dataclasses
+import fnmatch
 import logging
 import os
 from pathlib import Path
@@ -183,6 +184,138 @@ def _read_file(args: Dict[str, Any]) -> Any:
     if not paths.is_path_in_fs_root(path):
         raise PermissionError(f"path is outside the configured filesystem roots: {path}")
     return config_ops.read_raw(path)
+
+
+# ---- filesystem browse / find ----------------------------------------------
+
+# Directories never worth walking into for find/browse purposes.
+_FS_SKIP_DIRS = {
+    ".git",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ipynb_checkpoints",
+}
+_FIND_MAX_RESULTS = 100
+_FIND_DIR_BUDGET = 50000  # cap directories walked, so a huge tree can't run away
+
+
+def _starting_roots() -> List[str]:
+    """The places worth starting a browse/find from: the project search roots
+    (where projects, tokenizers, datasets live) plus any configured fs-root
+    sandbox dirs. Deduped, existing only."""
+    out: List[str] = []
+    for r in search_roots.list_roots():
+        if r.exists and r.path not in out:
+            out.append(r.path)
+    for p in paths.fs_roots():
+        s = str(p)
+        if s not in out:
+            out.append(s)
+    return out
+
+
+def _list_directory(args: Dict[str, Any]) -> Any:
+    # No path -> hand back the starting roots so the agent knows where to look.
+    path = (args.get("path") or "").strip()
+    if not path:
+        return {
+            "roots": _starting_roots(),
+            "note": "Pass one of these (or any absolute path within them) as "
+            "'path' to list its contents; use find_files to search by name.",
+        }
+    if not os.path.isabs(path):
+        raise ValueError("path must be absolute")
+    if not paths.is_path_in_fs_root(path):
+        raise PermissionError(f"path is outside the configured filesystem roots: {path}")
+    p = Path(path)
+    if not p.exists():
+        raise ValueError(f"path does not exist: {path}")
+    if not p.is_dir():
+        raise ValueError(f"not a directory: {path}")
+    entries: List[Dict[str, Any]] = []
+    try:
+        children = list(p.iterdir())
+    except PermissionError as e:
+        raise PermissionError(str(e))
+    for child in sorted(children, key=lambda c: c.name.lower()):
+        if child.name.startswith("."):
+            continue
+        try:
+            is_dir = child.is_dir()
+            resolved = child.resolve()
+        except OSError:
+            continue
+        if not paths.is_path_in_fs_root(resolved):  # symlink escape guard
+            continue
+        e: Dict[str, Any] = {"name": child.name, "path": str(resolved), "is_dir": is_dir}
+        if not is_dir:
+            try:
+                e["size"] = child.stat().st_size
+            except OSError:
+                pass
+        entries.append(e)
+    # Directories first, then files, each alphabetical.
+    entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
+    return {"path": str(p.resolve()), "entries": entries}
+
+
+def _find_files(args: Dict[str, Any]) -> Any:
+    pattern = (args.get("pattern") or "").strip()
+    if not pattern:
+        raise ValueError("pattern is required (e.g. 'wikitext*' or 'tokenizer')")
+    # A bare word (no glob metachars) is treated as a substring match — the
+    # find-like behavior most callers expect.
+    glob = pattern if any(ch in pattern for ch in "*?[") else f"*{pattern}*"
+    glob = glob.lower()
+    max_results = args.get("max_results")
+    max_results = _FIND_MAX_RESULTS if max_results in (None, "") else int(max_results)
+    max_results = max(1, min(max_results, 500))
+
+    root = (args.get("root") or "").strip()
+    if root:
+        if not os.path.isabs(root):
+            raise ValueError("root must be absolute")
+        if not paths.is_path_in_fs_root(root):
+            raise PermissionError(
+                f"path is outside the configured filesystem roots: {root}"
+            )
+        search_dirs = [root]
+    else:
+        search_dirs = _starting_roots()
+
+    matches: List[Dict[str, Any]] = []
+    walked = 0
+    truncated = False
+    for base in search_dirs:
+        for dirpath, dirnames, filenames in os.walk(base):
+            # Prune noise + hidden dirs from the descent (in place).
+            dirnames[:] = [
+                d for d in dirnames if d not in _FS_SKIP_DIRS and not d.startswith(".")
+            ]
+            walked += 1
+            if walked > _FIND_DIR_BUDGET:
+                truncated = True
+                break
+            for name in dirnames + filenames:
+                if name.startswith("."):
+                    continue
+                if not fnmatch.fnmatch(name.lower(), glob):
+                    continue
+                full = os.path.join(dirpath, name)
+                if not paths.is_path_in_fs_root(full):
+                    continue
+                matches.append({"path": full, "is_dir": os.path.isdir(full)})
+                if len(matches) >= max_results:
+                    truncated = True
+                    break
+            if truncated:
+                break
+        if truncated:
+            break
+    return {"pattern": pattern, "matches": matches, "truncated": truncated}
 
 
 def _scheduler_status(_args: Dict[str, Any]) -> Any:
@@ -490,6 +623,57 @@ def register_all(reg: ToolRegistry) -> None:
                 "required": ["path"],
             },
             handler=_read_file,
+            risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="list_directory",
+            description=(
+                "List the contents of a directory (names, whether each is a "
+                "dir, file sizes). Use to walk the filesystem — e.g. to find a "
+                "tokenizer under tokenizers/, a model output dir, or a data "
+                "file — when it isn't a Forgather project/config (those use "
+                "list_projects / list_configs). Call with no path to get the "
+                "starting roots (the project search roots + any fs-root "
+                "sandbox), then drill in. Paths must be within the configured "
+                "filesystem roots."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute directory path; omit to list the starting roots."},
+                },
+            },
+            handler=_list_directory,
+            risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="find_files",
+            description=(
+                "Find files and directories by name, recursively (like UNIX "
+                "find). pattern is a glob (e.g. 'wikitext*', '*.yaml') or a "
+                "bare word, which matches as a substring (e.g. 'tokenizer' "
+                "finds anything containing 'tokenizer'). Searches under root if "
+                "given, else across all starting roots (project search roots + "
+                "fs-root sandbox). Matches directories too — a tokenizer is a "
+                "directory. Results are capped (max_results, default 100; "
+                "truncated=true means there were more). Use to locate a "
+                "tokenizer, dataset, model, or config when you don't know its "
+                "exact path."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Glob (e.g. 'wikitext*') or a bare word matched as a substring."},
+                    "root": {"type": "string", "description": "Absolute dir to search under (default: all starting roots)."},
+                    "max_results": {"type": "integer", "description": "Cap on matches (default 100, max 500)."},
+                },
+                "required": ["pattern"],
+            },
+            handler=_find_files,
             risk=READ,
         )
     )
