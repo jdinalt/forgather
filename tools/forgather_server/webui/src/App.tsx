@@ -1547,7 +1547,12 @@ export default function App() {
           className="view-panel"
           style={view === "agent" ? undefined : { display: "none" }}
         >
-          <AgentPanel agent={agent} onOpenSettings={() => setAgentSettingsOpen(true)} />
+          <AgentPanel
+            agent={agent}
+            onOpenSettings={() => setAgentSettingsOpen(true)}
+            onOpenDoc={openDocs}
+            repoRoot={repoRootQ.data?.repo_root}
+          />
         </div>
       </div>
 
@@ -1569,6 +1574,8 @@ export default function App() {
             onOpenFull={() => setView("agent")}
             onOpenSettings={() => setAgentSettingsOpen(true)}
             onCollapse={() => setAgentSidebarCollapsed(true)}
+            onOpenDoc={openDocs}
+            repoRoot={repoRootQ.data?.repo_root}
           />
         )}
       </aside>

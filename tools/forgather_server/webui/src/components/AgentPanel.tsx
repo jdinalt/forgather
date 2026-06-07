@@ -8,9 +8,13 @@ import { AgentThread } from "./AgentThread";
 export function AgentPanel({
   agent,
   onOpenSettings,
+  onOpenDoc,
+  repoRoot,
 }: {
   agent: AgentController;
   onOpenSettings: () => void;
+  onOpenDoc?: (absPath: string) => void;
+  repoRoot?: string;
 }) {
   return (
     <div className="agent-full">
@@ -49,7 +53,7 @@ export function AgentPanel({
         </button>
       </header>
       <div className="agent-full-body">
-        <AgentThread agent={agent} />
+        <AgentThread agent={agent} onOpenDoc={onOpenDoc} repoRoot={repoRoot} />
       </div>
       <AgentComposer agent={agent} />
     </div>

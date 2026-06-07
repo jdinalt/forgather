@@ -17,9 +17,13 @@ import {
   activateProfile,
   getAgentStatus,
   getProfiles,
+  getSession,
   streamDecision,
   streamMessage,
 } from "./agent-client";
+import { persistGet, persistRemove, persistSet } from "./persist";
+
+const STORAGE_KEY = "forgather-agent-conversation";
 
 export type AgentItem =
   | { id: string; type: "user"; text: string }
@@ -46,6 +50,45 @@ export type AgentItem =
 // (a plain ``Omit<AgentItem, "id">`` collapses to the common keys only).
 type DistributiveOmit<T, K extends keyof any> = T extends unknown ? Omit<T, K> : never;
 type AgentItemInput = DistributiveOmit<AgentItem, "id">;
+
+/** Rebuild the renderable item list from the backend's canonical
+ *  content-block message log (used to rehydrate a conversation on load).
+ *  Resolved tool calls (incl. approved/rejected authoring tools) render as
+ *  tool items; the in-flight pending turn isn't in the log, so action cards
+ *  aren't reconstructed here (a still-awaiting conversation keeps its cached
+ *  items instead — see the load effect). */
+function itemsFromMessages(messages: Array<{ role: string; content: unknown }>): AgentItem[] {
+  const items: AgentItem[] = [];
+  const toolIdx = new Map<string, number>();
+  let n = 0;
+  const nid = () => `r_${n++}`;
+  for (const m of messages) {
+    const role = m.role === "user" ? "user" : "assistant";
+    const content = m.content;
+    if (typeof content === "string") {
+      if (content) items.push({ id: nid(), type: role, text: content });
+      continue;
+    }
+    if (!Array.isArray(content)) continue;
+    for (const block of content as any[]) {
+      if (!block || typeof block !== "object") continue;
+      if (block.type === "text") {
+        if (block.text) items.push({ id: nid(), type: role, text: String(block.text) });
+      } else if (block.type === "tool_use") {
+        items.push({ id: nid(), type: "tool", toolUseId: String(block.id), name: String(block.name), input: block.input });
+        toolIdx.set(String(block.id), items.length - 1);
+      } else if (block.type === "tool_result") {
+        const idx = toolIdx.get(String(block.tool_use_id));
+        const c = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
+        if (idx !== undefined) {
+          const it = items[idx];
+          if (it.type === "tool") items[idx] = { ...it, content: c, isError: !!block.is_error };
+        }
+      }
+    }
+  }
+  return items;
+}
 
 export interface AgentController {
   status: AgentStatus | null;
@@ -114,6 +157,52 @@ export function useAgent(): AgentController {
     refreshStatus();
     refreshProfiles();
   }, [refreshStatus, refreshProfiles]);
+
+  // Restore the conversation on load: show the cached items immediately,
+  // then rehydrate from the backend session log (authoritative — also picks
+  // up turns made in another tab). If the conversation is still awaiting
+  // approval, keep the cached items: the in-flight turn (and its action
+  // card) isn't in the backend message log yet. If the backend session is
+  // gone (e.g. server restart), keep the cached items for display.
+  useEffect(() => {
+    let raw: string | null = null;
+    try {
+      raw = persistGet(STORAGE_KEY);
+    } catch {
+      raw = null;
+    }
+    if (!raw) return;
+    let cached: { sessionId?: string; items?: AgentItem[] } = {};
+    try {
+      cached = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (cached.sessionId) {
+      sessionIdRef.current = cached.sessionId;
+      setSessionId(cached.sessionId);
+    }
+    if (Array.isArray(cached.items) && cached.items.length) {
+      setItems(cached.items);
+      idRef.current = cached.items.length; // continue ids past restored ones
+    }
+    if (!cached.sessionId) return;
+    getSession(cached.sessionId)
+      .then((h) => {
+        if (h.awaiting_approval) {
+          setAwaiting(true);
+          return; // keep cached items (they include the pending action card)
+        }
+        const rebuilt = itemsFromMessages(h.messages);
+        setItems(rebuilt);
+        idRef.current = rebuilt.length;
+      })
+      .catch(() => {
+        /* backend session gone — keep the cached items for display */
+      });
+    // Run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const addItem = useCallback((partial: AgentItemInput): string => {
     const id = nextId();
@@ -273,7 +362,27 @@ export function useAgent(): AgentController {
     setItems([]);
     setAwaiting(false);
     setBusy(false);
+    try {
+      persistRemove(STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
   }, []);
+
+  // Persist the conversation so a reload / accidental navigation doesn't lose
+  // it. Only write when idle (not mid-stream) to avoid a localStorage write
+  // per streamed token; the final state of each turn is captured when busy
+  // flips back to false.
+  useEffect(() => {
+    if (busy) return;
+    try {
+      if (sessionId || items.length) {
+        persistSet(STORAGE_KEY, JSON.stringify({ sessionId, items }));
+      }
+    } catch {
+      /* ignore quota / serialization errors */
+    }
+  }, [busy, items, sessionId]);
 
   const pendingActions = items
     .filter((it): it is Extract<AgentItem, { type: "action" }> => it.type === "action")

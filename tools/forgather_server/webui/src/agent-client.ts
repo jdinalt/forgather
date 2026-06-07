@@ -144,6 +144,20 @@ export async function fetchServerCert(base_url: string): Promise<CertInfo> {
   return jsonReq("/api/agent/fetch-cert", "POST", { base_url });
 }
 
+export interface SessionHistory {
+  session_id: string;
+  /** Canonical content-block messages (role + content[]); rebuilt into UI
+   *  items on the client. */
+  messages: Array<{ role: string; content: unknown }>;
+  awaiting_approval: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export async function getSession(id: string): Promise<SessionHistory> {
+  return jsonReq(`/api/agent/sessions/${encodeURIComponent(id)}`, "GET");
+}
+
 async function* streamAgent(
   url: string,
   body: Record<string, unknown>,

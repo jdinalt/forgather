@@ -69,7 +69,10 @@ Operating rules:
   edit — ask what they would prefer.
 - When editing an existing file, read_file it first and base your new
   content on what is actually there; pass the full new file content.
-- Be concise. When you cite documentation, give the file path.
+- Be concise. When you cite documentation, reference it by its file path
+  (e.g. `docs/trainers/diloco.md`, or the absolute path search_docs
+  returned) — never as an http(s) URL. The UI turns a doc path into a
+  clickable link that opens the doc in the Docs view.
 """
 
 
