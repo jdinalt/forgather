@@ -86,6 +86,47 @@ def test_propose_edit_config_previews_then_commits(tmp_path):
     assert "wrote" in result.lower()
 
 
+def test_propose_edit_config_guards_on_external_change(tmp_path):
+    # The mtime baseline is captured server-side at propose time (the model
+    # cannot supply it). If the file changes before approval, commit refuses.
+    import time
+
+    f = tmp_path / "c.yaml"
+    f.write_text("before: yes\n")
+    proposal = tools_authoring._propose_edit_config(
+        {
+            "project_dir": str(tmp_path),
+            "config_name": "c.yaml",
+            "path": str(f),
+            "new_content": "after: yes\n",
+        }
+    )
+    # Simulate an external change after the proposal was made (bump mtime).
+    future = time.time() + 10
+    os.utime(f, (future, future))
+    with pytest.raises(config_ops.StaleEditError):
+        proposal.commit()
+    assert f.read_text() == "before: yes\n"  # untouched
+
+
+def test_propose_edit_config_ignores_model_supplied_mtime(tmp_path):
+    # A stale/garbage expected_mtime from the model must NOT cause a spurious
+    # failure — the param is gone; the tool uses its own captured baseline.
+    f = tmp_path / "c.yaml"
+    f.write_text("before: yes\n")
+    proposal = tools_authoring._propose_edit_config(
+        {
+            "project_dir": str(tmp_path),
+            "config_name": "c.yaml",
+            "path": str(f),
+            "new_content": "after: yes\n",
+            "expected_mtime": 1,  # bogus; from before the file existed
+        }
+    )
+    proposal.commit()  # would have raised StaleEditError under the old design
+    assert f.read_text() == "after: yes\n"
+
+
 def test_propose_new_project_previews_and_commits(tmp_path, monkeypatch):
     from forgather_server import project_ops
 

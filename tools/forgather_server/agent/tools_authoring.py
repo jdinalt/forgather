@@ -63,10 +63,19 @@ def _propose_edit_config(args: Dict[str, Any]) -> Proposal:
     config_name = args["config_name"]
     path = args["path"]
     new_content = args["new_content"]
-    expected_mtime: Optional[float] = args.get("expected_mtime")
 
     _enforce_readable_path(path)  # fs-root gate before any read (see above)
     before = config_ops.read_raw(path)  # also validates the file exists/readable
+    # Capture the mtime *here*, at propose time, as the optimistic-concurrency
+    # baseline. The model cannot supply this reliably (no tool exposes an
+    # mtime), so taking it from the model led to spurious StaleEditError on a
+    # hallucinated value. Captured server-side it has real meaning: the commit
+    # (on approval) fails only if the file actually changed between this read
+    # and the user approving.
+    try:
+        expected_mtime: Optional[float] = os.path.getmtime(path)
+    except OSError:
+        expected_mtime = None
 
     def commit() -> str:
         info = config_ops.write_existing_file(
@@ -250,9 +259,10 @@ def register_all(reg: ToolRegistry) -> None:
                 "Propose overwriting an existing config/template file with new "
                 "content. Returns a diff for the user to approve; nothing is "
                 "written until they do. Read the file first (read_file) to get "
-                "its current content and base your edit on it. Pass "
-                "expected_mtime from a prior read to guard against clobbering "
-                "an external edit."
+                "its current content and base your edit on it (pass the FULL new "
+                "content). Clobber protection is automatic — the tool records "
+                "the file's state when it reads it and refuses the write if the "
+                "file changed before you got approval."
             ),
             json_schema={
                 "type": "object",
@@ -261,7 +271,6 @@ def register_all(reg: ToolRegistry) -> None:
                     "config_name": {"type": "string", "description": "For the post-write parse check."},
                     "path": {"type": "string", "description": "Absolute path of the file to overwrite."},
                     "new_content": {"type": "string", "description": "Full new file content."},
-                    "expected_mtime": {"type": "number", "description": "Optional optimistic-concurrency guard."},
                 },
                 "required": ["project_dir", "config_name", "path", "new_content"],
             },
