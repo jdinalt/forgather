@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 
 from .. import dataset_ops, job_records, queue_ops, queue_store
 from ..routes.jobs import read_tty_tail
+from . import _dataset_servers
 from .registry import CONFIRM, READ, Proposal, ToolRegistry, ToolSpec
 
 log = logging.getLogger("forgather_server.agent.tools_jobs")
@@ -189,6 +190,22 @@ def _run_dataset(args: Dict[str, Any]) -> Proposal:
     )
 
 
+# ---- dataset metadata (via dataset server) ---------------------------------
+
+
+def _list_dataset_servers(_args: Dict[str, Any]) -> Any:
+    return {"servers": _dataset_servers.list_servers()}
+
+
+def _dataset_info(args: Dict[str, Any]) -> Any:
+    dataset = (args.get("dataset") or "").strip()
+    if not dataset:
+        raise ValueError("dataset is required (the HF name/path from the config)")
+    return _dataset_servers.info(
+        dataset, server_id=args.get("server_id") or None, split=args.get("split") or None
+    )
+
+
 # ---- registration ----------------------------------------------------------
 
 
@@ -269,5 +286,47 @@ def register_all(reg: ToolRegistry) -> None:
             },
             handler=_run_dataset,
             risk=CONFIRM,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="list_dataset_servers",
+            description=(
+                "List dataset servers available to query (local, user-"
+                "registered, and cluster), with whether each is currently "
+                "reachable. Use before dataset_info to pick a server, or to "
+                "tell the user none is running."
+            ),
+            json_schema={"type": "object", "properties": {}},
+            handler=_list_dataset_servers,
+            risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="dataset_info",
+            description=(
+                "Get a dataset's splits, number of examples per split, and "
+                "feature/column names by querying a dataset server. Use this "
+                "when defining or smoke-testing a dataset project (these are "
+                "not obvious from the config). Pass the dataset's HF name/path "
+                "(read it from the config's load_dataset args via "
+                "inspect_config / render_config_pp). The data must already be "
+                "built/cached and a dataset server reachable (see "
+                "list_dataset_servers) — run_dataset on a raw split first to "
+                "build it. If none is reachable, you'll get an error to relay "
+                "to the user."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "dataset": {"type": "string", "description": "HF dataset name or path (from the config's load_dataset args)."},
+                    "server_id": {"type": "string", "description": "Optional dataset-server id from list_dataset_servers (default: first reachable)."},
+                    "split": {"type": "string", "description": "Optional split to use for the features fallback load."},
+                },
+                "required": ["dataset"],
+            },
+            handler=_dataset_info,
+            risk=READ,
         )
     )
