@@ -128,6 +128,20 @@ class TestLegacyMigration:
         assert _mode(server) == 0o700
         assert _mode(Path(isolated_home)) == 0o700
 
+    def test_tighten_existing_state_perms_fixes_agent_profiles(self, isolated_home):
+        # agent_profiles.json holds API keys (incl. Anthropic); a legacy or
+        # externally-created loose copy must be tightened to 0600 at startup.
+        from forgather_server import paths
+
+        server = paths.server_state_dir()
+        f = server / "agent_profiles.json"
+        f.write_text('{"profiles": []}\n')
+        os.chmod(f, 0o644)
+
+        paths.tighten_existing_state_perms()
+
+        assert _mode(f) == 0o600
+
     def test_tighten_existing_state_perms_idempotent(self, isolated_home):
         from forgather_server import paths
 

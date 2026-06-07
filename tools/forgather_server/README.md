@@ -3079,6 +3079,10 @@ posture (we do not silently disable verification anywhere).
 - Authoring tools enforce the filesystem-root allowlist at **propose** time
   (before any read), so `propose_edit_config` can't read a file outside the
   configured roots into the preview; writes are re-checked at commit.
+- The profile store (`agent_profiles.json`, which holds API keys / bearer
+  tokens) is written **mode 0600** and is in the startup perm-tightening
+  set, so only the owner can read it (matching the other credential-bearing
+  registries).
 
 ### Model selection (weakly bound)
 

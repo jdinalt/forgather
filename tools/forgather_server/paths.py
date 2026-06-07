@@ -299,6 +299,7 @@ _SENSITIVE_TOPLEVEL_FILES = (
     "sessions.json",
     "dataset_server_registry.json",
     "inference_server_registry.json",
+    "agent_profiles.json",
 )
 
 
