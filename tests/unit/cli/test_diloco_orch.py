@@ -858,6 +858,39 @@ class TestLaunchWorkers:
         assert kw["dynamic_args"] == {"max_steps": 5}
         assert kw["requested_gpus"] == 1
 
+    def test_shared_memory_backend_stamps_group(self, patch_orchestrator):
+        # --backend shared_memory: every worker of one submit shares a single
+        # shm_group_id + shm_group_size (= worker count) in its diloco block, so
+        # the scheduler derives one region dir + size for the co-located group.
+        client = patch_orchestrator(FakeClient(servers=SERVERS))
+        rc = orch.launch_workers(
+            _worker_args(count=2, backend="shared_memory", dataset="auto"), {}
+        )
+        assert rc == 0
+        assert len(client.enqueued) == 2
+        dilocos = [kw["job_params"]["diloco"] for kw in client.enqueued]
+        for d in dilocos:
+            assert d["backend"] == "shared_memory"
+            assert d["shm_group_size"] == 2
+        # One id for the whole submit (uniform across workers); worker ids stay
+        # distinct.
+        gid = dilocos[0]["shm_group_id"]
+        assert gid and all(d["shm_group_id"] == gid for d in dilocos)
+        assert dilocos[0]["worker_id"] != dilocos[1]["worker_id"]
+
+    def test_http_backend_omits_group(self, patch_orchestrator):
+        # The default http backend stamps no shm_group fields.
+        client = patch_orchestrator(FakeClient(servers=SERVERS))
+        rc = orch.launch_workers(
+            _worker_args(count=2, backend="http", dataset="auto"), {}
+        )
+        assert rc == 0
+        for kw in client.enqueued:
+            d = kw["job_params"]["diloco"]
+            assert "backend" not in d
+            assert "shm_group_id" not in d
+            assert "shm_group_size" not in d
+
     def test_explicit_single_worker_no_generate(self, patch_orchestrator):
         client = patch_orchestrator(FakeClient(servers=[]))
         rc = orch.launch_workers(

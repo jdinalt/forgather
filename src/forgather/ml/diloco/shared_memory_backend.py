@@ -31,7 +31,9 @@ persistent ``flock``, with the path as the rendezvous):
 * ``manifest.json`` — canonical param names / shapes / fp32 offsets, written once
   by the aggregator; followers poll for it.
 * ``region.bin`` — mmap: a small int64 control header (generation, arrival count,
-  group size) + the master params (fp32) + an accumulator (fp32, same size).
+  group size, live attach count) + the master params (fp32) + an accumulator
+  (fp32, same size). The attach count drives self-cleanup: ``join`` increments it,
+  ``leave`` decrements it, and the last worker out unlinks the region.
 
 Scope (increment 1): the backend + protocol + correctness, constructed directly
 (rendezvous params passed in). Trainer/CLI integration, the co-located-group
@@ -64,6 +66,7 @@ _W_MAGIC = 0
 _W_GENERATION = 1
 _W_ARRIVALS = 2
 _W_GROUP_SIZE = 3
+_W_ATTACH = 4  # live attach count; last worker out (==0) unlinks the region
 
 _SHM_SUBDIR = "diloco_shm"
 _MANIFEST = "manifest.json"
@@ -220,6 +223,10 @@ class SharedMemoryBackend(OuterSyncBackend):
                 self._attach_as_follower()
             else:
                 self._create_as_aggregator(load_checkpoint, factory)
+            # Count this worker as attached (under the same lock as create/attach
+            # so the aggregator's fresh region — zeroed by truncate — goes 0->1
+            # atomically). leave() decrements; the last one out unlinks.
+            self._ctrl[_W_ATTACH] = int(self._ctrl[_W_ATTACH]) + 1
 
         return self._read_master_snapshot()
 
@@ -399,10 +406,49 @@ class SharedMemoryBackend(OuterSyncBackend):
         except OSError:
             pass
 
+    def _cleanup_region_files(self) -> None:
+        """Last worker out: unlink the shared region so a completed group leaves
+        nothing behind. Best-effort — a crashed peer can leave a stale per-submit
+        dir (a scheduler GC sweep of stale ``diloco_shm_*`` dirs is the follow-up).
+        """
+        for path in (self._region_path, self._manifest_path, self._lock_path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        # Remove the region subdir, then the per-submit group dir if now empty.
+        for d in (self._shm_dir, self.group_dir):
+            try:
+                os.rmdir(d)
+            except OSError:
+                pass
+
     def leave(self, *, worker_id: str) -> None:
-        # Best-effort teardown of this process's handles. Region-file lifecycle
-        # (unlink) is the integration layer's concern.
+        # Decrement the attach count and, if last out, unlink the region — all
+        # under the held flock, in one critical section. Doing the unlink under
+        # the lock (rather than after releasing it) closes the window where a
+        # peer racing the last leaver could see a half-removed region. We also
+        # clear the magic word first so that any out-of-lifecycle joiner that
+        # still maps the region fails loud on the magic check (the intended
+        # lifecycle is: every worker joins during rendezvous, then all leave at
+        # teardown — no join arrives after the first leave).
+        if self._ctrl is not None:
+            try:
+                with self._locked():
+                    remaining = max(0, int(self._ctrl[_W_ATTACH]) - 1)
+                    self._ctrl[_W_ATTACH] = remaining
+                    if remaining == 0:
+                        self._ctrl[_W_MAGIC] = 0
+                        # Unlinking the lock file while still holding its flock
+                        # is fine: the lock lives on the open fd, released when
+                        # we close it below.
+                        self._cleanup_region_files()
+            except OSError:
+                pass
+
+        # Best-effort teardown of this process's handles.
         self._close_region()
+
         try:
             if self._lock_fd is not None:
                 os.close(self._lock_fd)

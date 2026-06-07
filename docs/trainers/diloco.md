@@ -536,6 +536,24 @@ All co-located workers must agree on `DILOCO_SHM_GROUP_DIR` and
 supported for this backend. For the internals see
 [`diloco-architecture.md`](diloco-architecture.md#shared-memory-backend).
 
+### Via the scheduler (`forgather submit`)
+
+The env-var form above is the manual recipe; the scheduler launches the same
+group as a first-class option. Pass `--backend shared_memory` to a DiLoCo
+submit and the worker count sizes the group:
+
+```bash
+forgather -t <config>.yaml submit --diloco --diloco-worker-count 2 \
+    --backend shared_memory
+```
+
+The submit mints one group id for the batch; the scheduler derives the per-host
+`DILOCO_SHM_GROUP_DIR` (under the host temp dir) and `DILOCO_SHM_GROUP_SIZE` for
+every worker, so you don't hand-set the env. The region is created on the first
+worker's join and **unlinked when the last worker leaves**, so a completed group
+leaves nothing behind. Because the backend is single-host, `--backend
+shared_memory` can't be combined with `--global` (the multi-node fan-out).
+
 ## Programmatic API
 
 The DiLoCo system can also be used directly in Python, independent of the CLI.

@@ -188,6 +188,17 @@ def create_submit_parser(global_args):
         default=30.0,
         help="Seconds between worker heartbeats to the server (default: 30).",
     )
+    diloco.add_argument(
+        "--backend",
+        choices=("http", "shared_memory"),
+        default="http",
+        help=(
+            "Sync backend for the worker(s). 'http' (default) syncs through the\n"
+            "param server. 'shared_memory' has the co-located workers on one host\n"
+            "share a CPU master region instead (single-host only; auto-configures\n"
+            "the group). Not compatible with --global."
+        ),
+    )
 
     parser.add_argument(
         "remainder",

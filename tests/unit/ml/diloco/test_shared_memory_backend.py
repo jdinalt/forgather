@@ -176,6 +176,48 @@ class TestSingleProcess:
             backend.synchronize_fragment(worker_id="w0", fragment_id=0, pseudograds={})
         backend.leave(worker_id="w0")
 
+    def test_last_out_cleans_up_region(self, tmp_path):
+        """A single-worker group: join+leave is also last-out, so the region
+        files and the per-group dir are unlinked (a submit leaves nothing
+        behind)."""
+        import os
+
+        _sd, ckpt = _make_checkpoint(tmp_path)
+        gdir = str(tmp_path / "g")
+        backend = SharedMemoryBackend(
+            group_dir=gdir, group_size=1, init_checkpoint=ckpt
+        )
+        backend.join(worker_id="w0")
+        assert os.path.exists(backend._region_path)
+        assert os.path.exists(backend._manifest_path)
+        backend.leave(worker_id="w0")
+        assert not os.path.exists(backend._region_path)
+        assert not os.path.exists(backend._manifest_path)
+        assert not os.path.exists(backend._lock_path)
+        assert not os.path.isdir(backend._shm_dir)
+
+    def test_early_leaver_does_not_clean_up(self, tmp_path):
+        """With two attached, the first to leave is not last-out and must not
+        unlink the region out from under the survivor."""
+        import os
+
+        _sd, ckpt = _make_checkpoint(tmp_path)
+        gdir = str(tmp_path / "g")
+        agg = SharedMemoryBackend(group_dir=gdir, group_size=2, init_checkpoint=ckpt)
+        agg.join(worker_id="w0")
+        follower = SharedMemoryBackend(
+            group_dir=gdir, group_size=2, init_checkpoint=ckpt
+        )
+        follower.join(worker_id="w1")
+        # Follower leaves first: region must survive for the aggregator.
+        follower.leave(worker_id="w1")
+        assert os.path.exists(agg._region_path)
+        assert os.path.exists(agg._manifest_path)
+        # Aggregator leaves last: now everything is gone.
+        agg.leave(worker_id="w0")
+        assert not os.path.exists(agg._region_path)
+        assert not os.path.isdir(agg._shm_dir)
+
     def test_group_size_mismatch_rejected(self, tmp_path):
         _sd, ckpt = _make_checkpoint(tmp_path)
         gdir = str(tmp_path / "g")
@@ -225,3 +267,12 @@ class TestMultiProcess:
             assert got is not None
             for name in canonical:
                 assert torch.allclose(got[name], ref[name], atol=1e-5), (rp, name)
+
+        # After every worker has left, the last one out unlinked the region —
+        # a completed group leaves nothing behind under the group dir.
+        import os
+
+        shm_dir = os.path.join(os.path.realpath(gdir), "diloco_shm")
+        assert not os.path.exists(os.path.join(shm_dir, "region.bin"))
+        assert not os.path.exists(os.path.join(shm_dir, "manifest.json"))
+        assert not os.path.isdir(shm_dir)

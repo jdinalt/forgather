@@ -25,6 +25,7 @@ import secrets
 import signal
 import socket
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -850,13 +851,20 @@ def _diloco_env_from_job_params(
     Expected input shape (all keys optional except ``server_addr``):
         {
           "server_addr": "host:port",
-          "sync_every": int,
-          "num_fragments": int,
-          "dylu": bool,
-          "bf16_comm": bool,
           "heartbeat_interval": float,
           "worker_id": str,
+          # Shared-memory backend (issue #154); absent for the default http
+          # backend. ``shm_group_id`` is uniform across the workers of one
+          # submit; ``shm_group_size`` is the worker count.
+          "backend": "http" | "shared_memory",
+          "shm_group_id": str,
+          "shm_group_size": int,
         }
+
+    The server-authoritative settings (``sync_every`` / ``num_fragments`` /
+    ``dylu`` / ``bf16_comm``) are deliberately NOT forwarded — the worker reads
+    them from the server's ``/info`` so the whole group agrees; a stale
+    submission carrying them is ignored here.
     """
     env: Dict[str, str] = {}
     server = diloco.get("server_addr")
@@ -887,6 +895,21 @@ def _diloco_env_from_job_params(
 
         wid = generate_name()
     env["DILOCO_WORKER_ID"] = wid
+    # Shared-memory backend (issue #154). The submission only declares the
+    # structured intent (backend + group id + size); the per-host env that the
+    # worker reads is derived here, so the CLI and webui don't duplicate it. The
+    # group dir is one per submit (from shm_group_id), shared by every co-located
+    # worker; the group size is the worker count.
+    if (diloco.get("backend") or "http").strip().lower() == "shared_memory":
+        env["DILOCO_BACKEND"] = "shared_memory"
+        group_id = (str(diloco.get("shm_group_id") or "")).strip()
+        if group_id:
+            env["DILOCO_SHM_GROUP_DIR"] = os.path.join(
+                tempfile.gettempdir(), f"diloco_shm_{group_id}"
+            )
+        size = diloco.get("shm_group_size")
+        if size:
+            env["DILOCO_SHM_GROUP_SIZE"] = str(int(size))
     return env
 
 
