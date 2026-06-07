@@ -52,4 +52,40 @@ def create_docs_parser(_global_args):
     clean.add_argument("--docs-dir", default=None)
     clean.add_argument("--repo-root", default=None)
 
+    index = sub.add_parser(
+        "index",
+        help="Build the vector-search index (docs/.built/.vector/) for hybrid docs search",
+    )
+    index.add_argument(
+        "--repo-root",
+        default=None,
+        help="Repository root (default: auto-detect via the forgather package).",
+    )
+    index.add_argument(
+        "--docs-dir",
+        default=None,
+        help="Docs source directory (default: <repo-root>/docs).",
+    )
+    index.add_argument(
+        "--model",
+        default=None,
+        help="sentence-transformers model id (default: all-MiniLM-L6-v2).",
+    )
+    index.add_argument(
+        "--clean",
+        action="store_true",
+        help="Remove the existing index before building.",
+    )
+    index.add_argument(
+        "--check",
+        action="store_true",
+        help="Exit non-zero if the index is missing or stale; don't write.",
+    )
+    index.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Print only the final summary line.",
+    )
+
     return parser

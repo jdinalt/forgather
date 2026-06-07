@@ -309,6 +309,18 @@ RUN umask 0002 \
 RUN umask 0002 \
     && cd ${REPO_DIR} && ${VENV_DIR}/bin/forgather docs build --quiet
 
+# Build the docs vector-search index (and, as a side effect, download + cache
+# the embedding model into the image's HF cache so runtime queries work
+# offline). On by default; pass --build-arg BUILD_DOCS_INDEX=0 to skip (e.g. a
+# network-less build — the Docs search then falls back to keyword at runtime).
+ARG BUILD_DOCS_INDEX=1
+RUN umask 0002 \
+    && if [ "${BUILD_DOCS_INDEX}" = "1" ]; then \
+           cd ${REPO_DIR} && ${VENV_DIR}/bin/forgather docs index --quiet ; \
+       else \
+           echo "[docs-index] skipped (BUILD_DOCS_INDEX=${BUILD_DOCS_INDEX})" ; \
+       fi
+
 # ---------------------------------------------------------------------------
 # Back to root for the entrypoint setup. The entrypoint runs as root
 # so it can usermod for UID remap then drops to the forgather user

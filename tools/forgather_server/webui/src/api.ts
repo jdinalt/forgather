@@ -772,8 +772,14 @@ export interface DocsSearchHit {
   excerpt: string;
 }
 
+export type DocsSearchMode = "keyword" | "vector" | "hybrid";
+
 export interface DocsSearchResult {
   query: string;
+  /** Mode that actually ran (vector/hybrid fall back to keyword if no index). */
+  mode: DocsSearchMode;
+  /** Whether a prebuilt vector index exists (gates the UI toggle). */
+  vector_available: boolean;
   hits: DocsSearchHit[];
 }
 
@@ -2336,9 +2342,9 @@ export const api = {
 
   docsFile: (path: string) =>
     fetchJson<DocsFile>(`/api/docs/file?path=${encodeURIComponent(path)}`),
-  docsSearch: (q: string, limit = 8) =>
+  docsSearch: (q: string, mode: DocsSearchMode = "keyword", limit = 8) =>
     fetchJson<DocsSearchResult>(
-      `/api/docs/search?q=${encodeURIComponent(q)}&limit=${limit}`,
+      `/api/docs/search?q=${encodeURIComponent(q)}&limit=${limit}&mode=${mode}`,
     ),
   docsAssetUrl: (path: string): string =>
     `/api/docs/asset?path=${encodeURIComponent(path)}`,

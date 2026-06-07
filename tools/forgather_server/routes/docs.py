@@ -178,40 +178,61 @@ def docs_root():
 class DocsSearchHit(BaseModel):
     path: str  # absolute SOURCE path, openable via /api/docs/file
     rel: str  # path relative to docs/
-    score: int
+    score: float  # keyword = term-count; vector/hybrid = cosine / RRF score
     excerpt: str
 
 
 class DocsSearchResponse(BaseModel):
     query: str
+    mode: str  # the mode that actually ran (vector/hybrid fall back to keyword)
+    vector_available: bool  # whether a prebuilt index exists (for the UI toggle)
     hits: List[DocsSearchHit]
 
 
-@router.get("/docs/search", response_model=DocsSearchResponse)
-def docs_search_endpoint(q: str, limit: int = 8):
-    """Keyword search over the docs corpus (user-facing — excludes CLAUDE.*).
+_VALID_MODES = ("keyword", "vector", "hybrid")
 
-    Returns ranked excerpts. ``path`` is the absolute *source* path so the Docs
-    viewer opens it through the normal /docs/file flow (which serves the rendered
-    .built variant and resolves relative assets correctly). A blank query yields
-    an empty result rather than an error so the UI can call it freely.
+
+@router.get("/docs/search", response_model=DocsSearchResponse)
+def docs_search_endpoint(q: str, limit: int = 8, mode: str = "keyword"):
+    """Search the docs corpus (user-facing — excludes CLAUDE.*).
+
+    ``mode`` is keyword (default), vector, or hybrid; vector/hybrid require a
+    prebuilt index (``forgather docs index``) and fall back to keyword when it's
+    absent — the returned ``mode`` reflects what actually ran. ``path`` is the
+    absolute *source* path so the Docs viewer opens it through the normal
+    /docs/file flow (which serves the rendered .built variant and resolves
+    relative assets). A blank query yields an empty result, not an error.
     """
+    from .. import docs_vector
+
+    if mode not in _VALID_MODES:
+        raise HTTPException(
+            status_code=400, detail=f"mode must be one of {_VALID_MODES}"
+        )
+    vector_available = docs_vector.index_available()
     if not (q or "").strip():
-        return DocsSearchResponse(query="", hits=[])
+        return DocsSearchResponse(
+            query="", mode="keyword", vector_available=vector_available, hits=[]
+        )
     result = docs_search.search(
-        q, include_agent_docs=False, max_hits=max(1, min(int(limit), 50))
+        q, include_agent_docs=False, max_hits=max(1, min(int(limit), 50)), mode=mode
     )
     docs_dir = Path(sr.forgather_repo_root()) / "docs"
     hits = [
         DocsSearchHit(
             path=str(docs_dir / h["rel"]),
             rel=h["rel"],
-            score=h["score"],
+            score=float(h["score"]),
             excerpt=h["excerpt"],
         )
         for h in result["hits"]
     ]
-    return DocsSearchResponse(query=result["query"], hits=hits)
+    return DocsSearchResponse(
+        query=result["query"],
+        mode=result.get("mode", "keyword"),
+        vector_available=vector_available,
+        hits=hits,
+    )
 
 
 @router.get("/docs/repo-root", response_model=DocsRepoRootResponse)

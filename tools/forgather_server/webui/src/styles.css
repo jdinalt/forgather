@@ -3317,6 +3317,9 @@ li.config.selected button.link:hover {
   margin-left: auto;
   position: relative;
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .docs-search-input {
   width: 200px;
@@ -3329,6 +3332,16 @@ li.config.selected button.link:hover {
   color: var(--fg);
   padding: 0 8px;
   font-size: 12px;
+}
+.docs-search-mode {
+  height: 24px;
+  box-sizing: border-box;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--fg);
+  font-size: 11px;
+  padding: 0 4px;
 }
 .docs-search-results {
   position: absolute;

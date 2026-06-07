@@ -19,8 +19,35 @@ def docs_cmd(args) -> int:
         return _build_cmd(args)
     if action == "clean":
         return _clean_cmd(args)
+    if action == "index":
+        return _index_cmd(args)
     print(f"unknown docs action: {action}", file=sys.stderr)
     return 2
+
+
+def _index_cmd(args) -> int:
+    """Build (or check) the docs vector-search index."""
+    from forgather import docs_index
+
+    repo_root, _ = _resolve_paths(args)
+    model = getattr(args, "model", None) or docs_index.DEFAULT_MODEL
+
+    if getattr(args, "check", False):
+        stale = docs_index.is_stale(repo_root, model_name=model)
+        print(f"docs index: {'stale — rebuild needed' if stale else 'up-to-date'}")
+        return 1 if stale else 0
+
+    report = docs_index.build_index(
+        repo_root, model_name=model, clean=bool(getattr(args, "clean", False))
+    )
+    if not getattr(args, "quiet", False):
+        if report.cleaned:
+            print(f"cleaned: {report.out_dir}")
+        print(
+            f"docs index: {report.chunks} chunks from {report.pages} pages "
+            f"-> {report.out_dir} (model={report.model_name})"
+        )
+    return 0
 
 
 def _resolve_paths(args) -> tuple[Path, Path]:

@@ -30,6 +30,11 @@ dependencies = [
     "torch ~= 2.10.0",
     "torchvision ~= 0.24",
     "transformers ~= 5.0",
+    # Embedding model for the optional docs vector/hybrid search. Imported
+    # lazily (only when building the index or running a vector search), so it
+    # adds no import-time cost; torch is already a dependency, so the marginal
+    # install/container weight is small.
+    "sentence-transformers >= 3.0",
     "tqdm ~= 4.65",
     "aiohttp ~= 3.9",
     "torchao ~= 0.16.0",
