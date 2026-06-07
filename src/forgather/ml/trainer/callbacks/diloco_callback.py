@@ -162,6 +162,35 @@ class DiLoCoCallback(TrainerCallback):
             verify_tls = _env_bool("DILOCO_VERIFY_TLS", True)
         self.verify_tls = verify_tls
 
+        # Sync-backend selection (issue #154). Default "http" keeps the
+        # central-parameter-server path. "shared_memory" routes the tensor legs
+        # through a co-located shared-memory region; it needs a per-host group
+        # rendezvous (group dir + size). The init weights default to the
+        # checkpoint the coordinator advertises in /info, with an env override.
+        from forgather.ml.diloco import (
+            diloco_backend,
+            diloco_shm_group_dir,
+            diloco_shm_group_size,
+            diloco_shm_init_checkpoint,
+        )
+
+        self.backend_kind = diloco_backend()
+        if self.backend_kind not in ("http", "shared_memory"):
+            raise ValueError(
+                f"DILOCO_BACKEND must be 'http' or 'shared_memory', "
+                f"got {self.backend_kind!r}"
+            )
+        self.shm_group_dir = diloco_shm_group_dir()
+        self.shm_group_size = diloco_shm_group_size()
+        self.shm_init_checkpoint = diloco_shm_init_checkpoint() or None
+        if self.backend_kind == "shared_memory" and (
+            not self.shm_group_dir or self.shm_group_size < 1
+        ):
+            raise ValueError(
+                "DILOCO_BACKEND=shared_memory requires DILOCO_SHM_GROUP_DIR and "
+                "DILOCO_SHM_GROUP_SIZE (>= 1)."
+            )
+
         # Worker instance (created in on_load_model_weights)
         self._worker = None
 
@@ -216,7 +245,49 @@ class DiLoCoCallback(TrainerCallback):
             "dylu": bool(ecs.get("dylu", False)),
             "num_fragments": int(ecs.get("num_fragments_default", 1)),
             "heartbeat_timeout": ecs.get("heartbeat_timeout"),
+            # The coordinator's init reference, for a non-HTTP backend that
+            # seeds from a checkpoint rather than receiving weights over the
+            # wire (issue #154). Broadcast to followers with the rest.
+            "model_checkpoint_dir": info.get("model_checkpoint_dir"),
         }
+
+    def _make_sync_backend(self, settings: Dict[str, Any]):
+        """Build the worker's sync backend from the selection knob + settings.
+
+        Returns ``None`` for the default HTTP path (the worker constructs its
+        own ``HttpStarBackend``), or a ``SharedMemoryBackend`` for the
+        co-located single-host regime. The shared-memory aggregator seeds its
+        region from the coordinator's advertised checkpoint
+        (``settings["model_checkpoint_dir"]``), overridable by
+        ``DILOCO_SHM_INIT_CHECKPOINT``.
+        """
+        if self.backend_kind != "shared_memory":
+            return None
+
+        if int(settings.get("num_fragments", 1)) > 1:
+            raise ValueError(
+                "DILOCO_BACKEND=shared_memory does not support streaming "
+                "fragments (num_fragments > 1); the coordinator advertised "
+                f"num_fragments={settings.get('num_fragments')}."
+            )
+
+        init_checkpoint = self.shm_init_checkpoint or settings.get(
+            "model_checkpoint_dir"
+        )
+        if not init_checkpoint:
+            raise ValueError(
+                "DILOCO_BACKEND=shared_memory needs an init checkpoint: the "
+                "coordinator did not advertise model_checkpoint_dir in /info "
+                "and DILOCO_SHM_INIT_CHECKPOINT is unset."
+            )
+
+        from forgather.ml.diloco.shared_memory_backend import SharedMemoryBackend
+
+        return SharedMemoryBackend(
+            group_dir=self.shm_group_dir,
+            group_size=self.shm_group_size,
+            init_checkpoint=init_checkpoint,
+        )
 
     def _validate_heartbeat(self, heartbeat_timeout) -> None:
         """Fail loud if the client's heartbeat cadence can't beat the
@@ -433,6 +504,7 @@ class DiLoCoCallback(TrainerCallback):
             heartbeat_interval=self.heartbeat_interval,
             num_fragments=self.num_fragments,
             max_sync_retries=self.max_sync_retries,
+            backend=self._make_sync_backend(settings),
             param_view=param_view,
             auth_token=self.auth_token,
             verify_tls=self.verify_tls,

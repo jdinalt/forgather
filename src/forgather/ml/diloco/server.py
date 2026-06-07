@@ -2736,6 +2736,11 @@ class DiLoCoServer:
         """
         response = {
             "output_dir": self.output_dir,
+            # The checkpoint dir the server loaded its master weights from. A
+            # non-HTTP backend (e.g. shared-memory, on the same host) can seed
+            # its region from this same init reference instead of receiving the
+            # weights over the wire (issue #154 "join returns a reference").
+            "model_checkpoint_dir": self._loaded_checkpoint_dir,
             "mode": "async" if self.async_mode else "sync",
             "async_mode": self.async_mode,
             "num_workers": self.num_workers,

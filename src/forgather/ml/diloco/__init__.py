@@ -24,7 +24,14 @@ import importlib
 from typing import TYPE_CHECKING
 
 # Lightweight, stdlib-only — safe to import eagerly and frequently hot-pathed.
-from .env import diloco_is_enabled, diloco_server_addr
+from .env import (
+    diloco_backend,
+    diloco_is_enabled,
+    diloco_server_addr,
+    diloco_shm_group_dir,
+    diloco_shm_group_size,
+    diloco_shm_init_checkpoint,
+)
 
 # name -> submodule (relative). Most pull in torch; load on first access only.
 # (``sync_backend`` is torch-free at import, but is deferred here too for a
@@ -55,6 +62,10 @@ __all__ = [
     "CoordinatorClient",
     "diloco_is_enabled",
     "diloco_server_addr",
+    "diloco_backend",
+    "diloco_shm_group_dir",
+    "diloco_shm_group_size",
+    "diloco_shm_init_checkpoint",
 ]
 
 
