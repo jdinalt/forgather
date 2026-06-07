@@ -22,10 +22,17 @@ import sys
 def submit_cmd(args):
     from . import submit_orch
 
+    # The collective backend runs N replicas as ONE torchrun job bound to a
+    # coordinator — its own dispatch path, distinct from the N-worker-job flow.
+    # It implies DiLoCo mode (it needs the coordinator for /info + dataset shards).
+    collective_mode = (getattr(args, "backend", None) or "http").strip().lower() == (
+        "collective"
+    )
     diloco_mode = (
         getattr(args, "diloco", False)
         or bool(getattr(args, "diloco_server", None))
         or getattr(args, "resume_workers", False)
+        or collective_mode
     )
     run_global = getattr(args, "run_global", False)
     # Composition: --global + --diloco-server is a multi-node bundle whose
@@ -84,6 +91,13 @@ def submit_cmd(args):
     # as N independent single-node workers.
     if diloco_compose:
         return _submit_global(args, submit_orch, config)
+    if collective_mode:
+        # Collective backend: one torchrun job of N replicas bound to a
+        # coordinator (not N worker jobs). Intercepted before the worker path.
+        from .diloco_orch import launch_collective
+
+        dynamic_args = submit_orch.collect_dynamic_args(args)
+        return launch_collective(args, dynamic_args) or 0
     if diloco_mode:
         # DiLoCo worker(s) via the shared worker-launch impl. --diloco selects
         # the mode; --diloco-server (dest=diloco_server) pins a param-server;
@@ -146,12 +160,30 @@ def _check_mode_flags(args, diloco_mode, run_global):
             "doesn't apply to --global; size each node with --member HOST:GPUS.",
         )
 
-    # The shared-memory backend has the co-located workers share a CPU master
-    # region on one host; it can't span a multi-node fan-out.
-    if run_global and getattr(args, "backend", "http") == "shared_memory":
+    # The shared-memory / collective backends are single-host; they can't span a
+    # multi-node fan-out.
+    backend = (getattr(args, "backend", None) or "http").strip().lower()
+    if run_global and backend in ("shared_memory", "collective"):
         return _err(
-            ["--backend shared_memory"],
+            [f"--backend {backend}"],
             "is single-host; not compatible with --global.",
+        )
+
+    # --diloco-replicate sizes the collective backend's one-job replica count;
+    # it's meaningless for the http / shared-memory (N-job) backends.
+    if getattr(args, "replicate", 1) != 1 and backend != "collective":
+        return _err(
+            ["--diloco-replicate"],
+            "applies only to --backend collective.",
+        )
+
+    # Collective is one job of N replicas; --diloco-worker-count (N separate
+    # jobs) is a different model and doesn't compose with it.
+    if backend == "collective" and getattr(args, "count", 1) != 1:
+        return _err(
+            ["--diloco-worker-count"],
+            "is the N-separate-jobs model; --backend collective is one job — "
+            "size it with --diloco-replicate.",
         )
 
     return None

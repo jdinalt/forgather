@@ -622,10 +622,29 @@ DILOCO_SERVER=https://127.0.0.1:8512 DILOCO_BACKEND=collective \
 ```
 
 Every replica syncs at the same `H`-step boundary; the all-reduce is the barrier
-(a faster replica waits there for the others). Pipeline / DDP composition on the
-`inner` axis, a `forgather submit` flag, the streaming-fragment path, and a
-fault-tolerant quorum (a dead peer currently hangs the all-reduce) are
-follow-ups; for the internals see
+(a faster replica waits there for the others).
+
+### Via the scheduler (`forgather submit`)
+
+The env-var form above is the manual recipe; the scheduler launches the same
+group as a first-class option. With a coordinator running, pass `--backend
+collective` and size the group with `--diloco-replicate`:
+
+```bash
+forgather -t <config>.yaml submit --backend collective \
+    --diloco-replicate 2 --diloco-server <server-id>
+```
+
+Unlike the shared-memory backend (which enqueues N worker jobs), collective is
+**one** scheduled job: the scheduler reserves `--diloco-replicate` GPUs, sets
+`nproc_per_node` to the same, and derives `DILOCO_BACKEND=collective` +
+`DILOCO_REPLICATE` for it (the `DILOCO_WORKER_ID` base is made per-replica at the
+entrypoint). Because the backend is single-host, `--backend collective` can't be
+combined with `--global`.
+
+Pipeline / DDP composition on the `inner` axis, the webui selector, the
+streaming-fragment path, and a fault-tolerant quorum (a dead peer currently hangs
+the all-reduce) are follow-ups; for the internals see
 [`diloco-architecture.md`](diloco-architecture.md#collective-backend).
 
 ## Programmatic API

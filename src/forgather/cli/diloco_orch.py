@@ -1031,6 +1031,102 @@ def launch_workers(args, dynamic_args):
     )
 
 
+def launch_collective(args, dynamic_args):
+    """Enqueue ONE collective DiLoCo training job: N replicas in a single
+    torchrun (``nproc = replicate``) that all-reduce pseudo-gradients, bound to a
+    coordinator for ``/info`` + the dataset shard dispatch.
+
+    Distinct from ``launch_workers`` (N separate worker jobs): the collective
+    backend's torchrun world *is* the replica group, so it's one job whose
+    ``job_params.nproc`` sizes the world and whose ``job_params.diloco`` carries
+    the coordinator + ``backend=collective`` (the scheduler derives the
+    ``DILOCO_*`` env, including ``DILOCO_REPLICATE``).
+    """
+    from forgather.utils import generate_name
+
+    from .server_client import AuthRequired, ServerUnreachable
+
+    config = _resolve_config_name(args)
+    if not config:
+        print(
+            "error: launching a collective run needs a config — none given (-t) "
+            "and no default_config in the project's meta.yaml. Pass -t <config>.",
+            file=sys.stderr,
+        )
+        return 1
+
+    replicate = int(getattr(args, "replicate", 1) or 1)
+    if replicate < 1:
+        print(
+            f"error: --diloco-replicate must be >= 1, got {replicate}",
+            file=sys.stderr,
+        )
+        return 1
+
+    client = _orchestrator(args)
+    try:
+        dataset_source = resolve_dataset_source(client, args)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    server = _resolve_worker_server(client, args)
+    if server is None:
+        return 1
+
+    worker_id = (getattr(args, "worker_id", None) or "").strip() or generate_name()
+    hb = getattr(args, "heartbeat_interval", None)
+    priority = getattr(args, "priority", 0)
+    project_dir = getattr(args, "project_dir", ".")
+
+    diloco = {
+        "server_addr": server,
+        "worker_id": worker_id,
+        "backend": "collective",
+        "diloco_replicate": replicate,
+    }
+    if hb is not None:
+        diloco["heartbeat_interval"] = hb
+    # nproc sizes the torchrun world (= the replica count); requested_gpus
+    # reserves that many GPUs for the one job.
+    job_params = {"nproc": str(replicate), "diloco": diloco}
+
+    if getattr(args, "dry_run", False):
+        print(
+            f"[dry-run] would enqueue 1 collective DiLoCo job against {server}: "
+            f"config={config} replicate={replicate} (nproc={replicate}, "
+            f"gpus={replicate}) worker_id={worker_id} priority={priority}"
+        )
+        if dynamic_args:
+            print(f"  dynamic_args={dynamic_args}")
+        return 0
+
+    try:
+        item = client.enqueue_job(
+            project_dir=project_dir,
+            config=config,
+            job_type="training",
+            job_params=job_params,
+            requested_gpus=replicate,
+            priority=priority,
+            dynamic_args=dynamic_args or None,
+            dataset_source=dataset_source,
+        )
+    except (ServerUnreachable, AuthRequired, RuntimeError) as e:
+        print(f"error: failed to enqueue collective job: {e}", file=sys.stderr)
+        return 1
+
+    queue_id = item.get("queue_id")
+    if getattr(args, "json", False):
+        print(json.dumps([{"worker_id": worker_id, "queue_id": queue_id}], indent=2))
+        return 0
+    print(
+        f"Enqueued 1 collective DiLoCo job ({replicate} replicas) against "
+        f"{server}: {worker_id} {queue_id}"
+    )
+    print("The scheduler will start it once that many GPUs are free.")
+    return 0
+
+
 _PP_SUFFIX = re.compile(r"_pp\d+$")
 
 

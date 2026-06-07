@@ -190,13 +190,29 @@ def create_submit_parser(global_args):
     )
     diloco.add_argument(
         "--backend",
-        choices=("http", "shared_memory"),
+        choices=("http", "shared_memory", "collective"),
         default="http",
         help=(
             "Sync backend for the worker(s). 'http' (default) syncs through the\n"
-            "param server. 'shared_memory' has the co-located workers on one host\n"
-            "share a CPU master region instead (single-host only; auto-configures\n"
-            "the group). Not compatible with --global."
+            "param server. 'shared_memory' has co-located workers on one host\n"
+            "share a CPU master region (single-host; N worker jobs).\n"
+            "'collective' runs N independent replicas as one torchrun job that\n"
+            "all-reduce pseudo-gradients (single-host; size with\n"
+            "--diloco-replicate). 'shared_memory'/'collective' are not\n"
+            "compatible with --global."
+        ),
+    )
+    diloco.add_argument(
+        "--diloco-replicate",
+        dest="replicate",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "Collective backend only: number of independent replicas in one\n"
+            "torchrun job (nproc_per_node = N, also the GPU reservation). The\n"
+            "replicas all-reduce among themselves; the coordinator provides\n"
+            "/info + the dataset shard dispatch. Default: 1."
         ),
     )
 

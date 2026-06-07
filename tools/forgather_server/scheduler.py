@@ -900,7 +900,8 @@ def _diloco_env_from_job_params(
     # worker reads is derived here, so the CLI and webui don't duplicate it. The
     # group dir is one per submit (from shm_group_id), shared by every co-located
     # worker; the group size is the worker count.
-    if (diloco.get("backend") or "http").strip().lower() == "shared_memory":
+    backend_kind = (diloco.get("backend") or "http").strip().lower()
+    if backend_kind == "shared_memory":
         env["DILOCO_BACKEND"] = "shared_memory"
         group_id = (str(diloco.get("shm_group_id") or "")).strip()
         if group_id:
@@ -910,6 +911,17 @@ def _diloco_env_from_job_params(
         size = diloco.get("shm_group_size")
         if size:
             env["DILOCO_SHM_GROUP_SIZE"] = str(int(size))
+    elif backend_kind == "collective":
+        # Collective backend (issue #154): N replicas in one torchrun job
+        # all-reduce pseudo-grads. The torchrun world is sized by job_params.nproc
+        # (the separate nproc_override path); here we only set the backend +
+        # replicate degree the DistributedEnvironment reads to build the diloco
+        # mesh axis. DILOCO_WORKER_ID (the base) is already set above; the
+        # train_script rewrites it per-rank.
+        env["DILOCO_BACKEND"] = "collective"
+        replicate = diloco.get("diloco_replicate")
+        if replicate:
+            env["DILOCO_REPLICATE"] = str(int(replicate))
     return env
 
 

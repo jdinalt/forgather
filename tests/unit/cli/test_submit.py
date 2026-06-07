@@ -38,6 +38,8 @@ def _submit_args(**over):
         wait_timeout=3600,
         poll_interval=10,
         backend="http",
+        replicate=1,
+        count=1,
         remainder=[],
     )
     base.update(over)
@@ -108,6 +110,57 @@ def test_shared_memory_backend_rejects_global(monkeypatch, capsys):
     assert rc == 1
     err = capsys.readouterr().err
     assert "shared_memory" in err and "single-host" in err
+
+
+def test_collective_routes_to_launch_collective(monkeypatch):
+    # --backend collective is one torchrun job (not N workers): it routes to
+    # launch_collective, not the worker path, carrying the replicate degree.
+    from forgather.cli import diloco_orch
+
+    captured = {}
+    monkeypatch.setattr(submit_orch, "collect_dynamic_args", lambda a: {"x": 1})
+
+    def fake_launch_collective(args, dynamic_args):
+        captured["replicate"] = args.replicate
+        captured["backend"] = args.backend
+        captured["dyn"] = dynamic_args
+        return 0
+
+    monkeypatch.setattr(diloco_orch, "launch_collective", fake_launch_collective)
+    rc = submit_mod.submit_cmd(
+        _submit_args(backend="collective", diloco_server="srv1", replicate=4)
+    )
+    assert rc == 0
+    assert captured["replicate"] == 4 and captured["backend"] == "collective"
+    assert captured["dyn"] == {"x": 1}
+
+
+def test_collective_rejects_global(capsys):
+    # Collective is single-host — not compatible with the multi-node fan-out.
+    rc = submit_mod.submit_cmd(
+        _submit_args(backend="collective", run_global=True, diloco_server="srv1")
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "collective" in err and "single-host" in err
+
+
+def test_replicate_requires_collective(capsys):
+    # --diloco-replicate is the collective one-job knob; meaningless elsewhere.
+    rc = submit_mod.submit_cmd(_submit_args(replicate=2, diloco=True))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "--diloco-replicate" in err and "collective" in err
+
+
+def test_worker_count_incompatible_with_collective(capsys):
+    # Collective is one job; --diloco-worker-count (N jobs) is a different model.
+    rc = submit_mod.submit_cmd(
+        _submit_args(backend="collective", diloco_server="srv1", count=2)
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "--diloco-worker-count" in err
 
 
 def test_no_config_errors(monkeypatch):
