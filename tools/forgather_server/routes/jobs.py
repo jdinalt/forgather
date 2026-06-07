@@ -435,6 +435,41 @@ def tty_path(job_id: str):
     return {"tty_log_path": _tty_path_for(job_id)}
 
 
+def read_tty_tail(
+    path: Optional[str], *, max_bytes: int, tail_lines: Optional[int] = None
+) -> str:
+    """Read at most ``max_bytes`` from the END of a TTY log file.
+
+    Seeks to the tail and drops the leading partial line for cleanliness
+    (a bare ``f.read()`` would OOM the server on a multi-hundred-MB training
+    log). If ``tail_lines`` is given, the result is further trimmed to its
+    last N lines. Returns ``""`` when ``path`` is falsy or the file is
+    missing. Shared by the HTTP ``tty_dump`` route and the agent's
+    ``read_job_output`` tool (which passes a tiny cap to protect the model's
+    context window).
+    """
+    if not path:
+        return ""
+    import os as _os
+
+    try:
+        with open(path, "rb") as f:
+            try:
+                size = _os.fstat(f.fileno()).st_size
+            except OSError:
+                size = 0
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+                f.readline()  # drop the leading partial line
+            data = f.read()
+    except FileNotFoundError:
+        return ""
+    text = data.decode("utf-8", errors="replace")
+    if tail_lines is not None:
+        text = "\n".join(text.splitlines()[-tail_lines:])
+    return text
+
+
 @router.get("/jobs/{job_id}/tty", response_class=PlainTextResponse)
 def tty_dump(job_id: str):
     """Captured stdout/stderr (tail; no follow).
@@ -444,25 +479,14 @@ def tty_dump(job_id: str):
     a bare ``f.read()`` would OOM the server on each click.
     """
     path = _tty_path_for(job_id)
-    try:
-        import os as _os
+    import os as _os
 
-        with open(path, "rb") as f:
-            try:
-                size = _os.fstat(f.fileno()).st_size
-            except OSError:
-                size = 0
-            if size > TTY_DUMP_MAX_BYTES:
-                f.seek(size - TTY_DUMP_MAX_BYTES)
-                # Drop the leading partial line for cleanliness.
-                f.readline()
-            data = f.read()
-            return PlainTextResponse(
-                data.decode("utf-8", errors="replace"),
-                media_type="text/plain; charset=utf-8",
-            )
-    except FileNotFoundError:
+    if not _os.path.exists(path):
         raise HTTPException(status_code=404, detail=f"tty file missing: {path}")
+    return PlainTextResponse(
+        read_tty_tail(path, max_bytes=TTY_DUMP_MAX_BYTES),
+        media_type="text/plain; charset=utf-8",
+    )
 
 
 @router.websocket("/jobs/{job_id}/tty")

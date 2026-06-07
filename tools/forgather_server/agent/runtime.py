@@ -25,7 +25,7 @@ from .. import agent_profiles_store as profiles_store
 from .. import agent_tls
 from .loop import AgentLoop
 from .registry import ToolRegistry
-from . import tools_authoring, tools_readonly
+from . import tools_authoring, tools_jobs, tools_readonly
 
 log = logging.getLogger("forgather_server.agent.runtime")
 
@@ -176,6 +176,7 @@ def get_registry() -> ToolRegistry:
         reg = ToolRegistry()
         tools_readonly.register_all(reg)
         tools_authoring.register_all(reg)
+        tools_jobs.register_all(reg)
         _registry = reg
     return _registry
 
