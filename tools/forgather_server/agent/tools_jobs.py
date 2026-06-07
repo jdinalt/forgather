@@ -18,11 +18,12 @@ validated path the HTTP route uses (``queue_ops.validate_and_enqueue``).
 from __future__ import annotations
 
 import logging
+import shlex
 from typing import Any, Dict, List, Optional
 
-from .. import job_records, queue_store
+from .. import dataset_ops, job_records, queue_ops, queue_store
 from ..routes.jobs import read_tty_tail
-from .registry import READ, ToolRegistry, ToolSpec
+from .registry import CONFIRM, READ, Proposal, ToolRegistry, ToolSpec
 
 log = logging.getLogger("forgather_server.agent.tools_jobs")
 
@@ -123,6 +124,71 @@ def _read_job_output(args: Dict[str, Any]) -> Any:
     }
 
 
+# ---- run a dataset job (CONFIRM) -------------------------------------------
+
+
+def _run_dataset(args: Dict[str, Any]) -> Proposal:
+    project_dir = args["project_dir"]
+    config_name = args["config_name"]
+    target = args.get("target") or "train_dataset_split"
+    examples = args.get("examples")
+    truncate = args.get("truncate")
+    tokenizer_path = args.get("tokenizer_path") or None
+    dynamic_args = args.get("dynamic_args") or {}
+
+    # Preview the exact command the job will run (no side effect).
+    cmd = dataset_ops.build_dataset_command(
+        project_dir=project_dir,
+        config_name=config_name,
+        dynamic_args=dynamic_args,
+        target=target,
+        examples=int(examples) if examples not in (None, "") else None,
+        truncate=int(truncate) if truncate not in (None, "") else None,
+        tokenizer_path=tokenizer_path,
+    )
+    cmd_str = shlex.join(cmd)
+
+    job_params: Dict[str, Any] = {"target": target}
+    if examples not in (None, ""):
+        job_params["examples"] = int(examples)
+    if truncate not in (None, ""):
+        job_params["truncate"] = int(truncate)
+    if tokenizer_path:
+        job_params["tokenizer_path"] = tokenizer_path
+
+    def commit() -> str:
+        item = queue_ops.validate_and_enqueue(
+            project_dir=project_dir,
+            config=config_name,
+            dynamic_args=dynamic_args,
+            requested_gpus=0,  # dataset jobs are CPU-only
+            job_type="dataset",
+            job_params=job_params,
+            enforce_fs_root=True,
+        )
+        return (
+            f"enqueued dataset job {item.queue_id} (target={target}). "
+            f"Poll list_jobs / read_job_output('{item.queue_id}') for progress; "
+            f"the first build downloads + builds the dataset and can be slow. "
+            f"Do not report it finished until its status is terminal "
+            f"(done / failed / aborted)."
+        )
+
+    return Proposal(
+        title=f"Build dataset: {config_name} ({target})",
+        summary="Run a `dataset` job: materializes the target, which downloads/"
+        "builds the data and prints sample examples.",
+        extra={
+            "command": cmd_str,
+            "target": target,
+            "warning": "The FIRST build downloads and builds the dataset and "
+            "can take a long time (large datasets especially). It runs as a "
+            "background scheduler job; watch it with list_jobs / read_job_output.",
+        },
+        commit=commit,
+    )
+
+
 # ---- registration ----------------------------------------------------------
 
 
@@ -169,5 +235,39 @@ def register_all(reg: ToolRegistry) -> None:
             },
             handler=_read_job_output,
             risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="run_dataset",
+            description=(
+                "Run a dataset config as a scheduler job (the equivalent of "
+                "`forgather ... dataset --target ...`). Use to materialize a "
+                "split — which downloads/builds the data — and to smoke-test it "
+                "by printing examples. target defaults to train_dataset_split "
+                "(a raw split needing no tokenizer); tokenized splits "
+                "(train_dataset/eval_dataset/test_dataset) need tokenizer_path. "
+                "examples = how many to print; truncate = max chars per example. "
+                "Approval required (it runs code and downloads data). It returns "
+                "immediately with a queue_id; the job runs in the background, so "
+                "tell the user the first build can be slow, then poll list_jobs "
+                "/ read_job_output and only report success once status is "
+                "terminal."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "project_dir": {"type": "string"},
+                    "config_name": {"type": "string"},
+                    "target": {"type": "string", "description": "Dataset target (default \"train_dataset_split\"). Raw: train/validation/test_dataset_split; tokenized: train_dataset/eval_dataset/test_dataset (need tokenizer_path)."},
+                    "examples": {"type": "integer", "description": "Number of examples to print (-n)."},
+                    "truncate": {"type": "integer", "description": "Max characters per example (--truncate)."},
+                    "tokenizer_path": {"type": "string", "description": "Tokenizer path (-T), required only for tokenized targets."},
+                    "dynamic_args": {"type": "object", "description": "Config-specific args (from inspect_config's dynamic_args), keyed by dest."},
+                },
+                "required": ["project_dir", "config_name"],
+            },
+            handler=_run_dataset,
+            risk=CONFIRM,
         )
     )

@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import pytest
 
-from forgather_server import job_records, queue_store
+from forgather_server import dataset_ops, job_records, queue_ops, queue_store
 from forgather_server.agent import tools_jobs
-from forgather_server.agent.registry import READ, ToolRegistry
+from forgather_server.agent.registry import CONFIRM, READ, Proposal, ToolRegistry
 from forgather_server.routes import jobs as jobs_route
 
 
@@ -26,10 +26,11 @@ def _item(**kw):
 def test_jobs_tools_registered():
     reg = ToolRegistry()
     tools_jobs.register_all(reg)
-    names = {s.name for s in reg.specs()}
-    assert {"list_jobs", "read_job_output"} <= names
-    for s in reg.specs():
-        assert s.risk == READ  # phase 1 adds only read tools
+    by_name = {s.name: s for s in reg.specs()}
+    assert {"list_jobs", "read_job_output", "run_dataset"} <= set(by_name)
+    assert by_name["list_jobs"].risk == READ
+    assert by_name["read_job_output"].risk == READ
+    assert by_name["run_dataset"].risk == CONFIRM  # gated: runs code + downloads
 
 
 def test_list_jobs_projects_safe_fields_and_merges_queue(monkeypatch):
@@ -112,6 +113,59 @@ def test_read_job_output_errors(monkeypatch):
     )
     with pytest.raises(ValueError, match="no console output"):
         tools_jobs._read_job_output({"queue_id": "q1"})
+
+
+def test_run_dataset_preview_builds_command_no_enqueue(monkeypatch):
+    captured = {}
+
+    def fake_build(**kw):
+        captured.update(kw)
+        return ["python", "-m", "forgather.cli", "dataset", "--target", kw["target"]]
+
+    enqueued = []
+    monkeypatch.setattr(dataset_ops, "build_dataset_command", fake_build)
+    monkeypatch.setattr(
+        queue_ops, "validate_and_enqueue", lambda **kw: enqueued.append(kw)
+    )
+
+    prop = tools_jobs._run_dataset(
+        {"project_dir": "/p", "config_name": "c.yaml", "examples": 3, "truncate": 64}
+    )
+    assert isinstance(prop, Proposal)
+    # Default target; examples/truncate threaded into the preview command.
+    assert captured["target"] == "train_dataset_split"
+    assert captured["examples"] == 3 and captured["truncate"] == 64
+    assert "command" in prop.extra and "train_dataset_split" in prop.extra["command"]
+    assert "slow" in prop.extra["warning"].lower() or "long time" in prop.extra["warning"].lower()
+    assert prop.commit is not None
+    # Preview must NOT enqueue anything.
+    assert enqueued == []
+
+
+def test_run_dataset_commit_enqueues(monkeypatch):
+    monkeypatch.setattr(
+        dataset_ops, "build_dataset_command", lambda **kw: ["python", "dataset"]
+    )
+
+    class _Item:
+        queue_id = "q_new"
+
+    seen = {}
+
+    def fake_enqueue(**kw):
+        seen.update(kw)
+        return _Item()
+
+    monkeypatch.setattr(queue_ops, "validate_and_enqueue", fake_enqueue)
+    prop = tools_jobs._run_dataset(
+        {"project_dir": "/p", "config_name": "c.yaml", "target": "validation_dataset_split", "truncate": 64}
+    )
+    msg = prop.commit()
+    assert seen["job_type"] == "dataset"
+    assert seen["requested_gpus"] == 0
+    assert seen["enforce_fs_root"] is True
+    assert seen["job_params"] == {"target": "validation_dataset_split", "truncate": 64}
+    assert "q_new" in msg
 
 
 def test_read_tty_tail_helper(tmp_path):
