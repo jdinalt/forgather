@@ -122,6 +122,12 @@ function isPathUnder(parent: string | null | undefined, child: string): boolean 
   return c === p || c.startsWith(p + "/");
 }
 
+/** True when two paths are the same (trailing slashes normalized). */
+function samePath(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  return a.replace(/\/+$/, "") === b.replace(/\/+$/, "");
+}
+
 interface Props {
   onSelect: (project: ProjectInfo, config: ConfigInfo) => void;
   onProjectOpen: (project: ProjectInfo, defaultConfig: ConfigInfo) => void;
@@ -1571,12 +1577,15 @@ function ProjectConfigs({
   const [expandedConfigs, setExpandedConfigs] = useState<Set<string>>(new Set());
 
   // Resolve a reveal request to the config it should land on: the config whose
-  // file the path points at, or — for a project-level reveal (path is the
-  // project dir, e.g. a just-created project) — the default config.
+  // file the path points at, or — for a project-level reveal (path IS the
+  // project dir, e.g. a just-created project) — the default config. The
+  // project-level fallback uses an exact path match, not "under": otherwise a
+  // config in a physically-nested project would also make this (outer) project
+  // select its default.
   const revealRowRef = useRef<HTMLLIElement | null>(null);
   const revealTarget = reveal
     ? project.configs.find((c) => isPathUnder(c.path, reveal.path)) ??
-      (isPathUnder(project.project_dir, reveal.path)
+      (samePath(project.project_dir, reveal.path)
         ? project.configs.find((c) => c.name === project.default_config) ??
           project.configs[0]
         : undefined)

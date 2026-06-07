@@ -200,6 +200,7 @@ _FS_SKIP_DIRS = {
 }
 _FIND_MAX_RESULTS = 100
 _FIND_DIR_BUDGET = 50000  # cap directories walked, so a huge tree can't run away
+_FIND_SCAN_BUDGET = 300000  # cap total entries examined (one huge flat dir too)
 
 
 def _starting_roots() -> List[str]:
@@ -288,6 +289,7 @@ def _find_files(args: Dict[str, Any]) -> Any:
 
     matches: List[Dict[str, Any]] = []
     walked = 0
+    examined = 0  # total entries fnmatch'd — bounds CPU on one huge flat dir
     truncated = False
     for base in search_dirs:
         for dirpath, dirnames, filenames in os.walk(base):
@@ -300,6 +302,10 @@ def _find_files(args: Dict[str, Any]) -> Any:
                 truncated = True
                 break
             for name in dirnames + filenames:
+                examined += 1
+                if examined > _FIND_SCAN_BUDGET:
+                    truncated = True
+                    break
                 if name.startswith("."):
                     continue
                 if not fnmatch.fnmatch(name.lower(), glob):
