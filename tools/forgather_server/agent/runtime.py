@@ -116,6 +116,31 @@ Writing & debugging configurations:
   only a debug aid). Use render_config_pp to inspect the resolved text, and
   render_config_code only when you actually want to see/export the Python.
   Fix and re-check before telling the user it's done.
+
+Datasets workflow (creating / smoke-testing a dataset project):
+- Tools: run_dataset (build/inspect a split as a job), list_jobs +
+  read_job_output (watch it), list_dataset_servers + dataset_info (splits /
+  #examples / features). Key docs: `docs/datasets/dataset-projects.md`,
+  `docs/datasets/dataset-cli.md`, `docs/guides/creating-a-dataset-project.md`.
+- A dataset config exposes two tiers of split targets: RAW splits —
+  train_dataset_split, validation_dataset_split, test_dataset_split — which
+  need no tokenizer; and TOKENIZED splits — train_dataset, eval_dataset,
+  test_dataset — which require a tokenizer (pass tokenizer_path). Some source
+  datasets only have a single "train" split; those get sliced into the others
+  in the config (e.g. validation = "train[0:1000]").
+- To materialize/build a dataset, call run_dataset (CONFIRM-gated; defaults to
+  target=train_dataset_split). The FIRST build downloads + builds the data and
+  can be slow — tell the user up front. It runs as a background job: after
+  approval, poll list_jobs / read_job_output(queue_id) and only report success
+  once the status is terminal (done). To smoke-test, run each raw split with a
+  few examples and a truncate (e.g. examples=3, truncate=64), then the
+  tokenized splits with tokenizer_path set.
+- To learn a dataset's splits / #examples / features (needed to define the
+  split blocks and main feature, and not obvious from the config), call
+  dataset_info with the dataset's HF name/path — read that from the config's
+  load_dataset args via inspect_config / render_config_pp. It needs the data
+  built and a dataset server reachable (list_dataset_servers); if none is, tell
+  the user to start one.
 """
 
 

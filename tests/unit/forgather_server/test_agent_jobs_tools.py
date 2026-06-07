@@ -23,6 +23,14 @@ def _item(**kw):
     return queue_store.QueueItem(**base)
 
 
+def test_system_prompt_mentions_dataset_workflow():
+    from forgather_server.agent import runtime
+
+    p = runtime.SYSTEM_PROMPT
+    for tool in ("run_dataset", "dataset_info", "list_jobs", "read_job_output"):
+        assert tool in p
+
+
 def test_jobs_tools_registered():
     reg = ToolRegistry()
     tools_jobs.register_all(reg)
