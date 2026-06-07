@@ -193,3 +193,41 @@ def test_stream_turn_no_cache_control_when_disabled():
     asyncio.run(run())
     assert captured["system"] == "SYS"  # untouched string
     assert "cache_control" not in captured["messages"][-1]["content"][-1]
+
+
+def test_effective_max_tokens_counts_system_and_tools():
+    # Regression: a 32K-context model with auto max_tokens (==32768) must not
+    # grant a near-full-window output budget on the first request. The clamp
+    # has to count system + tools, not just messages, or prompt + output
+    # overflows the window (the reported 32224 + 545 > 32768 error).
+    p = AnthropicProvider(
+        model="qwen", base_url="http://localhost:8000",
+        max_tokens=32768, max_model_len=32768,
+    )
+    messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+    system = "s" * 6000
+    tools = [
+        {"name": f"t{i}", "description": "d" * 400,
+         "input_schema": {"type": "object", "properties": {}}}
+        for i in range(40)
+    ]
+
+    eff = p._effective_max_tokens(messages, system, tools)
+    est = p._estimate_prompt_tokens(messages, system, tools)
+    # The whole point: prompt estimate + output budget fits the window.
+    assert eff + est <= p._max_model_len
+    # And system + tools materially shrink the budget vs the old messages-only
+    # estimate (which would have returned ~the full window).
+    assert eff < p._effective_max_tokens(messages)
+
+
+def test_effective_max_tokens_handles_cache_wrapped_system():
+    # system can arrive as a list of cache_control-wrapped text blocks.
+    p = AnthropicProvider(
+        model="qwen", base_url="http://localhost:8000",
+        max_tokens=8192, max_model_len=32768,
+    )
+    messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+    sys_blocks = [{"type": "text", "text": "s" * 3000}]
+    est = p._estimate_prompt_tokens(messages, sys_blocks, None)
+    assert est >= 1000  # the 3000-char system block was counted
