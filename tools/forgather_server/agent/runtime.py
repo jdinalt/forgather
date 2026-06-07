@@ -45,6 +45,7 @@ _SEED_KEYS = {
     "ca_cert_pem",
     "max_tokens",
     "max_iterations",
+    "prompt_caching",
     "label",
 }
 
@@ -331,6 +332,12 @@ def _build_loop(profile) -> AgentLoop:
     # context window. The provider further clamps per request so output
     # never collides with the (growing) prompt.
     base_max_tokens = explicit_tokens if explicit_tokens > 0 else _auto_max_tokens(max_model_len)
+    # Prompt caching: "auto" -> on for Claude (no base_url), off for a custom
+    # base_url (vLLM does its own prefix caching and may reject cache_control).
+    caching_pref = (profile.prompt_caching or "auto").lower()
+    prompt_caching = {"on": True, "off": False}.get(
+        caching_pref, not bool(profile.base_url)
+    )
     provider = AnthropicProvider(
         model=model,
         api_key=api_key,
@@ -339,6 +346,7 @@ def _build_loop(profile) -> AgentLoop:
         max_tokens=base_max_tokens,
         max_model_len=max_model_len,
         verify=verify,
+        prompt_caching=prompt_caching,
     )
     return AgentLoop(
         provider,

@@ -164,6 +164,7 @@ class ProfileModel(BaseModel):
     has_imported_cert: bool
     max_tokens: int
     max_iterations: int
+    prompt_caching: str
 
 
 class ProfileWrite(BaseModel):
@@ -178,6 +179,7 @@ class ProfileWrite(BaseModel):
     ca_cert_pem: Optional[str] = None
     max_tokens: Optional[int] = None
     max_iterations: Optional[int] = None
+    prompt_caching: Optional[str] = None
 
 
 def _to_model(p) -> ProfileModel:
@@ -193,6 +195,7 @@ def _to_model(p) -> ProfileModel:
         has_imported_cert=bool(p.ca_cert_pem),
         max_tokens=p.max_tokens,
         max_iterations=p.max_iterations,
+        prompt_caching=getattr(p, "prompt_caching", "auto"),
     )
 
 

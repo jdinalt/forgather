@@ -46,6 +46,59 @@ _CONTEXT_SAFETY_MARGIN = 512
 _CHARS_PER_TOKEN = 3.0
 
 
+_EPHEMERAL = {"type": "ephemeral"}
+
+
+def _add_cache_control(
+    messages: List[Dict[str, Any]],
+    system: Optional[str],
+    tools: List[Dict[str, Any]],
+):
+    """Inject Anthropic ``cache_control`` breakpoints, without mutating inputs.
+
+    Two breakpoints (well under the limit of 4) cover the whole re-sent prefix:
+
+    - One on the stable head: the ``system`` block (which, per the cache order
+      tools -> system -> messages, caches tools + system together). When there
+      is no system prompt but there are tools, the breakpoint goes on the last
+      tool instead so the tool schemas still cache.
+    - One on the last message's last content block, so the conversation prefix
+      caches and grows incrementally turn over turn.
+
+    Copies only the containers it touches; the caller's stored conversation is
+    left unchanged.
+    """
+    system_out: Any = system
+    tools_out = tools
+    if system:
+        system_out = [{"type": "text", "text": system, "cache_control": _EPHEMERAL}]
+    elif tools:
+        tools_out = list(tools)
+        last_tool = dict(tools_out[-1])
+        last_tool["cache_control"] = _EPHEMERAL
+        tools_out[-1] = last_tool
+
+    messages_out = messages
+    if messages:
+        messages_out = list(messages)
+        last_msg = dict(messages_out[-1])
+        content = last_msg.get("content")
+        if isinstance(content, list) and content and isinstance(content[-1], dict):
+            new_content = list(content)
+            blk = dict(new_content[-1])
+            blk["cache_control"] = _EPHEMERAL
+            new_content[-1] = blk
+            last_msg["content"] = new_content
+            messages_out[-1] = last_msg
+        elif isinstance(content, str) and content:
+            last_msg["content"] = [
+                {"type": "text", "text": content, "cache_control": _EPHEMERAL}
+            ]
+            messages_out[-1] = last_msg
+
+    return messages_out, system_out, tools_out
+
+
 class AnthropicProvider:
     """ChatProvider backed by the Anthropic SDK.
 
@@ -65,6 +118,7 @@ class AnthropicProvider:
         max_tokens: int = DEFAULT_MAX_TOKENS,
         max_model_len: Optional[int] = None,
         verify: Any = None,
+        prompt_caching: bool = False,
     ) -> None:
         self.model = model
         # Upper bound on output tokens. When max_model_len is known, the
@@ -83,6 +137,12 @@ class AnthropicProvider:
         # injected via a custom http_client when it's a non-default posture —
         # see agent_tls.build_verify. None/True keeps the SDK's own client.
         self._verify = verify
+        # Prompt caching (Anthropic ``cache_control`` breakpoints). Each loop
+        # iteration re-sends system + tools + history; with caching that stable
+        # prefix bills at ~0.1x instead of full rate. Off by default (the
+        # runtime turns it on for Claude); vLLM does its own automatic prefix
+        # caching and may reject cache_control, so it stays off there.
+        self._prompt_caching = prompt_caching
         self._client = None  # lazy
 
     def _ensure_client(self):
@@ -124,6 +184,9 @@ class AnthropicProvider:
         system: Optional[str] = None,
     ) -> AsyncIterator[ProviderEvent]:  # type: ignore[name-defined]
         client = self._ensure_client()
+
+        if self._prompt_caching:
+            messages, system, tools = _add_cache_control(messages, system, tools)
 
         create_kwargs: Dict[str, Any] = {
             "model": self.model,

@@ -15,7 +15,10 @@ import pytest
 
 pytest.importorskip("anthropic")
 
-from forgather_server.agent.providers.anthropic import AnthropicProvider
+from forgather_server.agent.providers.anthropic import (
+    AnthropicProvider,
+    _add_cache_control,
+)
 from forgather_server.agent.providers.base import Done, Usage
 
 
@@ -100,3 +103,93 @@ def test_usage_defaults_when_cache_fields_absent():
     assert u.cache_read_input_tokens == 0
     assert u.cache_creation_input_tokens == 0
     assert u.output_tokens == 10
+
+
+# ---- prompt caching (cache_control injection) ------------------------------
+
+
+def test_add_cache_control_anchors_system_and_last_message():
+    messages = [
+        {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "yo"}]},
+    ]
+    tools = [{"name": "a"}, {"name": "b"}]
+    msgs, system, tools_out = _add_cache_control(messages, "SYS", tools)
+    # system becomes a single cached text block (covers tools + system).
+    assert system == [
+        {"type": "text", "text": "SYS", "cache_control": {"type": "ephemeral"}}
+    ]
+    # tools untouched when system anchors the head.
+    assert tools_out == tools and "cache_control" not in tools_out[-1]
+    # last message's last block gets the breakpoint.
+    assert msgs[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    # inputs not mutated.
+    assert "cache_control" not in messages[-1]["content"][-1]
+
+
+def test_add_cache_control_falls_back_to_last_tool_without_system():
+    tools = [{"name": "a"}, {"name": "b"}]
+    msgs, system, tools_out = _add_cache_control(
+        [{"role": "user", "content": [{"type": "text", "text": "hi"}]}], None, tools
+    )
+    assert system is None
+    # No system to anchor on -> cache the tools prefix via the last tool.
+    assert tools_out[-1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in tools[-1]  # original untouched
+
+
+def test_add_cache_control_handles_empty_messages():
+    msgs, system, tools_out = _add_cache_control([], None, [])
+    assert msgs == [] and system is None and tools_out == []
+
+
+def test_stream_turn_sends_cache_control_when_enabled():
+    import asyncio
+
+    captured = {}
+
+    async def fake_create(**kw):
+        captured.update(kw)
+        return _FakeStream([SimpleNamespace(type="message_stop")])
+
+    p = AnthropicProvider(model="claude-x", api_key="k", prompt_caching=True)
+    p._client = SimpleNamespace(messages=SimpleNamespace(create=fake_create))
+
+    async def run():
+        async for _ in p.stream_turn(
+            [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+            [{"name": "t"}],
+            system="SYS",
+        ):
+            pass
+
+    asyncio.run(run())
+    assert captured["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert captured["messages"][-1]["content"][-1]["cache_control"] == {
+        "type": "ephemeral"
+    }
+
+
+def test_stream_turn_no_cache_control_when_disabled():
+    import asyncio
+
+    captured = {}
+
+    async def fake_create(**kw):
+        captured.update(kw)
+        return _FakeStream([SimpleNamespace(type="message_stop")])
+
+    p = AnthropicProvider(model="qwen", base_url="http://x", prompt_caching=False)
+    p._client = SimpleNamespace(messages=SimpleNamespace(create=fake_create))
+
+    async def run():
+        async for _ in p.stream_turn(
+            [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+            [{"name": "t"}],
+            system="SYS",
+        ):
+            pass
+
+    asyncio.run(run())
+    assert captured["system"] == "SYS"  # untouched string
+    assert "cache_control" not in captured["messages"][-1]["content"][-1]

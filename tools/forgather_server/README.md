@@ -3027,6 +3027,7 @@ agent:
   # verify_tls: true         # see TLS below
   # max_tokens: 4096
   # max_iterations: 12       # tool-use loop cap per user message
+  # prompt_caching: auto     # auto (on for Claude) | on | off — see below
 ```
 
 ### TLS for local (self-signed) servers
@@ -3127,6 +3128,36 @@ models" means the token is
 missing or wrong. The probe always skips TLS verification (it only returns
 model ids, so a not-yet-imported self-signed cert never blocks discovery);
 the actual chat connection still honors the profile's TLS setting.
+
+### Prompt caching & token metering
+
+An agentic loop re-sends the **whole prefix** — system prompt + every tool
+schema (~7K tokens here: ~2K system + ~5K for ~29 tools) + the full
+conversation — on *every* API round-trip. A turn that ends with a 35K-token
+transcript but took ~25 tool round-trips bills as **Σ (prefix size) over all
+requests** — easily ~600K input tokens, dwarfing the transcript. Output is
+tiny by comparison (the model mostly emits short tool calls). This is expected,
+not a billing bug: a single-snapshot tokenizer estimate of the final transcript
+can't see the round-trips, the re-sent system+tools, or thinking tokens.
+
+Two mechanisms make this visible and cheap:
+
+- **Metering.** The Anthropic adapter captures the full per-request usage
+  breakdown — `input` (fresh), `cache_read`, `cache_write`, `output` — logs it
+  per request (`agent request usage: …`), and the webui accumulates a
+  cumulative **session-billed** total across every round-trip. The header meter
+  shows two numbers: *context occupancy* (latest request, the window bar) and
+  *billed N* (cumulative, with a tooltip breaking down input/cache/output and
+  the cache-hit ratio). The billed number is the one that reconciles with the
+  provider's dashboard.
+- **Prompt caching.** With `cache_control` breakpoints on the stable head
+  (system, which covers tools) and the last message (the growing history), the
+  re-sent prefix bills at ~0.1x instead of full rate — typically cutting the
+  input bill by ~80-90% for these loops. Controlled per profile by
+  **Prompt caching**: `auto` (default — on for Claude, off for a custom
+  `base_url`, since vLLM does its own automatic prefix caching and may reject
+  `cache_control`), `on`, or `off`. Watch `cache_read` climb in the meter to
+  confirm it's working.
 
 ### Interaction model — propose → approve → commit
 

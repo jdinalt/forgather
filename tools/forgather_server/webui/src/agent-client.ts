@@ -31,6 +31,8 @@ export interface AgentProfile {
   has_imported_cert: boolean;
   max_tokens: number;
   max_iterations: number;
+  /** "auto" (on for Claude, off for vLLM) | "on" | "off". */
+  prompt_caching: string;
 }
 
 /** Fields accepted when creating/updating a profile. Omitted fields are
@@ -46,6 +48,7 @@ export interface AgentProfileWrite {
   ca_cert_pem?: string;
   max_tokens?: number;
   max_iterations?: number;
+  prompt_caching?: string;
 }
 
 export interface CertInfo {

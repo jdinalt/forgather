@@ -69,6 +69,10 @@ class AgentProfile:
     # hardcoded number; set a positive value to pin an explicit cap.
     max_tokens: int = 0
     max_iterations: int = DEFAULT_MAX_ITERATIONS
+    # Anthropic prompt caching: "auto" (on for Claude, off for a custom
+    # base_url i.e. vLLM, which does its own prefix caching), "on", or "off".
+    # Caching makes the re-sent system+tools+history prefix bill at ~0.1x.
+    prompt_caching: str = "auto"
 
 
 _PROFILE_FIELDS = {f.name for f in fields(AgentProfile)}
