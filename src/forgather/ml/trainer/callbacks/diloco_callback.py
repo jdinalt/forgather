@@ -169,6 +169,7 @@ class DiLoCoCallback(TrainerCallback):
         # checkpoint the coordinator advertises in /info, with an env override.
         from forgather.ml.diloco import (
             diloco_backend,
+            diloco_init_checkpoint,
             diloco_report_sync_state,
             diloco_shm_group_dir,
             diloco_shm_group_size,
@@ -177,14 +178,17 @@ class DiLoCoCallback(TrainerCallback):
 
         self.report_sync_state = diloco_report_sync_state()
         self.backend_kind = diloco_backend()
-        if self.backend_kind not in ("http", "shared_memory"):
+        if self.backend_kind not in ("http", "shared_memory", "collective"):
             raise ValueError(
-                f"DILOCO_BACKEND must be 'http' or 'shared_memory', "
-                f"got {self.backend_kind!r}"
+                f"DILOCO_BACKEND must be 'http', 'shared_memory', or "
+                f"'collective', got {self.backend_kind!r}"
             )
         self.shm_group_dir = diloco_shm_group_dir()
         self.shm_group_size = diloco_shm_group_size()
         self.shm_init_checkpoint = diloco_shm_init_checkpoint() or None
+        # Collective backend seeds from this (rank 0) when set, else from the
+        # coordinator's advertised model_checkpoint_dir.
+        self.init_checkpoint = diloco_init_checkpoint() or None
         if self.backend_kind == "shared_memory" and (
             not self.shm_group_dir or self.shm_group_size < 1
         ):
@@ -256,16 +260,38 @@ class DiLoCoCallback(TrainerCallback):
             "outer_optimizer": info.get("outer_optimizer"),
         }
 
-    def _make_sync_backend(self, settings: Dict[str, Any]):
+    @staticmethod
+    def _diloco_dims(trainer):
+        """Resolve (process_group, size, rank) for the collective's diloco axis.
+
+        Prefers the trainer's ``DistributedEnvironment`` diloco split
+        (``trainer.dist.diloco_*``, set when ``DILOCO_REPLICATE>1``); falls back
+        to the whole torchrun world (Phase 1 inner=1, where the diloco axis IS
+        the world) so the backend works even without the mesh split."""
+        import torch.distributed as dist
+
+        dist_env = getattr(trainer, "dist", None)
+        group = getattr(dist_env, "diloco_group", None)
+        if group is not None:
+            return group, dist_env.diloco_size, dist_env.diloco_rank
+        if dist.is_available() and dist.is_initialized():
+            return None, dist.get_world_size(), dist.get_rank()
+        return None, 1, 0
+
+    def _make_sync_backend(self, settings: Dict[str, Any], model=None, trainer=None):
         """Build the worker's sync backend from the selection knob + settings.
 
         Returns ``None`` for the default HTTP path (the worker constructs its
-        own ``HttpStarBackend``), or a ``SharedMemoryBackend`` for the
-        co-located single-host regime. The shared-memory aggregator seeds its
-        region from the coordinator's advertised checkpoint
+        own ``HttpStarBackend``), a ``SharedMemoryBackend`` for the co-located
+        single-host regime, or a ``CollectiveBackend`` for the replicated
+        all-reduce regime. The non-HTTP backends seed their initial weights from
+        the coordinator's advertised checkpoint
         (``settings["model_checkpoint_dir"]``), overridable by
-        ``DILOCO_SHM_INIT_CHECKPOINT``.
+        ``DILOCO_SHM_INIT_CHECKPOINT`` / ``DILOCO_INIT_CHECKPOINT``.
         """
+        if self.backend_kind == "collective":
+            return self._make_collective_backend(settings, model, trainer)
+
         if self.backend_kind != "shared_memory":
             return None
 
@@ -308,6 +334,89 @@ class DiLoCoCallback(TrainerCallback):
             outer_opt_factory=self._outer_opt_factory_from_settings(settings),
         )
 
+    def _make_collective_backend(self, settings: Dict[str, Any], model, trainer=None):
+        """Build the collective (replicated all-reduce) backend.
+
+        Every rank is an independent DiLoCo replica that all-reduces its
+        pseudo-gradient across the ``diloco`` axis of the device mesh (the group
+        of replicas sharing the same inner position). Requires a
+        ``torch.distributed`` world (launch the replicas via torchrun) and a
+        model that is NOT DDP-wrapped — collective DiLoCo *replaces* DDP's
+        per-step gradient sync; a DDP wrapper would all-reduce gradients every
+        step and defeat the point. The replicas must also be rank-sharded over
+        the data so they actually diverge between syncs.
+        """
+        import torch.distributed as dist
+
+        if not (dist.is_available() and dist.is_initialized()):
+            raise ValueError(
+                "DILOCO_BACKEND=collective requires a torch.distributed process "
+                "group (launch the replicas as a torchrun world); no group is "
+                "initialized in this process."
+            )
+
+        # No-silent-degeneration: in a multi-rank world the replicas are
+        # distinguished by DILOCO_REPLICATE (it drives the diloco mesh split + the
+        # per-replica DILOCO_WORKER_ID / data shard). Without it, every rank would
+        # share one worker_id and one data shard, and DiLoCo would silently
+        # collapse to training identical replicas. Fail loud.
+        from forgather.ml.diloco import diloco_replicate
+
+        if dist.get_world_size() > 1 and diloco_replicate() <= 1:
+            raise ValueError(
+                "DILOCO_BACKEND=collective in a "
+                f"{dist.get_world_size()}-process world requires DILOCO_REPLICATE "
+                "to be set (== the world size) so each replica gets a distinct "
+                "worker_id and data shard. It is unset (1)."
+            )
+
+        # Fail loud on a DDP-wrapped model — collective is the gradient-sync
+        # alternative, not a layer on top of it.
+        try:
+            from torch.nn.parallel import DistributedDataParallel as _DDP
+
+            if model is not None and isinstance(model, _DDP):
+                raise ValueError(
+                    "DILOCO_BACKEND=collective is incompatible with a "
+                    "DistributedDataParallel-wrapped model: each rank must be an "
+                    "INDEPENDENT replica (no per-step gradient all-reduce). "
+                    "Remove the DDP wrapper — DiLoCo's collective backend "
+                    "replaces DDP's gradient sync."
+                )
+        except ImportError:  # pragma: no cover - torch always ships DDP
+            pass
+
+        if int(settings.get("num_fragments", 1)) > 1:
+            raise ValueError(
+                "DILOCO_BACKEND=collective does not support streaming fragments "
+                "(num_fragments > 1); the coordinator advertised "
+                f"num_fragments={settings.get('num_fragments')}."
+            )
+
+        init_checkpoint = self.init_checkpoint or settings.get("model_checkpoint_dir")
+        if not init_checkpoint:
+            raise ValueError(
+                "DILOCO_BACKEND=collective needs an init checkpoint: the "
+                "coordinator did not advertise model_checkpoint_dir in /info and "
+                "DILOCO_INIT_CHECKPOINT is unset."
+            )
+
+        from forgather.ml.diloco.collective_backend import CollectiveBackend
+
+        # The collective runs on the diloco mesh axis: the replicas sharing this
+        # rank's inner position. With DILOCO_REPLICATE>1 the trainer's
+        # DistributedEnvironment built the (diloco, inner) mesh and exposed the
+        # sub-group; otherwise (Phase 1 inner=1) it is the whole world.
+        diloco_group, diloco_size, diloco_rank = self._diloco_dims(trainer)
+
+        return CollectiveBackend(
+            init_checkpoint=init_checkpoint,
+            process_group=diloco_group,
+            group_size=diloco_size,
+            rank=diloco_rank,
+            outer_opt_factory=self._outer_opt_factory_from_settings(settings),
+        )
+
     @staticmethod
     def _outer_opt_factory_from_settings(settings: Dict[str, Any]):
         """Reproduce the coordinator's outer optimizer so the shared-memory
@@ -317,15 +426,16 @@ class DiLoCoCallback(TrainerCallback):
         cfg = settings.get("outer_optimizer")
         if not cfg:
             raise ValueError(
-                "DILOCO_BACKEND=shared_memory: the coordinator did not advertise "
-                "its outer-optimizer config in /info (older server). Upgrade the "
-                "diloco server so the shared-memory group can match its outer step."
+                "This DiLoCo backend runs the outer optimizer itself, but the "
+                "coordinator did not advertise its outer-optimizer config in "
+                "/info (older server). Upgrade the diloco server so the group can "
+                "match its outer step."
             )
         name = cfg.get("name")
         if name != "SGD":
             raise ValueError(
-                "DILOCO_BACKEND=shared_memory reproduces only an SGD outer "
-                f"optimizer; the coordinator runs {name!r}."
+                "This DiLoCo backend reproduces only an SGD outer optimizer; the "
+                f"coordinator runs {name!r}."
             )
 
         import torch
@@ -463,6 +573,12 @@ class DiLoCoCallback(TrainerCallback):
                 f"(pp_rank={pp_rank}/{pp_world_size}); registering as "
                 f"group '{base_id}' member '{worker_id}'."
             )
+        # Collective backend: every rank is its own independent replica and
+        # already has a per-replica-distinct worker_id — the torchrun entrypoint
+        # (diloco_apply_collective_worker_id) rewrote DILOCO_WORKER_ID to
+        # ``{base}_r{diloco_rank}`` before config preprocessing, so ``worker_id``
+        # here is already distinct (and matches the output dir + work-dispatch
+        # shard). Nothing to derive.
 
         # Reachability pre-check + settings negotiation in one /info
         # round-trip, before we bother building the worker. Surfaces
@@ -554,7 +670,7 @@ class DiLoCoCallback(TrainerCallback):
             heartbeat_interval=self.heartbeat_interval,
             num_fragments=self.num_fragments,
             max_sync_retries=self.max_sync_retries,
-            backend=self._make_sync_backend(settings),
+            backend=self._make_sync_backend(settings, model, trainer),
             report_sync_state=self.report_sync_state,
             param_view=param_view,
             auth_token=self.auth_token,

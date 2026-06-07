@@ -554,6 +554,80 @@ worker's join and **unlinked when the last worker leaves**, so a completed group
 leaves nothing behind. Because the backend is single-host, `--backend
 shared_memory` can't be combined with `--global` (the multi-node fan-out).
 
+## Collective backend (single-host DDP alternative)
+
+Where the shared-memory backend exchanges weights through a CPU region, the
+**collective** backend exchanges them with a `torch.distributed` **all-reduce**.
+Every worker is an *independent DiLoCo replica* — its own data shard, **no
+per-step DDP gradient all-reduce** — that, once per `H` steps, all-reduces its
+pseudo-gradient with its peers and runs an **identical replicated outer
+optimizer** locally. Because every rank reduces the same pseudo-grads to the same
+mean and steps an identical optimizer over identical weights, all ranks land on
+bit-identical new global params with nothing crossing a central server.
+
+This is DiLoCo as a **DDP alternative**: an all-reduce over NVLink (NCCL) every
+`H` steps in place of DDP's per-step all-reduce. As `H` shrinks it approaches DDP
+quality at a fraction of DDP's comm. The HTTP server stays on as the
+**coordinator** (it provides `/info` negotiation — including the outer-optimizer
+config the replicas reproduce — the init-checkpoint reference, and the data
+work-unit dispatch that shards rows across replicas; no tensor role).
+`diloco/last_send_mb` reflects the all-reduce volume, off-server.
+
+### The replicate (`diloco`) mesh axis
+
+The replicas are a **device-mesh axis**. `DILOCO_REPLICATE=N` splits the torchrun
+world into a `(diloco, inner)` mesh: the `diloco` axis is the N replicas (the
+collective all-reduces across it); the `inner` axis is whatever the trainer
+parallelizes over (pipeline / DDP). The trainer is reported its **inner** view of
+the world, so its per-step collectives span one replica only — never across
+replicas, which is the whole point. This first cut targets `inner = 1` (N
+single-device replicas, so the trainer sees `world_size == 1` and does no
+gradient sync); composing the `diloco` axis with pipeline / DDP inner parallelism
+is a follow-up. Modeled on torchtitan's `ParallelDims`.
+
+Select it with environment variables (the launch sizes one torchrun world as
+`DILOCO_REPLICATE × inner`):
+
+| Variable | Meaning |
+|---|---|
+| `DILOCO_BACKEND` | `collective` (default `http`) |
+| `DILOCO_REPLICATE` | number of replicas on the `diloco` axis (the replicate degree) |
+| `DILOCO_WORKER_ID` | base worker id; the entrypoint makes it per-replica (`{base}_r{n}`) so each replica gets its own output dir, run logs, and data shard |
+| `DILOCO_INIT_CHECKPOINT` | optional; overrides the init checkpoint (default: the dir the coordinator advertises in `/info`) |
+| `DILOCO_REPORT_SYNC_STATE` | optional; report per-worker sync-state to the coordinator (default on) |
+
+The first rank loads the init checkpoint and broadcasts it so every replica
+starts from identical weights. Two requirements the regime imposes (both fail
+loud where detectable):
+
+- The model must **not** be DDP-wrapped — collective DiLoCo *replaces* DDP's
+  gradient sync. (With `inner = 1` the trainer sees `world_size == 1` and never
+  wraps, so any `trainer_type` works.)
+- The replicas must be **rank-sharded over the data** (each sees different data),
+  or they never diverge between syncs and DiLoCo degenerates. This rides on the
+  coordinator's work-unit dispatch, keyed by the per-replica `DILOCO_WORKER_ID`.
+
+Run a coordinator, then launch the replicas as a single torchrun world:
+
+```bash
+# Coordinator (no tensor role; provides /info + the init checkpoint + dispatch)
+forgather diloco server --local-only --output-dir <init-checkpoint-dir> \
+    --num-workers 2 --sync-every 100 -H 127.0.0.1 --port 8512
+
+# N replicas in one torchrun world, syncing via all-reduce
+DILOCO_SERVER=https://127.0.0.1:8512 DILOCO_BACKEND=collective \
+  DILOCO_REPLICATE=2 DILOCO_WORKER_ID=run1 \
+  torchrun --standalone --nproc-per-node 2 \
+    scripts/train_script.py -p <project-dir> <config>.yaml
+```
+
+Every replica syncs at the same `H`-step boundary; the all-reduce is the barrier
+(a faster replica waits there for the others). Pipeline / DDP composition on the
+`inner` axis, a `forgather submit` flag, the streaming-fragment path, and a
+fault-tolerant quorum (a dead peer currently hangs the all-reduce) are
+follow-ups; for the internals see
+[`diloco-architecture.md`](diloco-architecture.md#collective-backend).
+
 ## Programmatic API
 
 The DiLoCo system can also be used directly in Python, independent of the CLI.

@@ -646,6 +646,8 @@ class DistributedEnvironment(DistributedEnvInterface):
         device_map=None,
         always: bool = True,
         no_accelerator: bool = False,
+        diloco_replicate: int | None = None,
+        diloco_inner_axis: str = "data_parallel",
     ):
         """
         Initialize the distributed environment.
@@ -690,6 +692,22 @@ class DistributedEnvironment(DistributedEnvInterface):
         self.always = always
         self.device_map = device_map
         self.use_accelerator = not no_accelerator
+        # DiLoCo replicate axis (issue #154). The degree splits the torchrun
+        # world into a (diloco, inner) mesh; the trainer is reported the INNER
+        # view (world_size/rank), and the diloco sub-group is exposed for the
+        # collective backend. Resolved from the arg, else DILOCO_REPLICATE env,
+        # else 1 (a complete no-op — the default single-axis behavior).
+        if diloco_replicate is None:
+            diloco_replicate = int(os.environ.get("DILOCO_REPLICATE", "1") or "1")
+        self._diloco_replicate = int(diloco_replicate)
+        self._diloco_inner_axis = diloco_inner_axis
+        # Always present so callers (the DiLoCo callback) can read them; the
+        # split below overwrites them when the degree > 1.
+        self.diloco_degree = 1
+        self.diloco_rank = 0
+        self.diloco_size = 1
+        self.diloco_group = None
+        self.world_mesh = None
         self._init_distributed()
 
     def __repr__(self):
@@ -773,6 +791,83 @@ class DistributedEnvironment(DistributedEnvInterface):
             assert (
                 self.world_size == 1
             ), "World size is larger than 1 and torch distributed is not available."
+
+        # DiLoCo replicate split (after the global group exists — the mesh
+        # needs it). No-op when the degree is 1.
+        self._apply_diloco_split()
+
+    def _apply_diloco_split(self):
+        """Split the global world into a ``(diloco, inner)`` mesh and report the
+        INNER view to the trainer.
+
+        When ``DILOCO_REPLICATE``/``diloco_replicate`` > 1, the trainer-facing
+        ``rank``/``world_size`` become this rank's position WITHIN its replica
+        (so its DDP/pipeline collectives span one replica only — never across
+        replicas, which is what collective DiLoCo replaces), while the global
+        process group stays over all ranks and the ``diloco`` sub-group is
+        exposed for the collective backend. The node-local preprocessing groups
+        (``get_local/global_process_group``) read RANK/WORLD_SIZE from the env, so
+        they remain global and are unaffected.
+        """
+        degree = self._diloco_replicate
+        if degree <= 1:
+            return
+        # The replicate split currently serves only the collective DiLoCo
+        # backend; rewriting the trainer's world view for any other backend would
+        # silently change its parallelism. Fail loud (no silent misconfig).
+        if os.environ.get("DILOCO_BACKEND", "http").strip().lower() != "collective":
+            raise ValueError(
+                f"DILOCO_REPLICATE={degree} is set but DILOCO_BACKEND is not "
+                "'collective'. The replicate axis only applies to the collective "
+                "backend; unset DILOCO_REPLICATE or set DILOCO_BACKEND=collective."
+            )
+        global_world = self.world_size
+        if global_world % degree != 0:
+            raise ValueError(
+                f"DILOCO_REPLICATE={degree} does not evenly divide "
+                f"WORLD_SIZE={global_world}."
+            )
+        inner = global_world // degree
+        if inner != 1:
+            # Phase 1 supports inner=1 only (N single-device replicas). Composing
+            # the diloco axis with pipeline/DDP inner parallelism (inner>1) needs
+            # the trainer to consume the inner sub-group, which is not yet wired —
+            # a flat trainer mesh over the inner world_size would build the wrong
+            # group. Fail loud rather than mis-parallelize.
+            raise ValueError(
+                f"DILOCO_REPLICATE={degree} with WORLD_SIZE={global_world} implies "
+                f"inner={inner} (inner parallelism per replica), which is not yet "
+                "supported. Set DILOCO_REPLICATE == WORLD_SIZE so each replica is "
+                "a single device (inner=1)."
+            )
+        from forgather.ml.distributed_mesh import ForgatherParallelDims
+
+        pdims = ForgatherParallelDims(
+            diloco=degree,
+            inner=global_world // degree,
+            inner_axis=self._diloco_inner_axis,
+            world_size=global_world,
+            device_type=self.device_type,
+        )
+        self.world_mesh = pdims.world_mesh
+        self.diloco_degree = degree
+        self.diloco_group = pdims.diloco_group()
+        self.diloco_rank = pdims.diloco_rank()
+        self.diloco_size = pdims.diloco_size()
+        # Hand the trainer its inner view. local_rank (the device index) is
+        # unchanged — each process still owns its own GPU.
+        self.rank = pdims.inner_rank()
+        self.world_size = pdims.inner_size()
+        logger.info(
+            "DiLoCo replicate split: degree=%d inner=%d; trainer sees "
+            "rank=%d/%d, diloco_rank=%d/%d",
+            degree,
+            self.world_size,
+            self.rank,
+            self.world_size,
+            self.diloco_rank,
+            self.diloco_size,
+        )
 
     def _init_process_group(self):
         """Initialize the torch.distributed process group with the configured backend."""
