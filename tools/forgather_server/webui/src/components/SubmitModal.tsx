@@ -682,7 +682,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     const shmGroup =
       diBackend === "shared_memory"
         ? {
-            shmGroupId: crypto.randomUUID().replace(/-/g, "").slice(0, 16),
+            shmGroupId: randomGroupId(),
             shmGroupSize: groupWorkerIds.length,
           }
         : null;
@@ -1770,6 +1770,16 @@ interface DiLoCoFormSnapshot {
   backend?: "http" | "shared_memory";
   shmGroupId?: string;
   shmGroupSize?: number;
+}
+
+/** 16 hex chars, mirroring the CLI's ``uuid.uuid4().hex[:16]`` shared-memory
+ *  group id. Uses ``getRandomValues`` rather than ``crypto.randomUUID`` so it
+ *  also works over plain HTTP from a non-localhost origin (a LAN peer) —
+ *  ``randomUUID`` is secure-context-only and would throw there. */
+function randomGroupId(): string {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 /** Construct the ``job_params.diloco`` payload from the form snapshot.
