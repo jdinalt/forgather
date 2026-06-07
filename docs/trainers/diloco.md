@@ -497,8 +497,14 @@ Select it per worker with environment variables:
 | `DILOCO_SHM_INIT_CHECKPOINT` | optional; overrides the init checkpoint (default: the dir the coordinator advertises in `/info`) |
 
 The first worker to arrive creates the region and seeds it from the coordinator's
-checkpoint; the rest attach. Run a coordinator, then launch the group (one
-process per GPU):
+checkpoint; the rest attach. The aggregator also reproduces the coordinator's
+outer optimizer (advertised in `/info`), so the group's outer step matches the
+server's. The default init checkpoint is the coordinator's local filesystem path,
+so the coordinator and workers must share a filesystem (the single-host case);
+use `DILOCO_SHM_INIT_CHECKPOINT` if they don't. Each worker is one process (one
+GPU) — not a multi-GPU DDP job.
+
+Run a coordinator, then launch the group (one process per GPU):
 
 ```bash
 # Coordinator (no tensor role for a shared-memory group; provides /info + dispatch)

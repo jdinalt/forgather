@@ -2725,6 +2725,20 @@ class DiLoCoServer:
         workers.sort(key=lambda w: (not w["running"], -(w["last_registered"] or 0)))
         _send_json_response(handler, {"workers": workers})
 
+    def _outer_optimizer_info(self) -> dict:
+        """The live outer optimizer's class + SGD hyperparameters, so a backend
+        that runs the outer step itself can reproduce it exactly."""
+        opt = self.outer_optimizer
+        pg = opt.param_groups[0]
+        return {
+            "name": type(opt).__name__,
+            "lr": pg.get("lr"),
+            "momentum": pg.get("momentum", 0.0),
+            "nesterov": pg.get("nesterov", False),
+            "dampening": pg.get("dampening", 0.0),
+            "weight_decay": pg.get("weight_decay", 0.0),
+        }
+
     def _handle_info(self, handler: BaseHTTPRequestHandler):
         """Handle info request.
 
@@ -2741,6 +2755,11 @@ class DiLoCoServer:
             # its region from this same init reference instead of receiving the
             # weights over the wire (issue #154 "join returns a reference").
             "model_checkpoint_dir": self._loaded_checkpoint_dir,
+            # The outer-optimizer config, so a backend that runs the outer step
+            # itself (shared-memory) reproduces the server's exactly instead of
+            # silently defaulting (issue #154). SGD hyperparameters from the live
+            # optimizer's param group + class name.
+            "outer_optimizer": self._outer_optimizer_info(),
             "mode": "async" if self.async_mode else "sync",
             "async_mode": self.async_mode,
             "num_workers": self.num_workers,

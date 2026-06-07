@@ -249,6 +249,9 @@ class DiLoCoCallback(TrainerCallback):
             # seeds from a checkpoint rather than receiving weights over the
             # wire (issue #154). Broadcast to followers with the rest.
             "model_checkpoint_dir": info.get("model_checkpoint_dir"),
+            # The server's outer-optimizer config, so a backend that runs the
+            # outer step itself (shared-memory) matches it exactly.
+            "outer_optimizer": info.get("outer_optimizer"),
         }
 
     def _make_sync_backend(self, settings: Dict[str, Any]):
@@ -263,6 +266,19 @@ class DiLoCoCallback(TrainerCallback):
         """
         if self.backend_kind != "shared_memory":
             return None
+
+        # One process per co-located worker — a DDP-replica job (world_size > 1)
+        # would have only leaders join the region while group_size counts every
+        # process, hanging the barrier. Fail loud rather than deadlock.
+        import torch.distributed as dist
+
+        if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+            raise ValueError(
+                "DILOCO_BACKEND=shared_memory assumes one process per worker; "
+                f"this is a torch.distributed job (world_size="
+                f"{dist.get_world_size()}). Launch one shared-memory worker per "
+                "GPU instead of a DDP-replica job."
+            )
 
         if int(settings.get("num_fragments", 1)) > 1:
             raise ValueError(
@@ -287,6 +303,38 @@ class DiLoCoCallback(TrainerCallback):
             group_dir=self.shm_group_dir,
             group_size=self.shm_group_size,
             init_checkpoint=init_checkpoint,
+            outer_opt_factory=self._outer_opt_factory_from_settings(settings),
+        )
+
+    @staticmethod
+    def _outer_opt_factory_from_settings(settings: Dict[str, Any]):
+        """Reproduce the coordinator's outer optimizer so the shared-memory
+        group's outer step matches the server's, rather than silently defaulting.
+        Fail loud if the server didn't advertise it or ran a non-SGD optimizer
+        this backend can't reproduce."""
+        cfg = settings.get("outer_optimizer")
+        if not cfg:
+            raise ValueError(
+                "DILOCO_BACKEND=shared_memory: the coordinator did not advertise "
+                "its outer-optimizer config in /info (older server). Upgrade the "
+                "diloco server so the shared-memory group can match its outer step."
+            )
+        name = cfg.get("name")
+        if name != "SGD":
+            raise ValueError(
+                "DILOCO_BACKEND=shared_memory reproduces only an SGD outer "
+                f"optimizer; the coordinator runs {name!r}."
+            )
+
+        import torch
+
+        return lambda params: torch.optim.SGD(
+            params,
+            lr=cfg["lr"],
+            momentum=cfg.get("momentum", 0.0),
+            nesterov=cfg.get("nesterov", False),
+            dampening=cfg.get("dampening", 0.0),
+            weight_decay=cfg.get("weight_decay", 0.0),
         )
 
     def _validate_heartbeat(self, heartbeat_timeout) -> None:

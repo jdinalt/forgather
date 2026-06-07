@@ -1,13 +1,14 @@
-"""Tests for the shared-memory backend selection in DiLoCoCallback (#154, 2a).
+"""Tests for the shared-memory backend selection in DiLoCoCallback (#154).
 
 Covers `_make_sync_backend`: the `DILOCO_BACKEND` knob, the group-rendezvous env
 validation, the init-checkpoint precedence (`/info` advertised vs env override),
-and the fail-loud guards.
+the outer-optimizer reproduction from `/info`, and the fail-loud guards.
 """
 
 import os
 
 import pytest
+import torch
 
 from forgather.ml.diloco.shared_memory_backend import SharedMemoryBackend
 from forgather.ml.trainer.callbacks.diloco_callback import DiLoCoCallback
@@ -28,8 +29,15 @@ def _make_cb(monkeypatch, **env):
     return DiLoCoCallback(server_addr="dummy:8512")
 
 
-def _settings(num_fragments=1, ckpt="/info/ckpt"):
-    return {"num_fragments": num_fragments, "model_checkpoint_dir": ckpt}
+_SGD_INFO = {"name": "SGD", "lr": 0.7, "momentum": 0.9, "nesterov": True}
+
+
+def _settings(num_fragments=1, ckpt="/info/ckpt", outer=_SGD_INFO):
+    return {
+        "num_fragments": num_fragments,
+        "model_checkpoint_dir": ckpt,
+        "outer_optimizer": outer,
+    }
 
 
 class TestMakeSyncBackend:
@@ -50,8 +58,12 @@ class TestMakeSyncBackend:
         backend = cb._make_sync_backend(_settings(ckpt="/info/ckpt"))
         assert isinstance(backend, SharedMemoryBackend)
         assert backend.group_size == 2
-        assert backend.group_dir == os.path.abspath(str(tmp_path))
+        assert backend.group_dir == os.path.realpath(str(tmp_path))
         assert backend.init_checkpoint == "/info/ckpt"  # advertised by /info
+        # The aggregator reproduces the server's outer optimizer (from /info).
+        opt = backend.outer_opt_factory([torch.zeros(1, requires_grad=True)])
+        pg = opt.param_groups[0]
+        assert (pg["lr"], pg["momentum"], pg["nesterov"]) == (0.7, 0.9, True)
 
     def test_env_init_checkpoint_overrides_info(self, monkeypatch, tmp_path):
         cb = _make_cb(
@@ -91,3 +103,24 @@ class TestMakeSyncBackend:
         )
         with pytest.raises(ValueError):
             cb._make_sync_backend(_settings(ckpt=None))
+
+    def test_missing_outer_optimizer_raises(self, monkeypatch, tmp_path):
+        # Older server that doesn't advertise its outer-opt config -> fail loud.
+        cb = _make_cb(
+            monkeypatch,
+            DILOCO_BACKEND="shared_memory",
+            DILOCO_SHM_GROUP_DIR=str(tmp_path),
+            DILOCO_SHM_GROUP_SIZE="2",
+        )
+        with pytest.raises(ValueError):
+            cb._make_sync_backend(_settings(outer=None))
+
+    def test_non_sgd_outer_optimizer_raises(self, monkeypatch, tmp_path):
+        cb = _make_cb(
+            monkeypatch,
+            DILOCO_BACKEND="shared_memory",
+            DILOCO_SHM_GROUP_DIR=str(tmp_path),
+            DILOCO_SHM_GROUP_SIZE="2",
+        )
+        with pytest.raises(ValueError):
+            cb._make_sync_backend(_settings(outer={"name": "Adam", "lr": 1e-3}))

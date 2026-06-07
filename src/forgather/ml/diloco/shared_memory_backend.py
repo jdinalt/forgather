@@ -101,7 +101,9 @@ class SharedMemoryBackend(OuterSyncBackend):
     ):
         if group_size < 1:
             raise ValueError(f"group_size must be >= 1, got {group_size}")
-        self.group_dir = os.path.abspath(group_dir)
+        # realpath (not abspath) so co-located workers handed a symlinked or
+        # relative group dir still resolve to the same rendezvous.
+        self.group_dir = os.path.realpath(group_dir)
         self.group_size = int(group_size)
         self.init_checkpoint = init_checkpoint
         self.outer_opt_factory = outer_opt_factory or _default_outer_optimizer_factory
