@@ -184,6 +184,10 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   const [diHeartbeat, setDiHeartbeat] = useState<string>(
     persistedDiLoCo.heartbeatInterval,
   );
+  // Sync backend for the worker pool (issue #154). Not persisted: it's a
+  // per-submit choice and http is the safe default. Single-host only, so it's
+  // ignored on the cluster-fanout path (which the backend rejects anyway).
+  const [diBackend, setDiBackend] = useState<"http" | "shared_memory">("http");
   // Multi-node + DiLoCo composition: the bundle becomes one DiLoCo
   // worker group, all ranks sharing this base worker_id (the PP
   // callback appends ``_pp<rank>`` itself). Empty == let the master
@@ -667,6 +671,21 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
       }
     }
     const trimmedNproc = nprocOverride.trim();
+    // DiLoCo batch: one job per pool member (enabled stopped + new). With
+    // no pool members (or no DiLoCo server) we spawn a single auto-named
+    // job — the pre-pool behavior.
+    const groupWorkerIds: Array<string | null> =
+      selectedDiLoCoBase && poolWorkerIds.length > 0 ? poolWorkerIds : [null];
+    // Shared-memory backend: mint one group id for this submit so every
+    // co-located worker shares it (and the size = the batch count); the
+    // scheduler derives a single region dir + group size. Mirrors the CLI.
+    const shmGroup =
+      diBackend === "shared_memory"
+        ? {
+            shmGroupId: crypto.randomUUID().replace(/-/g, "").slice(0, 16),
+            shmGroupSize: groupWorkerIds.length,
+          }
+        : null;
     // Build one enqueue request for a given worker_id (null == let the
     // scheduler auto-assign, i.e. fall back to the queue_id).
     const buildRequest = (workerId: string | null): EnqueueRequest => {
@@ -680,6 +699,9 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
         base: selectedDiLoCoBase,
         heartbeatInterval: diHeartbeat,
         workerId: workerId ?? "",
+        backend: diBackend,
+        shmGroupId: shmGroup?.shmGroupId,
+        shmGroupSize: shmGroup?.shmGroupSize,
       });
       if (diloco) job_params.diloco = diloco;
       return {
@@ -693,13 +715,9 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
       };
     };
 
-    // DiLoCo batch: one job per pool member (enabled stopped + new). With
-    // no pool members (or no DiLoCo server) we spawn a single auto-named
-    // job — the pre-pool behavior.
-    const reqs: EnqueueRequest[] =
-      selectedDiLoCoBase && poolWorkerIds.length > 0
-        ? poolWorkerIds.map((wid) => buildRequest(wid))
-        : [buildRequest(null)];
+    const reqs: EnqueueRequest[] = groupWorkerIds.map((wid) =>
+      buildRequest(wid),
+    );
     enqueue.mutate(reqs);
   };
 
@@ -892,6 +910,8 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
               onSelectBase={setSelectedDiLoCoBase}
               heartbeatInterval={diHeartbeat}
               setHeartbeatInterval={setDiHeartbeat}
+              backend={diBackend}
+              setBackend={setDiBackend}
               resumableWorkers={resumableWorkers}
               knownWorkersLoading={knownWorkersQ.isLoading}
               disabledStopped={disabledStopped}
@@ -1022,6 +1042,9 @@ interface DiLoCoPickerProps {
   onSelectBase: (base: string) => void;
   heartbeatInterval: string;
   setHeartbeatInterval: (v: string) => void;
+  // Sync backend for the worker pool (non-cluster only; single-host).
+  backend: "http" | "shared_memory";
+  setBackend: (v: "http" | "shared_memory") => void;
   // Worker pool (batch submit; non-cluster only).
   resumableWorkers: ResumableWorker[];
   knownWorkersLoading: boolean;
@@ -1054,6 +1077,8 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
     onSelectBase,
     heartbeatInterval,
     setHeartbeatInterval,
+    backend,
+    setBackend,
     resumableWorkers,
     knownWorkersLoading,
     disabledStopped,
@@ -1433,6 +1458,26 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
               />
             </label>
 
+            <label style={{ display: "block", maxWidth: "16em" }}>
+              sync backend
+              <select
+                value={backend}
+                onChange={(e) =>
+                  setBackend(e.target.value as "http" | "shared_memory")
+                }
+                style={{ width: "100%" }}
+              >
+                <option value="http">http (param server)</option>
+                <option value="shared_memory">shared_memory (single-host)</option>
+              </select>
+              {backend === "shared_memory" && (
+                <span className="muted" style={{ fontSize: 11 }}>
+                  Co-located workers share a CPU master region (no on-wire sync).
+                  Single-host: every worker in this pool runs on one machine.
+                </span>
+              )}
+            </label>
+
             <WorkerPool
               resumableWorkers={resumableWorkers}
               knownWorkersLoading={knownWorkersLoading}
@@ -1718,6 +1763,13 @@ interface DiLoCoFormSnapshot {
   base: string;
   heartbeatInterval: string;
   workerId: string;
+  // Sync backend (issue #154). "shared_memory" has the co-located workers
+  // share a CPU master region instead of syncing through the param server.
+  // ``shmGroupId`` is uniform across the workers of one submit; ``shmGroupSize``
+  // is the worker count. Absent / "http" → the default param-server path.
+  backend?: "http" | "shared_memory";
+  shmGroupId?: string;
+  shmGroupSize?: number;
 }
 
 /** Construct the ``job_params.diloco`` payload from the form snapshot.
@@ -1749,6 +1801,14 @@ function buildDiLoCoPayload(
   }
   const wid = s.workerId.trim();
   if (wid) payload.worker_id = wid;
+  // Shared-memory backend: declare the structured intent (backend + uniform
+  // group id + size); the scheduler derives DILOCO_SHM_* env, mirroring the
+  // CLI's ``--backend shared_memory``. Omitted for the default http backend.
+  if (s.backend === "shared_memory") {
+    payload.backend = "shared_memory";
+    if (s.shmGroupId) payload.shm_group_id = s.shmGroupId;
+    if (s.shmGroupSize) payload.shm_group_size = s.shmGroupSize;
+  }
   return payload;
 }
 
