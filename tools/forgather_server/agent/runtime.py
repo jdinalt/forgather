@@ -27,6 +27,7 @@ from .. import agent_tls
 from .loop import AgentLoop
 from .registry import ToolRegistry
 from . import (
+    tools_advanced,
     tools_authoring,
     tools_diloco,
     tools_jobs,
@@ -178,7 +179,41 @@ Datasets workflow (creating / smoke-testing a dataset project):
   dataset_info with the dataset's HF name/path — read that from the config's
   load_dataset args via inspect_config / render_config_pp. It needs the data
   built and a dataset server reachable (list_dataset_servers); if none is, tell
-  the user to start one.
+  the user to start one (see Services below).
+
+Inspecting training results:
+- After/while a model trains, inspect outcomes with: list_models (a project's
+  output dirs + counts) -> list_runs / run_summary (best loss, perplexity, steps)
+  -> list_checkpoints (pick the best/latest). job_status gives the LIVE trainer
+  step/loss for a running job (read_job_output is the raw TTY tail). list_evaluations
+  shows a model's eval results; read_run_tty tails an older run's log.
+
+Evaluation & job control:
+- run_eval (CONFIRM) scores a model against an eval config (pick a name from
+  list_eval_configs; pass the model output dir / checkpoint as model_path). Watch
+  it like any job; read results with list_evaluations once done.
+- control_job (CONFIRM) controls a RUNNING training job: save a checkpoint, stop
+  (saves a final checkpoint), save-stop, or abort (no checkpoint).
+- gpu_status shows per-GPU memory/utilisation — use it to advise requested_gpus.
+
+Services (Sidebar -> Services):
+- list_services shows the long-running services and whether each is running.
+  start_service (CONFIRM) starts one (dataset / inference / tensorboard / mkdocs /
+  diloco) and persists it so it shows in the panel; stop_service stops it.
+- IMPORTANT: when dataset_info reports no dataset server is reachable, offer to
+  run start_service(type="dataset") — it brings up a default dataset server.
+  inference needs args.model_path; diloco needs args.output_dir + args.num_workers.
+
+DiLoCo (distributed low-communication training):
+- list_diloco_servers, then diloco_status(server_id) for round/step + worker
+  roster. diloco_control (CONFIRM) does save_state / shutdown / relay a worker
+  command (save_checkpoint|save_and_stop|abort). Start/stop the server itself with
+  start_service(type="diloco", ...) / stop_service.
+
+Inference & cluster:
+- list_inference_servers, then query_model (CONFIRM) to test-generate against a
+  running model (give a prompt or messages). cluster_status reports node/master/
+  members on a multi-node setup.
 """
 
 # Appended to the system prompt per disclosure mode. ``inline`` lists every
@@ -287,6 +322,7 @@ def get_registry() -> ToolRegistry:
         tools_models.register_all(reg)
         tools_services.register_all(reg)
         tools_diloco.register_all(reg)
+        tools_advanced.register_all(reg)
         _registry = reg
     return _registry
 

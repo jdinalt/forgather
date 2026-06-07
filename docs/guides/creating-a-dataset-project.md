@@ -182,9 +182,10 @@ others in the config, e.g. `validation = "train[0:1000]"`, as shown in Step 1.)
 > equivalent tools: `run_dataset` (submits the build/inspect as a scheduler
 > job — it returns immediately, so watch it with `list_jobs` /
 > `read_job_output`), and `dataset_info` (splits / #examples / features from a
-> dataset server; see `list_dataset_servers`). `forgather ls` →
-> `list_projects` / `list_configs`; `forgather pp` → `render_config_pp`;
-> `forgather graph` (validate) → `check_config`.
+> dataset server; see `list_dataset_servers`). If no dataset server is
+> reachable, the agent can start one with `start_service(type="dataset")`.
+> `forgather ls` → `list_projects` / `list_configs`; `forgather pp` →
+> `render_config_pp`; `forgather graph` (validate) → `check_config`.
 
 For interleaved and packed configs, perform the same tests to verify the
 composition works end-to-end.

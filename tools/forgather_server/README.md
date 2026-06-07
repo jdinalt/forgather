@@ -3525,6 +3525,67 @@ agent event), consumed by the webui with `fetch` + `ReadableStream` (not
 | `POST /api/agent/models` `{profile_id? \| base_url, api_key?, verify_tls?, ca_cert_pem?}` | List available models (Claude SDK, or vLLM `/v1/models`) for the model picker |
 | `POST /api/agent/fetch-cert` `{base_url}`         | Fetch the server's TLS cert (`{pem, sha256, …}`) for the import flow |
 
+#### Agent tools (in-process)
+
+The assistant drives the same machinery the webui does, through an
+in-process tool registry (`tools/forgather_server/agent/`, the single
+source of truth a future `forgather mcp` server would re-export). Each
+tool has a **risk** that decides the gate: `read` runs automatically;
+`propose` shows a diff and waits for approval; `confirm` is an
+approve-to-run gate for low-blast mutations (no rich diff). The
+approval gate is enforced **server-side** in the loop — the model can't
+make a `propose`/`confirm` change permanent on its own.
+
+Tool inventory by area:
+
+- **Navigate / inspect** (read): `list_workspaces`, `list_projects`,
+  `list_configs`, `inspect_config`, `render_config_pp`,
+  `render_config_code`, `check_config`, `list_config_templates`,
+  `config_template_refs`, `resolve_output_dir`, `read_file`,
+  `list_directory`, `find_files`, `search_docs`, `reveal_in_ui`.
+- **Author** (propose): `propose_edit_config`, `propose_new_config`,
+  `propose_new_config_from_template`, `propose_new_project`,
+  `propose_new_workspace` (+ `list_meta_templates`).
+- **Run jobs** (confirm): `run_dataset`, `run_construct`, `run_train`,
+  `run_eval` — plus `list_jobs`, `read_job_output`, `wait_for_job`,
+  `job_status`, `scheduler_status`, `gpu_status` (read) and
+  `control_job` (confirm: save / stop / save-stop / abort).
+- **Results** (read): `list_models`, `list_runs`, `run_summary`,
+  `list_checkpoints`, `list_evaluations`, `read_run_tty`.
+- **Datasets** (read): `list_dataset_servers`, `dataset_info`
+  (+ `list_eval_configs`).
+- **Services** (`list_services` read; `start_service` /
+  `stop_service` confirm) — start/stop dataset / inference /
+  tensorboard / mkdocs / diloco; `start_service(type="dataset")`
+  brings up a default dataset server.
+- **DiLoCo**: `list_diloco_servers`, `diloco_status` (read),
+  `diloco_control` (confirm).
+- **Inference / cluster / overrides**: `list_inference_servers`,
+  `query_model` (confirm), `cluster_status`, `get_config_overrides`,
+  `set_config_overrides` (confirm).
+- **Meta**: `list_tools`, `tool_help`, `call_tool` (see disclosure
+  below).
+
+**Tool disclosure (context-budget control).** As the tool set grows,
+its descriptions + schemas occupy context — a real ceiling for
+limited-context local (vLLM) models, where prompt caching (a *cost*
+mechanism, and off for vLLM) doesn't help. Tools carry a **tier**
+(`core` / `extended`) and the registry serializes in one of two modes:
+
+- `inline` (default for Claude / large-context): every tool is in the
+  array; `extended` tools show a one-line summary, with the full
+  description fetched on demand via `tool_help`. The block stays static,
+  so prompt caching is unaffected.
+- `deferred` (default for a custom `base_url` / local model): only
+  `core` + meta tools are in the array; `extended` tools are hidden and
+  invoked through the `call_tool` dispatcher (discovered with
+  `list_tools` / `tool_help`). The array stays tiny.
+
+The mode is auto-selected by provider, overridable per profile via
+`disclosure_mode` (`auto` / `inline` / `deferred`). `call_tool` runs the
+inner tool under the inner tool's own risk, so a confirm/propose tool
+still hits the approval gate when invoked indirectly.
+
 ### Config inspection
 
 | Endpoint                                                                         | Purpose                                                        |
