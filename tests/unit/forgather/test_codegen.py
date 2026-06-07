@@ -127,6 +127,30 @@ class TestPyEncoderVarNode:
         assert has_default is False
         assert default_value is Undefined
 
+    def test_varnode_with_dict_default(self):
+        # Regression: a dict default is unhashable/unorderable and used to
+        # crash PyEncoder when vars were tracked in a set sorted by value.
+        v = VarNode("opts", default={"a": 1, "b": 2})
+        result = encode(v)
+        name, has_default, default_value = result["variables"][0]
+        assert name == "opts"
+        assert has_default is True
+        assert default_value == {"a": 1, "b": 2}
+
+    def test_varnode_with_list_default(self):
+        # Regression: list defaults are unorderable too.
+        v = VarNode("items", default=[1, 2, 3])
+        result = encode(v)
+        name, has_default, default_value = result["variables"][0]
+        assert name == "items"
+        assert has_default is True
+        assert default_value == [1, 2, 3]
+
+    def test_varnode_dict_default_emitted_in_generated_code(self):
+        v = VarNode("opts", default={"a": 1})
+        result = generate_code(v)
+        assert "opts={'a': 1}" in result
+
 
 # ---------------------------------------------------------------------------
 # CallableNode encoding – imports

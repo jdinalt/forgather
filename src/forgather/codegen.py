@@ -20,7 +20,9 @@ class PyEncoder(GraphEncoder):
         super().init(obj, name_policy, True)
         self.imports = set()
         self.dynamic_imports = set()
-        self.vars = set()
+        # Keyed by variable name -> (has_default, value). We dedup/order by name
+        # only, since values may be unhashable/unorderable (e.g. dict, list).
+        self.vars = {}
 
     def __call__(
         self, obj: Any, name_policy: Optional[str | NamePolicy] = None
@@ -44,7 +46,11 @@ class PyEncoder(GraphEncoder):
                     for module, callable_name, searchpath in self.dynamic_imports
                 ]
             ),
-            variables=sorted(list(self.vars)),
+            # Sort by name only; values may be unorderable (dict/list).
+            variables=sorted(
+                ((name, hd, v) for name, (hd, v) in self.vars.items()),
+                key=lambda t: t[0],
+            ),
         )
 
     def _encode_definitions(self, obj):
@@ -116,7 +122,7 @@ class PyEncoder(GraphEncoder):
     def _var(self, obj: VarNode):
         # We include a bool for if the var is undefined, as this detection
         # is otherwise complicated in a Jinja template.
-        self.vars.add((obj.constructor, obj.value != Undefined, obj.value))
+        self.vars[obj.constructor] = (obj.value is not Undefined, obj.value)
         return obj.constructor
 
     def _callable(self, obj: CallableNode):
