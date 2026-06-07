@@ -15,7 +15,7 @@ from forgather_server import (
     queue_store,
 )
 from forgather_server.agent import tools_jobs
-from forgather_server.agent.registry import CONFIRM, READ, Proposal, ToolRegistry
+from forgather_server.agent.registry import CONFIRM, EXTENDED, READ, Proposal, ToolRegistry
 from forgather_server.routes import jobs as jobs_route
 
 
@@ -402,3 +402,68 @@ def test_read_tty_tail_helper(tmp_path):
     # A small byte cap drops the leading partial line.
     out = jobs_route.read_tty_tail(str(f), max_bytes=6)
     assert "aaaa" not in out and "cccc" in out
+
+
+# ---- cleanup_jobs ----------------------------------------------------------
+
+
+def test_cleanup_jobs_registered():
+    reg = ToolRegistry()
+    tools_jobs.register_all(reg)
+    spec = {s.name: s for s in reg.specs()}["cleanup_jobs"]
+    assert spec.risk == CONFIRM and spec.tier == EXTENDED
+
+
+def test_cleanup_jobs_requires_an_argument():
+    with pytest.raises(ValueError, match="queue_ids"):
+        tools_jobs._cleanup_jobs({})
+
+
+def test_cleanup_jobs_rejects_both_args():
+    with pytest.raises(ValueError, match="either"):
+        tools_jobs._cleanup_jobs({"queue_ids": ["q1"], "all_terminal": True})
+
+
+def test_cleanup_jobs_targets_only_terminal(monkeypatch):
+    recs = {
+        "qd": _rec(queue_id="qd", status="done"),
+        "qr": _rec(queue_id="qr", status="running"),
+    }
+    monkeypatch.setattr(job_records, "get_record", lambda q: recs.get(q))
+    prop = tools_jobs._cleanup_jobs({"queue_ids": ["qd", "qr", "qmissing"]})
+    assert isinstance(prop, Proposal)
+    assert prop.extra["queue_ids"] == ["qd"]  # running + missing excluded
+
+
+def test_cleanup_jobs_none_terminal_raises(monkeypatch):
+    monkeypatch.setattr(
+        job_records, "get_record",
+        lambda q: _rec(queue_id=q, status="running"),
+    )
+    with pytest.raises(ValueError, match="no removable"):
+        tools_jobs._cleanup_jobs({"queue_ids": ["qr"]})
+
+
+def test_cleanup_jobs_commit_removes_specific(monkeypatch):
+    monkeypatch.setattr(
+        job_records, "get_record",
+        lambda q: _rec(queue_id=q, status="done"),
+    )
+    removed = []
+    monkeypatch.setattr(jobs_route, "remove_job", lambda qid: removed.append(qid))
+    prop = tools_jobs._cleanup_jobs({"queue_ids": ["qa", "qb"]})
+    assert removed == []  # preview did not remove
+    msg = prop.commit()
+    assert removed == ["qa", "qb"] and "removed 2" in msg
+
+
+def test_cleanup_jobs_all_terminal(monkeypatch):
+    monkeypatch.setattr(
+        job_records, "list_records",
+        lambda: [_rec(queue_id="qd", status="done"), _rec(queue_id="qr", status="running")],
+    )
+    monkeypatch.setattr(jobs_route, "cleanup_jobs", lambda: {"removed": ["qd"], "count": 1})
+    prop = tools_jobs._cleanup_jobs({"all_terminal": True})
+    assert prop.extra["all_terminal"] is True and prop.extra["queue_ids"] == ["qd"]
+    msg = prop.commit()
+    assert "removed 1 completed" in msg

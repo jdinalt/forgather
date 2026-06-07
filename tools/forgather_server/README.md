@@ -3549,7 +3549,8 @@ Tool inventory by area:
 - **Run jobs** (confirm): `run_dataset`, `run_construct`, `run_train`,
   `run_eval` — plus `list_jobs`, `read_job_output`, `wait_for_job`,
   `job_status`, `scheduler_status`, `gpu_status` (read) and
-  `control_job` (confirm: save / stop / save-stop / abort).
+  `control_job` (confirm: save / stop / save-stop / abort),
+  `cleanup_jobs` (confirm: remove finished job records).
 - **Results** (read): `list_models`, `list_runs`, `run_summary`,
   `list_checkpoints`, `list_evaluations`, `read_run_tty`.
 - **Datasets** (read): `list_dataset_servers`, `dataset_info`

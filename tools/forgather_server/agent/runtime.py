@@ -150,6 +150,13 @@ Running configs as scheduler jobs:
   wait_for_job(queue_id). For a short job (dataset build, construct) wait_for_job
   is fine; for a full training run do NOT block — check on it periodically.
   Never report a job finished until its status is terminal (done/failed/aborted).
+- Tidy up after yourself: once a short-lived job you started (a dataset build,
+  construct, or eval) is terminal and you've reported its result, clean it up
+  with cleanup_jobs(queue_ids=[...the ids you spawned...]) so the Jobs list
+  doesn't accumulate clutter — you don't need the user to ask. Pass only the
+  queue_ids YOU started; do not use all_terminal (that clears everyone's jobs)
+  unless the user explicitly asks, and never clean up a job whose output the
+  user may still want (e.g. a training run they're reviewing).
 
 Datasets workflow (creating / smoke-testing a dataset project):
 - Tools: run_dataset (build/inspect a split as a job), wait_for_job (block

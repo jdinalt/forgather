@@ -531,6 +531,73 @@ def _control_job(args: Dict[str, Any]) -> Proposal:
     )
 
 
+# ---- clean up finished job records (CONFIRM) -------------------------------
+
+
+def _cleanup_jobs(args: Dict[str, Any]) -> Proposal:
+    queue_ids = list(args.get("queue_ids") or [])
+    all_terminal = bool(args.get("all_terminal", False))
+    if not queue_ids and not all_terminal:
+        raise ValueError(
+            "pass queue_ids (the finished jobs you spawned) or all_terminal=true"
+        )
+    if queue_ids and all_terminal:
+        raise ValueError("pass either queue_ids or all_terminal, not both")
+
+    if all_terminal:
+        targets = [
+            r.queue_id for r in job_records.list_records()
+            if r.status in job_records.TERMINAL_STATUSES
+        ]
+        scope = f"all {len(targets)} completed job record(s)"
+    else:
+        targets, problems = [], []
+        for qid in queue_ids:
+            rec = job_records.get_record(qid)
+            if rec is None:
+                problems.append(f"{qid} (no such record)")
+            elif rec.status not in job_records.TERMINAL_STATUSES:
+                problems.append(f"{qid} (still {rec.status})")
+            else:
+                targets.append(qid)
+        if not targets:
+            raise ValueError(
+                "no removable (terminal) job among the given queue_ids: "
+                + "; ".join(problems)
+            )
+        scope = f"{len(targets)} job record(s)"
+
+    def commit() -> str:
+        from fastapi import HTTPException
+
+        from ..routes import jobs as jobs_routes
+
+        if all_terminal:
+            res = jobs_routes.cleanup_jobs()
+            return f"removed {res['count']} completed job record(s)."
+        removed, errors = [], []
+        for qid in targets:
+            try:
+                jobs_routes.remove_job(qid)
+                removed.append(qid)
+            except HTTPException as e:
+                errors.append(f"{qid}: {e.detail}")
+        msg = f"removed {len(removed)} job record(s)"
+        if errors:
+            msg += f"; {len(errors)} could not be removed: {errors}"
+        return msg
+
+    return Proposal(
+        title="Clean up jobs",
+        summary=(
+            f"Remove {scope} from the Jobs history — terminal records and their "
+            "captured TTY logs. Running jobs are never touched."
+        ),
+        extra={"queue_ids": targets, "all_terminal": all_terminal},
+        commit=commit,
+    )
+
+
 # ---- registration ----------------------------------------------------------
 
 
@@ -789,6 +856,40 @@ def register_all(reg: ToolRegistry) -> None:
             },
             handler=_control_job,
             risk=CONFIRM,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="cleanup_jobs",
+            description=(
+                "Remove FINISHED job records from the Jobs list (terminal: "
+                "done/failed/aborted) and their captured TTY logs. Approval "
+                "required. Prefer passing queue_ids — the specific jobs you "
+                "spawned and are done reporting on — so you don't clear jobs the "
+                "user started. Set all_terminal=true only to clear every "
+                "completed job (the 'Clean completed' button). Running jobs are "
+                "never affected. Use this to tidy up after short-lived jobs "
+                "(dataset builds, construct/eval runs); don't remove a job whose "
+                "output the user may still want."
+            ),
+            summary="Remove finished job records (yours by queue_id, or all). CONFIRM.",
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "queue_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Finished jobs to remove (the ones you spawned).",
+                    },
+                    "all_terminal": {
+                        "type": "boolean",
+                        "description": "Remove every completed job instead of specific ids (default false).",
+                    },
+                },
+            },
+            handler=_cleanup_jobs,
+            risk=CONFIRM,
+            tier=EXTENDED,
         )
     )
     reg.register(
