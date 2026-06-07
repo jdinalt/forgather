@@ -56,6 +56,23 @@ args:
   # TLS options (see ``forgather tls --help``):
   # insecure: false
   # tls: null              # path to TLS config file
+
+# AI agent (right-sidebar assistant). This block only BOOTSTRAPS a profile
+# on first run; manage agent profiles in the webui thereafter (they persist
+# in agent_profiles.json and hot-swap without a restart). Uses the Anthropic
+# SDK for both Claude and local vLLM models — point ``base_url`` at a vLLM
+# server that serves the Anthropic Messages API (``/v1/messages``) for local
+# models, or omit it for Claude.
+# agent:
+#   provider: anthropic        # only adapter today
+#   model: claude-sonnet-4-6   # or a vLLM --served-model-name alias; blank = auto
+#   base_url: null             # e.g. https://kitt:8000 for local vLLM; null = Claude
+#   api_key_env: ANTHROPIC_API_KEY   # env var holding the key (or vLLM bearer)
+#   # api_key: null            # explicit key/bearer (overrides api_key_env)
+#   # verify_tls: true         # false = accept any cert (LAN self-signed); or
+#   #                          #   import the cert via the webui for verified TLS
+#   # max_tokens: 4096
+#   # max_iterations: 12       # tool-use loop cap per user message
 """
 
 

@@ -6,6 +6,7 @@ here make it easier to test and reuse.
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from forgather.cli.trefs import (
@@ -17,7 +18,7 @@ from forgather.config import ConfigEnvironment
 from forgather.latent import Latent
 from forgather.meta_config import MetaConfig
 
-from . import meta_templates, overrides_store
+from . import _atomic, meta_templates, overrides_store, paths
 
 
 @dataclass
@@ -707,32 +708,36 @@ def project_template_paths(project_dir: str) -> TemplatePaths:
     )
 
 
-def new_template_file(
+def resolve_new_template_target(
     project_dir: str,
     kind: str,
     name: str,
     *,
     meta_template: Optional[str] = None,
     values: Optional[Dict[str, Any]] = None,
-) -> str:
-    """Create a template / config file in ``project_dir``'s templates
-    directory and return its absolute path.
+) -> Tuple[str, str]:
+    """Pure: validate inputs and compute ``(target_path, content)``.
+
+    Does **not** touch disk. Performs all the validation and rendering
+    ``new_template_file`` used to do inline — name sanitation, search-path
+    resolution, containment, the no-overwrite check, and (when
+    ``meta_template`` is given) rendering the scaffold against ``values``.
+    Raises the same errors (``ValueError`` / ``RuntimeError`` /
+    ``FileExistsError``).
+
+    Split out so callers can PREVIEW a new file (compute path + content)
+    and gate the actual write — the agent's propose/commit flow relies on
+    this separation; the write step is :func:`write_template_file`.
 
     ``kind`` mirrors the CLI ``project new_config --type`` switch:
     - ``"config"``: under ``searchpath[0]/<config_prefix>/`` (the
       configs sub-tree, e.g. ``templates/configs/<name>``).
-    - ``"template"``: under ``searchpath[0]/`` directly (e.g.
-      ``templates/<name>``).
+    - ``"template"``: under ``searchpath[0]/`` directly.
 
-    A ``.yaml`` suffix is appended when ``name`` has none. Existing
-    files are refused (no overwrite). Parent directories are created
-    as needed.
-
-    If ``meta_template`` is given, the file is seeded with that
-    scaffold rendered against ``values`` (see ``meta_templates.render``).
-    Otherwise the file is written empty so the editor opens onto a
-    blank canvas — same behavior as ``forgather project new_config``
-    when no ``--copy-from`` is supplied.
+    A ``.yaml`` suffix is appended when ``name`` has none. When
+    ``meta_template`` is omitted the content is the empty string (a blank
+    canvas), matching ``forgather project new_config`` with no
+    ``--copy-from``.
     """
     if kind not in ("config", "template"):
         raise ValueError(f"unknown kind: {kind!r}")
@@ -773,10 +778,110 @@ def new_template_file(
     else:
         content = ""
 
+    return target, content
+
+
+def write_template_file(target: str, content: str) -> str:
+    """Atomically create a new file at ``target`` and return ``target``.
+
+    The write step paired with :func:`resolve_new_template_target`. Uses
+    the crash-atomic helper (tmp + fsync + rename) rather than a bare
+    ``open(..., "w")`` so a freshly-created file is never visible
+    half-written.
+
+    Re-checks the no-overwrite and fs-root invariants **at write time**, not
+    just in the resolver: for the agent's propose→approve flow there is a gap
+    between previewing (resolve) and committing (write), during which the
+    file could come to exist; refusing here keeps the no-clobber guarantee
+    across the approval gate.
+    """
+    if not paths.is_path_in_fs_root(target):
+        raise PermissionError(
+            f"path is outside the configured filesystem roots: {target}"
+        )
+    if os.path.exists(target):
+        raise FileExistsError(target)
     os.makedirs(os.path.dirname(target), exist_ok=True)
-    with open(target, "w") as f:
-        f.write(content)
+    _atomic.atomic_write_text(Path(target), content)
     return target
+
+
+class StaleEditError(RuntimeError):
+    """Raised when an existing-file overwrite would clobber an external edit.
+
+    Carries the on-disk and expected mtimes so callers can surface a
+    keep-mine / reload prompt — the same optimistic-concurrency signal the
+    ``PUT /api/template/source`` route returns as HTTP 409.
+    """
+
+    def __init__(self, path: str, current_mtime: float, expected_mtime: float):
+        super().__init__(
+            f"{path} changed on disk since it was read "
+            f"(current_mtime={current_mtime}, expected_mtime={expected_mtime})"
+        )
+        self.path = path
+        self.current_mtime = current_mtime
+        self.expected_mtime = expected_mtime
+
+
+def write_existing_file(
+    path: str, content: str, *, expected_mtime: Optional[float] = None
+) -> Dict[str, Any]:
+    """Atomically overwrite an existing file, with fs-root + mtime guards.
+
+    Mirrors the ``PUT /api/template/source`` route's logic
+    (``_enforce_fs_root`` + optimistic ``expected_mtime`` check + atomic
+    write) but raises plain exceptions instead of ``HTTPException`` so it is
+    usable from the agent tool layer as well as routes. Returns
+    ``{path, bytes_written, mtime}``.
+    """
+    if not os.path.isabs(path):
+        raise ValueError("path must be absolute")
+    if not paths.is_path_in_fs_root(path):
+        raise PermissionError(
+            f"path is outside the configured filesystem roots: {path}"
+        )
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(path)
+    if not p.is_file():
+        raise ValueError(f"not a regular file: {path}")
+    if expected_mtime is not None:
+        current = os.path.getmtime(path)
+        # Tiny tolerance for float roundtripping (ns-precision filesystems).
+        if current > expected_mtime + 1e-6:
+            raise StaleEditError(path, current, expected_mtime)
+    _atomic.atomic_write_text(p, content)
+    try:
+        new_mtime = os.path.getmtime(path)
+    except OSError:
+        new_mtime = 0.0
+    return {
+        "path": path,
+        "bytes_written": len(content.encode("utf-8")),
+        "mtime": new_mtime,
+    }
+
+
+def new_template_file(
+    project_dir: str,
+    kind: str,
+    name: str,
+    *,
+    meta_template: Optional[str] = None,
+    values: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Create a template / config file and return its absolute path.
+
+    Thin wrapper over :func:`resolve_new_template_target` +
+    :func:`write_template_file`, preserved for existing callers (the
+    ``project new_config`` route). New code that needs a preview/commit
+    split should call the two halves directly.
+    """
+    target, content = resolve_new_template_target(
+        project_dir, kind, name, meta_template=meta_template, values=values
+    )
+    return write_template_file(target, content)
 
 
 @dataclass

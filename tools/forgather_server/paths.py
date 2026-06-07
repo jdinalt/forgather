@@ -233,6 +233,16 @@ def diloco_server_registry_file() -> Path:
     return server_state_dir() / "diloco_server_registry.json"
 
 
+def agent_profiles_file() -> Path:
+    """Saved AI-agent connection profiles + the active selection.
+
+    Lives at ``<config>/server/agent_profiles.json``, mode 0600 (the file
+    may contain API keys / bearer tokens, same as the inference / dataset
+    server registries). See :mod:`forgather_server.agent_profiles_store`.
+    """
+    return server_state_dir() / "agent_profiles.json"
+
+
 def cluster_state_dir() -> Path:
     """Persistent directory for multi-node cluster state.
 
@@ -289,6 +299,7 @@ _SENSITIVE_TOPLEVEL_FILES = (
     "sessions.json",
     "dataset_server_registry.json",
     "inference_server_registry.json",
+    "agent_profiles.json",
 )
 
 

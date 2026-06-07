@@ -39,6 +39,10 @@ import { FilesPanel } from "./components/FilesPanel";
 import { FilesTree } from "./components/FilesTree";
 import { SearchRootsPanel } from "./components/SearchRootsPanel";
 import { ShutdownModal } from "./components/ShutdownModal";
+import { AgentPanel } from "./components/AgentPanel";
+import { AgentSidebarPanel } from "./components/AgentSidebarPanel";
+import { AgentSettingsModal } from "./components/AgentSettingsModal";
+import { useAgent } from "./useAgent";
 import { useFilesState } from "./files-state";
 
 type View =
@@ -50,7 +54,8 @@ type View =
   | "jobs"
   | "inference"
   | "datasets"
-  | "diloco";
+  | "diloco"
+  | "agent";
 export type ConfigTab = "info" | "pp" | "code" | "graph" | "templates" | "debug";
 
 // View metadata. "GPUs" is always the local node's GPU panel; "Nodes"
@@ -70,6 +75,7 @@ const VIEWS: { id: View; label: string; icon: string; clusterOnly?: boolean }[] 
     { id: "inference", label: "Inference", icon: "🔮" },
     { id: "datasets", label: "Datasets", icon: "🗂" },
     { id: "diloco", label: "DiLoCo", icon: "🧩" },
+    { id: "agent", label: "Agent", icon: "🤖" },
   ];
 
 // A window glyph with a left-biased vertical divider — represents the
@@ -234,6 +240,26 @@ export default function App() {
       e.preventDefault();
       e.stopPropagation();
       setSidebarCollapsed((c) => !c);
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", onKey, { capture: true } as any);
+  }, []);
+  // Shared agent controller — one conversation feeding both the right
+  // sidebar and the full "Agent" view. Collapsed by default so the right
+  // rail doesn't eat canvas width until the user opens it. Ctrl+J / Cmd+J
+  // toggles it (distinct from the left sidebar's Ctrl+B).
+  const agent = useAgent();
+  const [agentSidebarCollapsed, setAgentSidebarCollapsed] = useState(true);
+  const [agentSettingsOpen, setAgentSettingsOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.altKey || e.shiftKey) return;
+      if (e.key !== "j" && e.key !== "J") return;
+      e.preventDefault();
+      e.stopPropagation();
+      setAgentSidebarCollapsed((c) => !c);
     };
     window.addEventListener("keydown", onKey, { capture: true });
     return () =>
@@ -1517,7 +1543,45 @@ export default function App() {
             onEditService={setEditingService}
           />
         </div>
+        <div
+          className="view-panel"
+          style={view === "agent" ? undefined : { display: "none" }}
+        >
+          <AgentPanel agent={agent} onOpenSettings={() => setAgentSettingsOpen(true)} />
+        </div>
       </div>
+
+      {/* Right sidebar: compact agent thread. Shares the controller with the
+          full Agent view, so an action proposed here can be approved there. */}
+      <aside className={"agent-sidebar" + (agentSidebarCollapsed ? " collapsed" : "")}>
+        {agentSidebarCollapsed ? (
+          <button
+            className="agent-sidebar-reveal"
+            title="Open agent (Ctrl+J)"
+            aria-label="Open agent"
+            onClick={() => setAgentSidebarCollapsed(false)}
+          >
+            🤖
+          </button>
+        ) : (
+          <AgentSidebarPanel
+            agent={agent}
+            onOpenFull={() => setView("agent")}
+            onOpenSettings={() => setAgentSettingsOpen(true)}
+            onCollapse={() => setAgentSidebarCollapsed(true)}
+          />
+        )}
+      </aside>
+
+      {agentSettingsOpen && (
+        <AgentSettingsModal
+          onClose={() => setAgentSettingsOpen(false)}
+          onChanged={() => {
+            agent.refreshStatus();
+            agent.refreshProfiles();
+          }}
+        />
+      )}
 
       {startServerOpen && (
         <InferenceModal

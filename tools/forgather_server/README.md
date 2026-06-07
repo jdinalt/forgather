@@ -2974,6 +2974,201 @@ common system roots (`/`, `/home`, `/etc`, …) — the file variant
 relies on the depth floor alone since you can't recursively wipe a
 file.
 
+## AI agent (right-sidebar assistant)
+
+An in-process AI agent that helps inspect projects/configs, answer
+questions about Forgather (with doc citations), and author configs and
+templates. **Disabled until a profile is configured** — add one in the
+webui (the agent sidebar's ⚙ button) or seed one from `server_config.yaml`.
+
+### Provider
+
+The agent uses the **Anthropic SDK as a single path** for both Claude and
+local models. vLLM natively serves the Anthropic Messages API
+(`/v1/messages`), so pointing `base_url` at a vLLM server reaches a local
+model (e.g. Qwen3) through the same code path as Claude. A thin internal
+`ChatProvider` seam (`agent/providers/base.py`) keeps the loop
+provider-agnostic; an OpenAI-style adapter can be added later for
+non-Anthropic-API providers.
+
+For a local vLLM model, launch vLLM with
+`--enable-auto-tool-choice --tool-call-parser <parser>` (e.g.
+`qwen3_coder` for Qwen3.6, `hermes` for older Qwen3) and a
+`--served-model-name` alias (the Messages API rejects model names
+containing `/`).
+
+The credential is sent as the right header automatically: a profile with
+a `base_url` (a local vLLM server) sends `Authorization: Bearer <token>`
+(what vLLM checks), while Claude (no `base_url`) uses the `x-api-key`
+header. So a vLLM bearer goes in the same `api_key` / `api_key_env`
+field.
+
+### Profiles (multiple agents, hot-swappable)
+
+A **profile** is one named way to reach a model (provider, model,
+base_url, credentials, TLS posture). Manage several from the webui (agent
+sidebar ⚙ → "Agent profiles") and switch the active one from the header
+dropdown — changes take effect on the **next message, no server restart**
+(the runtime rebuilds its loop whenever the profile store's revision
+changes). Profiles persist at `<config>/server/agent_profiles.json` (mode
+0600 — the file holds API keys / bearer tokens).
+
+The `server_config.yaml` `agent:` block is only a **bootstrap**: on first
+run, if no profiles exist, one is seeded from it. Edit profiles in the UI
+thereafter.
+
+```yaml
+agent:
+  provider: anthropic        # only adapter today
+  model: claude-sonnet-4-6   # or a vLLM --served-model-name alias; blank = auto
+  base_url: null             # e.g. https://kitt:8000 for local vLLM; null = Claude
+  api_key_env: ANTHROPIC_API_KEY   # env var with the key (or vLLM bearer)
+  # api_key: null            # explicit key/bearer (overrides api_key_env)
+  # verify_tls: true         # see TLS below
+  # max_tokens: 4096
+  # max_iterations: 12       # tool-use loop cap per user message
+```
+
+### TLS for local (self-signed) servers
+
+A vLLM box on a LAN typically serves TLS with a self-signed cert that the
+system CA check rejects. Two per-profile options (same model as the
+inference registry):
+
+- **Verify TLS off** — accept any certificate. One toggle, but vulnerable
+  to a man-in-the-middle on the path. Fine for a trusted LAN.
+- **Import the certificate** (recommended) — the editor's "Import
+  certificate…" button fetches the server's cert (trust-on-first-use),
+  shows its SHA-256 fingerprint for you to confirm, and stores the PEM in
+  the profile. The agent then verifies against exactly that cert, with
+  hostname checking off (the chain check is the real boundary on a LAN —
+  same posture as forgather's own private-CA peers).
+
+Both model-listing and the chat connection use the profile's chosen
+posture (we do not silently disable verification anywhere).
+
+> **Security stance (intentional — please don't "harden" this away).**
+> For a self-hosted model server on a LAN, verify-off is a *supported,
+> warned* posture, and importing the cert is one click. We deliberately
+> keep the friction low: a local LLM's bearer token has little resale
+> value (these tokens are often plaintext in a config file anyway), and
+> capturing it requires actively MITM-ing the LAN without being noticed —
+> a high bar that even verify-off raises far above plain HTTP (which stops
+> packet-sniffing outright). Making LAN TLS painful is counter-productive:
+> it pushes people to plain HTTP, which is strictly worse. **Real Anthropic
+> (Claude) keys are different** — high value, real theft market — so the
+> agent never sends them over an unverified channel: Claude always goes
+> over the SDK's verified TLS, and `ANTHROPIC_API_KEY` is never
+> auto-forwarded to a custom `base_url` (see *Credential safety* below). A
+> token is also only ever sent to the exact server its profile names; it is
+> never resolved by URL match or borrowed from another panel.
+
+### Credential safety
+
+- Agent profiles are **self-contained**: a profile's token is sent only to
+  that profile's own `base_url`. The agent never resolves a token by URL
+  match or borrows one stored in another panel (e.g. the inference
+  registry), so a blank key never silently authenticates from an unrelated
+  config.
+- `/api/agent/models` will not redirect a saved profile's token to a
+  different `base_url` supplied in the request — an edited URL must carry
+  its own key.
+- `ANTHROPIC_API_KEY` (the well-known env var) is auto-read only for Claude
+  (no `base_url`); it is never forwarded to a custom `base_url`. A local
+  server needs an explicit key or a deliberately-named env var.
+- Authoring tools enforce the filesystem-root allowlist at **propose** time
+  (before any read), so `propose_edit_config` can't read a file outside the
+  configured roots into the preview; writes are re-checked at commit.
+- The profile store (`agent_profiles.json`, which holds API keys / bearer
+  tokens) is written **mode 0600** and is in the startup perm-tightening
+  set, so only the owner can read it (matching the other credential-bearing
+  registries).
+
+### Model selection (weakly bound)
+
+The model is only weakly bound to a profile. The editor's "Load models"
+button queries the server's live list (Claude via the SDK; vLLM/OpenAI via
+`/v1/models`) and offers a picker. Your choice is remembered; if a saved
+model no longer exists on the server, the first available is auto-selected.
+Leaving the model blank means "auto — first available", resolved at
+activation time. This suits vLLM, which serves one model at a time, so
+swapping the model on the box needs no profile edit.
+
+### Output budget (`max_tokens`)
+
+`max_tokens` defaults to **auto** (leave the field blank). vLLM enforces
+`prompt_tokens + max_tokens ≤ max_model_len`, and a verbose reasoning model
+easily burns through a small cap, so a hardcoded number is the wrong
+default. Auto:
+
+- reads the model's context window (`max_model_len`) from the server's
+  model card — the same query that backs the picker, so you never look it
+  up per model;
+- sizes the output budget to `min(context, 32768)` (32K is a sensible
+  ceiling even on huge-context models — Gemma 256K, NVIDIA 1M — leaving the
+  rest of the window for the prompt);
+- **clamps per request** so the output budget always fits the remaining
+  context as the conversation grows (a deliberately high prompt estimate
+  biases toward a smaller, safe budget rather than a "context length
+  exceeded" error).
+
+Set a positive value to pin an explicit cap instead.
+
+The model-list probe needs the server's bearer token. Credential
+resolution for a profile is self-contained: the profile's own key → its
+`api_key_env` env var. (Agent profiles do not silently borrow tokens from
+other panels — enter the token in the API key field; for vLLM it's
+`~/.config/vllm/api-key`.) **High-value-key guard:** the well-known
+`ANTHROPIC_API_KEY` env var is only auto-read for Claude (no `base_url`) —
+it is never forwarded to a custom `base_url`, so a blank-key local/vLLM
+profile can't leak your Anthropic key to the local box; a local server
+needs an explicit key or a deliberately-named env var. A 401 from "Load
+models" means the token is
+missing or wrong. The probe always skips TLS verification (it only returns
+model ids, so a not-yet-imported self-signed cert never blocks discovery);
+the actual chat connection still honors the profile's TLS setting.
+
+### Interaction model — propose → approve → commit
+
+Tools are classified by risk and the gate is enforced **server-side**, in
+the agent loop, never in the browser:
+
+- **`read`** — inspection / search tools run automatically.
+- **`propose`** — authoring tools compute a *preview only* (a before/after
+  diff) and return it; nothing is written. The turn pauses with a pending
+  action. The actual write runs only when you click **Approve**, replaying
+  the exact previewed content (the model cannot alter it after the fact).
+  Reject feeds a rejection back so the model can adapt. After a write,
+  the config is re-parsed and any error surfaces back into the chat.
+
+Because a paused turn owes a tool-result for every tool call it made, the
+loop refuses to call the model again until every pending action is
+resolved — so a change can never become permanent without approval.
+
+### UI — two surfaces, one conversation
+
+- **Right sidebar** (toggle with **Ctrl/Cmd+J**): the always-on compact
+  thread. Condensed action cards with Approve/Reject and an "Open in Agent
+  view" link for large diffs.
+- **Full "Agent" view** (left-nav 🤖): the same conversation with a Monaco
+  side-by-side diff for reviewing proposed changes, plus full history.
+
+Both share one controller, so an action proposed in the sidebar can be
+approved in the full view and vice-versa.
+
+### Tools (first release)
+
+Read-only: `list_projects`, `inspect_config`, `render_config_pp`,
+`read_file`, `scheduler_status`, `search_docs`, `list_meta_templates`.
+Authoring (propose/commit): `propose_edit_config`, `propose_new_config`,
+`propose_new_config_from_template`.
+
+The registry (`agent/registry.py`) is the single source of truth and is
+designed to be re-exported later by a `forgather mcp` server for external
+MCP clients (Claude Code / Desktop) without duplicating definitions. Job
+submission, scheduler control, and DiLoCo coordination are planned later
+phases.
+
 ## Not yet implemented
 
 - Per-run metrics charts (loss curves, etc. — the data is already in
@@ -3044,6 +3239,21 @@ tools/forgather_server/
 │                              #   CUDA_VISIBLE_DEVICES allow-list
 ├── gpu_policy.py              # Runtime per-GPU policy (disabled,
 │                              #   min_priority) — persisted
+├── agent_profiles_store.py    # Saved agent connection profiles + active
+│                              #   selection (JSON, 0600); hot-swap revision
+├── agent_tls.py               # Per-profile TLS verify, cert import (TOFU),
+│                              #   model listing (Claude SDK / vLLM /v1/models)
+├── agent/                     # In-process AI agent (right-sidebar assistant)
+│   ├── providers/
+│   │   ├── base.py            # ChatProvider seam + normalized events
+│   │   └── anthropic.py       # Anthropic SDK adapter (Claude + vLLM via
+│   │                          #   base_url); tool_use reassembly + tolerance
+│   ├── registry.py            # ToolSpec + risk levels + Proposal (preview)
+│   ├── loop.py                # Provider-agnostic loop + server-side gate
+│   ├── session.py             # In-memory sessions + pending approvals
+│   ├── runtime.py             # Config injection, factories, system prompt
+│   ├── tools_readonly.py      # Phase 0 read tools
+│   └── tools_authoring.py     # Phase 1 propose/commit tools
 ├── routes/
 │   ├── search_roots.py        # GET/POST/DELETE /api/search-roots
 │   ├── projects.py            # /api/projects, /api/project/{readme,asset}
@@ -3061,6 +3271,8 @@ tools/forgather_server/
 │   │                          #   /api/config/dynamic-args
 │   ├── inference_proxy.py     # /api/inference/{health,models,completions,
 │   │                          #   chat/completions} — same-origin SSE proxy
+│   ├── agent.py               # /api/agent/{status,message,approve,reject,
+│   │                          #   sessions} — SSE chat + approval gate
 │   └── generation_configs.py  # /api/generation-configs/{list,get,put,delete}
 └── webui/
     ├── package.json           # Vite, React, TypeScript, Monaco, viz-js,
@@ -3222,6 +3434,27 @@ are WebSockets.
 | `POST /api/workspace/init-here` `{workspace_dir, name, description, forgather_dir, libs?, search_paths?}` | Initialize a workspace in an *existing* directory — used by the Files-tree right-click flow. Refuses if `forgather_workspace/` already exists; requires `workspace_dir` to live at-or-under a configured search root. |
 | `POST /api/project/new-template` `{project_dir, kind: "config"\|"template", name, meta_template?, values?}` | Create a file under the templates dir; refuses overwrite, `.yaml` auto-appended, returns absolute path. With `meta_template` + `values` the file is seeded from a scaffold under `templatelib/meta/`; without them it is created empty |
 | `GET /api/project/meta-templates`              | Tree of available scaffolds discovered under `templatelib/meta/`. Each leaf is a `MetaTemplate` (`id`, `title`, `description`, `target_kind`, `fields[]`); each branch is a `MetaCategory` with `templates[]` + `children[]`. Feeds the New Config / New Template modal's "pick a starting point" step |
+
+### AI agent
+
+Streaming endpoints return `text/event-stream` (`data: {json}\n\n` per
+agent event), consumed by the webui with `fetch` + `ReadableStream` (not
+`EventSource`, so the session cookie authenticates them).
+
+| Endpoint                                          | Purpose                                                        |
+| ------------------------------------------------- | ------------------------------------------------------------- |
+| `GET /api/agent/status`                           | Whether the agent is configured (`{enabled, provider, model, base_url}` — no secrets) |
+| `POST /api/agent/message` `{message, session_id?}`| Send a user message; SSE-streams the turn (text, tool activity, action cards). A leading `session` frame carries the session id |
+| `POST /api/agent/approve` `{action_id}`           | Approve a pending action; runs the stored commit and SSE-streams the resumed turn |
+| `POST /api/agent/reject` `{action_id}`            | Reject a pending action; SSE-streams the resumed turn |
+| `GET /api/agent/sessions/{id}`                    | Conversation history (`{messages, awaiting_approval, …}`) |
+| `GET /api/agent/profiles`                         | List saved profiles + `active_id` (credentials redacted to `has_api_key` / `has_imported_cert`) |
+| `POST /api/agent/profiles` `{label, provider?, model?, base_url?, api_key?, api_key_env?, verify_tls?, ca_cert_pem?, …}` | Create a profile |
+| `PUT /api/agent/profiles/{id}` `{…same fields…}`  | Update a profile (omitted fields unchanged; empty `api_key`/`ca_cert_pem` clears) |
+| `DELETE /api/agent/profiles/{id}`                 | Remove a profile |
+| `POST /api/agent/profiles/{id}/activate`          | Switch the active profile (hot-swap; no restart) |
+| `POST /api/agent/models` `{profile_id? \| base_url, api_key?, verify_tls?, ca_cert_pem?}` | List available models (Claude SDK, or vLLM `/v1/models`) for the model picker |
+| `POST /api/agent/fetch-cert` `{base_url}`         | Fetch the server's TLS cert (`{pem, sha256, …}`) for the import flow |
 
 ### Config inspection
 
