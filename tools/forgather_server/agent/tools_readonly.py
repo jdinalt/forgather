@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .. import config_ops, discovery, docs_search, paths, scheduler, search_roots
-from .registry import READ, ToolRegistry, ToolSpec, UiDirective
+from .registry import EXTENDED, READ, ToolRegistry, ToolSpec, UiDirective
 
 log = logging.getLogger("forgather_server.agent.tools_readonly")
 
@@ -117,6 +117,14 @@ def _check_config(args: Dict[str, Any]) -> Any:
     # error}.
     return config_ops.check_config(
         args["project_dir"], args["config_name"], target=args.get("target") or None
+    )
+
+
+def _resolve_output_dir(args: Dict[str, Any]) -> Any:
+    # Where a config's training output lands + what's there now (sizes,
+    # entry counts) + nproc_per_node (seeds a sensible requested_gpus).
+    return dataclasses.asdict(
+        config_ops.load_output_dir_info(args["project_dir"], args["config_name"])
     )
 
 
@@ -481,6 +489,31 @@ def register_all(reg: ToolRegistry) -> None:
             },
             handler=_render_config_code,
             risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="resolve_output_dir",
+            description=(
+                "Resolve where a config's training output would land "
+                "(output_dir + the parent models_dir), whether they exist, their "
+                "current size / entry counts, and nproc_per_node from the config "
+                "meta. Use to find a model's output_dir for list_runs / "
+                "list_checkpoints, to check disk usage, or to seed requested_gpus "
+                "for run_train from nproc_per_node."
+            ),
+            summary="Resolve a config's output_dir, sizes, and nproc_per_node.",
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "project_dir": {"type": "string"},
+                    "config_name": {"type": "string"},
+                },
+                "required": ["project_dir", "config_name"],
+            },
+            handler=_resolve_output_dir,
+            risk=READ,
+            tier=EXTENDED,
         )
     )
     reg.register(

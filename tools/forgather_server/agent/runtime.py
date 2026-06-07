@@ -26,7 +26,13 @@ from .. import agent_profiles_store as profiles_store
 from .. import agent_tls
 from .loop import AgentLoop
 from .registry import ToolRegistry
-from . import tools_authoring, tools_jobs, tools_meta, tools_models, tools_readonly
+from . import (
+    tools_authoring,
+    tools_jobs,
+    tools_meta,
+    tools_models,
+    tools_readonly,
+)
 
 log = logging.getLogger("forgather_server.agent.runtime")
 

@@ -25,10 +25,18 @@ import logging
 import shlex
 from typing import Any, Dict, List, Optional
 
-from .. import construct_ops, dataset_ops, job_records, queue_ops, queue_store
+from .. import (
+    construct_ops,
+    dataset_ops,
+    eval_ops,
+    gpu_monitor,
+    job_records,
+    queue_ops,
+    queue_store,
+)
 from ..routes.jobs import read_tty_tail
 from . import _dataset_servers
-from .registry import CONFIRM, READ, Proposal, ToolRegistry, ToolSpec
+from .registry import CONFIRM, EXTENDED, READ, Proposal, ToolRegistry, ToolSpec
 
 log = logging.getLogger("forgather_server.agent.tools_jobs")
 
@@ -358,6 +366,155 @@ def _dataset_info(args: Dict[str, Any]) -> Any:
     )
 
 
+# ---- GPU status (READ) -----------------------------------------------------
+
+
+def _gpu_status(_args: Dict[str, Any]) -> Any:
+    # Compact per-GPU projection — enough to advise requested_gpus / which card
+    # is free, without dumping every process into model context.
+    gpus = []
+    for g in gpu_monitor.snapshot():
+        total = g.total_mem_bytes or 0
+        used = g.used_mem_bytes or 0
+        gpus.append(
+            {
+                "index": g.index,
+                "name": g.name,
+                "total_mem_bytes": total,
+                "used_mem_bytes": used,
+                "free_mem_bytes": max(0, total - used),
+                "util_pct": g.util_pct,
+                "mem_util_pct": g.mem_util_pct,
+                "temp_c": g.temp_c,
+                "power_w": g.power_w,
+                "disabled": g.disabled,
+                "excluded": g.excluded,
+                "min_priority": g.min_priority,
+                "unified_memory": g.unified_memory,
+                "process_count": len(g.processes or []),
+            }
+        )
+    return {"gpus": gpus}
+
+
+# ---- eval configs + run an eval job (CONFIRM) ------------------------------
+
+
+def _list_eval_configs(_args: Dict[str, Any]) -> Any:
+    from dataclasses import asdict
+
+    return {"eval_configs": [asdict(e) for e in eval_ops.list_eval_configs()]}
+
+
+_EVAL_PASSTHROUGH = ("batch_size", "max_length", "stride", "checkpoint_path", "trainer")
+
+
+def _run_eval(args: Dict[str, Any]) -> Proposal:
+    eval_name = (args.get("eval_name") or "").strip()
+    model_path = args["model_path"]
+    if not eval_name:
+        raise ValueError("eval_name is required (a name from list_eval_configs)")
+    entries = {e.name: e for e in eval_ops.list_eval_configs()}
+    entry = entries.get(eval_name)
+    if entry is None:
+        raise ValueError(
+            f"unknown eval config {eval_name!r}; available: {sorted(entries)}"
+        )
+    gpus = args.get("gpus")
+    requested_gpus = 1 if gpus in (None, "") else int(gpus)
+    passthrough = {k: args[k] for k in _EVAL_PASSTHROUGH if args.get(k) not in (None, "")}
+
+    job_params: Dict[str, Any] = {
+        "eval_project": entry.project_dir,
+        "eval_template": entry.template,
+        "model_path": model_path,
+        **passthrough,
+    }
+    # Preview the exact subprocess argv (no side effect).
+    cmd = eval_ops.build_eval_command(
+        eval_project=entry.project_dir,
+        eval_template=entry.template,
+        model_path=model_path,
+        **passthrough,
+    )
+    cmd_str = shlex.join(cmd)
+
+    def commit() -> str:
+        item = queue_ops.validate_and_enqueue(
+            project_dir=entry.project_dir,  # display hint + fs-root anchor
+            config=entry.name,
+            dynamic_args={},
+            requested_gpus=requested_gpus,
+            job_type="eval",
+            job_params=job_params,
+            enforce_fs_root=True,
+        )
+        return _enqueue_note(item, f"eval {eval_name} on {model_path}")
+
+    return Proposal(
+        title=f"Evaluate: {eval_name}",
+        summary="Run an `eval` job: scores the model against the eval config's "
+        "dataset (perplexity / loss / bpb). Runs as a background scheduler job.",
+        extra={
+            "command": cmd_str,
+            "eval_name": eval_name,
+            "model_path": model_path,
+            "requested_gpus": requested_gpus,
+        },
+        commit=commit,
+    )
+
+
+# ---- trainer control of a running job (CONFIRM) ----------------------------
+
+# action -> (trainer_control function name, human description)
+_CONTROL_ACTIONS = {
+    "save": ("save_checkpoint", "request a checkpoint save"),
+    "stop": ("graceful_stop", "gracefully stop (saves a final checkpoint)"),
+    "save-stop": ("save_and_stop", "save a checkpoint, then stop"),
+    "abort": ("abort", "abort immediately (NO final checkpoint)"),
+}
+
+
+def _control_job(args: Dict[str, Any]) -> Proposal:
+    queue_id = args["queue_id"]
+    action = (args.get("action") or "").strip()
+    if action not in _CONTROL_ACTIONS:
+        raise ValueError(
+            f"unknown action {action!r}; expected one of {sorted(_CONTROL_ACTIONS)}"
+        )
+    rec = job_records.get_record(queue_id)
+    if rec is None:
+        raise ValueError(f"no job with queue_id {queue_id!r} (use list_jobs)")
+    if rec.job_type != "training":
+        raise ValueError(
+            f"control_job only applies to training jobs (job {queue_id} is "
+            f"{rec.job_type!r})"
+        )
+    if rec.job_id is None:
+        raise ValueError(
+            f"job {queue_id} is not yet correlated to a trainer endpoint; wait "
+            "until it is running, then retry"
+        )
+    fn_name, desc = _CONTROL_ACTIONS[action]
+    job_id = rec.job_id
+
+    def commit() -> str:
+        from forgather import trainer_control
+
+        resp = getattr(trainer_control, fn_name)(job_id)
+        ok = getattr(resp, "success", None)
+        msg = getattr(resp, "message", str(resp))
+        return f"{action} job {queue_id}: success={ok} — {msg}"
+
+    return Proposal(
+        title=f"{action} training job {queue_id}",
+        summary=f"Trainer control: {desc}.",
+        extra={"queue_id": queue_id, "action": action, "config": rec.config},
+        commit=commit,
+    )
+
+
 # ---- registration ----------------------------------------------------------
 
 
@@ -567,5 +724,94 @@ def register_all(reg: ToolRegistry) -> None:
             },
             handler=_dataset_info,
             risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="gpu_status",
+            description=(
+                "Snapshot the GPUs: per-card name, total/used/free memory, "
+                "utilization, temperature, and whether the card is disabled or "
+                "excluded from scheduling. Use to advise requested_gpus before "
+                "run_train / run_eval, or to see what is busy."
+            ),
+            json_schema={"type": "object", "properties": {}},
+            handler=_gpu_status,
+            risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="control_job",
+            description=(
+                "Control a RUNNING training job by queue_id: save a checkpoint, "
+                "gracefully stop (saves a final checkpoint), save-and-stop, or "
+                "abort (immediate, no final checkpoint). Approval required. Only "
+                "valid for training jobs that have started (are correlated to a "
+                "trainer endpoint)."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "queue_id": {"type": "string"},
+                    "action": {
+                        "type": "string",
+                        "enum": ["save", "stop", "save-stop", "abort"],
+                        "description": "save | stop | save-stop | abort.",
+                    },
+                },
+                "required": ["queue_id", "action"],
+            },
+            handler=_control_job,
+            risk=CONFIRM,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="list_eval_configs",
+            description=(
+                "List the available evaluation configs (name, project_dir, "
+                "template, description, default batch_size/max_length/stride). "
+                "Use to pick an eval_name for run_eval."
+            ),
+            summary="List available evaluation configs (for run_eval).",
+            json_schema={"type": "object", "properties": {}},
+            handler=_list_eval_configs,
+            risk=READ,
+            tier=EXTENDED,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="run_eval",
+            description=(
+                "Run an evaluation job on the scheduler (the equivalent of "
+                "`forgather eval test ... -M <model>`). Scores a model against an "
+                "eval config's dataset (perplexity / loss / bpb). eval_name is a "
+                "name from list_eval_configs; model_path is the model output dir "
+                "or checkpoint to evaluate. gpus defaults to 1 (0 = CPU). "
+                "Optional: batch_size, max_length, stride, checkpoint_path, "
+                "trainer. Approval required. Returns a queue_id; watch it with "
+                "list_jobs / read_job_output and read results with "
+                "list_evaluations once it is done."
+            ),
+            summary="Run an evaluation job for a model (CONFIRM-gated).",
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "eval_name": {"type": "string", "description": "Eval config name (from list_eval_configs)."},
+                    "model_path": {"type": "string", "description": "Model output dir or checkpoint to evaluate."},
+                    "gpus": {"type": "integer", "description": "GPUs to reserve (default 1; 0 = CPU)."},
+                    "batch_size": {"type": "integer"},
+                    "max_length": {"type": "integer"},
+                    "stride": {"type": "integer"},
+                    "checkpoint_path": {"type": "string"},
+                    "trainer": {"type": "string", "description": "simple | ddp | pipeline (default ddp)."},
+                },
+                "required": ["eval_name", "model_path"],
+            },
+            handler=_run_eval,
+            risk=CONFIRM,
+            tier=EXTENDED,
         )
     )
