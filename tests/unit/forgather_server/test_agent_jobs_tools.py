@@ -7,7 +7,13 @@ import asyncio
 
 import pytest
 
-from forgather_server import dataset_ops, job_records, queue_ops, queue_store
+from forgather_server import (
+    construct_ops,
+    dataset_ops,
+    job_records,
+    queue_ops,
+    queue_store,
+)
 from forgather_server.agent import tools_jobs
 from forgather_server.agent.registry import CONFIRM, READ, Proposal, ToolRegistry
 from forgather_server.routes import jobs as jobs_route
@@ -29,7 +35,14 @@ def test_system_prompt_mentions_dataset_workflow():
     from forgather_server.agent import runtime
 
     p = runtime.SYSTEM_PROMPT
-    for tool in ("run_dataset", "dataset_info", "list_jobs", "read_job_output"):
+    for tool in (
+        "run_dataset",
+        "run_construct",
+        "run_train",
+        "dataset_info",
+        "list_jobs",
+        "read_job_output",
+    ):
         assert tool in p
 
 
@@ -37,11 +50,21 @@ def test_jobs_tools_registered():
     reg = ToolRegistry()
     tools_jobs.register_all(reg)
     by_name = {s.name: s for s in reg.specs()}
-    assert {"list_jobs", "read_job_output", "wait_for_job", "run_dataset"} <= set(by_name)
+    assert {
+        "list_jobs",
+        "read_job_output",
+        "wait_for_job",
+        "run_dataset",
+        "run_construct",
+        "run_train",
+    } <= set(by_name)
     assert by_name["list_jobs"].risk == READ
     assert by_name["read_job_output"].risk == READ
     assert by_name["wait_for_job"].risk == READ
-    assert by_name["run_dataset"].risk == CONFIRM  # gated: runs code + downloads
+    # All run-as-job tools are gated: they execute config code / reserve GPUs.
+    assert by_name["run_dataset"].risk == CONFIRM
+    assert by_name["run_construct"].risk == CONFIRM
+    assert by_name["run_train"].risk == CONFIRM
 
 
 def test_list_jobs_projects_safe_fields_and_merges_queue(monkeypatch):
@@ -202,6 +225,7 @@ def test_run_dataset_commit_enqueues(monkeypatch):
 
     class _Item:
         queue_id = "q_new"
+        job_type = "dataset"
 
     seen = {}
 
@@ -219,6 +243,101 @@ def test_run_dataset_commit_enqueues(monkeypatch):
     assert seen["enforce_fs_root"] is True
     assert seen["job_params"] == {"target": "validation_dataset_split", "truncate": 64}
     assert "q_new" in msg
+
+
+def _fake_item(job_type):
+    class _Item:
+        queue_id = "q_new"
+
+    _Item.job_type = job_type
+    return _Item()
+
+
+def test_run_construct_preview_and_commit(monkeypatch):
+    captured = {}
+
+    def fake_build(**kw):
+        captured.update(kw)
+        return ["python", "-m", "forgather.cli", "construct", "--target", kw["target"]]
+
+    seen = {}
+    monkeypatch.setattr(construct_ops, "build_construct_command", fake_build)
+    monkeypatch.setattr(
+        queue_ops,
+        "validate_and_enqueue",
+        lambda **kw: seen.update(kw) or _fake_item("construct"),
+    )
+
+    prop = tools_jobs._run_construct(
+        {"project_dir": "/p", "config_name": "c.yaml", "target": "model", "call": True}
+    )
+    assert isinstance(prop, Proposal)
+    assert prop.commit is not None
+    # Preview builds the command but does not enqueue.
+    assert captured["target"] == "model" and captured["call"] is True
+    assert "model" in prop.extra["command"]
+    assert seen == {}
+
+    msg = prop.commit()
+    assert seen["job_type"] == "construct"
+    assert seen["requested_gpus"] == 0  # default
+    assert seen["enforce_fs_root"] is True
+    assert seen["job_params"] == {"target": "model", "call": True}
+    assert "q_new" in msg
+
+
+def test_run_construct_gpus_override(monkeypatch):
+    monkeypatch.setattr(
+        construct_ops, "build_construct_command", lambda **kw: ["python", "construct"]
+    )
+    seen = {}
+    monkeypatch.setattr(
+        queue_ops,
+        "validate_and_enqueue",
+        lambda **kw: seen.update(kw) or _fake_item("construct"),
+    )
+    prop = tools_jobs._run_construct(
+        {"project_dir": "/p", "config_name": "c.yaml", "gpus": 2}
+    )
+    prop.commit()
+    assert seen["requested_gpus"] == 2
+    assert seen["job_params"] == {"target": "main", "call": False}  # defaults
+
+
+def test_run_train_defaults_one_gpu(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        queue_ops,
+        "validate_and_enqueue",
+        lambda **kw: seen.update(kw) or _fake_item("training"),
+    )
+    prop = tools_jobs._run_train({"project_dir": "/p", "config_name": "c.yaml"})
+    assert isinstance(prop, Proposal)
+    # Preview shows the CLI equivalent; no enqueue until commit.
+    assert "train" in prop.extra["command"]
+    assert seen == {}
+
+    msg = prop.commit()
+    assert seen["job_type"] == "training"
+    assert seen["requested_gpus"] == 1  # default
+    assert seen["enforce_fs_root"] is True
+    assert seen["job_params"] == {}  # no nproc
+    assert "q_new" in msg
+
+
+def test_run_train_gpus_and_nproc(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        queue_ops,
+        "validate_and_enqueue",
+        lambda **kw: seen.update(kw) or _fake_item("training"),
+    )
+    prop = tools_jobs._run_train(
+        {"project_dir": "/p", "config_name": "c.yaml", "gpus": 0, "nproc": "auto"}
+    )
+    prop.commit()
+    assert seen["requested_gpus"] == 0  # CPU smoke-test
+    assert seen["job_params"] == {"nproc": "auto"}
 
 
 def test_read_tty_tail_helper(tmp_path):

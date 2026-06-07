@@ -103,7 +103,21 @@ function itemsFromMessages(messages: Array<{ role: string; content: unknown }>):
 export interface AgentUsage {
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
   contextWindow: number | null;
+}
+
+/** Cumulative tokens billed across the whole session. An agentic loop re-sends
+ *  the prefix on every request, so this sum is what reconciles with the
+ *  provider's billing dashboard — typically many times the current context
+ *  occupancy (AgentUsage). */
+export interface AgentSessionCost {
+  inputTokens: number; // fresh (uncached) input, summed over all requests
+  cacheReadTokens: number; // prefix served from cache (~0.1x)
+  cacheCreationTokens: number; // prefix written to cache (~1.25x)
+  outputTokens: number;
+  requests: number; // number of API round-trips
 }
 
 export interface AgentController {
@@ -117,6 +131,9 @@ export interface AgentController {
   activeProfileId: string | null;
   /** Latest token accounting (context occupancy), or null until a turn runs. */
   usage: AgentUsage | null;
+  /** Cumulative tokens billed across the session (sum over every API request).
+   *  Reconciles with the provider billing dashboard; null until a turn runs. */
+  sessionCost: AgentSessionCost | null;
   /** Set when the last turn ended truncated (max_tokens / iteration cap), so
    *  the UI can offer "Continue". Cleared when a new turn starts. */
   incompleteReason: string | null;
@@ -157,6 +174,7 @@ export function useAgent(): AgentController {
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const [usage, setUsage] = useState<AgentUsage | null>(null);
+  const [sessionCost, setSessionCost] = useState<AgentSessionCost | null>(null);
   const [incompleteReason, setIncompleteReason] = useState<string | null>(null);
   const [lastArtifact, setLastArtifact] = useState<
     { kind: string; path: string; nonce: number } | null
@@ -220,7 +238,12 @@ export function useAgent(): AgentController {
       raw = null;
     }
     if (!raw) return;
-    let cached: { sessionId?: string; items?: AgentItem[]; usage?: AgentUsage } = {};
+    let cached: {
+      sessionId?: string;
+      items?: AgentItem[];
+      usage?: AgentUsage;
+      sessionCost?: AgentSessionCost;
+    } = {};
     try {
       cached = JSON.parse(raw);
     } catch {
@@ -235,6 +258,7 @@ export function useAgent(): AgentController {
       idRef.current = cached.items.length; // continue ids past restored ones
     }
     if (cached.usage) setUsage(cached.usage);
+    if (cached.sessionCost) setSessionCost(cached.sessionCost);
     if (!cached.sessionId) return;
     getSession(cached.sessionId)
       .then((h) => {
@@ -371,13 +395,30 @@ export function useAgent(): AgentController {
             }
           }
           break;
-        case "usage":
+        case "usage": {
+          const inTok = (ev.input_tokens as number) ?? 0;
+          const outTok = (ev.output_tokens as number) ?? 0;
+          const cacheRead = (ev.cache_read_input_tokens as number) ?? 0;
+          const cacheWrite = (ev.cache_creation_input_tokens as number) ?? 0;
+          // Latest request = current context occupancy.
           setUsage({
-            inputTokens: (ev.input_tokens as number) ?? 0,
-            outputTokens: (ev.output_tokens as number) ?? 0,
+            inputTokens: inTok,
+            outputTokens: outTok,
+            cacheReadTokens: cacheRead,
+            cacheCreationTokens: cacheWrite,
             contextWindow: (ev.context_window as number) ?? null,
           });
+          // Cumulative billed across the session: sum every request, since the
+          // loop re-sends the prefix each round-trip.
+          setSessionCost((prev) => ({
+            inputTokens: (prev?.inputTokens ?? 0) + inTok,
+            cacheReadTokens: (prev?.cacheReadTokens ?? 0) + cacheRead,
+            cacheCreationTokens: (prev?.cacheCreationTokens ?? 0) + cacheWrite,
+            outputTokens: (prev?.outputTokens ?? 0) + outTok,
+            requests: (prev?.requests ?? 0) + 1,
+          }));
           break;
+        }
         case "done":
           setAwaiting(false);
           // A truncated turn (max_tokens / iteration cap) flags Continue.
@@ -390,7 +431,6 @@ export function useAgent(): AgentController {
           setAwaiting(false);
           addItem({ type: "error", message: ev.message as string });
           break;
-        // "usage" intentionally ignored for now.
       }
     },
     [addItem, appendAssistant],
@@ -459,6 +499,7 @@ export function useAgent(): AgentController {
     setAwaiting(false);
     setBusy(false);
     setUsage(null);
+    setSessionCost(null);
     setIncompleteReason(null);
     try {
       persistRemove(STORAGE_KEY);
@@ -495,8 +536,9 @@ export function useAgent(): AgentController {
       messages,
       items,
       usage,
+      sessionCost,
     };
-  }, [items, usage]);
+  }, [items, usage, sessionCost]);
 
   const loadConversation = useCallback(
     async (data: Record<string, unknown>) => {
@@ -525,6 +567,10 @@ export function useAgent(): AgentController {
       setItems(restored);
       idRef.current = restored.length;
       setUsage((data.usage as AgentUsage) ?? null);
+      // Loading mints a *new* backend session (messages are re-imported), so the
+      // cumulative "billed this session" tally starts fresh — restoring the old
+      // total would conflate two distinct billing sessions.
+      setSessionCost(null);
       setAwaiting(false);
       setIncompleteReason(null);
     },
@@ -539,12 +585,15 @@ export function useAgent(): AgentController {
     if (busy) return;
     try {
       if (sessionId || items.length) {
-        persistSet(STORAGE_KEY, JSON.stringify({ sessionId, items, usage }));
+        persistSet(
+          STORAGE_KEY,
+          JSON.stringify({ sessionId, items, usage, sessionCost }),
+        );
       }
     } catch {
       /* ignore quota / serialization errors */
     }
-  }, [busy, items, sessionId, usage]);
+  }, [busy, items, sessionId, usage, sessionCost]);
 
   const pendingActions = items
     .filter((it): it is Extract<AgentItem, { type: "action" }> => it.type === "action")
@@ -561,6 +610,7 @@ export function useAgent(): AgentController {
     profiles,
     activeProfileId,
     usage,
+    sessionCost,
     incompleteReason,
     lastArtifact,
     lastReveal,

@@ -16,6 +16,17 @@ export interface AgentStatus {
   base_url?: string | null;
   verify_tls?: boolean;
   has_imported_cert?: boolean;
+  /** Per-million-token USD rates for the four token categories (estimate),
+   *  or null/absent for an unpriced / self-hosted model. */
+  pricing?: AgentPricing | null;
+}
+
+/** USD per million tokens for each billed category (estimate). */
+export interface AgentPricing {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
 }
 
 /** A saved connection profile (credentials redacted to flags). */
@@ -31,6 +42,8 @@ export interface AgentProfile {
   has_imported_cert: boolean;
   max_tokens: number;
   max_iterations: number;
+  /** "auto" (on for Claude, off for vLLM) | "on" | "off". */
+  prompt_caching: string;
 }
 
 /** Fields accepted when creating/updating a profile. Omitted fields are
@@ -46,6 +59,7 @@ export interface AgentProfileWrite {
   ca_cert_pem?: string;
   max_tokens?: number;
   max_iterations?: number;
+  prompt_caching?: string;
 }
 
 export interface CertInfo {
@@ -117,6 +131,23 @@ export async function deleteProfile(id: string): Promise<{ removed: string; acti
 
 export async function activateProfile(id: string): Promise<{ active_id: string }> {
   return jsonReq(`/api/agent/profiles/${id}/activate`, "POST");
+}
+
+/** Price-table for the cost estimate: user overrides + built-in defaults
+ *  (both keyed by model-id prefix -> [input, output] USD per Mtok). */
+export interface PricingTables {
+  overrides: Record<string, [number, number]>;
+  defaults: Record<string, [number, number]>;
+}
+
+export async function getAgentPricing(): Promise<PricingTables> {
+  return jsonReq("/api/agent/pricing", "GET");
+}
+
+export async function putAgentPricing(
+  overrides: Record<string, [number, number]>,
+): Promise<{ overrides: Record<string, [number, number]> }> {
+  return jsonReq("/api/agent/pricing", "PUT", { overrides });
 }
 
 export interface ModelsQuery {

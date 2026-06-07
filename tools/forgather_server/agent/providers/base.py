@@ -58,15 +58,31 @@ class ToolCall:
 
 @dataclass
 class Usage:
-    """Token accounting for one turn (best-effort; may be partial).
+    """Token accounting for one API request (best-effort; may be partial).
 
-    ``input_tokens`` is the prompt size of the request (the conversation's
-    current context occupancy); ``context_window`` is the model's max context
-    (``None`` when the provider doesn't report it, e.g. Claude).
+    Each request in an agentic loop re-sends the whole prefix (system + tools +
+    history), so the *billed* total over a session is the sum of these across
+    every request — far larger than the final transcript. The fields mirror the
+    Anthropic usage object so that sum reconciles with the billing dashboard:
+
+    - ``input_tokens`` — fresh (uncached) prompt tokens billed at full rate.
+      Also the conversation's current context occupancy (prompt size).
+    - ``output_tokens`` — generated tokens (includes thinking, which is not in
+      the stored transcript).
+    - ``cache_read_input_tokens`` — prefix served from the prompt cache
+      (billed at ~0.1x). High here means caching is working.
+    - ``cache_creation_input_tokens`` — prefix written to the cache this
+      request (billed at ~1.25x).
+    - ``context_window`` — the model's max context (``None`` when the provider
+      doesn't report it, e.g. Claude).
+
+    Total billed input for a request = input + cache_read + cache_creation.
     """
 
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
     context_window: Optional[int] = None
 
 

@@ -3027,6 +3027,7 @@ agent:
   # verify_tls: true         # see TLS below
   # max_tokens: 4096
   # max_iterations: 12       # tool-use loop cap per user message
+  # prompt_caching: auto     # auto (on for Claude) | on | off — see below
 ```
 
 ### TLS for local (self-signed) servers
@@ -3128,6 +3129,60 @@ missing or wrong. The probe always skips TLS verification (it only returns
 model ids, so a not-yet-imported self-signed cert never blocks discovery);
 the actual chat connection still honors the profile's TLS setting.
 
+### Prompt caching & token metering
+
+An agentic loop re-sends the **whole prefix** — system prompt + every tool
+schema (~7K tokens here: ~2K system + ~5K for ~29 tools) + the full
+conversation — on *every* API round-trip. A turn that ends with a 35K-token
+transcript but took ~25 tool round-trips bills as **Σ (prefix size) over all
+requests** — easily ~600K input tokens, dwarfing the transcript. Output is
+tiny by comparison (the model mostly emits short tool calls). This is expected,
+not a billing bug: a single-snapshot tokenizer estimate of the final transcript
+can't see the round-trips, the re-sent system+tools, or thinking tokens.
+
+Two mechanisms make this visible and cheap:
+
+- **Metering.** The Anthropic adapter captures the full per-request usage
+  breakdown — `input` (fresh), `cache_read`, `cache_write`, `output` — logs it
+  per request (`agent request usage: …`), and the webui accumulates a
+  cumulative **session-billed** total across every round-trip. The header meter
+  shows two numbers: *context occupancy* (latest request, the window bar) and
+  *billed N* (cumulative, with a tooltip breaking down input/cache/output and
+  the cache-hit ratio). The billed number is the one that reconciles with the
+  provider's dashboard.
+- **Prompt caching.** With `cache_control` breakpoints on the stable head
+  (system, which covers tools) and the last message (the growing history), the
+  re-sent prefix bills at ~0.1x instead of full rate — typically cutting the
+  input bill by ~80-90% for these loops. Controlled per profile by
+  **Prompt caching**: `auto` (default — on for Claude, off for a custom
+  `base_url`, since vLLM does its own automatic prefix caching and may reject
+  `cache_control`), `on`, or `off`. Watch `cache_read` climb in the meter to
+  confirm it's working.
+- **Cost estimate.** The meter also shows `~$N` next to the billed total — the
+  cumulative token categories multiplied by a per-model price table
+  (`agent_pricing.py`, USD per million tokens; cache read 0.1x / write 1.25x of
+  the input rate). It is an **estimate**, not a billing source of truth: the
+  per-message API never returns a dollar figure, and Anthropic's dashboard /
+  Cost Admin API (`/v1/organizations/cost_report`, Admin key) is authoritative.
+  A model not in the table (e.g. a self-hosted vLLM model) shows no cost. Prices
+  match by longest model-id prefix and resolve in three layers — webui override
+  file > server-config `agent.pricing` > built-in defaults (as of 2026-06). The
+  built-in rates were captured from
+  `platform.claude.com/docs/en/about-claude/pricing`.
+
+  Edit the rates from **Profiles… → Edit price table…** (next to Prompt
+  caching). That writes `<config>/server/agent_pricing.json` — a
+  `{"model-id-prefix": [input, output]}` map — and hot-reloads it (no restart).
+  For headless setups, the same overrides can be seeded from the server-config
+  `agent.pricing` block (lowest-priority layer):
+
+  ```yaml
+  agent:
+    pricing:
+      claude-opus-4-8: [5.0, 25.0]    # [input, output] USD per Mtok
+      claude-haiku-4: [1.0, 5.0]
+  ```
+
 ### Interaction model — propose → approve → commit
 
 Tools are classified by risk and the gate is enforced **server-side**, in
@@ -3156,17 +3211,31 @@ resolved — so a change can never become permanent without approval.
 Both share one controller, so an action proposed in the sidebar can be
 approved in the full view and vice-versa.
 
-### Tools (first release)
+### Tools
 
-Read-only: `list_projects`, `inspect_config`, `render_config_pp`,
-`read_file`, `scheduler_status`, `search_docs`, `list_meta_templates`.
-Authoring (propose/commit): `propose_edit_config`, `propose_new_config`,
-`propose_new_config_from_template`.
+Grouped by risk (the gate in `agent/registry.py`):
+
+- **Read-only** (`read`, run automatically) — project/config inspection:
+  `list_workspaces`, `list_projects`, `list_configs`, `inspect_config`,
+  `check_config`, `render_config_pp`, `render_config_code`,
+  `list_config_templates`, `config_template_refs`, `list_meta_templates`;
+  filesystem: `read_file`, `list_directory`, `find_files`, `search_docs`;
+  scheduler/jobs: `scheduler_status`, `list_jobs`, `read_job_output`,
+  `wait_for_job`; datasets: `list_dataset_servers`, `dataset_info`; UI:
+  `reveal_in_ui`.
+- **Authoring** (`propose` → preview → commit) — `propose_edit_config`,
+  `propose_new_config`, `propose_new_config_from_template`,
+  `propose_new_project`, `propose_new_workspace`.
+- **Run-as-job** (`confirm` → approve → enqueue) — submit a config to the
+  scheduler: `run_dataset` (build/inspect a dataset split), `run_construct`
+  (materialize a named target, e.g. the model or a tokenizer), `run_train`
+  (train the model — long-running, reserves GPUs). All three go through the
+  same validated path as the HTTP enqueue route (`queue_ops.validate_and_enqueue`).
 
 The registry (`agent/registry.py`) is the single source of truth and is
 designed to be re-exported later by a `forgather mcp` server for external
-MCP clients (Claude Code / Desktop) without duplicating definitions. Job
-submission, scheduler control, and DiLoCo coordination are planned later
+MCP clients (Claude Code / Desktop) without duplicating definitions.
+Scheduler control (abort/kill) and DiLoCo coordination are planned later
 phases.
 
 ## Not yet implemented

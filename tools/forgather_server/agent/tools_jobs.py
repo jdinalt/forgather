@@ -4,8 +4,11 @@ Three groups, all wrapping existing server machinery:
 
 - Job visibility (READ): ``list_jobs`` and ``read_job_output`` let the agent
   watch a job it submitted — its status and a tail of its console/TTY output.
-- ``run_dataset`` (CONFIRM): submit a ``dataset`` build/inspect job to the
-  scheduler (gated, since it downloads/builds data and runs code).
+- Run-as-job (CONFIRM): ``run_dataset`` / ``run_construct`` / ``run_train``
+  submit a job to the scheduler. All are gated (they run arbitrary config code,
+  download data, and — for training — consume GPUs for a long time). They share
+  the same validated enqueue path (``queue_ops.validate_and_enqueue``); the
+  per-type schemas differ only in their command-specific flags.
 - Dataset metadata (READ): ``list_dataset_servers`` / ``dataset_info`` answer
   "what are this dataset's splits, example counts, and features?" by querying a
   running dataset server (local or cluster).
@@ -22,7 +25,7 @@ import logging
 import shlex
 from typing import Any, Dict, List, Optional
 
-from .. import dataset_ops, job_records, queue_ops, queue_store
+from .. import construct_ops, dataset_ops, job_records, queue_ops, queue_store
 from ..routes.jobs import read_tty_tail
 from . import _dataset_servers
 from .registry import CONFIRM, READ, Proposal, ToolRegistry, ToolSpec
@@ -169,7 +172,16 @@ async def _wait_for_job(args: Dict[str, Any]) -> Any:
         waited += step
 
 
-# ---- run a dataset job (CONFIRM) -------------------------------------------
+# ---- run a config as a scheduler job (CONFIRM) -----------------------------
+
+
+def _enqueue_note(item: queue_store.QueueItem, what: str) -> str:
+    return (
+        f"enqueued {item.job_type} job {item.queue_id} ({what}). "
+        f"Poll list_jobs / read_job_output('{item.queue_id}') for progress, or "
+        f"wait_for_job('{item.queue_id}'). Do not report it finished until its "
+        f"status is terminal (done / failed / aborted)."
+    )
 
 
 def _run_dataset(args: Dict[str, Any]) -> Proposal:
@@ -211,12 +223,8 @@ def _run_dataset(args: Dict[str, Any]) -> Proposal:
             job_params=job_params,
             enforce_fs_root=True,
         )
-        return (
-            f"enqueued dataset job {item.queue_id} (target={target}). "
-            f"Poll list_jobs / read_job_output('{item.queue_id}') for progress; "
-            f"the first build downloads + builds the dataset and can be slow. "
-            f"Do not report it finished until its status is terminal "
-            f"(done / failed / aborted)."
+        return _enqueue_note(item, f"target={target}") + (
+            " The first build downloads + builds the dataset and can be slow."
         )
 
     return Proposal(
@@ -229,6 +237,106 @@ def _run_dataset(args: Dict[str, Any]) -> Proposal:
             "warning": "The FIRST build downloads and builds the dataset and "
             "can take a long time (large datasets especially). It runs as a "
             "background scheduler job; watch it with list_jobs / read_job_output.",
+        },
+        commit=commit,
+    )
+
+
+def _run_construct(args: Dict[str, Any]) -> Proposal:
+    project_dir = args["project_dir"]
+    config_name = args["config_name"]
+    target = args.get("target") or "main"
+    call = bool(args.get("call", False))
+    dynamic_args = args.get("dynamic_args") or {}
+    gpus = args.get("gpus")
+    requested_gpus = 0 if gpus in (None, "") else int(gpus)
+
+    # Preview the exact command (cheap: only loads the dynamic-args schema).
+    cmd = construct_ops.build_construct_command(
+        project_dir=project_dir,
+        config_name=config_name,
+        target=target,
+        dynamic_args=dynamic_args,
+        call=call,
+    )
+    cmd_str = shlex.join(cmd)
+
+    job_params: Dict[str, Any] = {"target": target, "call": call}
+
+    def commit() -> str:
+        item = queue_ops.validate_and_enqueue(
+            project_dir=project_dir,
+            config=config_name,
+            dynamic_args=dynamic_args,
+            requested_gpus=requested_gpus,
+            job_type="construct",
+            job_params=job_params,
+            enforce_fs_root=True,
+        )
+        return _enqueue_note(item, f"target={target}")
+
+    return Proposal(
+        title=f"Construct: {config_name} ({target})",
+        summary="Run a `construct` job: materializes the target node and prints "
+        "its repr (with --call, invokes it). A debug/inspection run — it executes "
+        "the config's constructors.",
+        extra={
+            "command": cmd_str,
+            "target": target,
+            "call": call,
+            "requested_gpus": requested_gpus,
+            "warning": "Runs the config's constructor code as a background "
+            "scheduler job; watch it with list_jobs / read_job_output.",
+        },
+        commit=commit,
+    )
+
+
+def _run_train(args: Dict[str, Any]) -> Proposal:
+    project_dir = args["project_dir"]
+    config_name = args["config_name"]
+    dynamic_args = args.get("dynamic_args") or {}
+    gpus = args.get("gpus")
+    requested_gpus = 1 if gpus in (None, "") else int(gpus)
+    nproc = args.get("nproc")
+
+    # No cheap preview command for training (build_command materializes the
+    # config). Show the equivalent CLI invocation instead.
+    cmd_str = shlex.join(
+        ["forgather", "-p", project_dir, "-t", config_name, "train"]
+    )
+
+    job_params: Dict[str, Any] = {}
+    if nproc not in (None, ""):
+        job_params["nproc"] = nproc
+
+    def commit() -> str:
+        item = queue_ops.validate_and_enqueue(
+            project_dir=project_dir,
+            config=config_name,
+            dynamic_args=dynamic_args,
+            requested_gpus=requested_gpus,
+            job_type="training",
+            job_params=job_params,
+            enforce_fs_root=True,
+        )
+        return _enqueue_note(item, f"{requested_gpus} GPU(s)") + (
+            " Training can run for a long time; check on it periodically rather "
+            "than blocking."
+        )
+
+    return Proposal(
+        title=f"Train: {config_name}",
+        summary="Run a `training` job on the scheduler. This trains the model — "
+        "a long, resource-intensive run that reserves GPUs.",
+        extra={
+            "command": cmd_str,
+            "requested_gpus": requested_gpus,
+            "dynamic_args": dynamic_args or None,
+            "warning": "Training is long-running and reserves "
+            f"{requested_gpus} GPU(s). It runs as a background scheduler job; "
+            "watch it with list_jobs / read_job_output and the training "
+            "dashboard.",
         },
         commit=commit,
     )
@@ -354,6 +462,68 @@ def register_all(reg: ToolRegistry) -> None:
                 "required": ["project_dir", "config_name"],
             },
             handler=_run_dataset,
+            risk=CONFIRM,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="run_construct",
+            description=(
+                "Run a config's `construct` target as a scheduler job (the "
+                "equivalent of `forgather ... construct --target ...`). Use to "
+                "materialize and inspect a node from the config — e.g. build the "
+                "model, a tokenizer, or any named target — without launching a "
+                "full training run. target defaults to \"main\"; set call=true to "
+                "invoke the materialized object. gpus defaults to 0 (most targets "
+                "materialize on meta/CPU); request a GPU only if the target "
+                "allocates real tensors. Approval required (it executes the "
+                "config's constructor code). Returns a queue_id; watch it with "
+                "list_jobs / read_job_output / wait_for_job and only report "
+                "success once status is terminal."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "project_dir": {"type": "string"},
+                    "config_name": {"type": "string"},
+                    "target": {"type": "string", "description": "Target node to construct (default \"main\")."},
+                    "call": {"type": "boolean", "description": "Invoke the materialized object after constructing it (default false)."},
+                    "gpus": {"type": "integer", "description": "GPUs to reserve (default 0)."},
+                    "dynamic_args": {"type": "object", "description": "Config-specific args (from inspect_config's dynamic_args), keyed by dest."},
+                },
+                "required": ["project_dir", "config_name"],
+            },
+            handler=_run_construct,
+            risk=CONFIRM,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="run_train",
+            description=(
+                "Run a config as a training job on the scheduler (the equivalent "
+                "of `forgather ... train`). This TRAINS the model: a long, "
+                "resource-intensive run that reserves GPUs and may take hours. "
+                "gpus defaults to 1; set 0 for a CPU smoke-test, or more for "
+                "multi-GPU. nproc optionally overrides processes-per-node. "
+                "Approval required. Returns immediately with a queue_id; the run "
+                "continues in the background, so tell the user it is long-running, "
+                "then check on it with list_jobs / read_job_output periodically "
+                "(do NOT block on wait_for_job for a full training run) and only "
+                "report success once status is terminal."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "project_dir": {"type": "string"},
+                    "config_name": {"type": "string"},
+                    "gpus": {"type": "integer", "description": "GPUs to reserve (default 1; 0 = CPU smoke-test)."},
+                    "nproc": {"type": "string", "description": "Override processes-per-node (int, or \"gpu\"/\"cpu\"/\"auto\")."},
+                    "dynamic_args": {"type": "object", "description": "Config-specific args (from inspect_config's dynamic_args), keyed by dest."},
+                },
+                "required": ["project_dir", "config_name"],
+            },
+            handler=_run_train,
             risk=CONFIRM,
         )
     )

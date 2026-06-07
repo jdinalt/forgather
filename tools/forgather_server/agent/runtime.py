@@ -21,6 +21,7 @@ import logging
 import os
 from typing import Any, Dict, Optional, Tuple
 
+from .. import agent_pricing
 from .. import agent_profiles_store as profiles_store
 from .. import agent_tls
 from .loop import AgentLoop
@@ -45,6 +46,7 @@ _SEED_KEYS = {
     "ca_cert_pem",
     "max_tokens",
     "max_iterations",
+    "prompt_caching",
     "label",
 }
 
@@ -123,6 +125,21 @@ Writing & debugging configurations:
   render_config_code only when you actually want to see/export the Python.
   Fix and re-check before telling the user it's done.
 
+Running configs as scheduler jobs:
+- A config can be run three ways, each its own CONFIRM-gated tool (all execute
+  config code, so each needs the user's approval and each returns immediately
+  with a queue_id for a background job): run_dataset (build/inspect a dataset
+  split), run_construct (materialize + inspect a named target, e.g. the model or
+  a tokenizer — the equivalent of `forgather construct --target ...`), and
+  run_train (TRAIN the model — `forgather train`, long-running, reserves GPUs).
+- Pick run_construct for "build/check this target" inspection (defaults to
+  target=main, gpus=0); pick run_train only when the user actually wants to
+  train. Pass dynamic_args (from inspect_config) for configs that require them.
+- Watch any job with list_jobs / read_job_output, or block with
+  wait_for_job(queue_id). For a short job (dataset build, construct) wait_for_job
+  is fine; for a full training run do NOT block — check on it periodically.
+  Never report a job finished until its status is terminal (done/failed/aborted).
+
 Datasets workflow (creating / smoke-testing a dataset project):
 - Tools: run_dataset (build/inspect a split as a job), wait_for_job (block
   until it finishes) + read_job_output / list_jobs (watch it),
@@ -165,6 +182,11 @@ def configure(cfg: Optional[Dict[str, Any]]) -> None:
     global _loop, _loop_key
     _loop = None
     _loop_key = None
+    # Price-table overrides (agent.pricing) are global, not a profile field, and
+    # configure() also (re)loads the webui-edited override file — so it must run
+    # even with no agent: block (the common webui-managed case), or saved price
+    # overrides would silently vanish on restart.
+    agent_pricing.configure(cfg.get("pricing") if cfg else None)
     if cfg:
         seed = {k: v for k, v in cfg.items() if k in _SEED_KEYS}
         try:
@@ -204,6 +226,9 @@ def status() -> Dict[str, Any]:
         "base_url": active.base_url or None,
         "verify_tls": active.verify_tls,
         "has_imported_cert": bool(active.ca_cert_pem),
+        # Per-Mtok USD rates for the four token categories so the meter can show
+        # an estimated cost; None for an unpriced / self-hosted model.
+        "pricing": agent_pricing.price_for(active.model),
     }
 
 
@@ -331,6 +356,12 @@ def _build_loop(profile) -> AgentLoop:
     # context window. The provider further clamps per request so output
     # never collides with the (growing) prompt.
     base_max_tokens = explicit_tokens if explicit_tokens > 0 else _auto_max_tokens(max_model_len)
+    # Prompt caching: "auto" -> on for Claude (no base_url), off for a custom
+    # base_url (vLLM does its own prefix caching and may reject cache_control).
+    caching_pref = (profile.prompt_caching or "auto").lower()
+    prompt_caching = {"on": True, "off": False}.get(
+        caching_pref, not bool(profile.base_url)
+    )
     provider = AnthropicProvider(
         model=model,
         api_key=api_key,
@@ -339,6 +370,7 @@ def _build_loop(profile) -> AgentLoop:
         max_tokens=base_max_tokens,
         max_model_len=max_model_len,
         verify=verify,
+        prompt_caching=prompt_caching,
     )
     return AgentLoop(
         provider,

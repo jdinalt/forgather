@@ -25,6 +25,7 @@ function fmtCtx(n: number | null): string {
   return String(n);
 }
 import { ModalBackdrop } from "./ModalBackdrop";
+import { AgentPricingModal } from "./AgentPricingModal";
 
 interface Props {
   onClose: () => void;
@@ -41,6 +42,7 @@ interface FormState {
   verify_tls: boolean;
   max_tokens: number;
   max_iterations: number;
+  prompt_caching: string;
 }
 
 const BLANK: FormState = {
@@ -53,6 +55,7 @@ const BLANK: FormState = {
   verify_tls: true,
   max_tokens: 0, // 0 = auto (sized from the model's context window)
   max_iterations: 12,
+  prompt_caching: "auto",
 };
 
 function formFromProfile(p: AgentProfile): FormState {
@@ -66,6 +69,7 @@ function formFromProfile(p: AgentProfile): FormState {
     verify_tls: p.verify_tls,
     max_tokens: p.max_tokens,
     max_iterations: p.max_iterations,
+    prompt_caching: p.prompt_caching || "auto",
   };
 }
 
@@ -78,6 +82,7 @@ export function AgentSettingsModal({ onClose, onChanged }: Props) {
   const [pendingCertPem, setPendingCertPem] = useState<string | null>(null);
   const [hasImportedCert, setHasImportedCert] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [showPricing, setShowPricing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
@@ -125,6 +130,7 @@ export function AgentSettingsModal({ onClose, onChanged }: Props) {
       verify_tls: form.verify_tls,
       max_tokens: Number(form.max_tokens),
       max_iterations: Number(form.max_iterations),
+      prompt_caching: form.prompt_caching,
     };
     if (form.api_key) body.api_key = form.api_key; // only overwrite when typed
     if (pendingCertPem !== null) body.ca_cert_pem = pendingCertPem; // import or clear
@@ -348,6 +354,23 @@ export function AgentSettingsModal({ onClose, onChanged }: Props) {
                 <input type="number" value={form.max_iterations} onChange={(e) => set("max_iterations", Number(e.target.value))} />
               </label>
             </div>
+            <label>Prompt caching{" "}
+              <span className="muted">(re-sent prefix billed at ~0.1x)</span>
+              <select
+                value={form.prompt_caching}
+                onChange={(e) => set("prompt_caching", e.target.value)}
+              >
+                <option value="auto">Auto (on for Claude, off for vLLM)</option>
+                <option value="on">On</option>
+                <option value="off">Off</option>
+              </select>
+            </label>
+            <div className="agent-note">
+              Cost estimate uses a price table (all profiles).{" "}
+              <button className="btn-link" onClick={() => setShowPricing(true)}>
+                Edit price table…
+              </button>
+            </div>
             {form.max_tokens === 0 && (
               <div className="agent-note">
                 {selectedCtx
@@ -373,6 +396,12 @@ export function AgentSettingsModal({ onClose, onChanged }: Props) {
           </div>
         </div>
       </div>
+      {showPricing && (
+        <AgentPricingModal
+          onClose={() => setShowPricing(false)}
+          onSaved={onChanged}
+        />
+      )}
     </ModalBackdrop>
   );
 }
