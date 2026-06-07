@@ -186,3 +186,39 @@ def test_shared_memory_without_group_id_omits_dir():
     assert env["DILOCO_BACKEND"] == "shared_memory"
     assert env["DILOCO_SHM_GROUP_SIZE"] == "2"
     assert "DILOCO_SHM_GROUP_DIR" not in env
+
+
+# --- collective backend (issue #154): one torchrun job; the scheduler derives
+# the backend + replicate degree (nproc is the separate job_params.nproc path) ---
+
+
+def test_collective_backend_derives_replicate_env():
+    env = _diloco_env_from_job_params(
+        {
+            "server_addr": "h:1",
+            "worker_id": "run1",
+            "backend": "collective",
+            "diloco_replicate": 4,
+        },
+        QID,
+    )
+    assert env["DILOCO_BACKEND"] == "collective"
+    assert env["DILOCO_REPLICATE"] == "4"
+    # The coordination-plane keys are still set; no shm keys leak in.
+    assert env["DILOCO_SERVER"] == "h:1"
+    assert env["DILOCO_WORKER_ID"] == "run1"
+    assert "DILOCO_SHM_GROUP_DIR" not in env
+
+
+def test_collective_without_replicate_omits_it():
+    env = _diloco_env_from_job_params(
+        {"server_addr": "h:1", "backend": "collective"}, QID
+    )
+    assert env["DILOCO_BACKEND"] == "collective"
+    assert "DILOCO_REPLICATE" not in env
+
+
+def test_http_backend_emits_no_collective_env():
+    env = _diloco_env_from_job_params({"server_addr": "h:1", "backend": "http"}, QID)
+    assert "DILOCO_BACKEND" not in env
+    assert "DILOCO_REPLICATE" not in env

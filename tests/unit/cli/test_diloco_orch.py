@@ -993,6 +993,55 @@ class TestLaunchWorkers:
         assert rc == 1
 
 
+class TestLaunchCollective:
+    def test_one_job_with_nproc_and_diloco(self, patch_orchestrator):
+        # Collective is ONE job: nproc + requested_gpus = replicate, and the
+        # diloco block carries backend=collective + diloco_replicate.
+        client = patch_orchestrator(FakeClient(servers=SERVERS))
+        rc = orch.launch_collective(
+            _worker_args(replicate=3, worker_id="run1", dataset="auto"),
+            {"max_steps": 7},
+        )
+        assert rc == 0
+        assert len(client.enqueued) == 1
+        kw = client.enqueued[0]
+        assert kw["job_type"] == "training"
+        assert kw["requested_gpus"] == 3
+        assert kw["job_params"]["nproc"] == "3"
+        d = kw["job_params"]["diloco"]
+        assert d["backend"] == "collective"
+        assert d["diloco_replicate"] == 3
+        assert d["worker_id"] == "run1"
+        assert d["server_addr"] == "http://192.168.9.43:8512"  # resolved local:q1
+        assert kw["dynamic_args"] == {"max_steps": 7}
+        assert kw["dataset_source"] == {"kind": "auto"}
+
+    def test_dry_run_enqueues_nothing(self, patch_orchestrator, capsys):
+        client = patch_orchestrator(FakeClient(servers=SERVERS))
+        rc = orch.launch_collective(
+            _worker_args(replicate=2, worker_id="r", dry_run=True, dataset="auto"),
+            {},
+        )
+        assert rc == 0
+        assert client.enqueued == []
+        out = capsys.readouterr().out
+        assert "collective" in out and "replicate=2" in out
+
+    def test_missing_config_errors(self, patch_orchestrator, capsys):
+        patch_orchestrator(FakeClient(servers=SERVERS))
+        rc = orch.launch_collective(
+            _worker_args(config_template=None, replicate=2, dataset="auto"), {}
+        )
+        assert rc == 1
+        assert "config" in capsys.readouterr().err
+
+    def test_invalid_replicate_errors(self, patch_orchestrator, capsys):
+        patch_orchestrator(FakeClient(servers=SERVERS))
+        rc = orch.launch_collective(_worker_args(replicate=0, dataset="auto"), {})
+        assert rc == 1
+        assert "diloco-replicate" in capsys.readouterr().err
+
+
 class TestStoppedBaseWorkers:
     def test_filters_running_and_dedups_pp(self):
         known = {
