@@ -31,15 +31,17 @@ export function AgentContextMeter({
   const pct = win && used ? Math.min(100, Math.round((used / win) * 100)) : null;
   const cls = pct == null ? "" : pct >= 90 ? " hot" : pct >= 70 ? " warn" : "";
   const ctxTitle = usage
-    ? `Context occupancy (latest request).\n` +
-      `prompt ${usage.inputTokens} · output ${usage.outputTokens}` +
+    ? `Context occupancy — LATEST request only.\n` +
+      `fresh input ${usage.inputTokens} · output ${usage.outputTokens}` +
       (usage.cacheReadTokens ? ` · cache read ${usage.cacheReadTokens}` : "") +
+      (usage.cacheCreationTokens ? ` · cache write ${usage.cacheCreationTokens}` : "") +
       (win ? ` · window ${win}` : " · window unknown")
     : "";
 
   // --- cumulative billed (whole session) ---
   let billed: number | null = null;
   let billedTitle = "";
+  let hitPct: number | null = null;
   if (sessionCost) {
     const billedIn =
       sessionCost.inputTokens +
@@ -47,15 +49,18 @@ export function AgentContextMeter({
       sessionCost.cacheCreationTokens;
     billed = billedIn + sessionCost.outputTokens;
     const cacheable = billedIn || 1;
-    const hitPct = Math.round((sessionCost.cacheReadTokens / cacheable) * 100);
+    hitPct = Math.round((sessionCost.cacheReadTokens / cacheable) * 100);
     billedTitle =
       `Cumulative tokens billed this session over ${sessionCost.requests} ` +
-      `request(s) — reconciles with the billing dashboard.\n` +
-      `input (uncached) ${sessionCost.inputTokens} · ` +
-      `cache read ${sessionCost.cacheReadTokens} · ` +
-      `cache write ${sessionCost.cacheCreationTokens} · ` +
+      `request(s) — the loop re-sends the prefix each round-trip, so this sum is ` +
+      `many times the latest-request occupancy and is what reconciles with the ` +
+      `billing dashboard (which counts these four categories separately).\n` +
+      `fresh input ${sessionCost.inputTokens} (1x) · ` +
+      `cache read ${sessionCost.cacheReadTokens} (~0.1x) · ` +
+      `cache write ${sessionCost.cacheCreationTokens} (~1.25x) · ` +
       `output ${sessionCost.outputTokens}\n` +
-      `cache hit ${hitPct}% of billed input`;
+      `cache hit ${hitPct}% of billed input — high means the prefix is being ` +
+      `reused (caching works); low means it is being re-created.`;
   }
 
   return (
@@ -77,6 +82,7 @@ export function AgentContextMeter({
       {billed != null && billed > 0 && (
         <span className="agent-ctx-billed" title={billedTitle}>
           billed {fmtTokens(billed)}
+          {hitPct != null ? ` · ${hitPct}% cached` : ""}
         </span>
       )}
     </span>
