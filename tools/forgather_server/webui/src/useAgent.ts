@@ -120,11 +120,20 @@ export interface AgentController {
   /** Set when the last turn ended truncated (max_tokens / iteration cap), so
    *  the UI can offer "Continue". Cleared when a new turn starts. */
   incompleteReason: string | null;
+  /** Set when the agent just *created* a navigable artifact (an approved
+   *  workspace / project / config commit). The app watches this to refresh
+   *  the Projects tree and reveal the new item. ``nonce`` lets the same path
+   *  fire a reveal more than once. */
+  lastArtifact: { kind: string; path: string; nonce: number } | null;
   send: (message: string) => void;
   decide: (actionId: string, approve: boolean) => void;
   continueTurn: () => void;
   stop: () => void;
   reset: () => void;
+  /** reset() guarded by a confirmation when a conversation exists, so a
+   *  stray click on the "New conversation" control can't silently discard
+   *  the current thread. */
+  newConversation: () => void;
   refreshStatus: () => void;
   refreshProfiles: () => void;
   activate: (profileId: string) => void;
@@ -145,6 +154,9 @@ export function useAgent(): AgentController {
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const [usage, setUsage] = useState<AgentUsage | null>(null);
   const [incompleteReason, setIncompleteReason] = useState<string | null>(null);
+  const [lastArtifact, setLastArtifact] = useState<
+    { kind: string; path: string; nonce: number } | null
+  >(null);
 
   const sessionIdRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -327,6 +339,15 @@ export function useAgent(): AgentController {
                 : it,
             ),
           );
+          // A successful create commit: tell the app to refresh the Projects
+          // tree and reveal the new workspace / project / config.
+          if (ev.approved && !ev.error && ev.created_kind && ev.created_path) {
+            setLastArtifact({
+              kind: ev.created_kind as string,
+              path: ev.created_path as string,
+              nonce: Date.now(),
+            });
+          }
           break;
         }
         case "usage":
@@ -425,6 +446,16 @@ export function useAgent(): AgentController {
     }
   }, []);
 
+  const newConversation = useCallback(() => {
+    if (
+      items.length > 0 &&
+      !window.confirm("Start a new conversation? The current one will be cleared.")
+    ) {
+      return;
+    }
+    reset();
+  }, [items.length, reset]);
+
   const dumpConversation = useCallback(async (): Promise<Record<string, unknown>> => {
     let messages: Array<{ role: string; content: unknown }> = [];
     const sid = sessionIdRef.current;
@@ -510,11 +541,13 @@ export function useAgent(): AgentController {
     activeProfileId,
     usage,
     incompleteReason,
+    lastArtifact,
     send,
     decide,
     continueTurn,
     stop,
     reset,
+    newConversation,
     refreshStatus,
     refreshProfiles,
     activate,

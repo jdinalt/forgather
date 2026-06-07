@@ -312,6 +312,77 @@ def test_incomplete_done_on_length_stop_reason():
     assert done and done[-1]["incomplete"] is True  # vLLM "length" == truncated
 
 
+def test_action_resolved_echoes_reveal_for_create():
+    # A create proposal carries reveal_kind; on approval the loop echoes
+    # created_kind + created_path so the webui can refresh + reveal the item.
+    state = {"read_calls": 0, "commit_calls": 0}
+    reg = ToolRegistry()
+
+    def make_project(args):
+        return Proposal(
+            title="New project: demo",
+            path="/ws/demo",
+            reveal_kind="project",
+            commit=lambda: "created project at /ws/demo",
+        )
+
+    reg.register(
+        ToolSpec(
+            name="make_project",
+            description="create a project",
+            json_schema={"type": "object", "properties": {}},
+            handler=make_project,
+            risk="propose",
+        )
+    )
+    provider = FakeProvider(
+        [
+            [ToolCall(id="t1", name="make_project", arguments={}), Done()],
+            [TextDelta("done"), Done()],
+        ]
+    )
+    loop = AgentLoop(provider, reg)
+    conv = Conversation(session_id="rev")
+    from forgather_server.agent import session as sess
+
+    with sess._state._lock:
+        sess._state.sessions[conv.session_id] = conv
+
+    first = _collect(loop.run_user_message(conv, "make a project"))
+    action_id = [e for e in first if e["type"] == "action_card"][0]["action_id"]
+    resumed = _collect(loop.apply_decision(action_id, approve=True))
+
+    resolved = [e for e in resumed if e["type"] == "action_resolved"]
+    assert resolved
+    assert resolved[0]["created_kind"] == "project"
+    assert resolved[0]["created_path"] == "/ws/demo"
+
+
+def test_action_resolved_reveal_none_for_edit():
+    # A non-create proposal (make_change has no reveal_kind) reports
+    # created_kind None so the webui knows not to refresh/reveal.
+    state = {"read_calls": 0, "commit_calls": 0}
+    reg = _make_registry(state)
+    provider = FakeProvider(
+        [
+            [ToolCall(id="t1", name="make_change", arguments={"path": "f.yaml"}), Done()],
+            [TextDelta("applied"), Done()],
+        ]
+    )
+    loop = AgentLoop(provider, reg)
+    conv = Conversation(session_id="rev2")
+    from forgather_server.agent import session as sess
+
+    with sess._state._lock:
+        sess._state.sessions[conv.session_id] = conv
+
+    first = _collect(loop.run_user_message(conv, "change f.yaml"))
+    action_id = [e for e in first if e["type"] == "action_card"][0]["action_id"]
+    resumed = _collect(loop.apply_decision(action_id, approve=True))
+    resolved = [e for e in resumed if e["type"] == "action_resolved"]
+    assert resolved and resolved[0]["created_kind"] is None
+
+
 def test_unknown_tool_is_error_not_crash():
     state = {"read_calls": 0, "commit_calls": 0}
     reg = _make_registry(state)

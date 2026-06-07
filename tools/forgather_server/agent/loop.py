@@ -194,6 +194,10 @@ class AgentLoop:
                     "action_id": action_id,
                     "approved": True,
                     "result": result_str,
+                    # Echoed only for create proposals; lets the webui refresh
+                    # the Projects tree and reveal the new item.
+                    "created_kind": approval.proposal.reveal_kind,
+                    "created_path": approval.proposal.path,
                 }
             except Exception as e:  # commit failed — tell the model, don't crash
                 log.exception("commit failed for action %s", action_id)

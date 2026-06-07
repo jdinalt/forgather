@@ -108,6 +108,7 @@ def _propose_new_config(args: Dict[str, Any]) -> Proposal:
         path=target,
         before=None,
         after=content,
+        reveal_kind="config",
         commit=commit,
     )
 
@@ -136,6 +137,7 @@ def _propose_new_config_from_template(args: Dict[str, Any]) -> Proposal:
         path=target,
         before=None,
         after=content,
+        reveal_kind="config",
         commit=commit,
     )
 
@@ -165,6 +167,7 @@ def _propose_new_workspace(args: Dict[str, Any]) -> Proposal:
         summary=f"Create workspace at {target}",
         path=target,
         extra={"name": name, "description": description, "parent_dir": parent_dir},
+        reveal_kind="workspace",
         commit=commit,
     )
 
@@ -214,6 +217,7 @@ def _propose_new_project(args: Dict[str, Any]) -> Proposal:
             "default_config": default_config,
             "starting_point": starting_point,
         },
+        reveal_kind="project",
         commit=commit,
     )
 
@@ -312,7 +316,7 @@ def register_all(reg: ToolRegistry) -> None:
                     "name": {"type": "string"},
                     "description": {"type": "string"},
                     "project_dir_name": {"type": "string", "description": "Project directory name (default: slug of name); may be nested a/b/c."},
-                    "config_prefix": {"type": "string", "description": "Configs sub-dir (default \"configs\")."},
+                    "config_prefix": {"type": "string", "description": "Name of the configs sub-directory under the project's template root. Leave unset to use the default \"configs\" (configs then live at <project>/templatelib/configs/). This is a leaf name only, NOT a path: do not prefix it with \"templatelib/\" or the project name -- the template root is prepended automatically, so \"templatelib/configs\" would wrongly nest as templatelib/templatelib/configs/."},
                     "default_config": {"type": "string", "description": "Default config file name (default \"default.yaml\")."},
                     "meta_template": {"type": "string", "description": "Scaffold id from list_meta_templates to seed the default config (mutually exclusive with copy_from)."},
                     "values": {"type": "object", "description": "Field values for the meta-template scaffold."},

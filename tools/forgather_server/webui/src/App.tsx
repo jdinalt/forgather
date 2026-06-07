@@ -323,6 +323,12 @@ export default function App() {
     setFilesOpen(true);
     setRevealRequest({ path, nonce: Date.now() });
   }, []);
+  // Reveal-in-Projects plumbing: when the agent creates a workspace /
+  // project / config, expand the Projects tree down to (and select) the new
+  // item, the same end state a user lands in after creating one via a modal.
+  const [projectsReveal, setProjectsReveal] = useState<
+    { path: string; nonce: number } | null
+  >(null);
   const [viewsOpen, setViewsOpen] = useState(true);
   // Cluster sidebar group — collapsed by default to keep the sidebar
   // tidy on first paint; hidden entirely when standalone.
@@ -356,6 +362,18 @@ export default function App() {
   const [docsBackStack, setDocsBackStack] = useState<DocsBackEntry[]>([]);
   const filesApi = useFilesState();
   const qc = useQueryClient();
+
+  // When the agent creates a workspace / project / config, mirror the
+  // user-driven create: refresh the Projects tree (and the Files browse
+  // cache), open the Projects section, and reveal/expand to the new item.
+  const lastArtifact = agent.lastArtifact;
+  useEffect(() => {
+    if (!lastArtifact) return;
+    qc.invalidateQueries({ queryKey: ["projects"] });
+    qc.invalidateQueries({ queryKey: ["fs-browse"], exact: false });
+    setProjectsOpen(true);
+    setProjectsReveal({ path: lastArtifact.path, nonce: lastArtifact.nonce });
+  }, [lastArtifact, qc]);
 
   // Cross-view dataset preselect: the Cluster view's Datasets tab and
   // the Datasets view's Servers tab both surface row clicks that
@@ -1304,6 +1322,7 @@ export default function App() {
                 onEditTemplate={openFileForEdit}
                 onJobSubmitted={onJobSubmitted}
                 onRevealInFiles={revealInFiles}
+                revealRequest={projectsReveal}
               />
             </div>
           </details>
