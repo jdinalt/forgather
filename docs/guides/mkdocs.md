@@ -41,11 +41,12 @@ forgather docs build --path docs/api  # restrict to a subtree
 forgather docs clean                  # remove docs/.built/
 ```
 
-The cache is populated automatically by `./build-webui.sh` (which is what
-the Docker post-build runs), so prebuilt runtime images ship with it
-populated. Set `SKIP_DOCS_BUILD=1` to skip the step. The webui falls back
-to the raw markdown source whenever the cache is missing or stale, so the
-Docs view always works whether or not the build step has been run --
+Building the cache is independent of the webui SPA build: `./build-webui.sh`
+builds only the SPA, while `forgather docs build` (or the `./build-docs.sh`
+wrapper) builds the docs cache. The Docker image runs them as two separate
+steps, so prebuilt runtime images ship with the cache populated. The webui
+falls back to the raw markdown source whenever the cache is missing or stale,
+so the Docs view always works whether or not the build step has been run --
 worst case the API pages show `:::` lines instead of expanded class
 documentation.
 

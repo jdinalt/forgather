@@ -302,6 +302,13 @@ RUN umask 0002 \
     && rm -rf ${REPO_DIR}/tools/forgather_server/webui/node_modules \
               ${REPO_DIR}/tools/forgather_server/webui/.node_modules-*
 
+# Pre-render the API-docs cache (docs/.built/) the Docs viewer reads from.
+# Independent of the webui SPA build above (build-webui.sh no longer triggers
+# it). griffe via mkdocstrings[python] is a core dependency, so this is a
+# normal build step; the viewer falls back to raw markdown if it's ever absent.
+RUN umask 0002 \
+    && cd ${REPO_DIR} && ${VENV_DIR}/bin/forgather docs build --quiet
+
 # ---------------------------------------------------------------------------
 # Back to root for the entrypoint setup. The entrypoint runs as root
 # so it can usermod for UID remap then drops to the forgather user
