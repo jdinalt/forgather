@@ -853,12 +853,15 @@ def _diloco_env_from_job_params(
           "server_addr": "host:port",
           "heartbeat_interval": float,
           "worker_id": str,
-          # Shared-memory backend (issue #154); absent for the default http
-          # backend. ``shm_group_id`` is uniform across the workers of one
-          # submit; ``shm_group_size`` is the worker count.
-          "backend": "http" | "shared_memory",
+          # Non-http backends (issue #154); absent for the default http backend.
+          # shared_memory: ``shm_group_id`` is uniform across the workers of one
+          # submit, ``shm_group_size`` is the worker count. collective: one
+          # torchrun job of ``diloco_replicate`` replicas (the world size rides
+          # the separate ``job_params.nproc`` path, not this dict).
+          "backend": "http" | "shared_memory" | "collective",
           "shm_group_id": str,
           "shm_group_size": int,
+          "diloco_replicate": int,
         }
 
     The server-authoritative settings (``sync_every`` / ``num_fragments`` /

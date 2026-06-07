@@ -1055,7 +1055,8 @@ def launch_collective(args, dynamic_args):
         )
         return 1
 
-    replicate = int(getattr(args, "replicate", 1) or 1)
+    replicate = getattr(args, "replicate", 1)
+    replicate = 1 if replicate is None else int(replicate)
     if replicate < 1:
         print(
             f"error: --diloco-replicate must be >= 1, got {replicate}",
