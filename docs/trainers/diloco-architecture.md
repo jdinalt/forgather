@@ -83,6 +83,7 @@ src/forgather/ml/diloco/
   client.py          HTTP client, tensor serialization, request construction, retry logic
   sync_backend.py    OuterSyncBackend seam + HttpStarBackend (the bulk tensor-leg transport)
   wire_cast.py       cast_for_upload: the HTTP backend's upload wire cast (fp32/bf16 + SR)
+  shared_memory_backend.py  SharedMemoryBackend: single-host shared-memory OuterSyncBackend
   coordinator.py     CoordinatorClient (the coordination surface: heartbeat / info / model-def)
   worker.py          Optimizer hook, pseudo-gradient computation, streaming, reconnection
   fragments.py       FragmentManager: parameter splitting, scheduling
@@ -100,6 +101,7 @@ tests/unit/ml/diloco/
   test_server.py          Server: outer optimizer correctness, serialization
   test_sync_backend.py    OuterSyncBackend delegation; worker backend-agnosticism
   test_coordinator.py     CoordinatorClient delegation; worker coordinator wiring
+  test_shared_memory_backend.py  SharedMemoryBackend: multi-process outer-step equivalence
   test_server_client.py   HTTP round-trip: register, submit, status
   test_worker.py          Worker: pseudo-gradients, optimizer hooks, full sync cycle
   test_async.py           Async mode, DN momentum, DyLU
@@ -381,6 +383,31 @@ coordination: `heartbeat`, `get_info` (`/info` negotiation), and `fetch_model_de
 instances and are outside this one: work-unit dispatch (`register_dataset` /
 `request_work` / `complete_work`), owned by the dataset layer, and control
 (`relay_command` / `save_state` / `shutdown` / `get_status`), owned by the CLI.
+
+### Shared-memory backend
+
+`SharedMemoryBackend` (`shared_memory_backend.py`) is the first non-HTTP
+`OuterSyncBackend` — the single-host regime, positioning DiLoCo as a DDP
+alternative. Co-located worker processes on one machine share a CPU
+master-weights region (a memory-mapped file under a per-group dir) instead of
+round-tripping a central HTTP parameter server: one master copy per host, no
+serialization, the outer optimizer applied in place. Because the worker hands the
+backend the raw pseudo-gradient, this backend operates in fp32 with no wire cast,
+and reports `sent_bytes`/`recv_bytes` of 0.
+
+The first process to create the region is the **aggregator** (it loads the
+initial weights, owns the master `ParameterList` + the outer optimizer — whose
+momentum stays in that process, so it is consistent across rounds exactly like
+the server — and each round averages the contributions, steps, and publishes the
+new master into the region); later arrivers are **followers** that attach and
+read. Each round, every worker adds its raw pseudo-gradient (upcast to fp32) into
+a shared accumulator under a `file_lock_build` critical section; a `generation`
+counter gates the barrier so no worker races into the next round. The averaging +
+outer step reproduce `DiLoCoServer._apply_outer_optimizer` exactly (per-name mean
+over contributors, fp32, SGD-Nesterov). The HTTP coordinator still handles
+membership, `/info`, heartbeat, and work-unit dispatch — only the tensor legs are
+shared-memory. (Trainer/CLI integration and the co-located-group rendezvous are a
+follow-up; the backend is constructed with the rendezvous params directly.)
 
 ---
 

@@ -38,6 +38,7 @@ _LAZY = {
     "OuterSyncBackend": ".sync_backend",
     "HttpStarBackend": ".sync_backend",
     "SyncResult": ".sync_backend",
+    "SharedMemoryBackend": ".shared_memory_backend",
     "CoordinatorClient": ".coordinator",
 }
 
@@ -50,6 +51,7 @@ __all__ = [
     "OuterSyncBackend",
     "HttpStarBackend",
     "SyncResult",
+    "SharedMemoryBackend",
     "CoordinatorClient",
     "diloco_is_enabled",
     "diloco_server_addr",
@@ -79,5 +81,6 @@ if TYPE_CHECKING:
     from .fragments import FragmentManager
     from .health import HealthMonitor
     from .server import DiLoCoServer
+    from .shared_memory_backend import SharedMemoryBackend
     from .sync_backend import HttpStarBackend, OuterSyncBackend, SyncResult
     from .worker import DiLoCoWorker
