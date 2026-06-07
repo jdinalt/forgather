@@ -133,6 +133,23 @@ export async function activateProfile(id: string): Promise<{ active_id: string }
   return jsonReq(`/api/agent/profiles/${id}/activate`, "POST");
 }
 
+/** Price-table for the cost estimate: user overrides + built-in defaults
+ *  (both keyed by model-id prefix -> [input, output] USD per Mtok). */
+export interface PricingTables {
+  overrides: Record<string, [number, number]>;
+  defaults: Record<string, [number, number]>;
+}
+
+export async function getAgentPricing(): Promise<PricingTables> {
+  return jsonReq("/api/agent/pricing", "GET");
+}
+
+export async function putAgentPricing(
+  overrides: Record<string, [number, number]>,
+): Promise<{ overrides: Record<string, [number, number]> }> {
+  return jsonReq("/api/agent/pricing", "PUT", { overrides });
+}
+
 export interface ModelsQuery {
   profile_id?: string;
   provider?: string;

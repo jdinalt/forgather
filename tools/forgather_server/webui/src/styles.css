@@ -6309,6 +6309,35 @@ li.config.selected button.link:hover {
   cursor: help;
 }
 
+/* Price-table editor modal. */
+.agent-pricing-modal {
+  width: min(560px, 92vw);
+}
+.agent-pricing-text {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  resize: vertical;
+}
+.agent-pricing-actions {
+  display: flex;
+  gap: 12px;
+  margin: 6px 0;
+}
+.agent-pricing-ref {
+  margin-top: 8px;
+  font-size: 12px;
+}
+.agent-pricing-ref pre {
+  max-height: 220px;
+  overflow: auto;
+  background: var(--bg-pane);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+}
+
 .agent-continue-row {
   display: flex;
   align-items: center;

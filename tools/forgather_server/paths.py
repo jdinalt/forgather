@@ -243,6 +243,17 @@ def agent_profiles_file() -> Path:
     return server_state_dir() / "agent_profiles.json"
 
 
+def agent_pricing_file() -> Path:
+    """User overrides for the agent token-meter price table.
+
+    Lives at ``<config>/server/agent_pricing.json``. Holds only model-id-prefix
+    -> [input, output] USD-per-Mtok overrides layered over the built-in
+    defaults; no secrets, so default file mode. See
+    :mod:`forgather_server.agent_pricing`.
+    """
+    return server_state_dir() / "agent_pricing.json"
+
+
 def cluster_state_dir() -> Path:
     """Persistent directory for multi-node cluster state.
 

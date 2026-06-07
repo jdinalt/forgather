@@ -3164,14 +3164,22 @@ Two mechanisms make this visible and cheap:
   the input rate). It is an **estimate**, not a billing source of truth: the
   per-message API never returns a dollar figure, and Anthropic's dashboard /
   Cost Admin API (`/v1/organizations/cost_report`, Admin key) is authoritative.
-  A model not in the table (e.g. a self-hosted vLLM model) shows no cost. The
-  built-in rates are as of 2026-01; override them when they drift via the
-  server-config `agent.pricing` block (keyed by model-id prefix):
+  A model not in the table (e.g. a self-hosted vLLM model) shows no cost. Prices
+  match by longest model-id prefix and resolve in three layers — webui override
+  file > server-config `agent.pricing` > built-in defaults (as of 2026-06). The
+  built-in rates were captured from
+  `platform.claude.com/docs/en/about-claude/pricing`.
+
+  Edit the rates from **Profiles… → Edit price table…** (next to Prompt
+  caching). That writes `<config>/server/agent_pricing.json` — a
+  `{"model-id-prefix": [input, output]}` map — and hot-reloads it (no restart).
+  For headless setups, the same overrides can be seeded from the server-config
+  `agent.pricing` block (lowest-priority layer):
 
   ```yaml
   agent:
     pricing:
-      claude-opus-4: [15.0, 75.0]     # [input, output] USD per Mtok
+      claude-opus-4-8: [5.0, 25.0]    # [input, output] USD per Mtok
       claude-haiku-4: [1.0, 5.0]
   ```
 

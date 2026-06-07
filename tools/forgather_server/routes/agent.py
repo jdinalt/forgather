@@ -31,6 +31,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from .. import agent_pricing
 from .. import agent_profiles_store as profiles_store
 from .. import agent_tls
 from ..agent import runtime, session as agent_session
@@ -90,6 +91,30 @@ class DecisionRequest(BaseModel):
 @router.get("/agent/status")
 def agent_status():
     return runtime.status()
+
+
+class PricingWrite(BaseModel):
+    # model-id-prefix -> [input, output] USD per million tokens.
+    overrides: Dict[str, Any]
+
+
+@router.get("/agent/pricing")
+def get_agent_pricing():
+    """The editable price-table overrides plus the built-in defaults (reference)."""
+    return {
+        "overrides": agent_pricing.get_overrides(),
+        "defaults": agent_pricing.get_defaults(),
+    }
+
+
+@router.put("/agent/pricing")
+def put_agent_pricing(req: PricingWrite):
+    """Persist + hot-reload the user price-table overrides (estimates only)."""
+    try:
+        saved = agent_pricing.set_overrides(req.overrides)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"overrides": saved}
 
 
 async def _get_loop():

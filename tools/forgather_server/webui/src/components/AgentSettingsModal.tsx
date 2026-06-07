@@ -25,6 +25,7 @@ function fmtCtx(n: number | null): string {
   return String(n);
 }
 import { ModalBackdrop } from "./ModalBackdrop";
+import { AgentPricingModal } from "./AgentPricingModal";
 
 interface Props {
   onClose: () => void;
@@ -81,6 +82,7 @@ export function AgentSettingsModal({ onClose, onChanged }: Props) {
   const [pendingCertPem, setPendingCertPem] = useState<string | null>(null);
   const [hasImportedCert, setHasImportedCert] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [showPricing, setShowPricing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
@@ -363,6 +365,12 @@ export function AgentSettingsModal({ onClose, onChanged }: Props) {
                 <option value="off">Off</option>
               </select>
             </label>
+            <div className="agent-note">
+              Cost estimate uses a price table (all profiles).{" "}
+              <button className="btn-link" onClick={() => setShowPricing(true)}>
+                Edit price table…
+              </button>
+            </div>
             {form.max_tokens === 0 && (
               <div className="agent-note">
                 {selectedCtx
@@ -388,6 +396,12 @@ export function AgentSettingsModal({ onClose, onChanged }: Props) {
           </div>
         </div>
       </div>
+      {showPricing && (
+        <AgentPricingModal
+          onClose={() => setShowPricing(false)}
+          onSaved={onChanged}
+        />
+      )}
     </ModalBackdrop>
   );
 }
