@@ -199,6 +199,105 @@ class TestSingleProcess:
             CollectiveBackend(init_checkpoint=ckpt, group_size=0, rank=0)
 
 
+def _subgroup_worker(rank, world_size, port, ckpt, num_rounds, result_path):
+    """Child: build a (diloco=2, inner=2) mesh and run the backend on this rank's
+    diloco SUB-group (which for inner-position 1 is global ranks [1,3], NOT
+    rooted at global rank 0 — exercises group-local broadcast source)."""
+    import os
+
+    import torch
+    import torch.distributed as dist
+
+    from forgather.ml.distributed_mesh import ForgatherParallelDims
+
+    os.environ.update(
+        MASTER_ADDR="127.0.0.1",
+        MASTER_PORT=str(port),
+        RANK=str(rank),
+        WORLD_SIZE=str(world_size),
+    )
+    dist.init_process_group(backend="gloo")
+    try:
+        pd = ForgatherParallelDims(
+            diloco=2,
+            inner=2,
+            inner_axis="data_parallel",
+            world_size=world_size,
+            device_type="cpu",
+        )
+        backend = CollectiveBackend(
+            init_checkpoint=ckpt,
+            process_group=pd.diloco_group(),
+            group_size=pd.diloco_size(),
+            rank=pd.diloco_rank(),
+        )
+        init = backend.join(worker_id=f"w{rank}")
+        names = list(init.keys())
+        last = None
+        for r in range(num_rounds):
+            # Fill values keyed by the diloco rank (the contributor index within
+            # the sub-group), matching the reference's per-contributor average.
+            pg = {
+                name: torch.full_like(init[name], _pg_value(pd.diloco_rank(), r, j))
+                for j, name in enumerate(names)
+            }
+            last = backend.synchronize(worker_id=f"w{rank}", pseudograds=pg).params
+        torch.save(
+            {"rank": rank, "diloco_rank": pd.diloco_rank(), "master": last}, result_path
+        )
+        backend.leave(worker_id=f"w{rank}")
+    finally:
+        dist.destroy_process_group()
+
+
+class TestSubGroup:
+    """A 2x2 mesh: two diloco sub-groups [0,2] and [1,3]. The [1,3] group is not
+    rooted at global rank 0, so this exercises the group-local broadcast source
+    (group_src) — a global src=0 would be wrong/hang here."""
+
+    def test_each_subgroup_matches_server_and_agrees(self, tmp_path):
+        sd, ckpt = _make_checkpoint(tmp_path)
+        num_rounds, world_size = 3, 4
+        port = _free_port()
+        ctx = mp.get_context("fork")
+        procs, paths = [], []
+        for r in range(world_size):
+            rp = str(tmp_path / f"sg_{r}.pt")
+            paths.append(rp)
+            p = ctx.Process(
+                target=_subgroup_worker,
+                args=(r, world_size, port, ckpt, num_rounds, rp),
+            )
+            p.start()
+            procs.append(p)
+        for p in procs:
+            p.join(timeout=60)
+            if p.is_alive():
+                p.terminate()
+                pytest.fail("a sub-group worker hung")
+            assert p.exitcode == 0, f"worker exited {p.exitcode}"
+
+        from forgather.ml.sharded_checkpoint import load_checkpoint
+
+        canonical = load_checkpoint(ckpt, module=None, device="cpu")
+        # Each diloco sub-group has 2 contributors (diloco_rank 0 and 1), so the
+        # reference is the group_size=2 outer step.
+        ref = _reference_master(canonical, group_size=2, num_rounds=num_rounds)
+        results = [torch.load(rp, weights_only=False) for rp in paths]
+        # Group by diloco sub-group: ranks {0,2} and {1,3}.
+        for r in results:
+            for name in canonical:
+                assert torch.allclose(r["master"][name], ref[name], atol=1e-5), (
+                    r["rank"],
+                    name,
+                )
+        # Cross-rank identity within each sub-group (and, here, across both,
+        # since both groups ran identical deterministic inputs).
+        for name in canonical:
+            for r in results[1:]:
+                assert torch.equal(r["master"][name], results[0]["master"][name]), name
+
+
 class TestMultiProcess:
     @pytest.mark.parametrize("world_size", [2, 3])
     def test_matches_server_math_and_ranks_agree(self, tmp_path, world_size):

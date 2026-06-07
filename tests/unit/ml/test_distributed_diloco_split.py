@@ -33,6 +33,7 @@ def _split_worker(rank, world_size, port, degree, result_path):
         WORLD_SIZE=str(world_size),
         LOCAL_RANK=str(rank),
         LOCAL_WORLD_SIZE=str(world_size),
+        DILOCO_BACKEND="collective",  # the split's required consumer
     )
     os.environ.pop("DILOCO_REPLICATE", None)
     from forgather.ml.distributed import DistributedEnvironment
@@ -88,20 +89,28 @@ def test_inner_one_reports_world_size_one(tmp_path):
         assert r["diloco_ranks"] == [0, 1]
 
 
-def test_inner_two_reports_inner_view(tmp_path):
-    # degree=2 over world=4 -> inner=2: trainer world_size=2, rank=inner_rank;
-    # the diloco group strides across the two replicas at the same inner pos.
-    results = _run(tmp_path, world_size=4, degree=2)
-    by_rank = {r["rank"]: r for r in results}
-    for r in results:
-        assert r["trainer_world_size"] == 2
-        assert r["diloco_size"] == 2
-    assert by_rank[0]["trainer_rank"] == 0 and by_rank[0]["diloco_rank"] == 0
-    assert by_rank[1]["trainer_rank"] == 1 and by_rank[1]["diloco_rank"] == 0
-    assert by_rank[2]["trainer_rank"] == 0 and by_rank[2]["diloco_rank"] == 1
-    assert by_rank[3]["trainer_rank"] == 1 and by_rank[3]["diloco_rank"] == 1
-    assert by_rank[0]["diloco_ranks"] == [0, 2]
-    assert by_rank[1]["diloco_ranks"] == [1, 3]
+def test_inner_gt_one_fails_loud(tmp_path):
+    # degree=2 over world=4 -> inner=2 (inner parallelism per replica) is not yet
+    # supported (Phase 1 = inner=1); the split must fail loud, not mis-parallelize.
+    port = _free_port()
+    ctx = mp.get_context("fork")
+    rp = str(tmp_path / "split_0.pt")
+    procs = []
+    for r in range(4):
+        p = ctx.Process(
+            target=_split_worker, args=(r, 4, port, 2, str(tmp_path / f"s_{r}.pt"))
+        )
+        p.start()
+        procs.append(p)
+    exitcodes = []
+    for p in procs:
+        p.join(timeout=60)
+        if p.is_alive():
+            p.terminate()
+            pytest.fail("a split worker hung")
+        exitcodes.append(p.exitcode)
+    # Every rank raises (inner=2 rejected) -> all non-zero.
+    assert all(code != 0 for code in exitcodes), exitcodes
 
 
 def test_degree_one_is_noop(tmp_path):

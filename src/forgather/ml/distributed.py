@@ -812,11 +812,33 @@ class DistributedEnvironment(DistributedEnvInterface):
         degree = self._diloco_replicate
         if degree <= 1:
             return
+        # The replicate split currently serves only the collective DiLoCo
+        # backend; rewriting the trainer's world view for any other backend would
+        # silently change its parallelism. Fail loud (no silent misconfig).
+        if os.environ.get("DILOCO_BACKEND", "http").strip().lower() != "collective":
+            raise ValueError(
+                f"DILOCO_REPLICATE={degree} is set but DILOCO_BACKEND is not "
+                "'collective'. The replicate axis only applies to the collective "
+                "backend; unset DILOCO_REPLICATE or set DILOCO_BACKEND=collective."
+            )
         global_world = self.world_size
         if global_world % degree != 0:
             raise ValueError(
                 f"DILOCO_REPLICATE={degree} does not evenly divide "
                 f"WORLD_SIZE={global_world}."
+            )
+        inner = global_world // degree
+        if inner != 1:
+            # Phase 1 supports inner=1 only (N single-device replicas). Composing
+            # the diloco axis with pipeline/DDP inner parallelism (inner>1) needs
+            # the trainer to consume the inner sub-group, which is not yet wired —
+            # a flat trainer mesh over the inner world_size would build the wrong
+            # group. Fail loud rather than mis-parallelize.
+            raise ValueError(
+                f"DILOCO_REPLICATE={degree} with WORLD_SIZE={global_world} implies "
+                f"inner={inner} (inner parallelism per replica), which is not yet "
+                "supported. Set DILOCO_REPLICATE == WORLD_SIZE so each replica is "
+                "a single device (inner=1)."
             )
         from forgather.ml.distributed_mesh import ForgatherParallelDims
 

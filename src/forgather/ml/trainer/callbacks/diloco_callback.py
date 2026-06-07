@@ -355,6 +355,21 @@ class DiLoCoCallback(TrainerCallback):
                 "initialized in this process."
             )
 
+        # No-silent-degeneration: in a multi-rank world the replicas are
+        # distinguished by DILOCO_REPLICATE (it drives the diloco mesh split + the
+        # per-replica DILOCO_WORKER_ID / data shard). Without it, every rank would
+        # share one worker_id and one data shard, and DiLoCo would silently
+        # collapse to training identical replicas. Fail loud.
+        from forgather.ml.diloco import diloco_replicate
+
+        if dist.get_world_size() > 1 and diloco_replicate() <= 1:
+            raise ValueError(
+                "DILOCO_BACKEND=collective in a "
+                f"{dist.get_world_size()}-process world requires DILOCO_REPLICATE "
+                "to be set (== the world size) so each replica gets a distinct "
+                "worker_id and data shard. It is unset (1)."
+            )
+
         # Fail loud on a DDP-wrapped model — collective is the gradient-sync
         # alternative, not a layer on top of it.
         try:
@@ -411,15 +426,16 @@ class DiLoCoCallback(TrainerCallback):
         cfg = settings.get("outer_optimizer")
         if not cfg:
             raise ValueError(
-                "DILOCO_BACKEND=shared_memory: the coordinator did not advertise "
-                "its outer-optimizer config in /info (older server). Upgrade the "
-                "diloco server so the shared-memory group can match its outer step."
+                "This DiLoCo backend runs the outer optimizer itself, but the "
+                "coordinator did not advertise its outer-optimizer config in "
+                "/info (older server). Upgrade the diloco server so the group can "
+                "match its outer step."
             )
         name = cfg.get("name")
         if name != "SGD":
             raise ValueError(
-                "DILOCO_BACKEND=shared_memory reproduces only an SGD outer "
-                f"optimizer; the coordinator runs {name!r}."
+                "This DiLoCo backend reproduces only an SGD outer optimizer; the "
+                f"coordinator runs {name!r}."
             )
 
         import torch

@@ -124,6 +124,10 @@ class CollectiveBackend(OuterSyncBackend):
         if have_group and self.group_size > 1:
             backend_name = str(dist.get_backend(process_group)).lower()
             if backend_name == "nccl":
+                # torchrun always sets LOCAL_RANK (the physical GPU index). The
+                # fallback is for the no-torchrun case and assumes inner=1
+                # (group-local rank == local rank); at inner>1 the group-local
+                # rank is not the device index, so LOCAL_RANK must be set.
                 local_rank = int(
                     os.environ.get("LOCAL_RANK", self.rank % torch.cuda.device_count())
                 )
@@ -137,26 +141,30 @@ class CollectiveBackend(OuterSyncBackend):
 
     # ----- collective helpers ----------------------------------------------
 
-    def _broadcast_object(self, obj, src: int):
+    def _broadcast_object(self, obj, group_src: int):
         import torch.distributed as dist
 
         holder = [obj]
         kwargs = {"group": self.process_group}
         if self._collective_device.type == "cuda":
             kwargs["device"] = self._collective_device
-        dist.broadcast_object_list(holder, src=src, **kwargs)
+        # group_src (not src): self.rank is the group-local diloco rank, so the
+        # source must be group-local too — src= would be a *global* rank, wrong
+        # for any diloco sub-group not rooted at global rank 0 (inner > 1).
+        dist.broadcast_object_list(holder, group_src=group_src, **kwargs)
         return holder[0]
 
-    def _broadcast_tensor(self, tensor: Optional[torch.Tensor], src: int):
-        """Broadcast one fp32 tensor from ``src`` to the group; non-root ranks
-        allocate from the broadcast shape. Returns a CPU fp32 tensor."""
+    def _broadcast_tensor(self, tensor: Optional[torch.Tensor], group_src: int):
+        """Broadcast one fp32 tensor from group-local rank ``group_src`` to the
+        group; non-root ranks allocate from the broadcast shape. Returns a CPU
+        fp32 tensor."""
         import torch.distributed as dist
 
         meta = None
-        if self.rank == src:
+        if self.rank == group_src:
             meta = tuple(tensor.shape)
-        shape = self._broadcast_object(meta, src=src)
-        if self.rank == src:
+        shape = self._broadcast_object(meta, group_src=group_src)
+        if self.rank == group_src:
             buf = (
                 tensor.detach().to(self._collective_device, torch.float32).contiguous()
             )
@@ -164,7 +172,7 @@ class CollectiveBackend(OuterSyncBackend):
             buf = torch.empty(
                 shape, dtype=torch.float32, device=self._collective_device
             )
-        dist.broadcast(buf, src=src, group=self.process_group)
+        dist.broadcast(buf, group=self.process_group, group_src=group_src)
         return buf.cpu()
 
     # ----- OuterSyncBackend -------------------------------------------------
@@ -196,10 +204,10 @@ class CollectiveBackend(OuterSyncBackend):
             names = None
 
         if self.init_broadcast and self.group_size > 1:
-            names = self._broadcast_object(names, src=0)
+            names = self._broadcast_object(names, group_src=0)
             for name in names:
                 src_t = master.get(name) if self.rank == 0 else None
-                master[name] = self._broadcast_tensor(src_t, src=0)
+                master[name] = self._broadcast_tensor(src_t, group_src=0)
         elif names is None:
             # group_size==1 or init_broadcast disabled: every rank must have
             # loaded the master itself. Fail loud rather than proceed nameless.
@@ -258,11 +266,12 @@ class CollectiveBackend(OuterSyncBackend):
             self._global[name] = self._master_params[i].data.clone()
 
         if self.broadcast_result and self.group_size > 1:
-            # Safety valve: make rank 0's stepped params authoritative instead of
-            # relying on cross-rank all_reduce bit-identity. Off by default.
+            # Safety valve: make group-local rank 0's stepped params
+            # authoritative instead of relying on cross-rank all_reduce
+            # bit-identity. Off by default.
             for name in self._names:
                 t = self._global[name].to(self._collective_device)
-                self._broadcast_in_place(t, src=0)
+                self._broadcast_in_place(t, group_src=0)
                 self._global[name] = t.cpu()
 
         params = {n: self._global[n].clone() for n in self._names}
@@ -271,10 +280,10 @@ class CollectiveBackend(OuterSyncBackend):
             params=params, committed=True, sent_bytes=sent, recv_bytes=sent
         )
 
-    def _broadcast_in_place(self, tensor: torch.Tensor, src: int) -> None:
+    def _broadcast_in_place(self, tensor: torch.Tensor, group_src: int) -> None:
         import torch.distributed as dist
 
-        dist.broadcast(tensor, src=src, group=self.process_group)
+        dist.broadcast(tensor, group=self.process_group, group_src=group_src)
 
     def synchronize_fragment(
         self, *, worker_id: str, fragment_id: int, pseudograds: "StateDict"
