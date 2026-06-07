@@ -1932,6 +1932,28 @@ function WorkerCard({
               {workerStatus.steps_per_second.toFixed(2)} steps/s
             </span>
           )}
+        {/* Worker-reported sync count. For an off-server backend
+            (shared-memory) the server's own ``sync_round`` above stays 0
+            because the worker never submits — this is the real progress
+            signal. ``last_send_mb`` ~0 marks the off-wire sync. */}
+        {workerStatus.sync_state?.sync_count !== undefined && (
+          <span
+            className="muted"
+            style={{ fontSize: 12 }}
+            title={
+              workerStatus.sync_state.last_send_mb !== undefined
+                ? `last sync sent ${workerStatus.sync_state.last_send_mb.toFixed(
+                    1,
+                  )} MB on the wire`
+                : undefined
+            }
+          >
+            sync{" "}
+            <b style={{ color: "var(--text, inherit)" }}>
+              {workerStatus.sync_state.sync_count}
+            </b>
+          </span>
+        )}
         <span className="muted" style={{ fontSize: 12 }}>
           hb {relativeAge(workerStatus.last_heartbeat)}
         </span>
