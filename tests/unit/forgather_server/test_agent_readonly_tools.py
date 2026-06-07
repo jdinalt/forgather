@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from forgather_server import config_ops
+import pytest
+
+from forgather_server import config_ops, discovery, paths
 from forgather_server.agent import tools_readonly
-from forgather_server.agent.registry import ToolRegistry
+from forgather_server.agent.registry import ToolRegistry, UiDirective
 
 
 def test_expected_read_tools_registered():
@@ -21,8 +23,32 @@ def test_expected_read_tools_registered():
         "check_config",
         "list_config_templates",
         "config_template_refs",
+        "reveal_in_ui",
         "search_docs",
     } <= names
+
+
+def test_reveal_in_ui_validates(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths, "is_path_in_fs_root", lambda p: True)
+    f = tmp_path / "x.yaml"
+    f.write_text("a: 1")
+
+    # A files reveal of an existing path returns a UiDirective.
+    d = tools_readonly._reveal_in_ui({"path": str(f), "where": "files"})
+    assert isinstance(d, UiDirective)
+    assert d.action == "reveal"
+    assert d.payload == {"path": str(f), "where": "files"}
+
+    # A projects reveal of a path that isn't a known ws/project/config errors.
+    monkeypatch.setattr(discovery, "discover_projects", lambda: [])
+    with pytest.raises(ValueError, match="not a known"):
+        tools_readonly._reveal_in_ui({"path": str(f), "where": "projects"})
+
+    # An unknown 'where' errors; a non-existent path errors.
+    with pytest.raises(ValueError, match="where must be"):
+        tools_readonly._reveal_in_ui({"path": str(f), "where": "nope"})
+    with pytest.raises(ValueError, match="does not exist"):
+        tools_readonly._reveal_in_ui({"path": str(tmp_path / "nope.yaml")})
 
 
 def test_render_config_code_delegates(monkeypatch):

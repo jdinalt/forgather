@@ -375,6 +375,19 @@ export default function App() {
     setProjectsReveal({ path: lastArtifact.path, nonce: lastArtifact.nonce });
   }, [lastArtifact, qc]);
 
+  // The agent's reveal_in_ui tool: point the user at a path it located, in
+  // either the Projects tree or the file explorer.
+  const lastReveal = agent.lastReveal;
+  useEffect(() => {
+    if (!lastReveal) return;
+    if (lastReveal.where === "files") {
+      revealInFiles(lastReveal.path);
+    } else {
+      setProjectsOpen(true);
+      setProjectsReveal({ path: lastReveal.path, nonce: lastReveal.nonce });
+    }
+  }, [lastReveal, revealInFiles]);
+
   // Cross-view dataset preselect: the Cluster view's Datasets tab and
   // the Datasets view's Servers tab both surface row clicks that
   // should land the user in Datasets → Explore with the chosen leaf

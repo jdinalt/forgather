@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .. import config_ops, discovery, paths, scheduler, search_roots
-from .registry import READ, ToolRegistry, ToolSpec
+from .registry import READ, ToolRegistry, ToolSpec, UiDirective
 
 log = logging.getLogger("forgather_server.agent.tools_readonly")
 
@@ -129,6 +129,51 @@ def _config_template_refs(args: Dict[str, Any]) -> Any:
     # forgather trefs: the templates a config actually pulls in (inheritance
     # chain), as a readable tree.
     return config_ops.render_trefs_tree(args["project_dir"], args["config_name"])
+
+
+def _known_projects_path(path: str) -> bool:
+    """True if ``path`` is a known workspace root, project dir, or config file
+    in the current discovery — i.e. something the Projects tree can reveal."""
+    norm = path.rstrip("/")
+    for cluster in discovery.discover_projects():
+        if cluster.workspace_root and cluster.workspace_root.rstrip("/") == norm:
+            return True
+        for proj in cluster.projects:
+            if proj.project_dir.rstrip("/") == norm:
+                return True
+            for cfg in proj.configs:
+                if cfg.path.rstrip("/") == norm:
+                    return True
+    return False
+
+
+def _reveal_in_ui(args: Dict[str, Any]) -> Any:
+    # Steer the webui to expand to + highlight a path. Returns a UiDirective
+    # the loop forwards to the client; no server-side side effect.
+    path = args["path"]
+    where = (args.get("where") or "projects").lower()
+    if where not in ("projects", "files"):
+        raise ValueError("where must be 'projects' or 'files'")
+    if not os.path.isabs(path):
+        raise ValueError("path must be absolute")
+    if not paths.is_path_in_fs_root(path):
+        raise PermissionError(
+            f"path is outside the configured filesystem roots: {path}"
+        )
+    if not os.path.exists(path):
+        raise ValueError(f"path does not exist: {path}")
+    if where == "projects" and not _known_projects_path(path):
+        raise ValueError(
+            f"path is not a known workspace, project, or config: {path}. Use "
+            "list_workspaces / list_projects / list_configs to get a valid "
+            "target, or reveal it in the file explorer with where='files'."
+        )
+    label = "Projects tree" if where == "projects" else "file explorer"
+    return UiDirective(
+        action="reveal",
+        payload={"path": path, "where": where},
+        message=f"revealed {path} in the {label}.",
+    )
 
 
 def _read_file(args: Dict[str, Any]) -> Any:
@@ -363,6 +408,32 @@ def register_all(reg: ToolRegistry) -> None:
                 "required": ["project_dir", "config_name"],
             },
             handler=_check_config,
+            risk=READ,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="reveal_in_ui",
+            description=(
+                "Reveal a workspace, project, or config to the user by "
+                "expanding the UI to it and selecting it — useful after you "
+                "locate something they asked for (e.g. \"show me a project "
+                "that does X\"). where=\"projects\" (default) expands the "
+                "Projects tree to the item; where=\"files\" expands the file "
+                "explorer and highlights the path. Give an absolute path from "
+                "list_workspaces / list_projects / list_configs (for "
+                "\"projects\") or read_file results. This only navigates the "
+                "UI; it changes nothing."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to the workspace dir, project dir, or config file."},
+                    "where": {"type": "string", "enum": ["projects", "files"], "description": "Which view to reveal in (default \"projects\")."},
+                },
+                "required": ["path"],
+            },
+            handler=_reveal_in_ui,
             risk=READ,
         )
     )

@@ -80,6 +80,23 @@ class Proposal:
 
 
 @dataclass
+class UiDirective:
+    """A client-side action a ``read`` tool asks the webui to perform.
+
+    Some read tools are useful precisely because they steer the UI — e.g.
+    revealing a project the agent just located. The handler returns a
+    ``UiDirective`` instead of plain data; the loop emits it as a
+    ``ui_directive`` event for the webui and feeds ``message`` back to the
+    model as the tool result (so the model knows it succeeded). It carries no
+    side effect on the server and so needs no approval gate.
+    """
+
+    action: str  # e.g. "reveal"
+    payload: Dict[str, Any] = field(default_factory=dict)
+    message: str = "done"
+
+
+@dataclass
 class ToolSpec:
     name: str
     description: str

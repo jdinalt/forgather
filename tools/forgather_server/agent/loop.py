@@ -32,7 +32,7 @@ import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from .providers.base import ChatProvider, Done, TextDelta, ToolCall, Usage
-from .registry import READ, Proposal, ToolRegistry
+from .registry import READ, Proposal, ToolRegistry, UiDirective
 from .session import (
     Conversation,
     PendingApproval,
@@ -353,6 +353,25 @@ class AgentLoop:
                     tc, pending_turn, f"{type(e).__name__}: {e}"
                 ):
                     yield ev
+                return
+            # A read tool may steer the UI (e.g. reveal a path) by returning a
+            # UiDirective: emit it for the webui, feed its message to the model.
+            if isinstance(out, UiDirective):
+                content = self._clip(out.message)
+                pending_turn.results[tc.id] = self.provider.format_tool_result(
+                    tc.id, content
+                )
+                yield {
+                    "type": "ui_directive",
+                    "action": out.action,
+                    "payload": out.payload,
+                }
+                yield {
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "content": content,
+                    "is_error": False,
+                }
                 return
             content = self._clip(self._stringify(out))
             pending_turn.results[tc.id] = self.provider.format_tool_result(tc.id, content)

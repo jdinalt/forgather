@@ -125,6 +125,10 @@ export interface AgentController {
    *  the Projects tree and reveal the new item. ``nonce`` lets the same path
    *  fire a reveal more than once. */
   lastArtifact: { kind: string; path: string; nonce: number } | null;
+  /** Set when the agent asks the UI to reveal a path (the reveal_in_ui tool),
+   *  e.g. after locating a project the user asked about. ``where`` is
+   *  "projects" or "files". The app routes it to the matching tree. */
+  lastReveal: { path: string; where: string; nonce: number } | null;
   send: (message: string) => void;
   decide: (actionId: string, approve: boolean) => void;
   continueTurn: () => void;
@@ -156,6 +160,9 @@ export function useAgent(): AgentController {
   const [incompleteReason, setIncompleteReason] = useState<string | null>(null);
   const [lastArtifact, setLastArtifact] = useState<
     { kind: string; path: string; nonce: number } | null
+  >(null);
+  const [lastReveal, setLastReveal] = useState<
+    { path: string; where: string; nonce: number } | null
   >(null);
 
   const sessionIdRef = useRef<string | null>(null);
@@ -350,6 +357,20 @@ export function useAgent(): AgentController {
           }
           break;
         }
+        case "ui_directive":
+          // The agent asked the UI to do something (reveal a path). No
+          // conversation item — just surface it for the app to act on.
+          if (ev.action === "reveal") {
+            const p = (ev.payload as Record<string, unknown>) ?? {};
+            if (typeof p.path === "string") {
+              setLastReveal({
+                path: p.path,
+                where: (p.where as string) || "projects",
+                nonce: Date.now(),
+              });
+            }
+          }
+          break;
         case "usage":
           setUsage({
             inputTokens: (ev.input_tokens as number) ?? 0,
@@ -542,6 +563,7 @@ export function useAgent(): AgentController {
     usage,
     incompleteReason,
     lastArtifact,
+    lastReveal,
     send,
     decide,
     continueTurn,

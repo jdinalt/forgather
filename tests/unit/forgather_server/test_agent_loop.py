@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 
 from forgather_server.agent.loop import AgentLoop
 from forgather_server.agent.providers.base import Done, TextDelta, ToolCall
-from forgather_server.agent.registry import Proposal, ToolRegistry, ToolSpec
+from forgather_server.agent.registry import Proposal, ToolRegistry, ToolSpec, UiDirective
 from forgather_server.agent.session import Conversation
 
 
@@ -381,6 +381,46 @@ def test_action_resolved_reveal_none_for_edit():
     resumed = _collect(loop.apply_decision(action_id, approve=True))
     resolved = [e for e in resumed if e["type"] == "action_resolved"]
     assert resolved and resolved[0]["created_kind"] is None
+
+
+def test_read_tool_ui_directive_is_emitted():
+    # A read tool may return a UiDirective: the loop emits a ui_directive event
+    # for the webui and feeds the directive's message back to the model.
+    reg = ToolRegistry()
+
+    def reveal(args):
+        return UiDirective(
+            action="reveal",
+            payload={"path": "/p/x", "where": "projects"},
+            message="revealed /p/x",
+        )
+
+    reg.register(
+        ToolSpec(
+            name="reveal",
+            description="reveal",
+            json_schema={"type": "object", "properties": {}},
+            handler=reveal,
+            risk="read",
+        )
+    )
+    provider = FakeProvider(
+        [
+            [ToolCall(id="t1", name="reveal", arguments={}), Done()],
+            [TextDelta("ok"), Done()],
+        ]
+    )
+    loop = AgentLoop(provider, reg)
+    conv = Conversation(session_id="ui")
+    events = _collect(loop.run_user_message(conv, "show me"))
+
+    directives = [e for e in events if e["type"] == "ui_directive"]
+    assert directives and directives[0]["action"] == "reveal"
+    assert directives[0]["payload"] == {"path": "/p/x", "where": "projects"}
+    results = [e for e in events if e["type"] == "tool_result"]
+    assert results and results[0]["content"] == "revealed /p/x"
+    assert results[0]["is_error"] is False
+    assert events[-1]["type"] == "done"
 
 
 def test_unknown_tool_is_error_not_crash():
