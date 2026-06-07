@@ -258,38 +258,26 @@ class DiLoCoWorker:
             self._is_dist = False
             self._ddp_rank = 0
             self._ddp_world_size = 1
-        if self._symmetric and self.pp_world_size > 1:
-            # Collective + pipeline is incompatible: a collective all-reduce
-            # covers the *full* model, but each pipeline rank owns only its
-            # slice. Fail loud rather than mismatch the collective.
-            raise ValueError(
-                "DiLoCo collective backend (replicated outer optimizer) is not "
-                "compatible with pipeline parallel (pp_world_size="
-                f"{self.pp_world_size}): the all-reduce spans the full model "
-                "while each pipeline rank holds only its slice. Use the HTTP "
-                "backend for pipeline groups."
-            )
         if self.pp_world_size > 1:
             # Every pipeline rank is its own DiLoCo worker (each owns
             # one DDP-group-of-one); we are always the leader of that
             # group-of-one. Cross-pipeline-rank broadcast is a no-op
             # (different slices).
             self._is_leader = True
-            # Pipeline + within-stage DDP composition isn't supported
-            # by the forgather trainer today. Under pure pipeline,
-            # the torch.distributed world_size equals pp_world_size
-            # (each process IS one pipeline rank). Within-stage DDP
-            # would multiply the world_size by the per-stage replica
-            # count, so world_size > pp_world_size is the signal. If
-            # both were active, the worker would build a
-            # PipelineParamView covering this rank's slice while DDP
-            # would also try to broadcast post-sync params via NCCL —
-            # but each pipeline rank holds different parameter names,
-            # so the broadcast collective would mismatch and either
-            # deadlock or surface as an opaque NCCL error. When
-            # pipeline+DDP composition lands, this gate will check
-            # for the ``pp_group`` plumbing instead.
-            if self._is_dist and self._ddp_world_size > self.pp_world_size:
+            # Pipeline + within-stage DDP composition isn't supported by the
+            # forgather trainer today. Under pure pipeline the torch.distributed
+            # world_size equals pp_world_size; within-stage DDP would multiply it
+            # by the per-stage replica count, so world_size > pp_world_size is the
+            # signal. EXCEPTION: under the collective backend (``_symmetric``) the
+            # extra global ranks are the DiLoCo *replicas* on the diloco mesh axis
+            # (global world = diloco × pp), handled by the backend's injected
+            # diloco sub-group — not within-stage DDP. Skip the guard there;
+            # each pp rank all-reduces its slice across the diloco axis.
+            if (
+                self._is_dist
+                and not self._symmetric
+                and self._ddp_world_size > self.pp_world_size
+            ):
                 raise ValueError(
                     f"DiLoCo + pipeline-parallel (pp_world_size="
                     f"{self.pp_world_size}) is not yet compatible "

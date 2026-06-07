@@ -441,11 +441,14 @@ destroys one. That group is the **`diloco` axis of a device mesh**:
 inner_axis))`), and `DistributedEnvironment._apply_diloco_split` (driven by
 `DILOCO_REPLICATE`) reports the **inner** view (`world_size`/`rank`) to the
 trainer — so the trainer's per-step collectives span one replica only — while
-exposing `diloco_group`/`diloco_rank`/`diloco_size` for the
-`DiLoCoCallback._make_collective_backend` to hand the backend. The first cut
-targets `inner == 1` (N single-device replicas, trainer `world_size == 1`);
-composing the `diloco` axis with pipeline/DDP inner parallelism is a follow-up.
-Modeled on torchtitan's `ParallelDims`.
+exposing `diloco_group`/`diloco_rank`/`diloco_size` (and, for `inner > 1`,
+`inner_mesh`/`inner_group`) for the `DiLoCoCallback._make_collective_backend` to
+hand the backend. With `inner == 1` each replica is a single device and the
+trainer sees `world_size == 1`. With `inner > 1` and `DILOCO_INNER_AXIS=
+pipeline_parallel` the replica is itself a multi-rank **pipeline** — see *Pipeline
+composition* below. Data-parallel inner (`diloco × DDP/FSDP`) is rejected at the
+split for now (DiLoCo largely replaces DDP); the guard stays until that
+composition lands. Modeled on torchtitan's `ParallelDims`.
 
 `fault_tolerant` is `False` (a dead peer hangs the all-reduce — quorum/skip-step
 is a follow-up) and `registers_with_coordinator` is `False` (each replica
@@ -460,6 +463,42 @@ before the config is preprocessed. Selected by `DILOCO_BACKEND=collective` +
 `DILOCO_REPLICATE`; the model must not be DDP-wrapped (with `inner == 1` the
 trainer sees `world_size == 1` and never wraps; the callback also fails loud on a
 `DistributedDataParallel` model).
+
+#### Pipeline composition (`diloco × pipeline`)
+
+With `DILOCO_INNER_AXIS=pipeline_parallel` the mesh is `(diloco=R,
+pipeline_parallel=P)` over one torchrun world of `R×P` ranks: each replica is a
+`P`-rank pipeline, and the `R` replicas at the same pipeline position form a
+`diloco` sub-group. Rank `diloco_idx*P + pp_idx` therefore sits in pipeline
+`diloco_idx` at stage `pp_idx`; its `diloco_group` strides across replicas
+(`[pp_idx, P+pp_idx, 2P+pp_idx, …]`) while its `inner_group` is the contiguous
+per-replica pipeline (`[diloco_idx*P … diloco_idx*P + P-1]`).
+
+The pipeline trainer consumes the **inner** sub-mesh: `_init_distributed` takes
+`self.dist.inner_mesh`/`inner_group` as its `self.mesh`/`self.pp_group` when the
+split is active, and every pipeline-internal collective (stage send/recv, the
+loss/token/stop relays, gradient-norm all-reduce, the throughput all-gather)
+targets `group=self.pp_group` with group-local `group_src`/`group_dst`/
+`group_peer` ranks — so a pipeline runs entirely within its replica and never
+crosses into another. The dataloader dispatcher is unchanged from a plain pipeline
+run: it broadcasts within the inner pipeline (`dp_mesh_dim=None` over the inner
+sub-mesh). The diloco axis is **not** a dataloader dimension — per-replica data
+divergence is owned by the DiLoCo work-unit dispatch at the dataset level (keyed
+on the per-replica `DILOCO_WORKER_ID`, `{base}_r{diloco_rank}`), so each replica
+iterates a distinct shard while its `P` pipeline ranks share it.
+
+Each pipeline rank owns only its parameter **slice** (`PipelineParamView`) and
+all-reduces *that slice* across its `diloco` sub-group — the outer step runs
+per-slice, in parallel across the `P` positions, and the union is the full model.
+`CollectiveBackend.join` filters the rank-0 init broadcast to the slice names the
+worker advertises in `worker_info["param_shapes"]`, so a pipeline rank's master
+covers exactly the names it reduces (for `inner == 1` that is the whole model, a
+no-op filter). The combined worker id composes the two id rules: the entrypoint
+rewrite gives the per-replica base `{base}_r{R}`, and the callback's pipeline path
+appends `_pp{P}`, yielding `R×P` distinct coordinator cells grouped by
+`group_id={base}_r{R}`. Selected by `DILOCO_BACKEND=collective` +
+`DILOCO_REPLICATE=R` + `DILOCO_INNER_AXIS=pipeline_parallel`, torchrun
+`--nproc-per-node = R×P`.
 
 ---
 

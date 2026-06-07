@@ -298,6 +298,156 @@ class TestSubGroup:
                 assert torch.equal(r["master"][name], results[0]["master"][name]), name
 
 
+# Per-pp-position param slices for the pipeline-composition test. pp rank 0 owns
+# layer0; pp rank 1 owns layer1 (weight + bias) — disjoint, covering the model.
+_PP_SLICES = {
+    0: ["layer0.weight"],
+    1: ["layer1.weight", "layer1.bias"],
+}
+
+# Name-keyed pseudo-grad fill (not positional): a pp rank reduces only its slice,
+# so a *slice-local* index would diverge from a full-model reference index for the
+# same name. Keying on the name makes the value independent of slice ordering.
+_NAME_BASE = {"layer0.weight": 1.0, "layer1.weight": 2.0, "layer1.bias": 3.0}
+
+
+def _pg_named(worker_idx: int, round_idx: int, name: str) -> float:
+    return (worker_idx + 1) * 0.1 + round_idx * 0.01 + _NAME_BASE[name]
+
+
+def _reference_slice_master(init_sd, slice_names, group_size, num_rounds):
+    """Server outer-step reference over a single pp slice, name-keyed grads."""
+    params = {
+        n: torch.nn.Parameter(init_sd[n].clone().float(), requires_grad=False)
+        for n in slice_names
+    }
+    opt = _default_outer_optimizer_factory(p for p in params.values())
+    for r in range(num_rounds):
+        for n in slice_names:
+            avg = sum(_pg_named(w, r, n) for w in range(group_size)) / group_size
+            params[n].grad = torch.full_like(params[n].data, avg)
+        opt.step()
+        opt.zero_grad()
+    return {n: params[n].data.clone() for n in slice_names}
+
+
+def _pipeline_slice_worker(rank, world_size, port, ckpt, num_rounds, result_path):
+    """Child: a (diloco=2, pipeline_parallel=2) mesh. Each pp rank owns only its
+    slice of the params and all-reduces that slice across its diloco sub-group.
+    The slice names are advertised via ``worker_info['param_shapes']`` so the
+    backend's ``join`` filters the rank-0 init broadcast to exactly that slice —
+    a full-model init would otherwise leave a pp rank with names it never reduces.
+    """
+    import os
+
+    import torch
+    import torch.distributed as dist
+
+    from forgather.ml.distributed_mesh import ForgatherParallelDims
+
+    os.environ.update(
+        MASTER_ADDR="127.0.0.1",
+        MASTER_PORT=str(port),
+        RANK=str(rank),
+        WORLD_SIZE=str(world_size),
+    )
+    dist.init_process_group(backend="gloo")
+    try:
+        pd = ForgatherParallelDims(
+            diloco=2,
+            inner=2,
+            inner_axis="pipeline_parallel",
+            world_size=world_size,
+            device_type="cpu",
+        )
+        slice_names = _PP_SLICES[pd.inner_rank()]
+        backend = CollectiveBackend(
+            init_checkpoint=ckpt,
+            process_group=pd.diloco_group(),
+            group_size=pd.diloco_size(),
+            rank=pd.diloco_rank(),
+        )
+        # worker_info carries the per-pp slice fingerprint; join filters to it.
+        worker_info = {"param_shapes": {n: None for n in slice_names}}
+        init = backend.join(worker_id=f"w{rank}", worker_info=worker_info)
+        # join must hand back *only* this rank's slice — nothing else.
+        assert sorted(init.keys()) == sorted(slice_names), sorted(init.keys())
+        names = list(init.keys())
+        last = None
+        for r in range(num_rounds):
+            pg = {
+                name: torch.full_like(init[name], _pg_named(pd.diloco_rank(), r, name))
+                for name in names
+            }
+            last = backend.synchronize(worker_id=f"w{rank}", pseudograds=pg).params
+        torch.save(
+            {"rank": rank, "inner_rank": pd.inner_rank(), "master": last}, result_path
+        )
+        backend.leave(worker_id=f"w{rank}")
+    finally:
+        dist.destroy_process_group()
+
+
+class TestPipelineSlice:
+    """diloco x pipeline: each pp rank reduces only its slice over the replicas
+    at its pp position. Verifies the slice-aware ``join`` (filtered init) and that
+    the per-slice masters match the server outer-step math for their names."""
+
+    def test_each_pp_slice_converges(self, tmp_path):
+        sd, ckpt = _make_checkpoint(tmp_path)
+        num_rounds, world_size = 3, 4
+        port = _free_port()
+        ctx = mp.get_context("fork")
+        procs, paths = [], []
+        for r in range(world_size):
+            rp = str(tmp_path / f"ps_{r}.pt")
+            paths.append(rp)
+            p = ctx.Process(
+                target=_pipeline_slice_worker,
+                args=(r, world_size, port, ckpt, num_rounds, rp),
+            )
+            p.start()
+            procs.append(p)
+        for p in procs:
+            p.join(timeout=60)
+            if p.is_alive():
+                p.terminate()
+                pytest.fail("a pipeline-slice worker hung")
+            assert p.exitcode == 0, f"worker exited {p.exitcode}"
+
+        from forgather.ml.sharded_checkpoint import load_checkpoint
+
+        canonical = load_checkpoint(ckpt, module=None, device="cpu")
+        # Each pp position's diloco sub-group has 2 contributors (diloco_rank 0/1)
+        # and reduces ONLY its slice. The reference runs the server outer step over
+        # just that slice's names with the same name-keyed pseudo-grads.
+        per_slice_ref = {
+            inner: _reference_slice_master(
+                canonical, names, group_size=2, num_rounds=num_rounds
+            )
+            for inner, names in _PP_SLICES.items()
+        }
+        results = {
+            r["rank"]: r for r in (torch.load(p, weights_only=False) for p in paths)
+        }
+        # Per-rank: master covers exactly its slice and matches the reference there.
+        for rank, res in results.items():
+            expected = _PP_SLICES[res["inner_rank"]]
+            ref = per_slice_ref[res["inner_rank"]]
+            assert sorted(res["master"].keys()) == sorted(expected), rank
+            for name in expected:
+                assert torch.allclose(res["master"][name], ref[name], atol=1e-5), (
+                    rank,
+                    name,
+                )
+        # Replicas at the same pp position agree bit-for-bit on their slice.
+        for inner in (0, 1):
+            same_pp = [res for res in results.values() if res["inner_rank"] == inner]
+            for name in _PP_SLICES[inner]:
+                for res in same_pp[1:]:
+                    assert torch.equal(res["master"][name], same_pp[0]["master"][name])
+
+
 class TestMultiProcess:
     @pytest.mark.parametrize("world_size", [2, 3])
     def test_matches_server_math_and_ranks_agree(self, tmp_path, world_size):

@@ -579,6 +579,18 @@ class DiLoCoCallback(TrainerCallback):
         # ``{base}_r{diloco_rank}`` before config preprocessing, so ``worker_id``
         # here is already distinct (and matches the output dir + work-dispatch
         # shard). Nothing to derive.
+        #
+        # Collective x pipeline composes the two blocks above for free: the
+        # entrypoint rewrite makes the base id ``{base}_r{R}`` (per replica),
+        # and the pipeline branch then appends ``_pp{P}`` from the *inner*
+        # (per-replica) pp_rank/pp_world_size, giving R*P distinct coordinator
+        # cells ``{base}_r{R}_pp{P}`` grouped by ``group_id={base}_r{R}``. The
+        # all-reduce that fuses the R replicas runs on the diloco sub-group
+        # (``trainer.dist.diloco_group``, wired in _make_collective_backend),
+        # while the pipeline runs on the inner sub-group; each pp rank reduces
+        # only its own slice (PipelineParamView) across the replicas at its pp
+        # position. The slice names flow to the backend's ``join`` via
+        # ``worker_info`` so the rank-0 init broadcast covers exactly that slice.
 
         # Reachability pre-check + settings negotiation in one /info
         # round-trip, before we bother building the worker. Surfaces
