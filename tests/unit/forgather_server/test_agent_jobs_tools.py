@@ -31,19 +31,18 @@ def _item(**kw):
     return queue_store.QueueItem(**base)
 
 
-def test_system_prompt_mentions_dataset_workflow():
-    from forgather_server.agent import runtime
+def test_playbook_covers_job_and_dataset_workflow():
+    # Procedures moved out of the prompt into the playbook; the prompt now
+    # points at it. Verify the prompt references the playbook and the entries
+    # carry the workflow tools.
+    from forgather_server.agent import playbook, runtime
 
-    p = runtime.SYSTEM_PROMPT
-    for tool in (
-        "run_dataset",
-        "run_construct",
-        "run_train",
-        "dataset_info",
-        "list_jobs",
-        "read_job_output",
-    ):
-        assert tool in p
+    assert "read_playbook" in runtime.SYSTEM_PROMPT
+    assert "run_dataset" in playbook.read("datasets")
+    assert "dataset_info" in playbook.read("datasets")
+    assert "run_train" in playbook.read("training")
+    for tool in ("list_jobs", "read_job_output", "wait_for_job"):
+        assert tool in playbook.read("training")
 
 
 def test_jobs_tools_registered():
@@ -637,10 +636,10 @@ def test_wait_for_job_queued_timeout_explains_gpu(monkeypatch):
     assert "note" in out and "GPU" in out["note"]
 
 
-def test_system_prompt_covers_output_dir_and_inference_gpu_guidance():
+def test_playbook_covers_output_dir_and_gpu_guidance():
     from forgather_server.agent import runtime
 
-    sp = runtime.SYSTEM_PROMPT
-    assert "resolve_output_dir" in sp  # proactive output-dir check (A)
-    assert "from_checkpoint=true" in sp  # serving a trained output dir (B)
-    assert "QUEUED" in sp  # GPU-reservation queueing guidance
+    from forgather_server.agent import playbook
+    assert "resolve_output_dir" in playbook.read("training")  # output-dir check (A)
+    assert "from_checkpoint" in playbook.read("inference")  # serving a trained dir (B)
+    assert "QUEUED" in playbook.read("services")  # GPU-reservation queueing

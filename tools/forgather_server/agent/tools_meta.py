@@ -22,12 +22,22 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from . import playbook
 from .registry import META, READ, ToolRegistry, ToolSpec
 
 
 def register_all(reg: ToolRegistry) -> None:
     def _list_tools(_args: Dict[str, Any]) -> Any:
         return {"tools": reg.catalog()}
+
+    def _list_playbook(_args: Dict[str, Any]) -> Any:
+        return {"topics": playbook.topics()}
+
+    def _read_playbook(args: Dict[str, Any]) -> Any:
+        topic = (args.get("topic") or "").strip()
+        if not topic:
+            raise ValueError("topic is required (use list_playbook to see topics)")
+        return {"topic": topic, "content": playbook.read(topic)}
 
     def _tool_help(args: Dict[str, Any]) -> Any:
         name = (args.get("name") or "").strip()
@@ -63,6 +73,42 @@ def register_all(reg: ToolRegistry) -> None:
             ),
             json_schema={"type": "object", "properties": {}},
             handler=_list_tools,
+            risk=READ,
+            tier=META,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="list_playbook",
+            description=(
+                "List the agent playbook topics (task-specific procedures) with a "
+                "one-line summary each. Call read_playbook(topic) for the full "
+                "step-by-step procedure before a non-trivial task."
+            ),
+            json_schema={"type": "object", "properties": {}},
+            handler=_list_playbook,
+            risk=READ,
+            tier=META,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="read_playbook",
+            description=(
+                "Get the full procedure for a task topic (training, datasets, "
+                "inference, services, evaluation, results, diloco, configs, "
+                "filesystem). Read it BEFORE doing that task — it has the details "
+                "(correct targets, output-dir handling, from_checkpoint, GPU "
+                "reservation, etc.) so you don't guess. list_playbook shows topics."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic name (see list_playbook)."},
+                },
+                "required": ["topic"],
+            },
+            handler=_read_playbook,
             risk=READ,
             tier=META,
         )

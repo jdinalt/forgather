@@ -3599,7 +3599,17 @@ Tool inventory by area:
   rejection, depth floor, denylist). `delete_path` is recursive for
   directories and irreversible.
 - **Meta**: `list_tools`, `tool_help`, `call_tool` (see disclosure
-  below).
+  below); `list_playbook`, `read_playbook` (task procedures — see below).
+
+**Playbook (knowledge disclosure).** Task-specific procedures (how to run
+training, build datasets, serve a model, etc.) live in markdown under
+`agent/playbook/` rather than in the system prompt, so the base prompt stays
+lean and the per-task detail doesn't tax context on every request. The prompt
+points the agent at `read_playbook(topic)` (with `list_playbook` to discover
+topics); it pulls the relevant procedure on demand. This is the knowledge
+analogue of the tool-disclosure mechanism — three retrieval surfaces:
+`tool_help` (how to call a tool), `search_docs` (how Forgather works), and
+`read_playbook` (how to do a task with these tools).
 
 **Tool disclosure (context-budget control).** As the tool set grows,
 its descriptions + schemas occupy context — a real ceiling for
