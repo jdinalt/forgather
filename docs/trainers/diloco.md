@@ -16,10 +16,11 @@ There are two independent reasons to use it — and they are easy to conflate:
   training practical over slow or heterogeneous links (commodity Ethernet,
   cross-host, WAN), where DDP/FSDP stall the GPUs all-reducing every step.
 - **Quality / generalization.** The outer step is a slow-momentum
-  (SlowMo / Lookahead) update that finds flatter minima. At a longer
-  (≈1B-token) budget DiLoCo can **match or overtake** an all-reduce-every-step
-  baseline on final eval loss — and this holds even with a **single worker on
-  one GPU**, where it is a pure regularizer with no data parallelism at all. See
+  (SlowMo / Lookahead) update that finds flatter minima, and on eval loss DiLoCo
+  can **overtake** an all-reduce-every-step baseline — how early depends on the
+  sync interval `H` (in the reference sweep, ~21% of a 1B run at `H=20`), not on
+  needing an enormous budget. The win holds even with a **single worker on one
+  GPU**, where it is a pure regularizer with no data parallelism at all. See
   [When to use DiLoCo](#when-to-use-diloco) and the empirical
   [sweep](../../examples/tiny_experiments/diloco/README.md#extended-sweep-budget-sync-interval-and-single-worker-local-sgd).
 
@@ -62,10 +63,14 @@ DiLoCo is a good fit when you want any of:
   Ethernet, different rooms/buildings, or a WAN — anywhere per-step all-reduce
   would stall the GPUs on the network. DiLoCo syncs ~500x less often and keeps
   them busy.
-- **A DDP alternative for better final quality.** At longer token budgets the
-  outer step is not just a bandwidth tradeoff — it converges to a *better*
-  optimum than an all-reduce-every-step baseline (see the
-  [sweep](../../examples/tiny_experiments/diloco/README.md#extended-sweep-budget-sync-interval-and-single-worker-local-sgd)).
+- **A DDP alternative for better final quality.** The outer step is not just a
+  bandwidth tradeoff — it converges to a *better* optimum than an
+  all-reduce-every-step baseline. In the reference
+  [sweep](../../examples/tiny_experiments/diloco/README.md#extended-sweep-budget-sync-interval-and-single-worker-local-sgd),
+  2-worker DiLoCo at a quality-tuned `H=20` overtakes the 2-GPU DDP baseline on
+  eval loss at **~21% of a 1B-token run** (and finishes 2.887 vs 3.005); how
+  early the crossover comes is set by the sync interval `H`, not by needing a
+  huge budget (the bandwidth-frugal default `H=500` is the slowest to cross).
 - **Single-node / single-worker regularization.** Even one worker on one GPU,
   no data parallelism, benefits: the outer SGD-with-Nesterov wrapped around the
   inner trajectory is a SlowMo/Lookahead-style slow-weight update that finds
@@ -93,8 +98,14 @@ is a contraindication:
 - **"On a fast / single-host link, always prefer DDP."** False — this conflates
   the two benefits. The *throughput* win needs a slow link to matter; the
   *quality/generalization* win is **independent of link speed** and shows up on
-  one box with a fast bus. On a fast interconnect DiLoCo costs essentially
-  nothing on throughput and can still finish at a better optimum.
+  one box with a fast bus, so single-host DiLoCo can still finish at a better
+  optimum. On throughput the picture depends on the backend: the HTTP
+  parameter-server path adds some per-sync overhead (the single-host reference
+  run measured ~310K vs ~360K tok/s, ~13%, though it syncs only 16 times), while
+  the **shared-memory / collective** backends average locally every `H` steps
+  instead of all-reducing every step, keeping single-host throughput close to
+  DDP. So on a single host the case for DDP is weak: comparable throughput
+  (shared-memory) and a better final optimum.
 - **"Don't use it with per-step gradient sync / a large learning rate."** There
   is no such contraindication (it is confabulated). DiLoCo *replaces* per-step
   sync by design; the literature's generalization edge actually wants a *small*
@@ -102,19 +113,29 @@ is a contraindication:
 
 ### Honest tradeoffs
 
-- **Extra moving parts.** You run a parameter server alongside the workers
-  (cheap, CPU-only, but another process to operate) plus the sync barrier.
+- **Extra moving parts.** The HTTP path runs a parameter server alongside the
+  workers (cheap, CPU-only, but another process to operate) plus the sync
+  barrier; the single-host **shared-memory / collective** backends fold the
+  averaging into the workers (no separate server).
 - **Token-budget caveat.** A worker runs the *full* schedule as if standalone —
   it does not know it is one of N — so N workers process N× the intended tokens
   unless you give **each worker `1/N` of the budget**.
-- **Short budgets can trail.** At a short (~1× Chinchilla, ~500M-token) budget
-  DiLoCo can finish *behind* the baseline (eval 3.343 vs ~3.15); the overtake is
-  an **end-game effect** of longer (≈1B-token+) runs. Don't expect the quality
-  win on short runs.
-- **`H` trades bandwidth for convergence.** Smaller `H` (more frequent sync)
-  converges better but communicates proportionally more (H=20 syncs 25× more
-  than H=500); larger `H` is bandwidth-frugal but drifts more. Tune it to your
-  interconnect.
+- **The crossover point is set by `H`, not just the budget.** It's tempting to
+  read the results as "DiLoCo only wins at the very end of a huge run," but
+  that's the **`H=500` default** talking — the bandwidth-frugal setting is the
+  *slowest* to cross (it doesn't pass the baseline within 1B tokens). Tighten the
+  sync interval and the crossover moves early: at `H=20`, 2-worker DiLoCo passes
+  DDP at ~21% of a 1B run and a single worker passes its baseline almost
+  immediately. The honest caveat is narrower than "short runs lose": at the
+  *shortest* budget (~1× Chinchilla, ~500M tokens) with the *default* `H=500`,
+  DiLoCo can finish behind (eval 3.343 vs ~3.15). If you want the quality win
+  sooner, run a shorter `H` rather than a longer budget.
+- **`H` trades bandwidth for convergence.** This is the same dial from the other
+  side: smaller `H` (more frequent sync) converges better but communicates
+  proportionally more (H=20 syncs 25× more than H=500); larger `H` is
+  bandwidth-frugal but drifts more and crosses later. Tune it to your
+  interconnect — a fast/single-host bus can afford a short `H` and the early
+  crossover; a slow link wants a larger `H` and accepts a later one.
 
 ## Quick Start (recommended): through the Forgather server
 
