@@ -3555,10 +3555,12 @@ Tool inventory by area:
   `list_checkpoints`, `list_evaluations`, `read_run_tty`.
 - **Datasets** (read): `list_dataset_servers`, `dataset_info`
   (+ `list_eval_configs`).
-- **Services** (`list_services` read; `start_service` /
-  `stop_service` confirm) — start/stop dataset / inference /
-  tensorboard / mkdocs / diloco; `start_service(type="dataset")`
-  brings up a default dataset server.
+- **Services** (`list_services` read; per-type start tools +
+  `stop_service`, confirm) — one start tool per service type, each with
+  explicit args: `start_dataset_server`, `start_diloco_server`,
+  `start_inference_server` (core) and `start_tensorboard`, `start_mkdocs`
+  (extended). `start_dataset_server()` with no args brings up a default
+  dataset server.
 - **DiLoCo**: `list_diloco_servers`, `diloco_status` (read),
   `diloco_control` (confirm).
 - **Inference / cluster / overrides**: `list_inference_servers`,

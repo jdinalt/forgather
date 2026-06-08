@@ -5,7 +5,7 @@ that workers sync against; watching workers/rounds and controlling the
 server (checkpoint, relay a command to workers, shut down) is core to
 operating a run. These wrap the ``_diloco`` helper (discovery +
 ``DiLoCoClient``). Starting/stopping the server itself is the generic
-``start_service(type='diloco', ...)`` / ``stop_service``.
+``start_diloco_server`` / ``stop_service``.
 
 All extended-tier. ``diloco_control`` is CONFIRM-gated (it mutates a live
 run); the read tools are auto.
@@ -118,7 +118,7 @@ def register_all(reg: ToolRegistry) -> None:
                 "relay (deliver a worker command on the next heartbeat — set "
                 "command to save_checkpoint | save_and_stop | abort, optionally "
                 "worker_id to target one worker instead of all). To start/stop "
-                "the server process itself use start_service / stop_service."
+                "the server process itself use start_diloco_server / stop_service."
             ),
             summary="Control a DiLoCo server: save_state | shutdown | relay (CONFIRM).",
             json_schema={

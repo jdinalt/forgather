@@ -132,6 +132,6 @@ def test_set_config_overrides_rejects_non_dict_values():
 
 def test_system_prompt_mentions_new_sections():
     sp = runtime.SYSTEM_PROMPT
-    for token in ("run_summary", "run_eval", "start_service(type=\"dataset\")",
+    for token in ("run_summary", "run_eval", "start_dataset_server()",
                   "diloco_status", "query_model"):
         assert token in sp

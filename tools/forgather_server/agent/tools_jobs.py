@@ -847,7 +847,7 @@ def register_all(reg: ToolRegistry) -> None:
                 "until='terminal' (default) waits for done/failed/aborted — use "
                 "for jobs that COMPLETE (run_dataset / run_construct / run_train "
                 "/ run_eval). until='running' waits for the job to come UP — use "
-                "for long-running SERVICES started with start_service (a dataset "
+                "for long-running SERVICES started with start_*_server (a dataset "
                 "/ inference / diloco server never goes terminal while healthy, "
                 "so waiting for 'terminal' would just time out). Either way a job "
                 "that fails returns immediately. Polls until the target state or "

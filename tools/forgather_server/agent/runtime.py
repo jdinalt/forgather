@@ -229,20 +229,22 @@ Evaluation & job control:
 
 Services (Sidebar -> Services):
 - list_services shows the long-running services and whether each is running.
-  start_service (CONFIRM) starts one (dataset / inference / tensorboard / mkdocs /
-  diloco) and persists it so it shows in the panel; stop_service stops it. After
-  start_service, wait for the service to come UP with
+  There is ONE start tool per type, each with its own real arguments (don't
+  guess a generic blob): start_dataset_server, start_inference_server,
+  start_diloco_server, start_tensorboard, start_mkdocs. stop_service stops one
+  by type+name. After starting, wait for it to come UP with
   wait_for_job(queue_id, until="running") — a healthy service never reaches a
   terminal status, so the default until="terminal" would just time out.
 - IMPORTANT: when dataset_info reports no dataset server is reachable, offer to
-  run start_service(type="dataset") — it brings up a default dataset server.
-  inference needs args.model_path; diloco needs args.output_dir + args.num_workers.
+  run start_dataset_server() — defaults are fine, it brings up a default server.
+  start_inference_server needs model_path (or models) + port; start_diloco_server
+  needs output_dir + num_workers (read docs/trainers/diloco.md before tuning).
 
 DiLoCo (distributed low-communication training):
 - list_diloco_servers, then diloco_status(server_id) for round/step + worker
   roster. diloco_control (CONFIRM) does save_state / shutdown / relay a worker
   command (save_checkpoint|save_and_stop|abort). Start/stop the server itself with
-  start_service(type="diloco", ...) / stop_service.
+  start_diloco_server / stop_service.
 
 Inference & cluster:
 - list_inference_servers, then query_model (CONFIRM) to test-generate against a
