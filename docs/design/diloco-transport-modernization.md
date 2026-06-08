@@ -118,7 +118,9 @@ checkpoints* — so wire and disk unify.
 
 Tier 1 is the **no-regrets prerequisite**: it makes the payload a clean typed
 frame so Tier 1.5 is a pure transport swap, not a transport+format rewrite. It
-is independently useful (zero-copy, no pickle, lower peak RAM) on its own.
+is independently useful (zero-copy load, no pickle, explicit dtype) on its own.
+The peak-RAM win does *not* land here — `save`/`load` are still whole-buffer —
+it arrives with the chunked transport in Tier 1.5.
 
 ## Tier 1.5 — streaming RPC transport (gRPC)
 
@@ -127,8 +129,9 @@ The control plane (`/info`, register, heartbeat, control) can stay on the
 existing HTTP server; only the heavy `submit_pseudograd` / `global_params` legs
 move. The transport is negotiated through `/info` (`transport: "http" | "grpc"`
 + an advertised endpoint/port), and **HTTP stays the always-available default and
-fallback** — a worker without the optional dep, or talking to a server that does
-not advertise the upgrade, uses HTTP transparently.
+fallback** — a worker talking to a server that does not advertise the gRPC
+upgrade uses HTTP transparently. (gRPC is a hard dependency, always importable;
+the negotiation is for peer back-compat, not for whether the dep is installed.)
 
 ### gRPC vs Arrow Flight
 

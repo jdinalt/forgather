@@ -40,6 +40,12 @@ def serialize_state_dict(
         # are freshly computed (global - local) and already on CPU, but the
         # upload cast / download path can yield non-contiguous views, so make
         # the guarantee explicit here rather than relying on the caller.
+        # Precondition: no two entries share storage — safetensors.save raises
+        # on aliased tensors, and ``.contiguous()`` does not clone an already-
+        # contiguous view. Every bulk-leg state dict here is alias-free (per-name
+        # pseudo-grad subtractions; server params are per-name clones), so this
+        # holds. A future caller serializing a live tied-param state_dict would
+        # need ``.clone()`` instead.
         dense = {k: v.detach().contiguous() for k, v in state_dict.items()}
         return st_save(dense)
     raise ValueError(f"Unknown wire format {fmt!r}; expected one of {WIRE_FORMATS}.")
