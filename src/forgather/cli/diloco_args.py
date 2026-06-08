@@ -205,6 +205,18 @@ def create_diloco_parser(global_args):
         ),
     )
     server_parser.add_argument(
+        "--wire-format",
+        dest="wire_format",
+        choices=("pickle", "safetensors"),
+        default="pickle",
+        help=(
+            "Bulk-tensor wire codec for both sync legs (issue #154).\n"
+            "``safetensors`` drops pickle for an explicit typed, zero-copy\n"
+            "frame (no arbitrary-code deserialization); ``pickle`` is the\n"
+            "back-compatible default for an older worker. (default: pickle)"
+        ),
+    )
+    server_parser.add_argument(
         "--no-bf16",
         dest="bf16_comm",
         action="store_false",

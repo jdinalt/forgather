@@ -12,7 +12,6 @@ Usage:
     new_params = client.submit_pseudogradients("worker-0", pseudograds)
 """
 
-import io
 import json
 import logging
 import os
@@ -25,6 +24,10 @@ from typing import Any, Dict, Optional
 import torch
 
 from forgather.ml.diloco.auth import read_standalone_token
+from forgather.ml.diloco.wire_serialize import (
+    deserialize_state_dict,
+    serialize_state_dict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +120,7 @@ class DiLoCoClient:
         retry_delay: float = 1.0,
         token: Optional[str] = None,
         verify_tls: bool = True,
+        wire_format: str = "pickle",
     ):
         # Normalize address. A bare ``host:port`` is the legacy form
         # (the ``forgather diloco worker --server host:port`` CLI and
@@ -178,6 +182,12 @@ class DiLoCoClient:
             token = read_standalone_token(self.server_addr)
         self.token = token
         self.verify_tls = verify_tls
+        # Bulk-tensor wire codec (issue #154), negotiated via /info. Governs
+        # both legs: the upload stamps it in the frame's ``fmt`` header so the
+        # server decodes this request regardless; the download (response /
+        # register) has no header, so the client must already hold the server's
+        # value here. Default "pickle" for back-compat with an older server.
+        self.wire_format = wire_format
         # SSL context for the control URL is cached. Bulk-port URLs
         # (learned at /register time) may have a different scheme, so
         # contexts for those are resolved per-request via ``_ssl_for``.
@@ -307,15 +317,16 @@ class DiLoCoClient:
         return headers
 
     def _serialize_state_dict(self, state_dict: Dict[str, torch.Tensor]) -> bytes:
-        """Serialize a state dict to bytes."""
-        buf = io.BytesIO()
-        torch.save(state_dict, buf)
-        return buf.getvalue()
+        """Serialize a state dict to bytes using the negotiated wire format."""
+        return serialize_state_dict(state_dict, self.wire_format)
 
     def _deserialize_state_dict(self, data: bytes) -> Dict[str, torch.Tensor]:
-        """Deserialize bytes to a state dict."""
-        buf = io.BytesIO(data)
-        return torch.load(buf, map_location="cpu", weights_only=True)
+        """Deserialize a bulk response using the negotiated wire format.
+
+        The download/response leg carries no per-frame header, so the format is
+        the server-authoritative value adopted from /info (``self.wire_format``).
+        """
+        return deserialize_state_dict(data, self.wire_format)
 
     def _request_json(
         self,
@@ -598,8 +609,11 @@ class DiLoCoClient:
         Returns:
             Updated global model parameters after outer optimizer step.
         """
-        # Build request body: length-prefixed JSON header + tensor payload
-        header = json.dumps({"worker_id": worker_id}).encode("utf-8")
+        # Build request body: length-prefixed JSON header + tensor payload.
+        # ``fmt`` tells the server which codec decodes this request's payload.
+        header = json.dumps({"worker_id": worker_id, "fmt": self.wire_format}).encode(
+            "utf-8"
+        )
         tensor_data = self._serialize_state_dict(pseudograds)
 
         body = struct.pack("!I", len(header)) + header + tensor_data
@@ -631,6 +645,7 @@ class DiLoCoClient:
             {
                 "worker_id": worker_id,
                 "fragment_id": fragment_id,
+                "fmt": self.wire_format,
             }
         ).encode("utf-8")
         tensor_data = self._serialize_state_dict(pseudograds)

@@ -102,6 +102,7 @@ class DiLoCoWorker:
         upload_sr: bool = False,
         download_dtype: str = "fp32",
         download_sr: bool = False,
+        wire_format: str = "pickle",
         bf16_comm: Optional[bool] = None,
         timeout: float = 600,
         dylu: bool = False,
@@ -156,6 +157,10 @@ class DiLoCoWorker:
         self.upload_sr = bool(upload_sr)
         self.download_dtype = download_dtype
         self.download_sr = bool(download_sr)
+        # Bulk-tensor wire codec (issue #154), adopted from /info and forwarded
+        # to the HTTP client (governs both the upload frame and the headerless
+        # download decode). Backends that bypass HTTP ignore it.
+        self.wire_format = wire_format
         # Legacy mirror for log lines / older callers reading
         # ``worker.bf16_comm`` (read-only — write via ``upload_dtype``).
         self.bf16_comm = self.upload_dtype == "bf16"
@@ -197,6 +202,7 @@ class DiLoCoWorker:
             timeout=timeout,
             token=auth_token,
             verify_tls=verify_tls,
+            wire_format=wire_format,
         )
 
         # Outer-synchronization backend (issue #154). The bulk tensor legs

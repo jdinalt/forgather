@@ -146,6 +146,7 @@ class DiLoCoCallback(TrainerCallback):
         self.upload_sr: Optional[bool] = None
         self.download_dtype: Optional[str] = None
         self.download_sr: Optional[bool] = None
+        self.wire_format: Optional[str] = None
         self.bf16_comm: Optional[bool] = None
         self.dylu: Optional[bool] = None
         self.num_fragments: Optional[int] = None
@@ -241,12 +242,16 @@ class DiLoCoCallback(TrainerCallback):
         if upload_dtype is None:
             upload_dtype = "bf16" if legacy_bf16 else "fp32"
         download_dtype = ecs.get("download_dtype", "fp32")
+        # Bulk-tensor wire codec (issue #154). Absent ⇒ "pickle" (an older
+        # server) so a fresh worker stays interoperable.
+        wire_format = ecs.get("wire_format", "pickle")
         return {
             "sync_every": int(sync_every),
             "upload_dtype": str(upload_dtype),
             "upload_sr": bool(ecs.get("upload_sr", False)),
             "download_dtype": str(download_dtype),
             "download_sr": bool(ecs.get("download_sr", False)),
+            "wire_format": str(wire_format),
             "bf16_comm": legacy_bf16,
             "dylu": bool(ecs.get("dylu", False)),
             "num_fragments": int(ecs.get("num_fragments_default", 1)),
@@ -651,6 +656,7 @@ class DiLoCoCallback(TrainerCallback):
         self.upload_sr = settings["upload_sr"]
         self.download_dtype = settings["download_dtype"]
         self.download_sr = settings["download_sr"]
+        self.wire_format = settings["wire_format"]
         self.bf16_comm = settings["bf16_comm"]
         self.dylu = settings["dylu"]
         self.num_fragments = settings["num_fragments"]
@@ -677,6 +683,7 @@ class DiLoCoCallback(TrainerCallback):
             upload_sr=self.upload_sr,
             download_dtype=self.download_dtype,
             download_sr=self.download_sr,
+            wire_format=self.wire_format,
             timeout=self.timeout,
             dylu=self.dylu,
             heartbeat_interval=self.heartbeat_interval,
