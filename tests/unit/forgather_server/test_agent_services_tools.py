@@ -149,3 +149,9 @@ def test_stop_service_disables_and_aborts(monkeypatch):
     msg = prop.commit()
     assert disabled == [("dataset", "d1", False)] and aborted == ["q7"]
     assert "stopped dataset:d1" in msg
+
+
+def test_start_inference_description_mentions_from_checkpoint():
+    by = {s.name: s for s in _reg().specs()}
+    desc = by["start_inference_server"].description
+    assert "from_checkpoint" in desc and "QUEUE" in desc

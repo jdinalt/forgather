@@ -621,3 +621,26 @@ def test_render_dynamic_arg_flags_handles_store_false(monkeypatch):
     assert tools_jobs._render_dynamic_arg_flags("/p", "c.yaml", {"use_cache": False}) == ["--use-cache"]
     # value True == implied default -> omit (no spurious flag).
     assert tools_jobs._render_dynamic_arg_flags("/p", "c.yaml", {"use_cache": True}) == []
+
+
+def test_wait_for_job_queued_timeout_explains_gpu(monkeypatch):
+    # A job stuck "queued" (no free GPU) past the timeout gets a diagnostic note.
+    monkeypatch.setattr(
+        job_records, "get_record",
+        lambda qid: _rec(queue_id=qid, status="queued", tty_log_path=None),
+    )
+    monkeypatch.setattr(tools_jobs, "_WAIT_POLL_SECONDS", 0.01)
+    out = asyncio.run(
+        tools_jobs._wait_for_job({"queue_id": "q1", "until": "running", "timeout_seconds": 0.05})
+    )
+    assert out["timed_out"] is True and out["status"] == "queued"
+    assert "note" in out and "GPU" in out["note"]
+
+
+def test_system_prompt_covers_output_dir_and_inference_gpu_guidance():
+    from forgather_server.agent import runtime
+
+    sp = runtime.SYSTEM_PROMPT
+    assert "resolve_output_dir" in sp  # proactive output-dir check (A)
+    assert "from_checkpoint=true" in sp  # serving a trained output dir (B)
+    assert "QUEUED" in sp  # GPU-reservation queueing guidance

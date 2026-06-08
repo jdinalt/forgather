@@ -312,9 +312,14 @@ def register_all(reg: ToolRegistry) -> None:
                 "Start an inference (model) server (Sidebar -> Services) so the "
                 "agent / webui can generate against it (see query_model). Provide "
                 "EXACTLY ONE of model_path (single model) or models (a list of "
-                "{name, path} for a multi-model server), plus a port. On "
-                "unified-memory hardware (DGX Spark / Grace-Hopper) set "
-                "keep_on_gpu=true. Approval required; then "
+                "{name, path} for a multi-model server), plus a port. To serve a "
+                "model you TRAINED (a Forgather output dir like output_models/"
+                "<name>), set from_checkpoint=true so it loads the latest native "
+                "checkpoint — a bare model_path expects an already-HF-format model "
+                "and will fail to load a raw output dir. On unified-memory hardware "
+                "(DGX Spark / Grace-Hopper) set keep_on_gpu=true. It reserves a "
+                "GPU (requested_gpus, default 1); if none is free it QUEUES until "
+                "one frees (check gpu_status). Approval required; then "
                 "wait_for_job(queue_id, until='running')."
             ),
             json_schema={
