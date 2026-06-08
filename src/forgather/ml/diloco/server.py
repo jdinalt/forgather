@@ -26,7 +26,6 @@ Usage:
 
 import base64
 import hashlib
-import io
 import json
 import logging
 import math
@@ -52,6 +51,11 @@ from forgather.ml.diloco.model_def import (
     compute_bundle_hash,
     enumerate_model_def_files,
     pack_model_def,
+)
+from forgather.ml.diloco.wire_serialize import (
+    WIRE_FORMATS,
+    deserialize_state_dict,
+    serialize_state_dict,
 )
 from forgather.ml.sharded_checkpoint import (
     find_latest_checkpoint,
@@ -340,17 +344,18 @@ def _describe_optimizer(optimizer) -> str:
     return f"{name}({items})"
 
 
-def _serialize_state_dict(state_dict: Dict[str, torch.Tensor]) -> bytes:
-    """Serialize a state dict to bytes using torch.save."""
-    buf = io.BytesIO()
-    torch.save(state_dict, buf)
-    return buf.getvalue()
+def _serialize_state_dict(
+    state_dict: Dict[str, torch.Tensor], fmt: str = "pickle"
+) -> bytes:
+    """Serialize a state dict to bytes using the named wire format."""
+    return serialize_state_dict(state_dict, fmt)
 
 
-def _deserialize_state_dict(data: bytes) -> Dict[str, torch.Tensor]:
-    """Deserialize bytes to a state dict using torch.load."""
-    buf = io.BytesIO(data)
-    return torch.load(buf, map_location="cpu", weights_only=True)
+def _deserialize_state_dict(
+    data: bytes, fmt: str = "pickle"
+) -> Dict[str, torch.Tensor]:
+    """Deserialize bytes to a state dict using the named wire format."""
+    return deserialize_state_dict(data, fmt)
 
 
 def _read_request_body(handler: BaseHTTPRequestHandler) -> bytes:
@@ -397,14 +402,19 @@ def _send_tensor_response(
     handler: BaseHTTPRequestHandler,
     state_dict: Dict[str, torch.Tensor],
     extra_headers: Optional[Dict[str, str]] = None,
+    fmt: str = "pickle",
 ):
     """Send a state dict as an octet-stream response.
 
     ``extra_headers`` (e.g. ``{"X-Forgather-Bulk-Url": "..."}``) ride
     along on the same response so worker registration can learn the
     bulk-listener URL without an extra round-trip.
+
+    ``fmt`` selects the wire codec. The response carries no header, so the
+    worker decodes it with the format it adopted from /info — pass the server's
+    authoritative ``wire_format`` so the two ends agree.
     """
-    data = _serialize_state_dict(state_dict)
+    data = _serialize_state_dict(state_dict, fmt)
     handler.send_response(200)
     handler.send_header("Content-Type", "application/octet-stream")
     handler.send_header("Content-Length", str(len(data)))
@@ -486,6 +496,7 @@ class DiLoCoServer:
         upload_sr: bool = False,
         download_dtype: str = "fp32",
         download_sr: bool = False,
+        wire_format: str = "pickle",
         bf16_comm: Optional[bool] = None,
         num_fragments: int = 1,
         heartbeat_timeout: float = 120.0,
@@ -517,6 +528,15 @@ class DiLoCoServer:
         self.save_total_limit = save_total_limit
         self.async_mode = async_mode
         self.safetensors = safetensors
+        # Bulk-tensor wire codec (issue #154), advertised via /info and
+        # authoritative for both legs. "pickle" (default) keeps back-compat with
+        # an older worker; "safetensors" drops pickle for an explicit typed,
+        # zero-copy frame. Validated against the known codecs.
+        if wire_format not in WIRE_FORMATS:
+            raise ValueError(
+                f"wire_format must be one of {WIRE_FORMATS}, got {wire_format!r}"
+            )
+        self.wire_format = wire_format
         self.dn_buffer_size = dn_buffer_size
         self.dylu_enabled = dylu_enabled
         self.dylu_base_sync_every = dylu_base_sync_every
@@ -1703,10 +1723,18 @@ class DiLoCoServer:
         if self.async_mode:
             with self._async_lock:
                 _send_tensor_response(
-                    handler, self._params_for_worker(worker_id), extra
+                    handler,
+                    self._params_for_worker(worker_id),
+                    extra,
+                    fmt=self.wire_format,
                 )
         else:
-            _send_tensor_response(handler, self._params_for_worker(worker_id), extra)
+            _send_tensor_response(
+                handler,
+                self._params_for_worker(worker_id),
+                extra,
+                fmt=self.wire_format,
+            )
 
     def _diff_slice_fingerprint(
         self, slice_shapes: Dict[str, List[int]]
@@ -1940,7 +1968,8 @@ class DiLoCoServer:
         tensor_data = body[4 + header_len :]
 
         worker_id = header["worker_id"]
-        pseudograds = _deserialize_state_dict(tensor_data)
+        # ``fmt`` is stamped by the client; absent ⇒ "pickle" (an older worker).
+        pseudograds = _deserialize_state_dict(tensor_data, header.get("fmt", "pickle"))
 
         # Reject ghost worker_ids: a worker whose group was atomically
         # evicted but whose HTTP client is still alive could otherwise
@@ -2053,7 +2082,7 @@ class DiLoCoServer:
 
         # _sync_cond released: flush audit records off the barrier path.
         self._audit_many(pending_audit)
-        _send_tensor_response(handler, response_params)
+        _send_tensor_response(handler, response_params, fmt=self.wire_format)
 
     def _handle_submit_async(self, handler, worker_id, pseudograds):
         """Asynchronous pseudo-gradient submission - apply immediately."""
@@ -2080,7 +2109,7 @@ class DiLoCoServer:
             # solo workers get the full state.
             global_params = self._params_for_worker(worker_id)
 
-        _send_tensor_response(handler, global_params)
+        _send_tensor_response(handler, global_params, fmt=self.wire_format)
 
     def _handle_submit_fragment_pseudograd(self, handler: BaseHTTPRequestHandler):
         """
@@ -2102,7 +2131,8 @@ class DiLoCoServer:
 
         worker_id = header["worker_id"]
         fragment_id = header["fragment_id"]
-        pseudograds = _deserialize_state_dict(tensor_data)
+        # ``fmt`` is stamped by the client; absent ⇒ "pickle" (an older worker).
+        pseudograds = _deserialize_state_dict(tensor_data, header.get("fmt", "pickle"))
 
         # Ghost / unsealed-group rejection (same gate as the full-sync
         # submit path).
@@ -2293,7 +2323,9 @@ class DiLoCoServer:
 
         # _sync_cond released: flush audit records off the barrier path.
         self._audit_many(pending_audit)
-        _send_tensor_response(handler, self._cast_for_download(result))
+        _send_tensor_response(
+            handler, self._cast_for_download(result), fmt=self.wire_format
+        )
 
     def _handle_submit_fragment_async(
         self, handler, worker_id, fragment_id, pseudograds
@@ -2325,7 +2357,9 @@ class DiLoCoServer:
 
             result = self._get_params_by_names(frag_param_names)
 
-        _send_tensor_response(handler, self._cast_for_download(result))
+        _send_tensor_response(
+            handler, self._cast_for_download(result), fmt=self.wire_format
+        )
 
     def _handle_get_global_params(self, handler: BaseHTTPRequestHandler):
         """Handle request for current global parameters.
@@ -2337,11 +2371,15 @@ class DiLoCoServer:
         if self.async_mode:
             with self._async_lock:
                 _send_tensor_response(
-                    handler, self._cast_for_download(self.get_global_params())
+                    handler,
+                    self._cast_for_download(self.get_global_params()),
+                    fmt=self.wire_format,
                 )
         else:
             _send_tensor_response(
-                handler, self._cast_for_download(self.get_global_params())
+                handler,
+                self._cast_for_download(self.get_global_params()),
+                fmt=self.wire_format,
             )
 
     def _handle_heartbeat(self, handler: BaseHTTPRequestHandler):
@@ -2808,6 +2846,11 @@ class DiLoCoServer:
                 "upload_sr": self.upload_sr,
                 "download_dtype": self.download_dtype,
                 "download_sr": self.download_sr,
+                # Bulk-tensor wire codec (issue #154). Authoritative for both
+                # legs: the upload also stamps it per-frame, but the download
+                # carries no header, so the worker must adopt this. "pickle"
+                # (default) keeps an older worker interoperable.
+                "wire_format": self.wire_format,
                 # Deprecated alias kept so pre-#130 workers parsing
                 # ``bf16_comm`` from ``expected_client_settings`` still
                 # negotiate a compatible upload format. True iff the

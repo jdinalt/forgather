@@ -209,6 +209,7 @@ def _server_cmd(args):
         upload_sr=args.upload_sr,
         download_dtype=args.download_dtype,
         download_sr=args.download_sr,
+        wire_format=args.wire_format,
         bf16_comm=args.bf16_comm,
         num_fragments=args.num_fragments,
         heartbeat_timeout=heartbeat_timeout,

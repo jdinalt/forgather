@@ -235,6 +235,96 @@ class TestPseudogradientSubmission:
             assert new_params[key].dtype == torch.float32
 
 
+class TestWireFormat:
+    """The bulk-tensor wire codec (issue #154) is negotiated via /info and
+    governs both legs. ``pickle`` (default) keeps an older peer interoperable;
+    ``safetensors`` drops pickle for an explicit typed frame."""
+
+    def _server(self, tmp_path, sd, wire_format):
+        ckpt = make_initial_checkpoint(sd, tmp_path)
+        server = DiLoCoServer(
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=1,
+            port=0,
+            outer_optimizer_factory=lambda p: torch.optim.SGD(p, lr=1.0),
+            wire_format=wire_format,
+        )
+        server.start()
+        time.sleep(0.2)
+        return server
+
+    def test_info_advertises_wire_format(self, tmp_path):
+        sd = _make_state_dict()
+        # Default server advertises pickle (back-compat); an explicit
+        # safetensors server advertises safetensors.
+        for wf in ("pickle", "safetensors"):
+            server = self._server(tmp_path, sd, wf)
+            try:
+                ecs = DiLoCoClient(f"localhost:{server.port}", timeout=10).get_info()[
+                    "expected_client_settings"
+                ]
+                assert ecs["wire_format"] == wf
+            finally:
+                server.stop()
+
+    def test_safetensors_end_to_end_sync(self, tmp_path):
+        """A safetensors-negotiated worker (client + server both safetensors)
+        registers and syncs with bit-identical results to the pickle path —
+        the codec is a transparent wire representation."""
+        sd = _make_state_dict()
+        server = self._server(tmp_path, sd, "safetensors")
+        try:
+            client = DiLoCoClient(
+                f"localhost:{server.port}", timeout=10, wire_format="safetensors"
+            )
+            # Register (download leg, safetensors) returns the init weights.
+            params = client.register("worker_0")
+            for k in sd:
+                assert torch.allclose(params[k], sd[k].float(), atol=1e-6), k
+            # Sync (upload + download legs, both safetensors).
+            pseudograds = {k: torch.full_like(v, 0.1) for k, v in sd.items()}
+            new_params = client.submit_pseudogradients("worker_0", pseudograds)
+            for k in sd:
+                assert torch.allclose(new_params[k], sd[k].float() - 0.1, atol=1e-5), k
+        finally:
+            server.stop()
+
+    def test_server_decodes_upload_per_frame_fmt(self, tmp_path):
+        """The server decodes an upload by the frame's stamped ``fmt``, not its
+        own default: a safetensors-stamped request is decoded correctly even
+        though this server's own wire_format is the pickle default. (The
+        response leg still uses the server's format; here we only assert the
+        server accepted and processed the safetensors upload.)"""
+        sd = _make_state_dict()
+        server = self._server(tmp_path, sd, "pickle")  # server default = pickle
+        try:
+            client = DiLoCoClient(f"localhost:{server.port}", timeout=10)
+            client.register("worker_0")
+            # Hand-frame a safetensors upload (what a safetensors worker sends),
+            # bypassing the client's own pickle default for the request only.
+            import json
+            import struct
+
+            from forgather.ml.diloco.wire_serialize import serialize_state_dict
+
+            pg = {k: torch.full_like(v, 0.1) for k, v in sd.items()}
+            header = json.dumps({"worker_id": "worker_0", "fmt": "safetensors"}).encode(
+                "utf-8"
+            )
+            body = (
+                struct.pack("!I", len(header))
+                + header
+                + serialize_state_dict(pg, "safetensors")
+            )
+            # The server's pickle-default response is decoded with pickle here.
+            raw = client._request_tensor("POST", "/submit_pseudograd", body=body)
+            for k in sd:
+                assert torch.allclose(raw[k], sd[k].float() - 0.1, atol=1e-5), k
+        finally:
+            server.stop()
+
+
 class TestStatusAndHeartbeat:
     def test_status(self, server_and_client):
         server, client, sd = server_and_client
