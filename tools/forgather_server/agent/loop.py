@@ -144,7 +144,7 @@ class AgentLoop:
                 yield ev
 
     async def apply_decision(
-        self, action_id: str, *, approve: bool
+        self, action_id: str, *, approve: bool, reason: Optional[str] = None
     ) -> AsyncIterator[Dict[str, Any]]:
         """Resolve one pending approval; resume the turn when the last clears.
 
@@ -180,11 +180,11 @@ class AgentLoop:
                     "message": "the conversation is no longer awaiting this action",
                 }
                 return
-            async for ev in self._resolve_one(conv, action_id, approval, approve):
+            async for ev in self._resolve_one(conv, action_id, approval, approve, reason):
                 yield ev
 
     async def _resolve_one(
-        self, conv, action_id: str, approval, approve: bool
+        self, conv, action_id: str, approval, approve: bool, reason: Optional[str] = None
     ) -> AsyncIterator[Dict[str, Any]]:
         tool_use_id = approval.tool_use_id
         if approve:
@@ -215,13 +215,28 @@ class AgentLoop:
                     "error": f"{type(e).__name__}: {e}",
                 }
         else:
+            reason = (reason or "").strip()
+            if reason:
+                msg = (
+                    "The user rejected this proposed change with the reason: "
+                    f'"{reason}". Take that guidance into account — do not retry '
+                    "the same change; adapt accordingly (or ask a follow-up if "
+                    "the reason is unclear)."
+                )
+            else:
+                msg = (
+                    "The user rejected this proposed change. Do not retry it "
+                    "without a different approach; ask what they would prefer."
+                )
             conv.pending_turn.results[tool_use_id] = self.provider.format_tool_result(
-                tool_use_id,
-                "The user rejected this proposed change. Do not retry it "
-                "without a different approach; ask what they would prefer.",
-                is_error=True,
+                tool_use_id, msg, is_error=True
             )
-            yield {"type": "action_resolved", "action_id": action_id, "approved": False}
+            yield {
+                "type": "action_resolved",
+                "action_id": action_id,
+                "approved": False,
+                "reason": reason or None,
+            }
 
         conv.pending_turn.outstanding.discard(tool_use_id)
         conv.touch()

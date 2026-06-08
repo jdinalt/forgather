@@ -6102,6 +6102,18 @@ li.config.selected button.link:hover {
   align-items: center;
   flex-wrap: wrap;
 }
+.agent-action-reject {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.agent-reject-reason {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font: inherit;
+  padding: 6px 8px;
+}
 .btn-approve {
   background: var(--accent);
   color: #fff;

@@ -117,7 +117,7 @@ def _pick(server_id: Optional[str]) -> Dict[str, Any]:
     if not entries:
         raise ValueError(
             "No inference server is known. Start one with "
-            "start_service(type='inference', args={model_path, port}) and retry."
+            "start_inference_server(model_path=..., port=...) and retry."
         )
     if server_id:
         for e in entries:

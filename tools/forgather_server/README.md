@@ -683,6 +683,35 @@ forgather gpu priority <idx> <N>        # only dispatch jobs with priority >= N 
 forgather gpu kill --yes <idx>          # SIGKILL all compute processes on the card
 ```
 
+**Drive the AI agent (interactive testing):** `forgather agent` is a thin
+client over the `/api/agent/*` endpoints for exercising the in-process
+assistant from the terminal — send messages as the user, watch the agent's
+text / tool calls / results stream, and make every Approve/Reject decision
+yourself (no auto-approve). Conversation + pending-action state lives in the
+server, so each command is one step:
+
+```bash
+forgather agent profiles                       # list connection profiles (* = active)
+forgather agent use <profile_id>               # test against any profile (Claude or local vLLM)
+forgather agent status                         # active agent's connection + disclosure mode
+forgather agent message "build the wikitext dataset"   # start a turn -> prints a session id
+forgather agent approve <action_id>            # your call on a proposed (CONFIRM/PROPOSE) action
+forgather agent reject  <action_id> --reason "use config Y"
+forgather agent message --session <id> "...follow-up guidance..."
+forgather agent continue --session <id>        # resume a turn cut off by the token budget
+forgather agent sessions                       # list active session ids (* none = none yet)
+forgather agent history <id>                   # dump the conversation
+forgather agent forget <id>                    # delete a session from the server
+```
+
+A new session is created the first time you `message` without `--session`
+(the id prints on the `STATE:` line); reuse it with `--session <id>`, or
+`sessions` to list what's active.
+
+Each turn streams until the agent finishes (often an answer or a clarifying
+question) or pauses for approval; a final `STATE:` line says which and what to
+run next. `--json` on the streaming verbs emits raw event JSONL.
+
 ---
 
 ## Installation
@@ -3555,10 +3584,12 @@ Tool inventory by area:
   `list_checkpoints`, `list_evaluations`, `read_run_tty`.
 - **Datasets** (read): `list_dataset_servers`, `dataset_info`
   (+ `list_eval_configs`).
-- **Services** (`list_services` read; `start_service` /
-  `stop_service` confirm) — start/stop dataset / inference /
-  tensorboard / mkdocs / diloco; `start_service(type="dataset")`
-  brings up a default dataset server.
+- **Services** (`list_services` read; per-type start tools +
+  `stop_service`, confirm) — one start tool per service type, each with
+  explicit args: `start_dataset_server`, `start_diloco_server`,
+  `start_inference_server` (core) and `start_tensorboard`, `start_mkdocs`
+  (extended). `start_dataset_server()` with no args brings up a default
+  dataset server.
 - **DiLoCo**: `list_diloco_servers`, `diloco_status` (read),
   `diloco_control` (confirm).
 - **Inference / cluster / overrides**: `list_inference_servers`,
@@ -3570,7 +3601,17 @@ Tool inventory by area:
   rejection, depth floor, denylist). `delete_path` is recursive for
   directories and irreversible.
 - **Meta**: `list_tools`, `tool_help`, `call_tool` (see disclosure
-  below).
+  below); `list_playbook`, `read_playbook` (task procedures — see below).
+
+**Playbook (knowledge disclosure).** Task-specific procedures (how to run
+training, build datasets, serve a model, etc.) live in markdown under
+`agent/playbook/` rather than in the system prompt, so the base prompt stays
+lean and the per-task detail doesn't tax context on every request. The prompt
+points the agent at `read_playbook(topic)` (with `list_playbook` to discover
+topics); it pulls the relevant procedure on demand. This is the knowledge
+analogue of the tool-disclosure mechanism — three retrieval surfaces:
+`tool_help` (how to call a tool), `search_docs` (how Forgather works), and
+`read_playbook` (how to do a task with these tools).
 
 **Tool disclosure (context-budget control).** As the tool set grows,
 its descriptions + schemas occupy context — a real ceiling for

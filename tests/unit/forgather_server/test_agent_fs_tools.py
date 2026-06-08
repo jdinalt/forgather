@@ -27,12 +27,13 @@ def test_registration_risk_and_tier():
         assert by[name].risk == CONFIRM and by[name].tier != EXTENDED
 
 
-def test_system_prompt_mentions_filesystem_tools():
-    from forgather_server.agent import runtime
+def test_playbook_covers_filesystem_tools():
+    # The fs procedure moved to the playbook; the prompt points at it.
+    from forgather_server.agent import playbook
 
-    sp = runtime.SYSTEM_PROMPT
+    fs = playbook.read("filesystem")
     for token in ("delete_path", "move_path", "copy_path", "stat_path"):
-        assert token in sp
+        assert token in fs
 
 
 # ---- stat ------------------------------------------------------------------

@@ -197,6 +197,37 @@ def test_reject_does_not_commit_but_resumes():
     assert conv.pending_turn is None
 
 
+def test_reject_with_reason_is_fed_to_the_model():
+    import json
+
+    state = {"read_calls": 0, "commit_calls": 0}
+    reg = _make_registry(state)
+    provider = FakeProvider(
+        [
+            [ToolCall(id="t1", name="make_change", arguments={"path": "f.yaml"}), Done()],
+            [TextDelta("ok, using Y instead"), Done()],
+        ]
+    )
+    loop = AgentLoop(provider, reg)
+    conv = Conversation(session_id="s4r")
+    from forgather_server.agent import session as sess
+
+    with sess._state._lock:
+        sess._state.sessions[conv.session_id] = conv
+
+    first = _collect(loop.run_user_message(conv, "change f.yaml"))
+    action_id = [e for e in first if e["type"] == "action_card"][0]["action_id"]
+
+    resumed = _collect(
+        loop.apply_decision(action_id, approve=False, reason="use config Y instead")
+    )
+    resolved = [e for e in resumed if e["type"] == "action_resolved"][0]
+    assert resolved["reason"] == "use config Y instead"
+    assert state["commit_calls"] == 0
+    # The reason reached the model as the rejected tool's result content.
+    assert "use config Y instead" in json.dumps(conv.messages, default=str)
+
+
 def test_missing_required_arg_is_error_not_crash():
     state = {"read_calls": 0, "commit_calls": 0}
     reg = _make_registry(state)

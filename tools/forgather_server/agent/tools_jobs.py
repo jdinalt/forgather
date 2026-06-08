@@ -179,7 +179,7 @@ async def _wait_for_job(args: Dict[str, Any]) -> Any:
             raise ValueError(f"job {queue_id} disappeared while waiting")
         reached = _reached(rec)
         if reached or waited >= timeout:
-            return {
+            out = {
                 "queue_id": queue_id,
                 "status": rec.status,
                 "exit_code": rec.exit_code,
@@ -191,6 +191,19 @@ async def _wait_for_job(args: Dict[str, Any]) -> Any:
                     tail_lines=_WAIT_TAIL_LINES,
                 ),
             }
+            # A job stuck "queued" after a timeout is almost always waiting for
+            # the scheduler to free a GPU (the requested_gpus reservation can't
+            # be met). Say so, and point at the tools that explain why — the
+            # agent (and user) otherwise just see an unexplained timeout.
+            if out["timed_out"] and rec.status == "queued":
+                out["note"] = (
+                    "still QUEUED (not yet dispatched) — likely waiting for a "
+                    "free GPU to meet its requested_gpus reservation, or for the "
+                    "scheduler. Check gpu_status (what's holding the GPUs) and "
+                    "list_jobs / scheduler_status; the user may need to stop "
+                    "another job/service or wait for one to finish."
+                )
+            return out
         step = min(_WAIT_POLL_SECONDS, timeout - waited)
         await asyncio.sleep(step)
         waited += step
@@ -847,7 +860,7 @@ def register_all(reg: ToolRegistry) -> None:
                 "until='terminal' (default) waits for done/failed/aborted — use "
                 "for jobs that COMPLETE (run_dataset / run_construct / run_train "
                 "/ run_eval). until='running' waits for the job to come UP — use "
-                "for long-running SERVICES started with start_service (a dataset "
+                "for long-running SERVICES started with start_*_server (a dataset "
                 "/ inference / diloco server never goes terminal while healthy, "
                 "so waiting for 'terminal' would just time out). Either way a job "
                 "that fails returns immediately. Polls until the target state or "

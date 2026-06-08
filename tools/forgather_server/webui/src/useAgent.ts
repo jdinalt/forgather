@@ -147,7 +147,7 @@ export interface AgentController {
    *  "projects" or "files". The app routes it to the matching tree. */
   lastReveal: { path: string; where: string; nonce: number } | null;
   send: (message: string) => void;
-  decide: (actionId: string, approve: boolean) => void;
+  decide: (actionId: string, approve: boolean, reason?: string) => void;
   continueTurn: () => void;
   stop: () => void;
   reset: () => void;
@@ -365,7 +365,13 @@ export function useAgent(): AgentController {
                 ? {
                     ...it,
                     status: newStatus,
-                    result: (ev.error as string) || (ev.result as string) || undefined,
+                    // reason is only present on reject; echo it back so the
+                    // user sees the guidance they sent to the agent.
+                    result:
+                      (ev.error as string) ||
+                      (ev.result as string) ||
+                      (ev.reason as string) ||
+                      undefined,
                   }
                 : it,
             ),
@@ -469,11 +475,11 @@ export function useAgent(): AgentController {
   );
 
   const decide = useCallback(
-    (actionId: string, approve: boolean) => {
+    (actionId: string, approve: boolean, reason?: string) => {
       if (busy) return;
       const ac = new AbortController();
       abortRef.current = ac;
-      void consume(streamDecision(actionId, approve, ac.signal));
+      void consume(streamDecision(actionId, approve, ac.signal, reason));
     },
     [busy, consume],
   );

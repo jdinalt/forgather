@@ -31,19 +31,18 @@ def _item(**kw):
     return queue_store.QueueItem(**base)
 
 
-def test_system_prompt_mentions_dataset_workflow():
-    from forgather_server.agent import runtime
+def test_playbook_covers_job_and_dataset_workflow():
+    # Procedures moved out of the prompt into the playbook; the prompt now
+    # points at it. Verify the prompt references the playbook and the entries
+    # carry the workflow tools.
+    from forgather_server.agent import playbook, runtime
 
-    p = runtime.SYSTEM_PROMPT
-    for tool in (
-        "run_dataset",
-        "run_construct",
-        "run_train",
-        "dataset_info",
-        "list_jobs",
-        "read_job_output",
-    ):
-        assert tool in p
+    assert "read_playbook" in runtime.SYSTEM_PROMPT
+    assert "run_dataset" in playbook.read("datasets")
+    assert "dataset_info" in playbook.read("datasets")
+    assert "run_train" in playbook.read("training")
+    for tool in ("list_jobs", "read_job_output", "wait_for_job"):
+        assert tool in playbook.read("training")
 
 
 def test_jobs_tools_registered():
@@ -621,3 +620,26 @@ def test_render_dynamic_arg_flags_handles_store_false(monkeypatch):
     assert tools_jobs._render_dynamic_arg_flags("/p", "c.yaml", {"use_cache": False}) == ["--use-cache"]
     # value True == implied default -> omit (no spurious flag).
     assert tools_jobs._render_dynamic_arg_flags("/p", "c.yaml", {"use_cache": True}) == []
+
+
+def test_wait_for_job_queued_timeout_explains_gpu(monkeypatch):
+    # A job stuck "queued" (no free GPU) past the timeout gets a diagnostic note.
+    monkeypatch.setattr(
+        job_records, "get_record",
+        lambda qid: _rec(queue_id=qid, status="queued", tty_log_path=None),
+    )
+    monkeypatch.setattr(tools_jobs, "_WAIT_POLL_SECONDS", 0.01)
+    out = asyncio.run(
+        tools_jobs._wait_for_job({"queue_id": "q1", "until": "running", "timeout_seconds": 0.05})
+    )
+    assert out["timed_out"] is True and out["status"] == "queued"
+    assert "note" in out and "GPU" in out["note"]
+
+
+def test_playbook_covers_output_dir_and_gpu_guidance():
+    from forgather_server.agent import runtime
+
+    from forgather_server.agent import playbook
+    assert "resolve_output_dir" in playbook.read("training")  # output-dir check (A)
+    assert "from_checkpoint" in playbook.read("inference")  # serving a trained dir (B)
+    assert "QUEUED" in playbook.read("services")  # GPU-reservation queueing

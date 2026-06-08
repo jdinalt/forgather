@@ -123,6 +123,20 @@ def get_conversation(session_id: str) -> Optional[Conversation]:
         return _state.sessions.get(session_id)
 
 
+def list_conversations() -> List[Conversation]:
+    """Snapshot of all active conversations (newest-updated first)."""
+    with _state._lock:
+        return sorted(_state.sessions.values(), key=lambda c: c.updated_at, reverse=True)
+
+
+def delete_conversation(session_id: str) -> bool:
+    """Drop a conversation (and its turn lock). True if it existed."""
+    with _state._lock:
+        existed = _state.sessions.pop(session_id, None) is not None
+        _turn_locks.pop(session_id, None)
+    return existed
+
+
 def import_conversation(
     messages: List[Dict[str, Any]], session_id: Optional[str] = None
 ) -> Conversation:

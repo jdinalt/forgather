@@ -86,6 +86,9 @@ class MessageRequest(BaseModel):
 
 class DecisionRequest(BaseModel):
     action_id: str
+    # Optional rejection reason fed back to the agent so it can adapt
+    # (ignored on approve).
+    reason: Optional[str] = None
 
 
 @router.get("/agent/status")
@@ -154,7 +157,7 @@ async def agent_reject(req: DecisionRequest):
     if not runtime.is_enabled():
         raise HTTPException(status_code=503, detail="agent is not configured")
     loop = await _get_loop()
-    return await _stream(loop.apply_decision(req.action_id, approve=False))
+    return await _stream(loop.apply_decision(req.action_id, approve=False, reason=req.reason))
 
 
 class ContinueRequest(BaseModel):
@@ -427,6 +430,30 @@ def agent_import(req: ImportRequest):
         )
     conv = agent_session.import_conversation(req.messages, req.session_id)
     return {"session_id": conv.session_id}
+
+
+@router.get("/agent/sessions")
+def agent_sessions_list():
+    """List active agent conversations (newest first) — ids + light metadata."""
+    return {
+        "sessions": [
+            {
+                "session_id": c.session_id,
+                "message_count": len(c.messages),
+                "awaiting_approval": c.pending_turn is not None,
+                "created_at": c.created_at,
+                "updated_at": c.updated_at,
+            }
+            for c in agent_session.list_conversations()
+        ]
+    }
+
+
+@router.delete("/agent/sessions/{session_id}")
+def agent_session_delete(session_id: str):
+    if not agent_session.delete_conversation(session_id):
+        raise HTTPException(status_code=404, detail=f"no such session: {session_id}")
+    return {"deleted": session_id}
 
 
 @router.get("/agent/sessions/{session_id}")

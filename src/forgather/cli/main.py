@@ -66,6 +66,7 @@ def parse_global_args(args=None):
 
 def get_subcommand_registry():
     """Registry of all available subcommands and their argument parsers."""
+    from .agent_args import create_agent_parser
     from .checkpoint_args import create_checkpoint_parser
     from .cluster_args import create_cluster_parser
     from .commands_args import (
@@ -142,6 +143,7 @@ def get_subcommand_registry():
         "mkdocs": create_mkdocs_parser,
         "docs": create_docs_parser,
         "tls": create_tls_parser,
+        "agent": create_agent_parser,
     }
 
 
@@ -586,6 +588,10 @@ def main():
                 from .job import job_cmd
 
                 job_cmd(args)
+            case "agent":
+                from .agent import agent_cmd
+
+                sys.exit(agent_cmd(args) or 0)
             case "gpu":
                 from .gpu import gpu_cmd
 

@@ -5,6 +5,8 @@
  *  a large diff never tries to render inside the narrow sidebar.
  */
 
+import { useState } from "react";
+
 import { DiffEditor } from "@monaco-editor/react";
 
 import { ActionCard } from "../agent-client";
@@ -18,7 +20,7 @@ interface Props {
   compact?: boolean;
   busy?: boolean;
   onApprove: () => void;
-  onReject: () => void;
+  onReject: (reason?: string) => void;
   onOpenFull?: () => void;
 }
 
@@ -60,6 +62,8 @@ export function AgentActionCard({
   onReject,
   onOpenFull,
 }: Props) {
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState("");
   const hasDiff = card.before != null || card.after != null;
   const { added, removed } = lineDelta(card.before, card.after);
   const isPending = status === "pending";
@@ -121,19 +125,56 @@ export function AgentActionCard({
       )}
 
       {isPending ? (
-        <div className="agent-action-buttons">
-          <button className="btn-approve" disabled={busy} onClick={onApprove}>
-            Approve
-          </button>
-          <button className="btn-reject" disabled={busy} onClick={onReject}>
-            Reject
-          </button>
-          {compact && onOpenFull && (
-            <button className="btn-link" onClick={onOpenFull}>
-              Review in Agent view →
+        rejecting ? (
+          <div className="agent-action-reject">
+            <textarea
+              className="agent-reject-reason"
+              placeholder="Optional: why? (the agent uses this to adapt — e.g. 'use config Y instead')"
+              value={reason}
+              autoFocus
+              rows={2}
+              disabled={busy}
+              onChange={(e) => setReason(e.target.value)}
+            />
+            <div className="agent-action-buttons">
+              <button
+                className="btn-reject"
+                disabled={busy}
+                onClick={() => onReject(reason)}
+              >
+                Confirm reject
+              </button>
+              <button
+                className="btn-link"
+                disabled={busy}
+                onClick={() => {
+                  setRejecting(false);
+                  setReason("");
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="agent-action-buttons">
+            <button className="btn-approve" disabled={busy} onClick={onApprove}>
+              Approve
             </button>
-          )}
-        </div>
+            <button
+              className="btn-reject"
+              disabled={busy}
+              onClick={() => setRejecting(true)}
+            >
+              Reject
+            </button>
+            {compact && onOpenFull && (
+              <button className="btn-link" onClick={onOpenFull}>
+                Review in Agent view →
+              </button>
+            )}
+          </div>
+        )
       ) : (
         <div className={"agent-action-resolved status-" + status}>
           {status === "approved" && "Approved"}

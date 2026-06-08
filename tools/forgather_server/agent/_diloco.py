@@ -113,7 +113,7 @@ def _pick(server_id: Optional[str]) -> Dict[str, Any]:
     if not entries:
         raise ValueError(
             "No DiLoCo server is known. Start one with "
-            "start_service(type='diloco', args={output_dir, num_workers}) and "
+            "start_diloco_server(output_dir=..., num_workers=...) and "
             "retry."
         )
     if server_id:
@@ -129,7 +129,7 @@ def _pick(server_id: Optional[str]) -> Dict[str, Any]:
             return e
     raise ValueError(
         "No DiLoCo server is reachable. Start one with "
-        "start_service(type='diloco', ...) and retry."
+        "start_diloco_server(...) and retry."
     )
 
 
