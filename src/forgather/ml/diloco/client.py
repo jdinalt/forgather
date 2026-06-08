@@ -217,11 +217,22 @@ class DiLoCoClient:
         # the control plane (register/heartbeat/info) stays on HTTP regardless.
         self.transport = transport
         if transport == "grpc" and grpc_endpoint:
-            from forgather.ml.diloco.grpc_transport import GrpcBytesTransport
+            from forgather.ml.diloco.grpc_transport import (
+                GrpcBytesTransport,
+                client_channel_credentials,
+            )
 
+            # gRPC mirrors the control-plane TLS posture (TLS server -> TLS gRPC,
+            # issue #154). The control scheme is the signal: https -> a secure
+            # channel (CA-verified, mTLS when this host is provisioned); http ->
+            # cleartext. The bearer rides only over the secure channel.
+            creds = None
+            if self.server_addr.startswith("https"):
+                creds = client_channel_credentials(verify_tls=self.verify_tls)
             self._transport = GrpcBytesTransport(
                 grpc_endpoint,
-                credentials=None,  # cleartext today; TLS parity is a follow-up
+                credentials=creds,
+                bearer=self.token,
                 timeout=self.timeout,
                 retry_delay=self.retry_delay,
             )

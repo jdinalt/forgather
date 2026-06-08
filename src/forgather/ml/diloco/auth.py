@@ -356,6 +356,32 @@ def authenticate_request(
     return verify_bearer(handler, expected_token)
 
 
+def authenticate_grpc_context(context, expected_token: Optional[str]) -> bool:
+    """Authenticate a gRPC call by bearer metadata (the gRPC bulk auth gate).
+
+    Passes when ``expected_token`` is falsy (auth disabled), or the call's
+    ``authorization`` metadata carries ``bearer <token>`` matching via
+    constant-time compare. gRPC lowercases metadata keys. The caller aborts the
+    RPC on a False return (no HTTP 401 to send).
+
+    Unlike the HTTP control plane (which is mTLS-OR-bearer via
+    ``ssl.CERT_OPTIONAL``), the gRPC bulk plane authenticates by **bearer over
+    TLS**: gRPC TLS has no CERT_OPTIONAL equivalent — a client cert is only
+    verified/exposed under ``require_client_auth=True``, which would reject every
+    non-cert client at the handshake. The bulk plane is worker-only and the
+    worker always holds the per-port token, so bearer-over-TLS is the right gate;
+    TLS still provides encryption + server authentication.
+    """
+    if not expected_token:
+        return True
+    md = {k.lower(): v for k, v in (context.invocation_metadata() or [])}
+    raw = md.get("authorization", "") or ""
+    if not raw.lower().startswith("bearer "):
+        return False
+    presented = raw.split(" ", 1)[1].strip()
+    return hmac.compare_digest(presented, expected_token)
+
+
 def _log_auth_failure(handler: BaseHTTPRequestHandler, reason: str) -> None:
     """Log a 401 at INFO so operators can correlate misconfigured peers
     against the audit-log register events. We don't include the

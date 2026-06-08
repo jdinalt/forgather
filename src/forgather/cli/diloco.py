@@ -42,7 +42,11 @@ def _server_cmd(args):
     from forgather.ml.diloco.server import DiLoCoServer
     from forgather.tls import enforce_non_loopback_policy
     from forgather.tls.discovery import primary_routable_ip
-    from forgather.tls.runtime import is_tls_active, stdlib_ssl_context
+    from forgather.tls.runtime import (
+        is_tls_active,
+        server_tls_files,
+        stdlib_ssl_context,
+    )
 
     _WILDCARD_HOSTS = ("0.0.0.0", "::", "")
 
@@ -159,6 +163,10 @@ def _server_cmd(args):
     # non-loopback binds without TLS unless --insecure was passed.
     ssl_context = stdlib_ssl_context(args)
     tls_on = ssl_context is not None
+    # The same cert/key/CA the control-plane SSLContext uses, as file paths, so
+    # the gRPC bulk listener (issue #154) can build matching TLS credentials
+    # (gRPC needs PEM material, not a Python SSLContext). (None,None,None) off.
+    grpc_cert, grpc_key, grpc_ca = server_tls_files(args)
     enforce_non_loopback_policy(
         args.host,
         tls_enabled=tls_on,
@@ -218,6 +226,9 @@ def _server_cmd(args):
         default_work_units=default_work_units,
         auth_token=auth_token,
         ssl_context=ssl_context,
+        tls_cert_file=grpc_cert,
+        tls_key_file=grpc_key,
+        tls_ca_file=grpc_ca,
         bulk_cleartext=bulk_cleartext,
         run_name=getattr(args, "run_name", None),
     )
