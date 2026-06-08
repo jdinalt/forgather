@@ -61,7 +61,8 @@ def test_prompt_points_at_playbook():
 
     sp = runtime.SYSTEM_PROMPT
     assert "read_playbook" in sp and "list_playbook" in sp
-    # Sharpened nudge: read_playbook should be the FIRST action of a task.
-    assert "FIRST tool call" in sp
+    # Judgment-based nudge: read the playbook before the consequential action,
+    # not mechanically first (rigid "first call" was a net negative in testing).
+    assert "consequential action" in sp
     # The prompt is lean — the long per-task procedures are gone.
     assert len(sp) < 6000
