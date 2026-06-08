@@ -120,8 +120,8 @@ class TestEndToEnd:
             server.stop()
 
     def test_large_payload_spans_chunks(self, tmp_path):
-        # A model bigger than one 1 MiB chunk exercises the chunk/reassemble path.
-        sd = _make_sd(dim=400)  # 2 x 400x400 fp32 ~ 2.5 MB
+        # A payload bigger than one 1 MiB chunk exercises chunk/reassemble.
+        sd = _make_sd(dim=400)  # 2 x 400x400 fp32 ~ 1.3 MB -> 2 chunks
         server = _grpc_server(tmp_path, sd)
         try:
             client = _negotiated_client(server)

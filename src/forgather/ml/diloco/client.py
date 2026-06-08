@@ -442,6 +442,11 @@ class DiLoCoClient:
         data = self._transport.round_trip(op, body, retries=max_retries)
         return self._deserialize_state_dict(data)
 
+    def close(self) -> None:
+        """Release the bulk transport's resources. No-op for HTTP (urllib opens
+        a connection per request); closes the channel for the gRPC transport."""
+        self._transport.close()
+
     def register(
         self, worker_id: str, worker_info: Optional[dict] = None
     ) -> Dict[str, torch.Tensor]:

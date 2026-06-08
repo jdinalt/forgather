@@ -572,6 +572,13 @@ class DiLoCoWorker:
                 except Exception:  # best-effort
                     pass
 
+        # Release the client's bulk transport (closes the gRPC channel; no-op
+        # for HTTP). Best-effort — teardown must not raise on a flaky close.
+        try:
+            self.client.close()
+        except Exception:  # best-effort
+            pass
+
         self._active = False
 
         logger.info(
