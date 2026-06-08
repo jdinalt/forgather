@@ -12,6 +12,7 @@ All extended-tier. query_model and set_config_overrides are CONFIRM-gated.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, List
 
@@ -25,8 +26,9 @@ log = logging.getLogger("forgather_server.agent.tools_advanced")
 # ---- inference -------------------------------------------------------------
 
 
-def _list_inference_servers(_args: Dict[str, Any]) -> Any:
-    return {"servers": _inference.list_servers()}
+async def _list_inference_servers(_args: Dict[str, Any]) -> Any:
+    # Off the event loop: list_servers does blocking health probes.
+    return {"servers": await asyncio.to_thread(_inference.list_servers)}
 
 
 def _query_model(args: Dict[str, Any]) -> Proposal:
@@ -48,9 +50,11 @@ def _query_model(args: Dict[str, Any]) -> Proposal:
 
     preview = messages[-1].get("content") if isinstance(messages[-1], dict) else str(messages[-1])
 
-    def commit() -> str:
-        out = _inference.chat(
-            server_id, messages, model=model, max_tokens=max_tokens, temperature=temperature
+    async def commit() -> str:
+        # Off the event loop: chat() is a blocking HTTP call (up to 120s).
+        out = await asyncio.to_thread(
+            _inference.chat, server_id, messages,
+            model=model, max_tokens=max_tokens, temperature=temperature,
         )
         content = (out.get("message") or {}).get("content")
         return (

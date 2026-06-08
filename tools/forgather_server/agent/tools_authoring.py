@@ -11,8 +11,8 @@ After a write lands, the commit result includes a parse check
 surfaced back into the conversation rather than silently committed.
 
 ``list_meta_templates`` is a read tool included here so the model can
-discover which scaffolds (and which fields) ``propose_new_config_from_template``
-accepts.
+discover which scaffolds (and which fields) ``propose_new_config`` (and
+``propose_new_project``) accept for the meta_template starting point.
 """
 
 from __future__ import annotations

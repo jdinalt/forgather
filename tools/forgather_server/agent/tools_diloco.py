@@ -13,18 +13,21 @@ run); the read tools are auto.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict
 
 from . import _diloco
 from .registry import CONFIRM, EXTENDED, READ, Proposal, ToolRegistry, ToolSpec
 
 
-def _list_diloco_servers(_args: Dict[str, Any]) -> Any:
-    return {"servers": _diloco.list_servers()}
+async def _list_diloco_servers(_args: Dict[str, Any]) -> Any:
+    # Off the event loop: list_servers does blocking reachability probes.
+    return {"servers": await asyncio.to_thread(_diloco.list_servers)}
 
 
-def _diloco_status(args: Dict[str, Any]) -> Any:
-    return _diloco.status(server_id=args.get("server_id") or None)
+async def _diloco_status(args: Dict[str, Any]) -> Any:
+    # Off the event loop: status() makes blocking HTTP calls.
+    return await asyncio.to_thread(_diloco.status, args.get("server_id") or None)
 
 
 def _diloco_control(args: Dict[str, Any]) -> Proposal:
@@ -45,8 +48,11 @@ def _diloco_control(args: Dict[str, Any]) -> Proposal:
         f" to {worker_id}" if worker_id else " to all workers"
     )
 
-    def commit() -> str:
-        out = _diloco.control(server_id, action, command=command, worker_id=worker_id)
+    async def commit() -> str:
+        # Off the event loop: control() makes a blocking HTTP call.
+        out = await asyncio.to_thread(
+            _diloco.control, server_id, action, command, worker_id
+        )
         return f"diloco {detail} on {out['server']['id']}: {out['result']}"
 
     return Proposal(

@@ -373,7 +373,7 @@ def test_run_train_defaults_one_gpu(monkeypatch):
     assert " train" not in prop.extra["command"]
     assert seen == {}
 
-    msg = prop.commit()
+    msg = asyncio.run(prop.commit())
     assert seen["job_type"] == "training"
     # nproc_per_node can't be read for a fake project -> falls back to 1.
     assert seen["requested_gpus"] == 1
@@ -395,7 +395,7 @@ def test_run_train_default_dataset_is_auto_in_cluster_mode(monkeypatch):
     )
     prop = tools_jobs._run_train({"project_dir": "/p", "config_name": "c.yaml", "gpus": 1})
     assert "--dataset auto" in prop.extra["command"]
-    prop.commit()
+    asyncio.run(prop.commit())
     assert seen["dataset_source"] == {"kind": "auto"}
 
 
@@ -415,7 +415,7 @@ def test_run_train_infers_gpus_and_passes_priority_and_dataset(monkeypatch):
         {"project_dir": "/p", "config_name": "c.yaml", "priority": 5,
          "dataset": "server:local:q1"}
     )
-    prop.commit()
+    asyncio.run(prop.commit())
     assert seen["requested_gpus"] == 4  # inferred from nproc_per_node
     assert seen["priority"] == 5
     assert seen["dataset_source"] == {"kind": "server", "server_id": "local:q1"}
@@ -431,7 +431,7 @@ def test_run_train_cpu_smoketest(monkeypatch):
     prop = tools_jobs._run_train(
         {"project_dir": "/p", "config_name": "c.yaml", "gpus": 0}
     )
-    prop.commit()
+    asyncio.run(prop.commit())
     assert seen["requested_gpus"] == 0  # CPU smoke-test
     assert seen["job_params"] == {}  # no nproc on the scheduled path
 
@@ -547,7 +547,7 @@ def test_run_train_multinode_routes_to_submit_cli(monkeypatch):
     cmd = prop.extra["command"]
     assert "--global" in cmd and "--member h1:2" in cmd and "--member h2:2" in cmd
     assert "--allow-version-mismatch" in cmd and prop.extra["mode"].startswith("multi-node")
-    msg = prop.commit()
+    msg = asyncio.run(prop.commit())
     assert "clusterjob-1" in msg and "--global" in " ".join(seen["argv"])
 
 
@@ -579,3 +579,45 @@ def test_run_train_advanced_renders_dynamic_args(monkeypatch):
     )
     cmd = prop.extra["command"]
     assert "--lr 3e-4" in cmd and "--fp16" in cmd
+
+
+def test_infer_requested_gpus_coerces_numeric_string(monkeypatch):
+    from forgather_server import config_ops
+
+    monkeypatch.setattr(
+        config_ops, "load_output_dir_info",
+        lambda pd, c: type("I", (), {"nproc_per_node": "4"})(),  # quoted in YAML
+    )
+    assert tools_jobs._infer_requested_gpus("/p", "c.yaml") == 4
+    monkeypatch.setattr(
+        config_ops, "load_output_dir_info",
+        lambda pd, c: type("I", (), {"nproc_per_node": "gpu"})(),  # keyword -> 1
+    )
+    assert tools_jobs._infer_requested_gpus("/p", "c.yaml") == 1
+
+
+def test_cleanup_jobs_reports_non_http_errors(monkeypatch):
+    monkeypatch.setattr(job_records, "get_record", lambda q: _rec(queue_id=q, status="done"))
+
+    def fake_remove(qid):
+        if qid == "qbad":
+            raise OSError("permission denied unlinking tty")
+
+    monkeypatch.setattr(jobs_route, "remove_job", fake_remove)
+    prop = tools_jobs._cleanup_jobs({"queue_ids": ["qok", "qbad"]})
+    msg = prop.commit()
+    # qok removed, qbad reported as an error — the loop is not aborted.
+    assert "removed 1 job record(s)" in msg and "qbad" in msg
+
+
+def test_render_dynamic_arg_flags_handles_store_false(monkeypatch):
+    from forgather_server import config_ops
+
+    monkeypatch.setattr(
+        config_ops, "load_dynamic_args_schema",
+        lambda pd, c: [{"names": ["--use-cache"], "action": "store_false"}],
+    )
+    # store_false implied default True: value False differs -> emit the flag.
+    assert tools_jobs._render_dynamic_arg_flags("/p", "c.yaml", {"use_cache": False}) == ["--use-cache"]
+    # value True == implied default -> omit (no spurious flag).
+    assert tools_jobs._render_dynamic_arg_flags("/p", "c.yaml", {"use_cache": True}) == []

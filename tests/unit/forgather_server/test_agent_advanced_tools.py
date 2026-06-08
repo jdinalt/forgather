@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from forgather_server import overrides_store
@@ -32,7 +34,7 @@ def test_list_inference_servers(monkeypatch):
         _inference, "list_servers",
         lambda: [{"id": "i1", "base_url": "http://h:8137", "models": ["m"], "reachable": True}],
     )
-    out = tools_advanced._list_inference_servers({})
+    out = asyncio.run(tools_advanced._list_inference_servers({}))
     assert out["servers"][0]["id"] == "i1"
 
 
@@ -55,7 +57,7 @@ def test_query_model_preview_then_commit(monkeypatch):
     monkeypatch.setattr(_inference, "chat", fake_chat)
     prop = tools_advanced._query_model({"prompt": "hi", "server_id": "i1"})
     assert isinstance(prop, Proposal) and calls == []  # preview only
-    msg = prop.commit()
+    msg = asyncio.run(prop.commit())
     assert calls and calls[0][1] == [{"role": "user", "content": "hi"}]
     assert "hello!" in msg
 

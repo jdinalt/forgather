@@ -324,33 +324,37 @@ def _infer_requested_gpus(project_dir: str, config_name: str) -> int:
         from .. import config_ops
 
         n = config_ops.load_output_dir_info(project_dir, config_name).nproc_per_node
-        if isinstance(n, int) and n > 0:
-            return n
+        # nproc_per_node may be an int or a numeric string ("4"); coerce like
+        # the CLI/modal do. A keyword ("gpu"/"cpu"/"auto") isn't a fixed count.
+        count = int(n)
+        if count > 0:
+            return count
+    except (TypeError, ValueError):
+        pass
     except Exception:
         log.debug("could not infer nproc_per_node for %s", config_name, exc_info=True)
     return 1
 
 
 def _parse_dataset_source(spec: str) -> Optional[Dict[str, Any]]:
-    """Mirror the CLI ``--dataset SOURCE`` wire format → a dataset_source dict.
-
-    "" / "local" -> None (in-process loader); "auto" -> cluster routing;
-    "server:<id>" -> a specific dataset server (id from list_dataset_servers).
-    Raises ValueError on anything else.
-    """
+    """Parse the CLI ``--dataset SOURCE`` wire format → a dataset_source dict,
+    reusing the canonical CLI parser so the agent and CLI never drift."""
     spec = (spec or "").strip()
-    if not spec or spec == "local":
-        return None
-    if spec == "auto":
-        return {"kind": "auto"}
-    if spec.startswith("server:"):
-        server_id = spec[len("server:"):].strip()
-        if not server_id:
-            raise ValueError("dataset 'server:<id>' requires a non-empty id")
-        return {"kind": "server", "server_id": server_id}
-    raise ValueError(
-        f"invalid dataset {spec!r}; expected 'auto', 'local', or 'server:<id>'"
-    )
+    try:
+        from forgather.cli.diloco_orch import parse_dataset_source
+
+        return parse_dataset_source(spec)
+    except ImportError:
+        # Fallback mirror (kept minimal) if the CLI module isn't importable.
+        if not spec or spec == "local":
+            return None
+        if spec == "auto":
+            return {"kind": "auto"}
+        if spec.startswith("server:") and spec[len("server:"):].strip():
+            return {"kind": "server", "server_id": spec[len("server:"):].strip()}
+        raise ValueError(
+            f"invalid dataset {spec!r}; expected 'auto', 'local', or 'server:<id>'"
+        )
 
 
 def _default_dataset_source() -> str:
@@ -374,16 +378,20 @@ def _render_dynamic_arg_flags(
     using the config's dynamic-arg schema to map dest -> cli_name."""
     if not dynamic_args:
         return []
+    # Reuse the canonical CLI renderer (honours store_true / store_false via the
+    # schema's `action`) so the agent's flags match `forgather submit` exactly.
     try:
         from .. import config_ops
+        from forgather.cli.diloco import _dynamic_cli_from_schema
 
-        schema = {a.dest: a for a in config_ops.load_dynamic_args(project_dir, config_name)}
+        schema = config_ops.load_dynamic_args_schema(project_dir, config_name)
+        return list(_dynamic_cli_from_schema(schema, dynamic_args))
     except Exception:
-        schema = {}
+        log.debug("falling back to simple dynamic-arg flag rendering", exc_info=True)
+    # Fallback (store_true semantics only): emit truthy bools as a bare flag.
     flags: List[str] = []
     for dest, val in dynamic_args.items():
-        spec = schema.get(dest)
-        cli = spec.cli_name if (spec and spec.cli_name) else "--" + str(dest).replace("_", "-")
+        cli = "--" + str(dest).replace("_", "-")
         if isinstance(val, bool):
             if val:
                 flags.append(cli)
@@ -502,11 +510,12 @@ def _run_train(args: Dict[str, Any]) -> Proposal:
     )
     cmd_str = shlex.join(argv)
 
-    def commit() -> str:
+    async def commit() -> str:
         # Multi-node / DiLoCo: dispatch through the single `forgather submit`
-        # entry point (composes every permutation; mirrors the CLI/modal).
+        # entry point (composes every permutation; mirrors the CLI/modal). Run
+        # the subprocess off the event loop so a slow submit can't block it.
         if advanced:
-            out = _submit_via_cli(argv)
+            out = await asyncio.to_thread(_submit_via_cli, argv)
             return f"submitted via `forgather submit`: {out} (watch with list_jobs)"
         # Basic single-node: enqueue in-process (robust, no subprocess).
         item = queue_ops.validate_and_enqueue(
@@ -763,6 +772,8 @@ def _cleanup_jobs(args: Dict[str, Any]) -> Proposal:
                 removed.append(qid)
             except HTTPException as e:
                 errors.append(f"{qid}: {e.detail}")
+            except Exception as e:  # e.g. OSError unlinking the TTY / control dir
+                errors.append(f"{qid}: {type(e).__name__}: {e}")
         msg = f"removed {len(removed)} job record(s)"
         if errors:
             msg += f"; {len(errors)} could not be removed: {errors}"

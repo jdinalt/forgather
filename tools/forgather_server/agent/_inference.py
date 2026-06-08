@@ -83,20 +83,33 @@ def _reachable(entry: Dict[str, Any]) -> bool:
         return False
 
 
+def _probe_all(entries: List[Dict[str, Any]]) -> List[bool]:
+    """Reachability for every entry, probed concurrently (bounded pool)."""
+    if not entries:
+        return []
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(entries))) as ex:
+        return list(ex.map(_reachable, entries))
+
+
 def list_servers() -> List[Dict[str, Any]]:
-    out = []
-    for e in _discover():
-        out.append(
-            {
-                "id": e["id"],
-                "label": e["label"],
-                "base_url": e["base_url"],
-                "source": e["source"],
-                "models": e["models"],
-                "reachable": _reachable(e),
-            }
-        )
-    return out
+    entries = _discover()
+    # Probe reachability concurrently — each probe blocks up to _PROBE_TIMEOUT,
+    # so serial probing would be O(N * timeout). (Callers should still run this
+    # off the event loop, e.g. via asyncio.to_thread.)
+    reach = _probe_all(entries)
+    return [
+        {
+            "id": e["id"],
+            "label": e["label"],
+            "base_url": e["base_url"],
+            "source": e["source"],
+            "models": e["models"],
+            "reachable": ok,
+        }
+        for e, ok in zip(entries, reach)
+    ]
 
 
 def _pick(server_id: Optional[str]) -> Dict[str, Any]:

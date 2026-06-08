@@ -507,7 +507,7 @@ def _build_loop(profile) -> AgentLoop:
     return AgentLoop(
         provider,
         get_registry(),
-        system=SYSTEM_PROMPT + _DISCLOSURE_NOTE[disclosure_mode],
+        system=SYSTEM_PROMPT + _DISCLOSURE_NOTE.get(disclosure_mode, _DISCLOSURE_NOTE["inline"]),
         max_iterations=int(profile.max_iterations or profiles_store.DEFAULT_MAX_ITERATIONS),
         disclosure_mode=disclosure_mode,
     )

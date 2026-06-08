@@ -80,22 +80,32 @@ def _reachable(entry: Dict[str, Any]) -> bool:
         return False
 
 
+def _probe_all(entries: List[Dict[str, Any]]) -> List[bool]:
+    """Reachability for every entry, probed concurrently (bounded pool)."""
+    if not entries:
+        return []
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(entries))) as ex:
+        return list(ex.map(_reachable, entries))
+
+
 def list_servers() -> List[Dict[str, Any]]:
     """Public list for the agent: id/label/base_url/source/reachable/healthy
     (no token)."""
-    out = []
-    for e in _discover():
-        out.append(
-            {
-                "id": e["id"],
-                "label": e["label"],
-                "base_url": e["base_url"],
-                "source": e["source"],
-                "reachable": _reachable(e),
-                "healthy": e.get("healthy"),
-            }
-        )
-    return out
+    entries = _discover()
+    reach = _probe_all(entries)  # concurrent; callers run this off the loop
+    return [
+        {
+            "id": e["id"],
+            "label": e["label"],
+            "base_url": e["base_url"],
+            "source": e["source"],
+            "reachable": ok,
+            "healthy": e.get("healthy"),
+        }
+        for e, ok in zip(entries, reach)
+    ]
 
 
 def _pick(server_id: Optional[str]) -> Dict[str, Any]:

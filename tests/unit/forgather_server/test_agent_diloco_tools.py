@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -128,5 +129,5 @@ def test_diloco_control_preview_then_commit(monkeypatch):
     )
     prop = tools_diloco._diloco_control({"server_id": "abc", "action": "shutdown"})
     assert isinstance(prop, Proposal) and calls == []  # preview: no side effect
-    msg = prop.commit()
+    msg = asyncio.run(prop.commit())
     assert calls == [("abc", "shutdown", None)] and "shutdown" in msg
