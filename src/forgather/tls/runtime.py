@@ -58,6 +58,26 @@ def _resolve_state(
     return cfg, on, cert, key
 
 
+def server_tls_files(
+    args: Optional[argparse.Namespace] = None, cfg: Optional[TLSConfig] = None
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Resolve the server's ``(cert, key, ca_bundle)`` file paths, or
+    ``(None, None, None)`` when TLS is off for this invocation.
+
+    The path analogue of :func:`stdlib_ssl_context` (which builds an
+    ``ssl.SSLContext`` from the same files): a transport that needs the raw PEM
+    material rather than a Python ``SSLContext`` — e.g. gRPC's
+    ``ssl_server_credentials`` — resolves the identical cert/key/CA the control
+    plane uses. The CA bundle is ``cfg.effective_bundle()`` (the cluster CA used
+    to validate presented client certs for mTLS); ``None`` when no bundle exists.
+    """
+    cfg, on, cert, key = _resolve_state(args, cfg)
+    if not on:
+        return None, None, None
+    bundle = cfg.effective_bundle()
+    return cert, key, (str(bundle) if bundle is not None else None)
+
+
 def uvicorn_ssl_kwargs(
     args: Optional[argparse.Namespace] = None, cfg: Optional[TLSConfig] = None
 ) -> dict:

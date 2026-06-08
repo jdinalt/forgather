@@ -128,6 +128,26 @@ class DiLoCoBulkServicer(bulk_pb2_grpc.DiLoCoBulkServicer):
         context.abort(code, cap.error_message())
 
 
+def make_server_credentials(
+    cert_file: str, key_file: str, ca_file: Optional[str]
+) -> "grpc.ServerCredentials":
+    """Build gRPC server TLS credentials from the control plane's cert/key.
+
+    ``require_client_auth=False``: TLS provides encryption + server
+    authentication, and the client authenticates by **bearer over TLS** (gRPC
+    has no ``CERT_OPTIONAL`` equivalent — a client cert is only exposed under
+    ``require_client_auth=True``, which would reject every non-cert client at the
+    handshake, so the HTTP control plane's mTLS-or-bearer model doesn't translate
+    to the worker-only bulk plane). ``ca_file`` is accepted for signature
+    symmetry / a future require-client-auth mode but unused here.
+    """
+    with open(cert_file, "rb") as f:
+        cert_pem = f.read()
+    with open(key_file, "rb") as f:
+        key_pem = f.read()
+    return grpc.ssl_server_credentials([(key_pem, cert_pem)])
+
+
 def make_grpc_server(
     server,
     host: str,

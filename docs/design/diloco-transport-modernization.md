@@ -17,20 +17,25 @@ The gRPC transport landed with two deliberate divergences from the sketch below:
    captures the framed response bytes + status. The blocking barrier works
    unchanged (the servicer runs in gRPC's thread pool, like the HTTP per-request
    threads). This was lower-risk and fully general (all ops/modes for free).
-2. **Cleartext + open today; TLS parity is the follow-up.** The gRPC listener
-   runs cleartext/unauthenticated — the same trusted-LAN posture as the
-   cleartext HTTP bulk listener it supersedes, gated behind the same kind of
-   explicit opt-in (`--grpc` / `grpc_enabled`, default off). `_grpc_security()`
-   is the seam where TLS/mTLS/bearer credentials slot in (the listener already
-   threads a credentials object + an `authenticate` callable). Building gRPC
-   credentials from the same cert/key/CA as the control plane needs that TLS
-   material plumbed to the server (it currently receives only a built
-   `ssl_context`), which is the focused follow-up.
+2. **TLS follows the control-plane posture; auth is bearer-over-TLS, not mTLS.**
+   The gRPC listener builds `ssl_server_credentials` from the *same* cert/key as
+   the control plane (plumbed to the server as file paths — gRPC needs PEM, not a
+   built `ssl_context`), so a TLS cluster runs gRPC over TLS; a cleartext server
+   runs gRPC cleartext (trusted-LAN). The worker authenticates by **bearer over
+   the encrypted channel**. The original sketch said "mTLS-or-bearer" to mirror
+   the HTTP `ssl.CERT_OPTIONAL` listener — but gRPC TLS has **no `CERT_OPTIONAL`
+   equivalent**: a client cert is only verified/exposed under
+   `require_client_auth=True`, which would reject every non-cert client at the
+   handshake. Since the bulk plane is worker-only and the worker always holds the
+   per-port token, bearer-over-TLS is the right gate (TLS still gives encryption
+   + server auth). `_grpc_security()` is the seam; the bearer rides as call
+   metadata only over a secure channel (a token over cleartext is theater).
 
 The negotiation, framing reuse, and HTTP fallback are as designed: `/info`
 advertises `transport` + `grpc_endpoint`; the client builds `GrpcBytesTransport`
-only when `transport == "grpc"`; an older server omitting the keys ⇒ HTTP. The
-`register` param-download stays on the HTTP control plane.
+only when `transport == "grpc"` (a secure channel when the control URL is
+`https`); an older server omitting the keys ⇒ HTTP. The `register` param-download
+stays on the HTTP control plane.
 
 > TODO(remove once the transport track lands): this is a WIP design doc that
 > tracks the modernization PR-to-PR. Once Tier 1 + Tier 1.5 have landed, delete

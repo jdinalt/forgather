@@ -161,10 +161,14 @@ moved is independent of the wire precision above, and likewise server-authoritat
   backpressure), advertised via `/info`; workers negotiate it and fall back to HTTP
   if a server doesn't offer it. It **supersedes** `--bulk-cleartext` (gRPC is the
   single bulk fast-path). The control plane (register / heartbeat / `/info`) stays
-  on HTTP. The gRPC listener is currently cleartext/trusted-LAN (like the cleartext
-  bulk listener); TLS/mTLS parity is a follow-up, so prefer it on a trusted network
-  for now. Best paid off on large models / slow links, where the streaming + framing
-  wins matter; for tiny experiments the HTTP default is fine.
+  on HTTP. The gRPC listener **follows the control-plane TLS posture**: a TLS server
+  (a CA-provisioned cluster) runs gRPC over TLS too, with the worker authenticating
+  by **bearer over the encrypted channel**; a cleartext server runs gRPC cleartext
+  (trusted-LAN). gRPC TLS has no `CERT_OPTIONAL` equivalent, so the bulk plane
+  authenticates by bearer rather than the control plane's mTLS-or-bearer — the
+  worker always holds the token, and TLS still provides encryption + server
+  authentication. Best paid off on large models / slow links, where the streaming +
+  framing wins matter; for tiny experiments the HTTP default is fine.
 
 Both knobs are available wherever a DiLoCo server is launched: the direct
 `forgather diloco server` CLI, a scheduled server job (`forgather diloco server`

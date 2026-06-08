@@ -503,6 +503,9 @@ class DiLoCoServer:
         min_workers: int = 1,
         auth_token: Optional[str] = None,
         ssl_context: Optional["ssl.SSLContext"] = None,
+        tls_cert_file: Optional[str] = None,
+        tls_key_file: Optional[str] = None,
+        tls_ca_file: Optional[str] = None,
         bulk_cleartext: bool = False,
         grpc_enabled: bool = False,
         default_work_units: int = 1024,
@@ -610,6 +613,12 @@ class DiLoCoServer:
             )
         self.auth_token = auth_token
         self.ssl_context = ssl_context
+        # The control-plane TLS material as file paths (issue #154). gRPC needs
+        # PEM bytes, not a Python SSLContext, so _grpc_security reads these to
+        # build matching ssl_server_credentials. Present iff TLS is on.
+        self.tls_cert_file = tls_cert_file
+        self.tls_key_file = tls_key_file
+        self.tls_ca_file = tls_ca_file
         # Optional second listener for bulk data transport (pseudo-
         # gradients + global-params). When ``bulk_cleartext`` is set the
         # three bulk endpoints are served *only* on this listener and the
@@ -4109,18 +4118,44 @@ class DiLoCoServer:
             self.bulk_port = None
 
     def _grpc_security(self):
-        """Resolve ``(server_credentials, authenticate)`` for the gRPC listener.
+        """Resolve ``(server_credentials, authenticate)`` for the gRPC listener,
+        following the control plane's TLS posture (issue #154).
 
-        Currently ``(None, None)``: the gRPC bulk listener runs cleartext + open
-        — the same trusted-LAN posture as the cleartext HTTP bulk listener it
-        supersedes, and gated behind the same kind of explicit opt-in
-        (``grpc_enabled``). TLS/mTLS/bearer parity (gRPC credentials built from
-        the same cert/key/CA as the control plane, plus a peer-cert/bearer auth
-        gate) is the immediate follow-up; ``_start_grpc_listener`` already threads
-        both a credentials object and an ``authenticate`` callable through, so
-        that lands without touching the listener wiring.
+        - **TLS** iff the control plane has TLS (``ssl_context`` set) and the
+          cert/key paths were plumbed in: build ``ssl_server_credentials`` from
+          the same cert/key (encryption + server authentication). Else cleartext.
+        - **Auth gate** iff TLS is on *and* a bearer token is configured: an
+          ``authenticate`` callable that requires a matching bearer over the
+          secure channel (``authenticate_grpc_context``), aborting UNAUTHENTICATED
+          otherwise. No token ⇒ open (like the HTTP no-auth path); cleartext ⇒
+          no bearer gate (a bearer over a sniffable socket is theater, matching
+          the cleartext bulk listener). gRPC authenticates the worker by bearer,
+          not mTLS — see ``authenticate_grpc_context``.
         """
-        return None, None
+        creds = None
+        if self.ssl_context is not None and self.tls_cert_file and self.tls_key_file:
+            from forgather.ml.diloco import grpc_bulk
+
+            creds = grpc_bulk.make_server_credentials(
+                self.tls_cert_file, self.tls_key_file, self.tls_ca_file
+            )
+
+        authenticate = None
+        if creds is not None and self.auth_token:
+            import grpc
+
+            from forgather.ml.diloco.auth import authenticate_grpc_context
+
+            token = self.auth_token
+
+            def authenticate(context):
+                if not authenticate_grpc_context(context, token):
+                    context.abort(
+                        grpc.StatusCode.UNAUTHENTICATED,
+                        "missing or invalid credentials (mTLS cert or bearer)",
+                    )
+
+        return creds, authenticate
 
     def _start_grpc_listener(self) -> None:
         """Spawn the gRPC bulk listener when enabled (issue #154).
@@ -4144,7 +4179,7 @@ class DiLoCoServer:
         )
         self._grpc_server.start()
         posture = "TLS" if creds is not None else "cleartext"
-        auth = "mTLS+bearer" if authenticate is not None else "open"
+        auth = "bearer" if authenticate is not None else "open"
         logger.info(
             f"DiLoCo gRPC bulk listener on {self.host}:{self.grpc_port} "
             f"({posture}, {auth})"

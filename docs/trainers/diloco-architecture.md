@@ -356,10 +356,25 @@ via an in-memory `_CapturingHandler` (`grpc_bulk.py`) — it reassembles the
 chunks, drives the handler, and captures the framed response + status, which it
 maps back to gRPC (200 → streamed bytes; 4xx/5xx → the corresponding gRPC
 status). The blocking barrier works unchanged in gRPC's thread pool. gRPC
-**supersedes** the cleartext bulk listener (one bulk fast-path); it runs
-cleartext/trusted-LAN today, with TLS/mTLS parity a follow-up (`_grpc_security`
-is the seam). The Python stubs (`proto/bulk_pb2*.py`) are generated from
-`proto/bulk.proto` and committed; regenerate with `proto/generate.sh`.
+**supersedes** the cleartext bulk listener (one bulk fast-path).
+
+**Security (`_grpc_security`)** follows the control-plane TLS posture: a TLS
+server builds gRPC `ssl_server_credentials` from the *same* cert/key (plumbed to
+the server as file paths — gRPC needs PEM, not a Python `SSLContext`), so the
+bulk plane is encrypted and server-authenticated; a cleartext server runs gRPC
+cleartext (trusted-LAN). The worker authenticates by **bearer over the TLS
+channel** (`authenticate_grpc_context` checks the `authorization` metadata;
+`GrpcBytesTransport` sends it only over a secure channel). Unlike the HTTP control
+plane's mTLS-or-bearer (`ssl.CERT_OPTIONAL`), gRPC TLS has no `CERT_OPTIONAL`
+equivalent — a client cert is only verified/exposed under
+`require_client_auth=True`, which would reject every non-cert client at the
+handshake — so the worker-only bulk plane authenticates by bearer (the worker
+always holds the per-port token). The client mirrors the posture from the control
+scheme: an `https` control URL ⇒ a secure gRPC channel (CA bundle as the trust
+root); `http` ⇒ cleartext.
+
+The Python stubs (`proto/bulk_pb2*.py`) are generated from `proto/bulk.proto` and
+committed; regenerate with `proto/generate.sh`.
 
 ### Client retry behavior
 
