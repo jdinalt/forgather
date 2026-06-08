@@ -1,10 +1,28 @@
 # DiLoCo: Distributed Local-SGD Training
 
-DiLoCo (Distributed Local SGD with Communication) enables distributed training
-across multiple heterogeneous machines on a standard LAN. Unlike DDP, which
-requires high-bandwidth interconnects (NVLink, InfiniBand), DiLoCo reduces
-communication by ~500x, making 1 Gig Ethernet practical for multi-machine
-training.
+DiLoCo (Distributed Local-SGD) is a **two-level optimization scheme**. An
+ordinary *inner* optimizer (e.g. AdamW) trains each worker locally for `H` steps
+(default 500), exactly as in non-distributed training; then, at the sync
+boundary, each worker's net weight change over those H steps — its
+**pseudo-gradient** — is averaged across workers and fed to an *outer* optimizer
+(SGD with Nesterov momentum, `lr=0.7`, `momentum=0.9`) on a parameter server,
+which produces the new global weights everyone adopts. Syncing every ~500 steps
+instead of every step is the whole idea: it is a general **low-communication**
+training method.
+
+There are two independent reasons to use it — and they are easy to conflate:
+
+- **Bandwidth / scaling.** Communicating ~500x less often makes data-parallel
+  training practical over slow or heterogeneous links (commodity Ethernet,
+  cross-host, WAN), where DDP/FSDP stall the GPUs all-reducing every step.
+- **Quality / generalization.** The outer step is a slow-momentum
+  (SlowMo / Lookahead) update that finds flatter minima, and on eval loss DiLoCo
+  can **overtake** an all-reduce-every-step baseline — how early depends on the
+  sync interval `H` (in the reference sweep, ~21% of a 1B run at `H=20`), not on
+  needing an enormous budget. The win holds even with a **single worker on one
+  GPU**, where it is a pure regularizer with no data parallelism at all. See
+  [When to use DiLoCo](#when-to-use-diloco) and the empirical
+  [sweep](../../examples/tiny_experiments/diloco/README.md#extended-sweep-budget-sync-interval-and-single-worker-local-sgd).
 
 > **Running DiLoCo from the CLI?** The canonical, end-to-end, verified
 > walkthrough is
@@ -14,11 +32,12 @@ training.
 > the protocol, every setting, and the advanced modes the example doesn't cover.
 
 The system supports two operating modes:
-- **Synchronous**: All workers must submit before the server applies the outer
-  optimizer. Simple and deterministic.
-- **Asynchronous**: Workers submit independently without waiting. Supports
-  heterogeneous hardware (different GPU types, different numbers of GPUs per
-  machine) with Delayed Nesterov (DN) momentum and Dynamic Local Updates (DyLU).
+- **Synchronous** (default): all workers must submit before the server applies
+  the outer optimizer. Simple and deterministic.
+- **Asynchronous** (`--async`): workers submit independently without waiting,
+  for heterogeneous fleets where fast workers shouldn't idle on slow ones;
+  Delayed Nesterov (DN) momentum and Dynamic Local Updates (DyLU) keep stale
+  updates from destabilizing training.
 
 ## DiLoCo documentation map
 
@@ -28,13 +47,128 @@ documentation lives here:
 
 | Document | What it covers |
 |---|---|
-| **This page** — `docs/trainers/diloco.md` | Concepts, quick start, CLI, programmatic API, server configuration, [wire precision](#wire-precision), async mode |
+| **This page** — `docs/trainers/diloco.md` | Concepts, [when to use](#when-to-use-diloco), [quick start](#quick-start-recommended-through-the-forgather-server), CLI, programmatic API, server configuration, [wire precision](#wire-precision), async mode |
 | [Architecture & Maintainer Guide](diloco-architecture.md) | Internals: wire protocol, server/worker classes, checkpoint + meta-init, threading model |
 | [Work-Unit Dispatch](../design/diloco-work-unit-dispatch.md) | How workers shard the training set via server-issued row ranges |
 | [Pipeline Groups](../design/diloco-pipeline-groups.md) | DiLoCo + pipeline parallel: per-rank workers and server-aware groups |
 | [Security Model](../design/diloco-security.md) | Auth, mTLS, the endpoint trust split, audit log |
 | Example — [`tiny_experiments/diloco`](../../examples/tiny_experiments/diloco/README.md) | Canonical end-to-end CLI walkthrough; DiLoCo vs DDP / PostLocalSGD sweep |
 | Example — [`tiny_experiments/diloco_lowprec`](../../examples/tiny_experiments/diloco_lowprec/README.md) | Low-precision wire transport (bf16 ± stochastic rounding) experiment sweep |
+
+## When to use DiLoCo
+
+DiLoCo is a good fit when you want any of:
+
+- **Multi-node / slow-network scaling.** Training spans machines on commodity
+  Ethernet, different rooms/buildings, or a WAN — anywhere per-step all-reduce
+  would stall the GPUs on the network. DiLoCo syncs ~500x less often and keeps
+  them busy.
+- **A DDP alternative for better final quality.** The outer step is not just a
+  bandwidth tradeoff — it converges to a *better* optimum than an
+  all-reduce-every-step baseline. In the reference
+  [sweep](../../examples/tiny_experiments/diloco/README.md#extended-sweep-budget-sync-interval-and-single-worker-local-sgd),
+  2-worker DiLoCo at a quality-tuned `H=20` overtakes the 2-GPU DDP baseline on
+  eval loss at **~21% of a 1B-token run** (and finishes 2.887 vs 3.005); how
+  early the crossover comes is set by the sync interval `H`, not by needing a
+  huge budget (the bandwidth-frugal default `H=500` is the slowest to cross).
+- **Single-node / single-worker regularization.** Even one worker on one GPU,
+  no data parallelism, benefits: the outer SGD-with-Nesterov wrapped around the
+  inner trajectory is a SlowMo/Lookahead-style slow-weight update that finds
+  flatter minima and generalizes better. *"A DiLoCo-style outer step is worth
+  folding into ordinary single-node training, no parameter server required."*
+- **Heterogeneous fleets.** Workers of different speeds / GPU counts, via
+  asynchronous mode (Delayed Nesterov + DyLU), so fast workers don't idle on
+  slow ones.
+
+### Myths to ignore
+
+A reader who skims the bandwidth pitch tends to conclude DiLoCo is *only* for
+big models on slow multi-machine links — and, in particular, that you should
+**always prefer DDP on a single host with a fast, low-latency interconnect.**
+That is wrong, and it is contradicted by both Forgather's own
+[sweep](../../examples/tiny_experiments/diloco/README.md#extended-sweep-budget-sync-interval-and-single-worker-local-sgd)
+and the local-SGD literature ([References](#references)). None of the following
+is a contraindication:
+
+- **"Small models don't benefit."** False — the reference sweep uses a 34.4M
+  Llama and shows the full set of gains. Model size is not a barrier.
+- **"You need multiple machines / multiple GPUs."** False — a single worker on
+  a single GPU already wins on eval loss; the Lookahead/SlowMo effect needs no
+  data parallelism.
+- **"On a fast / single-host link, always prefer DDP."** False — this conflates
+  the two benefits. The *throughput* win needs a slow link to matter; the
+  *quality/generalization* win is **independent of link speed** and shows up on
+  one box with a fast bus, so single-host DiLoCo can still finish at a better
+  optimum. On throughput the picture depends on the backend: the HTTP
+  parameter-server path adds some per-sync overhead (the single-host reference
+  run measured ~310K vs ~360K tok/s, ~13%, though it syncs only 16 times), while
+  the **shared-memory / collective** backends average locally every `H` steps
+  instead of all-reducing every step, keeping single-host throughput close to
+  DDP. So on a single host the case for DDP is weak: comparable throughput
+  (shared-memory) and a better final optimum.
+- **"Don't use it with per-step gradient sync / a large learning rate."** There
+  is no such contraindication (it is confabulated). DiLoCo *replaces* per-step
+  sync by design; the literature's generalization edge actually wants a *small*
+  LR and a *long* run, not a large LR.
+
+### Honest tradeoffs
+
+- **Extra moving parts.** The HTTP path runs a parameter server alongside the
+  workers (cheap, CPU-only, but another process to operate) plus the sync
+  barrier; the single-host **shared-memory / collective** backends fold the
+  averaging into the workers (no separate server).
+- **Token-budget caveat.** A worker runs the *full* schedule as if standalone —
+  it does not know it is one of N — so N workers process N× the intended tokens
+  unless you give **each worker `1/N` of the budget**.
+- **The crossover point is set by `H`, not just the budget.** It's tempting to
+  read the results as "DiLoCo only wins at the very end of a huge run," but
+  that's the **`H=500` default** talking — the bandwidth-frugal setting is the
+  *slowest* to cross (it doesn't pass the baseline within 1B tokens). Tighten the
+  sync interval and the crossover moves early: at `H=20`, 2-worker DiLoCo passes
+  DDP at ~21% of a 1B run and a single worker passes its baseline almost
+  immediately. The honest caveat is narrower than "short runs lose": at the
+  *shortest* budget (~1× Chinchilla, ~500M tokens) with the *default* `H=500`,
+  DiLoCo can finish behind (eval 3.343 vs ~3.15). If you want the quality win
+  sooner, run a shorter `H` rather than a longer budget.
+- **`H` trades bandwidth for convergence.** This is the same dial from the other
+  side: smaller `H` (more frequent sync) converges better but communicates
+  proportionally more (H=20 syncs 25× more than H=500); larger `H` is
+  bandwidth-frugal but drifts more and crosses later. Tune it to your
+  interconnect — a fast/single-host bus can afford a short `H` and the early
+  crossover; a slow link wants a larger `H` and accepts a later one.
+
+## Quick Start (recommended): through the Forgather server
+
+The recommended way to run DiLoCo is through the **Forgather server**, which
+schedules the parameter server and workers as managed jobs, captures their logs,
+provisions auth tokens and TLS, and lets workers auto-discover the dataset
+server — so you don't wire up discovery, tokens, or certificates by hand. For a
+verified, end-to-end walkthrough (build the model, start the servers, launch
+workers, monitor, stop, resume) follow the canonical CLI example:
+[`examples/tiny_experiments/diloco/`](../../examples/tiny_experiments/diloco/README.md).
+
+The short version, with a `forgather server` already running:
+
+```bash
+# 1. Start the parameter server (CPU-only) as a scheduled job, seeded from a
+#    model you built first (see the example's "Construct the Model" step).
+forgather diloco server --output-dir path/to/model --num-workers 2 -H 0.0.0.0
+
+# 2. Launch N workers in one command — each a scheduled training job, wired to
+#    the cluster's dataset routing. (Omit --diloco-server to auto-pick the one
+#    running server.)
+forgather submit --diloco --diloco-worker-count 2 --dataset auto
+
+# 3. Monitor, then stop cleanly (save every worker, checkpoint the server).
+forgather diloco status --queues --watch
+forgather diloco shutdown
+```
+
+Full flag detail and the discovery / locality rules are in
+[Running through the Forgather server](#running-through-the-forgather-server-detailed-reference)
+below. The lower-level foreground path — starting each process by hand — is
+under [Manual / low-level invocation](#manual--low-level-invocation-development--debugging),
+useful for development, debugging, or when no Forgather server is available.
 
 ## How It Works
 
@@ -177,12 +311,17 @@ webui's **DiLoCo Server** modal (a wire-format selector + a gRPC toggle in its
 security section). A running server's negotiated transport is surfaced in the
 webui DiLoCo panel.
 
-## Quick Start
+## Manual / low-level invocation (development & debugging)
 
-This section is a condensed inline reference. For a guided, verified, end-to-end
-run — building the model, starting the Forgather/dataset/DiLoCo servers, launching
-workers, monitoring, stopping, and resuming — follow the canonical CLI example at
-[`examples/tiny_experiments/diloco/`](../../examples/tiny_experiments/diloco/README.md).
+This section documents the **lower-level foreground path**: starting the
+parameter server and each worker by hand with explicit `--diloco-server
+host:port` and `--worker-id`. Most users should prefer the
+[server-coordinated Quick Start](#quick-start-recommended-through-the-forgather-server)
+above (and the canonical
+[example](../../examples/tiny_experiments/diloco/README.md)); reach for these
+commands for development, debugging, single-process foreground runs, or
+environments without a Forgather server. The flag-reference tables here remain
+canonical.
 
 ### 1. Start the Server
 
@@ -366,8 +505,10 @@ connection across ticks (no per-tick subprocess) and works inside the
 interactive CLI, where Ctrl-C returns you to the prompt. Not compatible with
 `--json`.
 
-## Interacting through the forgather server
+## Running through the Forgather server (detailed reference)
 
+This is the **recommended** way to run DiLoCo (the concise version is the
+[Quick Start](#quick-start-recommended-through-the-forgather-server) above).
 These commands route through the forgather server (`forgather server`) by
 default — it gives richer, centrally-authenticated access without needing
 each parameter server's token on the local machine. The server's proxy

@@ -40,10 +40,8 @@ Forgather's distributed checkpoint system provides automatic coordination for mu
 
 ### Implementation Details
 
-All implementation details are documented in the main documentation:
-- **Test Results**: All 5 trainers tested successfully (see Technical Documentation)
-- **Migration Details**: Complete trainer migration guide available in Migration Guide
-- **Known Issues**: Documented in User Guide troubleshooting section
+- **Migration Details**: Complete trainer migration guide in the [Migration Guide](migration_guide.md)
+- **Known Issues**: Documented in the [User Guide](user_guide.md) troubleshooting section
 
 ## Quick Reference
 
@@ -61,12 +59,18 @@ All implementation details are documented in the main documentation:
 
 | Trainer | Status | Model Pattern | Optimizer Pattern | Dataset Pattern |
 |---------|--------|---------------|-------------------|-----------------|
-| **SimpleTrainer** | ✅ Tested | GLOBAL | GLOBAL | GLOBAL |
+| **Trainer** | ✅ Tested | GLOBAL | GLOBAL | GLOBAL |
 | **DDPTrainer** | ✅ Tested | REPLICATED | REPLICATED | GLOBAL or PER_RANK |
 | **AccelTrainer** | ✅ Tested | REPLICATED | REPLICATED | PER_RANK |
 | **PipelineTrainer** | ✅ Tested | PER_RANK | PER_RANK | GLOBAL |
+| **FSDP2Trainer** | ✅ Tested | HF safetensors¹ | PER_RANK (sharded) | GLOBAL or PER_RANK |
 | **Hybrid DP x TP** | 🚧 Designed | PER_GROUP | PER_GROUP | PER_GROUP |
 | **Hybrid DP x PP** | 🚧 Designed | PER_GROUP | PER_GROUP | PER_GROUP |
+
+¹ FSDP2 saves/loads the model as consolidated HuggingFace safetensors via the
+checkpoint manager's model hooks — it is not registered as a sharing-pattern
+`StateComponent`. The sharded optimizer moments stay per-rank (their DTensor
+layout can't cheaply round-trip a gather/broadcast).
 
 ### Validation Levels
 
@@ -84,8 +88,8 @@ All implementation details are documented in the main documentation:
 - ✅ **Dynamic Patterns**: Runtime determination (e.g., dataset state)
 - ✅ **Validation**: Optional replication verification
 - ✅ **Manifests**: Complete checkpoint inventory for debugging
-- ✅ **Backward Compatible**: Old checkpoints still load
-- ✅ **Production Ready**: All trainers tested successfully
+- ✅ **Tolerant Loading**: `strict=False` skips missing optional components
+- ✅ **Tested**: save/resume integration tests across the supported trainers
 - ✅ **Checkpoint Preservation**: Keep best N checkpoints safe from cleanup
 - ✅ **Divergence Detection**: Catch training issues early with stateful callbacks
 - ✅ **Stateful Callbacks**: Callback state saved/restored with checkpoints
@@ -145,9 +149,6 @@ Model/optimizer saved as PER_RANK (different stages), dataset as GLOBAL.
 
 ## Troubleshooting
 
-**Training hangs during save?**
-- Distributed barrier deadlock (already fixed in built-in trainers)
-
 **Validation failure?**
 - Check DDP synchronization
 - AccelTrainer optimizer validation is automatically disabled
@@ -175,15 +176,12 @@ See [Migration Guide](migration_guide.md) for implementation details.
 ## Related Documentation
 
 - **Dataset Checkpointing**: `docs/datasets/fast-hf-loader-checkpoints.md`
-- **Trainer Overview**: (coming soon)
+- **Trainer Overview**: [`docs/trainers/trainer_options.md`](../trainers/trainer_options.md)
 - **Configuration System**: `docs/configuration/README.md`
 
-## Implementation Status
+## Status
 
-- **Phase 1**: ✅ Core abstractions complete
-- **Phase 2**: ✅ Pattern implementations complete
-- **Phase 3**: ✅ All trainers migrated and tested
-- **Phase 4**: 🚧 Hybrid parallelism testing (in progress)
-- **Phase 5**: 🚧 Advanced features (future)
-
-**Current status**: Production-ready for all single parallelism strategies (DDP, Pipeline, Accelerate). Hybrid parallelism designed but needs testing.
+The checkpoint system covers all single-parallelism trainers — `Trainer`,
+`DDPTrainer`, `AccelTrainer`, `PipelineTrainer`, and `FSDP2Trainer` (see the
+[Trainer Support](#trainer-support) table). Hybrid parallelism (DP × TP,
+DP × PP) is designed but not yet tested.

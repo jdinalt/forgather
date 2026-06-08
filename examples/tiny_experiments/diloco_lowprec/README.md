@@ -168,9 +168,10 @@ The three questions, by group:
 
 A DiLoCo worker is an ordinary trainer that runs its **full** step budget — it
 does not know it is one of N. With 2 workers, the model collaboratively sees ≈2×
-a single worker's budget. To land in the **~1B-token end-game regime** (where the
-sibling project shows DiLoCo's advantage emerging), each worker runs the default
-**500M** schedule (`small.yaml`'s `total_tokens=500`), for ≈1B total — no
+a single worker's budget. To reach the budget where the sibling project shows
+DiLoCo's advantage established (≈1B total tokens, well past the crossover), each
+worker runs the default **500M** schedule (`small.yaml`'s `total_tokens=500`),
+for ≈1B total — no
 `--total-tokens` override needed. Using the default also guarantees identical
 step counts across every experiment, which is what makes the curves directly
 comparable.

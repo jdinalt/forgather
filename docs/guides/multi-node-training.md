@@ -34,22 +34,27 @@ Companion references for when you need them:
 
 ## When to use multi-node
 
-Multi-node training across consumer Ethernet (1G or 2.5G) is **only
-viable for pipeline parallel (PP)**. The rule of thumb:
+Across consumer Ethernet (1G or 2.5G), the two strategies that train at
+a useful rate are **pipeline parallel (PP)** and **DiLoCo** — both are
+built for low inter-node bandwidth. The rule of thumb:
 
 | Strategy | Communication pattern | Practical inter-node bandwidth needed |
 |---|---|---|
 | **Pipeline Parallel (PP)** | activations between adjacent stages, once per microbatch | works on 1G+ Ethernet; the trainer Forgather just tested on |
+| **DiLoCo** | pseudo-gradient sync every H steps (default 500), not every step | works on 1G+ Ethernet by design (~500x less traffic); see [DiLoCo](../trainers/diloco.md) |
 | **DDP** | full gradient all-reduce every step | needs ~10G+ for non-trivial models; viable on 1G for ~1B-class |
 | **FSDP** | parameter all-gather on every layer | needs NVLink or fast InfiniBand; near-unusable on Ethernet |
 | **Tensor Parallel** | per-layer all-reduce | needs NVLink |
 
 Forgather's multi-node infra is agnostic to the trainer choice — you
-can submit any DDP/FSDP/PP config across the cluster — but on a
-typical home-lab LAN, only PP will actually train at a useful rate.
-DDP across two boxes on a 1G link will work, but the gradient
-all-reduce will dominate and step time will be much longer than the
-single-host equivalent.
+can submit any DDP/FSDP/PP config across the cluster — but on a typical
+home-lab LAN, PP and DiLoCo are the ones that train at a useful rate.
+PP splits the model across stages and ships only activations; DiLoCo
+keeps each worker training locally and synchronizes infrequently (and,
+at longer budgets, can even match or beat a DDP baseline's final
+quality — see [DiLoCo](../trainers/diloco.md)). DDP across two boxes on
+a 1G link will work, but the gradient all-reduce will dominate and step
+time will be much longer than the single-host equivalent.
 
 The reference end-to-end run (Llama2-7B + Samantha + 1F1B PP across a
 1+2 GPU layout on a 1Gbit link) achieves all-three-GPUs-at-100% util,

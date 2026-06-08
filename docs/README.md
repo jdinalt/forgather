@@ -6,83 +6,92 @@ Most research ML codebases accrete: one training script becomes ten, each a near
 
 Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdinalt/forgather)
 
-## Quick Navigation
+## New to Forgather?
 
-**Start here:**
+Follow these in order:
 
-- **[Installation](getting-started/installation.md)** - Host venv (pip / uv) or the Docker images
-- **[Docker images](getting-started/docker.md)** - Full reference for the dev and runtime (distributable) images: CLI flags, env vars, multi-node operation, troubleshooting. Docker is the recommended install path on Linux
-- **[Getting Started](getting-started/README.md)** - First training run, key CLI commands, and the web UI tour
-- **[Forgather Server Walkthrough](guides/forgather-server-walkthrough.md)** - End-to-end tour of the web UI from a fresh install to chatting with a freshly-trained model
-- **[Forgather Server Reference](forgather-server.md)** - CLI flags, config-file syntax, persistent state, full API and panel reference
-- **[Core Concepts](core-concepts/README.md)** - Configuration pipeline, projects, templates, trainers
-- **[Release Notes](release-notes/README.md)** - Per-release change summaries; current release is [1.2.0](release-notes/v1.2.0.md)
+1. **[Installation](getting-started/installation.md)** — host venv (pip / uv), or **[Docker images](getting-started/docker.md)** (the recommended path on Linux).
+2. **[Getting Started](getting-started/README.md)** — your first training run and the key CLI commands.
+3. **[Forgather Server Walkthrough](guides/forgather-server-walkthrough.md)** — the full web-UI tour: fresh install → train a small model → chat with it.
+4. **[Core Concepts](core-concepts/README.md)** — the configuration pipeline, projects, templates, and trainers.
+5. **[Tiny Llama tutorial](tutorials/tiny_llama/README.md)** — a hands-on first project.
 
-**Configuration:**
+Current release: **[1.2.0](release-notes/v1.2.0.md)** ([all release notes](release-notes/README.md)).
+
+---
+
+## Configuration & templates
 
 - **[Configuration Overview](configuration/README.md)** - Template system and YAML configuration
 - **[Syntax Reference](configuration/syntax-reference.md)** - Complete syntax reference for tags and directives
 - **[Model Initialization](configuration/model-initialization.md)** - Regex-based parameter initialization
 - **[Project Templates](project-templates/lm-training-projects.md)** - LM Training and Auto LR project templates
-- **[Meta-templates](../templatelib/meta/README.md)** - Scaffolds for creating new config files via the webui's New Config / New Template modal, and how to author your own
+- **[Meta-templates](../templatelib/meta/README.md)** - Scaffolds for new config files via the webui's New Config / New Template modal, and how to author your own
 - **[High-level API](api/project.md)** - The "Project" abstraction
-- **[Low-level API](configuration/low-level-api.md)** - The API upon which the Project abstraction is built
+- **[Low-level API](configuration/low-level-api.md)** - The API the Project abstraction is built on
 
-**Training:**
+## Trainers & training
 
 - **[Trainer Options Reference](trainers/trainer_options.md)** - Every training-argument field and constructor parameter across all built-in trainers
 - **[Pipeline Parallel](trainers/pipeline-parallel.md)** - Pipeline parallelism for consumer GPUs and limited interconnects
 - **[Multi-node Training](guides/multi-node-training.md)** - Practical setup, submit flow, and hang diagnosis for training across multiple machines on a LAN
 - **[Trainer Control](trainers/trainer-control.md)** - External control of running training jobs (save, stop, abort)
 - **[Training Performance Metrics](trainers/training-performance-metrics.md)** - Token throughput, FLOP tracking, and MFU
-- **[DiLoCo](trainers/diloco.md)** - Distributed Local-SGD training across heterogeneous machines on LAN
+- **[DiLoCo](trainers/diloco.md)** - Low-communication distributed training (Local-SGD): syncs infrequently instead of every step, so it scales to slow or intermittent interconnects — and at longer token budgets can match or exceed DDP final quality, with generalization benefits that show up even on a single node
 - **[FP8 Training](trainers/fp8-training.md)** - FP8 training via torchao
 - **[QAT Training](trainers/qat-training.md)** - Quantization-aware training via torchao; pair with `forgather finalize --quantize` (also works alone as post-training quantization)
-- **[Checkpointing](checkpointing/README.md)** - Distributed checkpoint system for multi-GPU and multi-node training
 - **[Torch Titan Integration](trainers/torchtitan.md)** - Forgather integration with PyTorch's Torch Titan training framework
 - **[Adafactor Triton Performance](trainers/adafactor-triton-performance.md)** - Performance analysis for the Triton-optimized Adafactor kernel
 - **[Distributed Eval: Zero Batches](trainers/distributed-eval-zero-batches.md)** - Diagnose and fix the "produced zero batches" / "did not yield any examples" eval errors in DDP/distributed training
 
-**Models and inference:**
+## Checkpointing
+
+- **[Checkpointing Overview](checkpointing/README.md)** - Distributed checkpoint system for multi-GPU and multi-node training
+- **[Checkpointing User Guide](checkpointing/user_guide.md)** - Day-to-day save/resume workflow and options
+
+## Data & datasets
+
+- **[Dataset CLI Reference](datasets/dataset-cli.md)** - `forgather dataset` command: inspect, sample, and histogram datasets
+- **[Creating a Dataset Project](guides/creating-a-dataset-project.md)** - Load, pack, and interleave HuggingFace datasets
+- **[Dataset Projects](datasets/dataset-projects.md)** - Structure and configuration of dataset projects
+- **[Sequence Packing](datasets/sequence-packing.md)** ([quick reference](datasets/sequence-packing-quick-reference.md)) - Packing short examples into full-length sequences
+- **[Document Boundaries](datasets/document-boundaries.md)** - Preserving document edges during packing
+- **[Fast HF Loader](datasets/fast-hf-loader.md)** - High-throughput streaming loader for HuggingFace datasets
+- **[Dataset Server](tools/dataset_server/README.md)** - Multi-node training: serve HF cache + named local datasets via `FORGATHER_DATASET_SERVER`
+
+## Models & inference
 
 - **[Model Architecture](guides/model-architecture.md)** - Transformer module inventory, composition patterns, and optimization flags
-- **[Model Conversion](guides/model-conversion.md)** - Bidirectional HuggingFace / Forgather model conversion
-- **[Update Model](guides/model-update.md)** - Migrate a saved Forgather model to newer Forgather sources via versioned config + state_dict migrations; preserves saved hyperparameters
-- **[Finalize Model](guides/finalize-model.md)** - Build a clean handoff directory after pre-training: source + tokenizer + chat template + generation_config + a single preserved checkpoint
-- **[Add-Tokens Config](guides/add-tokens-config.md)** - YAML format for `--add-tokens` (ChatML / new EOS / pad)
-- **[EOS Tokens and `generate()` Stopping Criteria](guides/eos-and-generate-stopping.md)** - Theory of operation: how HF's `generate()` resolves stopping across multiple EOS-bearing files
-- **[vLLM Integration](inference/vllm_integration.md)** - Distributed inference with vLLM (currently blocked on Transformers v5)
-- **[Inference Server](tools/inference_server/README.md)** - The bundled OpenAI-compatible inference server. CLI (single-model + multi-model with `-m NAME=PATH`), YAML config (single `model:` or a `models:` list), `--keep-on-gpu` for unified-memory / abundant-VRAM setups, `--eager-load` for fail-fast startup. The webui's Inference panel is documented in [forgather-server.md](forgather-server.md#inference-panel).
-- **[Inference Server Architecture](tools/inference_server/ARCHITECTURE.md)** - Internals: the `ModelEntry` + registry refactor, the `acquire()` swap protocol, lifecycle states, and why the request lock spans the full streaming SSE response.
-
-**Guides:**
-
-- **[Forgather Server Walkthrough](guides/forgather-server-walkthrough.md)** - End-to-end tour of the web UI: install through training a small model and chatting with it
-- **[Forgather Server Reference](forgather-server.md)** - Full feature + API reference for the server's panels, modals, and endpoints
 - **[Creating a Model Project](guides/creating-a-model-project.md)** - Define a custom model architecture from scratch
 - **[Model CLI Reference](guides/model-cli.md)** - `forgather model` command: construct, test, checkpoint, and use models
-- **[Creating a Dataset Project](guides/creating-a-dataset-project.md)** - Load, pack, and interleave HuggingFace datasets
-- **[Dataset CLI Reference](datasets/dataset-cli.md)** - `forgather dataset` command: inspect, sample, and histogram datasets
-- **[Dataset Server](tools/dataset_server/README.md)** - Multi-node training: serve HF cache + named local datasets via `FORGATHER_DATASET_SERVER`
-- **[Working with Tokenizer Projects](guides/working-with-tokenizer-projects.md)** - CLI commands for tokenizer projects
-- **[Debugging Configuration Errors](guides/debugging.md)** - Systematic troubleshooting and common error patterns
+- **[Model Conversion](guides/model-conversion.md)** - Bidirectional HuggingFace / Forgather model conversion
+- **[Update Model](guides/model-update.md)** - Migrate a saved Forgather model to newer sources via versioned config + state_dict migrations
+- **[Finalize Model](guides/finalize-model.md)** - Build a clean handoff directory after pre-training (source + tokenizer + chat template + generation_config + a preserved checkpoint)
+- **[Add-Tokens Config](guides/add-tokens-config.md)** - YAML format for `--add-tokens` (ChatML / new EOS / pad)
+- **[EOS Tokens and `generate()` Stopping Criteria](guides/eos-and-generate-stopping.md)** - How HF's `generate()` resolves stopping across multiple EOS-bearing files
+- **[vLLM Integration](inference/vllm_integration.md)** - Distributed inference with vLLM (currently blocked on Transformers v5)
+- **[Inference Server](tools/inference_server/README.md)** - The bundled OpenAI-compatible inference server (single/multi-model CLI, YAML config, `--keep-on-gpu`, `--eager-load`)
+- **[Inference Server Architecture](tools/inference_server/ARCHITECTURE.md)** - Internals: the `ModelEntry` + registry, the `acquire()` swap protocol, lifecycle states, request locking
+
+## Server, CLI & operations
+
+- **[Forgather Server Reference](forgather-server.md)** - Full feature + API reference for the server's panels, modals, and endpoints
 - **[Interactive CLI](guides/interactive-cli.md)** - Interactive shell with tab completion and editor integration
+- **[Debugging Configuration Errors](guides/debugging.md)** - Systematic troubleshooting and common error patterns
 - **[Evaluating Models](guides/evaluating-models.md)** - Loss/perplexity evaluation via `forgather eval`
 - **[Log Analysis](guides/logs-analysis.md)** - Training log summaries, plots, and heatmaps
 - **[TensorBoard](guides/tensorboard.md)** - Launch TensorBoard against a model's `runs/` directory from the webui or `forgather tb`
-- **[MkDocs](guides/mkdocs.md)** - Serve the bundled Forgather docs locally with live-reload via the Services menu or `forgather mkdocs`
-
-**Operations:**
-
-- **[TLS](operations/tls.md)** - Enable HTTPS for `forgather server`, `dataset_server`, and `inference_server` off a single per-host CA + cert. Single-host bring-up, cluster cert distribution, renewal, Docker runtime integration, command reference, threat model.
+- **[MkDocs](guides/mkdocs.md)** - Serve the bundled Forgather docs locally with live-reload
+- **[Working with Tokenizer Projects](guides/working-with-tokenizer-projects.md)** - CLI commands for tokenizer projects
+- **[TLS](operations/tls.md)** - HTTPS/mTLS for `forgather server`, `dataset_server`, and `inference_server`: bring-up, cert distribution, renewal, threat model
 
 ## Tutorials
+
 - **[Tiny Llama](tutorials/tiny_llama/README.md)** - Demonstration of basic usage
-- **[Projects Overview](tutorials/projects_overview/project_index.ipynb)** - Learn about the Forgather Project abstraction
+- **[Projects Overview](tutorials/projects_overview/project_index.ipynb)** - The Forgather Project abstraction
 - **[Project Composition](tutorials/project_composition/project_index.ipynb)** - How the template system works
-- **[Dynamic LM](tutorials/dynamic_lm/dynamic_lm.ipynb)** - Demonstrates how models are dynamically composed
-- **[Samantha](examples/finetune/samantha/README.md)** - Demonstrates how to use Forgather to finetune a 7B parameter model on the Samantha dataset
-- **[H.P. Lovecraft Project](tutorials/hp_lovecraft_project/README.md)** - Learn how to create workspaces and projects, while training a model to summon the Elder Gods
+- **[Dynamic LM](tutorials/dynamic_lm/dynamic_lm.ipynb)** - How models are dynamically composed
+- **[H.P. Lovecraft Project](tutorials/hp_lovecraft_project/README.md)** - Create workspaces and projects while training a model to summon the Elder Gods
 
 ## Featured Examples
 
@@ -95,7 +104,7 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 | Cut peak memory | [tiny_experiments/peak_memory](examples/tiny_experiments/peak_memory/README.md) |
 | Pick an optimizer | [tiny_experiments/optimizers](examples/tiny_experiments/optimizers/README.md) |
 | Pipeline-parallel recipes | [tiny_experiments/pipeline_parallel](examples/tiny_experiments/pipeline_parallel/README.md) |
-| Decentralised / bandwidth-limited training | [tiny_experiments/diloco](examples/tiny_experiments/diloco/README.md) |
+| Low-communication training (also helps generalization) | [tiny_experiments/diloco](examples/tiny_experiments/diloco/README.md) |
 
 **[pretrain/small-llm](examples/pretrain/small-llm/README.md)** — A 162M-parameter Llama trained from scratch on the SmolLM corpus (FineWeb-Edu + Cosmopedia) with packed sequences and Flex Attention. Ten production-ready configs covering 1× and 10× Chinchilla budgets, AdamW / Adafactor / bf16 variants. Includes reproducible Chinchilla scaling-law plots.
 
@@ -111,12 +120,13 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 
 **[tiny_experiments/pipeline_parallel](examples/tiny_experiments/pipeline_parallel/README.md)** — Test harness and reference configs for PyTorch's pipeline-parallel schedules (GPipe, 1F1B, ZBV, interleaved), with checkpoint save/resume coverage across 2/4-GPU setups.
 
-**[tiny_experiments/diloco](examples/tiny_experiments/diloco/README.md)** — DiLoCo (distributed local SGD) on a 4M-parameter model. Pseudo-gradient compression, streaming-fragment overlap with the backward pass, sync and async modes. The lowest-communication-bandwidth trainer in the library.
+**[tiny_experiments/diloco](examples/tiny_experiments/diloco/README.md)** — DiLoCo (distributed local SGD) on a 4M-parameter model. Pseudo-gradient compression, streaming-fragment overlap with the backward pass, sync and async modes. Forgather's lowest-bandwidth trainer — but the infrequent-sync regime is also a regularizer: it can match or beat DDP final quality at longer budgets and improve generalization even single-node, not just a fallback for slow networks.
 
 ## Example Project Collections
-- **[Tiny Experiments](examples/tiny_experiments/README.md)** - A collection of experiments and integration tests using (mostly) small models
-- **[Dataset Projects](examples/datasets/README.md)** - A collection of demonstration dataset configurations
-- **[Finetune](examples/finetune/README.md)** - A collection of finetuning examples
+
+- **[Tiny Experiments](examples/tiny_experiments/README.md)** - Experiments and integration tests using (mostly) small models
+- **[Dataset Projects](examples/datasets/README.md)** - Demonstration dataset configurations
+- **[Finetune](examples/finetune/README.md)** - Finetuning examples
 - **[Tokenizers](examples/tokenizers/README.md)** - Tokenizer definition examples
 - **[Models](examples/models/README.md)** - Example model definitions
 
@@ -128,6 +138,7 @@ Subsystem design and architecture documents (audience: contributors and maintain
 - **[DiLoCo: Work-Unit Dispatch](design/diloco-work-unit-dispatch.md)** - How workers shard the training set via server-issued row ranges
 - **[DiLoCo + Pipeline Parallel](design/diloco-pipeline-groups.md)** - Per-rank DiLoCo workers with server-aware pipeline groups
 - **[DiLoCo: Security Model](design/diloco-security.md)** - Auth, mTLS, the endpoint trust split, audit log
+- **[Fused Loss Trainer API](fused_loss/fused_loss_trainer_api.md)** - Fused linear cross-entropy loss integration
 
 (The user-facing DiLoCo reference, with a map of all DiLoCo docs, is [trainers/diloco.md](trainers/diloco.md).)
 
@@ -136,8 +147,8 @@ Subsystem design and architecture documents (audience: contributors and maintain
 - **[API Reference](api/index.md)** - Auto-generated Python API documentation
 - **[Debugging Guide](configuration/debugging.md)** - Tools and techniques for debugging configurations
 - **[Known Bugs](development/bugs.md)** - Known bugs in top-level modules, with corresponding xfail tests
-- **[Testing Guide](development/testing.md)** How to create and run unit tests
-- **[Integration Testing](development/integration-testing.md)** How to create and run integration tests
+- **[Testing Guide](development/testing.md)** - How to create and run unit tests
+- **[Integration Testing](development/integration-testing.md)** - How to create and run integration tests
 
 ## Getting Help
 
@@ -154,11 +165,13 @@ docs/
 ├── configuration/       # Template and configuration system
 ├── project-templates/   # Reusable project templates (LM Training, Auto LR)
 ├── trainers/            # Training system (PP, DiLoCo, control, metrics, FP8)
-├── design/              # Subsystem design & architecture notes
 ├── checkpointing/       # Distributed checkpoint system
 ├── datasets/            # Data loading, packing, and preprocessing
 ├── inference/           # vLLM integration guide
 ├── guides/              # How-to guides (models, datasets, CLI, conversion)
-├── development/         # Testing and development workflow
+├── design/              # Subsystem design & architecture notes
 ├── fused_loss/          # Fused linear cross-entropy loss
+├── operations/          # TLS / cluster operations
+├── release-notes/       # Per-release change summaries
+├── development/         # Testing and development workflow
 ```

@@ -685,8 +685,11 @@ analysis script that produced them is
 ## Extended sweep: budget, sync interval, and single-worker local-SGD
 
 The 1× comparison above is a *conservative* budget (≈1× Chinchilla, 500M
-tokens). The papers report that DiLoCo's advantage shows up in the **end-game**
-of longer runs, so this sweep doubles the budget to **2× (≈1B tokens)** and
+tokens). The papers report that DiLoCo's advantage is **back-loaded** — it starts
+behind an all-reduce baseline and **crosses over** later in training, once the
+gains come from generalization rather than raw descent speed — so this sweep
+doubles the budget to **2× (≈1B tokens)** to give the crossover room to appear,
+and
 varies three things: the **sync interval** `H` (`--sync-every` 500 / 100 / 20),
 the **worker count** (2-worker vs a single worker, the latter also swept across
 `H`), and the **synchronization mechanism** (DiLoCo's pseudo-gradient + outer
@@ -717,10 +720,13 @@ confound on any curve).
 
 This is the headline. **At 1×, DiLoCo trailed the baseline** (eval 3.343 vs
 3.156). **At 2×, DiLoCo with `H ≤ 100` overtakes both baselines** (2.887 / 2.936
-vs 3.005 / 2.999). The end-game panel makes the ordering unambiguous: H=20 and
-H=100 pull *below* the baselines in the back half of the run, exactly where the
-literature says the gain appears. (H=500 is the exception — it's still slightly
-behind the baselines at 2×; see below.)
+vs 3.005 / 2.999). The tail-zoom panel (≥600M tokens) makes the *final* ordering
+unambiguous — H=20 and H=100 sit *below* both baselines. But the overtake happens
+earlier than that zoom shows: in the full parsed curves
+([`sweep_curves.csv`](assets/sweep_curves.csv)), **H=20 crosses below the
+baselines at ~21% of the 1B-token run and H=100 at ~49%** — the tighter the sync,
+the sooner the crossover, set by `H` rather than by needing a giant budget.
+(H=500 is the exception — it never crosses within 1B; see below.)
 
 ### 2. Shorter sync intervals converge better (for more bandwidth)
 
@@ -767,9 +773,11 @@ helps the averaging run (3.075 → 3.057); the entire ~0.15 gap to DiLoCo is the
 outer Nesterov update. This is **not** a divergence — PostLocalSGD trains stably
 the whole way (each run does an 800-step full-DDP warmup before averaging
 engages), it just converges *inefficiently* to a worse optimum at constant LR.
-Pure periodic averaging keeps the replicas close; it does **not** supply the
-implicit regularization the slow-momentum outer step does. That is the
-mechanism behind the whole sweep: DiLoCo's edge is the outer optimizer
+Averaging-form Local SGD has its own generalization story, but a *conditional*
+one — a small LR, a long run, and a tuned `H` (Gu et al., below) — and at these
+constant-LR settings it didn't materialize: here the implicit regularization came
+from the slow-momentum outer step, not the averaging. That is the mechanism
+behind the whole sweep: DiLoCo's edge is the outer optimizer
 ([SlowMo](#background-why-this-happens-and-where-to-read-more), below), not the
 fact of periodic synchronization.
 
@@ -799,15 +807,26 @@ observation to the work that explains (or first reported) it.
   Generalization Gap and Sharp Minima* (ICLR 2017,
   [arXiv:1609.04836](https://arxiv.org/abs/1609.04836)).
 
-- **Why local SGD generalizes better — and when.** Gu, Lyu, Huang & Arora, *Why
-  (and When) does Local SGD Generalize Better than SGD?* (ICLR 2023,
-  [arXiv:2303.01215](https://arxiv.org/abs/2303.01215)) show that periodic
-  averaging induces a drift that accelerates sharpness reduction — **but only
-  with a small learning rate and a long enough run.** That conditional is
-  exactly our curve: at 1× DiLoCo trailed; the win only emerged in the **2×
-  end-game**. See also Lin, Stich, Patel & Jaggi, *Don't Use Large Mini-Batches,
-  Use Local SGD* (ICLR 2020, [arXiv:1808.07217](https://arxiv.org/abs/1808.07217)),
-  which reports the same generalization edge over large-batch training.
+- **When the *averaging* form of local SGD generalizes better.** Gu, Lyu, Huang
+  & Arora, *Why (and When) does Local SGD Generalize Better than SGD?* (ICLR
+  2023, [arXiv:2303.01215](https://arxiv.org/abs/2303.01215)) analyze **pure
+  periodic model averaging** (no outer optimizer) and show it can induce a drift
+  toward flatter minima — **but only conditionally: a small learning rate, a long
+  enough run, and a tuned local-step count `H`** (a late-phase, slow-timescale
+  effect; the test-accuracy benefit itself they pose as a *hypothesis*, not a
+  theorem, and disclaim any direct theoretical separation). We cite this for the
+  local-SGD generalization *phenomenon* and its conditionality — **not** as an
+  explanation of DiLoCo's curve. Their mechanism is the averaging step, and the
+  algorithm their conditional is stated on is post-local SGD: the same
+  PostLocalSGD that, in
+  [Section 4](#4-the-gain-is-the-outer-optimizer-not-the-averaging), did *not*
+  beat the DDP baseline at our settings. DiLoCo's edge is the SlowMo/Lookahead
+  outer optimizer, which Gu et al. neither model nor invoke (they find Nesterov
+  *unnecessary* for the averaging benefit). Lin, Stich, Patel & Jaggi, *Don't Use
+  Large Mini-Batches, Use Local SGD* (ICLR 2020,
+  [arXiv:1808.07217](https://arxiv.org/abs/1808.07217)) introduce that averaging
+  variant (post-local SGD) and report its generalization edge over large-batch
+  SGD.
 
 - **The single-worker result is Lookahead / weight averaging.** A 1-worker
   DiLoCo step — `H` inner steps, then a slow outer update — is precisely the
