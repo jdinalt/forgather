@@ -497,6 +497,7 @@ class DiLoCoServer:
         download_dtype: str = "fp32",
         download_sr: bool = False,
         wire_format: str = "pickle",
+        backend: str = "http",
         bf16_comm: Optional[bool] = None,
         num_fragments: int = 1,
         heartbeat_timeout: float = 120.0,
@@ -541,6 +542,19 @@ class DiLoCoServer:
                 f"wire_format must be one of {WIRE_FORMATS}, got {wire_format!r}"
             )
         self.wire_format = wire_format
+        # Sync backend the group must use (issue #154). The backend is a
+        # group-wide invariant — a collective group is one all-reduce world, a
+        # shared-memory group is co-located, an HTTP group is independent
+        # workers; there is no valid mixed group. The server *declares* it here
+        # and advertises it via /info so every worker validates its own launched
+        # backend against it (fail loud on disagreement). This is declaration
+        # metadata: it does not change the server's own behavior.
+        if backend not in ("http", "shared_memory", "collective"):
+            raise ValueError(
+                f"backend must be 'http', 'shared_memory', or 'collective', "
+                f"got {backend!r}"
+            )
+        self.backend = backend
         self.dn_buffer_size = dn_buffer_size
         self.dylu_enabled = dylu_enabled
         self.dylu_base_sync_every = dylu_base_sync_every
@@ -2873,6 +2887,12 @@ class DiLoCoServer:
                 # carries no header, so the worker must adopt this. "pickle"
                 # (default) keeps an older worker interoperable.
                 "wire_format": self.wire_format,
+                # Sync backend the group must use (issue #154). The worker
+                # validates its own launched backend against this and fails loud
+                # on disagreement — it cannot *adopt* it (the backend fixes the
+                # launch topology), only agree. Absent ⇒ an older server ⇒ the
+                # worker skips the check.
+                "backend": self.backend,
                 # Deprecated alias kept so pre-#130 workers parsing
                 # ``bf16_comm`` from ``expected_client_settings`` still
                 # negotiate a compatible upload format. True iff the

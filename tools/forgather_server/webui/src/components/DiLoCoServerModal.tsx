@@ -51,6 +51,10 @@ interface PersistedAdHoc {
   // them from /info. gRPC supersedes the cleartext bulk plane.
   wireFormat: string;
   grpcEnabled: boolean;
+  // Sync backend the worker group must use (issue #154). Declared here and
+  // advertised via /info; workers validate their own backend against it and
+  // fail loud on disagreement. Must match `submit --backend` for the workers.
+  backend: string;
 }
 
 const DEFAULT_AD_HOC: PersistedAdHoc = {
@@ -79,6 +83,7 @@ const DEFAULT_AD_HOC: PersistedAdHoc = {
   bulkCleartext: false,
   wireFormat: "pickle",
   grpcEnabled: false,
+  backend: "http",
 };
 
 function loadPersisted(): PersistedAdHoc {
@@ -176,6 +181,7 @@ export function DiLoCoServerModal({
         bulkCleartext: pickBool(editingService.args, "bulk_cleartext", false),
         wireFormat: pickStr(editingService.args, "wire_format", "pickle"),
         grpcEnabled: pickBool(editingService.args, "grpc_enabled", false),
+        backend: pickStr(editingService.args, "backend", "http"),
       }
     : {
         ...persisted,
@@ -209,6 +215,7 @@ export function DiLoCoServerModal({
   const [bulkCleartext, setBulkCleartext] = useState(seed.bulkCleartext);
   const [wireFormat, setWireFormat] = useState(seed.wireFormat);
   const [grpcEnabled, setGrpcEnabled] = useState(seed.grpcEnabled);
+  const [backend, setBackend] = useState(seed.backend);
   const [saving, setSaving] = useState(false);
 
   // Light validation — the backend re-checks but flagging in-UI is friendlier.
@@ -301,6 +308,9 @@ export function DiLoCoServerModal({
     if (wireFormat && wireFormat !== "pickle") {
       args.wire_format = wireFormat;
     }
+    if (backend && backend !== "http") {
+      args.backend = backend;
+    }
     if (grpcEnabled) {
       args.grpc_enabled = true;
     }
@@ -335,6 +345,7 @@ export function DiLoCoServerModal({
       bulkCleartext,
       wireFormat,
       grpcEnabled,
+      backend,
     };
     persistSet(STORAGE_KEY, JSON.stringify(cur));
   };
@@ -794,6 +805,23 @@ export function DiLoCoServerModal({
 
               <hr style={{ width: "100%", opacity: 0.2 }} />
 
+              <label>
+                <code>--backend</code>{" "}
+                <select
+                  value={backend}
+                  onChange={(e) => setBackend(e.target.value)}
+                >
+                  <option value="http">http</option>
+                  <option value="shared_memory">shared_memory</option>
+                  <option value="collective">collective</option>
+                </select>{" "}
+                <span className="muted" style={{ fontSize: "smaller" }}>
+                  Sync backend the worker group must use. Declared here and
+                  advertised via /info; workers validate against it and fail
+                  loud on disagreement. <strong>Must match</strong> the{" "}
+                  <code>--backend</code> the workers are submitted with.
+                </span>
+              </label>
               <label>
                 <code>--wire-format</code>{" "}
                 <select

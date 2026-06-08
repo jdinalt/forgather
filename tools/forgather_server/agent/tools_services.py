@@ -148,7 +148,7 @@ def _start_diloco_server(args: Dict[str, Any]) -> Proposal:
         ("output_dir", "num_workers", "port", "host", "sync_every", "async_mode",
          "save_every", "save_total_limit", "num_fragments", "min_workers",
          "heartbeat_timeout", "outer_lr", "outer_momentum", "from_checkpoint",
-         "run_name", "no_auth"),
+         "run_name", "no_auth", "backend"),
     )
     advanced = args.get("advanced")
     if isinstance(advanced, dict):
@@ -297,6 +297,7 @@ def register_all(reg: ToolRegistry) -> None:
                     "from_checkpoint": {"type": "string", "description": "Resume the server from this checkpoint."},
                     "run_name": {"type": "string", "description": "Run name for logging."},
                     "no_auth": {"type": "boolean", "description": "Disable the bearer-token gate."},
+                    "backend": {"type": "string", "enum": ["http", "shared_memory", "collective"], "description": "Sync backend the worker group must use (default http). Advertised via /info; workers validate against it and fail loud on disagreement. Must match `submit --backend` for the workers."},
                     "advanced": {"type": "object", "description": "Other `forgather diloco server` flags (see docs/trainers/diloco.md), e.g. dylu, bf16_comm, upload_dtype, download_dtype, num_fragments tuning."},
                 },
                 "required": ["output_dir", "num_workers"],

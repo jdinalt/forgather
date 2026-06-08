@@ -1318,6 +1318,10 @@ export interface DiLoCoInfo {
     /** Bulk-tensor wire codec (issue #154). Server-authoritative; workers
      *  adopt it so both legs agree. "pickle" (default) is back-compatible. */
     wire_format?: "pickle" | "safetensors";
+    /** Sync backend the group must use (issue #154). The server declares it;
+     *  workers validate their own launched backend against it (fail loud on
+     *  disagreement). They cannot adopt it — it fixes the launch topology. */
+    backend?: "http" | "shared_memory" | "collective";
   };
   /** Bulk transport negotiation (issue #154). "grpc" when the gRPC bulk
    *  listener is up, else "http" (the default + universal fallback). */

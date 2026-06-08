@@ -612,6 +612,9 @@ def _build_diloco_server(item, gpu_indices, tty_path):
         # Bulk transport (issue #154): wire codec + optional gRPC listener.
         wire_format=str(p.get("wire_format", "pickle") or "pickle"),
         grpc_enabled=bool(p.get("grpc_enabled", False)),
+        # Declared group backend (issue #154), advertised via /info for workers
+        # to validate against.
+        backend=str(p.get("backend", "http") or "http"),
         num_fragments=int(p.get("num_fragments", 1) or 1),
         from_checkpoint=p.get("from_checkpoint") or None,
         save_every=int(p.get("save_every", 10) or 0),

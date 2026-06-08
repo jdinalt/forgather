@@ -218,6 +218,7 @@ def _server_cmd(args):
         download_dtype=args.download_dtype,
         download_sr=args.download_sr,
         wire_format=args.wire_format,
+        backend=getattr(args, "backend", "http"),
         grpc_enabled=getattr(args, "grpc_enabled", False),
         bf16_comm=args.bf16_comm,
         num_fragments=args.num_fragments,

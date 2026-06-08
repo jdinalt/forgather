@@ -233,6 +233,22 @@ class DiLoCoCallback(TrainerCallback):
                 f"older server predating server-authoritative settings; "
                 f"upgrade the diloco server."
             )
+        # Backend agreement (issue #154). The backend is a group-wide invariant
+        # the server *declares*; this worker can't adopt it (it fixes the launch
+        # topology) but must agree. Fail loud on disagreement so a group is never
+        # launched with workers communicating differently. Absent ⇒ an older
+        # server that doesn't declare one ⇒ skip (back-compat).
+        server_backend = ecs.get("backend")
+        if server_backend is not None and server_backend != self.backend_kind:
+            raise DiLoCoServerUnreachable(
+                f"DiLoCoCallback: backend mismatch — this worker was launched "
+                f"with DILOCO_BACKEND={self.backend_kind!r} but the server at "
+                f"{self.server_addr!r} declares the group uses "
+                f"backend={server_backend!r}. All workers in a group must use "
+                f"the same backend. Relaunch the worker(s) with "
+                f"backend={server_backend!r} (e.g. `forgather submit --backend "
+                f"{server_backend}`), or change the server's `--backend`."
+            )
         # Wire precision (issue #130). Prefer the four explicit keys
         # the post-#130 server advertises; fall back to the legacy
         # ``bf16_comm`` boolean for older servers (mapped to

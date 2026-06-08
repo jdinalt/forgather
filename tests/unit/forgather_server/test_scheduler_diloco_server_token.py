@@ -220,6 +220,20 @@ def test_build_diloco_command_bulk_transport_flags():
     assert "--grpc" not in cmd2
 
 
+def test_build_diloco_command_backend_flag():
+    """The declared group backend (issue #154) surfaces on the spawn argv when
+    non-default; the http default is omitted for a readable argv."""
+    from forgather_server.diloco_server_ops import build_diloco_server_command
+
+    cmd = build_diloco_server_command(
+        output_dir="/tmp/out", num_workers=1, port=8512, backend="collective"
+    )
+    assert cmd[cmd.index("--backend") + 1] == "collective"
+
+    cmd2 = build_diloco_server_command(output_dir="/tmp/out", num_workers=1, port=8512)
+    assert "--backend" not in cmd2
+
+
 def test_server_job_params_to_command_threads_bulk_transport():
     """End-to-end orchestrator path: the CLI args -> _server_job_params dict ->
     build_diloco_server_command argv carries wire_format + grpc."""
@@ -280,6 +294,7 @@ def test_scheduler_forwards_bulk_transport_to_launcher(tmp_path):
                 "no_auth": True,  # skip token-file resolution
                 "wire_format": "safetensors",
                 "grpc_enabled": True,
+                "backend": "collective",
             }
         },
     )()
@@ -287,6 +302,7 @@ def test_scheduler_forwards_bulk_transport_to_launcher(tmp_path):
         scheduler._build_diloco_server(item, [], tmp_path / "tty.log")
     assert spawn.call_args.kwargs["wire_format"] == "safetensors"
     assert spawn.call_args.kwargs["grpc_enabled"] is True
+    assert spawn.call_args.kwargs["backend"] == "collective"
 
 
 # ---------------------------------------------------------------------------
