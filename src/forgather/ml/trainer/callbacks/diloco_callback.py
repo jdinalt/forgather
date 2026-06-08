@@ -147,6 +147,8 @@ class DiLoCoCallback(TrainerCallback):
         self.download_dtype: Optional[str] = None
         self.download_sr: Optional[bool] = None
         self.wire_format: Optional[str] = None
+        self.transport: Optional[str] = None
+        self.grpc_endpoint: Optional[str] = None
         self.bf16_comm: Optional[bool] = None
         self.dylu: Optional[bool] = None
         self.num_fragments: Optional[int] = None
@@ -245,6 +247,10 @@ class DiLoCoCallback(TrainerCallback):
         # Bulk-tensor wire codec (issue #154). Absent ⇒ "pickle" (an older
         # server) so a fresh worker stays interoperable.
         wire_format = ecs.get("wire_format", "pickle")
+        # Bulk transport (issue #154). Top-level /info keys (not a training
+        # setting). Absent ⇒ "http" — an older server, or gRPC disabled.
+        transport = info.get("transport", "http")
+        grpc_endpoint = info.get("grpc_endpoint")
         return {
             "sync_every": int(sync_every),
             "upload_dtype": str(upload_dtype),
@@ -252,6 +258,8 @@ class DiLoCoCallback(TrainerCallback):
             "download_dtype": str(download_dtype),
             "download_sr": bool(ecs.get("download_sr", False)),
             "wire_format": str(wire_format),
+            "transport": str(transport),
+            "grpc_endpoint": grpc_endpoint,
             "bf16_comm": legacy_bf16,
             "dylu": bool(ecs.get("dylu", False)),
             "num_fragments": int(ecs.get("num_fragments_default", 1)),
@@ -657,6 +665,8 @@ class DiLoCoCallback(TrainerCallback):
         self.download_dtype = settings["download_dtype"]
         self.download_sr = settings["download_sr"]
         self.wire_format = settings["wire_format"]
+        self.transport = settings["transport"]
+        self.grpc_endpoint = settings["grpc_endpoint"]
         self.bf16_comm = settings["bf16_comm"]
         self.dylu = settings["dylu"]
         self.num_fragments = settings["num_fragments"]
@@ -684,6 +694,8 @@ class DiLoCoCallback(TrainerCallback):
             download_dtype=self.download_dtype,
             download_sr=self.download_sr,
             wire_format=self.wire_format,
+            transport=self.transport,
+            grpc_endpoint=self.grpc_endpoint,
             timeout=self.timeout,
             dylu=self.dylu,
             heartbeat_interval=self.heartbeat_interval,

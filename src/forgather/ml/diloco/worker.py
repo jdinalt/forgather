@@ -103,6 +103,8 @@ class DiLoCoWorker:
         download_dtype: str = "fp32",
         download_sr: bool = False,
         wire_format: str = "pickle",
+        transport: str = "http",
+        grpc_endpoint: Optional[str] = None,
         bf16_comm: Optional[bool] = None,
         timeout: float = 600,
         dylu: bool = False,
@@ -203,6 +205,8 @@ class DiLoCoWorker:
             token=auth_token,
             verify_tls=verify_tls,
             wire_format=wire_format,
+            transport=transport,
+            grpc_endpoint=grpc_endpoint,
         )
 
         # Outer-synchronization backend (issue #154). The bulk tensor legs

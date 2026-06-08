@@ -142,6 +142,30 @@ bf16 — is not covered by that work; the
 experiment finds bf16 download (± SR) essentially lossless on a small Llama at
 ~1B tokens. See [References](#references).
 
+### Bulk transport
+
+How the bulk legs (pseudo-gradients up, averaged weights down) are serialized and
+moved is independent of the wire precision above, and likewise server-authoritative
+(advertised via `/info`, adopted by every worker).
+
+| Knob | Server flag | Default | Effect |
+|---|---|---|---|
+| wire codec | `--wire-format {pickle,safetensors}` | `pickle` | `safetensors` drops pickle for an explicit typed, zero-copy frame; same format as on-disk checkpoints |
+| transport | `--grpc` | off (HTTP) | serve the bulk legs over a streaming gRPC listener instead of the HTTP control port |
+
+- **`--wire-format safetensors`** removes pickle from the wire (no arbitrary-code
+  deserialization) and makes every tensor's dtype/shape explicit. The codec is
+  negotiated, so a mixed old/new fleet stays interoperable; the upload also stamps
+  the codec per request.
+- **`--grpc`** moves the bulk legs onto an HTTP/2 streaming listener (chunked, with
+  backpressure), advertised via `/info`; workers negotiate it and fall back to HTTP
+  if a server doesn't offer it. It **supersedes** `--bulk-cleartext` (gRPC is the
+  single bulk fast-path). The control plane (register / heartbeat / `/info`) stays
+  on HTTP. The gRPC listener is currently cleartext/trusted-LAN (like the cleartext
+  bulk listener); TLS/mTLS parity is a follow-up, so prefer it on a trusted network
+  for now. Best paid off on large models / slow links, where the streaming + framing
+  wins matter; for tiny experiments the HTTP default is fine.
+
 ## Quick Start
 
 This section is a condensed inline reference. For a guided, verified, end-to-end

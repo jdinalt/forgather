@@ -43,6 +43,12 @@ dependencies = [
     # transport (issue #154). Promoted from a transitive import to an explicit
     # dependency now that the wire path depends on it.
     "safetensors ~= 0.7",
+    # DiLoCo gRPC bulk transport (issue #154). grpcio is the runtime; grpcio-tools
+    # regenerates the committed proto stubs (proto/generate.sh). Both in the main
+    # deps per the repo's no-optional-extras policy — a ~6 MB wheel is negligible
+    # next to PyTorch/CUDA.
+    "grpcio ~= 1.80",
+    "grpcio-tools ~= 1.80",
     # Pinned because tools/forgather_server/asgi_tls_protocol.py subclasses
     # uvicorn.protocols.http.{h11,httptools}_impl (private paths) to surface
     # the peer's TLS client cert on the ASGI scope. A uvicorn bump that
@@ -103,6 +109,12 @@ forgather = "forgather.cli:main"
 
 [tool.isort]
 profile = "black"
+# Generated gRPC stubs are committed as-emitted by protoc; never reorder them
+# (it would diverge from a fresh regenerate). See proto/generate.sh.
+extend_skip_glob = ["*_pb2.py", "*_pb2_grpc.py"]
 
 [tool.black]
 line-length = 88
+# Skip the generated gRPC stubs even when passed explicitly (e.g. by the
+# pre-commit hook), so the committed files match a fresh protoc regenerate.
+force-exclude = '.*_pb2(_grpc)?\.py$'

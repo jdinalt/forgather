@@ -83,6 +83,11 @@ src/forgather/ml/diloco/
   client.py          HTTP client, tensor serialization, request construction, retry logic
   sync_backend.py    OuterSyncBackend seam + HttpStarBackend (the bulk tensor-leg transport)
   wire_cast.py       cast_for_upload: the HTTP backend's upload wire cast (fp32/bf16 + SR)
+  wire_serialize.py  Bulk payload codec: pickle | safetensors, the shared serialize seam
+  bulk_transport.py  BulkBytesTransport seam + HttpBytesTransport (the client's byte round-trip)
+  grpc_transport.py  GrpcBytesTransport: the client's gRPC bulk transport
+  grpc_bulk.py       Server gRPC servicer + listener + _CapturingHandler (reuses HTTP handlers)
+  proto/bulk.proto   gRPC bulk service; generated bulk_pb2*.py (proto/generate.sh)
   shared_memory_backend.py  SharedMemoryBackend: single-host shared-memory OuterSyncBackend
   collective_backend.py  CollectiveBackend: all-reduce + replicated outer optimizer
   coordinator.py     CoordinatorClient (the coordination surface: heartbeat / info / model-def)
@@ -234,8 +239,10 @@ tensor size). The first `total % N` fragments get one extra parameter.
 
 ## Wire Protocol
 
-All communication uses HTTP/1.1 over TCP. The server runs a
-`ThreadingHTTPServer` (one thread per request).
+The control plane uses HTTP/1.1 over TCP — the server runs a
+`ThreadingHTTPServer` (one thread per request). The bulk tensor legs use the same
+HTTP listener by default, or an optional streaming gRPC listener (`--grpc`); see
+[gRPC bulk transport](#grpc-bulk-transport-optional).
 
 ### Endpoints
 
@@ -310,18 +317,49 @@ Pseudo-gradient submissions use a length-prefixed header format:
 ```
 [4 bytes: header length (big-endian uint32)]
 [header_length bytes: JSON header (UTF-8)]
-[remaining bytes: torch.save payload]
+[remaining bytes: serialized state-dict payload]
 ```
 
-The JSON header contains `worker_id` and optionally `fragment_id`. The tensor
-payload is a serialized `Dict[str, torch.Tensor]` produced by
-`torch.save(state_dict, BytesIO)`.
+The JSON header contains `worker_id`, optionally `fragment_id`, and `fmt` — the
+wire codec for this request's payload (see below). The payload is a serialized
+`Dict[str, torch.Tensor]`.
 
-### Tensor serialization
+### Tensor serialization (wire codec)
 
-Both client and server use `torch.save` / `torch.load` with `map_location="cpu"`
-and `weights_only=True`. This is the same format used by PyTorch checkpoints.
+The bulk payload codec is one of two, negotiated server-authoritatively via
+`/info` (`wire_format`, default `pickle`) and shared by both legs;
+`wire_serialize.py` is the single seam the client and server both delegate to:
+
+- **`pickle`** — `torch.save` / `torch.load` (`map_location="cpu"`,
+  `weights_only=True`). The historical format; dtypes ride implicitly inside the
+  pickle.
+- **`safetensors`** — `safetensors.torch.save` / `load`. No pickle (no
+  arbitrary-code deserialization), an explicit dtype/shape header on the wire,
+  zero-copy load, and the *same* format as on-disk checkpoints.
+
+The **upload** stamps its codec in the frame's `fmt` header so the server decodes
+each request regardless of its own setting; the **download** response carries no
+header, so the worker decodes it with the `wire_format` it adopted from `/info`.
+Absent `fmt` / `wire_format` ⇒ `pickle`, so an older peer stays interoperable.
 Response payloads use `Content-Type: application/octet-stream`.
+
+### gRPC bulk transport (optional)
+
+With `--grpc` the three bulk legs are served over a streaming gRPC (HTTP/2)
+listener instead of the HTTP control port, advertised via `/info`
+(`transport: "grpc"` + `grpc_endpoint`). The worker negotiates it
+(`GrpcBytesTransport`), falling back to HTTP when a server doesn't offer it; the
+control plane stays on HTTP. The same `[len][header][blob]` frame is chunked over
+the request/response streams (so the wire-codec negotiation is unchanged), and
+the server-side servicer reuses the **unmodified** HTTP submit/barrier handlers
+via an in-memory `_CapturingHandler` (`grpc_bulk.py`) — it reassembles the
+chunks, drives the handler, and captures the framed response + status, which it
+maps back to gRPC (200 → streamed bytes; 4xx/5xx → the corresponding gRPC
+status). The blocking barrier works unchanged in gRPC's thread pool. gRPC
+**supersedes** the cleartext bulk listener (one bulk fast-path); it runs
+cleartext/trusted-LAN today, with TLS/mTLS parity a follow-up (`_grpc_security`
+is the seam). The Python stubs (`proto/bulk_pb2*.py`) are generated from
+`proto/bulk.proto` and committed; regenerate with `proto/generate.sh`.
 
 ### Client retry behavior
 

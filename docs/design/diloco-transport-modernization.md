@@ -1,8 +1,36 @@
 # DiLoCo: modernizing the request/response bulk transport
 
 **Status:** WIP design doc, tracking the implementation PR-to-PR. Tier 1
-(safetensors wire frame) lands in PR1; the seam refactor and Tier 1.5 (gRPC)
-follow.
+(safetensors wire frame, #184) and the `BulkBytesTransport` seam (#185) have
+landed; Tier 1.5 (gRPC) is landing now — see *Tier 1.5 — as built* below. The
+remaining follow-up is gRPC TLS/mTLS/bearer parity.
+
+### Tier 1.5 — as built
+
+The gRPC transport landed with two deliberate divergences from the sketch below:
+
+1. **No handler-agnostic "core" extraction.** Rather than restructure the
+   synchronization-critical submit/barrier handlers into result-returning cores
+   (high risk), the gRPC servicer reuses the **unmodified** HTTP handlers via an
+   in-memory `_CapturingHandler` (`grpc_bulk.py`): it reassembles the request
+   chunks into the same `[len][header][blob]` frame, drives the handler, and
+   captures the framed response bytes + status. The blocking barrier works
+   unchanged (the servicer runs in gRPC's thread pool, like the HTTP per-request
+   threads). This was lower-risk and fully general (all ops/modes for free).
+2. **Cleartext + open today; TLS parity is the follow-up.** The gRPC listener
+   runs cleartext/unauthenticated — the same trusted-LAN posture as the
+   cleartext HTTP bulk listener it supersedes, gated behind the same kind of
+   explicit opt-in (`--grpc` / `grpc_enabled`, default off). `_grpc_security()`
+   is the seam where TLS/mTLS/bearer credentials slot in (the listener already
+   threads a credentials object + an `authenticate` callable). Building gRPC
+   credentials from the same cert/key/CA as the control plane needs that TLS
+   material plumbed to the server (it currently receives only a built
+   `ssl_context`), which is the focused follow-up.
+
+The negotiation, framing reuse, and HTTP fallback are as designed: `/info`
+advertises `transport` + `grpc_endpoint`; the client builds `GrpcBytesTransport`
+only when `transport == "grpc"`; an older server omitting the keys ⇒ HTTP. The
+`register` param-download stays on the HTTP control plane.
 
 > TODO(remove once the transport track lands): this is a WIP design doc that
 > tracks the modernization PR-to-PR. Once Tier 1 + Tier 1.5 have landed, delete
