@@ -364,16 +364,42 @@ def test_run_train_defaults_one_gpu(monkeypatch):
     )
     prop = tools_jobs._run_train({"project_dir": "/p", "config_name": "c.yaml"})
     assert isinstance(prop, Proposal)
-    # Preview shows the CLI equivalent; no enqueue until commit.
-    assert "train" in prop.extra["command"]
+    # Preview shows the SCHEDULED invocation (submit), NOT a foreground `train`.
+    assert "submit" in prop.extra["command"]
+    assert " train" not in prop.extra["command"]
     assert seen == {}
 
     msg = prop.commit()
     assert seen["job_type"] == "training"
-    assert seen["requested_gpus"] == 1  # default
+    # nproc_per_node can't be read for a fake project -> falls back to 1.
+    assert seen["requested_gpus"] == 1
+    assert seen["priority"] == 0
+    assert seen["dataset_source"] is None  # in-process loader by default
     assert seen["enforce_fs_root"] is True
     assert seen["job_params"] == {}  # no nproc
     assert "q_new" in msg
+
+
+def test_run_train_infers_gpus_and_passes_priority_and_dataset(monkeypatch):
+    from forgather_server import config_ops
+
+    monkeypatch.setattr(
+        config_ops, "load_output_dir_info",
+        lambda pd, c: type("I", (), {"nproc_per_node": 4})(),
+    )
+    seen = {}
+    monkeypatch.setattr(
+        queue_ops, "validate_and_enqueue",
+        lambda **kw: seen.update(kw) or _fake_item("training"),
+    )
+    prop = tools_jobs._run_train(
+        {"project_dir": "/p", "config_name": "c.yaml", "priority": 5,
+         "dataset_server_id": "local:q1"}
+    )
+    prop.commit()
+    assert seen["requested_gpus"] == 4  # inferred from nproc_per_node
+    assert seen["priority"] == 5
+    assert seen["dataset_source"] == {"kind": "server", "server_id": "local:q1"}
 
 
 def test_run_train_gpus_and_nproc(monkeypatch):
@@ -411,7 +437,7 @@ def test_cleanup_jobs_registered():
     reg = ToolRegistry()
     tools_jobs.register_all(reg)
     spec = {s.name: s for s in reg.specs()}["cleanup_jobs"]
-    assert spec.risk == CONFIRM and spec.tier == EXTENDED
+    assert spec.risk == CONFIRM and spec.tier != EXTENDED  # core: nudged for routine use
 
 
 def test_cleanup_jobs_requires_an_argument():
@@ -467,3 +493,15 @@ def test_cleanup_jobs_all_terminal(monkeypatch):
     assert prop.extra["all_terminal"] is True and prop.extra["queue_ids"] == ["qd"]
     msg = prop.commit()
     assert "removed 1 completed" in msg
+
+
+def test_system_prompt_docs_first_and_scheduling():
+    from forgather_server.agent import runtime
+
+    sp = runtime.SYSTEM_PROMPT
+    assert "READ THE DOCS FIRST" in sp  # docs-first bias
+    # run_train is described as scheduling, not foreground.
+    reg = ToolRegistry()
+    tools_jobs.register_all(reg)
+    desc = {s.name: s for s in reg.specs()}["run_train"].description
+    assert "SCHEDULE" in desc and "submit" in desc and "foreground" in desc

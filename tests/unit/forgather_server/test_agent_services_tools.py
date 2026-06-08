@@ -19,7 +19,7 @@ def test_registration_risk_and_tier():
     by = {s.name: s for s in _reg().specs()}
     assert by["list_services"].risk == READ and by["list_services"].tier != EXTENDED
     assert by["start_service"].risk == CONFIRM and by["start_service"].tier != EXTENDED
-    assert by["stop_service"].risk == CONFIRM and by["stop_service"].tier == EXTENDED
+    assert by["stop_service"].risk == CONFIRM and by["stop_service"].tier != EXTENDED
 
 
 def test_list_services_shape(monkeypatch):

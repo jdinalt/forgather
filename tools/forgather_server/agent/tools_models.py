@@ -181,7 +181,6 @@ def register_all(reg: ToolRegistry) -> None:
             },
             handler=_list_runs,
             risk=READ,
-            tier=EXTENDED,
         )
     )
     reg.register(
@@ -200,7 +199,6 @@ def register_all(reg: ToolRegistry) -> None:
             },
             handler=_list_evaluations,
             risk=READ,
-            tier=EXTENDED,
         )
     )
     reg.register(

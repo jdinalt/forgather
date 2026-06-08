@@ -26,11 +26,13 @@ def _reg():
 
 def test_registration_risk_and_tier():
     by = {s.name: s for s in _reg().specs()}
-    for name in ("list_models", "run_summary", "list_checkpoints", "job_status"):
+    # Common results tools are core (visible even in deferred mode).
+    for name in ("list_models", "run_summary", "list_checkpoints", "job_status",
+                 "list_runs", "list_evaluations"):
         assert by[name].risk == READ and by[name].tier != EXTENDED
-    for name in ("list_runs", "list_evaluations", "read_run_tty"):
-        assert by[name].risk == READ and by[name].tier == EXTENDED
-        assert by[name].summary  # extended tools carry a short summary
+    # read_run_tty (older runs not in the job list) stays extended.
+    assert by["read_run_tty"].risk == READ and by["read_run_tty"].tier == EXTENDED
+    assert by["read_run_tty"].summary
 
 
 def test_list_models_serializes_dataclasses(monkeypatch):

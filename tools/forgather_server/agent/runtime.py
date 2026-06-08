@@ -78,6 +78,14 @@ Operating rules:
   incrementally: list_workspaces -> list_projects(workspace_root) ->
   list_configs(project_dir) -> inspect_config. Only list everything
   (list_projects with no argument) when you genuinely need a repo-wide view.
+- READ THE DOCS FIRST. Before a non-trivial task — creating or editing a
+  project/config, running training, building a dataset, following a tutorial,
+  or debugging an error — search_docs for the relevant guide and read_file it
+  BEFORE acting. The tutorials and guides exist to prevent exactly the mistakes
+  you'd otherwise make (wrong targets, missing dynamic_args, foreground vs
+  scheduled runs). A minute spent reading the matching doc saves a wrong turn;
+  ground your plan in the docs, then act. If the user names a tutorial/example,
+  open its README and the docs it points to first.
 - For files that are NOT Forgather projects/configs — a tokenizer under
   tokenizers/, a model output dir, a data file — do not use
   list_projects/list_configs (they only see projects). Use find_files (a

@@ -316,23 +316,59 @@ def _run_construct(args: Dict[str, Any]) -> Proposal:
     )
 
 
+def _infer_requested_gpus(project_dir: str, config_name: str) -> int:
+    """Default GPU reservation from the config's nproc_per_node, like the
+    Submit modal / `forgather submit`. Falls back to 1 when it's a keyword
+    ("gpu"/"cpu"/"auto") or can't be read."""
+    try:
+        from .. import config_ops
+
+        n = config_ops.load_output_dir_info(project_dir, config_name).nproc_per_node
+        if isinstance(n, int) and n > 0:
+            return n
+    except Exception:
+        log.debug("could not infer nproc_per_node for %s", config_name, exc_info=True)
+    return 1
+
+
 def _run_train(args: Dict[str, Any]) -> Proposal:
     project_dir = args["project_dir"]
     config_name = args["config_name"]
     dynamic_args = args.get("dynamic_args") or {}
-    gpus = args.get("gpus")
-    requested_gpus = 1 if gpus in (None, "") else int(gpus)
     nproc = args.get("nproc")
+    priority = args.get("priority")
+    priority = 0 if priority in (None, "") else int(priority)
+    dataset_server_id = args.get("dataset_server_id") or None
 
-    # No cheap preview command for training (build_command materializes the
-    # config). Show the equivalent CLI invocation instead.
-    cmd_str = shlex.join(
-        ["forgather", "-p", project_dir, "-t", config_name, "train"]
+    # requested_gpus: explicit wins; otherwise infer from the config's
+    # nproc_per_node (matches `forgather submit` and the Submit modal).
+    gpus = args.get("gpus")
+    requested_gpus = (
+        int(gpus) if gpus not in (None, "")
+        else _infer_requested_gpus(project_dir, config_name)
     )
 
     job_params: Dict[str, Any] = {}
     if nproc not in (None, ""):
-        job_params["nproc"] = nproc
+        job_params["nproc"] = str(nproc)
+    # Dataset source: default (None) = the in-process loader. A server id from
+    # list_dataset_servers routes training data through that dataset server.
+    dataset_source = (
+        {"kind": "server", "server_id": dataset_server_id} if dataset_server_id else None
+    )
+
+    # Accurate preview: this SCHEDULES a background job (the equivalent of
+    # `forgather submit`, i.e. `train --schedule`) — it does NOT run training
+    # in the foreground. (Plain `forgather train` would be foreground.)
+    cmd = ["forgather", "-p", project_dir, "-t", config_name, "submit",
+           "--requested-gpus", str(requested_gpus)]
+    if priority:
+        cmd += ["--priority", str(priority)]
+    if nproc not in (None, ""):
+        cmd += ["--nproc", str(nproc)]
+    if dataset_server_id:
+        cmd += ["--dataset-source", dataset_server_id]
+    cmd_str = shlex.join(cmd)
 
     def commit() -> str:
         item = queue_ops.validate_and_enqueue(
@@ -340,8 +376,10 @@ def _run_train(args: Dict[str, Any]) -> Proposal:
             config=config_name,
             dynamic_args=dynamic_args,
             requested_gpus=requested_gpus,
+            priority=priority,
             job_type="training",
             job_params=job_params,
+            dataset_source=dataset_source,
             enforce_fs_root=True,
         )
         return _enqueue_note(item, f"{requested_gpus} GPU(s)") + (
@@ -351,16 +389,19 @@ def _run_train(args: Dict[str, Any]) -> Proposal:
 
     return Proposal(
         title=f"Train: {config_name}",
-        summary="Run a `training` job on the scheduler. This trains the model — "
-        "a long, resource-intensive run that reserves GPUs.",
+        summary="SCHEDULE a `training` job (a background scheduler job, like "
+        "`forgather submit`/`train --schedule` — not a foreground run). This "
+        "trains the model: long-running and reserves GPUs.",
         extra={
             "command": cmd_str,
             "requested_gpus": requested_gpus,
+            "priority": priority,
+            "dataset_source": dataset_server_id or "local",
             "dynamic_args": dynamic_args or None,
             "warning": "Training is long-running and reserves "
-            f"{requested_gpus} GPU(s). It runs as a background scheduler job; "
-            "watch it with list_jobs / read_job_output and the training "
-            "dashboard.",
+            f"{requested_gpus} GPU(s). It is QUEUED to the scheduler (background), "
+            "not run in the foreground; watch it with list_jobs / "
+            "read_job_output / job_status and the training dashboard.",
         },
         commit=commit,
     )
@@ -750,24 +791,32 @@ def register_all(reg: ToolRegistry) -> None:
         ToolSpec(
             name="run_train",
             description=(
-                "Run a config as a training job on the scheduler (the equivalent "
-                "of `forgather ... train`). This TRAINS the model: a long, "
-                "resource-intensive run that reserves GPUs and may take hours. "
-                "gpus defaults to 1; set 0 for a CPU smoke-test, or more for "
-                "multi-GPU. nproc optionally overrides processes-per-node. "
-                "Approval required. Returns immediately with a queue_id; the run "
-                "continues in the background, so tell the user it is long-running, "
-                "then check on it with list_jobs / read_job_output periodically "
-                "(do NOT block on wait_for_job for a full training run) and only "
-                "report success once status is terminal."
+                "SCHEDULE a training job — the equivalent of `forgather ... "
+                "submit` (i.e. `forgather train --schedule`), NOT a foreground "
+                "`forgather train`. It QUEUES a background scheduler job that "
+                "trains the model (long-running, reserves GPUs, may take hours); "
+                "it does not run training in the foreground. gpus = GPUs to "
+                "reserve; if omitted it defaults to the config's nproc_per_node "
+                "(like the Submit modal), falling back to 1 — set 0 for a CPU "
+                "smoke-test. priority (default 0) orders the scheduler queue. "
+                "nproc optionally overrides processes-per-node. dataset_server_id "
+                "(from list_dataset_servers) routes training data through a "
+                "dataset server; omit to use the in-process loader. Approval "
+                "required. Returns immediately with a queue_id; tell the user it "
+                "is long-running, then check on it with list_jobs / job_status / "
+                "read_job_output periodically (do NOT block on wait_for_job for a "
+                "full training run) and only report success once status is "
+                "terminal."
             ),
             json_schema={
                 "type": "object",
                 "properties": {
                     "project_dir": {"type": "string"},
                     "config_name": {"type": "string"},
-                    "gpus": {"type": "integer", "description": "GPUs to reserve (default 1; 0 = CPU smoke-test)."},
+                    "gpus": {"type": "integer", "description": "GPUs to reserve (default: config's nproc_per_node, else 1; 0 = CPU smoke-test)."},
+                    "priority": {"type": "integer", "description": "Scheduler priority (default 0; higher dispatches first)."},
                     "nproc": {"type": "string", "description": "Override processes-per-node (int, or \"gpu\"/\"cpu\"/\"auto\")."},
+                    "dataset_server_id": {"type": "string", "description": "Optional dataset-server id (from list_dataset_servers) to source training data; omit for the in-process loader."},
                     "dynamic_args": {"type": "object", "description": "Config-specific args (from inspect_config's dynamic_args), keyed by dest."},
                 },
                 "required": ["project_dir", "config_name"],
@@ -889,7 +938,6 @@ def register_all(reg: ToolRegistry) -> None:
             },
             handler=_cleanup_jobs,
             risk=CONFIRM,
-            tier=EXTENDED,
         )
     )
     reg.register(
@@ -904,7 +952,6 @@ def register_all(reg: ToolRegistry) -> None:
             json_schema={"type": "object", "properties": {}},
             handler=_list_eval_configs,
             risk=READ,
-            tier=EXTENDED,
         )
     )
     reg.register(
@@ -938,6 +985,5 @@ def register_all(reg: ToolRegistry) -> None:
             },
             handler=_run_eval,
             risk=CONFIRM,
-            tier=EXTENDED,
         )
     )

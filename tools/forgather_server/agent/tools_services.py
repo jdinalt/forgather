@@ -227,6 +227,5 @@ def register_all(reg: ToolRegistry) -> None:
             },
             handler=_stop_service,
             risk=CONFIRM,
-            tier=EXTENDED,
         )
     )

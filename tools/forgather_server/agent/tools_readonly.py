@@ -487,8 +487,10 @@ def register_all(reg: ToolRegistry) -> None:
                 },
                 "required": ["project_dir", "config_name"],
             },
+            summary="Generate the equivalent stand-alone Python for a config (debug/export).",
             handler=_render_config_code,
             risk=READ,
+            tier=EXTENDED,
         )
     )
     reg.register(
@@ -513,7 +515,6 @@ def register_all(reg: ToolRegistry) -> None:
             },
             handler=_resolve_output_dir,
             risk=READ,
-            tier=EXTENDED,
         )
     )
     reg.register(
@@ -605,8 +606,10 @@ def register_all(reg: ToolRegistry) -> None:
                 },
                 "required": ["project_dir", "config_name"],
             },
+            summary="Show a config's template inheritance tree (debug).",
             handler=_config_template_refs,
             risk=READ,
+            tier=EXTENDED,
         )
     )
     reg.register(

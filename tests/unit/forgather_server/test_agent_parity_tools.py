@@ -32,13 +32,14 @@ def test_registration_risk_and_tier():
     by = {s.name: s for s in _jobs_reg().specs()}
     assert by["gpu_status"].risk == READ and by["gpu_status"].tier != EXTENDED
     assert by["control_job"].risk == CONFIRM and by["control_job"].tier != EXTENDED
-    assert by["list_eval_configs"].risk == READ and by["list_eval_configs"].tier == EXTENDED
-    assert by["run_eval"].risk == CONFIRM and by["run_eval"].tier == EXTENDED
+    # eval pairs with run_train (core); both eval tools are core.
+    assert by["list_eval_configs"].risk == READ and by["list_eval_configs"].tier != EXTENDED
+    assert by["run_eval"].risk == CONFIRM and by["run_eval"].tier != EXTENDED
 
     ro = ToolRegistry()
     tools_readonly.register_all(ro)
     spec = {s.name: s for s in ro.specs()}["resolve_output_dir"]
-    assert spec.risk == READ and spec.tier == EXTENDED
+    assert spec.risk == READ and spec.tier != EXTENDED  # core: used by run/cleanup flows
 
 
 # ---- gpu_status ------------------------------------------------------------
