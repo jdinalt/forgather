@@ -12,6 +12,7 @@ state lives in the running server, so each command here is one step:
     forgather agent approve <action_id>           # your call on a proposed action
     forgather agent reject  <action_id> --reason "use config Y instead"
     forgather agent message --session <id> "..."  # follow-up guidance
+    forgather agent sessions                       # list active session ids
     forgather agent history <id>                  # dump the conversation
 
 Each turn streams until the agent finishes (done — often an answer or a
@@ -226,6 +227,26 @@ def _cmd_continue(client: ServerClient, args) -> int:
     return 1 if state.get("error") else 0
 
 
+def _cmd_sessions(client: ServerClient, args) -> int:
+    import time
+
+    data = client._get("/agent/sessions").json()
+    sessions = data.get("sessions") or []
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    if not sessions:
+        print('no active sessions (start one: forgather agent message "...")')
+        return 0
+    print(f"{'session_id':<38} {'msgs':>4} {'awaiting':>8}  updated")
+    for s in sessions:
+        upd = s.get("updated_at")
+        when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(upd)) if upd else "-"
+        print(f"{s.get('session_id', ''):<38} {s.get('message_count', 0):>4} "
+              f"{str(bool(s.get('awaiting_approval'))):>8}  {when}")
+    return 0
+
+
 def _cmd_history(client: ServerClient, args) -> int:
     data = client._get(f"/agent/sessions/{args.session_id}").json()
     if args.json:
@@ -254,7 +275,7 @@ def agent_cmd(args) -> int:
     sub = getattr(args, "agent_subcommand", None)
     if not sub:
         print("usage: forgather agent {profiles|use|status|message|approve|reject|"
-              "continue|history} ... (forgather agent --help)", file=sys.stderr)
+              "continue|sessions|history} ... (forgather agent --help)", file=sys.stderr)
         return 2
     client = ServerClient.from_args(args)
     handlers = {
@@ -265,6 +286,7 @@ def agent_cmd(args) -> int:
         "approve": _cmd_approve,
         "reject": _cmd_reject,
         "continue": _cmd_continue,
+        "sessions": _cmd_sessions,
         "history": _cmd_history,
     }
     try:

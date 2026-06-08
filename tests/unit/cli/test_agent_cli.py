@@ -145,3 +145,20 @@ def test_cmd_profiles_marks_active(capsys):
     out = capsys.readouterr().out
     assert rc == 0 and "p1" in out and "p2" in out and "active: p1" in out
     assert "* p1" in out  # active marker
+
+
+def test_cmd_sessions_lists(capsys):
+    import argparse
+    client = _GetClient({"sessions": [
+        {"session_id": "abc", "message_count": 4, "awaiting_approval": False, "updated_at": 0},
+        {"session_id": "def", "message_count": 1, "awaiting_approval": True, "updated_at": 0},
+    ]})
+    rc = agent._cmd_sessions(client, argparse.Namespace(json=False))
+    out = capsys.readouterr().out
+    assert rc == 0 and "abc" in out and "def" in out and "session_id" in out
+
+
+def test_cmd_sessions_empty(capsys):
+    import argparse
+    rc = agent._cmd_sessions(_GetClient({"sessions": []}), argparse.Namespace(json=False))
+    assert rc == 0 and "no active sessions" in capsys.readouterr().out

@@ -57,6 +57,10 @@ def create_agent_parser(global_args):
     p_co.add_argument("--session", default=None, help="Session id to resume")
     p_co.add_argument("--json", action="store_true", help="Emit raw event JSONL")
 
+    p_ss = sub.add_parser("sessions", help="List active session ids + metadata",
+                          formatter_class=RawTextHelpFormatter)
+    p_ss.add_argument("--json", action="store_true", help="Emit raw JSON")
+
     p_hi = sub.add_parser("history", help="Dump a session's conversation",
                           formatter_class=RawTextHelpFormatter)
     p_hi.add_argument("session_id", help="Session id")

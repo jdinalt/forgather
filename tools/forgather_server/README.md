@@ -698,8 +698,13 @@ forgather agent approve <action_id>            # your call on a proposed (CONFIR
 forgather agent reject  <action_id> --reason "use config Y"
 forgather agent message --session <id> "...follow-up guidance..."
 forgather agent continue --session <id>        # resume a turn cut off by the token budget
+forgather agent sessions                       # list active session ids (* none = none yet)
 forgather agent history <id>                   # dump the conversation
 ```
+
+A new session is created the first time you `message` without `--session`
+(the id prints on the `STATE:` line); reuse it with `--session <id>`, or
+`sessions` to list what's active.
 
 Each turn streams until the agent finishes (often an answer or a clarifying
 question) or pauses for approval; a final `STATE:` line says which and what to

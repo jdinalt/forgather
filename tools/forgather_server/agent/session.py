@@ -123,6 +123,12 @@ def get_conversation(session_id: str) -> Optional[Conversation]:
         return _state.sessions.get(session_id)
 
 
+def list_conversations() -> List[Conversation]:
+    """Snapshot of all active conversations (newest-updated first)."""
+    with _state._lock:
+        return sorted(_state.sessions.values(), key=lambda c: c.updated_at, reverse=True)
+
+
 def import_conversation(
     messages: List[Dict[str, Any]], session_id: Optional[str] = None
 ) -> Conversation:

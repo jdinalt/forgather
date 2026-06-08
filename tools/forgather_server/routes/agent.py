@@ -429,6 +429,23 @@ def agent_import(req: ImportRequest):
     return {"session_id": conv.session_id}
 
 
+@router.get("/agent/sessions")
+def agent_sessions_list():
+    """List active agent conversations (newest first) — ids + light metadata."""
+    return {
+        "sessions": [
+            {
+                "session_id": c.session_id,
+                "message_count": len(c.messages),
+                "awaiting_approval": c.pending_turn is not None,
+                "created_at": c.created_at,
+                "updated_at": c.updated_at,
+            }
+            for c in agent_session.list_conversations()
+        ]
+    }
+
+
 @router.get("/agent/sessions/{session_id}")
 def agent_session_history(session_id: str):
     conv = agent_session.get_conversation(session_id)
