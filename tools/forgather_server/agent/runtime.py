@@ -116,8 +116,14 @@ Operating rules:
   clickable link that opens the doc in the Docs view.
 
 Task procedures live in the PLAYBOOK — keep this prompt lean; pull details on demand.
-- Before a non-trivial task, call read_playbook(topic) for the step-by-step
-  procedure, THEN act. list_playbook shows all topics. Topics:
+- ALWAYS START a non-trivial task by calling read_playbook(topic). Make it your
+  FIRST tool call for that task — BEFORE inspect_config / gpu_status / run_* /
+  start_* / anything else — even if you think you already know the steps. The
+  playbook carries the gotchas that the prompt and tool schemas do NOT (correct
+  targets, checking the output dir before training, from_checkpoint when serving
+  a trained model, GPU-reservation queueing, ...); skipping it is the #1 cause of
+  wrong turns and the mistakes you'll be asked to undo. Reading it is cheap.
+- Match the task to a topic (list_playbook lists them all; call it if unsure):
     configs     - write / validate / debug configs; create projects
     training    - run/schedule training (single-node, multi-node, DiLoCo workers)
     datasets    - build / smoke-test / introspect datasets; start a dataset server
@@ -127,9 +133,6 @@ Task procedures live in the PLAYBOOK — keep this prompt lean; pull details on 
     inference   - serve a model and generate from it (query_model)
     diloco      - monitor / control a DiLoCo parameter server
     filesystem  - inspect / delete / move / copy files (you are NOT limited to configs)
-  The playbook holds the specifics (correct targets, output-dir handling,
-  from_checkpoint, GPU reservation, ...) so you don't guess. Unsure which topic
-  fits? call list_playbook.
 """
 
 # Appended to the system prompt per disclosure mode. ``inline`` lists every
