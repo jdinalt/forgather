@@ -184,14 +184,14 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   const [diHeartbeat, setDiHeartbeat] = useState<string>(
     persistedDiLoCo.heartbeatInterval,
   );
-  // Sync backend for the worker pool (issue #154). Not persisted: it's a
-  // per-submit choice and http is the safe default. Single-host only, so it's
-  // ignored on the cluster-fanout path (which the backend rejects anyway).
-  const [diBackend, setDiBackend] = useState<
-    "http" | "shared_memory" | "collective"
-  >("http");
-  // Collective backend: the replica count (one torchrun job of N replicas =
-  // nproc = GPU reservation). Only used when diBackend === "collective".
+  // Launch mode (issue #154). The sync backend (http / shared_memory) is NOT
+  // chosen here — it's declared on the param server and derived at launch from
+  // /info. The one operator-visible launch choice is the *topology*: the normal
+  // worker pool, or "collective" (one torchrun job of N replicas). Not
+  // persisted; single-host, so it's ignored on the cluster-fanout path.
+  const [diCollective, setDiCollective] = useState<boolean>(false);
+  // Collective: the replica count (one torchrun job of N replicas = nproc = GPU
+  // reservation). Only used when diCollective is true.
   const [diReplicate, setDiReplicate] = useState<number>(2);
   // Multi-node + DiLoCo composition: the bundle becomes one DiLoCo
   // worker group, all ranks sharing this base worker_id (the PP
@@ -677,16 +677,16 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     }
     const trimmedNproc = nprocOverride.trim();
 
-    // Collective backend: ONE torchrun job of N replicas (not the N-job worker
-    // pool). nproc + requested_gpus = the replicate degree; the scheduler
-    // derives DILOCO_BACKEND=collective + DILOCO_REPLICATE. Mirrors the CLI's
-    // `forgather submit --backend collective --diloco-replicate N`.
-    if (diBackend === "collective" && selectedDiLoCoBase) {
+    // Collective topology: ONE torchrun job of N replicas (not the N-job worker
+    // pool). nproc + requested_gpus = the replica count; ``diloco_replicate``
+    // marks the job collective, and the scheduler validates the param server
+    // actually declares 'collective' before deriving DILOCO_REPLICATE. Mirrors
+    // the CLI's `forgather submit --diloco-replicate N`.
+    if (diCollective && selectedDiLoCoBase) {
       const diloco = buildDiLoCoPayload({
         base: selectedDiLoCoBase,
         heartbeatInterval: diHeartbeat,
         workerId: "",
-        backend: "collective",
         replicate: diReplicate,
       });
       const req: EnqueueRequest = {
@@ -707,16 +707,11 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     // job — the pre-pool behavior.
     const groupWorkerIds: Array<string | null> =
       selectedDiLoCoBase && poolWorkerIds.length > 0 ? poolWorkerIds : [null];
-    // Shared-memory backend: mint one group id for this submit so every
-    // co-located worker shares it (and the size = the batch count); the
-    // scheduler derives a single region dir + group size. Mirrors the CLI.
-    const shmGroup =
-      diBackend === "shared_memory"
-        ? {
-            shmGroupId: randomGroupId(),
-            shmGroupSize: groupWorkerIds.length,
-          }
-        : null;
+    // The sync backend is NOT chosen here (issue #154): workers submit
+    // backend-agnostic, and the scheduler queries the param server's /info just
+    // before torchrun. For a shared_memory server it derives the per-host region
+    // dir + group size from the server's worker count — so there's no
+    // submit-time group id to mint.
     // Build one enqueue request for a given worker_id (null == let the
     // scheduler auto-assign, i.e. fall back to the queue_id).
     const buildRequest = (workerId: string | null): EnqueueRequest => {
@@ -730,9 +725,6 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
         base: selectedDiLoCoBase,
         heartbeatInterval: diHeartbeat,
         workerId: workerId ?? "",
-        backend: diBackend,
-        shmGroupId: shmGroup?.shmGroupId,
-        shmGroupSize: shmGroup?.shmGroupSize,
       });
       if (diloco) job_params.diloco = diloco;
       return {
@@ -941,8 +933,8 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
               onSelectBase={setSelectedDiLoCoBase}
               heartbeatInterval={diHeartbeat}
               setHeartbeatInterval={setDiHeartbeat}
-              backend={diBackend}
-              setBackend={setDiBackend}
+              collective={diCollective}
+              setCollective={setDiCollective}
               replicate={diReplicate}
               setReplicate={setDiReplicate}
               resumableWorkers={resumableWorkers}
@@ -1031,7 +1023,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
                 ? "Submitting…"
                 : useClusterFanout
                   ? `Submit to ${mnState.selected.size} nodes`
-                  : selectedDiLoCoBase && diBackend === "collective"
+                  : selectedDiLoCoBase && diCollective
                     ? `Submit collective (${diReplicate} replica${
                         diReplicate === 1 ? "" : "s"
                       })`
@@ -1079,9 +1071,10 @@ interface DiLoCoPickerProps {
   onSelectBase: (base: string) => void;
   heartbeatInterval: string;
   setHeartbeatInterval: (v: string) => void;
-  // Sync backend for the worker pool (non-cluster only; single-host).
-  backend: "http" | "shared_memory" | "collective";
-  setBackend: (v: "http" | "shared_memory" | "collective") => void;
+  // Launch topology (non-cluster only; single-host). The sync backend itself is
+  // server-declared; the operator only picks worker-pool vs collective here.
+  collective: boolean;
+  setCollective: (v: boolean) => void;
   replicate: number;
   setReplicate: (v: number) => void;
   // Worker pool (batch submit; non-cluster only).
@@ -1116,8 +1109,8 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
     onSelectBase,
     heartbeatInterval,
     setHeartbeatInterval,
-    backend,
-    setBackend,
+    collective,
+    setCollective,
     replicate,
     setReplicate,
     resumableWorkers,
@@ -1500,50 +1493,47 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
             </label>
 
             <label style={{ display: "block", maxWidth: "16em" }}>
-              sync backend
+              launch topology
               <select
-                value={backend}
-                onChange={(e) =>
-                  setBackend(
-                    e.target.value as "http" | "shared_memory" | "collective",
-                  )
-                }
+                value={collective ? "collective" : "workers"}
+                onChange={(e) => setCollective(e.target.value === "collective")}
                 style={{ width: "100%" }}
               >
-                <option value="http">http (param server)</option>
-                <option value="shared_memory">shared_memory (single-host)</option>
+                <option value="workers">worker pool</option>
                 <option value="collective">collective (single-host)</option>
               </select>
-              {backend === "shared_memory" && (
-                <span className="muted" style={{ fontSize: 11 }}>
-                  Co-located workers share a CPU master region (no on-wire sync).
-                  Single-host: every worker in this pool runs on one machine.
-                </span>
-              )}
-              {backend === "collective" && (
+              {collective ? (
                 <span className="muted" style={{ fontSize: 11 }}>
                   N replicas run as one torchrun job that all-reduce
                   pseudo-gradients (single-host). One job, sized below — the
-                  worker pool doesn't apply.
+                  worker pool doesn't apply. The param server must declare
+                  --backend collective.
+                </span>
+              ) : (
+                <span className="muted" style={{ fontSize: 11 }}>
+                  The sync backend (http / shared_memory) is declared on the
+                  param server and applied at launch — there's no per-submit
+                  choice, so workers can't disagree.
                 </span>
               )}
             </label>
 
-            {backend === "collective" ? (
+            {collective ? (
               <label style={{ display: "block", maxWidth: "16em" }}>
                 replicate degree (replicas)
                 <input
                   type="number"
-                  min={1}
+                  min={2}
                   step={1}
                   value={replicate}
                   onChange={(e) =>
-                    setReplicate(Math.max(1, Number(e.target.value) || 1))
+                    setReplicate(Math.max(2, Number(e.target.value) || 2))
                   }
                   style={{ width: "100%" }}
                 />
                 <span className="muted" style={{ fontSize: 11 }}>
                   = nproc_per_node and the GPU reservation for the one job.
+                  Minimum 2 (a single replica has no peers to all-reduce).
                 </span>
               </label>
             ) : (
@@ -1833,27 +1823,12 @@ interface DiLoCoFormSnapshot {
   base: string;
   heartbeatInterval: string;
   workerId: string;
-  // Sync backend (issue #154). "shared_memory" has the co-located workers
-  // share a CPU master region instead of syncing through the param server.
-  // ``shmGroupId`` is uniform across the workers of one submit; ``shmGroupSize``
-  // is the worker count. "collective" runs N replicas as one torchrun job that
-  // all-reduce (``replicate`` = the replica count). Absent / "http" → the
-  // default param-server path.
-  backend?: "http" | "shared_memory" | "collective";
-  shmGroupId?: string;
-  shmGroupSize?: number;
+  // Launch topology (issue #154). ``replicate`` (> 1) marks a collective job:
+  // N replicas as one torchrun job that all-reduce. Absent → the normal worker
+  // pool. The sync backend itself is server-declared and never carried here.
   replicate?: number;
 }
 
-/** 16 hex chars, mirroring the CLI's ``uuid.uuid4().hex[:16]`` shared-memory
- *  group id. Uses ``getRandomValues`` rather than ``crypto.randomUUID`` so it
- *  also works over plain HTTP from a non-localhost origin (a LAN peer) —
- *  ``randomUUID`` is secure-context-only and would throw there. */
-function randomGroupId(): string {
-  const bytes = new Uint8Array(8);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
 
 /** Construct the ``job_params.diloco`` payload from the form snapshot.
  *  Returns null when the operator picked "None" — callers should skip
@@ -1884,19 +1859,13 @@ function buildDiLoCoPayload(
   }
   const wid = s.workerId.trim();
   if (wid) payload.worker_id = wid;
-  // Shared-memory backend: declare the structured intent (backend + uniform
-  // group id + size); the scheduler derives DILOCO_SHM_* env, mirroring the
-  // CLI's ``--backend shared_memory``. Omitted for the default http backend.
-  if (s.backend === "shared_memory") {
-    payload.backend = "shared_memory";
-    if (s.shmGroupId) payload.shm_group_id = s.shmGroupId;
-    if (s.shmGroupSize) payload.shm_group_size = s.shmGroupSize;
-  } else if (s.backend === "collective") {
-    // Collective backend: the scheduler derives DILOCO_BACKEND=collective +
-    // DILOCO_REPLICATE; the torchrun world size rides job_params.nproc (set by
-    // the caller). Mirrors the CLI's ``--backend collective --diloco-replicate``.
-    payload.backend = "collective";
-    if (s.replicate) payload.diloco_replicate = s.replicate;
+  // Launch topology only. ``diloco_replicate`` marks a collective job; the
+  // scheduler validates the server declares 'collective' and derives
+  // DILOCO_REPLICATE (the torchrun world size rides job_params.nproc, set by the
+  // caller). The sync backend (http / shared_memory) is NOT carried — it's
+  // server-declared and derived at launch (issue #154).
+  if (s.replicate && s.replicate > 1) {
+    payload.diloco_replicate = s.replicate;
   }
   return payload;
 }

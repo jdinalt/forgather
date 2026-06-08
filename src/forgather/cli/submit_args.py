@@ -190,16 +190,15 @@ def create_submit_parser(global_args):
     )
     diloco.add_argument(
         "--backend",
-        choices=("http", "shared_memory", "collective"),
-        default="http",
+        choices=("http", "shared_memory"),
+        default=None,
         help=(
-            "Sync backend for the worker(s). 'http' (default) syncs through the\n"
-            "param server. 'shared_memory' has co-located workers on one host\n"
-            "share a CPU master region (single-host; N worker jobs).\n"
-            "'collective' runs N independent replicas as one torchrun job that\n"
-            "all-reduce pseudo-gradients (single-host; size with\n"
-            "--diloco-replicate). 'shared_memory'/'collective' are not\n"
-            "compatible with --global."
+            "Dev/debug only: the worker's sync backend, honored solely with\n"
+            "--local-only (a direct foreground launch with no server to query).\n"
+            "The orchestrated path does NOT take this — the backend is declared\n"
+            "once on the param server ('diloco server --backend …') and derived\n"
+            "at launch from /info, so workers can't disagree. 'collective' is a\n"
+            "launch topology, selected with --diloco-replicate (not here)."
         ),
     )
     diloco.add_argument(
@@ -209,10 +208,12 @@ def create_submit_parser(global_args):
         default=1,
         metavar="N",
         help=(
-            "Collective backend only: number of independent replicas in one\n"
+            "Select the collective topology: N independent replicas in one\n"
             "torchrun job (nproc_per_node = N, also the GPU reservation). The\n"
-            "replicas all-reduce among themselves; the coordinator provides\n"
-            "/info + the dataset shard dispatch. Default: 1."
+            "replicas all-reduce pseudo-gradients among themselves; the\n"
+            "coordinator provides /info + the dataset shard dispatch. The param\n"
+            "server must declare --backend collective. Single-host; not\n"
+            "compatible with --global. Default: 1 (no collective)."
         ),
     )
 

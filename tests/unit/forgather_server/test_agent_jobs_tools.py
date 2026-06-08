@@ -554,10 +554,13 @@ def test_run_train_diloco_routes_to_submit_cli(monkeypatch):
     monkeypatch.setattr(tools_jobs, "_submit_via_cli", lambda argv: "queued worker w0")
     prop = tools_jobs._run_train(
         {"project_dir": "/p", "config_name": "c.yaml", "gpus": 1,
-         "diloco_server": "ringdale", "backend": "http"}
+         "diloco_server": "ringdale"}
     )
     cmd = prop.extra["command"]
-    assert "--diloco" in cmd and "--diloco-server ringdale" in cmd and "--backend http" in cmd
+    # No --backend: the sync backend is server-authoritative and derived at
+    # launch (issue #154); the agent submit tool never passes it.
+    assert "--diloco" in cmd and "--diloco-server ringdale" in cmd
+    assert "--backend" not in cmd
     assert "DiLoCo" in prop.extra["mode"]
 
 

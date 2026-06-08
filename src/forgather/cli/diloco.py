@@ -739,6 +739,15 @@ def _worker_cmd(args):
     )
     env["DILOCO_HEARTBEAT_INTERVAL"] = str(getattr(args, "heartbeat_interval", 30.0))
 
+    # Direct/foreground is the one place an explicit --backend is honored
+    # (issue #154): torchrun runs here, with no scheduler to query the param
+    # server's declared backend. The orchestrated path forbids --backend and
+    # derives it at launch instead. PR1's worker-side check still validates this
+    # value against the server's /info, so a misspecification fails loud.
+    backend = (getattr(args, "backend", None) or "").strip().lower()
+    if backend:
+        env["DILOCO_BACKEND"] = backend
+
     # Always set DILOCO_WORKER_ID — when the operator didn't supply one,
     # mint a memorable two-word name so the worker doesn't surface as
     # the worker.py auto-generated ``worker_<hostname>_<8hex>`` fallback.
