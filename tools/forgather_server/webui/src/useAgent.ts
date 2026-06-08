@@ -365,7 +365,13 @@ export function useAgent(): AgentController {
                 ? {
                     ...it,
                     status: newStatus,
-                    result: (ev.error as string) || (ev.result as string) || undefined,
+                    // reason is only present on reject; echo it back so the
+                    // user sees the guidance they sent to the agent.
+                    result:
+                      (ev.error as string) ||
+                      (ev.result as string) ||
+                      (ev.reason as string) ||
+                      undefined,
                   }
                 : it,
             ),

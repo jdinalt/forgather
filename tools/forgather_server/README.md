@@ -693,6 +693,7 @@ server, so each command is one step:
 ```bash
 forgather agent profiles                       # list connection profiles (* = active)
 forgather agent use <profile_id>               # test against any profile (Claude or local vLLM)
+forgather agent status                         # active agent's connection + disclosure mode
 forgather agent message "build the wikitext dataset"   # start a turn -> prints a session id
 forgather agent approve <action_id>            # your call on a proposed (CONFIRM/PROPOSE) action
 forgather agent reject  <action_id> --reason "use config Y"
@@ -700,6 +701,7 @@ forgather agent message --session <id> "...follow-up guidance..."
 forgather agent continue --session <id>        # resume a turn cut off by the token budget
 forgather agent sessions                       # list active session ids (* none = none yet)
 forgather agent history <id>                   # dump the conversation
+forgather agent forget <id>                    # delete a session from the server
 ```
 
 A new session is created the first time you `message` without `--session`
