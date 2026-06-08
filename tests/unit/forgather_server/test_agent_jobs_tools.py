@@ -524,3 +524,57 @@ def test_system_prompt_docs_first_and_scheduling():
     tools_jobs.register_all(reg)
     desc = {s.name: s for s in reg.specs()}["run_train"].description
     assert "SCHEDULE" in desc and "submit" in desc and "foreground" in desc
+
+
+def test_run_train_multinode_routes_to_submit_cli(monkeypatch):
+    seen = {}
+
+    def fake_submit(argv):
+        seen["argv"] = argv
+        return "queued bundle clusterjob-1"
+
+    monkeypatch.setattr(tools_jobs, "_submit_via_cli", fake_submit)
+    # The in-process enqueue path must NOT be used for an advanced submit.
+    def _boom(**kw):
+        raise AssertionError("advanced submit must go through the CLI")
+
+    monkeypatch.setattr(queue_ops, "validate_and_enqueue", _boom)
+    prop = tools_jobs._run_train(
+        {"project_dir": "/p", "config_name": "c.yaml", "gpus": 2,
+         "members": ["h1:2", "h2:2"], "allow_version_mismatch": True}
+    )
+    cmd = prop.extra["command"]
+    assert "--global" in cmd and "--member h1:2" in cmd and "--member h2:2" in cmd
+    assert "--allow-version-mismatch" in cmd and prop.extra["mode"].startswith("multi-node")
+    msg = prop.commit()
+    assert "clusterjob-1" in msg and "--global" in " ".join(seen["argv"])
+
+
+def test_run_train_diloco_routes_to_submit_cli(monkeypatch):
+    monkeypatch.setattr(tools_jobs, "_submit_via_cli", lambda argv: "queued worker w0")
+    prop = tools_jobs._run_train(
+        {"project_dir": "/p", "config_name": "c.yaml", "gpus": 1,
+         "diloco_server": "ringdale", "backend": "http"}
+    )
+    cmd = prop.extra["command"]
+    assert "--diloco" in cmd and "--diloco-server ringdale" in cmd and "--backend http" in cmd
+    assert "DiLoCo" in prop.extra["mode"]
+
+
+def test_run_train_advanced_renders_dynamic_args(monkeypatch):
+    from forgather_server import config_ops
+
+    monkeypatch.setattr(
+        config_ops, "load_dynamic_args",
+        lambda pd, c: [
+            config_ops.DynamicArg(dest="lr", cli_name="--lr"),
+            config_ops.DynamicArg(dest="fp16", cli_name="--fp16", type="bool"),
+        ],
+    )
+    monkeypatch.setattr(tools_jobs, "_submit_via_cli", lambda argv: "ok")
+    prop = tools_jobs._run_train(
+        {"project_dir": "/p", "config_name": "c.yaml", "gpus": 1, "diloco": True,
+         "dynamic_args": {"lr": "3e-4", "fp16": True}}
+    )
+    cmd = prop.extra["command"]
+    assert "--lr 3e-4" in cmd and "--fp16" in cmd

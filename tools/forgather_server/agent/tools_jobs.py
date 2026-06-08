@@ -367,6 +367,110 @@ def _default_dataset_source() -> str:
     return "local"
 
 
+def _render_dynamic_arg_flags(
+    project_dir: str, config_name: str, dynamic_args: Dict[str, Any]
+) -> List[str]:
+    """Render dynamic_args (keyed by dest) as `forgather submit` CLI flags,
+    using the config's dynamic-arg schema to map dest -> cli_name."""
+    if not dynamic_args:
+        return []
+    try:
+        from .. import config_ops
+
+        schema = {a.dest: a for a in config_ops.load_dynamic_args(project_dir, config_name)}
+    except Exception:
+        schema = {}
+    flags: List[str] = []
+    for dest, val in dynamic_args.items():
+        spec = schema.get(dest)
+        cli = spec.cli_name if (spec and spec.cli_name) else "--" + str(dest).replace("_", "-")
+        if isinstance(val, bool):
+            if val:
+                flags.append(cli)
+        else:
+            flags += [cli, str(val)]
+    return flags
+
+
+def _build_submit_argv(
+    project_dir: str, config_name: str, *, requested_gpus: int, priority: int,
+    dataset: str, args: Dict[str, Any], dyn_flags: List[str],
+) -> List[str]:
+    """Compose the full `forgather submit` argv (single point of dispatch for
+    single-node / multi-node / DiLoCo, mirroring the CLI / Submit modal)."""
+    argv = ["forgather", "-p", project_dir, "-t", config_name, "submit",
+            "--requested-gpus", str(requested_gpus)]
+    if priority:
+        argv += ["--priority", str(priority)]
+    if dataset:
+        argv += ["--dataset", dataset]
+    # Multi-node (--global). See docs/guides/multi-node-training.md.
+    members = args.get("members") or []
+    if members:
+        argv.append("--global")
+        for m in members:
+            argv += ["--member", str(m)]
+        if args.get("rdzv_host"):
+            argv += ["--rdzv-host", str(args["rdzv_host"])]
+        if args.get("allow_version_mismatch"):
+            argv.append("--allow-version-mismatch")
+    # DiLoCo worker(s). See docs/trainers/diloco.md.
+    diloco_server = (args.get("diloco_server") or "").strip()
+    if args.get("diloco") or diloco_server or args.get("resume_workers"):
+        argv.append("--diloco")
+        if diloco_server:
+            argv += ["--diloco-server", diloco_server]
+        if args.get("backend"):
+            argv += ["--backend", str(args["backend"])]
+        if args.get("diloco_worker_count"):
+            argv += ["--diloco-worker-count", str(args["diloco_worker_count"])]
+        if args.get("diloco_replicate"):
+            argv += ["--diloco-replicate", str(args["diloco_replicate"])]
+        if args.get("worker_id"):
+            argv += ["--worker-id", str(args["worker_id"])]
+        if args.get("heartbeat_interval"):
+            argv += ["--heartbeat-interval", str(args["heartbeat_interval"])]
+        if args.get("resume_workers"):
+            argv.append("--resume-workers")
+    return argv + dyn_flags
+
+
+def _is_advanced_submit(args: Dict[str, Any]) -> bool:
+    """Multi-node or DiLoCo? Those route through the `forgather submit` CLI."""
+    return bool(
+        args.get("members")
+        or args.get("diloco")
+        or args.get("diloco_server")
+        or args.get("resume_workers")
+    )
+
+
+def _submit_via_cli(argv: List[str]) -> str:
+    """Run `forgather submit` against THIS server and return its output.
+
+    Synchronous (submit just enqueues, so it returns quickly); pointed at the
+    running server via FORGATHER_SERVER_URL so the CLI enqueues here.
+    """
+    import os
+    import subprocess
+
+    env = os.environ.copy()
+    try:
+        from .. import cluster
+
+        ident = cluster.self_identity()
+        if ident is not None:
+            scheme = "https" if getattr(ident, "tls", False) else "http"
+            env["FORGATHER_SERVER_URL"] = f"{scheme}://127.0.0.1:{ident.port}"
+    except Exception:
+        log.debug("could not resolve own server URL for submit subprocess", exc_info=True)
+    proc = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=180)
+    if proc.returncode != 0:
+        msg = (proc.stderr or proc.stdout or "").strip() or "submit failed"
+        raise RuntimeError(f"`forgather submit` failed: {msg}")
+    return (proc.stdout or "").strip()
+
+
 def _run_train(args: Dict[str, Any]) -> Proposal:
     project_dir = args["project_dir"]
     config_name = args["config_name"]
@@ -390,18 +494,21 @@ def _run_train(args: Dict[str, Any]) -> Proposal:
     dataset = (args.get("dataset") or "").strip() or _default_dataset_source()
     dataset_source = _parse_dataset_source(dataset)
 
-    # Accurate preview: this SCHEDULES a background job (the equivalent of
-    # `forgather submit`, i.e. `train --schedule`) — it does NOT run training
-    # in the foreground. (Plain `forgather train` would be foreground.)
-    cmd = ["forgather", "-p", project_dir, "-t", config_name, "submit",
-           "--requested-gpus", str(requested_gpus)]
-    if priority:
-        cmd += ["--priority", str(priority)]
-    if dataset:
-        cmd += ["--dataset", dataset]
-    cmd_str = shlex.join(cmd)
+    advanced = _is_advanced_submit(args)
+    dyn_flags = _render_dynamic_arg_flags(project_dir, config_name, dynamic_args) if advanced else []
+    argv = _build_submit_argv(
+        project_dir, config_name, requested_gpus=requested_gpus, priority=priority,
+        dataset=dataset, args=args, dyn_flags=dyn_flags,
+    )
+    cmd_str = shlex.join(argv)
 
     def commit() -> str:
+        # Multi-node / DiLoCo: dispatch through the single `forgather submit`
+        # entry point (composes every permutation; mirrors the CLI/modal).
+        if advanced:
+            out = _submit_via_cli(argv)
+            return f"submitted via `forgather submit`: {out} (watch with list_jobs)"
+        # Basic single-node: enqueue in-process (robust, no subprocess).
         item = queue_ops.validate_and_enqueue(
             project_dir=project_dir,
             config=config_name,
@@ -418,16 +525,18 @@ def _run_train(args: Dict[str, Any]) -> Proposal:
             "than blocking."
         )
 
+    kind = "multi-node / DiLoCo" if advanced else "single-node"
     return Proposal(
         title=f"Train: {config_name}",
         summary="SCHEDULE a `training` job (a background scheduler job, like "
         "`forgather submit`/`train --schedule` — not a foreground run). This "
-        "trains the model: long-running and reserves GPUs.",
+        f"trains the model ({kind}): long-running and reserves GPUs.",
         extra={
             "command": cmd_str,
             "requested_gpus": requested_gpus,
             "priority": priority,
             "dataset": dataset or "local (default)",
+            "mode": kind,
             "dynamic_args": dynamic_args or None,
             "warning": "Training is long-running and reserves "
             f"{requested_gpus} GPU(s). It is QUEUED to the scheduler (background), "
@@ -822,23 +931,32 @@ def register_all(reg: ToolRegistry) -> None:
         ToolSpec(
             name="run_train",
             description=(
-                "SCHEDULE a training job — the equivalent of `forgather ... "
-                "submit` (i.e. `forgather train --schedule`), NOT a foreground "
-                "`forgather train`. It QUEUES a background scheduler job that "
-                "trains the model (long-running, reserves GPUs, may take hours); "
-                "it does not run training in the foreground. gpus = GPUs to "
-                "reserve; if omitted it defaults to the config's nproc_per_node "
-                "(like the Submit modal), falling back to 1 — set 0 for a CPU "
-                "smoke-test. priority (default 0) orders the scheduler queue. "
-                "dataset selects the training data source (the CLI's --dataset): "
-                "'auto' (cluster routing), 'local' (in-process loader), or "
-                "'server:<id>' (a dataset server from list_dataset_servers). "
-                "Omit it to use the mode-aware default, which is normally 'auto' "
-                "— only pass 'local'/'server:<id>' for special cases. Approval "
-                "required. Returns immediately with a queue_id; tell the user it "
-                "is long-running, then check on it with list_jobs / job_status / "
-                "read_job_output periodically (do NOT block on wait_for_job for a "
-                "full training run) and only report success once status is "
+                "SCHEDULE a training job — the single composable submit entry "
+                "point (the equivalent of `forgather ... submit`, i.e. `train "
+                "--schedule`), NOT a foreground `forgather train`. It QUEUES a "
+                "background scheduler job; it does not run in the foreground.\n"
+                "BASIC (the common case) is simple — just project_dir + "
+                "config_name, optionally gpus: defaults are fine. gpus defaults "
+                "to the config's nproc_per_node (else 1; 0 = CPU smoke-test); "
+                "priority (default 0) orders the queue; dataset is the data "
+                "source ('auto'|'local'|'server:<id>'), default mode-aware "
+                "(normally 'auto').\n"
+                "OVERRIDES: to change config parameters, pass dynamic_args (keyed "
+                "by dest, from inspect_config) — there are many; if unfamiliar, "
+                "READ docs/project-templates/lm-training-projects.md first.\n"
+                "MULTI-NODE: pass members ('HOST:GPUS[:IFACE]', repeatable) for a "
+                "cluster fan-out (+ optional rdzv_host, allow_version_mismatch). "
+                "READ docs/guides/multi-node-training.md first.\n"
+                "DiLoCo: pass diloco_server (id/label, or set diloco=true) to "
+                "join a param server, with backend / diloco_worker_count / "
+                "diloco_replicate / worker_id / heartbeat_interval / "
+                "resume_workers. READ docs/trainers/diloco.md first.\n"
+                "Multi-node and DiLoCo are complex and composable — read the docs "
+                "before using them, and if the user is unsure how they want the "
+                "job run, ASK clarifying questions before proposing. Approval "
+                "required. Returns a queue_id; it's long-running, so watch with "
+                "list_jobs / job_status / read_job_output (do NOT block on "
+                "wait_for_job for a full run) and only report success once "
                 "terminal."
             ),
             json_schema={
@@ -848,8 +966,19 @@ def register_all(reg: ToolRegistry) -> None:
                     "config_name": {"type": "string"},
                     "gpus": {"type": "integer", "description": "GPUs to reserve (default: config's nproc_per_node, else 1; 0 = CPU smoke-test)."},
                     "priority": {"type": "integer", "description": "Scheduler priority (default 0; higher dispatches first)."},
-                    "dataset": {"type": "string", "description": "Training data source: 'auto' | 'local' | 'server:<id>'. Omit for the mode-aware default (normally 'auto')."},
-                    "dynamic_args": {"type": "object", "description": "Config-specific args (from inspect_config's dynamic_args), keyed by dest."},
+                    "dataset": {"type": "string", "description": "Data source: 'auto' | 'local' | 'server:<id>'. Omit for the mode-aware default (normally 'auto')."},
+                    "dynamic_args": {"type": "object", "description": "Config-specific overrides (from inspect_config's dynamic_args), keyed by dest. See docs/project-templates/lm-training-projects.md."},
+                    "members": {"type": "array", "items": {"type": "string"}, "description": "MULTI-NODE: per-node 'HOST:GPUS[:IFACE]'. See docs/guides/multi-node-training.md."},
+                    "rdzv_host": {"type": "string", "description": "Multi-node rendezvous host (default: cluster master)."},
+                    "allow_version_mismatch": {"type": "boolean", "description": "Multi-node: skip the cross-peer version check."},
+                    "diloco": {"type": "boolean", "description": "DiLoCo: submit as DiLoCo worker(s). See docs/trainers/diloco.md."},
+                    "diloco_server": {"type": "string", "description": "DiLoCo param-server id/label/host:port to join (implies diloco; auto-picks the single running server if omitted)."},
+                    "backend": {"type": "string", "enum": ["http", "shared_memory", "collective"], "description": "DiLoCo sync backend (default http)."},
+                    "diloco_worker_count": {"type": "integer", "description": "DiLoCo: number of worker jobs to launch (default 1)."},
+                    "diloco_replicate": {"type": "integer", "description": "DiLoCo collective backend: replicas in one torchrun job."},
+                    "worker_id": {"type": "string", "description": "DiLoCo worker id (auto-generated if omitted)."},
+                    "heartbeat_interval": {"type": "number", "description": "DiLoCo worker heartbeat seconds (default 30)."},
+                    "resume_workers": {"type": "boolean", "description": "DiLoCo: relaunch every stopped worker the server knows (resumes checkpoints)."},
                 },
                 "required": ["project_dir", "config_name"],
             },

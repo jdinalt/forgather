@@ -154,6 +154,16 @@ Running configs as scheduler jobs:
 - Pick run_construct for "build/check this target" inspection (defaults to
   target=main, gpus=0); pick run_train only when the user actually wants to
   train. Pass dynamic_args (from inspect_config) for configs that require them.
+- run_train is the SINGLE composable submit entry point for every training job
+  (single-node, multi-node, DiLoCo). The basic case is trivial — project_dir +
+  config_name, optionally gpus; the defaults are fine, so DON'T overthink it.
+  But anything beyond basic is complex: to override config parameters use
+  dynamic_args and first read
+  `docs/project-templates/lm-training-projects.md`; for multi-node (members=)
+  first read `docs/guides/multi-node-training.md`; for DiLoCo (diloco_server=)
+  first read `docs/trainers/diloco.md`. Read the doc BEFORE composing the call.
+  If the user hasn't made clear how they want a complex job run, ASK them
+  focused questions first rather than guessing.
 - Watch any job with list_jobs / read_job_output, or block with
   wait_for_job(queue_id). For a short job (dataset build, construct) wait_for_job
   is fine; for a full training run do NOT block — check on it periodically.
