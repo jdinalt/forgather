@@ -198,6 +198,97 @@ def test_build_diloco_command_no_bulk_cleartext_omits_flag():
     assert "--bulk-port" not in cmd
 
 
+def test_build_diloco_command_bulk_transport_flags():
+    """Bulk transport (issue #154): --wire-format only on divergence from the
+    pickle default; --grpc when the gRPC listener is requested."""
+    from forgather_server.diloco_server_ops import build_diloco_server_command
+
+    cmd = build_diloco_server_command(
+        output_dir="/tmp/out",
+        num_workers=1,
+        port=8512,
+        wire_format="safetensors",
+        grpc_enabled=True,
+    )
+    assert "--wire-format" in cmd
+    assert cmd[cmd.index("--wire-format") + 1] == "safetensors"
+    assert "--grpc" in cmd
+
+    # Defaults (pickle / no gRPC) emit neither, keeping the argv readable.
+    cmd2 = build_diloco_server_command(output_dir="/tmp/out", num_workers=1, port=8512)
+    assert "--wire-format" not in cmd2
+    assert "--grpc" not in cmd2
+
+
+def test_server_job_params_to_command_threads_bulk_transport():
+    """End-to-end orchestrator path: the CLI args -> _server_job_params dict ->
+    build_diloco_server_command argv carries wire_format + grpc."""
+    import argparse
+
+    from forgather_server.diloco_server_ops import build_diloco_server_command
+
+    from forgather.cli.diloco_orch import _server_job_params
+
+    args = argparse.Namespace(
+        output_dir="/tmp/out",
+        port=8512,
+        num_workers=2,
+        host="127.0.0.1",
+        save_every=10,
+        save_total_limit=3,
+        outer_lr=0.7,
+        outer_momentum=0.9,
+        no_nesterov=False,
+        heartbeat_timeout=120,
+        min_workers=1,
+        sync_every=500,
+        num_fragments=1,
+        bf16_comm=None,
+        wire_format="safetensors",
+        grpc_enabled=True,
+    )
+    p = _server_job_params(args)
+    assert p["wire_format"] == "safetensors"
+    assert p["grpc_enabled"] is True
+    # The scheduler hands these job_params keys to the command builder.
+    cmd = build_diloco_server_command(
+        output_dir=p["output_dir"],
+        num_workers=p["num_workers"],
+        port=p["port"],
+        wire_format=p["wire_format"],
+        grpc_enabled=p["grpc_enabled"],
+    )
+    assert cmd[cmd.index("--wire-format") + 1] == "safetensors"
+    assert "--grpc" in cmd
+
+
+def test_scheduler_forwards_bulk_transport_to_launcher(tmp_path):
+    """The scheduler hop: _build_diloco_server reads wire_format/grpc_enabled
+    from job_params and forwards them to spawn_diloco_server_process."""
+    from unittest.mock import patch
+
+    from forgather_server import scheduler
+
+    item = type(
+        "Item",
+        (),
+        {
+            "job_params": {
+                "output_dir": "/tmp/out",
+                "num_workers": 2,
+                "port": 8512,
+                "no_auth": True,  # skip token-file resolution
+                "wire_format": "safetensors",
+                "grpc_enabled": True,
+            }
+        },
+    )()
+    with patch.object(scheduler.launcher, "spawn_diloco_server_process") as spawn:
+        scheduler._build_diloco_server(item, [], tmp_path / "tty.log")
+    assert spawn.call_args.kwargs["wire_format"] == "safetensors"
+    assert spawn.call_args.kwargs["grpc_enabled"] is True
+
+
 # ---------------------------------------------------------------------------
 # Token injection into the training worker's env (issue #90 follow-up):
 # a worker pointed at a routable (non-loopback) DiLoCo URL can't use the

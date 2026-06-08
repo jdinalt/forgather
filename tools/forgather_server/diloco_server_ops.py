@@ -39,6 +39,8 @@ def build_diloco_server_command(
     upload_sr: bool = False,
     download_dtype: str = "fp32",
     download_sr: bool = False,
+    wire_format: str = "pickle",
+    grpc_enabled: bool = False,
     num_fragments: int = 1,
     from_checkpoint: Optional[str] = None,
     save_every: int = 10,
@@ -116,6 +118,13 @@ def build_diloco_server_command(
     if upload_dtype is None and bf16_comm is False:
         # Pre-#130 caller path: surface the deprecated alias.
         cmd.append("--no-bf16")
+    # Bulk transport (issue #154). The wire codec only when it diverges from
+    # the CLI default (pickle); --grpc when the gRPC bulk listener is requested
+    # (it supersedes --bulk-cleartext server-side).
+    if wire_format and wire_format != "pickle":
+        cmd.extend(["--wire-format", wire_format])
+    if grpc_enabled:
+        cmd.append("--grpc")
     if from_checkpoint:
         cmd.extend(["--from-checkpoint", from_checkpoint])
     # save_every: 0 disables periodic save — the CLI accepts 0, so pass

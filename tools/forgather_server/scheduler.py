@@ -609,6 +609,9 @@ def _build_diloco_server(item, gpu_indices, tty_path):
         upload_sr=bool(p.get("upload_sr", False)),
         download_dtype=str(p.get("download_dtype", "fp32") or "fp32"),
         download_sr=bool(p.get("download_sr", False)),
+        # Bulk transport (issue #154): wire codec + optional gRPC listener.
+        wire_format=str(p.get("wire_format", "pickle") or "pickle"),
+        grpc_enabled=bool(p.get("grpc_enabled", False)),
         num_fragments=int(p.get("num_fragments", 1) or 1),
         from_checkpoint=p.get("from_checkpoint") or None,
         save_every=int(p.get("save_every", 10) or 0),
