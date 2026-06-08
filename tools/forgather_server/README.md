@@ -683,6 +683,28 @@ forgather gpu priority <idx> <N>        # only dispatch jobs with priority >= N 
 forgather gpu kill --yes <idx>          # SIGKILL all compute processes on the card
 ```
 
+**Drive the AI agent (interactive testing):** `forgather agent` is a thin
+client over the `/api/agent/*` endpoints for exercising the in-process
+assistant from the terminal — send messages as the user, watch the agent's
+text / tool calls / results stream, and make every Approve/Reject decision
+yourself (no auto-approve). Conversation + pending-action state lives in the
+server, so each command is one step:
+
+```bash
+forgather agent profiles                       # list connection profiles (* = active)
+forgather agent use <profile_id>               # test against any profile (Claude or local vLLM)
+forgather agent message "build the wikitext dataset"   # start a turn -> prints a session id
+forgather agent approve <action_id>            # your call on a proposed (CONFIRM/PROPOSE) action
+forgather agent reject  <action_id> --reason "use config Y"
+forgather agent message --session <id> "...follow-up guidance..."
+forgather agent continue --session <id>        # resume a turn cut off by the token budget
+forgather agent history <id>                   # dump the conversation
+```
+
+Each turn streams until the agent finishes (often an answer or a clarifying
+question) or pauses for approval; a final `STATE:` line says which and what to
+run next. `--json` on the streaming verbs emits raw event JSONL.
+
 ---
 
 ## Installation
