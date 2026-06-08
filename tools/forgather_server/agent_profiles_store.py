@@ -73,6 +73,10 @@ class AgentProfile:
     # base_url i.e. vLLM, which does its own prefix caching), "on", or "off".
     # Caching makes the re-sent system+tools+history prefix bill at ~0.1x.
     prompt_caching: str = "auto"
+    # Tool disclosure: "auto" (inline for Claude, deferred for a custom
+    # base_url i.e. a limited-context local model), "inline" (all tools in the
+    # array), or "deferred" (core+meta only; extended tools via call_tool).
+    disclosure_mode: str = "auto"
 
 
 _PROFILE_FIELDS = {f.name for f in fields(AgentProfile)}

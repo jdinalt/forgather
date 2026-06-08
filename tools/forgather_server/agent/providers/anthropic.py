@@ -39,7 +39,10 @@ DEFAULT_MAX_TOKENS = 4096
 # budget must leave room for the (growing) prompt. We clamp max_tokens to
 # the remaining context on every request using a cheap, deliberately
 # *over*-estimated prompt size (bias toward a smaller, safe output budget
-# rather than a hard "context length exceeded" error).
+# rather than a hard "context length exceeded" error). The estimate counts
+# system + tools + messages — on a small-context model the tool schemas and
+# system prompt are most of the prompt; counting only messages grants an
+# output budget that overflows the window on the first request.
 _MIN_OUTPUT_TOKENS = 512
 _CONTEXT_SAFETY_MARGIN = 512
 # Rough chars-per-token; intentionally low so the prompt estimate runs high.
@@ -185,12 +188,16 @@ class AnthropicProvider:
     ) -> AsyncIterator[ProviderEvent]:  # type: ignore[name-defined]
         client = self._ensure_client()
 
+        # Size the output budget BEFORE the cache_control transform, against the
+        # full prompt — system + tools + messages. (The transform only adds
+        # cache_control markers; it doesn't change the text we measure.)
+        effective_max_tokens = self._effective_max_tokens(messages, system, tools)
         if self._prompt_caching:
             messages, system, tools = _add_cache_control(messages, system, tools)
 
         create_kwargs: Dict[str, Any] = {
             "model": self.model,
-            "max_tokens": self._effective_max_tokens(messages),
+            "max_tokens": effective_max_tokens,
             "messages": messages,
             "stream": True,
         }
@@ -292,16 +299,25 @@ class AnthropicProvider:
                 # stop_reason was captured from the message_delta above.
                 yield Done(stop_reason=stop_reason)
 
-    def _effective_max_tokens(self, messages: List[Dict[str, Any]]) -> int:
+    def _effective_max_tokens(
+        self,
+        messages: List[Dict[str, Any]],
+        system: Any = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> int:
         """Clamp the output budget so prompt + output fits the context.
 
         No-op when max_model_len is unknown (e.g. Claude) — the upstream
         enforces its own output limits there. For vLLM, keep
-        ``estimated_prompt + max_tokens <= max_model_len``.
+        ``estimated_prompt + max_tokens <= max_model_len``, where the prompt
+        is system + tools + messages — NOT just messages: the tool schemas and
+        system prompt dominate the prompt on a small-context model, and
+        omitting them grants a near-full-window output budget that overflows
+        the very first request.
         """
         if not self._max_model_len:
             return self.max_tokens
-        est_prompt = self._estimate_prompt_tokens(messages)
+        est_prompt = self._estimate_prompt_tokens(messages, system, tools)
         avail = self._max_model_len - est_prompt - _CONTEXT_SAFETY_MARGIN
         if avail < _MIN_OUTPUT_TOKENS:
             # Conversation nearly fills the window; ask for the floor and let
@@ -310,9 +326,25 @@ class AnthropicProvider:
         return max(_MIN_OUTPUT_TOKENS, min(self.max_tokens, avail))
 
     @staticmethod
-    def _estimate_prompt_tokens(messages: List[Dict[str, Any]]) -> int:
-        """Cheap, deliberately-high estimate of the prompt's token count."""
+    def _estimate_prompt_tokens(
+        messages: List[Dict[str, Any]],
+        system: Any = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> int:
+        """Cheap, deliberately-high estimate of the prompt's token count.
+
+        Counts the system prompt and the serialized tool schemas as well as
+        the messages — all three are sent on every request and the latter two
+        are often the bulk of the prompt.
+        """
         chars = 0
+        if isinstance(system, str):
+            chars += len(system)
+        elif system:  # cache_control-wrapped list of text blocks
+            for b in system:
+                chars += len(b.get("text", "") if isinstance(b, dict) else str(b))
+        if tools:
+            chars += len(json.dumps(tools, default=str))
         for m in messages:
             content = m.get("content")
             if isinstance(content, str):

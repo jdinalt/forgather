@@ -15,7 +15,7 @@ from forgather_server import (
     queue_store,
 )
 from forgather_server.agent import tools_jobs
-from forgather_server.agent.registry import CONFIRM, READ, Proposal, ToolRegistry
+from forgather_server.agent.registry import CONFIRM, EXTENDED, READ, Proposal, ToolRegistry
 from forgather_server.routes import jobs as jobs_route
 
 
@@ -191,6 +191,57 @@ def test_wait_for_job_unknown(monkeypatch):
         asyncio.run(tools_jobs._wait_for_job({"queue_id": "nope"}))
 
 
+def test_wait_for_job_until_running_returns_when_up(monkeypatch):
+    # A service: starting -> running, and never terminal. until="running"
+    # must return as soon as it's up (not wait out the timeout).
+    seq = iter(["starting", "starting", "running"])
+    state = {"status": "starting"}
+
+    def fake_get(qid):
+        try:
+            state["status"] = next(seq)
+        except StopIteration:
+            pass
+        return _rec(queue_id=qid, status=state["status"], tty_log_path=None)
+
+    monkeypatch.setattr(job_records, "get_record", fake_get)
+    monkeypatch.setattr(tools_jobs, "_WAIT_POLL_SECONDS", 0.01)
+    out = asyncio.run(
+        tools_jobs._wait_for_job({"queue_id": "q1", "until": "running", "timeout_seconds": 60})
+    )
+    assert out["status"] == "running" and out["timed_out"] is False
+
+
+def test_wait_for_job_until_running_returns_on_early_failure(monkeypatch):
+    # A service that dies before coming up still returns (terminal), so the
+    # agent learns it failed instead of waiting out the timeout.
+    seq = iter(["starting", "failed"])
+    state = {"status": "starting"}
+
+    def fake_get(qid):
+        try:
+            state["status"] = next(seq)
+        except StopIteration:
+            pass
+        return _rec(queue_id=qid, status=state["status"], exit_code=1, tty_log_path=None)
+
+    monkeypatch.setattr(job_records, "get_record", fake_get)
+    monkeypatch.setattr(tools_jobs, "_WAIT_POLL_SECONDS", 0.01)
+    out = asyncio.run(
+        tools_jobs._wait_for_job({"queue_id": "q1", "until": "running", "timeout_seconds": 60})
+    )
+    assert out["status"] == "failed" and out["timed_out"] is False
+
+
+def test_wait_for_job_invalid_until(monkeypatch):
+    monkeypatch.setattr(
+        job_records, "get_record",
+        lambda qid: _rec(queue_id=qid, status="running", tty_log_path=None),
+    )
+    with pytest.raises(ValueError, match="until"):
+        asyncio.run(tools_jobs._wait_for_job({"queue_id": "q1", "until": "bogus"}))
+
+
 def test_run_dataset_preview_builds_command_no_enqueue(monkeypatch):
     captured = {}
 
@@ -311,21 +362,66 @@ def test_run_train_defaults_one_gpu(monkeypatch):
         "validate_and_enqueue",
         lambda **kw: seen.update(kw) or _fake_item("training"),
     )
+    # Force standalone (no cluster) so the mode-aware dataset default is local.
+    import forgather_server.cluster as cluster
+
+    monkeypatch.setattr(cluster, "self_identity", lambda: None)
     prop = tools_jobs._run_train({"project_dir": "/p", "config_name": "c.yaml"})
     assert isinstance(prop, Proposal)
-    # Preview shows the CLI equivalent; no enqueue until commit.
-    assert "train" in prop.extra["command"]
+    # Preview shows the SCHEDULED invocation (submit), NOT a foreground `train`.
+    assert "submit" in prop.extra["command"]
+    assert " train" not in prop.extra["command"]
     assert seen == {}
 
-    msg = prop.commit()
+    msg = asyncio.run(prop.commit())
     assert seen["job_type"] == "training"
-    assert seen["requested_gpus"] == 1  # default
+    # nproc_per_node can't be read for a fake project -> falls back to 1.
+    assert seen["requested_gpus"] == 1
+    assert seen["priority"] == 0
+    assert seen["dataset_source"] is None  # local (standalone default)
     assert seen["enforce_fs_root"] is True
-    assert seen["job_params"] == {}  # no nproc
+    assert seen["job_params"] == {}
     assert "q_new" in msg
 
 
-def test_run_train_gpus_and_nproc(monkeypatch):
+def test_run_train_default_dataset_is_auto_in_cluster_mode(monkeypatch):
+    import forgather_server.cluster as cluster
+
+    monkeypatch.setattr(cluster, "self_identity", lambda: object())  # in cluster mode
+    seen = {}
+    monkeypatch.setattr(
+        queue_ops, "validate_and_enqueue",
+        lambda **kw: seen.update(kw) or _fake_item("training"),
+    )
+    prop = tools_jobs._run_train({"project_dir": "/p", "config_name": "c.yaml", "gpus": 1})
+    assert "--dataset auto" in prop.extra["command"]
+    asyncio.run(prop.commit())
+    assert seen["dataset_source"] == {"kind": "auto"}
+
+
+def test_run_train_infers_gpus_and_passes_priority_and_dataset(monkeypatch):
+    from forgather_server import config_ops
+
+    monkeypatch.setattr(
+        config_ops, "load_output_dir_info",
+        lambda pd, c: type("I", (), {"nproc_per_node": 4})(),
+    )
+    seen = {}
+    monkeypatch.setattr(
+        queue_ops, "validate_and_enqueue",
+        lambda **kw: seen.update(kw) or _fake_item("training"),
+    )
+    prop = tools_jobs._run_train(
+        {"project_dir": "/p", "config_name": "c.yaml", "priority": 5,
+         "dataset": "server:local:q1"}
+    )
+    asyncio.run(prop.commit())
+    assert seen["requested_gpus"] == 4  # inferred from nproc_per_node
+    assert seen["priority"] == 5
+    assert seen["dataset_source"] == {"kind": "server", "server_id": "local:q1"}
+
+
+def test_run_train_cpu_smoketest(monkeypatch):
     seen = {}
     monkeypatch.setattr(
         queue_ops,
@@ -333,11 +429,11 @@ def test_run_train_gpus_and_nproc(monkeypatch):
         lambda **kw: seen.update(kw) or _fake_item("training"),
     )
     prop = tools_jobs._run_train(
-        {"project_dir": "/p", "config_name": "c.yaml", "gpus": 0, "nproc": "auto"}
+        {"project_dir": "/p", "config_name": "c.yaml", "gpus": 0}
     )
-    prop.commit()
+    asyncio.run(prop.commit())
     assert seen["requested_gpus"] == 0  # CPU smoke-test
-    assert seen["job_params"] == {"nproc": "auto"}
+    assert seen["job_params"] == {}  # no nproc on the scheduled path
 
 
 def test_read_tty_tail_helper(tmp_path):
@@ -351,3 +447,177 @@ def test_read_tty_tail_helper(tmp_path):
     # A small byte cap drops the leading partial line.
     out = jobs_route.read_tty_tail(str(f), max_bytes=6)
     assert "aaaa" not in out and "cccc" in out
+
+
+# ---- cleanup_jobs ----------------------------------------------------------
+
+
+def test_cleanup_jobs_registered():
+    reg = ToolRegistry()
+    tools_jobs.register_all(reg)
+    spec = {s.name: s for s in reg.specs()}["cleanup_jobs"]
+    assert spec.risk == CONFIRM and spec.tier != EXTENDED  # core: nudged for routine use
+
+
+def test_cleanup_jobs_requires_an_argument():
+    with pytest.raises(ValueError, match="queue_ids"):
+        tools_jobs._cleanup_jobs({})
+
+
+def test_cleanup_jobs_rejects_both_args():
+    with pytest.raises(ValueError, match="either"):
+        tools_jobs._cleanup_jobs({"queue_ids": ["q1"], "all_terminal": True})
+
+
+def test_cleanup_jobs_targets_only_terminal(monkeypatch):
+    recs = {
+        "qd": _rec(queue_id="qd", status="done"),
+        "qr": _rec(queue_id="qr", status="running"),
+    }
+    monkeypatch.setattr(job_records, "get_record", lambda q: recs.get(q))
+    prop = tools_jobs._cleanup_jobs({"queue_ids": ["qd", "qr", "qmissing"]})
+    assert isinstance(prop, Proposal)
+    assert prop.extra["queue_ids"] == ["qd"]  # running + missing excluded
+
+
+def test_cleanup_jobs_none_terminal_raises(monkeypatch):
+    monkeypatch.setattr(
+        job_records, "get_record",
+        lambda q: _rec(queue_id=q, status="running"),
+    )
+    with pytest.raises(ValueError, match="no removable"):
+        tools_jobs._cleanup_jobs({"queue_ids": ["qr"]})
+
+
+def test_cleanup_jobs_commit_removes_specific(monkeypatch):
+    monkeypatch.setattr(
+        job_records, "get_record",
+        lambda q: _rec(queue_id=q, status="done"),
+    )
+    removed = []
+    monkeypatch.setattr(jobs_route, "remove_job", lambda qid: removed.append(qid))
+    prop = tools_jobs._cleanup_jobs({"queue_ids": ["qa", "qb"]})
+    assert removed == []  # preview did not remove
+    msg = prop.commit()
+    assert removed == ["qa", "qb"] and "removed 2" in msg
+
+
+def test_cleanup_jobs_all_terminal(monkeypatch):
+    monkeypatch.setattr(
+        job_records, "list_records",
+        lambda: [_rec(queue_id="qd", status="done"), _rec(queue_id="qr", status="running")],
+    )
+    monkeypatch.setattr(jobs_route, "cleanup_jobs", lambda: {"removed": ["qd"], "count": 1})
+    prop = tools_jobs._cleanup_jobs({"all_terminal": True})
+    assert prop.extra["all_terminal"] is True and prop.extra["queue_ids"] == ["qd"]
+    msg = prop.commit()
+    assert "removed 1 completed" in msg
+
+
+def test_system_prompt_docs_first_and_scheduling():
+    from forgather_server.agent import runtime
+
+    sp = runtime.SYSTEM_PROMPT
+    assert "READ THE DOCS FIRST" in sp  # docs-first bias
+    assert "README.md" in sp  # read an existing project's README early
+    # run_train is described as scheduling, not foreground.
+    reg = ToolRegistry()
+    tools_jobs.register_all(reg)
+    desc = {s.name: s for s in reg.specs()}["run_train"].description
+    assert "SCHEDULE" in desc and "submit" in desc and "foreground" in desc
+
+
+def test_run_train_multinode_routes_to_submit_cli(monkeypatch):
+    seen = {}
+
+    def fake_submit(argv):
+        seen["argv"] = argv
+        return "queued bundle clusterjob-1"
+
+    monkeypatch.setattr(tools_jobs, "_submit_via_cli", fake_submit)
+    # The in-process enqueue path must NOT be used for an advanced submit.
+    def _boom(**kw):
+        raise AssertionError("advanced submit must go through the CLI")
+
+    monkeypatch.setattr(queue_ops, "validate_and_enqueue", _boom)
+    prop = tools_jobs._run_train(
+        {"project_dir": "/p", "config_name": "c.yaml", "gpus": 2,
+         "members": ["h1:2", "h2:2"], "allow_version_mismatch": True}
+    )
+    cmd = prop.extra["command"]
+    assert "--global" in cmd and "--member h1:2" in cmd and "--member h2:2" in cmd
+    assert "--allow-version-mismatch" in cmd and prop.extra["mode"].startswith("multi-node")
+    msg = asyncio.run(prop.commit())
+    assert "clusterjob-1" in msg and "--global" in " ".join(seen["argv"])
+
+
+def test_run_train_diloco_routes_to_submit_cli(monkeypatch):
+    monkeypatch.setattr(tools_jobs, "_submit_via_cli", lambda argv: "queued worker w0")
+    prop = tools_jobs._run_train(
+        {"project_dir": "/p", "config_name": "c.yaml", "gpus": 1,
+         "diloco_server": "ringdale", "backend": "http"}
+    )
+    cmd = prop.extra["command"]
+    assert "--diloco" in cmd and "--diloco-server ringdale" in cmd and "--backend http" in cmd
+    assert "DiLoCo" in prop.extra["mode"]
+
+
+def test_run_train_advanced_renders_dynamic_args(monkeypatch):
+    from forgather_server import config_ops
+
+    monkeypatch.setattr(
+        config_ops, "load_dynamic_args",
+        lambda pd, c: [
+            config_ops.DynamicArg(dest="lr", cli_name="--lr"),
+            config_ops.DynamicArg(dest="fp16", cli_name="--fp16", type="bool"),
+        ],
+    )
+    monkeypatch.setattr(tools_jobs, "_submit_via_cli", lambda argv: "ok")
+    prop = tools_jobs._run_train(
+        {"project_dir": "/p", "config_name": "c.yaml", "gpus": 1, "diloco": True,
+         "dynamic_args": {"lr": "3e-4", "fp16": True}}
+    )
+    cmd = prop.extra["command"]
+    assert "--lr 3e-4" in cmd and "--fp16" in cmd
+
+
+def test_infer_requested_gpus_coerces_numeric_string(monkeypatch):
+    from forgather_server import config_ops
+
+    monkeypatch.setattr(
+        config_ops, "load_output_dir_info",
+        lambda pd, c: type("I", (), {"nproc_per_node": "4"})(),  # quoted in YAML
+    )
+    assert tools_jobs._infer_requested_gpus("/p", "c.yaml") == 4
+    monkeypatch.setattr(
+        config_ops, "load_output_dir_info",
+        lambda pd, c: type("I", (), {"nproc_per_node": "gpu"})(),  # keyword -> 1
+    )
+    assert tools_jobs._infer_requested_gpus("/p", "c.yaml") == 1
+
+
+def test_cleanup_jobs_reports_non_http_errors(monkeypatch):
+    monkeypatch.setattr(job_records, "get_record", lambda q: _rec(queue_id=q, status="done"))
+
+    def fake_remove(qid):
+        if qid == "qbad":
+            raise OSError("permission denied unlinking tty")
+
+    monkeypatch.setattr(jobs_route, "remove_job", fake_remove)
+    prop = tools_jobs._cleanup_jobs({"queue_ids": ["qok", "qbad"]})
+    msg = prop.commit()
+    # qok removed, qbad reported as an error — the loop is not aborted.
+    assert "removed 1 job record(s)" in msg and "qbad" in msg
+
+
+def test_render_dynamic_arg_flags_handles_store_false(monkeypatch):
+    from forgather_server import config_ops
+
+    monkeypatch.setattr(
+        config_ops, "load_dynamic_args_schema",
+        lambda pd, c: [{"names": ["--use-cache"], "action": "store_false"}],
+    )
+    # store_false implied default True: value False differs -> emit the flag.
+    assert tools_jobs._render_dynamic_arg_flags("/p", "c.yaml", {"use_cache": False}) == ["--use-cache"]
+    # value True == implied default -> omit (no spurious flag).
+    assert tools_jobs._render_dynamic_arg_flags("/p", "c.yaml", {"use_cache": True}) == []

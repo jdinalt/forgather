@@ -32,6 +32,28 @@ PROPOSE = "propose"
 CONFIRM = "confirm"
 _RISK_LEVELS = frozenset({READ, PROPOSE, CONFIRM})
 
+# Disclosure tier — controls how a tool is surfaced to the model:
+#   core     — always in the tool array (full description).
+#   extended — full description in ``inline`` mode; in ``deferred`` mode it is
+#              dropped from the array and reached only via the ``call_tool``
+#              dispatcher (discovered with list_tools / tool_help).
+#   meta     — the disclosure helpers themselves; always present (except
+#              ``call_tool``, which is ``deferred``-only — see ``dispatch``).
+CORE = "core"
+EXTENDED = "extended"
+META = "meta"
+_TIERS = frozenset({CORE, EXTENDED, META})
+
+# Serialization modes for ``anthropic_tools``:
+#   inline   — every tool in the array; extended tools carry a short summary.
+#              The block is static across a session, so prompt caching holds.
+#   deferred — only core + meta tools in the array; extended tools are hidden
+#              and invoked through ``call_tool``. Keeps the array tiny for
+#              limited-context local models.
+INLINE = "inline"
+DEFERRED = "deferred"
+_MODES = frozenset({INLINE, DEFERRED})
+
 
 @dataclass
 class Proposal:
@@ -103,10 +125,23 @@ class ToolSpec:
     json_schema: Dict[str, Any]
     handler: Handler
     risk: str = READ
+    # Disclosure tier (see CORE / EXTENDED / META above).
+    tier: str = CORE
+    # Short one-line description shown in ``inline`` mode for an ``extended``
+    # tool (the full ``description`` is fetched on demand via ``tool_help``).
+    # ``None`` => fall back to the full description.
+    summary: Optional[str] = None
+    # The ``call_tool`` dispatcher sets this. The loop intercepts a dispatch
+    # tool: it resolves the inner tool from the call's ``name``/``args`` and
+    # runs it under the *inner* tool's risk (so a confirm tool still gates).
+    # A dispatch tool is only serialized in ``deferred`` mode.
+    dispatch: bool = False
 
     def __post_init__(self) -> None:
         if self.risk not in _RISK_LEVELS:
             raise ValueError(f"unknown risk level: {self.risk!r}")
+        if self.tier not in _TIERS:
+            raise ValueError(f"unknown tier: {self.tier!r}")
 
 
 class ToolRegistry:
@@ -124,13 +159,38 @@ class ToolRegistry:
     def specs(self) -> List[ToolSpec]:
         return list(self._tools.values())
 
-    def anthropic_tools(self) -> List[Dict[str, Any]]:
-        """Serialize to the Anthropic Messages API tool shape."""
+    def anthropic_tools(self, mode: str = INLINE) -> List[Dict[str, Any]]:
+        """Serialize to the Anthropic Messages API tool shape for ``mode``.
+
+        ``inline`` emits every tool (extended tools with their short summary);
+        ``deferred`` emits only core + meta tools (plus the ``call_tool``
+        dispatcher) and hides extended tools, which are then reached via
+        ``call_tool``. ``input_schema`` is always sent in full so a tool
+        stays directly callable with good argument hints.
+        """
+        if mode not in _MODES:
+            raise ValueError(f"unknown disclosure mode: {mode!r}")
+        out: List[Dict[str, Any]] = []
+        for s in self._tools.values():
+            if s.dispatch:
+                if mode != DEFERRED:
+                    continue  # call_tool is pointless when all tools are inline
+            elif s.tier == EXTENDED and mode == DEFERRED:
+                continue  # hidden from the array; reachable via call_tool
+            use_summary = s.tier == EXTENDED and mode == INLINE and s.summary
+            out.append(
+                {
+                    "name": s.name,
+                    "description": s.summary if use_summary else s.description,
+                    "input_schema": s.json_schema,
+                }
+            )
+        return out
+
+    def catalog(self) -> List[Dict[str, Any]]:
+        """Compact listing of every registered tool (for list_tools)."""
         return [
-            {
-                "name": s.name,
-                "description": s.description,
-                "input_schema": s.json_schema,
-            }
+            {"name": s.name, "tier": s.tier, "risk": s.risk,
+             "summary": s.summary or s.description.split("\n", 1)[0]}
             for s in self._tools.values()
         ]

@@ -615,6 +615,27 @@ def load_output_dir_info(project_dir: str, config_name: str) -> OutputDirInfo:
     return info
 
 
+def load_dynamic_args_schema(project_dir: str, config_name: str) -> List[Dict[str, Any]]:
+    """Return the config's raw ``dynamic_args`` entries (list of dicts with
+    ``names`` / ``type`` / ``action`` / ``default`` …).
+
+    Unlike :func:`load_dynamic_args` (which projects to ``DynamicArg`` and
+    drops ``action``), this preserves the argparse ``action`` so callers that
+    reconstruct CLI flags can honour store_true / store_false correctly.
+    Returns ``[]`` on any load failure.
+    """
+    from forgather.project import Project
+
+    try:
+        proj = Project(config_name=config_name, project_dir=project_dir)
+        if "dynamic_args" not in proj.config:
+            return []
+        raw = proj("dynamic_args")
+    except Exception:
+        return []
+    return [e for e in raw if isinstance(e, dict)] if isinstance(raw, list) else []
+
+
 def load_dynamic_args(project_dir: str, config_name: str) -> List[DynamicArg]:
     """Return the config's dynamic-args schema.
 

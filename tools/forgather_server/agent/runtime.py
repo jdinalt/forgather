@@ -26,7 +26,17 @@ from .. import agent_profiles_store as profiles_store
 from .. import agent_tls
 from .loop import AgentLoop
 from .registry import ToolRegistry
-from . import tools_authoring, tools_jobs, tools_readonly
+from . import (
+    tools_advanced,
+    tools_authoring,
+    tools_diloco,
+    tools_fs,
+    tools_jobs,
+    tools_meta,
+    tools_models,
+    tools_readonly,
+    tools_services,
+)
 
 log = logging.getLogger("forgather_server.agent.runtime")
 
@@ -47,6 +57,7 @@ _SEED_KEYS = {
     "max_tokens",
     "max_iterations",
     "prompt_caching",
+    "disclosure_mode",
     "label",
 }
 
@@ -67,6 +78,19 @@ Operating rules:
   incrementally: list_workspaces -> list_projects(workspace_root) ->
   list_configs(project_dir) -> inspect_config. Only list everything
   (list_projects with no argument) when you genuinely need a repo-wide view.
+- When helping with an EXISTING project, read its README.md early — read_file
+  on <project_dir>/README.md (and any docs/ it links). It carries the
+  project's purpose, conventions, which config to use, and run instructions
+  that the config alone doesn't convey; the project list's description is only
+  a one-line summary. Ground your help in the README before acting or advising.
+- READ THE DOCS FIRST. Before a non-trivial task — creating or editing a
+  project/config, running training, building a dataset, following a tutorial,
+  or debugging an error — search_docs for the relevant guide and read_file it
+  BEFORE acting. The tutorials and guides exist to prevent exactly the mistakes
+  you'd otherwise make (wrong targets, missing dynamic_args, foreground vs
+  scheduled runs). A minute spent reading the matching doc saves a wrong turn;
+  ground your plan in the docs, then act. If the user names a tutorial/example,
+  open its README and the docs it points to first.
 - For files that are NOT Forgather projects/configs — a tokenizer under
   tokenizers/, a model output dir, a data file — do not use
   list_projects/list_configs (they only see projects). Use find_files (a
@@ -135,10 +159,27 @@ Running configs as scheduler jobs:
 - Pick run_construct for "build/check this target" inspection (defaults to
   target=main, gpus=0); pick run_train only when the user actually wants to
   train. Pass dynamic_args (from inspect_config) for configs that require them.
+- run_train is the SINGLE composable submit entry point for every training job
+  (single-node, multi-node, DiLoCo). The basic case is trivial — project_dir +
+  config_name, optionally gpus; the defaults are fine, so DON'T overthink it.
+  But anything beyond basic is complex: to override config parameters use
+  dynamic_args and first read
+  `docs/project-templates/lm-training-projects.md`; for multi-node (members=)
+  first read `docs/guides/multi-node-training.md`; for DiLoCo (diloco_server=)
+  first read `docs/trainers/diloco.md`. Read the doc BEFORE composing the call.
+  If the user hasn't made clear how they want a complex job run, ASK them
+  focused questions first rather than guessing.
 - Watch any job with list_jobs / read_job_output, or block with
   wait_for_job(queue_id). For a short job (dataset build, construct) wait_for_job
   is fine; for a full training run do NOT block — check on it periodically.
   Never report a job finished until its status is terminal (done/failed/aborted).
+- Tidy up after yourself: once a short-lived job you started (a dataset build,
+  construct, or eval) is terminal and you've reported its result, clean it up
+  with cleanup_jobs(queue_ids=[...the ids you spawned...]) so the Jobs list
+  doesn't accumulate clutter — you don't need the user to ask. Pass only the
+  queue_ids YOU started; do not use all_terminal (that clears everyone's jobs)
+  unless the user explicitly asks, and never clean up a job whose output the
+  user may still want (e.g. a training run they're reviewing).
 
 Datasets workflow (creating / smoke-testing a dataset project):
 - Tools: run_dataset (build/inspect a split as a job), wait_for_job (block
@@ -169,8 +210,87 @@ Datasets workflow (creating / smoke-testing a dataset project):
   dataset_info with the dataset's HF name/path — read that from the config's
   load_dataset args via inspect_config / render_config_pp. It needs the data
   built and a dataset server reachable (list_dataset_servers); if none is, tell
-  the user to start one.
+  the user to start one (see Services below).
+
+Inspecting training results:
+- After/while a model trains, inspect outcomes with: list_models (a project's
+  output dirs + counts) -> list_runs / run_summary (best loss, perplexity, steps)
+  -> list_checkpoints (pick the best/latest). job_status gives the LIVE trainer
+  step/loss for a running job (read_job_output is the raw TTY tail). list_evaluations
+  shows a model's eval results; read_run_tty tails an older run's log.
+
+Evaluation & job control:
+- run_eval (CONFIRM) scores a model against an eval config (pick a name from
+  list_eval_configs; pass the model output dir / checkpoint as model_path). Watch
+  it like any job; read results with list_evaluations once done.
+- control_job (CONFIRM) controls a RUNNING training job: save a checkpoint, stop
+  (saves a final checkpoint), save-stop, or abort (no checkpoint).
+- gpu_status shows per-GPU memory/utilisation — use it to advise requested_gpus.
+
+Services (Sidebar -> Services):
+- list_services shows the long-running services and whether each is running.
+  start_service (CONFIRM) starts one (dataset / inference / tensorboard / mkdocs /
+  diloco) and persists it so it shows in the panel; stop_service stops it. After
+  start_service, wait for the service to come UP with
+  wait_for_job(queue_id, until="running") — a healthy service never reaches a
+  terminal status, so the default until="terminal" would just time out.
+- IMPORTANT: when dataset_info reports no dataset server is reachable, offer to
+  run start_service(type="dataset") — it brings up a default dataset server.
+  inference needs args.model_path; diloco needs args.output_dir + args.num_workers.
+
+DiLoCo (distributed low-communication training):
+- list_diloco_servers, then diloco_status(server_id) for round/step + worker
+  roster. diloco_control (CONFIRM) does save_state / shutdown / relay a worker
+  command (save_checkpoint|save_and_stop|abort). Start/stop the server itself with
+  start_service(type="diloco", ...) / stop_service.
+
+Inference & cluster:
+- list_inference_servers, then query_model (CONFIRM) to test-generate against a
+  running model (give a prompt or messages). cluster_status reports node/master/
+  members on a multi-node setup.
+
+Filesystem management:
+- You are NOT limited to editing config files. Besides config authoring
+  (propose_*), you can manage files directly: stat_path (inspect a path),
+  delete_path (delete a file OR, recursively, a directory — e.g. clear a model's
+  output directory), move_path, copy_path. delete/move/copy are CONFIRM-gated and
+  guarded (must be inside the filesystem roots, not a system path). When asked to
+  "delete/clean up the output directory", find it with resolve_output_dir (or
+  list_models) and then delete_path — do not tell the user to run the command
+  themselves.
 """
+
+# Appended to the system prompt per disclosure mode. ``inline`` lists every
+# tool (extended ones summarized); ``deferred`` lists only core tools and
+# reaches the rest through call_tool.
+_DISCLOSURE_NOTE = {
+    "inline": (
+        "\n\nTool descriptions: some tools (extended) show only a brief "
+        "summary. Call tool_help(name) for the full description and argument "
+        "schema before using one you are unsure about; list_tools shows the "
+        "full catalog.\n"
+    ),
+    "deferred": (
+        "\n\nTool discovery: only core tools are listed directly. To use any "
+        "other capability, call list_tools to find the right tool, tool_help"
+        "(name) to learn its arguments, then call_tool(name=..., args={...}) "
+        "to run it (it still asks for approval if it makes changes).\n"
+    ),
+}
+
+
+def _resolve_disclosure_mode(profile) -> str:
+    """Resolve the tool-disclosure mode for a profile.
+
+    Explicit "inline"/"deferred" on the profile wins; "auto" (or anything
+    else) picks deferred for a custom base_url (local/vLLM, limited context)
+    and inline for Claude (large context, prompt caching keeps the static
+    tool block cheap).
+    """
+    pref = (getattr(profile, "disclosure_mode", "") or "auto").lower()
+    if pref in ("inline", "deferred"):
+        return pref
+    return "deferred" if profile.base_url else "inline"
 
 
 def configure(cfg: Optional[Dict[str, Any]]) -> None:
@@ -226,6 +346,7 @@ def status() -> Dict[str, Any]:
         "base_url": active.base_url or None,
         "verify_tls": active.verify_tls,
         "has_imported_cert": bool(active.ca_cert_pem),
+        "disclosure_mode": _resolve_disclosure_mode(active),
         # Per-Mtok USD rates for the four token categories so the meter can show
         # an estimated cost; None for an unpriced / self-hosted model.
         "pricing": agent_pricing.price_for(active.model),
@@ -236,9 +357,17 @@ def get_registry() -> ToolRegistry:
     global _registry
     if _registry is None:
         reg = ToolRegistry()
+        # Meta/disclosure tools first so list_tools / tool_help / call_tool are
+        # always present regardless of mode.
+        tools_meta.register_all(reg)
         tools_readonly.register_all(reg)
         tools_authoring.register_all(reg)
         tools_jobs.register_all(reg)
+        tools_models.register_all(reg)
+        tools_services.register_all(reg)
+        tools_diloco.register_all(reg)
+        tools_advanced.register_all(reg)
+        tools_fs.register_all(reg)
         _registry = reg
     return _registry
 
@@ -362,6 +491,9 @@ def _build_loop(profile) -> AgentLoop:
     prompt_caching = {"on": True, "off": False}.get(
         caching_pref, not bool(profile.base_url)
     )
+    # Disclosure mode: "auto" -> deferred for a custom base_url (local/vLLM,
+    # limited context), inline for Claude (large context + prompt caching).
+    disclosure_mode = _resolve_disclosure_mode(profile)
     provider = AnthropicProvider(
         model=model,
         api_key=api_key,
@@ -375,8 +507,9 @@ def _build_loop(profile) -> AgentLoop:
     return AgentLoop(
         provider,
         get_registry(),
-        system=SYSTEM_PROMPT,
+        system=SYSTEM_PROMPT + _DISCLOSURE_NOTE.get(disclosure_mode, _DISCLOSURE_NOTE["inline"]),
         max_iterations=int(profile.max_iterations or profiles_store.DEFAULT_MAX_ITERATIONS),
+        disclosure_mode=disclosure_mode,
     )
 
 

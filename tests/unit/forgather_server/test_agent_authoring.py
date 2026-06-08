@@ -195,3 +195,70 @@ def test_propose_new_config_refuses_existing(tmp_path):
         tools_authoring._propose_new_config(
             {"project_dir": str(tmp_path), "name": "x.yaml"}
         )
+
+
+def _stub_config_ops(monkeypatch, tmp_path, *, rendered=""):
+    """Stub resolve/write/validate so the three starting-point paths can be
+    exercised without a real project on disk."""
+    from types import SimpleNamespace
+
+    target = str(tmp_path / "c.yaml")
+    monkeypatch.setattr(
+        config_ops, "resolve_new_template_target",
+        lambda pd, kind, name, meta_template=None, values=None: (
+            target, rendered if meta_template else ""
+        ),
+    )
+    written = {}
+    monkeypatch.setattr(
+        config_ops, "write_template_file",
+        lambda t, c: written.update(target=t, content=c),
+    )
+    monkeypatch.setattr(
+        config_ops, "load_config_meta",
+        lambda pd, n: SimpleNamespace(parse_error=None),
+    )
+    return written
+
+
+def test_propose_new_config_meta_template(tmp_path, monkeypatch):
+    written = _stub_config_ops(monkeypatch, tmp_path, rendered="scaffolded: yes\n")
+    p = tools_authoring._propose_new_config(
+        {"project_dir": str(tmp_path), "name": "c.yaml",
+         "meta_template": "tiny", "values": {"a": 1}}
+    )
+    assert p.after == "scaffolded: yes\n" and "scaffold:" in p.extra["starting_point"]
+    assert written == {}  # preview did not write
+    p.commit()
+    assert written["content"] == "scaffolded: yes\n"
+
+
+def test_propose_new_config_copy_from(tmp_path, monkeypatch):
+    from forgather_server import paths
+
+    written = _stub_config_ops(monkeypatch, tmp_path)
+    monkeypatch.setattr(paths, "is_path_in_fs_root", lambda p: True)
+    monkeypatch.setattr(config_ops, "read_raw", lambda path: "copied: yes\n")
+    p = tools_authoring._propose_new_config(
+        {"project_dir": str(tmp_path), "name": "c.yaml",
+         "copy_from": "/abs/example/configs/base.yaml"}
+    )
+    assert p.after == "copied: yes\n" and "copy:" in p.extra["starting_point"]
+    p.commit()
+    assert written["content"] == "copied: yes\n"
+
+
+def test_propose_new_config_inline_content(tmp_path, monkeypatch):
+    _stub_config_ops(monkeypatch, tmp_path)
+    p = tools_authoring._propose_new_config(
+        {"project_dir": str(tmp_path), "name": "c.yaml", "content": "x: 1\n"}
+    )
+    assert p.after == "x: 1\n" and p.extra["starting_point"] == "inline content"
+
+
+def test_propose_new_config_starting_points_mutually_exclusive(tmp_path):
+    with pytest.raises(ValueError, match="at most one"):
+        tools_authoring._propose_new_config(
+            {"project_dir": str(tmp_path), "name": "c.yaml",
+             "meta_template": "tiny", "copy_from": "/abs/x.yaml"}
+        )
