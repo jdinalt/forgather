@@ -66,4 +66,8 @@ def create_agent_parser(global_args):
     p_hi.add_argument("session_id", help="Session id")
     p_hi.add_argument("--json", action="store_true", help="Emit raw JSON")
 
+    p_fg = sub.add_parser("forget", help="Delete a session (free it from the server)",
+                          formatter_class=RawTextHelpFormatter)
+    p_fg.add_argument("session_id", help="Session id (see 'forgather agent sessions')")
+
     return parser

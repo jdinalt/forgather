@@ -449,6 +449,13 @@ def agent_sessions_list():
     }
 
 
+@router.delete("/agent/sessions/{session_id}")
+def agent_session_delete(session_id: str):
+    if not agent_session.delete_conversation(session_id):
+        raise HTTPException(status_code=404, detail=f"no such session: {session_id}")
+    return {"deleted": session_id}
+
+
 @router.get("/agent/sessions/{session_id}")
 def agent_session_history(session_id: str):
     conv = agent_session.get_conversation(session_id)

@@ -247,6 +247,12 @@ def _cmd_sessions(client: ServerClient, args) -> int:
     return 0
 
 
+def _cmd_forget(client: ServerClient, args) -> int:
+    client._delete(f"/agent/sessions/{args.session_id}")
+    print(f"forgot session {args.session_id}")
+    return 0
+
+
 def _cmd_history(client: ServerClient, args) -> int:
     data = client._get(f"/agent/sessions/{args.session_id}").json()
     if args.json:
@@ -275,7 +281,7 @@ def agent_cmd(args) -> int:
     sub = getattr(args, "agent_subcommand", None)
     if not sub:
         print("usage: forgather agent {profiles|use|status|message|approve|reject|"
-              "continue|sessions|history} ... (forgather agent --help)", file=sys.stderr)
+              "continue|sessions|history|forget} ... (forgather agent --help)", file=sys.stderr)
         return 2
     client = ServerClient.from_args(args)
     handlers = {
@@ -288,6 +294,7 @@ def agent_cmd(args) -> int:
         "continue": _cmd_continue,
         "sessions": _cmd_sessions,
         "history": _cmd_history,
+        "forget": _cmd_forget,
     }
     try:
         return handlers[sub](client, args)

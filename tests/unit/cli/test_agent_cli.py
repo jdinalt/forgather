@@ -189,3 +189,15 @@ def test_cmd_reject_sends_reason():
 
     agent._cmd_reject(_CapClient(), argparse.Namespace(action_id="a1", reason="use Y", json=False))
     assert captured["json"] == {"action_id": "a1", "reason": "use Y"}
+
+
+def test_cmd_forget_deletes():
+    import argparse
+    captured = {}
+
+    class _Client:
+        def _delete(self, path):
+            captured["path"] = path
+
+    rc = agent._cmd_forget(_Client(), argparse.Namespace(session_id="sess_x"))
+    assert rc == 0 and captured["path"] == "/agent/sessions/sess_x"
