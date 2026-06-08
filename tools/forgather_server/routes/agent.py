@@ -86,6 +86,9 @@ class MessageRequest(BaseModel):
 
 class DecisionRequest(BaseModel):
     action_id: str
+    # Optional rejection reason fed back to the agent so it can adapt
+    # (ignored on approve).
+    reason: Optional[str] = None
 
 
 @router.get("/agent/status")
@@ -154,7 +157,7 @@ async def agent_reject(req: DecisionRequest):
     if not runtime.is_enabled():
         raise HTTPException(status_code=503, detail="agent is not configured")
     loop = await _get_loop()
-    return await _stream(loop.apply_decision(req.action_id, approve=False))
+    return await _stream(loop.apply_decision(req.action_id, approve=False, reason=req.reason))
 
 
 class ContinueRequest(BaseModel):

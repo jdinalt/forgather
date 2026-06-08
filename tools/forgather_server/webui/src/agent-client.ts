@@ -246,9 +246,13 @@ export function streamDecision(
   actionId: string,
   approve: boolean,
   signal: AbortSignal,
+  reason?: string,
 ): AsyncIterable<AgentEvent> {
   const url = approve ? "/api/agent/approve" : "/api/agent/reject";
-  return streamAgent(url, { action_id: actionId }, signal);
+  const body: Record<string, unknown> = { action_id: actionId };
+  // The optional reason steers the agent on reject; ignored on approve.
+  if (!approve && reason && reason.trim()) body.reason = reason.trim();
+  return streamAgent(url, body, signal);
 }
 
 export function streamContinue(

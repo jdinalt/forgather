@@ -162,3 +162,30 @@ def test_cmd_sessions_empty(capsys):
     import argparse
     rc = agent._cmd_sessions(_GetClient({"sessions": []}), argparse.Namespace(json=False))
     assert rc == 0 and "no active sessions" in capsys.readouterr().out
+
+
+def test_cmd_reject_sends_reason():
+    import argparse
+    captured = {}
+
+    class _CapSess:
+        headers = {}
+
+        def post(self, url, json=None, stream=None, timeout=None):
+            captured["json"] = json
+            return _Resp([
+                _sse({"type": "action_resolved", "action_id": "a1", "approved": False, "reason": "use Y"}),
+                _sse({"type": "done", "session_id": "s", "reason": "end_turn", "incomplete": False}),
+            ])
+
+    class _CapClient:
+        base = "http://x:8765"
+
+        def __init__(self):
+            self.session = _CapSess()
+
+        def _url(self, p):
+            return self.base + "/api" + p
+
+    agent._cmd_reject(_CapClient(), argparse.Namespace(action_id="a1", reason="use Y", json=False))
+    assert captured["json"] == {"action_id": "a1", "reason": "use Y"}

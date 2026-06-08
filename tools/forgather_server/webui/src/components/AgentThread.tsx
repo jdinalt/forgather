@@ -214,7 +214,7 @@ export function AgentThread({ agent, compact, onOpenFull, onOpenDoc, repoRoot }:
               compact={compact}
               busy={agent.busy}
               onApprove={() => agent.decide(it.card.action_id, true)}
-              onReject={() => agent.decide(it.card.action_id, false)}
+              onReject={(reason) => agent.decide(it.card.action_id, false, reason)}
               onOpenFull={onOpenFull}
             />
           );

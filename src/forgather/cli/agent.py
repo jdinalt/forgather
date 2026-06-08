@@ -211,11 +211,11 @@ def _cmd_approve(client: ServerClient, args) -> int:
 
 
 def _cmd_reject(client: ServerClient, args) -> int:
-    # The server's reject takes only the action_id; surface the reason locally
-    # so the tester's intent is captured in the transcript/output.
+    # The reason is sent to the agent so it can adapt (not just logged).
+    body = {"action_id": args.action_id}
     if args.reason:
-        print(f"(reject reason: {args.reason})")
-    state = _stream(client, "/agent/reject", {"action_id": args.action_id}, as_json=args.json)
+        body["reason"] = args.reason
+    state = _stream(client, "/agent/reject", body, as_json=args.json)
     return 1 if state.get("error") else 0
 
 
