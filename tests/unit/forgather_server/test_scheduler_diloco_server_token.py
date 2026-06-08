@@ -262,6 +262,33 @@ def test_server_job_params_to_command_threads_bulk_transport():
     assert "--grpc" in cmd
 
 
+def test_scheduler_forwards_bulk_transport_to_launcher(tmp_path):
+    """The scheduler hop: _build_diloco_server reads wire_format/grpc_enabled
+    from job_params and forwards them to spawn_diloco_server_process."""
+    from unittest.mock import patch
+
+    from forgather_server import scheduler
+
+    item = type(
+        "Item",
+        (),
+        {
+            "job_params": {
+                "output_dir": "/tmp/out",
+                "num_workers": 2,
+                "port": 8512,
+                "no_auth": True,  # skip token-file resolution
+                "wire_format": "safetensors",
+                "grpc_enabled": True,
+            }
+        },
+    )()
+    with patch.object(scheduler.launcher, "spawn_diloco_server_process") as spawn:
+        scheduler._build_diloco_server(item, [], tmp_path / "tty.log")
+    assert spawn.call_args.kwargs["wire_format"] == "safetensors"
+    assert spawn.call_args.kwargs["grpc_enabled"] is True
+
+
 # ---------------------------------------------------------------------------
 # Token injection into the training worker's env (issue #90 follow-up):
 # a worker pointed at a routable (non-loopback) DiLoCo URL can't use the
