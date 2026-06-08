@@ -61,7 +61,7 @@ All implementation details are documented in the main documentation:
 
 | Trainer | Status | Model Pattern | Optimizer Pattern | Dataset Pattern |
 |---------|--------|---------------|-------------------|-----------------|
-| **SimpleTrainer** | ✅ Tested | GLOBAL | GLOBAL | GLOBAL |
+| **Trainer** | ✅ Tested | GLOBAL | GLOBAL | GLOBAL |
 | **DDPTrainer** | ✅ Tested | REPLICATED | REPLICATED | GLOBAL or PER_RANK |
 | **AccelTrainer** | ✅ Tested | REPLICATED | REPLICATED | PER_RANK |
 | **PipelineTrainer** | ✅ Tested | PER_RANK | PER_RANK | GLOBAL |
@@ -175,7 +175,7 @@ See [Migration Guide](migration_guide.md) for implementation details.
 ## Related Documentation
 
 - **Dataset Checkpointing**: `docs/datasets/fast-hf-loader-checkpoints.md`
-- **Trainer Overview**: (coming soon)
+- **Trainer Overview**: [`docs/trainers/trainer_options.md`](../trainers/trainer_options.md)
 - **Configuration System**: `docs/configuration/README.md`
 
 ## Implementation Status
