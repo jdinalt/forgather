@@ -4152,7 +4152,7 @@ class DiLoCoServer:
                 if not authenticate_grpc_context(context, token):
                     context.abort(
                         grpc.StatusCode.UNAUTHENTICATED,
-                        "missing or invalid credentials (mTLS cert or bearer)",
+                        "missing or invalid bearer token",
                     )
 
         return creds, authenticate
@@ -4163,7 +4163,8 @@ class DiLoCoServer:
         The bound ephemeral port is read back into ``self.grpc_port`` and
         advertised via /info. ``grpc`` is imported lazily here so a server with
         gRPC off pays no import cost. Security posture comes from
-        ``_grpc_security`` (cleartext/open today; TLS parity is the follow-up).
+        ``_grpc_security`` (TLS following the control-plane posture, with an
+        optional bearer gate; or cleartext/open).
         """
         if not self._grpc_enabled:
             return

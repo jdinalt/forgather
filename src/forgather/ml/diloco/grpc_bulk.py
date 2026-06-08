@@ -78,9 +78,10 @@ class _CapturingHandler:
 class DiLoCoBulkServicer(bulk_pb2_grpc.DiLoCoBulkServicer):
     """Drives the server's HTTP bulk handlers from gRPC streams.
 
-    ``authenticate`` is injected by the listener (mirrors the HTTP auth gate:
-    mTLS peer cert or bearer metadata); ``None`` means the listener is running
-    open (trusted LAN), matching the HTTP bulk listener's posture.
+    ``authenticate`` is injected by the listener (a bearer-over-TLS gate — the
+    bulk plane authenticates by bearer, not mTLS; see ``authenticate_grpc_context``);
+    ``None`` means the listener is running open (cleartext/trusted-LAN, or TLS
+    without an auth token), matching the HTTP bulk listener's posture.
     """
 
     def __init__(self, server, authenticate=None, chunk_bytes: int = CHUNK_BYTES):

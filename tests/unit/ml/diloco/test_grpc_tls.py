@@ -178,6 +178,30 @@ def test_wrong_bearer_rejected(grpc_tls_server):
         t.close()
 
 
+def test_cleartext_server_has_no_bearer_gate(tmp_path):
+    """Invariant: a cleartext server (no TLS) never builds a bearer gate, even
+    with an auth token — a bearer over a sniffable socket is theater. So
+    _grpc_security returns (None, None): cleartext + open."""
+    ckpt = make_initial_checkpoint(_sd(), tmp_path)
+    s = DiLoCoServer(
+        output_dir=str(tmp_path),
+        from_checkpoint=ckpt,
+        num_workers=1,
+        port=0,
+        heartbeat_timeout=0,
+        auth_token="a-token",  # set, but no TLS
+        ssl_context=None,
+        grpc_enabled=True,
+    )
+    try:
+        creds, authenticate = s._grpc_security()
+        assert creds is None
+        assert authenticate is None
+    finally:
+        # not started; nothing to stop, but be tidy if construction changes
+        pass
+
+
 def test_authenticate_grpc_context_unit():
     """The bearer auth gate: matching bearer accepted; wrong/missing rejected;
     no token -> open."""

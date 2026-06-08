@@ -42,8 +42,11 @@ def client_channel_credentials(verify_tls: bool = True):
     with open(str(bundle), "rb") as f:
         ca_pem = f.read()
     cert_pem = key_pem = None
-    # Present this node's cert/key for mTLS when provisioned (mirrors
-    # urllib_ssl_context.load_cert_chain on the HTTP client).
+    # Present this node's cert/key when provisioned (mirrors
+    # urllib_ssl_context.load_cert_chain on the HTTP client). The gRPC bulk
+    # server runs server-auth-only TLS today (require_client_auth=False), so this
+    # client cert is currently unused on the wire — kept for symmetry and a
+    # future require-client-auth mode.
     if cfg.is_provisioned():
         with open(str(cfg.server_cert), "rb") as f:
             cert_pem = f.read()
@@ -55,8 +58,14 @@ def client_channel_credentials(verify_tls: bool = True):
         certificate_chain=cert_pem,
     )
     if not verify_tls:
-        # No standard "skip verify" for gRPC; the CA bundle is the trust root.
-        logger.debug("gRPC: verify_tls=False ignored; trusting the cluster CA.")
+        # gRPC has no clean per-channel skip-verify (unlike the urllib client's
+        # CERT_NONE escape hatch). Warn rather than silently honor it: a worker
+        # relying on --no-verify-tls for a tunneled endpoint gets HTTP-works /
+        # gRPC-CA-verified, so the request is not honored on the gRPC leg.
+        logger.warning(
+            "gRPC: verify_tls=False not supported; the bulk channel still "
+            "verifies the server against the cluster CA."
+        )
     return creds
 
 

@@ -1,9 +1,11 @@
 # DiLoCo: modernizing the request/response bulk transport
 
 **Status:** WIP design doc, tracking the implementation PR-to-PR. Tier 1
-(safetensors wire frame, #184) and the `BulkBytesTransport` seam (#185) have
-landed; Tier 1.5 (gRPC) is landing now — see *Tier 1.5 — as built* below. The
-remaining follow-up is gRPC TLS/mTLS/bearer parity.
+(safetensors wire frame, #184), the `BulkBytesTransport` seam (#185), and Tier
+1.5 (gRPC, #186 + the submit/webui surface + gRPC TLS) have all landed — see
+*Tier 1.5 — as built* below. This track is complete; the only remaining transport
+work is the unstarted Tier 2/3 ideas (object-store staging, frame compression),
+which are out of scope here.
 
 ### Tier 1.5 — as built
 
