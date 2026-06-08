@@ -24,6 +24,7 @@ from typing import Any, Dict, Optional
 import torch
 
 from forgather.ml.diloco.auth import read_standalone_token
+from forgather.ml.diloco.bulk_transport import PATH_TO_OP, HttpBytesTransport
 from forgather.ml.diloco.wire_serialize import (
     deserialize_state_dict,
     serialize_state_dict,
@@ -205,6 +206,20 @@ class DiLoCoClient:
         # construction time — keeps ``__slots__`` migrations and static
         # type checkers happy.
         self._bulk_ssl_ctx: Optional["ssl.SSLContext"] = None
+        # Pluggable byte transport for the bulk legs (issue #154). The default
+        # HTTP transport reuses this client's URL/header/SSL resolvers (so the
+        # bulk-listener routing, bearer-omission, and per-request SSL stay
+        # single-sourced and live — ``bulk_url`` can change on /register). A
+        # future gRPC transport swaps in here, selected by /info, without the
+        # rest of the client changing.
+        self._transport = HttpBytesTransport(
+            url_for=self._url,
+            headers_for=self._headers,
+            ssl_for=self._ssl_for_request,
+            timeout=self.timeout,
+            retry_delay=self.retry_delay,
+            scheme_hint=self._scheme_hint,
+        )
 
     def _scheme_hint(self) -> str:
         """Diagnostic suffix for connection errors when the URL scheme
@@ -395,56 +410,23 @@ class DiLoCoClient:
         content_type: str = "application/octet-stream",
         retries: Optional[int] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Make a request and return deserialized tensor response.
+        """Round-trip a framed bulk request and return the deserialized tensors.
+
+        The byte round-trip (URL routing, auth, TLS, retry) is delegated to the
+        pluggable ``self._transport``; this method owns the protocol boundary —
+        mapping the path to a ``BulkOp`` and deserializing the response with the
+        negotiated wire format. ``method``/``content_type`` are retained for the
+        call signature (the transport derives the verb from the op).
 
         Args:
             retries: Number of retries on connection failure. Defaults to 0
                 (no retries) for backward compatibility. Set to a positive
                 value for fault-tolerant reconnection scenarios.
         """
-        url = self._url(path)
+        op = PATH_TO_OP["/" + path.lstrip("/")]
         max_retries = retries if retries is not None else 0
-        delay = self.retry_delay
-
-        for attempt in range(max_retries + 1):
-            req = urllib.request.Request(
-                url,
-                data=body,
-                method=method,
-                headers=self._headers(content_type if body else None, path=path),
-            )
-            try:
-                with urllib.request.urlopen(
-                    req,
-                    timeout=self.timeout,
-                    context=self._ssl_for_request(url),
-                ) as resp:
-                    data = resp.read()
-                    return self._deserialize_state_dict(data)
-            except urllib.error.HTTPError as e:
-                # HTTP error (4xx/5xx) - read the response body for diagnostics
-                try:
-                    error_body = e.read().decode("utf-8", errors="replace")
-                    error_detail = json.loads(error_body).get("error", error_body)
-                except Exception:
-                    error_detail = str(e)
-                raise ConnectionError(
-                    f"Server returned HTTP {e.code} for {url}: {error_detail}"
-                ) from e
-            except urllib.error.URLError as e:
-                if attempt < max_retries:
-                    logger.warning(
-                        f"Tensor request to {url} failed "
-                        f"(attempt {attempt + 1}/{max_retries + 1}): {e}. "
-                        f"Retrying in {delay:.1f}s..."
-                    )
-                    time.sleep(delay)
-                    delay *= 2
-                else:
-                    raise ConnectionError(
-                        f"Failed to connect to DiLoCo server at {url}: {e}"
-                        f"{self._scheme_hint()}"
-                    ) from e
+        data = self._transport.round_trip(op, body, retries=max_retries)
+        return self._deserialize_state_dict(data)
 
     def register(
         self, worker_id: str, worker_info: Optional[dict] = None
