@@ -759,6 +759,9 @@ def _server_job_params(args):
         # knobs above.
         "wire_format": getattr(args, "wire_format", "pickle"),
         "grpc_enabled": getattr(args, "grpc_enabled", False),
+        # Sync backend the group must use (issue #154); advertised via /info for
+        # workers to validate against.
+        "backend": getattr(args, "backend", "http"),
         "no_auth": getattr(args, "no_auth", False),
         "bulk_cleartext": getattr(args, "bulk_cleartext", False),
     }

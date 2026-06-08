@@ -652,6 +652,29 @@ worker's per-worker checkpoint resume is only correct when it lands back on
 the host that holds that checkpoint. Cross-host launch and resume are tracked
 in [issue #118](https://github.com/jdinalt/forgather/issues/118).
 
+## Sync backends and group agreement
+
+DiLoCo's sync tensors can move three ways: the default **`http`** parameter
+server (independent workers, possibly cross-host), a single-host
+**`shared_memory`** region, or an all-reduce **`collective`** group. The backend
+is a **group-wide invariant** — a collective group is one all-reduce world, a
+shared-memory group is co-located, an HTTP group is independent workers; there is
+no valid *mixed* group, and workers that disagree on the backend would deadlock or
+corrupt the sync.
+
+So the backend is **declared on the server** (`forgather diloco server --backend
+{http,shared_memory,collective}`, default `http`) and advertised via `/info`; each
+worker **validates** its own launched backend against the server's declaration and
+**fails loud** at `/info` if they disagree — caught before any training, rather
+than as a silent mid-run failure. (A worker can't *adopt* the backend the way it
+adopts `sync_every`: the backend fixes the launch topology — GPU count, torchrun
+world, co-location — which is decided before the worker runs. It can only agree.)
+Set it in **both** places — the server's `--backend` and the workers'
+`forgather submit --backend` (or `DILOCO_BACKEND`) — and they must match; the
+validation is the safety net that catches a mismatch. An older server that doesn't
+declare a backend skips the check. The same selector is on the webui's **DiLoCo
+Server** modal and the agent's `start_diloco_server` tool.
+
 ## Shared-memory backend (single-host)
 
 On a single host, co-located worker processes can exchange the sync tensors
@@ -693,8 +716,11 @@ GPU) — not a multi-GPU DDP job.
 Run a coordinator, then launch the group (one process per GPU):
 
 ```bash
-# Coordinator (no tensor role for a shared-memory group; provides /info + dispatch)
-forgather diloco server --local-only --output-dir <init-checkpoint-dir> \
+# Coordinator (no tensor role for a shared-memory group; provides /info + dispatch).
+# --backend shared_memory declares the group backend so the workers validate
+# against it (a worker launched with a mismatched backend fails loud at /info).
+forgather diloco server --local-only --backend shared_memory \
+    --output-dir <init-checkpoint-dir> \
     --num-workers 2 --sync-every 100 -H 127.0.0.1 --port 8512
 
 # Two co-located workers sharing one region
@@ -789,8 +815,11 @@ loud where detectable):
 Run a coordinator, then launch the replicas as a single torchrun world:
 
 ```bash
-# Coordinator (no tensor role; provides /info + the init checkpoint + dispatch)
-forgather diloco server --local-only --output-dir <init-checkpoint-dir> \
+# Coordinator (no tensor role; provides /info + the init checkpoint + dispatch).
+# --backend collective declares the group backend so the replicas validate
+# against it (a worker launched with a mismatched backend fails loud at /info).
+forgather diloco server --local-only --backend collective \
+    --output-dir <init-checkpoint-dir> \
     --num-workers 2 --sync-every 100 -H 127.0.0.1 --port 8512
 
 # N replicas in one torchrun world, syncing via all-reduce

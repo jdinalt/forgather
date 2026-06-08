@@ -313,6 +313,42 @@ class TestServerAuthoritativeSettings:
         mock_instance.start.assert_called_once()
 
 
+class TestBackendAgreement:
+    """The server declares the group's sync backend in /info; a worker
+    validates its own launched backend against it and fails loud on
+    disagreement — it can't adopt it (the backend fixes the launch
+    topology), only agree (issue #154)."""
+
+    def _info(self, backend):
+        ecs = {"sync_every": 500}
+        if backend is not None:
+            ecs["backend"] = backend
+        return {"expected_client_settings": ecs}
+
+    def test_match_is_accepted(self, monkeypatch):
+        monkeypatch.setenv("DILOCO_BACKEND", "collective")
+        cb = DiLoCoCallback(server_addr="host:8512")
+        assert cb.backend_kind == "collective"
+        settings = cb._resolve_server_settings(self._info("collective"))
+        assert settings["sync_every"] == 500
+
+    def test_mismatch_fails_loud(self, monkeypatch):
+        from forgather.ml.diloco.client import DiLoCoServerUnreachable
+
+        monkeypatch.setenv("DILOCO_BACKEND", "http")
+        cb = DiLoCoCallback(server_addr="host:8512")
+        with pytest.raises(DiLoCoServerUnreachable, match="backend mismatch"):
+            cb._resolve_server_settings(self._info("collective"))
+
+    def test_absent_declaration_skips_check(self, monkeypatch):
+        # An older server that doesn't advertise a backend → no validation,
+        # so a fresh worker stays compatible.
+        monkeypatch.setenv("DILOCO_BACKEND", "collective")
+        cb = DiLoCoCallback(server_addr="host:8512")
+        settings = cb._resolve_server_settings(self._info(None))
+        assert settings["sync_every"] == 500
+
+
 class TestWorkerLifecycle:
     """Worker created/started in on_train_begin, stopped in on_train_end.
 

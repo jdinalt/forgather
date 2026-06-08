@@ -205,6 +205,20 @@ def create_diloco_parser(global_args):
         ),
     )
     server_parser.add_argument(
+        "--backend",
+        dest="backend",
+        choices=("http", "shared_memory", "collective"),
+        default="http",
+        help=(
+            "Sync backend the worker group must use (issue #154). Declared\n"
+            "here and advertised via /info; every worker validates its own\n"
+            "launched backend against it and fails loud on disagreement, so a\n"
+            "group can't be launched with workers that disagree on how to\n"
+            "communicate. Must match what `forgather submit --backend` sets for\n"
+            "the workers. (default: http)"
+        ),
+    )
+    server_parser.add_argument(
         "--wire-format",
         dest="wire_format",
         choices=("pickle", "safetensors"),
