@@ -10,6 +10,7 @@ the default ``HttpBytesTransport``.
 import json
 import struct
 
+import pytest
 import torch
 
 from forgather.ml.diloco.bulk_transport import PATH_TO_OP, BulkOp, HttpBytesTransport
@@ -95,6 +96,77 @@ def test_path_to_op_covers_all_bulk_paths():
     assert PATH_TO_OP["/submit_pseudograd"] is BulkOp.SUBMIT_PSEUDOGRAD
     assert PATH_TO_OP["/submit_fragment_pseudograd"] is BulkOp.SUBMIT_FRAGMENT
     assert PATH_TO_OP["/global_params"] is BulkOp.GLOBAL_PARAMS
+
+
+def _http_transport(**over):
+    kw = dict(
+        url_for=lambda path: f"http://localhost/{path.lstrip('/')}",
+        headers_for=lambda content_type=None, *, path=None: {},
+        ssl_for=lambda u: None,
+        timeout=1,
+        retry_delay=0,
+        scheme_hint=lambda: "",
+    )
+    kw.update(over)
+    return HttpBytesTransport(**kw)
+
+
+def test_close_is_callable():
+    # close() is a no-op for urllib but exists as the channel-teardown hook a
+    # gRPC transport will implement; it must be callable and return None.
+    assert _http_transport().close() is None
+
+
+def test_retry_path_recovers_after_transient_failures():
+    """round_trip retries URLError up to ``retries`` times with backoff, then
+    succeeds — the fault-tolerant reconnection path PR3's transport relies on."""
+    import urllib.error
+    import urllib.request
+
+    calls = {"n": 0}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"OK"
+
+    def flaky_urlopen(req, timeout=None, context=None):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise urllib.error.URLError("connection refused")
+        return _Resp()
+
+    transport = _http_transport()  # retry_delay=0 keeps it fast
+    orig = urllib.request.urlopen
+    urllib.request.urlopen = flaky_urlopen
+    try:
+        out = transport.round_trip(BulkOp.GLOBAL_PARAMS, retries=2)
+        assert out == b"OK"
+        assert calls["n"] == 3  # failed twice, succeeded on the third
+    finally:
+        urllib.request.urlopen = orig
+
+
+def test_retry_exhausted_raises_connection_error():
+    import urllib.error
+    import urllib.request
+
+    def always_fails(req, timeout=None, context=None):
+        raise urllib.error.URLError("down")
+
+    transport = _http_transport()
+    orig = urllib.request.urlopen
+    urllib.request.urlopen = always_fails
+    try:
+        with pytest.raises(ConnectionError, match="Failed to connect"):
+            transport.round_trip(BulkOp.SUBMIT_PSEUDOGRAD, b"x", retries=1)
+    finally:
+        urllib.request.urlopen = orig
 
 
 def test_http_transport_op_verb_mapping():

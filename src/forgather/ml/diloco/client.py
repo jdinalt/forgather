@@ -434,6 +434,14 @@ class DiLoCoClient:
         """
         Register with the server and receive global parameters.
 
+        Note: although the response carries a tensor download, register does its
+        own inline HTTP round-trip rather than going through ``self._transport``.
+        It is a control+bulk hybrid — the same call reads the
+        ``X-Forgather-Bulk-Url`` header and the 409/422 typed-error branches — so
+        it stays on the control plane. A future non-HTTP bulk transport (issue
+        #154) leaves register here; it must decide separately whether to route
+        the param download through the transport or keep it HTTP.
+
         Args:
             worker_id: Unique worker identifier.
             worker_info: Optional metadata dict (hostname, device info, etc.).
