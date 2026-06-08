@@ -362,6 +362,10 @@ def test_run_train_defaults_one_gpu(monkeypatch):
         "validate_and_enqueue",
         lambda **kw: seen.update(kw) or _fake_item("training"),
     )
+    # Force standalone (no cluster) so the mode-aware dataset default is local.
+    import forgather_server.cluster as cluster
+
+    monkeypatch.setattr(cluster, "self_identity", lambda: None)
     prop = tools_jobs._run_train({"project_dir": "/p", "config_name": "c.yaml"})
     assert isinstance(prop, Proposal)
     # Preview shows the SCHEDULED invocation (submit), NOT a foreground `train`.
@@ -374,10 +378,25 @@ def test_run_train_defaults_one_gpu(monkeypatch):
     # nproc_per_node can't be read for a fake project -> falls back to 1.
     assert seen["requested_gpus"] == 1
     assert seen["priority"] == 0
-    assert seen["dataset_source"] is None  # in-process loader by default
+    assert seen["dataset_source"] is None  # local (standalone default)
     assert seen["enforce_fs_root"] is True
-    assert seen["job_params"] == {}  # no nproc
+    assert seen["job_params"] == {}
     assert "q_new" in msg
+
+
+def test_run_train_default_dataset_is_auto_in_cluster_mode(monkeypatch):
+    import forgather_server.cluster as cluster
+
+    monkeypatch.setattr(cluster, "self_identity", lambda: object())  # in cluster mode
+    seen = {}
+    monkeypatch.setattr(
+        queue_ops, "validate_and_enqueue",
+        lambda **kw: seen.update(kw) or _fake_item("training"),
+    )
+    prop = tools_jobs._run_train({"project_dir": "/p", "config_name": "c.yaml", "gpus": 1})
+    assert "--dataset auto" in prop.extra["command"]
+    prop.commit()
+    assert seen["dataset_source"] == {"kind": "auto"}
 
 
 def test_run_train_infers_gpus_and_passes_priority_and_dataset(monkeypatch):
@@ -394,7 +413,7 @@ def test_run_train_infers_gpus_and_passes_priority_and_dataset(monkeypatch):
     )
     prop = tools_jobs._run_train(
         {"project_dir": "/p", "config_name": "c.yaml", "priority": 5,
-         "dataset_server_id": "local:q1"}
+         "dataset": "server:local:q1"}
     )
     prop.commit()
     assert seen["requested_gpus"] == 4  # inferred from nproc_per_node
@@ -402,7 +421,7 @@ def test_run_train_infers_gpus_and_passes_priority_and_dataset(monkeypatch):
     assert seen["dataset_source"] == {"kind": "server", "server_id": "local:q1"}
 
 
-def test_run_train_gpus_and_nproc(monkeypatch):
+def test_run_train_cpu_smoketest(monkeypatch):
     seen = {}
     monkeypatch.setattr(
         queue_ops,
@@ -410,11 +429,11 @@ def test_run_train_gpus_and_nproc(monkeypatch):
         lambda **kw: seen.update(kw) or _fake_item("training"),
     )
     prop = tools_jobs._run_train(
-        {"project_dir": "/p", "config_name": "c.yaml", "gpus": 0, "nproc": "auto"}
+        {"project_dir": "/p", "config_name": "c.yaml", "gpus": 0}
     )
     prop.commit()
     assert seen["requested_gpus"] == 0  # CPU smoke-test
-    assert seen["job_params"] == {"nproc": "auto"}
+    assert seen["job_params"] == {}  # no nproc on the scheduled path
 
 
 def test_read_tty_tail_helper(tmp_path):

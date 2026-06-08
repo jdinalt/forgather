@@ -331,31 +331,64 @@ def _infer_requested_gpus(project_dir: str, config_name: str) -> int:
     return 1
 
 
+def _parse_dataset_source(spec: str) -> Optional[Dict[str, Any]]:
+    """Mirror the CLI ``--dataset SOURCE`` wire format → a dataset_source dict.
+
+    "" / "local" -> None (in-process loader); "auto" -> cluster routing;
+    "server:<id>" -> a specific dataset server (id from list_dataset_servers).
+    Raises ValueError on anything else.
+    """
+    spec = (spec or "").strip()
+    if not spec or spec == "local":
+        return None
+    if spec == "auto":
+        return {"kind": "auto"}
+    if spec.startswith("server:"):
+        server_id = spec[len("server:"):].strip()
+        if not server_id:
+            raise ValueError("dataset 'server:<id>' requires a non-empty id")
+        return {"kind": "server", "server_id": server_id}
+    raise ValueError(
+        f"invalid dataset {spec!r}; expected 'auto', 'local', or 'server:<id>'"
+    )
+
+
+def _default_dataset_source() -> str:
+    """Mode-aware default for --dataset, matching the CLI / Submit modal:
+    "auto" (cluster routing) when this server is in cluster mode — the normal
+    case, since cluster mode is always on — else "local"."""
+    try:
+        from .. import cluster
+
+        if cluster.self_identity() is not None:
+            return "auto"
+    except Exception:
+        log.debug("cluster self-identity probe failed", exc_info=True)
+    return "local"
+
+
 def _run_train(args: Dict[str, Any]) -> Proposal:
     project_dir = args["project_dir"]
     config_name = args["config_name"]
     dynamic_args = args.get("dynamic_args") or {}
-    nproc = args.get("nproc")
     priority = args.get("priority")
     priority = 0 if priority in (None, "") else int(priority)
-    dataset_server_id = args.get("dataset_server_id") or None
 
-    # requested_gpus: explicit wins; otherwise infer from the config's
-    # nproc_per_node (matches `forgather submit` and the Submit modal).
+    # requested_gpus is the single worker-count knob for a scheduled job (the
+    # scheduler reserves N GPUs and runs nproc_per_node=N) — there is no
+    # separate --nproc on `forgather submit`. Explicit wins; otherwise infer
+    # from the config's nproc_per_node (matches the Submit modal).
     gpus = args.get("gpus")
     requested_gpus = (
         int(gpus) if gpus not in (None, "")
         else _infer_requested_gpus(project_dir, config_name)
     )
 
-    job_params: Dict[str, Any] = {}
-    if nproc not in (None, ""):
-        job_params["nproc"] = str(nproc)
-    # Dataset source: default (None) = the in-process loader. A server id from
-    # list_dataset_servers routes training data through that dataset server.
-    dataset_source = (
-        {"kind": "server", "server_id": dataset_server_id} if dataset_server_id else None
-    )
+    # Dataset source (the CLI's --dataset SOURCE): local = in-process loader;
+    # auto = cluster routing; server:<id> = a named dataset server. Omitted ->
+    # the mode-aware default (normally "auto"), matching `forgather submit`.
+    dataset = (args.get("dataset") or "").strip() or _default_dataset_source()
+    dataset_source = _parse_dataset_source(dataset)
 
     # Accurate preview: this SCHEDULES a background job (the equivalent of
     # `forgather submit`, i.e. `train --schedule`) — it does NOT run training
@@ -364,10 +397,8 @@ def _run_train(args: Dict[str, Any]) -> Proposal:
            "--requested-gpus", str(requested_gpus)]
     if priority:
         cmd += ["--priority", str(priority)]
-    if nproc not in (None, ""):
-        cmd += ["--nproc", str(nproc)]
-    if dataset_server_id:
-        cmd += ["--dataset-source", dataset_server_id]
+    if dataset:
+        cmd += ["--dataset", dataset]
     cmd_str = shlex.join(cmd)
 
     def commit() -> str:
@@ -378,7 +409,7 @@ def _run_train(args: Dict[str, Any]) -> Proposal:
             requested_gpus=requested_gpus,
             priority=priority,
             job_type="training",
-            job_params=job_params,
+            job_params={},
             dataset_source=dataset_source,
             enforce_fs_root=True,
         )
@@ -396,7 +427,7 @@ def _run_train(args: Dict[str, Any]) -> Proposal:
             "command": cmd_str,
             "requested_gpus": requested_gpus,
             "priority": priority,
-            "dataset_source": dataset_server_id or "local",
+            "dataset": dataset or "local (default)",
             "dynamic_args": dynamic_args or None,
             "warning": "Training is long-running and reserves "
             f"{requested_gpus} GPU(s). It is QUEUED to the scheduler (background), "
@@ -799,9 +830,11 @@ def register_all(reg: ToolRegistry) -> None:
                 "reserve; if omitted it defaults to the config's nproc_per_node "
                 "(like the Submit modal), falling back to 1 — set 0 for a CPU "
                 "smoke-test. priority (default 0) orders the scheduler queue. "
-                "nproc optionally overrides processes-per-node. dataset_server_id "
-                "(from list_dataset_servers) routes training data through a "
-                "dataset server; omit to use the in-process loader. Approval "
+                "dataset selects the training data source (the CLI's --dataset): "
+                "'auto' (cluster routing), 'local' (in-process loader), or "
+                "'server:<id>' (a dataset server from list_dataset_servers). "
+                "Omit it to use the mode-aware default, which is normally 'auto' "
+                "— only pass 'local'/'server:<id>' for special cases. Approval "
                 "required. Returns immediately with a queue_id; tell the user it "
                 "is long-running, then check on it with list_jobs / job_status / "
                 "read_job_output periodically (do NOT block on wait_for_job for a "
@@ -815,8 +848,7 @@ def register_all(reg: ToolRegistry) -> None:
                     "config_name": {"type": "string"},
                     "gpus": {"type": "integer", "description": "GPUs to reserve (default: config's nproc_per_node, else 1; 0 = CPU smoke-test)."},
                     "priority": {"type": "integer", "description": "Scheduler priority (default 0; higher dispatches first)."},
-                    "nproc": {"type": "string", "description": "Override processes-per-node (int, or \"gpu\"/\"cpu\"/\"auto\")."},
-                    "dataset_server_id": {"type": "string", "description": "Optional dataset-server id (from list_dataset_servers) to source training data; omit for the in-process loader."},
+                    "dataset": {"type": "string", "description": "Training data source: 'auto' | 'local' | 'server:<id>'. Omit for the mode-aware default (normally 'auto')."},
                     "dynamic_args": {"type": "object", "description": "Config-specific args (from inspect_config's dynamic_args), keyed by dest."},
                 },
                 "required": ["project_dir", "config_name"],
