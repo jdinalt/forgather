@@ -260,10 +260,12 @@ def test_server_job_params_to_command_threads_bulk_transport():
         bf16_comm=None,
         wire_format="safetensors",
         grpc_enabled=True,
+        backend="collective",
     )
     p = _server_job_params(args)
     assert p["wire_format"] == "safetensors"
     assert p["grpc_enabled"] is True
+    assert p["backend"] == "collective"
     # The scheduler hands these job_params keys to the command builder.
     cmd = build_diloco_server_command(
         output_dir=p["output_dir"],
@@ -271,9 +273,11 @@ def test_server_job_params_to_command_threads_bulk_transport():
         port=p["port"],
         wire_format=p["wire_format"],
         grpc_enabled=p["grpc_enabled"],
+        backend=p["backend"],
     )
     assert cmd[cmd.index("--wire-format") + 1] == "safetensors"
     assert "--grpc" in cmd
+    assert cmd[cmd.index("--backend") + 1] == "collective"
 
 
 def test_scheduler_forwards_bulk_transport_to_launcher(tmp_path):
