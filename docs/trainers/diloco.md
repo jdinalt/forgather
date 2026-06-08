@@ -662,18 +662,35 @@ shared-memory group is co-located, an HTTP group is independent workers; there i
 no valid *mixed* group, and workers that disagree on the backend would deadlock or
 corrupt the sync.
 
-So the backend is **declared on the server** (`forgather diloco server --backend
-{http,shared_memory,collective}`, default `http`) and advertised via `/info`; each
-worker **validates** its own launched backend against the server's declaration and
-**fails loud** at `/info` if they disagree — caught before any training, rather
-than as a silent mid-run failure. (A worker can't *adopt* the backend the way it
-adopts `sync_every`: the backend fixes the launch topology — GPU count, torchrun
-world, co-location — which is decided before the worker runs. It can only agree.)
-Set it in **both** places — the server's `--backend` and the workers'
-`forgather submit --backend` (or `DILOCO_BACKEND`) — and they must match; the
-validation is the safety net that catches a mismatch. An older server that doesn't
-declare a backend skips the check. The same selector is on the webui's **DiLoCo
-Server** modal and the agent's `start_diloco_server` tool.
+So the backend is **set in exactly one place — the server**
+(`forgather diloco server --backend {http,shared_memory,collective}`, default
+`http`) — and advertised via `/info`. Workers are **not** asked to choose it:
+`forgather submit` enqueues them backend-agnostic, and the scheduler queries the
+server's `/info` *just before it invokes `torchrun`*, derives the backend, and
+shapes the launch (the env, the `shared_memory` region, the `collective` world)
+from it. If the server is unreachable at that moment the launch **fails loud** —
+there is no default to fall back to. This makes a disagreeing worker
+unrepresentable: nobody can launch one with the wrong backend, because nobody
+launches one with a chosen backend at all.
+
+A worker can't *adopt* the backend the way it adopts `sync_every`: the backend
+fixes the launch topology — GPU count, torchrun world, co-location — which is
+decided before the worker runs. Deriving it at launch is what lets that decision
+still come from the server. As a second line of defense, each running worker also
+validates its own launched backend against `/info` and fails loud on a mismatch
+(the safety net for a hand-launched or stale process); an older server that
+doesn't declare a backend skips that check.
+
+The **`collective`** topology is the one launch-shape the operator still selects
+explicitly, because it's structurally different — one `torchrun` job of N
+replicas rather than N independent jobs. Select it with **`--diloco-replicate N`**
+(a topology/sizing flag), against a server that declares `--backend collective`;
+the scheduler validates the two agree. `--backend` itself is **not** a `submit`
+option on the orchestrated path. It survives only as a `--local-only` dev/debug
+escape hatch (a direct foreground `torchrun` with no server to query), where the
+running worker's own validation still catches a misspecification. The backend
+selector lives on the webui's **DiLoCo Server** modal and the agent's
+`start_diloco_server` tool — the server side, where it belongs.
 
 ## Shared-memory backend (single-host)
 
@@ -741,20 +758,24 @@ supported for this backend. For the internals see
 ### Via the scheduler (`forgather submit`)
 
 The env-var form above is the manual recipe; the scheduler launches the same
-group as a first-class option. Pass `--backend shared_memory` to a DiLoCo
-submit and the worker count sizes the group:
+group as a first-class option. Declare `shared_memory` on the **server**, then
+submit plain workers — they inherit the backend at launch:
 
 ```bash
-forgather -t <config>.yaml submit --diloco --diloco-worker-count 2 \
-    --backend shared_memory
+# Once, on the param server:
+forgather diloco server --backend shared_memory -n 2 ...
+# Then submit the workers (no --backend — it's derived from the server):
+forgather -t <config>.yaml submit --diloco --diloco-worker-count 2
 ```
 
-The submit mints one group id for the batch; the scheduler derives the per-host
-`DILOCO_SHM_GROUP_DIR` (under the host temp dir) and `DILOCO_SHM_GROUP_SIZE` for
-every worker, so you don't hand-set the env. The region is created on the first
-worker's join and **unlinked when the last worker leaves**, so a completed group
-leaves nothing behind. Because the backend is single-host, `--backend
-shared_memory` can't be combined with `--global` (the multi-node fan-out).
+The workers carry no backend; the scheduler queries the server's `/info` before
+`torchrun`, sees `shared_memory`, and derives the per-host `DILOCO_SHM_GROUP_DIR`
+(under the host temp dir, one per server) and `DILOCO_SHM_GROUP_SIZE` (the
+server's declared worker count) for every worker, so you don't hand-set the env.
+The region is created on the first worker's join and **unlinked when the last
+worker leaves**, so a completed group leaves nothing behind. Because the backend
+is single-host, a `shared_memory` server's workers can't be submitted with
+`--global` (the multi-node fan-out).
 
 ## Collective backend (single-host DDP alternative)
 
@@ -835,19 +856,23 @@ Every replica syncs at the same `H`-step boundary; the all-reduce is the barrier
 ### Via the scheduler (`forgather submit`)
 
 The env-var form above is the manual recipe; the scheduler launches the same
-group as a first-class option. With a coordinator running, pass `--backend
-collective` and size the group with `--diloco-replicate`:
+group as a first-class option. With a coordinator that declares
+`--backend collective` running, size the group with `--diloco-replicate` — the
+replica count is the one launch-shape you pick (the backend itself comes from the
+server):
 
 ```bash
-forgather -t <config>.yaml submit --backend collective \
-    --diloco-replicate 2 --diloco-server <server-id>
+forgather -t <config>.yaml submit --diloco-replicate 2 --diloco-server <server-id>
 ```
 
-Unlike the shared-memory backend (which enqueues N worker jobs), collective is
+The scheduler validates that the chosen server actually declares `collective`
+before it launches; submitting `--diloco-replicate` against an `http` /
+`shared_memory` server fails loud. Unlike the shared-memory backend (which
+enqueues N worker jobs), collective is
 **one** scheduled job: the scheduler reserves `--diloco-replicate` GPUs, sets
 `nproc_per_node` to the same, and derives `DILOCO_BACKEND=collective` +
 `DILOCO_REPLICATE` for it (the `DILOCO_WORKER_ID` base is made per-replica at the
-entrypoint). Because the backend is single-host, `--backend collective` can't be
+entrypoint). Because the backend is single-host, `--diloco-replicate` can't be
 combined with `--global`.
 
 ### Composing with pipeline parallel

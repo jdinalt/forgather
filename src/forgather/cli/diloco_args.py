@@ -211,11 +211,12 @@ def create_diloco_parser(global_args):
         default="http",
         help=(
             "Sync backend the worker group must use (issue #154). Declared\n"
-            "here and advertised via /info; every worker validates its own\n"
-            "launched backend against it and fails loud on disagreement, so a\n"
+            "here and advertised via /info; the launcher derives each worker's\n"
+            "backend from this at launch, and every running worker also\n"
+            "validates its own against it and fails loud on disagreement — so a\n"
             "group can't be launched with workers that disagree on how to\n"
-            "communicate. Must match what `forgather submit --backend` sets for\n"
-            "the workers. (default: http)"
+            "communicate. The single source of truth: `forgather submit` does\n"
+            "not take --backend on the orchestrated path. (default: http)"
         ),
     )
     server_parser.add_argument(

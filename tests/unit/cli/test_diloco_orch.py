@@ -858,10 +858,11 @@ class TestLaunchWorkers:
         assert kw["dynamic_args"] == {"max_steps": 5}
         assert kw["requested_gpus"] == 1
 
-    def test_shared_memory_backend_stamps_group(self, patch_orchestrator):
-        # --backend shared_memory: every worker of one submit shares a single
-        # shm_group_id + shm_group_size (= worker count) in its diloco block, so
-        # the scheduler derives one region dir + size for the co-located group.
+    def test_workers_enqueue_backend_agnostic(self, patch_orchestrator):
+        # Workers carry NO backend / shm-group at submit (issue #154): the
+        # backend is server-authoritative and derived by the scheduler at launch
+        # from the param server's /info. The diloco block holds only the server
+        # + (distinct) worker id; group coordination comes from the server.
         client = patch_orchestrator(FakeClient(servers=SERVERS))
         rc = orch.launch_workers(
             _worker_args(count=2, backend="shared_memory", dataset="auto"), {}
@@ -870,12 +871,9 @@ class TestLaunchWorkers:
         assert len(client.enqueued) == 2
         dilocos = [kw["job_params"]["diloco"] for kw in client.enqueued]
         for d in dilocos:
-            assert d["backend"] == "shared_memory"
-            assert d["shm_group_size"] == 2
-        # One id for the whole submit (uniform across workers); worker ids stay
-        # distinct.
-        gid = dilocos[0]["shm_group_id"]
-        assert gid and all(d["shm_group_id"] == gid for d in dilocos)
+            assert "backend" not in d
+            assert "shm_group_id" not in d
+            assert "shm_group_size" not in d
         assert dilocos[0]["worker_id"] != dilocos[1]["worker_id"]
 
     def test_http_backend_omits_group(self, patch_orchestrator):
@@ -996,7 +994,9 @@ class TestLaunchWorkers:
 class TestLaunchCollective:
     def test_one_job_with_nproc_and_diloco(self, patch_orchestrator):
         # Collective is ONE job: nproc + requested_gpus = replicate, and the
-        # diloco block carries backend=collective + diloco_replicate.
+        # diloco block carries the collective TOPOLOGY (diloco_replicate). The
+        # backend itself is NOT stamped here — the scheduler queries the server's
+        # /info at launch and validates it declares collective (issue #154).
         client = patch_orchestrator(FakeClient(servers=SERVERS))
         rc = orch.launch_collective(
             _worker_args(replicate=3, worker_id="run1", dataset="auto"),
@@ -1009,7 +1009,7 @@ class TestLaunchCollective:
         assert kw["requested_gpus"] == 3
         assert kw["job_params"]["nproc"] == "3"
         d = kw["job_params"]["diloco"]
-        assert d["backend"] == "collective"
+        assert "backend" not in d
         assert d["diloco_replicate"] == 3
         assert d["worker_id"] == "run1"
         assert d["server_addr"] == "http://192.168.9.43:8512"  # resolved local:q1

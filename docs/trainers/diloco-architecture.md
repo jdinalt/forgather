@@ -464,9 +464,12 @@ omitting a name fails loud (the average divides by the group size). The averagin
 contributors, fp32, SGD-Nesterov). The HTTP coordinator still handles membership,
 `/info`, heartbeat, and work-unit dispatch — only the tensor legs are
 shared-memory. The backend is constructed directly with its rendezvous parameters
-(`group_dir`, `group_size`, `init_checkpoint`); the trainer/CLI wiring
-(`DILOCO_BACKEND=shared_memory`, `forgather submit --backend shared_memory`)
-selects it.
+(`group_dir`, `group_size`, `init_checkpoint`); the trainer reads
+`DILOCO_BACKEND=shared_memory` to select it. That env var is **derived at launch**
+by the scheduler from the param server's `/info` (the server declares
+`--backend shared_memory`) — orchestrated workers are submitted backend-agnostic,
+so `group_dir`/`group_size` come from the server identity + its worker count, not
+a submit-time flag.
 
 ### Collective backend
 

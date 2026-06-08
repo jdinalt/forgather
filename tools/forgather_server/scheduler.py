@@ -830,6 +830,106 @@ def _diloco_token_for_server_addr(server_addr: str) -> Optional[str]:
     return None
 
 
+def _diloco_server_token(server_addr: str) -> Optional[str]:
+    """Bearer token for a param server at ``server_addr``.
+
+    Resolves a locally-spawned server's token from its JobRecord first (that
+    path also handles the routable-host stamping), then falls back to the same
+    inventory the webui proxy uses — the user registry + the cluster snapshot —
+    so a **registered remote** server's token is found too. Without this
+    fallback the launch-time ``/info`` query (and the worker's own token) would
+    401 against any server this scheduler didn't itself spawn. Returns ``None``
+    when no source knows the address (a ``--no-auth`` server, or genuinely
+    unknown).
+    """
+    token = _diloco_token_for_server_addr(server_addr)
+    if token:
+        return token
+    try:
+        from . import cluster_diloco_inventory as cdi
+
+        norm = cdi._normalize(server_addr)
+        for s in cdi.local_servers():
+            if cdi._normalize(s.base_url) == norm and s.auth_token:
+                return s.auth_token
+        t = cdi.master_inventory.token_for_url(server_addr)
+        if t:
+            return t
+    except Exception:
+        pass
+    return None
+
+
+def _diloco_server_verify_tls(server_addr: str) -> bool:
+    """``verify_tls`` for a known param server at ``server_addr``.
+
+    Resolved from the same source the webui proxy uses
+    (``routes/diloco.py:_verify_for``): the local-server inventory (which folds
+    in user-registry entries) then the cluster snapshot. Defaults to ``True`` —
+    a verified handshake — when the server isn't in any inventory (e.g. a bare
+    loopback dev server, where TLS is moot anyway).
+    """
+    try:
+        from . import cluster_diloco_inventory as cdi
+
+        norm = cdi._normalize(server_addr)
+        for s in cdi.local_servers():
+            if cdi._normalize(s.base_url) == norm:
+                return bool(s.verify_tls)
+        v = cdi.master_inventory.verify_tls_for_url(server_addr)
+        if v is not None:
+            return bool(v)
+    except Exception:
+        pass
+    return True
+
+
+def _diloco_query_info(server_addr: str, queue_id: str) -> Dict[str, Any]:
+    """Fetch ``<server>/info`` to derive the launch backend.
+
+    The sync backend is server-authoritative (issue #154): an orchestrated
+    worker is enqueued *without* one, and the value is read here — at the moment
+    we're about to spawn ``torchrun`` — from the server's ``/info``. There is no
+    safe default, so an unreachable server **raises**; ``_launch`` wraps the
+    builder in ``try/except`` and marks the job ``failed`` with this message.
+
+    Implemented as a minimal ``urllib`` GET (not ``DiLoCoClient``) to keep torch
+    off the long-lived server's import path. Auth/TLS reuse the same primitives
+    the worker's client and the webui proxy use: the per-port bearer token and a
+    cluster-CA ``SSLContext`` (which also presents this host's cert for an mTLS
+    server).
+    """
+    import json
+    import urllib.request
+
+    base = str(server_addr).strip().rstrip("/")
+    if "://" not in base:
+        # Bare host:port — a loopback dev server. Orchestrated server_addrs
+        # always carry a scheme (the inventory normalizes them), so this only
+        # fires for the cleartext-localhost case.
+        base = "http://" + base
+    url = base + "/info"
+    headers: Dict[str, str] = {}
+    token = _diloco_server_token(server_addr)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    ctx = None
+    if base.lower().startswith("https"):
+        from forgather.tls.runtime import urllib_ssl_context
+
+        ctx = urllib_ssl_context(verify=_diloco_server_verify_tls(server_addr))
+    try:
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        raise RuntimeError(
+            f"DiLoCo backend could not be derived for job {queue_id}: the param "
+            f"server at {base} is unreachable ({e}). Start it, or launch the "
+            f"worker directly with 'submit --local-only --backend <kind>'."
+        ) from e
+
+
 def _diloco_env_from_job_params(
     diloco: Dict[str, Any],
     queue_id: str,
@@ -859,11 +959,13 @@ def _diloco_env_from_job_params(
           "server_addr": "host:port",
           "heartbeat_interval": float,
           "worker_id": str,
-          # Non-http backends (issue #154); absent for the default http backend.
-          # shared_memory: ``shm_group_id`` is uniform across the workers of one
-          # submit, ``shm_group_size`` is the worker count. collective: one
-          # torchrun job of ``diloco_replicate`` replicas (the world size rides
-          # the separate ``job_params.nproc`` path, not this dict).
+          # Sync backend (issue #154). Orchestrated worker submissions omit it —
+          # the backend is derived here from the server's /info at launch (see
+          # below). ``backend`` is present only for a --local-only re-enqueue or
+          # an older queued job, in which case it's honored verbatim and the
+          # group-coordination keys (``shm_group_id`` / ``shm_group_size``) come
+          # inline. ``diloco_replicate`` marks a collective job — one torchrun
+          # world whose size rides the separate ``job_params.nproc`` path.
           "backend": "http" | "shared_memory" | "collective",
           "shm_group_id": str,
           "shm_group_size": int,
@@ -880,12 +982,13 @@ def _diloco_env_from_job_params(
     if not server:
         return env
     env["DILOCO_SERVER"] = str(server)
-    # Forward the bearer token for a locally-spawned server so the
-    # worker can authenticate even when server_addr is routable
-    # (non-loopback) and the per-port loopback file auto-discovery in
-    # DiLoCoClient wouldn't fire. An explicit token in extra_env / the
-    # worker's own env still wins (we never overwrite a set value).
-    token = _diloco_token_for_server_addr(str(server))
+    # Forward the bearer token so the worker can authenticate even when
+    # server_addr is routable (non-loopback) and the per-port loopback file
+    # auto-discovery in DiLoCoClient wouldn't fire. Resolves a locally-spawned
+    # server's token from its JobRecord and a registered remote's from the
+    # inventory. An explicit token in extra_env / the worker's own env still
+    # wins (we never overwrite a set value).
+    token = _diloco_server_token(str(server))
     if token:
         env[_DILOCO_TOKEN_ENV_VAR] = token
     # sync_every / num_fragments / dylu / bf16_comm are server-authoritative
@@ -904,22 +1007,84 @@ def _diloco_env_from_job_params(
 
         wid = generate_name()
     env["DILOCO_WORKER_ID"] = wid
-    # Shared-memory backend (issue #154). The submission only declares the
-    # structured intent (backend + group id + size); the per-host env that the
-    # worker reads is derived here, so the CLI and webui don't duplicate it. The
-    # group dir is one per submit (from shm_group_id), shared by every co-located
-    # worker; the group size is the worker count.
-    backend_kind = (diloco.get("backend") or "http").strip().lower()
+    # Sync backend (issue #154). The server is the single declarer: an
+    # orchestrated worker is enqueued *without* a backend and the value is
+    # derived here, at launch, from the server's /info — so a worker can never be
+    # spawned disagreeing with its group. An explicit backend in the submission
+    # is honored only for the --local-only dev path (and for back-compat with a
+    # job queued by an older CLI), which skips the query.
+    explicit_backend = (diloco.get("backend") or "").strip().lower()
+    is_collective_job = bool(diloco.get("diloco_replicate"))
+    server_info: Dict[str, Any] = {}
+    if explicit_backend:
+        # Trusted/back-compat path (--local-only re-enqueue, or a job from an
+        # older CLI): honor the submitted backend verbatim, no query, no topology
+        # cross-check — the operator set it directly.
+        backend_kind = explicit_backend
+    else:
+        # Derived path (the orchestrated default): the backend comes from the
+        # server's /info at launch.
+        server_info = _diloco_query_info(str(server), queue_id)
+        ecs = server_info.get("expected_client_settings") or {}
+        backend_kind = (ecs.get("backend") or "http").strip().lower()
+        log.info(
+            "diloco job %s: derived backend=%s from server %s",
+            queue_id,
+            backend_kind,
+            server,
+        )
+        # The derived backend must match the job's launch topology, which was
+        # fixed at enqueue and can't be reconciled now: a collective job is one
+        # torchrun world (sized by job_params.nproc), a worker job is one of N
+        # independent processes. A mismatch is fatal (fail the launch).
+        if is_collective_job and backend_kind != "collective":
+            raise RuntimeError(
+                f"DiLoCo backend mismatch for job {queue_id}: this is a "
+                f"collective job (one torchrun world of "
+                f"{diloco.get('diloco_replicate')} replicas) but the server at "
+                f"{server} declares backend={backend_kind!r}. Start the param "
+                f"server with --backend collective."
+            )
+        if backend_kind == "collective" and not is_collective_job:
+            raise RuntimeError(
+                f"DiLoCo backend mismatch for job {queue_id}: the server at "
+                f"{server} declares backend='collective' (one torchrun world) "
+                f"but this was submitted as an independent worker. Launch it "
+                f"with --diloco-replicate N instead."
+            )
     if backend_kind == "shared_memory":
         env["DILOCO_BACKEND"] = "shared_memory"
-        group_id = (str(diloco.get("shm_group_id") or "")).strip()
-        if group_id:
+        if explicit_backend:
+            # Back-compat path: an older queued job carried the group
+            # coordination inline (one dir per submit, group size = worker count).
+            group_id = (str(diloco.get("shm_group_id") or "")).strip()
+            if group_id:
+                env["DILOCO_SHM_GROUP_DIR"] = os.path.join(
+                    tempfile.gettempdir(), f"diloco_shm_{group_id}"
+                )
+            size = diloco.get("shm_group_size")
+            if size:
+                env["DILOCO_SHM_GROUP_SIZE"] = str(int(size))
+        else:
+            # Server-derived: the group dir is one per *server* (stable,
+            # base_url-derived) so every co-located worker computes the same
+            # region without a submit-time uuid; the group size is the server's
+            # declared worker count (single source of truth, /info num_workers).
+            # NOTE(follow-up): because the dir is now stable per server (vs the
+            # old per-submit uuid), a group that crashed without unlinking its
+            # region could leave a stale one that the next run against the same
+            # server attaches to. Single-host only; the proper fix is the
+            # shared-memory GC sweep (see shared_memory_backend cleanup TODO) or
+            # a per-server-instance id in /info. Tracked, not fixed here.
+            from . import cluster_diloco_inventory as cdi
+
+            group_id = cdi.server_id_for(cdi._normalize(str(server)))
             env["DILOCO_SHM_GROUP_DIR"] = os.path.join(
                 tempfile.gettempdir(), f"diloco_shm_{group_id}"
             )
-        size = diloco.get("shm_group_size")
-        if size:
-            env["DILOCO_SHM_GROUP_SIZE"] = str(int(size))
+            num_workers = server_info.get("num_workers")
+            if num_workers:
+                env["DILOCO_SHM_GROUP_SIZE"] = str(int(num_workers))
     elif backend_kind == "collective":
         # Collective backend (issue #154): N replicas in one torchrun job
         # all-reduce pseudo-grads. The torchrun world is sized by job_params.nproc
@@ -931,6 +1096,9 @@ def _diloco_env_from_job_params(
         replicate = diloco.get("diloco_replicate")
         if replicate:
             env["DILOCO_REPLICATE"] = str(int(replicate))
+    # http (the request/response default) emits no DILOCO_BACKEND: the trainer
+    # defaults to http when it's unset, and the worker's own /info check (PR1)
+    # validates the (default-http) value against the server regardless.
     return env
 
 

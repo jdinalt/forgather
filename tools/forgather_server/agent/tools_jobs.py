@@ -441,8 +441,9 @@ def _build_submit_argv(
         argv.append("--diloco")
         if diloco_server:
             argv += ["--diloco-server", diloco_server]
-        if args.get("backend"):
-            argv += ["--backend", str(args["backend"])]
+        # No --backend here: the sync backend is server-authoritative and derived
+        # at launch from the param server's /info (issue #154). Collective is
+        # selected by --diloco-replicate (a launch topology) below.
         if args.get("diloco_worker_count"):
             argv += ["--diloco-worker-count", str(args["diloco_worker_count"])]
         if args.get("diloco_replicate"):
@@ -972,9 +973,10 @@ def register_all(reg: ToolRegistry) -> None:
                 "cluster fan-out (+ optional rdzv_host, allow_version_mismatch). "
                 "READ docs/guides/multi-node-training.md first.\n"
                 "DiLoCo: pass diloco_server (id/label, or set diloco=true) to "
-                "join a param server, with backend / diloco_worker_count / "
+                "join a param server, with diloco_worker_count / "
                 "diloco_replicate / worker_id / heartbeat_interval / "
-                "resume_workers. READ docs/trainers/diloco.md first.\n"
+                "resume_workers. The sync backend is declared on the param "
+                "server, not here. READ docs/trainers/diloco.md first.\n"
                 "Multi-node and DiLoCo are complex and composable — read the docs "
                 "before using them, and if the user is unsure how they want the "
                 "job run, ASK clarifying questions before proposing. Approval "
@@ -997,9 +999,8 @@ def register_all(reg: ToolRegistry) -> None:
                     "allow_version_mismatch": {"type": "boolean", "description": "Multi-node: skip the cross-peer version check."},
                     "diloco": {"type": "boolean", "description": "DiLoCo: submit as DiLoCo worker(s). See docs/trainers/diloco.md."},
                     "diloco_server": {"type": "string", "description": "DiLoCo param-server id/label/host:port to join (implies diloco; auto-picks the single running server if omitted)."},
-                    "backend": {"type": "string", "enum": ["http", "shared_memory", "collective"], "description": "DiLoCo sync backend (default http)."},
                     "diloco_worker_count": {"type": "integer", "description": "DiLoCo: number of worker jobs to launch (default 1)."},
-                    "diloco_replicate": {"type": "integer", "description": "DiLoCo collective backend: replicas in one torchrun job."},
+                    "diloco_replicate": {"type": "integer", "description": "DiLoCo: replica count for the collective topology (one torchrun job of N; the param server must declare --backend collective). Omit/1 for normal workers."},
                     "worker_id": {"type": "string", "description": "DiLoCo worker id (auto-generated if omitted)."},
                     "heartbeat_interval": {"type": "number", "description": "DiLoCo worker heartbeat seconds (default 30)."},
                     "resume_workers": {"type": "boolean", "description": "DiLoCo: relaunch every stopped worker the server knows (resumes checkpoints)."},

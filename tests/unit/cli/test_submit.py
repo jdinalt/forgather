@@ -37,7 +37,10 @@ def _submit_args(**over):
         wait=False,
         wait_timeout=3600,
         poll_interval=10,
-        backend="http",
+        # --backend now defaults to None (the orchestrated path derives it from
+        # the server); it's only honored with --local-only. Collective is
+        # selected by --diloco-replicate, not --backend (issue #154).
+        backend=None,
         replicate=1,
         count=1,
         remainder=[],
@@ -100,21 +103,20 @@ def test_backend_requires_diloco(monkeypatch, capsys):
     assert "--backend" in err and "--diloco" in err
 
 
-def test_shared_memory_backend_rejects_global(monkeypatch, capsys):
-    # The shared-memory backend is single-host; it can't span a --global fan-out.
-    # Use the composition form (--global + --diloco-server) so the run reaches the
-    # mode-flag validation rather than the earlier --global/--diloco gate.
+def test_backend_rejected_without_local_only(capsys):
+    # --backend is server-authoritative on the orchestrated path: it's only
+    # honored with --local-only (issue #154). Passing it otherwise is a misuse.
     rc = submit_mod.submit_cmd(
-        _submit_args(run_global=True, diloco_server="srv1", backend="shared_memory")
+        _submit_args(diloco_server="srv1", backend="shared_memory")
     )
     assert rc == 1
     err = capsys.readouterr().err
-    assert "shared_memory" in err and "single-host" in err
+    assert "--backend" in err and "--local-only" in err
 
 
 def test_collective_routes_to_launch_collective(monkeypatch):
-    # --backend collective is one torchrun job (not N workers): it routes to
-    # launch_collective, not the worker path, carrying the replicate degree.
+    # Collective (one torchrun job, not N workers) is selected by the topology
+    # flag --diloco-replicate, and routes to launch_collective — no --backend.
     from forgather.cli import diloco_orch
 
     captured = {}
@@ -122,42 +124,30 @@ def test_collective_routes_to_launch_collective(monkeypatch):
 
     def fake_launch_collective(args, dynamic_args):
         captured["replicate"] = args.replicate
-        captured["backend"] = args.backend
         captured["dyn"] = dynamic_args
         return 0
 
     monkeypatch.setattr(diloco_orch, "launch_collective", fake_launch_collective)
-    rc = submit_mod.submit_cmd(
-        _submit_args(backend="collective", diloco_server="srv1", replicate=4)
-    )
+    rc = submit_mod.submit_cmd(_submit_args(diloco_server="srv1", replicate=4))
     assert rc == 0
-    assert captured["replicate"] == 4 and captured["backend"] == "collective"
+    assert captured["replicate"] == 4
     assert captured["dyn"] == {"x": 1}
 
 
 def test_collective_rejects_global(capsys):
-    # Collective is single-host — not compatible with the multi-node fan-out.
+    # Collective (--diloco-replicate) is single-host — not compatible with the
+    # multi-node fan-out.
     rc = submit_mod.submit_cmd(
-        _submit_args(backend="collective", run_global=True, diloco_server="srv1")
+        _submit_args(replicate=2, run_global=True, diloco_server="srv1")
     )
     assert rc == 1
     err = capsys.readouterr().err
-    assert "collective" in err and "single-host" in err
-
-
-def test_replicate_requires_collective(capsys):
-    # --diloco-replicate is the collective one-job knob; meaningless elsewhere.
-    rc = submit_mod.submit_cmd(_submit_args(replicate=2, diloco=True))
-    assert rc == 1
-    err = capsys.readouterr().err
-    assert "--diloco-replicate" in err and "collective" in err
+    assert "--diloco-replicate" in err and "--global" in err
 
 
 def test_worker_count_incompatible_with_collective(capsys):
     # Collective is one job; --diloco-worker-count (N jobs) is a different model.
-    rc = submit_mod.submit_cmd(
-        _submit_args(backend="collective", diloco_server="srv1", count=2)
-    )
+    rc = submit_mod.submit_cmd(_submit_args(replicate=2, diloco_server="srv1", count=2))
     assert rc == 1
     err = capsys.readouterr().err
     assert "--diloco-worker-count" in err

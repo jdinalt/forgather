@@ -16,7 +16,6 @@ import json
 import os
 import re
 import sys
-import uuid
 
 
 def _orchestrator(args):
@@ -926,24 +925,16 @@ def _enqueue_worker_jobs(client, names, server, args, dynamic_args, dataset_sour
     priority = getattr(args, "priority", 0)
     project_dir = getattr(args, "project_dir", ".")
 
-    # Shared-memory backend (issue #154): one group id for this submit; every
-    # worker shares it (and the size), so the scheduler derives a single
-    # per-host region dir + group size into DILOCO_SHM_* env. Per-worker
-    # DILOCO_WORKER_ID stays distinct.
-    backend = (getattr(args, "backend", None) or "http").strip().lower()
-    shm_group = None
-    if backend == "shared_memory":
-        shm_group = {
-            "backend": "shared_memory",
-            "shm_group_id": uuid.uuid4().hex[:16],
-            "shm_group_size": len(names),
-        }
-
+    # The sync backend is NOT chosen here (issue #154). Workers enqueue
+    # backend-agnostic; the scheduler queries the param server's /info just
+    # before torchrun and derives DILOCO_BACKEND (and, for shared_memory, the
+    # per-host region dir + group size from the server's worker count). This is
+    # why there's no submit-time group id: the group identity is the server's.
     if getattr(args, "dry_run", False):
         print(
             f"[dry-run] would enqueue {len(names)} DiLoCo worker(s) against "
             f"{server}: config={config} gpus/worker={gpus} priority={priority} "
-            f"backend={backend}"
+            f"backend=derived-at-launch"
         )
         for name in names:
             print(f"  {name}")
@@ -956,8 +947,6 @@ def _enqueue_worker_jobs(client, names, server, args, dynamic_args, dataset_sour
         diloco = {"server_addr": server, "worker_id": name}
         if hb is not None:
             diloco["heartbeat_interval"] = hb
-        if shm_group is not None:
-            diloco.update(shm_group)
         try:
             item = client.enqueue_job(
                 project_dir=project_dir,
@@ -1087,10 +1076,14 @@ def launch_collective(args, dynamic_args):
     priority = getattr(args, "priority", 0)
     project_dir = getattr(args, "project_dir", ".")
 
+    # The collective *topology* (one torchrun world of N replicas) is fixed here
+    # by --diloco-replicate; ``diloco_replicate`` marks the job as collective for
+    # the scheduler. The backend itself stays server-authoritative: the scheduler
+    # queries /info at launch and fails the job if the param server doesn't
+    # actually declare 'collective' (issue #154).
     diloco = {
         "server_addr": server,
         "worker_id": worker_id,
-        "backend": "collective",
         "diloco_replicate": replicate,
     }
     if hb is not None:

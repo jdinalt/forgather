@@ -401,6 +401,13 @@ def test_env_builder_injects_token(monkeypatch):
         "list_records",
         lambda: [_fake_diloco_job("0.0.0.0", 8512, "tok-x", "192.168.9.43")],
     )
+    # Backend is derived from the server's /info at launch (issue #154); this
+    # test is about token injection, so stub the query to a reachable http server.
+    monkeypatch.setattr(
+        scheduler,
+        "_diloco_query_info",
+        lambda s, q: {"expected_client_settings": {"backend": "http"}},
+    )
     env = scheduler._diloco_env_from_job_params(
         {"server_addr": "https://192.168.9.43:8512"}, "queue-1"
     )
@@ -412,7 +419,31 @@ def test_env_builder_no_token_when_no_match(monkeypatch):
     from forgather_server import scheduler
 
     monkeypatch.setattr(scheduler.job_records, "list_records", lambda: [])
+    monkeypatch.setattr(
+        scheduler,
+        "_diloco_query_info",
+        lambda s, q: {"expected_client_settings": {"backend": "http"}},
+    )
     env = scheduler._diloco_env_from_job_params(
         {"server_addr": "https://10.0.0.9:8512"}, "queue-1"
     )
     assert "FORGATHER_DILOCO_SERVER_TOKEN" not in env
+
+
+def test_server_token_falls_back_to_inventory(monkeypatch):
+    """A registered *remote* server (no local JobRecord) resolves its token from
+    the inventory, so the launch-time /info query (and the worker) can
+    authenticate (issue #154)."""
+    import types
+
+    from forgather_server import cluster_diloco_inventory as cdi
+    from forgather_server import scheduler
+
+    # No locally-spawned JobRecord matches...
+    monkeypatch.setattr(scheduler.job_records, "list_records", lambda: [])
+    # ...but the server is a registered remote known to the inventory.
+    entry = types.SimpleNamespace(
+        base_url="https://remote:8512", auth_token="tok-remote"
+    )
+    monkeypatch.setattr(cdi, "local_servers", lambda: [entry])
+    assert scheduler._diloco_server_token("https://remote:8512") == "tok-remote"

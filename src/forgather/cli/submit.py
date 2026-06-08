@@ -24,10 +24,11 @@ def submit_cmd(args):
 
     # The collective backend runs N replicas as ONE torchrun job bound to a
     # coordinator — its own dispatch path, distinct from the N-worker-job flow.
-    # It implies DiLoCo mode (it needs the coordinator for /info + dataset shards).
-    collective_mode = (getattr(args, "backend", None) or "http").strip().lower() == (
-        "collective"
-    )
+    # It implies DiLoCo mode (it needs the coordinator for /info + dataset
+    # shards). Collective is a launch *topology*, selected by the replica count
+    # (--diloco-replicate N), not by --backend — the sync backend itself is
+    # server-authoritative and derived at launch (issue #154).
+    collective_mode = int(getattr(args, "replicate", 1) or 1) > 1
     diloco_mode = (
         getattr(args, "diloco", False)
         or bool(getattr(args, "diloco_server", None))
@@ -131,10 +132,42 @@ def _check_mode_flags(args, diloco_mode, run_global):
             misused.append("--worker-id")
         if getattr(args, "heartbeat_interval", 30.0) != 30.0:
             misused.append("--heartbeat-interval")
-        if getattr(args, "backend", "http") != "http":
+        if (getattr(args, "backend", None) or "http").strip().lower() != "http":
             misused.append("--backend")
         if misused:
             return _err(misused, "— DiLoCo-worker flag(s); pass --diloco.")
+
+    # --backend is server-authoritative in the orchestrated path: the sync
+    # backend is declared once on the param server and derived at launch from
+    # /info (issue #154). It's accepted only on the --local-only dev path, where
+    # torchrun is invoked directly and there's no server to query. 'collective'
+    # is a launch topology, selected with --diloco-replicate, never via --backend.
+    backend = (getattr(args, "backend", None) or "").strip().lower()
+    if backend == "collective":
+        return _err(
+            ["--backend collective"],
+            "isn't a submit option: collective is a launch topology, selected "
+            "with --diloco-replicate N.",
+        )
+    if backend and not getattr(args, "local_only", False):
+        return _err(
+            ["--backend"],
+            "is only honored with --local-only (dev/debug); the orchestrated "
+            "path derives the backend from the param server (set it on the "
+            "'diloco server').",
+        )
+
+    # --local-fallback degrades to a local foreground launch when the server is
+    # down — but then there's no server to derive the backend from, and the
+    # backend isn't passed (orchestrated). Reject it for DiLoCo submits: run with
+    # the server up (orchestrated), or commit to --local-only --backend <kind>.
+    if diloco_mode and getattr(args, "local_fallback", False):
+        return _err(
+            ["--local-fallback"],
+            "can't derive a backend when it degrades to local. Run with the "
+            "param server up (orchestrated), or use --local-only --backend "
+            "<kind>.",
+        )
 
     # Multi-node knobs require --global.
     if not run_global:
@@ -160,30 +193,21 @@ def _check_mode_flags(args, diloco_mode, run_global):
             "doesn't apply to --global; size each node with --member HOST:GPUS.",
         )
 
-    # The shared-memory / collective backends are single-host; they can't span a
-    # multi-node fan-out.
-    backend = (getattr(args, "backend", None) or "http").strip().lower()
-    if run_global and backend in ("shared_memory", "collective"):
-        return _err(
-            [f"--backend {backend}"],
-            "is single-host; not compatible with --global.",
-        )
-
-    # --diloco-replicate sizes the collective backend's one-job replica count;
-    # it's meaningless for the http / shared-memory (N-job) backends.
-    if getattr(args, "replicate", 1) != 1 and backend != "collective":
+    # Collective (--diloco-replicate N) is one single-host torchrun world; it
+    # can't span a multi-node fan-out, and --diloco-worker-count (N separate
+    # jobs) is a different model that doesn't compose with it.
+    replicate = int(getattr(args, "replicate", 1) or 1)
+    if replicate > 1 and run_global:
         return _err(
             ["--diloco-replicate"],
-            "applies only to --backend collective.",
+            "selects the single-host collective topology; not compatible with "
+            "--global.",
         )
-
-    # Collective is one job of N replicas; --diloco-worker-count (N separate
-    # jobs) is a different model and doesn't compose with it.
-    if backend == "collective" and getattr(args, "count", 1) != 1:
+    if replicate > 1 and getattr(args, "count", 1) != 1:
         return _err(
             ["--diloco-worker-count"],
-            "is the N-separate-jobs model; --backend collective is one job — "
-            "size it with --diloco-replicate.",
+            "is the N-separate-jobs model; collective is one job — size it with "
+            "--diloco-replicate alone.",
         )
 
     return None

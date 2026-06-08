@@ -27,6 +27,36 @@ def stable_generate_name(monkeypatch):
     return "spectacular-fox"
 
 
+@pytest.fixture(autouse=True)
+def mock_query(monkeypatch):
+    """Stub the launch-time ``/info`` query (issue #154).
+
+    With no explicit ``backend`` in the submission, ``_diloco_env_from_job_params``
+    derives the backend from the param server's ``/info`` — a real network call.
+    Most tests here exercise the env translation, not the network, so by default
+    the stub returns a reachable ``http`` server (the common case). Tests that
+    care about the *derived* backend set ``holder['info']``; ``holder['error']``
+    simulates an unreachable server (the query raising).
+    """
+    holder = {
+        "info": {
+            "expected_client_settings": {"backend": "http"},
+            "num_workers": 1,
+        },
+        "error": None,
+    }
+
+    import forgather_server.scheduler as sched
+
+    def fake_query(server_addr, queue_id):
+        if holder["error"] is not None:
+            raise holder["error"]
+        return holder["info"]
+
+    monkeypatch.setattr(sched, "_diloco_query_info", fake_query)
+    return holder
+
+
 def test_empty_dict_emits_nothing():
     assert _diloco_env_from_job_params({}, QID) == {}
 
@@ -133,8 +163,9 @@ def test_worker_id_default_does_not_contain_queue_id():
     assert env["DILOCO_WORKER_ID"].strip()
 
 
-# --- shared-memory backend (issue #154): submit declares structured intent,
-# the scheduler derives the per-host DILOCO_SHM_* env ----------------------
+# --- explicit backend (issue #154): the --local-only / back-compat path, where
+# the submission carries the backend inline and the scheduler honors it verbatim
+# (no /info query, no topology cross-check) --------------------------------
 
 
 def test_shared_memory_backend_derives_shm_env():
@@ -222,3 +253,91 @@ def test_http_backend_emits_no_collective_env():
     env = _diloco_env_from_job_params({"server_addr": "h:1", "backend": "http"}, QID)
     assert "DILOCO_BACKEND" not in env
     assert "DILOCO_REPLICATE" not in env
+
+
+# --- derived backend (issue #154): the orchestrated default. The submission
+# carries NO backend; the scheduler queries the server's /info at launch and
+# shapes the env from the declared backend (mocked via the mock_query fixture). --
+
+
+def test_derived_http_emits_no_backend_env(mock_query):
+    # Server declares http -> no DILOCO_BACKEND (trainer defaults to http), no
+    # shm / collective env. The control-plane keys are still forwarded.
+    mock_query["info"] = {"expected_client_settings": {"backend": "http"}}
+    env = _diloco_env_from_job_params({"server_addr": "h:1", "worker_id": "w1"}, QID)
+    assert env["DILOCO_SERVER"] == "h:1"
+    assert env["DILOCO_WORKER_ID"] == "w1"
+    assert "DILOCO_BACKEND" not in env
+    assert "DILOCO_SHM_GROUP_DIR" not in env
+    assert "DILOCO_REPLICATE" not in env
+
+
+def test_derived_shared_memory_uses_server_identity_and_worker_count(mock_query):
+    # Server declares shared_memory + a worker count; the scheduler derives the
+    # group dir from the SERVER (stable, base_url-derived) and the size from the
+    # server's num_workers — no submit-time group id involved.
+    import os
+    import tempfile
+
+    from forgather_server import cluster_diloco_inventory as cdi
+
+    mock_query["info"] = {
+        "expected_client_settings": {"backend": "shared_memory"},
+        "num_workers": 4,
+    }
+    server = "https://param.example:8512"
+    env = _diloco_env_from_job_params({"server_addr": server, "worker_id": "w1"}, QID)
+    assert env["DILOCO_BACKEND"] == "shared_memory"
+    expected_id = cdi.server_id_for(cdi._normalize(server))
+    assert env["DILOCO_SHM_GROUP_DIR"] == os.path.join(
+        tempfile.gettempdir(), f"diloco_shm_{expected_id}"
+    )
+    assert env["DILOCO_SHM_GROUP_SIZE"] == "4"
+
+
+def test_derived_shared_memory_same_server_yields_same_group_dir(mock_query):
+    # Two co-located workers against the same server compute the SAME region dir
+    # without any shared submit-time id (the server's identity is the group key).
+    mock_query["info"] = {
+        "expected_client_settings": {"backend": "shared_memory"},
+        "num_workers": 2,
+    }
+    server = "https://param.example:8512"
+    a = _diloco_env_from_job_params({"server_addr": server, "worker_id": "a"}, QID)
+    b = _diloco_env_from_job_params({"server_addr": server, "worker_id": "b"}, QID)
+    assert a["DILOCO_SHM_GROUP_DIR"] == b["DILOCO_SHM_GROUP_DIR"]
+
+
+def test_derived_collective_sets_replicate(mock_query):
+    # A collective-shaped job (diloco_replicate set) against a server that
+    # declares collective derives the backend + replicate degree.
+    mock_query["info"] = {"expected_client_settings": {"backend": "collective"}}
+    env = _diloco_env_from_job_params(
+        {"server_addr": "h:1", "worker_id": "run1", "diloco_replicate": 3}, QID
+    )
+    assert env["DILOCO_BACKEND"] == "collective"
+    assert env["DILOCO_REPLICATE"] == "3"
+
+
+def test_derived_collective_job_against_non_collective_server_raises(mock_query):
+    # The job is collective-shaped but the server declares http: a fatal
+    # topology/backend mismatch (fail the launch).
+    mock_query["info"] = {"expected_client_settings": {"backend": "http"}}
+    with pytest.raises(RuntimeError, match="collective"):
+        _diloco_env_from_job_params({"server_addr": "h:1", "diloco_replicate": 2}, QID)
+
+
+def test_derived_collective_server_against_worker_job_raises(mock_query):
+    # The server declares collective but this was submitted as an independent
+    # worker (no replicate): also a fatal mismatch.
+    mock_query["info"] = {"expected_client_settings": {"backend": "collective"}}
+    with pytest.raises(RuntimeError, match="collective"):
+        _diloco_env_from_job_params({"server_addr": "h:1"}, QID)
+
+
+def test_unreachable_server_raises(mock_query):
+    # The backend is server-authoritative: an unreachable server has no safe
+    # default, so the query raises and _launch turns it into a failed job.
+    mock_query["error"] = RuntimeError("server unreachable")
+    with pytest.raises(RuntimeError, match="unreachable"):
+        _diloco_env_from_job_params({"server_addr": "h:1"}, QID)

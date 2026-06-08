@@ -200,6 +200,76 @@ def test_diloco_flag_alone_triggers_diloco_mode(monkeypatch):
     assert "args" in called  # dispatched to the worker path
 
 
+# --- backend is server-authoritative (issue #154): --backend is rejected on the
+# orchestrated path and honored only with --local-only; collective is selected by
+# the --diloco-replicate topology flag ---------------------------------------
+
+
+def test_backend_without_local_only_errors():
+    # The orchestrated path derives the backend from the server; passing
+    # --backend without --local-only is a misuse (fail loud).
+    rc = submit_mod.submit_cmd(
+        _submit_args(diloco_server="X", backend="shared_memory", local_only=False)
+    )
+    assert rc == 1
+
+
+def test_backend_with_local_only_dispatches(monkeypatch):
+    # --local-only is the one place --backend is honored (direct foreground
+    # launch, no server to query).
+    called = {}
+    monkeypatch.setattr(diloco_mod, "_worker_cmd", _worker_capture(called))
+    rc = submit_mod.submit_cmd(
+        _submit_args(diloco_server="X", backend="shared_memory", local_only=True)
+    )
+    assert rc == 0
+    assert called["args"].backend == "shared_memory"
+
+
+def test_backend_collective_errors_pointing_to_replicate():
+    # 'collective' is a topology, not a --backend value; reject it.
+    rc = submit_mod.submit_cmd(
+        _submit_args(diloco_server="X", backend="collective", local_only=True)
+    )
+    assert rc == 1
+
+
+def test_local_fallback_in_diloco_mode_errors():
+    # --local-fallback can't derive a backend when it degrades to local.
+    rc = submit_mod.submit_cmd(_submit_args(diloco=True, local_fallback=True))
+    assert rc == 1
+
+
+def test_replicate_gt_one_dispatches_to_collective(monkeypatch):
+    # --diloco-replicate N (N>1) selects the collective topology, routing to
+    # launch_collective rather than the N-worker path.
+    from forgather.cli import diloco_orch
+
+    monkeypatch.setattr(submit_orch, "collect_dynamic_args", lambda args: {})
+    monkeypatch.setattr(
+        diloco_mod, "_worker_cmd", lambda args: (_ for _ in ()).throw(AssertionError)
+    )
+    captured = {}
+
+    def _fake_collective(args, dynamic_args):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(diloco_orch, "launch_collective", _fake_collective)
+    rc = submit_mod.submit_cmd(_submit_args(diloco_server="X", replicate=2))
+    assert rc == 0
+    assert captured["args"].replicate == 2
+
+
+def test_replicate_one_does_not_dispatch_to_collective(monkeypatch):
+    # The default replicate (1) is the normal worker path, not collective.
+    called = {}
+    monkeypatch.setattr(diloco_mod, "_worker_cmd", _worker_capture(called))
+    rc = submit_mod.submit_cmd(_submit_args(diloco_server="X", replicate=1))
+    assert rc == 0
+    assert "args" in called
+
+
 # --- dynamic-args forwarding (the submit-partition regression) --------------
 
 
