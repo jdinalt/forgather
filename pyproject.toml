@@ -111,6 +111,10 @@ forgather = "forgather.cli:main"
 profile = "black"
 # Generated gRPC stubs are committed as-emitted by protoc; never reorder them
 # (it would diverge from a fresh regenerate). See proto/generate.sh.
+# ``filter_files`` is required so the skip applies even when the pre-commit hook
+# passes the files explicitly (isort ignores skip_glob for explicit args
+# otherwise).
+filter_files = true
 extend_skip_glob = ["*_pb2.py", "*_pb2_grpc.py"]
 
 [tool.black]
