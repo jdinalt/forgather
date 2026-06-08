@@ -278,12 +278,15 @@ Forgather provides a hierarchy of trainer classes for different training scenari
 | `Trainer` | Single-GPU or basic distributed training |
 | `AccelTrainer` | Multi-GPU via HuggingFace Accelerate |
 | `DDPTrainer` | DistributedDataParallel |
+| `FSDP2Trainer` | Sharded data parallel (FSDP2 / `fully_shard`) |
 | `PipelineTrainer` | Pipeline parallelism (split model across GPUs) |
 
 All trainers share the same callback system, checkpoint coordination, and
 configuration interface. The trainer is selected in the configuration template --
 switching from single-GPU to pipeline parallel is a template change, not a code
-change.
+change. **DiLoCo** (low-communication distributed training) is not a separate
+trainer class -- it attaches to any trainer via `DiLoCoCallback`; see
+[DiLoCo](../trainers/diloco.md).
 
 For the complete list of training arguments (batching, compile, checkpointing,
 memory, DDP, pipeline, ...) and each trainer class's constructor parameters,

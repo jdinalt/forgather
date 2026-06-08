@@ -188,236 +188,51 @@ current directory. You should see output listing the bundled example projects.
 > reference page is where to go to customize things or understand
 > how it works.
 
-The repo ships a `Dockerfile` (and matching helpers in `docker/`)
-that builds an Ubuntu 24.04 image with the full Forgather environment
-pre-provisioned: Python 3.12, PyTorch (CUDA wheels), all
-dependencies, `cut-cross-entropy` from source, and a developer
-toolchain (vim, tmux, ripgrep, jq, htop, ssh, sudo, ...). It's
-useful in two ways:
+The repo ships a `Dockerfile` (and `docker/` helper scripts) that
+builds an Ubuntu 24.04 image with the full Forgather environment
+pre-provisioned (Python 3.12, PyTorch with CUDA wheels, all deps,
+`cut-cross-entropy` from source, a developer toolchain). There's
+also a distributable **runtime image** (`Dockerfile.runtime`) for
+multi-node clusters. The [Docker images](docker.md) reference is the
+full guide — every flag and env var, the runtime image, multi-node
+setup, persistent overrides, container lifecycle, networking, and
+troubleshooting.
 
-- **As a development environment** — one command and you have a
-  working Forgather install without touching your host Python.
-- **As a clean sandbox for release testing** — build the image with
-  `--no-cache` and you get a reproducible from-scratch verification
-  that the source tree builds and runs end-to-end.
-
-There's also a separate **runtime image** (`Dockerfile.runtime`)
-intended for distribution to a multi-node cluster — generic, no
-host-clone dependency, builds the SPA inside the image. The
-[Docker images](docker.md) reference covers both.
-
-### Prerequisites
+### Docker prerequisites
 
 - Docker Engine 24+ (or Docker Desktop on macOS/Windows).
 - For GPU training: an NVIDIA GPU with current drivers on the host
   and the
   [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-  installed (`nvidia-ctk runtime configure --runtime=docker` and a
+  installed (`nvidia-ctk runtime configure --runtime=docker` then
   `systemctl restart docker`). PyTorch wheels bundle their own CUDA
   runtime, so you don't need a CUDA SDK on the host — just the
   driver and the container toolkit.
 
-### Build the image
+### Quick start
 
 ```bash
 git clone https://github.com/jdinalt/forgather.git
 cd forgather
-docker/build               # CUDA build (default; ~3 GB)
-docker/build --cpu         # CPU-only build for GPU-less hosts
-```
+docker/build               # per-user CUDA dev image (~3 GB); bakes in your host UID/GID
+docker/build --cpu         # CPU-only build (~1.5 GB) for GPU-less hosts — pair with GPUS=none
+docker/run                 # interactive shell: --gpus all, $HOME bind-mounted, host networking
+GPUS=none docker/run       # hosts with no NVIDIA driver (must use this)
 
-`docker/build` builds a **per-user** dev image: it reads your
-`id -u` / `id -g` / `id -un` and passes them as build args, baking
-your host identity into the in-container user. Files created inside
-the container on bind-mounted host paths land with correct ownership
-without any runtime remap — the in-container user simply IS you.
-
-The default image tag is `forgather-dev:<your-host-username>` so
-multiple operators on a shared host get separate images. (For the
-build-once-deploy-everywhere, user-agnostic story, see the
-[runtime image](docker.md#runtime-image-specifics).)
-
-**CPU-only builds.** Pass `--cpu` to build with the CPU-only PyTorch
-wheel from `download.pytorch.org/whl/cpu`. The resulting image is
-much smaller (no `nvidia-*` runtime libs) and is appropriate for:
-
-- CI / docs builds where no GPU is available.
-- Laptops, Chromebooks, or other hosts with no NVIDIA driver, where
-  you just want to exercise the CLI / configuration / Forgather
-  server without actually training.
-- Sanity-checking that a project's preprocessing and configuration
-  work end-to-end before moving it to a GPU host.
-
-CPU-only training does technically work for tiny models but is
-orders of magnitude slower than CUDA — budget accordingly (the
-Tiny Llama tutorial takes most of a day on a Chromebook vs.
-~2 minutes on an RTX 4090).
-
-The first build pulls ~3 GB of dependencies (or ~1.5 GB for `--cpu`)
-and takes a few minutes; rebuilds reuse the layer cache. After the
-docker build, `build.sh` runs `./build-webui.sh` in a transient
-container against the host clone so the Forgather server's SPA
-dist/ is ready before `docker/run` is invoked. Skip the post-step
-with `SKIP_WEBUI_BUILD=1 docker/build` (e.g. you'll iterate on the
-SPA via `npm run dev`).
-
-### Run it
-
-```bash
-docker/run                  # default: --gpus all
-GPUS=none docker/run        # hosts with no NVIDIA driver (must use this)
-```
-
-> **Heads-up: no NVIDIA driver on the host?** `docker/run` defaults to
-> `--gpus all`, which fails on a GPU-less host with `failed to
-> discover GPU vendor from CDI: no known GPU vendor found`. Use
-> `GPUS=none docker/run` instead — and pair it with `docker/build
-> --cpu` so the image isn't dragging in the CUDA-flavoured PyTorch
-> wheel you can't use anyway. If you accidentally created the
-> container with the default GPU config first, run `docker/run --rm`
-> to clear it before retrying with `GPUS=none` (current `docker/run`
-> versions auto-clean partial creates on failure; older ones
-> don't).
-
-This drops you into an interactive bash shell with:
-
-- The Forgather venv (at `/opt/forgather/venv`) on `PATH`.
-- `--gpus all` by default (override with `GPUS=none` for CPU only or
-  `GPUS='"device=0,1"'` for a subset).
-- Your host home directory bind-mounted at the same path inside the
-  container, so absolute paths in shell history, configs, and
-  notebooks keep resolving correctly.
-- The host's network stack (`--network host`) so services bound to
-  `127.0.0.1` inside the container are reachable on the host's
-  loopback as-is.
-
-The container's entrypoint detects the bind-mounted Forgather
-checkout and re-links the editable install to it on entry, so your
-host-side edits are picked up live without a rebuild.
-
-```bash
 # Inside the container:
 forgather ls -r
 cd examples/tutorials/tiny_llama
 forgather -t v2.yaml train
 ```
 
-### Container lifecycle
-
-The container is long-lived: the first `docker/run` invocation
-creates a detached container named `forgather-dev-${USER}` with
-`sleep infinity` as PID 1; subsequent invocations re-attach via
-`docker exec`. Logging out of an interactive shell does **not**
-stop the container, so a `forgather server` (or any training job)
-you started in one session keeps running, and you can re-attach
-from a new terminal to inspect or control it.
-
-```bash
-docker/run                   # attach (creating the container if needed)
-docker/run forgather ls -r   # one-shot command in the same container
-docker/run --status          # is the container running, stopped, or absent?
-docker/run --stop            # stop (but keep) — preserves filesystem state
-docker/run --rm              # stop and remove (next run.sh recreates fresh)
-docker/run --recreate        # rebuild from scratch (e.g. after image rebuild)
-```
-
-`IMAGE`, `GPUS`, `NETWORK`, port and mount overrides only apply
-when the container is **created**. After `docker/build`
-rebuilds the image, run `docker/run --recreate` to roll the
-running container forward to the new image.
-
-If you'd rather drive `docker` directly:
-
-```bash
-NAME=forgather-dev-$USER
-docker ps -a --filter name=${NAME}        # see the container, running or not
-docker logs ${NAME}                       # entrypoint output (install re-link warnings)
-docker stop ${NAME}                       # stop
-docker start ${NAME}                      # start an existing stopped container
-docker rm -f ${NAME}                      # stop and remove
-```
-
-After pulling repo changes, most updates are picked up live —
-the source tree is bind-mounted from your host clone. If
-`pyproject.toml` changed (new deps, version bumps), refresh the
-venv from inside the running container — no rebuild needed:
-
-```bash
-# Inside the container:
-uv pip install -e "$FORGATHER_REPO"
-cd "$FORGATHER_REPO" && ./build-webui.sh    # only if the SPA changed
-```
-
-Force-rebuilding the image is only needed when the `Dockerfile`
-itself changed (new system packages, Python minor-version bump):
-
-```bash
-docker/build -- --no-cache
-docker/run --recreate
-```
-
-See [docker.md → Upgrading Forgather inside the container](docker.md#upgrading-forgather-inside-the-container)
-for the full reference.
-
-### Networking
-
-`docker/run` defaults to `--network host`, so the container
-shares the host's network stack. Every service inside the
-container is reachable on its bound port without `-p` mappings,
-and tools that default to `127.0.0.1` (Forgather server, MkDocs,
-TensorBoard, inference) Just Work — open
-<http://localhost:8765/> from the host browser as if Forgather
-were running on bare metal.
-
-If you'd rather use bridge networking with explicit port-forwards
-(slightly more isolated, but every service then has to bind
-`0.0.0.0` inside the container to be reachable through the
-forward), set `NETWORK=bridge`:
-
-```bash
-NETWORK=bridge docker/run
-# Inside the container:
-forgather server -H 0.0.0.0
-mkdocs serve --host 0.0.0.0
-tensorboard --bind_all
-```
-
-The bridge mode forwards the host side to `127.0.0.1` only by
-default (same exposure as the host-networking case). For LAN
-access from another machine, set `HOST_BIND=0.0.0.0` alongside
-`NETWORK=bridge`.
-
-> **Binding outside loopback?** The server refuses to bind a
-> non-loopback host (`0.0.0.0`, LAN IP, public IP) without TLS
-> unless you pass `--insecure`. Provision HTTPS with
-> `forgather tls init` first — see
-> [TLS](../operations/tls.md) for the single-host setup and the
-> Docker runtime image's `TLS_INIT=1` convenience flag.
-
-### Common overrides
-
-```bash
-# CPU-only:
-GPUS=none docker/run
-
-# Specific GPUs:
-GPUS='"device=0,1"' docker/run
-
-# Mount additional host paths (e.g. scratch / dataset volumes):
-EXTRA_MOUNTS="-v /scratch:/scratch" docker/run
-
-# Forward extra ports (Vite dev server, etc.):
-EXTRA_PORTS="-p 5173:5173" docker/run
-
-# Build / run a tagged variant:
-docker/build forgather-dev:experiment
-IMAGE=forgather-dev:experiment docker/run
-```
-
-For more detail — full CLI / env-var reference, the runtime
-(distributable) image, multi-node setup, and the release-testing
-workflow against a freshly cloned tree — see the [Docker images](docker.md)
-reference.
+`docker/build` runs `./build-webui.sh` automatically so the server's
+SPA is ready; the container is long-lived (re-attach with `docker/run`,
+roll forward after a rebuild with `docker/run --recreate`). `--cpu`
+builds with the CPU-only PyTorch wheel from `download.pytorch.org/whl/cpu`
+(CLI/config sanity-checks only — CPU training is orders of magnitude
+slower). For `GPUS` / `NETWORK` / `EXTRA_MOUNTS` overrides, the
+container lifecycle, networking, and the runtime image, see the
+[Docker images](docker.md) reference.
 
 ## Next: your first training run
 
