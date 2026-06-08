@@ -685,8 +685,11 @@ analysis script that produced them is
 ## Extended sweep: budget, sync interval, and single-worker local-SGD
 
 The 1× comparison above is a *conservative* budget (≈1× Chinchilla, 500M
-tokens). The papers report that DiLoCo's advantage shows up in the **end-game**
-of longer runs, so this sweep doubles the budget to **2× (≈1B tokens)** and
+tokens). The papers report that DiLoCo's advantage is **back-loaded** — it starts
+behind an all-reduce baseline and **crosses over** later in training, once the
+gains come from generalization rather than raw descent speed — so this sweep
+doubles the budget to **2× (≈1B tokens)** to give the crossover room to appear,
+and
 varies three things: the **sync interval** `H` (`--sync-every` 500 / 100 / 20),
 the **worker count** (2-worker vs a single worker, the latter also swept across
 `H`), and the **synchronization mechanism** (DiLoCo's pseudo-gradient + outer
@@ -717,10 +720,13 @@ confound on any curve).
 
 This is the headline. **At 1×, DiLoCo trailed the baseline** (eval 3.343 vs
 3.156). **At 2×, DiLoCo with `H ≤ 100` overtakes both baselines** (2.887 / 2.936
-vs 3.005 / 2.999). The end-game panel makes the ordering unambiguous: H=20 and
-H=100 pull *below* the baselines in the back half of the run, exactly where the
-literature says the gain appears. (H=500 is the exception — it's still slightly
-behind the baselines at 2×; see below.)
+vs 3.005 / 2.999). The tail-zoom panel (≥600M tokens) makes the *final* ordering
+unambiguous — H=20 and H=100 sit *below* both baselines. But the overtake happens
+earlier than that zoom shows: in the full parsed curves
+([`sweep_curves.csv`](assets/sweep_curves.csv)), **H=20 crosses below the
+baselines at ~21% of the 1B-token run and H=100 at ~49%** — the tighter the sync,
+the sooner the crossover, set by `H` rather than by needing a giant budget.
+(H=500 is the exception — it never crosses within 1B; see below.)
 
 ### 2. Shorter sync intervals converge better (for more bandwidth)
 
@@ -804,8 +810,9 @@ observation to the work that explains (or first reported) it.
   [arXiv:2303.01215](https://arxiv.org/abs/2303.01215)) show that periodic
   averaging induces a drift that accelerates sharpness reduction — **but only
   with a small learning rate and a long enough run.** That conditional is
-  exactly our curve: at 1× DiLoCo trailed; the win only emerged in the **2×
-  end-game**. See also Lin, Stich, Patel & Jaggi, *Don't Use Large Mini-Batches,
+  exactly our curve: the win is **back-loaded**, and a tighter `H` brings the
+  crossover forward (~21% of a 1B-token run at H=20, vs never-within-1B at the
+  bandwidth-frugal H=500). See also Lin, Stich, Patel & Jaggi, *Don't Use Large Mini-Batches,
   Use Local SGD* (ICLR 2020, [arXiv:1808.07217](https://arxiv.org/abs/1808.07217)),
   which reports the same generalization edge over large-batch training.
 
