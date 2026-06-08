@@ -754,6 +754,11 @@ def _server_job_params(args):
         "download_dtype": getattr(args, "download_dtype", "fp32"),
         "download_sr": getattr(args, "download_sr", False),
         "bf16_comm": args.bf16_comm,
+        # Bulk transport (issue #154): the wire codec and the optional gRPC
+        # listener. Threaded through to the spawned argv like the precision
+        # knobs above.
+        "wire_format": getattr(args, "wire_format", "pickle"),
+        "grpc_enabled": getattr(args, "grpc_enabled", False),
         "no_auth": getattr(args, "no_auth", False),
         "bulk_cleartext": getattr(args, "bulk_cleartext", False),
     }

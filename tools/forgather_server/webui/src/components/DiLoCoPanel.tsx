@@ -2587,6 +2587,22 @@ function ControlPanel({
             output_dir: {info.output_dir}
           </div>
         )}
+        {info &&
+          (info.transport === "grpc" ||
+            info.expected_client_settings?.wire_format === "safetensors") && (
+            <div
+              className="muted"
+              style={{ fontSize: 11, wordBreak: "break-all" }}
+            >
+              bulk transport:{" "}
+              {info.transport === "grpc"
+                ? `gRPC${info.grpc_endpoint ? ` (${info.grpc_endpoint})` : ""}`
+                : "HTTP"}
+              {info.expected_client_settings?.wire_format
+                ? ` · ${info.expected_client_settings.wire_format}`
+                : ""}
+            </div>
+          )}
       </div>
 
       {confirmShutdown && (

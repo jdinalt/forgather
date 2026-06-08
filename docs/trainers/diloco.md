@@ -166,6 +166,13 @@ moved is independent of the wire precision above, and likewise server-authoritat
   for now. Best paid off on large models / slow links, where the streaming + framing
   wins matter; for tiny experiments the HTTP default is fine.
 
+Both knobs are available wherever a DiLoCo server is launched: the direct
+`forgather diloco server` CLI, a scheduled server job (`forgather diloco server`
+through the forgather server, which threads them onto the spawned argv), and the
+webui's **DiLoCo Server** modal (a wire-format selector + a gRPC toggle in its
+security section). A running server's negotiated transport is surfaced in the
+webui DiLoCo panel.
+
 ## Quick Start
 
 This section is a condensed inline reference. For a guided, verified, end-to-end

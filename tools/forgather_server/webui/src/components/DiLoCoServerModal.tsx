@@ -46,6 +46,11 @@ interface PersistedAdHoc {
   // endpoints on a separate cleartext listener on an ephemeral port it
   // picks itself — bypassing TLS for throughput on a trusted LAN.
   bulkCleartext: boolean;
+  // Bulk transport (issue #154). Wire codec for the tensor legs and the
+  // optional gRPC streaming listener. Server-authoritative — workers adopt
+  // them from /info. gRPC supersedes the cleartext bulk plane.
+  wireFormat: string;
+  grpcEnabled: boolean;
 }
 
 const DEFAULT_AD_HOC: PersistedAdHoc = {
@@ -72,6 +77,8 @@ const DEFAULT_AD_HOC: PersistedAdHoc = {
   noAuth: false,
   regenToken: false,
   bulkCleartext: false,
+  wireFormat: "pickle",
+  grpcEnabled: false,
 };
 
 function loadPersisted(): PersistedAdHoc {
@@ -167,6 +174,8 @@ export function DiLoCoServerModal({
         noAuth: pickBool(editingService.args, "no_auth", false),
         regenToken: pickBool(editingService.args, "regen_token", false),
         bulkCleartext: pickBool(editingService.args, "bulk_cleartext", false),
+        wireFormat: pickStr(editingService.args, "wire_format", "pickle"),
+        grpcEnabled: pickBool(editingService.args, "grpc_enabled", false),
       }
     : {
         ...persisted,
@@ -198,6 +207,8 @@ export function DiLoCoServerModal({
   const [noAuth, setNoAuth] = useState(seed.noAuth);
   const [regenToken, setRegenToken] = useState(seed.regenToken);
   const [bulkCleartext, setBulkCleartext] = useState(seed.bulkCleartext);
+  const [wireFormat, setWireFormat] = useState(seed.wireFormat);
+  const [grpcEnabled, setGrpcEnabled] = useState(seed.grpcEnabled);
   const [saving, setSaving] = useState(false);
 
   // Light validation — the backend re-checks but flagging in-UI is friendlier.
@@ -285,6 +296,14 @@ export function DiLoCoServerModal({
     if (bulkCleartext) {
       args.bulk_cleartext = true;
     }
+    // Bulk transport (issue #154). Emit only on divergence from the CLI
+    // default (pickle / HTTP), keeping the spawned argv readable.
+    if (wireFormat && wireFormat !== "pickle") {
+      args.wire_format = wireFormat;
+    }
+    if (grpcEnabled) {
+      args.grpc_enabled = true;
+    }
     return args;
   };
 
@@ -314,6 +333,8 @@ export function DiLoCoServerModal({
       noAuth,
       regenToken,
       bulkCleartext,
+      wireFormat,
+      grpcEnabled,
     };
     persistSet(STORAGE_KEY, JSON.stringify(cur));
   };
@@ -768,6 +789,39 @@ export function DiLoCoServerModal({
                   ephemeral port (workers learn it over the encrypted
                   control channel). Trades on-wire confidentiality of the
                   bulk tensors for throughput — trusted LANs only.
+                </span>
+              </label>
+
+              <hr style={{ width: "100%", opacity: 0.2 }} />
+
+              <label>
+                <code>--wire-format</code>{" "}
+                <select
+                  value={wireFormat}
+                  onChange={(e) => setWireFormat(e.target.value)}
+                >
+                  <option value="pickle">pickle</option>
+                  <option value="safetensors">safetensors</option>
+                </select>{" "}
+                <span className="muted" style={{ fontSize: "smaller" }}>
+                  Bulk-tensor wire codec. <code>safetensors</code> drops pickle
+                  for an explicit typed, zero-copy frame (no arbitrary-code
+                  deserialization); <code>pickle</code> is the back-compatible
+                  default.
+                </span>
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={grpcEnabled}
+                  onChange={(e) => setGrpcEnabled(e.target.checked)}
+                />{" "}
+                <code>--grpc</code>{" "}
+                <span className="muted" style={{ fontSize: "smaller" }}>
+                  Serve the bulk legs over a streaming gRPC listener (workers
+                  negotiate it via /info; HTTP stays the fallback). Supersedes{" "}
+                  <code>--bulk-cleartext</code>. Cleartext/trusted-LAN today —
+                  TLS parity is a follow-up.
                 </span>
               </label>
             </div>

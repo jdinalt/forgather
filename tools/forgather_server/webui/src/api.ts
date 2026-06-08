@@ -1315,7 +1315,16 @@ export interface DiLoCoInfo {
     num_fragments_min?: number;
     num_fragments_default?: number;
     heartbeat_timeout?: number;
+    /** Bulk-tensor wire codec (issue #154). Server-authoritative; workers
+     *  adopt it so both legs agree. "pickle" (default) is back-compatible. */
+    wire_format?: "pickle" | "safetensors";
   };
+  /** Bulk transport negotiation (issue #154). "grpc" when the gRPC bulk
+   *  listener is up, else "http" (the default + universal fallback). */
+  transport?: "grpc" | "http";
+  /** host:port a worker dials for the gRPC bulk legs when transport="grpc";
+   *  null/absent for http. */
+  grpc_endpoint?: string | null;
 }
 
 /** Summary entry from ``GET /api/diloco/work-queues``. One per
