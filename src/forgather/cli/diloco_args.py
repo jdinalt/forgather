@@ -217,6 +217,18 @@ def create_diloco_parser(global_args):
         ),
     )
     server_parser.add_argument(
+        "--grpc",
+        dest="grpc_enabled",
+        action="store_true",
+        help=(
+            "Serve the bulk legs over a streaming gRPC listener (issue #154)\n"
+            "instead of the HTTP control port. Advertised via /info so workers\n"
+            "negotiate it; HTTP stays the fallback. Supersedes --bulk-cleartext\n"
+            "(gRPC is the single bulk fast-path). Cleartext/trusted-LAN today;\n"
+            "TLS parity is a follow-up. (default: off)"
+        ),
+    )
+    server_parser.add_argument(
         "--no-bf16",
         dest="bf16_comm",
         action="store_false",

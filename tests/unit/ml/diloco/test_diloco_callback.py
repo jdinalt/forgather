@@ -346,6 +346,8 @@ class TestWorkerLifecycle:
             download_dtype="fp32",
             download_sr=False,
             wire_format="pickle",
+            transport="http",
+            grpc_endpoint=None,
             timeout=600,
             dylu=False,
             heartbeat_interval=30.0,
@@ -487,6 +489,8 @@ class TestWorkerLifecycle:
             download_dtype="fp32",
             download_sr=False,
             wire_format="pickle",  # absent from this legacy /info → default
+            transport="http",  # legacy /info omits transport → http
+            grpc_endpoint=None,
             timeout=300,
             dylu=True,  # from /info
             heartbeat_interval=10.0,

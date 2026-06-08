@@ -92,6 +92,16 @@ def test_fragment_op_mapping():
     assert header["fragment_id"] == 1
 
 
+def test_client_close_delegates_to_transport():
+    """DiLoCoClient.close() releases the bulk transport (closes a gRPC channel;
+    no-op for HTTP) — the path DiLoCoWorker.stop() now drives at teardown."""
+    fake = _RecordingTransport({"w": torch.randn(2)}, "safetensors")
+    fake.closed = False
+    client = _client_with_fake(fake)
+    client.close()
+    assert fake.closed is True
+
+
 def test_path_to_op_covers_all_bulk_paths():
     assert PATH_TO_OP["/submit_pseudograd"] is BulkOp.SUBMIT_PSEUDOGRAD
     assert PATH_TO_OP["/submit_fragment_pseudograd"] is BulkOp.SUBMIT_FRAGMENT

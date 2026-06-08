@@ -504,6 +504,7 @@ class DiLoCoServer:
         auth_token: Optional[str] = None,
         ssl_context: Optional["ssl.SSLContext"] = None,
         bulk_cleartext: bool = False,
+        grpc_enabled: bool = False,
         default_work_units: int = 1024,
         run_name: Optional[str] = None,
     ):
@@ -629,6 +630,18 @@ class DiLoCoServer:
         self.bulk_port: Optional[int] = None
         self._bulk_server = None
         self._bulk_server_thread = None
+        # Optional gRPC bulk transport (issue #154). A streaming HTTP/2 listener
+        # serving the same three bulk legs, advertised via /info so a worker can
+        # negotiate it. It SUPERSEDES the cleartext bulk listener: gRPC is
+        # TLS-capable without urllib's overhead, so when enabled the cleartext
+        # listener is not also started (two fast paths into the bulk plane is the
+        # exact smell the control/bulk role-split exists to prevent). ``grpc_port``
+        # is the OS-assigned ephemeral port, filled once the listener binds.
+        self._grpc_enabled = bool(grpc_enabled)
+        if self._grpc_enabled:
+            self._bulk_enabled = False
+        self.grpc_port: Optional[int] = None
+        self._grpc_server = None
         # Audit log (issue #90). Append-only JSONL records for events
         # worth reconstructing after the fact: registrations, evictions,
         # outer-optimizer steps, and control actions. Best-effort —
@@ -2863,6 +2876,13 @@ class DiLoCoServer:
                 # heartbeat send cadence against the server's death timeout.
                 "heartbeat_timeout": self.heartbeat_timeout,
             },
+            # Bulk transport negotiation (issue #154). "grpc" when the gRPC
+            # listener is up, else "http" (the default + universal fallback).
+            # ``grpc_endpoint`` is the host:port a worker dials for the gRPC bulk
+            # legs (None for http). An older server omits both ⇒ the worker
+            # defaults to http, so negotiation is purely for peer back-compat.
+            "transport": "grpc" if self._grpc_enabled else "http",
+            "grpc_endpoint": self.get_grpc_url(_request_host(handler)),
         }
         _send_json_response(handler, response)
 
@@ -3491,6 +3511,22 @@ class DiLoCoServer:
             host = request_host or "127.0.0.1"
         return f"http://{host}:{self.bulk_port}"
 
+    def get_grpc_url(self, request_host: Optional[str] = None) -> Optional[str]:
+        """The ``host:port`` of the gRPC bulk listener, for /info advertisement.
+
+        ``None`` when gRPC is disabled or before the listener has bound. Like
+        ``get_bulk_url``, a wildcard bind prefers the worker's ``request_host``
+        (routable from that worker by construction) over an unroutable
+        ``0.0.0.0``. No scheme — gRPC channel security is set by the worker from
+        the negotiated TLS posture, not encoded in the address.
+        """
+        if not self._grpc_enabled or self.grpc_port is None:
+            return None
+        host = self.host
+        if host in self._WILDCARD_HOSTS or host is None:
+            host = request_host or "127.0.0.1"
+        return f"{host}:{self.grpc_port}"
+
     def _create_handler(self, role: str = "control"):
         """Create a request handler bound to this server.
 
@@ -4072,6 +4108,55 @@ class DiLoCoServer:
             self._bulk_server_thread = None
             self.bulk_port = None
 
+    def _grpc_security(self):
+        """Resolve ``(server_credentials, authenticate)`` for the gRPC listener.
+
+        Currently ``(None, None)``: the gRPC bulk listener runs cleartext + open
+        — the same trusted-LAN posture as the cleartext HTTP bulk listener it
+        supersedes, and gated behind the same kind of explicit opt-in
+        (``grpc_enabled``). TLS/mTLS/bearer parity (gRPC credentials built from
+        the same cert/key/CA as the control plane, plus a peer-cert/bearer auth
+        gate) is the immediate follow-up; ``_start_grpc_listener`` already threads
+        both a credentials object and an ``authenticate`` callable through, so
+        that lands without touching the listener wiring.
+        """
+        return None, None
+
+    def _start_grpc_listener(self) -> None:
+        """Spawn the gRPC bulk listener when enabled (issue #154).
+
+        The bound ephemeral port is read back into ``self.grpc_port`` and
+        advertised via /info. ``grpc`` is imported lazily here so a server with
+        gRPC off pays no import cost. Security posture comes from
+        ``_grpc_security`` (cleartext/open today; TLS parity is the follow-up).
+        """
+        if not self._grpc_enabled:
+            return
+        from forgather.ml.diloco import grpc_bulk
+
+        creds, authenticate = self._grpc_security()
+        self._grpc_server, self.grpc_port = grpc_bulk.make_grpc_server(
+            self,
+            self.host,
+            authenticate=authenticate,
+            server_credentials=creds,
+            max_workers=max(self.num_workers + 4, 8),
+        )
+        self._grpc_server.start()
+        posture = "TLS" if creds is not None else "cleartext"
+        auth = "mTLS+bearer" if authenticate is not None else "open"
+        logger.info(
+            f"DiLoCo gRPC bulk listener on {self.host}:{self.grpc_port} "
+            f"({posture}, {auth})"
+        )
+
+    def _stop_grpc_listener(self) -> None:
+        """Counterpart to ``_start_grpc_listener``."""
+        if self._grpc_server is not None:
+            self._grpc_server.stop(grace=5).wait(timeout=6)
+            self._grpc_server = None
+            self.grpc_port = None
+
     def run(self):
         """Run the server (blocking). Call this from the main process.
 
@@ -4134,6 +4219,7 @@ class DiLoCoServer:
 
         self._start_health_monitor()
         self._start_bulk_listener()
+        self._start_grpc_listener()
 
         mode = "async" if self.async_mode else "sync"
         scheme = "https" if self.ssl_context is not None else "http"
@@ -4162,6 +4248,7 @@ class DiLoCoServer:
                 logger.error("Failed to save server state on stop: %s", exc)
         self._stop_health_monitor()
         self._stop_bulk_listener()
+        self._stop_grpc_listener()
         if self._tb_writer is not None:
             try:
                 self._tb_writer.close()

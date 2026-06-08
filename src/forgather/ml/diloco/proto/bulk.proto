@@ -1,0 +1,36 @@
+// DiLoCo bulk tensor transport (issue #154).
+//
+// The opt-in gRPC transport for the bulk legs. Each RPC streams an opaque,
+// already-framed byte payload — the SAME `[4-byte len][JSON header][tensor
+// blob]` frame the HTTP transport uses — chunked so neither end holds the whole
+// model twice. The server reassembles the chunks and feeds them through the
+// exact same request handler as the HTTP path; the response is the framed
+// tensor bytes, streamed back as chunks.
+//
+// Regenerate the Python stubs after editing:  proto/generate.sh
+syntax = "proto3";
+
+package forgather.diloco;
+
+service DiLoCoBulk {
+  // Pseudo-gradient submission (full model). Request chunks carry the framed
+  // [len][header][blob]; response chunks carry the framed averaged weights.
+  rpc SubmitPseudograd(stream Chunk) returns (stream Chunk);
+
+  // Streaming-DiLoCo per-fragment submission. Same framing; the header carries
+  // fragment_id.
+  rpc SubmitFragment(stream Chunk) returns (stream Chunk);
+
+  // Fetch the current global parameters (no request body, like the HTTP GET).
+  rpc GlobalParams(GlobalParamsRequest) returns (stream Chunk);
+}
+
+// A slice of a framed byte payload. Streamed in order; the receiver concatenates
+// `data` to reconstruct the frame.
+message Chunk {
+  bytes data = 1;
+}
+
+// GlobalParams takes no payload — the server returns the full global state, as
+// the HTTP `GET /global_params` does.
+message GlobalParamsRequest {}

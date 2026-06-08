@@ -122,6 +122,8 @@ class DiLoCoClient:
         token: Optional[str] = None,
         verify_tls: bool = True,
         wire_format: str = "pickle",
+        transport: str = "http",
+        grpc_endpoint: Optional[str] = None,
     ):
         # Normalize address. A bare ``host:port`` is the legacy form
         # (the ``forgather diloco worker --server host:port`` CLI and
@@ -206,20 +208,32 @@ class DiLoCoClient:
         # construction time — keeps ``__slots__`` migrations and static
         # type checkers happy.
         self._bulk_ssl_ctx: Optional["ssl.SSLContext"] = None
-        # Pluggable byte transport for the bulk legs (issue #154). The default
-        # HTTP transport reuses this client's URL/header/SSL resolvers (so the
-        # bulk-listener routing, bearer-omission, and per-request SSL stay
-        # single-sourced and live — ``bulk_url`` can change on /register). A
-        # future gRPC transport swaps in here, selected by /info, without the
-        # rest of the client changing.
-        self._transport = HttpBytesTransport(
-            url_for=self._url,
-            headers_for=self._headers,
-            ssl_for=self._ssl_for_request,
-            timeout=self.timeout,
-            retry_delay=self.retry_delay,
-            scheme_hint=self._scheme_hint,
-        )
+        # Pluggable byte transport for the bulk legs (issue #154), selected by
+        # /info negotiation. The default HTTP transport reuses this client's
+        # URL/header/SSL resolvers (so the bulk-listener routing,
+        # bearer-omission, and per-request SSL stay single-sourced and live —
+        # ``bulk_url`` can change on /register). When the server advertises
+        # ``transport: "grpc"`` the gRPC transport swaps in for the bulk legs;
+        # the control plane (register/heartbeat/info) stays on HTTP regardless.
+        self.transport = transport
+        if transport == "grpc" and grpc_endpoint:
+            from forgather.ml.diloco.grpc_transport import GrpcBytesTransport
+
+            self._transport = GrpcBytesTransport(
+                grpc_endpoint,
+                credentials=None,  # cleartext today; TLS parity is a follow-up
+                timeout=self.timeout,
+                retry_delay=self.retry_delay,
+            )
+        else:
+            self._transport = HttpBytesTransport(
+                url_for=self._url,
+                headers_for=self._headers,
+                ssl_for=self._ssl_for_request,
+                timeout=self.timeout,
+                retry_delay=self.retry_delay,
+                scheme_hint=self._scheme_hint,
+            )
 
     def _scheme_hint(self) -> str:
         """Diagnostic suffix for connection errors when the URL scheme
@@ -427,6 +441,11 @@ class DiLoCoClient:
         max_retries = retries if retries is not None else 0
         data = self._transport.round_trip(op, body, retries=max_retries)
         return self._deserialize_state_dict(data)
+
+    def close(self) -> None:
+        """Release the bulk transport's resources. No-op for HTTP (urllib opens
+        a connection per request); closes the channel for the gRPC transport."""
+        self._transport.close()
 
     def register(
         self, worker_id: str, worker_info: Optional[dict] = None
