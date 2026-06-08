@@ -519,6 +519,7 @@ def test_system_prompt_docs_first_and_scheduling():
 
     sp = runtime.SYSTEM_PROMPT
     assert "READ THE DOCS FIRST" in sp  # docs-first bias
+    assert "README.md" in sp  # read an existing project's README early
     # run_train is described as scheduling, not foreground.
     reg = ToolRegistry()
     tools_jobs.register_all(reg)

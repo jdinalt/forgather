@@ -78,6 +78,11 @@ Operating rules:
   incrementally: list_workspaces -> list_projects(workspace_root) ->
   list_configs(project_dir) -> inspect_config. Only list everything
   (list_projects with no argument) when you genuinely need a repo-wide view.
+- When helping with an EXISTING project, read its README.md early — read_file
+  on <project_dir>/README.md (and any docs/ it links). It carries the
+  project's purpose, conventions, which config to use, and run instructions
+  that the config alone doesn't convey; the project list's description is only
+  a one-line summary. Ground your help in the README before acting or advising.
 - READ THE DOCS FIRST. Before a non-trivial task — creating or editing a
   project/config, running training, building a dataset, following a tutorial,
   or debugging an error — search_docs for the relevant guide and read_file it
