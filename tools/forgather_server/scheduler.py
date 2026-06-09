@@ -1070,12 +1070,10 @@ def _diloco_env_from_job_params(
             # base_url-derived) so every co-located worker computes the same
             # region without a submit-time uuid; the group size is the server's
             # declared worker count (single source of truth, /info num_workers).
-            # NOTE(follow-up): because the dir is now stable per server (vs the
-            # old per-submit uuid), a group that crashed without unlinking its
-            # region could leave a stale one that the next run against the same
-            # server attaches to. Single-host only; the proper fix is the
-            # shared-memory GC sweep (see shared_memory_backend cleanup TODO) or
-            # a per-server-instance id in /info. Tracked, not fixed here.
+            # The dir being stable per server (vs the old per-submit uuid) is
+            # safe: SharedMemoryBackend decides the aggregator role with an OS
+            # ownership lease, so a region orphaned by a crashed group is
+            # reclaimed and rebuilt by the next launch rather than attached to.
             from . import cluster_diloco_inventory as cdi
 
             group_id = cdi.server_id_for(cdi._normalize(str(server)))

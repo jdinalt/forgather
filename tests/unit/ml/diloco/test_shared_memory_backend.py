@@ -14,6 +14,8 @@ import pytest
 import torch
 
 from forgather.ml.diloco.shared_memory_backend import (
+    _W_ATTACH,
+    _W_GENERATION,
     SharedMemoryBackend,
     _default_outer_optimizer_factory,
 )
@@ -229,6 +231,71 @@ class TestSingleProcess:
         with pytest.raises(ValueError):
             bad.join(worker_id="w1")
         agg.leave(worker_id="w0")
+
+    def test_live_aggregator_makes_next_joiner_a_follower(self, tmp_path):
+        """The ownership lease is what assigns the role: while the aggregator
+        holds it, the next joiner attaches as a follower (not a second
+        aggregator)."""
+        _sd, ckpt = _make_checkpoint(tmp_path)
+        gdir = str(tmp_path / "g")
+        agg = SharedMemoryBackend(group_dir=gdir, group_size=2, init_checkpoint=ckpt)
+        agg.join(worker_id="w0")
+        assert agg._is_aggregator is True
+        follower = SharedMemoryBackend(
+            group_dir=gdir, group_size=2, init_checkpoint=ckpt
+        )
+        follower.join(worker_id="w1")
+        assert follower._is_aggregator is False
+        follower.leave(worker_id="w1")
+        agg.leave(worker_id="w0")
+
+    def test_stale_region_reclaimed_after_crash(self, tmp_path):
+        """A group that crashed (region left on disk, no live lease holder) must
+        not strand the next launch: with the role decided by an OS ownership
+        lease (freed when the holder dies), the fresh worker reclaims ownership
+        and rebuilds the region instead of attaching to the ownerless one as a
+        follower — which would deadlock (no aggregator publishing)."""
+        import os
+
+        _sd, ckpt = _make_checkpoint(tmp_path)
+        gdir = str(tmp_path / "g")
+
+        crashed = SharedMemoryBackend(
+            group_dir=gdir, group_size=1, init_checkpoint=ckpt
+        )
+        crashed.join(worker_id="w0")
+        assert os.path.exists(crashed._manifest_path)
+        assert os.path.exists(crashed._region_path)
+        # Simulate the process dying mid-run: drop the OS locks (the ownership
+        # lease + the rendezvous mutex) and the region mapping WITHOUT the
+        # cleanup that leave() would do, so the manifest/region persist on disk
+        # with no live lease holder — exactly what a crash leaves behind.
+        os.close(crashed._owner_lock_fd)
+        crashed._owner_lock_fd = None
+        if crashed._lock_fd is not None:
+            os.close(crashed._lock_fd)
+            crashed._lock_fd = None
+        crashed._close_region()
+        assert os.path.exists(crashed._manifest_path)  # still there (no cleanup)
+
+        # A fresh launch against the same (now stable) per-server dir.
+        fresh = SharedMemoryBackend(group_dir=gdir, group_size=1, init_checkpoint=ckpt)
+        init = fresh.join(worker_id="w0")
+        # It reclaimed ownership and rebuilt: aggregator role, a fresh region
+        # (generation 0, attach count 1 — not 2, which is what attaching to the
+        # stale region would have produced).
+        assert fresh._is_aggregator is True
+        assert int(fresh._ctrl[_W_GENERATION]) == 0
+        assert int(fresh._ctrl[_W_ATTACH]) == 1
+        # And it can actually complete a round (a stranded follower would hang).
+        names = list(init.keys())
+        pg = {
+            name: torch.full_like(init[name], _pg_value(0, 0, j))
+            for j, name in enumerate(names)
+        }
+        result = fresh.synchronize(worker_id="w0", pseudograds=pg)
+        assert result.committed is True
+        fresh.leave(worker_id="w0")
 
 
 class TestMultiProcess:
