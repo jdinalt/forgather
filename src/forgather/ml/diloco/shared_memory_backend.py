@@ -13,7 +13,8 @@ Because the worker hands the backend the **raw** pseudo-gradient (the upload cas
 moved into the backend in #157), this backend operates entirely in fp32 with no
 wire cast.
 
-Roles (same class; decided at join — first arriver wins):
+Roles (same class; decided at join by the ``owner.lock`` ownership lease — the
+worker that takes the lease is the aggregator, the rest are followers):
 
 * **Aggregator** — creates the region, loads the initial weights, owns the master
   ``ParameterList`` + the outer optimizer (its momentum lives in this process,
@@ -34,6 +35,13 @@ persistent ``flock``, with the path as the rendezvous):
   group size, live attach count) + the master params (fp32) + an accumulator
   (fp32, same size). The attach count drives self-cleanup: ``join`` increments it,
   ``leave`` decrements it, and the last worker out unlinks the region.
+* ``owner.lock`` — the aggregator role is an **ownership lease**: the aggregator
+  holds an exclusive ``flock`` on this file for its whole lifetime. A joiner that
+  can take the lease is the aggregator (and discards any region orphaned by a
+  crashed prior group before recreating); one that can't attaches as a follower.
+  Because the OS frees the lease when the holder dies, a re-launched group never
+  attaches to an ownerless region left by a crash — which would otherwise
+  deadlock (all followers, no aggregator publishing).
 
 Scope (increment 1): the backend + protocol + correctness, constructed directly
 (rendezvous params passed in). Trainer/CLI integration, the co-located-group
@@ -71,6 +79,7 @@ _W_ATTACH = 4  # live attach count; last worker out (==0) unlinks the region
 _SHM_SUBDIR = "diloco_shm"
 _MANIFEST = "manifest.json"
 _REGION = "region.bin"
+_OWNER_LOCK = "owner.lock"  # aggregator's process-lifetime ownership lease
 _POLL_INTERVAL = 0.01
 
 
@@ -120,6 +129,11 @@ class SharedMemoryBackend(OuterSyncBackend):
         self._manifest_path = os.path.join(self._shm_dir, _MANIFEST)
         self._lock_path = os.path.join(self._shm_dir, "region.lock")
         self._lock_fd: Optional[int] = None
+        self._owner_lock_path = os.path.join(self._shm_dir, _OWNER_LOCK)
+        # Aggregator ownership lease: held (LOCK_EX) for this process's lifetime
+        # when this worker is the aggregator; the OS frees it on death. None
+        # until join() decides the role.
+        self._owner_lock_fd: Optional[int] = None
 
         # Set at join().
         self._is_aggregator = False
@@ -208,10 +222,16 @@ class SharedMemoryBackend(OuterSyncBackend):
     ) -> "StateDict":
         """Create or attach to the shared region; return the master snapshot.
 
-        First arriver (no manifest yet) is the aggregator: it loads the initial
-        weights from ``init_checkpoint``, lays out + creates the region, copies
-        the weights into the master buffer, and builds the outer optimizer over
-        its own fp32 master ``ParameterList``. Later arrivers attach.
+        The aggregator role is an ownership lease, not "first to write the
+        manifest": the worker that can take the ``owner.lock`` flock is the
+        aggregator — it loads the initial weights from ``init_checkpoint``, lays
+        out + creates the region, copies the weights into the master buffer, and
+        builds the outer optimizer over its own fp32 master ``ParameterList``.
+        Workers that can't take the lease (a live aggregator holds it) attach as
+        followers. The lease is what makes re-launch after a crash safe: a region
+        orphaned by a dead group has no live lease holder, so the next launch
+        reclaims ownership and rebuilds it instead of every worker attaching to
+        an ownerless region (which would deadlock — no aggregator to publish).
         """
         from forgather.ml.sharded_checkpoint import load_checkpoint
 
@@ -219,16 +239,81 @@ class SharedMemoryBackend(OuterSyncBackend):
         os.makedirs(self._shm_dir, exist_ok=True)
 
         with self._locked():
-            if os.path.exists(self._manifest_path):
-                self._attach_as_follower()
-            else:
-                self._create_as_aggregator(load_checkpoint, factory)
+            # Release the lease/fd if the role decision raises (a bad
+            # init_checkpoint, OOM building the master, a group_size mismatch on
+            # the follower path). The OS would free it on process exit anyway,
+            # but an in-process retry against the same group_dir must not find
+            # the lease held by this dead attempt — that would reintroduce the
+            # exact "no aggregator" deadlock the lease prevents.
+            try:
+                if self._try_acquire_ownership():
+                    # No live aggregator holds the lease: a fresh group, or a
+                    # region orphaned by a crashed one (leave() never ran, so its
+                    # stale manifest/region were never unlinked). Discard any
+                    # leftovers and (re)create — otherwise every worker would
+                    # attach as a follower to an ownerless region and deadlock.
+                    self._discard_stale_region()
+                    self._create_as_aggregator(load_checkpoint, factory)
+                else:
+                    # A live aggregator holds the lease; its manifest (written
+                    # before it released the rendezvous mutex) is the
+                    # region-ready signal.
+                    self._attach_as_follower()
+            except BaseException:
+                self._release_ownership()
+                raise
             # Count this worker as attached (under the same lock as create/attach
             # so the aggregator's fresh region — zeroed by truncate — goes 0->1
             # atomically). leave() decrements; the last one out unlinks.
             self._ctrl[_W_ATTACH] = int(self._ctrl[_W_ATTACH]) + 1
 
         return self._read_master_snapshot()
+
+    def _try_acquire_ownership(self) -> bool:
+        """Try to take the aggregator ownership lease.
+
+        A non-blocking exclusive ``flock`` on ``owner.lock``, held for this
+        process's lifetime when acquired. Returns True if this worker is the
+        aggregator. Called under the rendezvous mutex (``_locked``), so the
+        accept/attach decision is serialized across co-located workers — exactly
+        one wins. The OS frees the lease when the holder dies, so a crashed
+        aggregator's lease is reclaimable by the next launch.
+        """
+        if self._owner_lock_fd is None:
+            self._owner_lock_fd = os.open(
+                self._owner_lock_path, os.O_CREAT | os.O_RDWR, 0o644
+            )
+        try:
+            fcntl.flock(self._owner_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            # EWOULDBLOCK / EAGAIN: a live aggregator holds the lease.
+            return False
+
+    def _release_ownership(self) -> None:
+        """Close the owner-lock fd, dropping the lease (no-op for a follower,
+        which opened the fd but never acquired the flock). Idempotent."""
+        try:
+            if self._owner_lock_fd is not None:
+                os.close(self._owner_lock_fd)
+                self._owner_lock_fd = None
+        except OSError:
+            pass
+
+    def _discard_stale_region(self) -> None:
+        """Unlink a region orphaned by a crashed prior group.
+
+        Safe because we hold the ownership lease — no live aggregator can be
+        using these files. Only the data files (manifest + region) are removed;
+        ``region.lock`` (the rendezvous mutex this call holds) and ``owner.lock``
+        (our lease) are deliberately left in place — unlinking the mutex path
+        here would split it for the next joiner.
+        """
+        for path in (self._manifest_path, self._region_path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
     def _attach_as_follower(self) -> None:
         with open(self._manifest_path, "r", encoding="utf-8") as fh:
@@ -408,10 +493,17 @@ class SharedMemoryBackend(OuterSyncBackend):
 
     def _cleanup_region_files(self) -> None:
         """Last worker out: unlink the shared region so a completed group leaves
-        nothing behind. Best-effort — a crashed peer can leave a stale per-submit
-        dir (a scheduler GC sweep of stale ``diloco_shm_*`` dirs is the follow-up).
+        nothing behind. Best-effort — a group that *crashes* (no last leave) can
+        still leave files behind, but that's no longer a hazard: the ownership
+        lease means the next launch reclaims and rebuilds an orphaned region
+        rather than attaching to it (see ``join`` / ``_try_acquire_ownership``).
         """
-        for path in (self._region_path, self._manifest_path, self._lock_path):
+        for path in (
+            self._region_path,
+            self._manifest_path,
+            self._lock_path,
+            self._owner_lock_path,
+        ):
             try:
                 os.unlink(path)
             except OSError:
@@ -455,3 +547,9 @@ class SharedMemoryBackend(OuterSyncBackend):
                 self._lock_fd = None
         except OSError:
             pass
+
+        # Release the aggregator ownership lease (no-op for a follower, which
+        # never holds it). Closing the fd drops the flock; the OS would do the
+        # same on process exit, but a clean leave frees it promptly so an
+        # out-of-lifecycle relaunch can reclaim ownership immediately.
+        self._release_ownership()

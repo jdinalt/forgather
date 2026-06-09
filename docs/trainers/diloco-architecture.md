@@ -451,13 +451,18 @@ the server does), no serialization on the wire. Because the worker hands the
 backend the raw pseudo-gradient, this backend operates in fp32 with no wire cast,
 and reports `sent_bytes`/`recv_bytes` of 0.
 
-The first process to create the region is the **aggregator** (it loads the
-initial weights, owns the master `ParameterList` + the outer optimizer — whose
-momentum stays in that process, so it is consistent across rounds exactly like
-the server — and each round averages the contributions, steps, and publishes the
-new master into the region); later arrivers are **followers** that attach and
-read. Each round, every worker adds its raw pseudo-gradient (upcast to fp32) into
-a shared accumulator under a persistent-`flock` critical section; a `generation`
+The **aggregator** role is decided by an ownership lease: the worker that can
+take an exclusive `flock` on `owner.lock` (held for its whole lifetime) is the
+aggregator — it loads the initial weights, owns the master `ParameterList` + the
+outer optimizer (whose momentum stays in that process, so it is consistent across
+rounds exactly like the server) and each round averages the contributions, steps,
+and publishes the new master into the region; workers that can't take the lease
+are **followers** that attach and read. The lease makes re-launch after a crash
+safe: a region orphaned by a dead group has no live lease holder, so the next
+launch reclaims ownership and rebuilds it rather than every worker attaching to
+an ownerless region (which would deadlock — no aggregator to publish). Each round,
+every worker adds its raw pseudo-gradient (upcast to fp32) into a shared
+accumulator under a persistent-`flock` critical section; a `generation`
 counter gates the barrier so no worker races into the next round, and a worker
 omitting a name fails loud (the average divides by the group size). The averaging
 + outer step reproduce `DiLoCoServer._apply_outer_optimizer` (per-name mean over
