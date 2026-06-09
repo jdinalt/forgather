@@ -163,6 +163,7 @@ export function AgentThread({ agent, compact, onOpenFull, onOpenDoc, repoRoot }:
 
   return (
     <div className={"agent-thread" + (compact ? " compact" : "")}>
+      <div className="agent-thread-inner">
       {agent.items.length === 0 && (
         <div className="agent-empty muted">
           Ask about a project or config, search the docs, or request a change.
@@ -241,6 +242,7 @@ export function AgentThread({ agent, compact, onOpenFull, onOpenDoc, repoRoot }:
         </div>
       )}
       <div ref={endRef} />
+      </div>
     </div>
   );
 }
