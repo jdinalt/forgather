@@ -61,8 +61,8 @@ and publishes the new master back into the region; the workers are pure
 **followers** that contribute their pseudo-gradient into the region and read the
 published master. Shared-memory is a *transport swap* of the HTTP star, not a
 second aggregation owner — the workers never submit pseudo-gradients over the
-wire (`diloco/last_send_mb` is 0), and the server still provides the usual
-`/info` negotiation and work-unit dispatch.
+wire (no wire volume — the `up_mb`/`dn_mb` log columns are omitted), and the
+server still provides the usual `/info` negotiation and work-unit dispatch.
 
 Because the **server** runs the outer step, its `sync_round` advances normally
 and its checkpoints carry the trained weights, named `checkpoint-{round}`. The
@@ -164,8 +164,8 @@ This is DiLoCo as a **DDP alternative**: an all-reduce over NVLink (NCCL) every
 quality at a fraction of DDP's comm. The HTTP server stays on as the
 **coordinator** (it provides `/info` negotiation — including the outer-optimizer
 config the replicas reproduce — the init-checkpoint reference, and the data
-work-unit dispatch that shards rows across replicas; no tensor role).
-`diloco/last_send_mb` reflects the all-reduce volume, off-server.
+work-unit dispatch that shards rows across replicas; no tensor role). The
+`up_mb`/`dn_mb` log columns reflect the all-reduce volume, off-server.
 
 ### The replicate (`diloco`) mesh axis
 

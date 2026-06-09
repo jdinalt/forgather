@@ -1097,6 +1097,10 @@ class DiLoCoWorker:
             "diloco/steps_per_second": self.get_steps_per_second(),
             "diloco/sync_every": self.sync_every,
         }
+        # Windowed-mean rate columns. The window is populated by the full-model
+        # sync path only; streaming-fragment sync (num_fragments > 1) does not
+        # accumulate it (a fragment isn't a whole sync round), so these columns
+        # are absent under streaming — ``sync_count`` still tracks rounds.
         n = self._win_sync_count
         if n > 0:
             metrics["diloco/sync_time"] = self._win_sync_time / n

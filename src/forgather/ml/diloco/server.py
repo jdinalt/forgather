@@ -2124,9 +2124,10 @@ class DiLoCoServer:
 
             expected = self._get_expected_worker_count()
             submitted = len(self._pending_pseudograds)
-            logger.info(
+            logger.log(
+                logging.INFO if self.verbose_sync else logging.DEBUG,
                 f"Worker {worker_id} submitted pseudograds "
-                f"({submitted}/{expected}) for round {my_round}"
+                f"({submitted}/{expected}) for round {my_round}",
             )
 
             if self._round_complete():
@@ -2175,9 +2176,10 @@ class DiLoCoServer:
                     w.sync_round += 1
                     w.last_sync_server_round = self._sync_round + 1
 
-            logger.info(
+            logger.log(
+                logging.INFO if self.verbose_sync else logging.DEBUG,
                 f"Worker {worker_id} submitted pseudograds (async), "
-                f"staleness={staleness}, server_round={self._sync_round}"
+                f"staleness={staleness}, server_round={self._sync_round}",
             )
 
             # Apply this worker's pseudo-gradients immediately
@@ -2321,9 +2323,10 @@ class DiLoCoServer:
 
             expected = self._get_expected_worker_count()
             submitted = len(self._fragment_pending[fragment_id])
-            logger.info(
+            logger.log(
+                logging.INFO if self.verbose_sync else logging.DEBUG,
                 f"Worker {worker_id} submitted fragment {fragment_id} pseudograds "
-                f"({submitted}/{expected}) for fragment round {my_round}"
+                f"({submitted}/{expected}) for fragment round {my_round}",
             )
 
             if self._fragment_round_complete(fragment_id):
@@ -2414,9 +2417,10 @@ class DiLoCoServer:
                 if worker_id in self._workers:
                     self._workers[worker_id].last_heartbeat = time.time()
 
-            logger.info(
+            logger.log(
+                logging.INFO if self.verbose_sync else logging.DEBUG,
                 f"Worker {worker_id} submitted fragment {fragment_id} (async), "
-                f"server_round={self._sync_round}"
+                f"server_round={self._sync_round}",
             )
 
             # Apply fragment's pseudo-gradients to the outer optimizer

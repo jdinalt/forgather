@@ -218,9 +218,11 @@ step without per-round log spam:
   shared-memory run omits them (its wire volume is zero).
 
 The rates are the mean over the syncs since the previous log row (windowed, like
-`tok/s`), not a single last-sync sample. For a deeper, per-round trace turn on
-`--verbose-sync` on the server (off by default) — it logs the server's outer
-step and each worker's sync line at INFO.
+`tok/s`), not a single last-sync sample. The rate columns
+(`sync_s` / `up_mb` / `dn_mb`) are not populated under streaming-fragment sync
+(`--num-fragments > 1`); `sync` still counts rounds. For a deeper, per-round
+trace turn on `--verbose-sync` on the server (off by default) — it logs the
+server's outer step and each worker's per-round sync line at INFO.
 
 ## Running through the Forgather server (detailed reference)
 
