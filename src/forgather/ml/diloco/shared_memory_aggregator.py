@@ -1,0 +1,175 @@
+"""
+Server-side shared-memory aggregator for single-host DiLoCo (issue #154).
+
+Flavor 2 of the shared-memory backend: because shared-memory DiLoCo is
+single-host and the param server is co-located, the **server** maps the same
+:class:`~forgather.ml.diloco.shared_memory_region.ShmRegion` and runs the outer
+optimizer itself — instead of electing one of the workers as the aggregator.
+shared-memory becomes a *transport swap* of the HTTP star, not a second
+aggregation owner:
+
+* The server holds the region's ownership lease, creates the region from its own
+  master weights, and is the sole writer of the master / generation.
+* Every worker is a **follower**: it contributes its raw pseudo-gradient into the
+  shared accumulator and reads back the published master each round.
+* The server reuses its existing master ``ParameterList`` + outer optimizer +
+  ``save_state`` / ``load_state``, so the outer-optimizer momentum is persisted
+  and the round counter advances exactly like the HTTP path — which is what makes
+  a shared-memory run checkpoint and resume coherently (issues #197, #198).
+
+This class owns only the region side of that: lease + create, the per-round
+barrier (wait for every follower to contribute), reading the averaged
+pseudo-gradient, and publishing the server's stepped master back into the region.
+The optimizer step itself stays in the server (passed in as ``step_fn``) so the
+HTTP and shared-memory paths share one outer-step implementation.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from typing import TYPE_CHECKING, Callable, Dict
+
+from .shared_memory_region import ShmRegion
+
+if TYPE_CHECKING:
+    import torch
+
+    StateDict = Dict[str, "torch.Tensor"]
+
+logger = logging.getLogger(__name__)
+
+_POLL_INTERVAL = 0.01
+
+
+class SharedMemoryAggregator:
+    """Drives the shared-memory region from the server side.
+
+    Lifecycle:
+
+    * :meth:`start` — acquire the ownership lease (fail loud if another live
+      aggregator holds it), discard any crash-orphaned region, create + seed the
+      region from the server's master, and count the server itself as an
+      attacher (so a follower leaving never unlinks the region while the server
+      is alive — the server cleans up on :meth:`stop`).
+    * :meth:`wait_for_round` — block until all ``group_size`` followers have
+      contributed (or ``timeout``).
+    * :meth:`aggregate` — under the region lock, average the accumulator, run the
+      server's outer step (``step_fn``), publish the new master, and bump the
+      generation so the followers release.
+    * :meth:`stop` — drop the server's attach, unlink the region if last out,
+      release the lease.
+    """
+
+    def __init__(self, group_dir: str, lock_timeout: float = 300.0):
+        self._region = ShmRegion(group_dir)
+        self.lock_timeout = lock_timeout
+        self._group_size = 0
+        self._started = False
+
+    @property
+    def group_dir(self) -> str:
+        return self._region.group_dir
+
+    def start(self, master: "StateDict", group_size: int) -> None:
+        """Create + seed the region as its owner.
+
+        Fails loud if another process already holds the ownership lease for this
+        ``group_dir`` — the server is the sole shared-memory aggregator, so a
+        held lease means a stale server (or a misconfigured second one) is still
+        running. The OS frees a crashed owner's lease, so this only blocks a
+        genuinely live conflict.
+        """
+        if group_size < 1:
+            raise ValueError(f"group_size must be >= 1, got {group_size}")
+        with self._region.locked():
+            if not self._region.try_acquire_ownership():
+                raise RuntimeError(
+                    "SharedMemoryAggregator: the shared-memory region at "
+                    f"{self._region.group_dir} is already owned by a live "
+                    "aggregator. A stale DiLoCo server is still holding it — "
+                    "stop it before starting a new one."
+                )
+            # A region orphaned by a crashed prior group has no live lease
+            # holder; discard its stale files before recreating.
+            self._region.discard_stale()
+            self._region.create(master, group_size)
+            # Count the server as an attacher so the last follower out doesn't
+            # unlink the region from under us; the server unlinks on stop().
+            self._region.incr_attach()
+        self._group_size = int(group_size)
+        self._started = True
+        logger.info(
+            "SharedMemoryAggregator: region created at %s (group_size=%d)",
+            self._region.group_dir,
+            self._group_size,
+        )
+
+    def wait_for_round(self, timeout: float | None = None) -> bool:
+        """Block until every follower has contributed to the current round.
+
+        Returns True when all ``group_size`` arrivals are in, False on timeout.
+        Lock-free poll: arrivals is only written under the region lock and an
+        aligned int64 read is atomic on the platforms we target, so an
+        unsynchronized read here at worst costs an extra poll.
+        """
+        if not self._started:
+            raise RuntimeError("SharedMemoryAggregator.start() not called")
+        deadline = time.time() + (self.lock_timeout if timeout is None else timeout)
+        while True:
+            if self._region.arrivals() >= self._group_size:
+                return True
+            if time.time() > deadline:
+                return False
+            time.sleep(_POLL_INTERVAL)
+
+    def aggregate(self, step_fn: Callable[["StateDict"], "StateDict"]) -> int:
+        """Apply one outer step and publish, under the region lock.
+
+        ``step_fn`` receives the averaged pseudo-gradient (accumulator divided by
+        ``group_size``, keyed by param name, reshaped) and returns the new master
+        state dict (the server sets these as grads on its ``_param_list``, steps
+        the outer optimizer, and returns ``get_global_params()``). Holding the
+        lock across the step mirrors the worker-aggregator path and is cheap (a
+        CPU SGD step); followers contributing the next round are parked on the
+        generation bump until we publish, so the accumulator is stable here.
+
+        Returns the new generation.
+        """
+        with self._region.locked():
+            avg: "StateDict" = {}
+            for name in self._region.names:
+                avg[name] = (
+                    self._region.accum_slice(name).clone() / self._group_size
+                ).reshape(self._region.shape(name))
+
+            new_master = step_fn(avg)
+
+            for name in self._region.names:
+                self._region.master_slice(name).copy_(new_master[name].reshape(-1))
+            # Zero the accumulator and reset arrivals, then bump the generation
+            # last — its advance is the followers' "round committed" signal.
+            self._region.zero_accum()
+            self._region.set_arrivals(0)
+            new_gen = self._region.bump_generation()
+        return new_gen
+
+    def stop(self) -> None:
+        """Drop the server's attach (unlinking the region if last out) and
+        release the lease. Idempotent."""
+        if not self._started:
+            self._region.release_ownership()
+            return
+        if self._region.ctrl is not None:
+            try:
+                with self._region.locked():
+                    remaining = self._region.decr_attach()
+                    if remaining == 0:
+                        self._region.mark_dead()
+                        self._region.cleanup_files()
+            except OSError:
+                pass
+        self._region.close()
+        self._region.close_lock()
+        self._region.release_ownership()
+        self._started = False
