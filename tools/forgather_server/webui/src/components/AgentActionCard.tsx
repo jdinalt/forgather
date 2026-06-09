@@ -5,7 +5,7 @@
  *  a large diff never tries to render inside the narrow sidebar.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { DiffEditor } from "@monaco-editor/react";
 
@@ -122,6 +122,16 @@ export function AgentActionCard({
 }: Props) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
+  // The reject form (reason box + Confirm/Cancel) opens at the bottom of the
+  // card, which on a tall card lands below the thread's clip edge — hidden
+  // behind the composer with no hint to scroll. Pull it into view so the
+  // controls are reachable the instant Reject is clicked.
+  const rejectRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (rejecting) {
+      rejectRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+    }
+  }, [rejecting]);
   const hasDiff = card.before != null || card.after != null;
   const { added, removed } = lineDelta(card.before, card.after);
   const isPending = status === "pending";
@@ -139,7 +149,14 @@ export function AgentActionCard({
   const argsEntries = Object.entries(card.proposed_args ?? {});
 
   return (
-    <div className={"agent-action-card" + (compact ? " compact" : "")} data-status={status}>
+    <div
+      className={
+        "agent-action-card" +
+        (compact ? " compact" : "") +
+        (hasDiff && !compact ? " has-diff" : "")
+      }
+      data-status={status}
+    >
       <div className="agent-action-head">
         <span className={"agent-risk-chip risk-" + card.risk}>{card.risk}</span>
         <span className="agent-action-title">{card.title}</span>
@@ -168,6 +185,9 @@ export function AgentActionCard({
               minimap: { enabled: false },
               scrollBeyondLastLine: false,
               fontSize: 12,
+              // The card width is now responsive (breaks out of the reading
+              // band to fill the thread), so let Monaco re-measure on resize.
+              automaticLayout: true,
             }}
           />
         </div>
@@ -192,7 +212,7 @@ export function AgentActionCard({
 
       {isPending ? (
         rejecting ? (
-          <div className="agent-action-reject">
+          <div className="agent-action-reject" ref={rejectRef}>
             <textarea
               className="agent-reject-reason"
               placeholder="Optional: why? (the agent uses this to adapt — e.g. 'use config Y instead')"

@@ -1057,25 +1057,27 @@ export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
           ref={transcriptRef}
           onScroll={onTranscriptScroll}
         >
-          {messages.length === 0 && (
-            <div className="muted inference-chat-empty">
-              No messages yet — type below and Send (or Ctrl+Enter).
-            </div>
-          )}
-          {messages.map((msg, i) => (
-            <Message
-              key={i}
-              msg={msg}
-              disabled={busy}
-              onDelete={() => onDeleteMessage(i)}
-              onEdit={() => onEditMessage(i)}
-              isEditing={editingIndex === i}
-              editDraft={editDraft}
-              onEditDraftChange={setEditDraft}
-              onSaveEdit={onSaveEdit}
-              onCancelEdit={onCancelEdit}
-            />
-          ))}
+          <div className="inference-chat-messages-inner">
+            {messages.length === 0 && (
+              <div className="muted inference-chat-empty">
+                No messages yet — type below and Send (or Ctrl+Enter).
+              </div>
+            )}
+            {messages.map((msg, i) => (
+              <Message
+                key={i}
+                msg={msg}
+                disabled={busy}
+                onDelete={() => onDeleteMessage(i)}
+                onEdit={() => onEditMessage(i)}
+                isEditing={editingIndex === i}
+                editDraft={editDraft}
+                onEditDraftChange={setEditDraft}
+                onSaveEdit={onSaveEdit}
+                onCancelEdit={onCancelEdit}
+              />
+            ))}
+          </div>
         </div>
         {!stickToBottom && (
           <button
