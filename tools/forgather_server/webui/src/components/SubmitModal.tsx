@@ -306,6 +306,16 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   // that don't advertise a backend) — the safe worker-pool default.
   const diCollective =
     dilocoInfoQ.data?.expected_client_settings?.backend === "collective";
+  // A collective group's world size IS the server's declared num_workers, so
+  // seed the replica count (= nproc / GPU reservation) from it once /info
+  // resolves. Keyed on the declared count so switching servers re-seeds; the
+  // operator can still override in the input below.
+  useEffect(() => {
+    const declared = dilocoInfoQ.data?.num_workers;
+    if (diCollective && declared && declared >= 2) {
+      setDiReplicate(declared);
+    }
+  }, [diCollective, dilocoInfoQ.data?.num_workers]);
   // Under DiLoCo the worker no longer takes a model path: it fetches the
   // model definition (config + custom code + tokenizer) from the server's
   // /model_def endpoint, builds the model empty on meta, and pulls weights
@@ -1568,7 +1578,8 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
                 />
                 <span className="muted" style={{ fontSize: 11 }}>
                   = nproc_per_node and the GPU reservation for the one job.
-                  Minimum 2 (a single replica has no peers to all-reduce).
+                  Seeded from the server's worker count; minimum 2 (a single
+                  replica has no peers to all-reduce).
                 </span>
               </label>
             ) : (
