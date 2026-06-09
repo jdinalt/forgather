@@ -49,6 +49,8 @@ not_in_nav: |
   syntax_highlighting/**
   tools/**
   trainers/diloco-architecture.md
+  trainers/diloco-architecture-runtime.md
+  trainers/diloco-architecture-reference.md
   trainers/distributed-eval-zero-batches.md
   tutorials/dynamic_lm/README.md
   tutorials/hp_lovecraft_project/4k_spike_investigation.md
