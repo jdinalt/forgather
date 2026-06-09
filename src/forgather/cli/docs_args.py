@@ -57,49 +57,7 @@ def create_docs_parser(_global_args):
         help="Search the docs corpus (keyword / vector / hybrid) — the same ranker the webui and agent use",
         formatter_class=RawTextHelpFormatter,
     )
-    search.add_argument(
-        "query",
-        nargs="+",
-        help="Search terms (joined into one query; quote to be safe).",
-    )
-    search.add_argument(
-        "--mode",
-        choices=("keyword", "vector", "hybrid"),
-        default="keyword",
-        help=(
-            "Ranker (default: keyword).\n"
-            "  keyword       substring term-frequency; fully offline.\n"
-            "  vector/hybrid semantic; need a prebuilt index (forgather docs index)\n"
-            "                + sentence-transformers, and fall back to keyword when\n"
-            "                either is missing (the printed mode reflects what ran)."
-        ),
-    )
-    search.add_argument(
-        "--limit", type=int, default=8, help="Max hits to return (default: 8)."
-    )
-    search.add_argument(
-        "--no-agent-docs",
-        action="store_true",
-        help="Exclude CLAUDE.md / CLAUDE.d/ (mirror the user-facing webui scope; by\n"
-        "default the agent docs ARE included, matching the search_docs tool).",
-    )
-    search.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit raw JSON ({query, mode, hits, diagnostics}) instead of text.",
-    )
-    search.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Print diagnostics (index availability, model, timing, fallback\n"
-        "reason, and any vector embed error) to stderr.",
-    )
-    search.add_argument(
-        "--repo-root",
-        default=None,
-        help="Repository root (default: auto-detect via the forgather package).",
-    )
+    add_search_args(search)
 
     index = sub.add_parser(
         "index",
@@ -137,4 +95,87 @@ def create_docs_parser(_global_args):
         help="Print only the final summary line.",
     )
 
+    return parser
+
+
+def add_search_args(parser):
+    """Populate ``parser`` with the docs-search arguments.
+
+    Shared by the ``forgather docs search`` subcommand and the top-level
+    ``forgather search`` alias so they stay identical.
+    """
+    parser.add_argument(
+        "query",
+        nargs="+",
+        help="Search terms (joined into one query).",
+    )
+    # Mode is a set of short, mutually-exclusive flags (default keyword). -h is
+    # argparse's help, so hybrid is -H.
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "-k", "--keyword", dest="mode", action="store_const", const="keyword",
+        help="Keyword ranking (default): substring term-frequency, fully offline.",
+    )
+    mode.add_argument(
+        "-v", "--vector", dest="mode", action="store_const", const="vector",
+        help="Semantic vector ranking (needs a prebuilt index). Runs on the\n"
+        "forgather server by default so the embedding model stays warm.",
+    )
+    mode.add_argument(
+        "-H", "--hybrid", dest="mode", action="store_const", const="hybrid",
+        help="Hybrid: vector + keyword fused (reciprocal-rank fusion). Like\n"
+        "--vector, runs on the server by default.",
+    )
+    parser.set_defaults(mode="keyword")
+    parser.add_argument(
+        "--limit", type=int, default=8, help="Max hits to return (default: 8)."
+    )
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        help="Run the search in-process instead of on the server. For\n"
+        "--vector/--hybrid this loads the embedding model locally (slow cold\n"
+        "start) — useful for diagnostics; not the default.",
+    )
+    parser.add_argument(
+        "--server",
+        default=None,
+        metavar="URL",
+        help="forgather server base URL for --vector/--hybrid (default:\n"
+        "$FORGATHER_SERVER_URL or the local default).",
+    )
+    parser.add_argument(
+        "--no-agent-docs",
+        action="store_true",
+        help="Exclude CLAUDE.md / CLAUDE.d/ from a --local search (included by\n"
+        "default, matching the search_docs tool). The server path always uses\n"
+        "the user-facing corpus, which already excludes them.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit raw JSON ({query, mode, hits, diagnostics}) instead of text.",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print diagnostics (source, index availability, timing, fallback\n"
+        "reason, vector embed errors) to stderr.",
+    )
+    parser.add_argument(
+        "--repo-root",
+        default=None,
+        help="Repository root for a --local search (default: auto-detect).",
+    )
+    return parser
+
+
+def create_search_parser(_global_args):
+    """Top-level ``forgather search`` — an alias for ``forgather docs search``."""
+    parser = argparse.ArgumentParser(
+        prog="forgather search",
+        description="Search the Forgather docs (alias for `forgather docs search`)",
+        formatter_class=RawTextHelpFormatter,
+    )
+    add_search_args(parser)
     return parser

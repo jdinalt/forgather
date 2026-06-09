@@ -64,6 +64,34 @@ def parse_global_args(args=None):
     return global_args, remaining_args
 
 
+# Global options that take a value (the following token is the value, not the
+# subcommand). Mirrors parse_global_args.
+_GLOBAL_VALUE_FLAGS = ("-p", "--project-dir", "-t", "--config-template")
+
+
+def _subcommand_token_index(tokens):
+    """Index of the subcommand token (the first positional), skipping leading
+    global options.
+
+    Used to gate the per-command arg carve-outs so a *positional argument* that
+    happens to equal a command name — e.g. the word "server" inside a
+    ``forgather docs search …`` query — does not trigger another command's
+    arg-rewriting. Returns ``None`` if there is no positional token.
+    """
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok.startswith("--") and "=" in tok:
+            i += 1  # --opt=value is a single token
+        elif tok in _GLOBAL_VALUE_FLAGS:
+            i += 2  # value-taking global flag consumes the next token
+        elif tok.startswith("-"):
+            i += 1  # boolean / unknown global flag
+        else:
+            return i
+    return None
+
+
 def get_subcommand_registry():
     """Registry of all available subcommands and their argument parsers."""
     from .agent_args import create_agent_parser
@@ -84,7 +112,7 @@ def get_subcommand_registry():
     from .dataset_args import create_dataset_parser
     from .dataset_server_args import create_dataset_server_parser
     from .diloco_args import create_diloco_parser
-    from .docs_args import create_docs_parser
+    from .docs_args import create_docs_parser, create_search_parser
     from .eval_args import create_eval_parser
     from .gpu_args import create_gpu_parser
     from .job_args import create_job_parser
@@ -142,6 +170,7 @@ def get_subcommand_registry():
         "cluster": create_cluster_parser,
         "mkdocs": create_mkdocs_parser,
         "docs": create_docs_parser,
+        "search": create_search_parser,  # alias for `docs search`
         "tls": create_tls_parser,
         "agent": create_agent_parser,
     }
@@ -274,21 +303,14 @@ def parse_args(args=None):
     # Handle 'server' command — forwards everything; `-p` means --port to the
     # server, not the global --project-dir. Strip anything after `server` from
     # what the global parser sees and preserve the original tokens verbatim.
-    # Only match the top-level `server` subcommand, not the `server` token
-    # inside `inf server ...`.
-    if "server" in args_list:
-        srv_idx = args_list.index("server")
-        # The carve-out is only for the top-level ``forgather server``
-        # subcommand. Other parents that *contain* a ``server`` sub-
-        # subcommand (``inf server``, ``cluster server``) must NOT be
-        # rewritten — their positional args after ``server`` are real
-        # args for the inner subparser, not REMAINDER passthrough.
-        _server_parents = ("inf", "cluster", "diloco")
-        if srv_idx > 0 and args_list[srv_idx - 1] in _server_parents:
-            pass  # leave args_list alone — the inner subparser handles them
-        else:
-            server_original_args = args_list[srv_idx + 1 :]
-            args_list = args_list[: srv_idx + 1]
+    # Gate on the SUBCOMMAND POSITION: the carve-out applies only when `server`
+    # is the actual subcommand, never when the word "server" appears as a
+    # positional arg of another command (e.g. inside a `docs search …` query,
+    # or as `inf server` / `cluster server` where the parent owns the subtree).
+    _srv_sub_idx = _subcommand_token_index(args_list)
+    if _srv_sub_idx is not None and args_list[_srv_sub_idx] == "server":
+        server_original_args = args_list[_srv_sub_idx + 1 :]
+        args_list = args_list[: _srv_sub_idx + 1]
 
     # 'dataset-server start' uses REMAINDER passthrough so the
     # underlying script's --port (-p) doesn't conflict with the global
@@ -609,6 +631,14 @@ def main():
             case "docs":
                 from .docs import docs_cmd
 
+                rc = docs_cmd(args)
+                if rc:
+                    sys.exit(rc)
+            case "search":
+                # Top-level alias for `forgather docs search`.
+                from .docs import docs_cmd
+
+                args.docs_action = "search"
                 rc = docs_cmd(args)
                 if rc:
                     sys.exit(rc)

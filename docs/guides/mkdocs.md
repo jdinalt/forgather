@@ -85,35 +85,47 @@ keyword, and the toggle notes that no index is built. The index lives under
 Prebuilt runtime images build the index (and cache the model) by default; pass
 `--build-arg BUILD_DOCS_INDEX=0` to skip it (e.g. a network-less build).
 
-### Search from the CLI (`forgather docs search`)
+### Search from the CLI (`forgather search`)
 
-The same ranker is exposed on the command line, so you can search the docs
-without a browser — handy for testing the ranker, scripting, and for coding
-agents that would otherwise fall back to `find`/`grep`. It calls the **same**
-`docs_search` backend the webui box and the agent's `search_docs` tool use
-(in-process — the server does **not** need to be running):
+The same ranker is exposed on the command line — handy for testing the ranker,
+scripting, and for coding agents that would otherwise fall back to `find`/`grep`.
+`forgather search …` is a top-level alias for `forgather docs search …`.
 
 ```bash
-forgather docs search "resume training from a checkpoint"      # keyword (default)
-forgather docs search --mode vector "how do shards get merged" # semantic
-forgather docs search --mode hybrid --limit 5 "tls mtls certs" # vector+keyword (RRF)
-forgather docs search --json "diloco aggregator"               # machine-readable
-forgather docs search --mode vector -v "lazy model load"       # diagnostics on stderr
+forgather search "resume training from a checkpoint"   # keyword (default)
+forgather search -v "how do shards get merged"         # vector (semantic)
+forgather search -H --limit 5 "tls mtls certs"         # hybrid (vector+keyword RRF)
+forgather search --json "diloco aggregator"            # machine-readable
+forgather search -v --verbose "lazy model load"        # diagnostics on stderr
+forgather search -v --local "embedder cold start"      # in-process (diagnostics)
 ```
 
-- `--mode keyword|vector|hybrid` — keyword runs fully offline; `vector`/`hybrid`
-  need the index above plus sentence-transformers and **fall back to keyword**
-  when either is missing (the reported mode reflects what actually ran, and a
-  `warning:` line explains *why* it fell back).
-- `--limit N` (default 8), `--json` (emits `{query, mode, hits, diagnostics}`),
-  `--no-agent-docs` (exclude `CLAUDE.md` / `CLAUDE.d/`, matching the user-facing
-  webui scope; included by default like the agent tool), `--repo-root PATH`.
-- `-v` / `--verbose` — print diagnostics to stderr: whether a vector index is
-  present (with model + chunk count), the requested-vs-actual mode, and the
-  elapsed time. Because the embedding model loads lazily on first use, a cold
-  `--mode vector` run includes that one-time load in its timing — this is the
-  fastest way to see exactly how long the model takes and whether vector search
-  is actually working (vs. silently falling back).
+**Mode** (mutually exclusive short flags): `-k`/`--keyword` (default), `-v`/`--vector`,
+`-H`/`--hybrid` (`-h` stays help). Where each runs:
+
+- **keyword** — always in-process: instant, offline, full corpus (includes the
+  agent docs `CLAUDE.md` / `CLAUDE.d/` by default; `--no-agent-docs` to exclude).
+- **vector / hybrid** — queried on the running **forgather server** by default
+  (`/api/docs/search`), so the embedding model stays warm and a query returns in
+  well under a second instead of paying the multi-second cold model load every
+  time. The server path searches the user-facing corpus (no agent docs). If no
+  server is reachable you get a clear error pointing at `forgather server` (or
+  `--local`).
+- `--local` — force an **in-process** search; for `--vector`/`--hybrid` this
+  loads the embedding model in the CLI process (slow cold start). This is the
+  diagnostic path — `--local --verbose` shows the index availability (model +
+  chunk count) and times the cold load, the fastest way to see how long the
+  model takes and whether vector search actually works (vs. silently falling
+  back). It also works with the server down.
+
+Other flags: `--limit N` (default 8), `--json` (emits
+`{query, mode, hits, diagnostics}` — `diagnostics.source` is `server` or
+`local`), `--server URL` (override the server base URL for the warm path),
+`--repo-root PATH` (for `--local`).
+
+After `forgather docs index` rebuilds the index, a **running server does not
+need a restart** — its runtime cache is keyed on the index's modification time
+and reloads on the next query.
 
 ## Launch from the webui
 

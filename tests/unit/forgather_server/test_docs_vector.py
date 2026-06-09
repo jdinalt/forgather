@@ -101,6 +101,30 @@ def test_docs_search_mode_vector_when_built(repo):
     assert out["mode"] == "vector"
 
 
+def test_index_reloads_on_rebuild_without_reset(repo):
+    # The runtime cache is keyed on meta.json's mtime, so a rebuilt index is
+    # picked up on the next query with NO reset_cache()/restart. This is why
+    # `forgather docs index` needs no server-side reload endpoint.
+    import os
+
+    _build(repo)
+    out1 = docs_vector.search("capacitor", include_agent_docs=False, max_hits=5)
+    assert out1 is not None and "api/gizmo.md" not in [h["rel"] for h in out1["hits"]]
+
+    # Add a new matching page and rebuild WITHOUT touching the cache.
+    (repo / "docs" / "api" / "gizmo.md").write_text(
+        "# Gizmo\n\nThe Gizmo also frobnicates the flux capacitor.\n"
+    )
+    docs_index.build_index(repo, model_name="fake", embedder=FakeEmbedder())
+    # Advance the meta mtime in case the rebuild landed in the same fs tick.
+    meta = docs_index.index_dir(repo) / "meta.json"
+    bumped = os.path.getmtime(meta) + 5
+    os.utime(meta, (bumped, bumped))
+
+    out2 = docs_vector.search("capacitor", include_agent_docs=False, max_hits=5)
+    assert "api/gizmo.md" in [h["rel"] for h in out2["hits"]]
+
+
 # ---- endpoint --------------------------------------------------------------
 
 
