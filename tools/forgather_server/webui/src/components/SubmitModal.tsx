@@ -1395,6 +1395,9 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
             {info && (
               <div className="muted" style={{ marginBottom: 6 }}>
                 Server mode: <strong>{info.mode ?? "—"}</strong>
+                {info.num_workers !== undefined && (
+                  <> · {info.num_workers} workers</>
+                )}
                 {info.num_parameters !== undefined && (
                   <> · {info.num_parameters.toLocaleString()} params</>
                 )}
@@ -1473,6 +1476,35 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
                         const sr = ecs?.download_sr ? " + SR" : "";
                         return `${dt}${sr}`;
                       })()}
+                    </strong>
+                  </span>
+                  {/* Bulk-transport topology (issue #154). Server-declared;
+                      the worker validates its launched backend against this
+                      and fails loud on disagreement, so surfacing the
+                      declared values lets the operator catch a mismatch
+                      before submitting. */}
+                  <span>
+                    backend:{" "}
+                    <strong>
+                      {info.expected_client_settings?.backend ?? "—"}
+                    </strong>
+                  </span>
+                  <span>
+                    transport: <strong>{info.transport ?? "http"}</strong>
+                  </span>
+                  <span>
+                    wire_format:{" "}
+                    <strong>
+                      {info.expected_client_settings?.wire_format ?? "pickle"}
+                    </strong>
+                  </span>
+                  <span>
+                    heartbeat_timeout:{" "}
+                    <strong>
+                      {info.expected_client_settings?.heartbeat_timeout !==
+                      undefined
+                        ? `${info.expected_client_settings.heartbeat_timeout}s`
+                        : "—"}
                     </strong>
                   </span>
                 </div>
