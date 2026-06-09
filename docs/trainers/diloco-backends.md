@@ -48,69 +48,82 @@ selector lives on the webui's **DiLoCo Server** modal and the agent's
 
 ## Shared-memory backend (single-host)
 
-On a single host, co-located worker processes can exchange the sync tensors
-through a **shared CPU master-weights region** instead of the HTTP parameter
-server — one shared master per host, no serialization, the outer optimizer
-applied in place. This makes DiLoCo a DDP alternative: sync every `H` steps at a
-fraction of DDP's per-step all-reduce. The HTTP server stays on as the
-**coordinator** (it provides `/info` negotiation and work-unit dispatch); only
-the tensor legs move to shared memory, so the workers never submit
-pseudo-gradients over the wire (`diloco/last_send_mb` is 0).
+On a single host, co-located worker processes exchange the sync tensors through a
+**shared CPU master-weights region** instead of moving them over HTTP — one
+shared master per host, no serialization, the outer optimizer applied in place.
+This makes DiLoCo a DDP alternative: sync every `H` steps at a fraction of DDP's
+per-step all-reduce.
 
-Select it per worker with environment variables:
+Because the region is single-host and the param server is co-located, the
+**server maps the same region and *is* the aggregator**. It owns the master and
+the outer optimizer, runs the outer step over the shared accumulator each round,
+and publishes the new master back into the region; the workers are pure
+**followers** that contribute their pseudo-gradient into the region and read the
+published master. Shared-memory is a *transport swap* of the HTTP star, not a
+second aggregation owner — the workers never submit pseudo-gradients over the
+wire (`diloco/last_send_mb` is 0), and the server still provides the usual
+`/info` negotiation and work-unit dispatch.
+
+Because the **server** runs the outer step, its `sync_round` advances normally
+and its checkpoints carry the trained weights, named `checkpoint-{round}`. The
+outer-optimizer momentum lives in the server and is checkpointed with it, so a
+shared-memory run **checkpoints and resumes coherently** — a resume continues the
+loss trajectory rather than restarting from the seed.
+
+The region's rendezvous is advertised by the server in `/info`
+(`shm_group_dir` + `shm_group_size`, the server's configured worker count), and
+each follower reads it from there — so on the orchestrated path you set nothing
+per worker. The environment variables below are an optional override (the manual
+/ dev recipe):
 
 | Variable | Meaning |
 |---|---|
 | `DILOCO_BACKEND` | `shared_memory` (default `http`) |
-| `DILOCO_SHM_GROUP_DIR` | a per-host directory the co-located group shares (the rendezvous) |
-| `DILOCO_SHM_GROUP_SIZE` | number of co-located workers in the group |
-| `DILOCO_SHM_INIT_CHECKPOINT` | optional; overrides the init checkpoint (default: the dir the coordinator advertises in `/info`) |
+| `DILOCO_SHM_GROUP_DIR` | override the per-host region directory (default: advertised by the server in `/info`) |
+| `DILOCO_SHM_GROUP_SIZE` | override the co-located group size (default: the server's configured `--num-workers`, from `/info`) |
 | `DILOCO_REPORT_SYNC_STATE` | optional; report per-worker sync-state to the coordinator for diagnostics (default on; set `0`/`false` to omit) |
 
-Shared-memory workers register with the coordinator for membership and report
-their sync-state (`sync_count`, send/recv MB, sync time) on the heartbeat, so the
+Shared-memory followers register with the server for membership and report their
+sync-state (`sync_count`, send/recv MB, sync time) on the heartbeat, so the
 group's progress is exposed in the server's `/status` (for the dashboard/CLI to
-surface) even though the tensor exchange is off-server. The server-side per-worker
-`sync_round` stays 0 for these workers — they never submit — so the reported
-`sync_state.sync_count` is their progress indicator. (`DILOCO_REPORT_SYNC_STATE`
-applies to any backend; it is most useful for an off-server one like this, where
-the server has no other progress signal.)
+surface) even though the tensor exchange is off-server. (`DILOCO_REPORT_SYNC_STATE`
+applies to any backend; it is most useful for an off-server one like this.) Each
+follower is one process (one GPU) — not a multi-GPU DDP job.
 
-The worker that takes the region's ownership lease (an exclusive `flock` held for
-its lifetime) is the **aggregator**: it creates the region and seeds it from the
-coordinator's checkpoint; the rest attach as followers. The lease makes re-launch
-after a crash safe — a region left behind by a dead group has no live lease
-holder, so the next launch reclaims and rebuilds it instead of stranding on an
-ownerless region. The aggregator also reproduces the coordinator's outer
-optimizer (advertised in `/info`), so the group's outer step matches the
-server's. The default init checkpoint is the coordinator's local filesystem path,
-so the coordinator and workers must share a filesystem (the single-host case);
-use `DILOCO_SHM_INIT_CHECKPOINT` if they don't. Each worker is one process (one
-GPU) — not a multi-GPU DDP job.
+The **server** owns the region's lifecycle: it creates and seeds the region from
+its master when it starts (or from the *restored* trained master on resume),
+holds the region's ownership lease (an exclusive `flock`) for its lifetime, and
+unlinks the region when it stops. The lease makes re-launch after a crash safe —
+a region left behind by a dead server has no live lease holder, so the next
+launch reclaims and rebuilds it rather than stranding on an ownerless region. The
+configured group must fully form (every follower attached) before the first sync
+round, so a worker that's slow to launch surfaces as *no progress* rather than a
+silently smaller group; a follower that **crashes** mid-round is not tolerated
+(shared-memory is single-host, not fault-tolerant) — the server marks the group
+dead and the followers fail loud.
 
-Run a coordinator, then launch the group (one process per GPU):
+Run a server (which is also the aggregator), then launch the followers (one
+process per GPU):
 
 ```bash
-# Coordinator (no tensor role for a shared-memory group; provides /info + dispatch).
-# --backend shared_memory declares the group backend so the workers validate
-# against it (a worker launched with a mismatched backend fails loud at /info).
+# Server + aggregator: declares the backend, owns the region + the outer step.
+# A worker launched with a mismatched backend fails loud at /info.
 forgather diloco server --local-only --backend shared_memory \
-    --output-dir <init-checkpoint-dir> \
+    --output-dir <checkpoint-dir> \
     --num-workers 2 --sync-every 100 -H 127.0.0.1 --port 8512
 
-# Two co-located workers sharing one region
-GROUP=$(mktemp -d)
+# Two co-located followers; they read the region dir + size from the server's
+# /info, so no DILOCO_SHM_* env is needed.
 for w in 0 1; do
   DILOCO_SERVER=https://127.0.0.1:8512 DILOCO_WORKER_ID=shm-w$w \
-  DILOCO_BACKEND=shared_memory DILOCO_SHM_GROUP_DIR=$GROUP DILOCO_SHM_GROUP_SIZE=2 \
+  DILOCO_BACKEND=shared_memory \
     forgather -t <config>.yaml train -d $w &
 done
 wait
 ```
 
-All co-located workers must agree on `DILOCO_SHM_GROUP_DIR` and
-`DILOCO_SHM_GROUP_SIZE`. Streaming-fragment sync (`num_fragments > 1`) is not
-supported for this backend. For the internals see
+Streaming-fragment sync (`num_fragments > 1`) is not supported for this backend.
+For the internals see
 [`diloco-architecture.md`](diloco-architecture.md#shared-memory-backend).
 
 ### Via the scheduler (`forgather submit`)
@@ -120,18 +133,18 @@ group as a first-class option. Declare `shared_memory` on the **server**, then
 submit plain workers — they inherit the backend at launch:
 
 ```bash
-# Once, on the param server:
+# Once, on the param server (also the aggregator):
 forgather diloco server --backend shared_memory -n 2 ...
-# Then submit the workers (no --backend — it's derived from the server):
+# Then submit the followers (no --backend, no region env — derived from the server):
 forgather -t <config>.yaml submit --diloco --diloco-worker-count 2
 ```
 
 The workers carry no backend; the scheduler queries the server's `/info` before
-`torchrun`, sees `shared_memory`, and derives the per-host `DILOCO_SHM_GROUP_DIR`
-(under the host temp dir, one per server) and `DILOCO_SHM_GROUP_SIZE` (the
-server's declared worker count) for every worker, so you don't hand-set the env.
-The region is created on the first worker's join and **unlinked when the last
-worker leaves**, so a completed group leaves nothing behind. Because the backend
+`torchrun`, sees `shared_memory`, and sets only `DILOCO_BACKEND` — the follower
+then reads `shm_group_dir` + `shm_group_size` from `/info` at runtime (the server
+is the single source of truth for both, sizing the group from its configured
+`--num-workers`). The server creates and owns the region and unlinks it on
+shutdown, so a completed run leaves nothing behind. Because the backend
 is single-host, a `shared_memory` server's workers can't be submitted with
 `--global` (the multi-node fan-out).
 
