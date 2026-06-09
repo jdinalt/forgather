@@ -522,6 +522,15 @@ class DiLoCoServer:
             )
 
         self.num_workers = num_workers
+        # The stable, operator-configured worker count (the launch ``-n``).
+        # Unlike ``self.num_workers`` — which drifts at runtime: raised on
+        # over-registration, lowered to ``max(min_workers, remaining)`` on
+        # worker death — this never changes after construction. It is the
+        # single source of truth for the shared-memory group size (a
+        # co-located group is a fixed N) and is advertised via /info so a
+        # follower sizes its region correctly regardless of who has registered
+        # yet.
+        self._configured_num_workers = num_workers
         self.min_workers = min_workers
         self.host = host
         self.port = port or self._find_available_port()
@@ -547,14 +556,36 @@ class DiLoCoServer:
         # shared-memory group is co-located, an HTTP group is independent
         # workers; there is no valid mixed group. The server *declares* it here
         # and advertises it via /info so every worker validates its own launched
-        # backend against it (fail loud on disagreement). This is declaration
-        # metadata: it does not change the server's own behavior.
+        # backend against it (fail loud on disagreement). For ``http`` and
+        # ``collective`` this is pure declaration metadata; for ``shared_memory``
+        # the server additionally *is* the aggregator (set up below).
         if backend not in ("http", "shared_memory", "collective"):
             raise ValueError(
                 f"backend must be 'http', 'shared_memory', or 'collective', "
                 f"got {backend!r}"
             )
         self.backend = backend
+        # Shared-memory (Flavor 2, issue #154): shared-memory DiLoCo is
+        # single-host and the server is co-located, so the server maps the same
+        # region and runs the outer step itself — owning the master + outer
+        # momentum and checkpointing them through its normal save_state /
+        # load_state — instead of electing an aggregator worker whose trained
+        # state was never persisted (the root cause of the checkpoint-0 /
+        # resume-divergence bugs). The region is created in start() (after the
+        # master is loaded) and torn down in stop(). The dir is host-local and
+        # stable per port so a restart reclaims/rebuilds the same region via the
+        # ownership lease; it is advertised in /info as ``shm_group_dir`` so a
+        # follower attaches without re-deriving it.
+        self._shm_agg = None
+        self._shm_agg_thread: Optional[threading.Thread] = None
+        self._shm_stop = threading.Event()
+        self._shm_group_dir: Optional[str] = None
+        if self.backend == "shared_memory":
+            import tempfile
+
+            self._shm_group_dir = os.path.join(
+                tempfile.gettempdir(), f"diloco_shm_p{self.port}"
+            )
         self.dn_buffer_size = dn_buffer_size
         self.dylu_enabled = dylu_enabled
         self.dylu_base_sync_every = dylu_base_sync_every
@@ -2851,6 +2882,19 @@ class DiLoCoServer:
             "mode": "async" if self.async_mode else "sync",
             "async_mode": self.async_mode,
             "num_workers": self.num_workers,
+            # Shared-memory rendezvous (Flavor 2, issue #154). When the server
+            # is the shared-memory aggregator it owns the region; a follower
+            # reads the dir + group size from here rather than re-deriving them.
+            # ``shm_group_size`` is the STABLE configured worker count (the
+            # launch ``-n``), not the mutable ``num_workers``, so a follower
+            # sizes its region correctly no matter who has registered yet. Both
+            # are null for non-shared-memory backends.
+            "shm_group_dir": self._shm_group_dir,
+            "shm_group_size": (
+                self._configured_num_workers
+                if self.backend == "shared_memory"
+                else None
+            ),
             "num_parameters": self._model_params,
             "model_size_mb": round(self._model_size_mb, 2),
             "dylu_enabled": self.dylu_enabled,
@@ -4257,6 +4301,104 @@ class DiLoCoServer:
             # already ran it (re-entrancy guard); otherwise this is the run.
             self.graceful_shutdown()
 
+    def _start_shm_aggregator(self):
+        """Create the shared-memory region and start the server-side aggregation
+        loop (Flavor 2, issue #154).
+
+        The server seeds the region from its current master — the loaded weights
+        on a fresh start, or the restored *trained* master + outer momentum on a
+        resume — and is the sole writer of the master / generation. Workers
+        attach as followers and contribute pseudo-gradients into the region's
+        accumulator; this loop runs the outer step and publishes.
+        """
+        from .shared_memory_aggregator import SharedMemoryAggregator
+
+        self._shm_stop.clear()
+        self._shm_agg = SharedMemoryAggregator(self._shm_group_dir)
+        self._shm_agg.start(self.get_global_params(), self._configured_num_workers)
+        self._shm_agg_thread = threading.Thread(
+            target=self._shm_aggregation_loop, name="shm-aggregator", daemon=True
+        )
+        self._shm_agg_thread.start()
+        logger.info(
+            "Shared-memory aggregator started: region=%s group_size=%d",
+            self._shm_group_dir,
+            self._configured_num_workers,
+        )
+
+    def _stop_shm_aggregator(self):
+        """Stop the aggregation loop and release/clean up the region.
+        Idempotent."""
+        if self._shm_agg is None:
+            return
+        self._shm_stop.set()
+        if self._shm_agg_thread is not None:
+            self._shm_agg_thread.join(timeout=10)
+            self._shm_agg_thread = None
+        try:
+            self._shm_agg.stop()
+        finally:
+            self._shm_agg = None
+
+    def _shm_aggregation_loop(self):
+        """Poll the region; each time every follower has contributed, apply one
+        outer step and publish, then handle audit + periodic save off the region
+        lock. Runs until stop() signals teardown.
+
+        TODO(shm-fault-tolerance): shared-memory is ``fault_tolerant=False`` — a
+        worker that dies mid-round leaves arrivals < group_size and this loop
+        waits indefinitely (the group is effectively dead). Tie into the health
+        monitor to fail the round loud when a registered follower dies.
+        """
+        while not self._shm_stop.is_set() and self._running:
+            try:
+                ready = self._shm_agg.wait_for_round(timeout=0.5)
+            except Exception:
+                logger.exception("shm aggregator: error waiting for round")
+                return
+            if not ready:
+                continue  # no full round yet (workers still training)
+            try:
+                self._shm_agg.aggregate(self._shm_outer_step)
+            except Exception:
+                logger.exception("shm aggregator: outer step failed; stopping loop")
+                return
+            logger.info(
+                "Shared-memory outer step complete. Sync round: %d", self._sync_round
+            )
+            self._audit(
+                "outer_step", sync_round=self._sync_round, backend="shared_memory"
+            )
+            if (
+                self.save_every_n_rounds > 0
+                and self._sync_round % self.save_every_n_rounds == 0
+            ):
+                try:
+                    self.save_state()
+                except Exception:
+                    logger.exception("shm aggregator: periodic save_state failed")
+
+    def _shm_outer_step(self, avg_grads):
+        """Apply one outer optimizer step over the averaged pseudo-gradient and
+        return the new master (the publish payload).
+
+        Mirrors :meth:`_apply_outer_optimizer`'s core: the HTTP path averages
+        ``_pending_pseudograds`` itself, whereas here the region already summed
+        the followers' contributions and the aggregator divided by group_size,
+        so ``avg_grads`` is the per-name mean. Held under ``_sync_cond`` so a
+        concurrent control-save observes a consistent master. The optimizer
+        state (momentum) lives in this process and is checkpointed by
+        ``save_state`` — which is what makes a shared-memory run resume cleanly.
+        """
+        with self._sync_cond:
+            for i, name in enumerate(self._param_names):
+                self._param_list[i].grad = avg_grads[name].float()
+            self.outer_optimizer.step()
+            self.outer_optimizer.zero_grad()
+            self._sync_round += 1
+            self._dirty = True
+            return self.get_global_params()
+
     def start(self):
         """Start the server in a background thread (non-blocking)."""
         if self._running:
@@ -4276,6 +4418,8 @@ class DiLoCoServer:
         self._start_health_monitor()
         self._start_bulk_listener()
         self._start_grpc_listener()
+        if self.backend == "shared_memory":
+            self._start_shm_aggregator()
 
         mode = "async" if self.async_mode else "sync"
         scheme = "https" if self.ssl_context is not None else "http"
@@ -4292,6 +4436,11 @@ class DiLoCoServer:
         """Stop the background server."""
         if not self._running:
             raise RuntimeError("Stop cannot be called, unless we are already running.")
+        # Stop the shared-memory aggregation loop first (before save_state
+        # below) so the master isn't being concurrently stepped while we
+        # snapshot it, and the region is released/cleaned up.
+        if self.backend == "shared_memory":
+            self._stop_shm_aggregator()
         # Flush state before teardown so a graceful stop doesn't lose the
         # rounds / issued work-units accumulated since the last autosave
         # (#105). save_state no-ops when clean; never let a save failure
