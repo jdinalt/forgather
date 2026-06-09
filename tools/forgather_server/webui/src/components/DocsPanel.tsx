@@ -501,8 +501,13 @@ function DocsSearchBox({ onNavigate }: { onNavigate: (path: string) => void }) {
     onNavigate(path);
   };
 
-  // Vector/hybrid requested but keyword ran => no index built yet.
-  const fellBack = ranMode !== null && ranMode !== mode;
+  // Vector/hybrid requested but keyword actually ran. Only meaningful once the
+  // request has COMPLETED: while a search is in flight, ``ranMode`` still holds
+  // the PREVIOUS search's mode, so comparing it to the live ``mode`` during the
+  // first vector query — when the embedding model is loading (several seconds) —
+  // would flash a false "no vector index" banner before the real vector results
+  // arrive. Gating on ``!busy`` keeps the banner for genuine fallbacks only.
+  const fellBack = !busy && ranMode !== null && ranMode !== mode;
 
   return (
     <div className="docs-search" ref={boxRef}>
@@ -538,8 +543,20 @@ function DocsSearchBox({ onNavigate }: { onNavigate: (path: string) => void }) {
           {busy && <div className="docs-search-state muted">Searching…</div>}
           {fellBack && (
             <div className="docs-search-state muted">
-              No vector index — showing keyword results. Build one with
-              <code> forgather docs index</code>.
+              {vectorAvailable === false ? (
+                <>
+                  No vector index — showing keyword results. Build one with
+                  <code> forgather docs index</code>.
+                </>
+              ) : (
+                // Index exists but the run still fell back — the embedding model
+                // wasn't ready (it loads lazily on the first query) or embedding
+                // failed. Don't claim the index is missing.
+                <>
+                  Vector model not ready — showing keyword results. Try again in
+                  a moment, or check <code>forgather docs search --mode vector -v</code>.
+                </>
+              )}
             </div>
           )}
           {!busy && hits && hits.length === 0 && (

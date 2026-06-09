@@ -52,6 +52,55 @@ def create_docs_parser(_global_args):
     clean.add_argument("--docs-dir", default=None)
     clean.add_argument("--repo-root", default=None)
 
+    search = sub.add_parser(
+        "search",
+        help="Search the docs corpus (keyword / vector / hybrid) — the same ranker the webui and agent use",
+        formatter_class=RawTextHelpFormatter,
+    )
+    search.add_argument(
+        "query",
+        nargs="+",
+        help="Search terms (joined into one query; quote to be safe).",
+    )
+    search.add_argument(
+        "--mode",
+        choices=("keyword", "vector", "hybrid"),
+        default="keyword",
+        help=(
+            "Ranker (default: keyword).\n"
+            "  keyword       substring term-frequency; fully offline.\n"
+            "  vector/hybrid semantic; need a prebuilt index (forgather docs index)\n"
+            "                + sentence-transformers, and fall back to keyword when\n"
+            "                either is missing (the printed mode reflects what ran)."
+        ),
+    )
+    search.add_argument(
+        "--limit", type=int, default=8, help="Max hits to return (default: 8)."
+    )
+    search.add_argument(
+        "--no-agent-docs",
+        action="store_true",
+        help="Exclude CLAUDE.md / CLAUDE.d/ (mirror the user-facing webui scope; by\n"
+        "default the agent docs ARE included, matching the search_docs tool).",
+    )
+    search.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit raw JSON ({query, mode, hits, diagnostics}) instead of text.",
+    )
+    search.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Print diagnostics (index availability, model, timing, fallback\n"
+        "reason, and any vector embed error) to stderr.",
+    )
+    search.add_argument(
+        "--repo-root",
+        default=None,
+        help="Repository root (default: auto-detect via the forgather package).",
+    )
+
     index = sub.add_parser(
         "index",
         help="Build the vector-search index (docs/.built/.vector/) for hybrid docs search",

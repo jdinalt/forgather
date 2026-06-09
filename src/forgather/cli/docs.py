@@ -21,8 +21,154 @@ def docs_cmd(args) -> int:
         return _clean_cmd(args)
     if action == "index":
         return _index_cmd(args)
+    if action == "search":
+        return _search_cmd(args)
     print(f"unknown docs action: {action}", file=sys.stderr)
     return 2
+
+
+def _search_cmd(args) -> int:
+    """Search the docs corpus with the shared keyword/vector/hybrid ranker.
+
+    Reuses ``tools/forgather_server/docs_search.py`` — the exact backend the
+    webui Docs search box and the agent's ``search_docs`` tool call — so
+    results rank identically. Keyword runs fully offline; vector/hybrid also
+    need a prebuilt index (``forgather docs index``) plus sentence-transformers
+    and fall back to keyword when either is missing (the reported mode reflects
+    what actually ran). The server does NOT need to be running.
+    """
+    import json as _json
+    import logging
+    import time
+
+    repo_root = (
+        Path(args.repo_root).resolve() if args.repo_root else _autodetect_repo_root()
+    )
+    tools_dir = repo_root / "tools"
+    if not (tools_dir / "forgather_server" / "docs_search.py").is_file():
+        print(
+            f"docs search needs the forgather source tree at "
+            f"{tools_dir / 'forgather_server'} (run from a checkout, or pass "
+            f"--repo-root).",
+            file=sys.stderr,
+        )
+        return 2
+    if str(tools_dir) not in sys.path:
+        sys.path.insert(0, str(tools_dir))
+
+    verbose = bool(getattr(args, "verbose", False))
+    as_json = bool(getattr(args, "json", False))
+    if verbose:
+        # Surface docs_vector's "embed failed" warning (and any model-load
+        # chatter) so a silent vector→keyword fallback shows its cause.
+        logging.basicConfig(level=logging.INFO, format="# %(name)s: %(message)s")
+
+    # Imported after the sys.path insert; the empty package __init__ keeps this
+    # cheap (no FastAPI), so the CLI stays fast for the common keyword path.
+    from forgather_server import docs_search, docs_vector, search_roots  # noqa: E402
+
+    # The backend derives the corpus root from search_roots, not from our
+    # ``repo_root`` (which only located ``tools/`` for the import). Report THAT
+    # root so the diagnostics can never claim to search a tree they didn't.
+    searched_root = Path(search_roots.forgather_repo_root())
+
+    query = " ".join(args.query).strip()
+    mode = args.mode
+    include_agent_docs = not bool(getattr(args, "no_agent_docs", False))
+    limit = max(1, int(getattr(args, "limit", 8) or 8))
+
+    index_ok = docs_vector.index_available()
+    if verbose:
+        print(f"# repo: {searched_root}", file=sys.stderr)
+        print(
+            f"# vector index: {'available' if index_ok else 'absent'}"
+            + (f" ({_index_summary(searched_root)})" if index_ok else ""),
+            file=sys.stderr,
+        )
+
+    t0 = time.perf_counter()
+    try:
+        result = docs_search.search(
+            query, include_agent_docs=include_agent_docs, max_hits=limit, mode=mode
+        )
+    except ValueError as e:  # empty query
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:  # noqa: BLE001 — a diagnostic must report, not traceback
+        print(f"error: docs search failed: {e}", file=sys.stderr)
+        if mode in ("vector", "hybrid"):
+            print(
+                "hint: the vector index may be corrupt or incompatible — rebuild "
+                "with `forgather docs index --clean`.",
+                file=sys.stderr,
+            )
+        return 1
+    elapsed = time.perf_counter() - t0
+    ran_mode = result.get("mode", "keyword")
+    fell_back = mode in ("vector", "hybrid") and ran_mode == "keyword"
+
+    diagnostics = {
+        "repo_root": str(searched_root),
+        "requested_mode": mode,
+        "ran_mode": ran_mode,
+        "vector_index_available": index_ok,
+        "fell_back_to_keyword": fell_back,
+        "elapsed_seconds": round(elapsed, 3),
+        "hit_count": len(result["hits"]),
+    }
+
+    if as_json:
+        print(_json.dumps({**result, "diagnostics": diagnostics}, indent=2))
+        return 0
+
+    if verbose:
+        print(
+            f"# mode: requested={mode} ran={ran_mode}  {elapsed:.2f}s  "
+            f"{len(result['hits'])} hits",
+            file=sys.stderr,
+        )
+    if fell_back:
+        if index_ok:
+            print(
+                "warning: vector/hybrid requested but ran keyword — the index "
+                "exists, so the embedder was unavailable (sentence-transformers "
+                "missing, model download failed, or an embed error). Re-run with "
+                "-v to see the cause.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "warning: vector/hybrid requested but no index found — ran "
+                "keyword. Build the index with `forgather docs index`.",
+                file=sys.stderr,
+            )
+
+    hits = result["hits"]
+    if not hits:
+        print("No matches.")
+        return 0
+    for i, h in enumerate(hits, 1):
+        excerpt = " ".join(h["excerpt"].split())
+        if len(excerpt) > 200:
+            excerpt = excerpt[:200].rstrip() + "…"
+        print(f"{i:>2}. {h['rel']}  (score {h['score']})")
+        print(f"    {h['path']}")
+        if excerpt:
+            print(f"    {excerpt}")
+    return 0
+
+
+def _index_summary(repo_root: Path) -> str:
+    """Short ``model=… chunks=…`` for the verbose vector-index line (best-effort)."""
+    import json as _json
+
+    from forgather import docs_index
+
+    try:
+        meta = _json.loads((docs_index.index_dir(repo_root) / "meta.json").read_text())
+        return f"model={meta.get('model')} chunks={meta.get('count')}"
+    except Exception:  # noqa: BLE001 — diagnostics only
+        return "meta unavailable"
 
 
 def _index_cmd(args) -> int:
