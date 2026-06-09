@@ -178,4 +178,7 @@ def create_search_parser(_global_args):
         formatter_class=RawTextHelpFormatter,
     )
     add_search_args(parser)
+    # Make the namespace self-sufficient: dispatching to docs_cmd needs
+    # docs_action="search", and the alias has no sub-subparser to set it.
+    parser.set_defaults(docs_action="search")
     return parser

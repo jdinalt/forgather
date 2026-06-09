@@ -64,6 +64,15 @@ def _search_via_server(args, query, mode, limit, as_json, verbose) -> int:
     client = ServerClient.from_args(args)
     if verbose:
         print(f"# source: server {client.base}", file=sys.stderr)
+    if getattr(args, "no_agent_docs", False):
+        # The server endpoint already searches the user-facing corpus (no
+        # CLAUDE.*), so the flag is a no-op here — say so rather than imply it
+        # filtered anything. Use --local to filter agent docs in-process.
+        print(
+            "note: --no-agent-docs has no effect on the server path (it already "
+            "searches the user-facing corpus); use --local to control it.",
+            file=sys.stderr,
+        )
 
     t0 = time.perf_counter()
     try:
@@ -104,9 +113,7 @@ def _search_via_server(args, query, mode, limit, as_json, verbose) -> int:
         "hit_count": len(hits),
     }
     result = {"query": payload.get("query", query), "mode": ran_mode, "hits": hits}
-    return _emit_search(
-        result, diagnostics, as_json, verbose, fell_back, vector_available, server=True
-    )
+    return _emit_search(result, diagnostics, as_json, verbose)
 
 
 def _search_local(args, query, mode, limit, as_json, verbose) -> int:
@@ -189,18 +196,24 @@ def _search_local(args, query, mode, limit, as_json, verbose) -> int:
         "elapsed_seconds": round(elapsed, 3),
         "hit_count": len(result["hits"]),
     }
-    return _emit_search(
-        result, diagnostics, as_json, verbose, fell_back, index_ok, server=False
-    )
+    return _emit_search(result, diagnostics, as_json, verbose)
 
 
-def _emit_search(result, diagnostics, as_json, verbose, fell_back, vector_available, *, server) -> int:
-    """Render a search result (shared by the local and server paths)."""
+def _emit_search(result, diagnostics, as_json, verbose) -> int:
+    """Render a search result (shared by the local and server paths).
+
+    Reads the fallback / availability / source signals straight off the
+    ``diagnostics`` dict it is handed, so there is one source of truth.
+    """
     import json as _json
 
     if as_json:
         print(_json.dumps({**result, "diagnostics": diagnostics}, indent=2))
         return 0
+
+    fell_back = diagnostics["fell_back_to_keyword"]
+    vector_available = diagnostics["vector_index_available"]
+    server = diagnostics["source"] == "server"
 
     if verbose:
         print(

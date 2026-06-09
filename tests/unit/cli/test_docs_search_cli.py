@@ -42,9 +42,13 @@ def _run(argv):
 
 
 def _run_alias(argv):
-    """Run via the top-level alias parser (`forgather search …`)."""
+    """Run via the top-level alias parser (`forgather search …`).
+
+    The parser sets docs_action="search" itself, so the namespace dispatches
+    correctly without main() having to patch it in.
+    """
     args = create_search_parser(None).parse_args(argv)
-    args.docs_action = "search"  # main.py sets this before dispatching to docs_cmd
+    assert args.docs_action == "search"
     return docs_cmd(args)
 
 
@@ -178,6 +182,27 @@ def test_server_unreachable_reports_and_hints_local(monkeypatch, capsys):
     assert rc == 1
     assert "could not reach server" in err
     assert "--local" in err  # points the user at the in-process fallback
+
+
+def test_server_auth_required_reports(monkeypatch, capsys):
+    _install_fake_client(
+        monkeypatch, raises=server_client.AuthRequired("server requires authentication")
+    )
+    rc = _run(["search", "--hybrid", "tls"])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "requires authentication" in err
+
+
+def test_no_agent_docs_noop_note_on_server_path(monkeypatch, capsys):
+    _install_fake_client(
+        monkeypatch,
+        payload={"query": "x", "mode": "vector", "vector_available": True, "hits": []},
+    )
+    rc = _run(["search", "--vector", "--no-agent-docs", "x"])
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert "no effect on the server path" in err
 
 
 # ---- main.py subcommand-position helper (query-word safety) -----------------
