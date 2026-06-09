@@ -125,6 +125,16 @@ def create_diloco_parser(global_args):
         ),
     )
     server_parser.add_argument(
+        "--verbose-sync",
+        action="store_true",
+        help=(
+            "Log every sync round (server outer step + each worker's sync line) "
+            "at INFO. Off by default — routine progress rides the per-step "
+            "sync/up_mb/dn_mb/sync_s log columns. Server-authoritative: the "
+            "workers adopt this from /info. A targeted DiLoCo diagnostic."
+        ),
+    )
+    server_parser.add_argument(
         "--dylu",
         action="store_true",
         help="Enable Dynamic Local Updates (DyLU) - adapt sync frequency per worker",

@@ -54,6 +54,11 @@ Group-wide worker settings (must match across the group, so they live on the
 server; every worker adopts them from `/info` — there are no worker flags):
 - `--sync-every N`: Local optimizer steps between syncs (H). Default: 500.
   Under `--dylu`, the DyLU base rate is used instead.
+- `--verbose-sync`: Log every sync round at INFO — the server's outer step and
+  each worker's per-round sync line. **Off by default** (the per-round lines log
+  at DEBUG); a targeted DiLoCo diagnostic. Routine progress instead rides the
+  per-step training-log columns the worker publishes (see
+  [Sync log columns](#sync-log-columns)).
 - `--num-fragments N`: Streaming-sync fragments every worker splits the model
   into (1 = no streaming). Default: 1.
 - **Wire precision** — `--upload-dtype {fp32,bf16}` / `--upload-sr` /
@@ -199,6 +204,25 @@ train / eval loss. The same block appears in the webui's DiLoCo server view.
 connection across ticks (no per-tick subprocess) and works inside the
 interactive CLI, where Ctrl-C returns you to the prompt. Not compatible with
 `--json`.
+
+### Sync log columns
+
+Each worker's training log carries DiLoCo sync metrics inline, in the regular
+step table alongside `peak_mem` / `mfu` — so you see sync progress every log
+step without per-round log spam:
+
+- `sync` — completed sync rounds.
+- `sync_s` — mean wall-time per sync over the log window.
+- `up_mb` / `dn_mb` — mean per-sync upload / download over the window. Shown
+  **only for backends that move tensors over a wire** (HTTP, collective); a
+  shared-memory run omits them (its wire volume is zero).
+
+The rates are the mean over the syncs since the previous log row (windowed, like
+`tok/s`), not a single last-sync sample. The rate columns
+(`sync_s` / `up_mb` / `dn_mb`) are not populated under streaming-fragment sync
+(`--num-fragments > 1`); `sync` still counts rounds. For a deeper, per-round
+trace turn on `--verbose-sync` on the server (off by default) — it logs the
+server's outer step and each worker's per-round sync line at INFO.
 
 ## Running through the Forgather server (detailed reference)
 

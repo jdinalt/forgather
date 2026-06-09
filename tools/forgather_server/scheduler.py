@@ -598,6 +598,7 @@ def _build_diloco_server(item, gpu_indices, tty_path):
         host=p.get("host", "127.0.0.1"),
         async_mode=bool(p.get("async_mode", False)),
         dn_buffer_size=int(p.get("dn_buffer_size", 0) or 0),
+        verbose_sync=bool(p.get("verbose_sync", False)),
         dylu=bool(p.get("dylu", False)),
         dylu_base_sync_every=int(p.get("dylu_base_sync_every", 500) or 500),
         sync_every=int(p.get("sync_every", 500) or 500),

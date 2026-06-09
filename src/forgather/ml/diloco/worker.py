@@ -121,6 +121,7 @@ class DiLoCoWorker:
         backend: Optional[OuterSyncBackend] = None,
         coordinator: Optional[CoordinatorClient] = None,
         report_sync_state: bool = True,
+        verbose_sync: bool = False,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -235,6 +236,10 @@ class DiLoCoWorker:
         # coordinator can show this worker's progress in its diagnostics — the
         # only sync-progress signal for an off-server backend (shared-memory).
         self.report_sync_state = bool(report_sync_state)
+        # Verbose per-round sync logging (server-authoritative, off by default).
+        # When False the per-round "starting/complete" lines log at DEBUG; the
+        # always-on sync_metrics columns carry routine progress instead.
+        self.verbose_sync = bool(verbose_sync)
 
         # Replicated/collective backends (CollectiveBackend) make every rank an
         # independent DiLoCo replica that participates symmetrically in the outer
@@ -367,6 +372,14 @@ class DiLoCoWorker:
         self._total_sync_time: float = 0
         self._last_sync_send_bytes: int = 0
         self._last_sync_recv_bytes: int = 0
+        # Per-log-window accumulators for the published MEAN sync rates
+        # (send/recv MB and sync time per sync). Reset by note_logged() on each
+        # trainer log step so the columns show the mean over the window, not a
+        # single last-sync sample.
+        self._win_sync_count: int = 0
+        self._win_send_bytes: int = 0
+        self._win_recv_bytes: int = 0
+        self._win_sync_time: float = 0.0
         self._step_timestamps: List[float] = []
         self._last_staleness: int = 0
         self._dylu_adjustments: int = 0
@@ -728,9 +741,12 @@ class DiLoCoWorker:
         t0 = time.time()
 
         if self._is_leader:
-            logger.info(
-                f"DiLoCoWorker {self.worker_id}: starting sync "
-                f"(round {self._sync_count + 1}, after {self._local_step} local steps)"
+            logger.log(
+                logging.INFO if self.verbose_sync else logging.DEBUG,
+                "DiLoCoWorker %s: starting sync (round %d, after %d local steps)",
+                self.worker_id,
+                self._sync_count + 1,
+                self._local_step,
             )
 
             # Compute raw pseudo-gradients (the backend applies the wire cast).
@@ -799,11 +815,23 @@ class DiLoCoWorker:
                 elapsed = time.time() - t0
                 self._last_sync_time = elapsed
                 self._total_sync_time += elapsed
+                # Accumulate this sync into the current log window; sync_metrics
+                # publishes the per-window MEAN rate (reset by note_logged() on
+                # each log step), like tok/s — not a single last-sync sample.
+                self._win_sync_count += 1
+                self._win_send_bytes += send_bytes
+                self._win_recv_bytes += recv_bytes
+                self._win_sync_time += elapsed
 
-                logger.info(
-                    f"DiLoCoWorker {self.worker_id}: sync round {self._sync_count + 1} complete. "
-                    f"Sent {send_bytes / 1e6:.1f} MB, received {recv_bytes / 1e6:.1f} MB, "
-                    f"took {elapsed:.1f}s"
+                logger.log(
+                    logging.INFO if self.verbose_sync else logging.DEBUG,
+                    "DiLoCoWorker %s: sync round %d complete. "
+                    "Sent %.1f MB, received %.1f MB, took %.1fs",
+                    self.worker_id,
+                    self._sync_count + 1,
+                    send_bytes / 1e6,
+                    recv_bytes / 1e6,
+                    elapsed,
                 )
 
         # Broadcast post-sync params from leader to all followers so
@@ -1049,17 +1077,36 @@ class DiLoCoWorker:
 
     @property
     def sync_metrics(self) -> dict:
-        """Return current sync metrics for logging."""
+        """Sync metrics for the trainer's log row (injected by
+        ``DiLoCoCallback.on_log``, which then calls :meth:`note_logged`).
+
+        The step-table renderer shows only keys present here, so this is the
+        single control point for which DiLoCo columns appear:
+
+        * ``sync_send_mb`` / ``sync_recv_mb`` — published only when the backend
+          moves tensors over a wire (``reports_transfer_bytes``); a
+          shared-memory run omits them rather than render a misleading ``0.0``.
+        * the rate metrics are the **mean over the syncs since the last log
+          step** (windowed, like ``tok/s``), not a single last-sync sample, and
+          are absent (column skipped that row) when no sync fell in the window.
+        """
         metrics = {
             "diloco/sync_count": self._sync_count,
             "diloco/local_step": self._local_step,
-            "diloco/last_sync_time": self._last_sync_time,
             "diloco/total_sync_time": self._total_sync_time,
-            "diloco/last_send_mb": self._last_sync_send_bytes / 1e6,
-            "diloco/last_recv_mb": self._last_sync_recv_bytes / 1e6,
             "diloco/steps_per_second": self.get_steps_per_second(),
             "diloco/sync_every": self.sync_every,
         }
+        # Windowed-mean rate columns. The window is populated by the full-model
+        # sync path only; streaming-fragment sync (num_fragments > 1) does not
+        # accumulate it (a fragment isn't a whole sync round), so these columns
+        # are absent under streaming — ``sync_count`` still tracks rounds.
+        n = self._win_sync_count
+        if n > 0:
+            metrics["diloco/sync_time"] = self._win_sync_time / n
+            if self.backend.reports_transfer_bytes:
+                metrics["diloco/sync_send_mb"] = (self._win_send_bytes / n) / 1e6
+                metrics["diloco/sync_recv_mb"] = (self._win_recv_bytes / n) / 1e6
         if self.dylu:
             metrics["diloco/dylu_adjustments"] = self._dylu_adjustments
         if self._fragment_manager is not None:
@@ -1070,6 +1117,17 @@ class DiLoCoWorker:
         if self._reconnections > 0:
             metrics["diloco/reconnections"] = self._reconnections
         return metrics
+
+    def note_logged(self) -> None:
+        """Reset the per-log-window sync accumulators.
+
+        Called by ``DiLoCoCallback.on_log`` right after it reads
+        :attr:`sync_metrics`, so each log row's mean rates cover only the syncs
+        since the previous row."""
+        self._win_sync_count = 0
+        self._win_send_bytes = 0
+        self._win_recv_bytes = 0
+        self._win_sync_time = 0.0
 
     def force_sync(self):
         """Force an immediate full-model sync regardless of step count."""

@@ -1300,6 +1300,8 @@ export interface DiLoCoInfo {
   expected_client_settings?: {
     sync_every?: number | null;
     dylu?: boolean;
+    /** Verbose per-round sync logging (off by default); server-authoritative. */
+    verbose_sync?: boolean;
     /** Wire precision (issue #130). Four server-authoritative knobs
      *  covering each direction × dtype-vs-SR. Workers adopt these
      *  verbatim. The dtype enum is currently ``"fp32" | "bf16"``;

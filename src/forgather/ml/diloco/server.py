@@ -489,6 +489,7 @@ class DiLoCoServer:
         async_mode: bool = False,
         safetensors: bool = True,
         dn_buffer_size: int = 0,
+        verbose_sync: bool = False,
         dylu_enabled: bool = False,
         dylu_base_sync_every: int = 500,
         sync_every: int = 500,
@@ -587,6 +588,12 @@ class DiLoCoServer:
                 tempfile.gettempdir(), f"diloco_shm_p{self.port}"
             )
         self.dn_buffer_size = dn_buffer_size
+        # Verbose per-round sync logging (off by default). Server-authoritative:
+        # advertised in /info so each worker gates its own per-round sync log to
+        # match, and the server gates its per-round outer-step log. A targeted
+        # DiLoCo diagnostic — the always-on summary columns (sync count, up/down
+        # MB, sync time) carry routine progress without it.
+        self.verbose_sync = verbose_sync
         self.dylu_enabled = dylu_enabled
         self.dylu_base_sync_every = dylu_base_sync_every
         # Group-wide worker settings the server is authoritative for (issue
@@ -1013,7 +1020,11 @@ class DiLoCoServer:
         self._pending_pseudograds.clear()
         self._dirty = True
 
-        logger.info(f"Outer optimizer step complete. Sync round: {self._sync_round}")
+        logger.log(
+            logging.INFO if self.verbose_sync else logging.DEBUG,
+            "Outer optimizer step complete. Sync round: %d",
+            self._sync_round,
+        )
         outer_step_event = (
             "outer_step",
             {
@@ -2113,9 +2124,10 @@ class DiLoCoServer:
 
             expected = self._get_expected_worker_count()
             submitted = len(self._pending_pseudograds)
-            logger.info(
+            logger.log(
+                logging.INFO if self.verbose_sync else logging.DEBUG,
                 f"Worker {worker_id} submitted pseudograds "
-                f"({submitted}/{expected}) for round {my_round}"
+                f"({submitted}/{expected}) for round {my_round}",
             )
 
             if self._round_complete():
@@ -2164,9 +2176,10 @@ class DiLoCoServer:
                     w.sync_round += 1
                     w.last_sync_server_round = self._sync_round + 1
 
-            logger.info(
+            logger.log(
+                logging.INFO if self.verbose_sync else logging.DEBUG,
                 f"Worker {worker_id} submitted pseudograds (async), "
-                f"staleness={staleness}, server_round={self._sync_round}"
+                f"staleness={staleness}, server_round={self._sync_round}",
             )
 
             # Apply this worker's pseudo-gradients immediately
@@ -2310,9 +2323,10 @@ class DiLoCoServer:
 
             expected = self._get_expected_worker_count()
             submitted = len(self._fragment_pending[fragment_id])
-            logger.info(
+            logger.log(
+                logging.INFO if self.verbose_sync else logging.DEBUG,
                 f"Worker {worker_id} submitted fragment {fragment_id} pseudograds "
-                f"({submitted}/{expected}) for fragment round {my_round}"
+                f"({submitted}/{expected}) for fragment round {my_round}",
             )
 
             if self._fragment_round_complete(fragment_id):
@@ -2403,9 +2417,10 @@ class DiLoCoServer:
                 if worker_id in self._workers:
                     self._workers[worker_id].last_heartbeat = time.time()
 
-            logger.info(
+            logger.log(
+                logging.INFO if self.verbose_sync else logging.DEBUG,
                 f"Worker {worker_id} submitted fragment {fragment_id} (async), "
-                f"server_round={self._sync_round}"
+                f"server_round={self._sync_round}",
             )
 
             # Apply fragment's pseudo-gradients to the outer optimizer
@@ -2918,6 +2933,10 @@ class DiLoCoServer:
                     self.dylu_base_sync_every if self.dylu_enabled else self.sync_every
                 ),
                 "dylu": self.dylu_enabled,
+                # Verbose per-round sync logging (off by default). Group-wide so
+                # the server and every worker log at the same cadence; a worker
+                # reads this to gate its own per-round sync line.
+                "verbose_sync": self.verbose_sync,
                 # Wire precision (issue #130). Four server-authoritative
                 # knobs covering each direction × dtype-vs-SR. Workers
                 # adopt these verbatim — the group must agree on the
@@ -4408,8 +4427,10 @@ class DiLoCoServer:
                 logger.exception("shm aggregator: outer step failed; aborting group")
                 self._abort_shm_group()
                 return
-            logger.info(
-                "Shared-memory outer step complete. Sync round: %d", self._sync_round
+            logger.log(
+                logging.INFO if self.verbose_sync else logging.DEBUG,
+                "Shared-memory outer step complete. Sync round: %d",
+                self._sync_round,
             )
             self._audit(
                 "outer_step", sync_round=self._sync_round, backend="shared_memory"

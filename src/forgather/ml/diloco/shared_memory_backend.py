@@ -64,6 +64,9 @@ class SharedMemoryBackend(OuterSyncBackend):
     # join attaches to the region, not the HTTP server — the worker registers
     # separately for coordinator membership / diagnostics.
     registers_with_coordinator = False
+    # No wire: the sync is a shared-memory accumulator, so up/down MB are
+    # always 0 — omit those log columns rather than show a misleading 0.0.
+    reports_transfer_bytes = False
 
     def __init__(
         self,

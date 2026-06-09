@@ -734,6 +734,7 @@ def _server_job_params(args):
         "num_workers": args.num_workers,
         "host": args.host,
         "async_mode": getattr(args, "async_mode", False),
+        "verbose_sync": getattr(args, "verbose_sync", False),
         "dylu": getattr(args, "dylu", False),
         "save_every": args.save_every,
         "save_total_limit": args.save_total_limit,
