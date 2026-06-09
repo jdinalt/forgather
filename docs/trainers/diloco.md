@@ -722,9 +722,13 @@ surface) even though the tensor exchange is off-server. The server-side per-work
 applies to any backend; it is most useful for an off-server one like this, where
 the server has no other progress signal.)
 
-The first worker to arrive creates the region and seeds it from the coordinator's
-checkpoint; the rest attach. The aggregator also reproduces the coordinator's
-outer optimizer (advertised in `/info`), so the group's outer step matches the
+The worker that takes the region's ownership lease (an exclusive `flock` held for
+its lifetime) is the **aggregator**: it creates the region and seeds it from the
+coordinator's checkpoint; the rest attach as followers. The lease makes re-launch
+after a crash safe — a region left behind by a dead group has no live lease
+holder, so the next launch reclaims and rebuilds it instead of stranding on an
+ownerless region. The aggregator also reproduces the coordinator's outer
+optimizer (advertised in `/info`), so the group's outer step matches the
 server's. The default init checkpoint is the coordinator's local filesystem path,
 so the coordinator and workers must share a filesystem (the single-host case);
 use `DILOCO_SHM_INIT_CHECKPOINT` if they don't. Each worker is one process (one

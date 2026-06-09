@@ -13,7 +13,8 @@ Because the worker hands the backend the **raw** pseudo-gradient (the upload cas
 moved into the backend in #157), this backend operates entirely in fp32 with no
 wire cast.
 
-Roles (same class; decided at join — first arriver wins):
+Roles (same class; decided at join by the ``owner.lock`` ownership lease — the
+worker that takes the lease is the aggregator, the rest are followers):
 
 * **Aggregator** — creates the region, loads the initial weights, owns the master
   ``ParameterList`` + the outer optimizer (its momentum lives in this process,
@@ -238,18 +239,29 @@ class SharedMemoryBackend(OuterSyncBackend):
         os.makedirs(self._shm_dir, exist_ok=True)
 
         with self._locked():
-            if self._try_acquire_ownership():
-                # No live aggregator holds the lease: a fresh group, or a region
-                # orphaned by a crashed one (leave() never ran, so its stale
-                # manifest/region were never unlinked). Discard any leftovers and
-                # (re)create — otherwise every worker would attach as a follower
-                # to an ownerless region and the round would deadlock.
-                self._discard_stale_region()
-                self._create_as_aggregator(load_checkpoint, factory)
-            else:
-                # A live aggregator holds the lease; its manifest (written before
-                # it released the rendezvous mutex) is the region-ready signal.
-                self._attach_as_follower()
+            # Release the lease/fd if the role decision raises (a bad
+            # init_checkpoint, OOM building the master, a group_size mismatch on
+            # the follower path). The OS would free it on process exit anyway,
+            # but an in-process retry against the same group_dir must not find
+            # the lease held by this dead attempt — that would reintroduce the
+            # exact "no aggregator" deadlock the lease prevents.
+            try:
+                if self._try_acquire_ownership():
+                    # No live aggregator holds the lease: a fresh group, or a
+                    # region orphaned by a crashed one (leave() never ran, so its
+                    # stale manifest/region were never unlinked). Discard any
+                    # leftovers and (re)create — otherwise every worker would
+                    # attach as a follower to an ownerless region and deadlock.
+                    self._discard_stale_region()
+                    self._create_as_aggregator(load_checkpoint, factory)
+                else:
+                    # A live aggregator holds the lease; its manifest (written
+                    # before it released the rendezvous mutex) is the
+                    # region-ready signal.
+                    self._attach_as_follower()
+            except BaseException:
+                self._release_ownership()
+                raise
             # Count this worker as attached (under the same lock as create/attach
             # so the aggregator's fresh region — zeroed by truncate — goes 0->1
             # atomically). leave() decrements; the last one out unlinks.
@@ -277,6 +289,16 @@ class SharedMemoryBackend(OuterSyncBackend):
         except OSError:
             # EWOULDBLOCK / EAGAIN: a live aggregator holds the lease.
             return False
+
+    def _release_ownership(self) -> None:
+        """Close the owner-lock fd, dropping the lease (no-op for a follower,
+        which opened the fd but never acquired the flock). Idempotent."""
+        try:
+            if self._owner_lock_fd is not None:
+                os.close(self._owner_lock_fd)
+                self._owner_lock_fd = None
+        except OSError:
+            pass
 
     def _discard_stale_region(self) -> None:
         """Unlink a region orphaned by a crashed prior group.
@@ -530,9 +552,4 @@ class SharedMemoryBackend(OuterSyncBackend):
         # never holds it). Closing the fd drops the flock; the OS would do the
         # same on process exit, but a clean leave frees it promptly so an
         # out-of-lifecycle relaunch can reclaim ownership immediately.
-        try:
-            if self._owner_lock_fd is not None:
-                os.close(self._owner_lock_fd)
-                self._owner_lock_fd = None
-        except OSError:
-            pass
+        self._release_ownership()
