@@ -50,6 +50,13 @@ from .sync_backend import HttpStarBackend, OuterSyncBackend
 
 logger = logging.getLogger(__name__)
 
+# Per-round sync logs scale with the round count, so at a small sync interval
+# (e.g. ``--sync-every 20``) they flood the log — many rounds per run. The
+# per-round line is emitted at DEBUG; an INFO progress line is throttled to
+# every Nth round so INFO stays informative without scaling with H. The
+# trainer's own step table is the primary INFO progress signal.
+_SYNC_LOG_EVERY = 20
+
 
 class DiLoCoWorker:
     """
@@ -728,7 +735,7 @@ class DiLoCoWorker:
         t0 = time.time()
 
         if self._is_leader:
-            logger.info(
+            logger.debug(
                 f"DiLoCoWorker {self.worker_id}: starting sync "
                 f"(round {self._sync_count + 1}, after {self._local_step} local steps)"
             )
@@ -800,10 +807,17 @@ class DiLoCoWorker:
                 self._last_sync_time = elapsed
                 self._total_sync_time += elapsed
 
-                logger.info(
-                    f"DiLoCoWorker {self.worker_id}: sync round {self._sync_count + 1} complete. "
+                round_num = self._sync_count + 1
+                # Per-round detail at DEBUG; an INFO line every _SYNC_LOG_EVERY
+                # rounds so the cadence doesn't scale with the sync interval.
+                _level = (
+                    logging.INFO if round_num % _SYNC_LOG_EVERY == 0 else logging.DEBUG
+                )
+                logger.log(
+                    _level,
+                    f"DiLoCoWorker {self.worker_id}: sync round {round_num} complete. "
                     f"Sent {send_bytes / 1e6:.1f} MB, received {recv_bytes / 1e6:.1f} MB, "
-                    f"took {elapsed:.1f}s"
+                    f"took {elapsed:.1f}s",
                 )
 
         # Broadcast post-sync params from leader to all followers so

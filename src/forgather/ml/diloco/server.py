@@ -70,6 +70,12 @@ from forgather.ml.sharded_checkpoint import save_checkpoint as save_model_checkp
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+# Per-round "outer step complete" logs scale with the round count, so at a small
+# sync interval (e.g. ``--sync-every 20``) they flood the log. The per-round line
+# is emitted at DEBUG; an INFO line is throttled to every Nth round. Periodic
+# save logs ("Server state saved …") remain the steady INFO progress signal.
+_SYNC_LOG_EVERY = 20
+
 
 @dataclass
 class WorkerInfo:
@@ -1013,7 +1019,11 @@ class DiLoCoServer:
         self._pending_pseudograds.clear()
         self._dirty = True
 
-        logger.info(f"Outer optimizer step complete. Sync round: {self._sync_round}")
+        logger.log(
+            logging.INFO if self._sync_round % _SYNC_LOG_EVERY == 0 else logging.DEBUG,
+            "Outer optimizer step complete. Sync round: %d",
+            self._sync_round,
+        )
         outer_step_event = (
             "outer_step",
             {
@@ -4408,8 +4418,14 @@ class DiLoCoServer:
                 logger.exception("shm aggregator: outer step failed; aborting group")
                 self._abort_shm_group()
                 return
-            logger.info(
-                "Shared-memory outer step complete. Sync round: %d", self._sync_round
+            logger.log(
+                (
+                    logging.INFO
+                    if self._sync_round % _SYNC_LOG_EVERY == 0
+                    else logging.DEBUG
+                ),
+                "Shared-memory outer step complete. Sync round: %d",
+                self._sync_round,
             )
             self._audit(
                 "outer_step", sync_round=self._sync_round, backend="shared_memory"
