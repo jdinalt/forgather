@@ -1599,13 +1599,18 @@ the agent loop, never in the browser:
   return a structured preview (a curated `extra` summary plus, for jobs, the
   reconstructed command) and pause for **Approve** the same way.
 
-Every paused action card also shows **the verbatim tool-call arguments the
-agent proposed**, in an "Agent-proposed arguments" block, regardless of what
-the tool curated into its summary. This is the authoritative view of what you
-are approving: a tool's summary may omit, reword, or default-fill arguments,
-but the proposed-args block is the unedited request. The loop attaches it
-generically at the gate (`Proposal.to_card`), so a newly added propose/confirm
-tool can never silently hide its inputs.
+Every paused action card also shows **the arguments the agent actually passed**
+in the tool call, in an "Agent-proposed arguments" block, regardless of what the
+tool curated into its summary. This is the authoritative view of what you are
+approving: a tool's `extra` summary may omit, reword, or default-fill arguments,
+but this block is the raw tool-call dict. It lists only the keys the agent
+specified — arguments left to defaults are absent, so a tool with a large
+optional-argument surface stays readable — while keeping explicit `null` /
+empty-string values visible (a passed-but-blank arg is still an input). An
+over-long value (e.g. a multi-thousand-char prompt) is clipped with a
+`… (+N more characters)` marker. The loop attaches the block generically at the
+gate (`Proposal.to_card`), so a newly added propose/confirm tool can never
+silently hide an argument it was given.
 
 Because a paused turn owes a tool-result for every tool call it made, the
 loop refuses to call the model again until every pending action is
