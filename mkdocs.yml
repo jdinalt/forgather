@@ -49,6 +49,8 @@ not_in_nav: |
   syntax_highlighting/**
   tools/**
   trainers/diloco-architecture.md
+  trainers/diloco-architecture-runtime.md
+  trainers/diloco-architecture-reference.md
   trainers/distributed-eval-zero-batches.md
   tutorials/dynamic_lm/README.md
   tutorials/hp_lovecraft_project/4k_spike_investigation.md
@@ -146,7 +148,11 @@ nav:
     - Pipeline Parallel: trainers/pipeline-parallel.md
     - Trainer Control: trainers/trainer-control.md
     - Performance Metrics: trainers/training-performance-metrics.md
-    - DiLoCo: trainers/diloco.md
+    - DiLoCo:
+      - Overview: trainers/diloco.md
+      - CLI Reference: trainers/diloco-cli.md
+      - Sync Backends: trainers/diloco-backends.md
+      - Programmatic API & Advanced: trainers/diloco-advanced.md
     - FP8 Training: trainers/fp8-training.md
     - TorchTitan: trainers/torchtitan.md
     - Adafactor Triton: trainers/adafactor-triton-performance.md

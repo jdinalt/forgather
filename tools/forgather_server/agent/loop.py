@@ -48,9 +48,16 @@ from .session import (
 log = logging.getLogger("forgather_server.agent.loop")
 
 # Cap a single tool_result fed back to the model so a giant file dump
-# doesn't blow the context. Generous; read tools that can be large
-# (render_pp) should paginate at the tool layer if needed.
-_MAX_RESULT_CHARS = 60_000
+# doesn't blow the context. The budget is provider-aware: a large-context
+# model (``inline`` disclosure) can digest a big blob, but a small local
+# model (``deferred`` disclosure) chokes on it — a 60 KB dump is ~15–20 K
+# tokens, enough to overflow a 9B's window and leave it unable to respond.
+# ``read_file`` reports the next offset on truncation so a clipped read is
+# recoverable via pagination rather than a dead end.
+_MAX_RESULT_CHARS_INLINE = 60_000
+# Matches the 16 KiB "straight into model context" budget the job-log tail
+# (tools_jobs._OUTPUT_MAX_BYTES) already deemed safe for small models.
+_MAX_RESULT_CHARS_DEFERRED = 16_000
 
 
 class AgentLoop:
@@ -420,7 +427,7 @@ class AgentLoop:
                     "is_error": False,
                 }
                 return
-            content = self._clip(self._stringify(out))
+            content = self._clip(self._stringify(out), tool_name=spec.name, args=args)
             pending_turn.results[tc.id] = self.provider.format_tool_result(tc.id, content)
             yield {
                 "type": "tool_result",
@@ -536,8 +543,32 @@ class AgentLoop:
         except (TypeError, ValueError):
             return str(out)
 
-    @staticmethod
-    def _clip(text: str) -> str:
-        if len(text) <= _MAX_RESULT_CHARS:
+    def _result_budget(self) -> int:
+        return (
+            _MAX_RESULT_CHARS_DEFERRED
+            if self.disclosure_mode == "deferred"
+            else _MAX_RESULT_CHARS_INLINE
+        )
+
+    def _clip(
+        self,
+        text: str,
+        *,
+        tool_name: Optional[str] = None,
+        args: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        cap = self._result_budget()
+        if len(text) <= cap:
             return text
-        return text[:_MAX_RESULT_CHARS] + f"\n... [truncated {len(text) - _MAX_RESULT_CHARS} chars]"
+        dropped = len(text) - cap
+        head = text[:cap]
+        # A clipped read_file is recoverable: tell the model the exact offset
+        # to resume from so it can page the rest instead of giving up.
+        if tool_name == "read_file" and args is not None:
+            next_offset = int(args.get("offset") or 0) + cap
+            return (
+                head
+                + f"\n... [truncated {dropped} chars. To read more, call read_file "
+                f"again with the same path and offset={next_offset}.]"
+            )
+        return head + f"\n... [truncated {dropped} chars]"
