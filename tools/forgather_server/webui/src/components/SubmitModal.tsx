@@ -919,7 +919,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
             // sections are open, the CSS clamps each to half the
             // available body height and the inner table scrolls
             // independently.
-            <details className="submit-section" open>
+            <details className="submit-section">
               <summary>
                 <h4 className="dyn-heading">
                   Multi-node{" "}
@@ -971,7 +971,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
             />
           )}
 
-          <details className="submit-section" open>
+          <details className="submit-section">
             <summary>
               <h4 className="dyn-heading">
                 Dynamic arguments
@@ -1224,7 +1224,7 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
   // worker_id, hide the pool.
   if (clusterFanout) {
     return (
-      <details className="submit-section" open>
+      <details className="submit-section">
         <summary>
           <h4 className="dyn-heading">
             DiLoCo{" "}
@@ -1328,7 +1328,7 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
     // selection couldn't be restored — is always visible at a glance.
     // Collapsing it on "None" previously hid the reset (issue #95).
     // Still user-collapsible: this only sets the initial open state.
-    <details className="submit-section" open>
+    <details className="submit-section">
       <summary>
         <h4 className="dyn-heading">
           DiLoCo{" "}
