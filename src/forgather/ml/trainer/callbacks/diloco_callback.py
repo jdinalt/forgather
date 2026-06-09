@@ -372,7 +372,6 @@ class DiLoCoCallback(TrainerCallback):
         return SharedMemoryBackend(
             group_dir=group_dir,
             group_size=int(group_size),
-            follower_only=True,
         )
 
     def _make_collective_backend(self, settings: Dict[str, Any], model, trainer=None):

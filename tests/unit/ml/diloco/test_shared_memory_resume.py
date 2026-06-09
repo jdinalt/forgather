@@ -44,7 +44,7 @@ def _server(model_dir, ckpt, group_dir, **kw):
 def _run_rounds(group_dir, pg, rounds, wid="w0"):
     """Drive ``rounds`` sync rounds as a single follower; return the last
     published master. The server's aggregation thread does the outer step."""
-    be = SharedMemoryBackend(group_dir=group_dir, group_size=1, follower_only=True)
+    be = SharedMemoryBackend(group_dir=group_dir, group_size=1)
     be.join(worker_id=wid)
     last = None
     try:

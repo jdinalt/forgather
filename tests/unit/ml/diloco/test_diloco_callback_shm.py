@@ -51,9 +51,9 @@ class TestMakeSyncBackend:
         assert cb._make_sync_backend(_settings()) is None
 
     def test_shared_memory_follower_from_info(self, monkeypatch, tmp_path):
-        # Flavor 2: dir + size come from the server's /info; the worker is a
-        # pure follower (no self-elected aggregation), seeds no weights, and
-        # does not build the outer optimizer (the server owns it).
+        # Flavor 2: dir + size come from the server's /info; the backend is a
+        # pure follower (the server owns the region + outer optimizer), so it
+        # carries no init_checkpoint or outer-optimizer factory.
         cb = _make_cb(monkeypatch, DILOCO_BACKEND="shared_memory")  # no env dir/size
         backend = cb._make_sync_backend(
             _settings(shm_group_dir=str(tmp_path), shm_group_size=3)
@@ -61,8 +61,8 @@ class TestMakeSyncBackend:
         assert isinstance(backend, SharedMemoryBackend)
         assert backend.group_size == 3
         assert backend.group_dir == os.path.realpath(str(tmp_path))
-        assert backend.follower_only is True
-        assert backend.init_checkpoint is None
+        assert backend.runs_outer_optimizer == "shared-region"  # server runs it
+        assert not hasattr(backend, "init_checkpoint")
 
     def test_env_overrides_info_dir_size(self, monkeypatch, tmp_path):
         # The env vars remain an explicit override over /info.
