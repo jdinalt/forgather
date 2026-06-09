@@ -146,7 +146,11 @@ nav:
     - Pipeline Parallel: trainers/pipeline-parallel.md
     - Trainer Control: trainers/trainer-control.md
     - Performance Metrics: trainers/training-performance-metrics.md
-    - DiLoCo: trainers/diloco.md
+    - DiLoCo:
+      - Overview: trainers/diloco.md
+      - CLI Reference: trainers/diloco-cli.md
+      - Sync Backends: trainers/diloco-backends.md
+      - Programmatic API & Advanced: trainers/diloco-advanced.md
     - FP8 Training: trainers/fp8-training.md
     - TorchTitan: trainers/torchtitan.md
     - Adafactor Triton: trainers/adafactor-triton-performance.md
