@@ -184,14 +184,14 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   const [diHeartbeat, setDiHeartbeat] = useState<string>(
     persistedDiLoCo.heartbeatInterval,
   );
-  // Launch mode (issue #154). The sync backend (http / shared_memory) is NOT
-  // chosen here — it's declared on the param server and derived at launch from
-  // /info. The one operator-visible launch choice is the *topology*: the normal
-  // worker pool, or "collective" (one torchrun job of N replicas). Not
-  // persisted; single-host, so it's ignored on the cluster-fanout path.
-  const [diCollective, setDiCollective] = useState<boolean>(false);
+  // Launch topology (issue #154) is no longer an operator choice. The sync
+  // backend (http / shared_memory / collective) is declared on the param
+  // server and read from /info; ``diCollective`` is derived from it below
+  // (once /info resolves) rather than picked here, so the operator can't
+  // select a topology the scheduler would reject. Single-host only, so it's
+  // ignored on the cluster-fanout path.
   // Collective: the replica count (one torchrun job of N replicas = nproc = GPU
-  // reservation). Only used when diCollective is true.
+  // reservation). Only used when the server declares the collective backend.
   const [diReplicate, setDiReplicate] = useState<number>(2);
   // Multi-node + DiLoCo composition: the bundle becomes one DiLoCo
   // worker group, all ranks sharing this base worker_id (the PP
@@ -298,6 +298,14 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     enabled: !!selectedDiLoCoBase,
     staleTime: 60_000,
   });
+  // The launch topology is the server's declared backend, not an operator
+  // choice: a "collective" server runs one torchrun job of N replicas, while
+  // http/shared_memory servers use the worker pool. Derived from /info so the
+  // submit path and UI stay consistent with what the worker will actually
+  // launch (and validate). False until /info resolves (and for older servers
+  // that don't advertise a backend) — the safe worker-pool default.
+  const diCollective =
+    dilocoInfoQ.data?.expected_client_settings?.backend === "collective";
   // Under DiLoCo the worker no longer takes a model path: it fetches the
   // model definition (config + custom code + tokenizer) from the server's
   // /model_def endpoint, builds the model empty on meta, and pulls weights
@@ -934,7 +942,6 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
               heartbeatInterval={diHeartbeat}
               setHeartbeatInterval={setDiHeartbeat}
               collective={diCollective}
-              setCollective={setDiCollective}
               replicate={diReplicate}
               setReplicate={setDiReplicate}
               resumableWorkers={resumableWorkers}
@@ -1071,10 +1078,10 @@ interface DiLoCoPickerProps {
   onSelectBase: (base: string) => void;
   heartbeatInterval: string;
   setHeartbeatInterval: (v: string) => void;
-  // Launch topology (non-cluster only; single-host). The sync backend itself is
-  // server-declared; the operator only picks worker-pool vs collective here.
+  // Launch topology (non-cluster only; single-host). Derived from the server's
+  // declared backend (collective vs http/shared_memory), not an operator
+  // choice — shown read-only so the operator can see what will launch.
   collective: boolean;
-  setCollective: (v: boolean) => void;
   replicate: number;
   setReplicate: (v: number) => void;
   // Worker pool (batch submit; non-cluster only).
@@ -1110,7 +1117,6 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
     heartbeatInterval,
     setHeartbeatInterval,
     collective,
-    setCollective,
     replicate,
     setReplicate,
     resumableWorkers,
@@ -1524,31 +1530,28 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
               />
             </label>
 
-            <label style={{ display: "block", maxWidth: "16em" }}>
-              launch topology
-              <select
-                value={collective ? "collective" : "workers"}
-                onChange={(e) => setCollective(e.target.value === "collective")}
-                style={{ width: "100%" }}
-              >
-                <option value="workers">worker pool</option>
-                <option value="collective">collective (single-host)</option>
-              </select>
+            {/* Launch topology is the server's declared backend (shown in the
+                summary above), not an operator choice: a collective server
+                runs one torchrun job of N replicas; http/shared_memory servers
+                use the worker pool. The worker validates its launched backend
+                against the server and fails loud on disagreement, so there's
+                nothing safe to pick here — we just reflect the derived mode. */}
+            <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
               {collective ? (
-                <span className="muted" style={{ fontSize: 11 }}>
-                  N replicas run as one torchrun job that all-reduce
-                  pseudo-gradients (single-host). One job, sized below — the
-                  worker pool doesn't apply. The param server must declare
-                  --backend collective.
-                </span>
+                <>
+                  Launch topology: <strong>collective</strong> — N replicas run
+                  as one torchrun job that all-reduce pseudo-gradients
+                  (single-host). One job, sized below; the worker pool doesn't
+                  apply.
+                </>
               ) : (
-                <span className="muted" style={{ fontSize: 11 }}>
-                  The sync backend (http / shared_memory) is declared on the
-                  param server and applied at launch — there's no per-submit
-                  choice, so workers can't disagree.
-                </span>
+                <>
+                  Launch topology: <strong>worker pool</strong> — the sync
+                  backend (http / shared_memory) is declared on the param server
+                  and applied at launch, so workers can't disagree.
+                </>
               )}
-            </label>
+            </div>
 
             {collective ? (
               <label style={{ display: "block", maxWidth: "16em" }}>
