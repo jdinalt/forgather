@@ -1390,7 +1390,12 @@ function WorkspaceBlock({
       className="workspace"
       style={{ marginLeft: depth ? 10 : 0 }}
       open={open}
-      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
+      onToggle={(e) => {
+        // Guard against bubbled `toggle` events from nested <details>
+        // (project rows): only react when this workspace itself toggled.
+        if (e.target !== e.currentTarget) return;
+        setOpen((e.currentTarget as HTMLDetailsElement).open);
+      }}
     >
       <summary
         title={ws.workspace_root}
@@ -1504,7 +1509,10 @@ function ProjectBlock({
       <details
         open={expanded}
         onToggle={(e) => {
-          const isOpen = (e.target as HTMLDetailsElement).open;
+          // Guard against bubbled `toggle` events from nested <details>;
+          // also avoids re-firing onProjectOpen on every descendant toggle.
+          if (e.target !== e.currentTarget) return;
+          const isOpen = (e.currentTarget as HTMLDetailsElement).open;
           setExpanded(isOpen);
           if (isOpen && defaultConfig) {
             onProjectOpen(project, defaultConfig);
