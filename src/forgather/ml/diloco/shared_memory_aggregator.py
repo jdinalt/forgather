@@ -67,6 +67,13 @@ class SharedMemoryAggregator:
         self.lock_timeout = lock_timeout
         self._group_size = 0
         self._started = False
+        # The barrier only shrinks dynamically AFTER the full configured group
+        # has formed (every follower has attached at least once). Until then it
+        # waits for all ``group_size`` contributions, so a slow-to-arrive worker
+        # can't let the server aggregate a partial group at startup. ``_formed``
+        # latches True once the live-follower high-water mark reaches group_size.
+        self._formed = False
+        self._max_live = 0
 
     @property
     def group_dir(self) -> str:
@@ -130,7 +137,15 @@ class SharedMemoryAggregator:
         while True:
             arrivals = self._region.arrivals()
             live_followers = self._region.attach_count() - 1  # exclude the server
-            if arrivals >= 1 and arrivals >= live_followers:
+            # Latch "formed" once the full configured group has attached; only
+            # then may the barrier shrink (the drain/leave case). Before that,
+            # require all group_size contributions so a slow arriver at startup
+            # can't trigger a partial-group outer step.
+            self._max_live = max(self._max_live, live_followers)
+            if self._max_live >= self._group_size:
+                self._formed = True
+            threshold = max(1, live_followers) if self._formed else self._group_size
+            if arrivals >= 1 and arrivals >= threshold:
                 return True
             if time.time() > deadline:
                 return False
@@ -174,6 +189,22 @@ class SharedMemoryAggregator:
             self._region.set_arrivals(0)
             new_gen = self._region.bump_generation()
         return new_gen
+
+    def abort(self) -> None:
+        """Mark the region dead so parked followers fail loud immediately.
+
+        Called when the server's aggregation loop dies (e.g. the outer step
+        raised): clearing the magic makes every follower's ``_await_generation``
+        poll raise at once, instead of each blocking out its ``lock_timeout`` on
+        a generation that will never advance. Best-effort; the region is cleaned
+        up by :meth:`stop` on the server's teardown.
+        """
+        try:
+            with self._region.locked():
+                if self._region.ctrl is not None:
+                    self._region.mark_dead()
+        except OSError:
+            pass
 
     def stop(self) -> None:
         """Drop the server's attach (unlinking the region if last out) and

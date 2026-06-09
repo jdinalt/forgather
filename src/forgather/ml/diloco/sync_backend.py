@@ -106,10 +106,14 @@ class OuterSyncBackend(ABC):
     Capability flags advertise properties the worker (or a future trainer
     callback) must honor rather than assume:
 
-    - ``runs_outer_optimizer`` — where the outer optimizer lives:
-      ``"central"`` (a server holds it; HTTP today), ``"replicated"`` (each
-      worker runs an identical deterministic copy after an all-reduce), or
-      ``"shared-region"`` (it operates in place on a shared parameter region).
+    - ``runs_outer_optimizer`` — where the outer optimizer lives, i.e. NOT in
+      this worker's training loop: ``"central"`` (a server holds it; HTTP
+      today), ``"replicated"`` (each worker runs an identical deterministic copy
+      after an all-reduce), or ``"shared-region"`` (a region-mediated step — the
+      co-located server, as the shared-memory aggregator, runs it in place on the
+      shared parameter region the worker contributes into). Only ``"replicated"``
+      has the worker construct/run the optimizer locally (via
+      ``outer_opt_factory``).
     - ``supports_async`` — whether the backend permits apply-immediately /
       DyLU-style asynchronous sync. Bare collectives are strictly synchronous.
     - ``fault_tolerant`` — whether the backend transparently survives a *peer*

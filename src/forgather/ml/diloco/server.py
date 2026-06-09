@@ -3789,16 +3789,29 @@ class DiLoCoServer:
             logger.info("State is clean. Skipping save.")
             return
 
+        # Snapshot the model + outer optimizer + round together under the sync
+        # condition so a concurrent outer step (the shared-memory aggregation
+        # thread, or an HTTP sync barrier) can't tear the master across the read
+        # — a control-save racing a step would otherwise persist some params
+        # from before the step and some from after. The outer step mutates these
+        # three under the same condition, so this captures a consistent set; the
+        # disk I/O below runs off the lock on these immutable snapshots.
+        with self._sync_cond:
+            global_params = self.get_global_params()
+            outer_opt_state = self.outer_optimizer.state_dict()
+            sync_round = self._sync_round
+            total_submissions = self._total_submissions
+
         if path is not None:
             checkpoint_path = path
         else:
-            checkpoint_path = next_checkpoint_path(self.output_dir, self._sync_round)
+            checkpoint_path = next_checkpoint_path(self.output_dir, sync_round)
 
         os.makedirs(checkpoint_path, exist_ok=True)
 
         # Save model weights as HF-compatible sharded checkpoint
         save_model_checkpoint(
-            checkpoint_path, self.get_global_params(), safetensors=self.safetensors
+            checkpoint_path, global_params, safetensors=self.safetensors
         )
 
         # Work-unit dispatch state IS persisted: the server is the authority
@@ -3843,12 +3856,12 @@ class DiLoCoServer:
             known_workers = {k: dict(v) for k, v in self._known_workers.items()}
 
         server_state = {
-            "outer_optimizer": self.outer_optimizer.state_dict(),
-            "sync_round": self._sync_round,
+            "outer_optimizer": outer_opt_state,
+            "sync_round": sync_round,
             "num_workers": self.num_workers,
             "param_names": self._param_names,
             "async_mode": self.async_mode,
-            "total_submissions": self._total_submissions,
+            "total_submissions": total_submissions,
             "known_workers": known_workers,
             "work_queues": work_queues,
             "dataset_lengths": dataset_lengths,
@@ -4332,13 +4345,38 @@ class DiLoCoServer:
         if self._shm_agg is None:
             return
         self._shm_stop.set()
+        wedged = False
         if self._shm_agg_thread is not None:
             self._shm_agg_thread.join(timeout=10)
+            if self._shm_agg_thread.is_alive():
+                # The loop didn't exit (e.g. wedged holding the region flock
+                # while blocked on _sync_cond). Calling stop() would re-take the
+                # flock and block shutdown indefinitely; skip the lock-taking
+                # cleanup and let the OS free the lease + region on process exit.
+                wedged = True
+                logger.error(
+                    "shm aggregator thread did not exit within 10s; skipping "
+                    "region cleanup to avoid blocking shutdown (the OS reclaims "
+                    "the lease + region on process exit)."
+                )
             self._shm_agg_thread = None
         try:
-            self._shm_agg.stop()
+            if not wedged:
+                self._shm_agg.stop()
         finally:
             self._shm_agg = None
+
+    def _abort_shm_group(self):
+        """The aggregation loop died: mark the region dead so parked followers
+        fail loud immediately (rather than each blocking out its lock_timeout on
+        a generation that will never advance), and trip the server's shutdown so
+        it doesn't keep serving a group that can no longer make progress."""
+        try:
+            if self._shm_agg is not None:
+                self._shm_agg.abort()
+        except Exception:
+            logger.exception("shm aggregator: abort failed")
+        self._shutdown_event.set()
 
     def _shm_aggregation_loop(self):
         """Poll the region; each time every follower has contributed, apply one
@@ -4360,13 +4398,15 @@ class DiLoCoServer:
                 ready = self._shm_agg.wait_for_round(timeout=0.5)
             except Exception:
                 logger.exception("shm aggregator: error waiting for round")
+                self._abort_shm_group()
                 return
             if not ready:
                 continue  # no full round yet (workers still training)
             try:
                 self._shm_agg.aggregate(self._shm_outer_step)
             except Exception:
-                logger.exception("shm aggregator: outer step failed; stopping loop")
+                logger.exception("shm aggregator: outer step failed; aborting group")
+                self._abort_shm_group()
                 return
             logger.info(
                 "Shared-memory outer step complete. Sync round: %d", self._sync_round
@@ -4389,9 +4429,11 @@ class DiLoCoServer:
 
         Mirrors :meth:`_apply_outer_optimizer`'s core: the HTTP path averages
         ``_pending_pseudograds`` itself, whereas here the region already summed
-        the followers' contributions and the aggregator divided by group_size,
-        so ``avg_grads`` is the per-name mean. Held under ``_sync_cond`` so a
-        concurrent control-save observes a consistent master. The optimizer
+        the followers' contributions and the aggregator divided by the
+        contributor count, so ``avg_grads`` is the per-name mean. The model,
+        optimizer, and round are mutated together under ``_sync_cond``;
+        ``save_state`` snapshots the same three under that condition, so a
+        concurrent control-save never captures a torn master. The optimizer
         state (momentum) lives in this process and is checkpointed by
         ``save_state`` — which is what makes a shared-memory run resume cleanly.
         """

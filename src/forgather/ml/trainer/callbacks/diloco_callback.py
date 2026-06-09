@@ -176,7 +176,6 @@ class DiLoCoCallback(TrainerCallback):
             diloco_report_sync_state,
             diloco_shm_group_dir,
             diloco_shm_group_size,
-            diloco_shm_init_checkpoint,
         )
 
         self.report_sync_state = diloco_report_sync_state()
@@ -194,9 +193,9 @@ class DiLoCoCallback(TrainerCallback):
         # /info, with a loud error if neither source supplies them.
         self.shm_group_dir = diloco_shm_group_dir()
         self.shm_group_size = diloco_shm_group_size()
-        self.shm_init_checkpoint = diloco_shm_init_checkpoint() or None
         # Collective backend seeds from this (rank 0) when set, else from the
-        # coordinator's advertised model_checkpoint_dir.
+        # coordinator's advertised model_checkpoint_dir. (Shared-memory has no
+        # worker-side init checkpoint: the server seeds the region's master.)
         self.init_checkpoint = diloco_init_checkpoint() or None
 
         # Worker instance (created in on_load_model_weights)
@@ -318,11 +317,11 @@ class DiLoCoCallback(TrainerCallback):
 
         Returns ``None`` for the default HTTP path (the worker constructs its
         own ``HttpStarBackend``), a ``SharedMemoryBackend`` for the co-located
-        single-host regime, or a ``CollectiveBackend`` for the replicated
-        all-reduce regime. The non-HTTP backends seed their initial weights from
-        the coordinator's advertised checkpoint
-        (``settings["model_checkpoint_dir"]``), overridable by
-        ``DILOCO_SHM_INIT_CHECKPOINT`` / ``DILOCO_INIT_CHECKPOINT``.
+        single-host regime (a pure follower — the co-located server owns the
+        region and seeds its master), or a ``CollectiveBackend`` for the
+        replicated all-reduce regime (which seeds its initial weights from the
+        coordinator's advertised ``settings["model_checkpoint_dir"]``,
+        overridable by ``DILOCO_INIT_CHECKPOINT``).
         """
         if self.backend_kind == "collective":
             return self._make_collective_backend(settings, model, trainer)
@@ -459,10 +458,11 @@ class DiLoCoCallback(TrainerCallback):
 
     @staticmethod
     def _outer_opt_factory_from_settings(settings: Dict[str, Any]):
-        """Reproduce the coordinator's outer optimizer so the shared-memory
-        group's outer step matches the server's, rather than silently defaulting.
-        Fail loud if the server didn't advertise it or ran a non-SGD optimizer
-        this backend can't reproduce."""
+        """Reproduce the coordinator's outer optimizer so the collective
+        group's worker-run outer step matches the server's, rather than silently
+        defaulting. Fail loud if the server didn't advertise it or ran a non-SGD
+        optimizer this backend can't reproduce. (Shared-memory no longer uses
+        this — the server runs the outer step there.)"""
         cfg = settings.get("outer_optimizer")
         if not cfg:
             raise ValueError(

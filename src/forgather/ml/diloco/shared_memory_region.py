@@ -127,6 +127,12 @@ class ShmRegion:
     def magic(self) -> int:
         return int(self._ctrl[_W_MAGIC])
 
+    def is_alive(self) -> bool:
+        """True while the region carries the live magic. Cleared (``mark_dead``)
+        when the region is torn down or the aggregator aborts the group, so a
+        parked follower can fail loud instead of waiting out its timeout."""
+        return self._ctrl is not None and int(self._ctrl[_W_MAGIC]) == _MAGIC
+
     # ----- locking + ownership ----------------------------------------------
 
     @contextlib.contextmanager

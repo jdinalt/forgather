@@ -153,6 +153,16 @@ class SharedMemoryBackend(OuterSyncBackend):
     def _await_generation(self, target_gen: int) -> "StateDict":
         deadline = time.time() + self.lock_timeout
         while self._region.generation() < target_gen:
+            if not self._region.is_alive():
+                # The server cleared the magic — it aborted the group (its
+                # aggregation loop died) or tore the region down. Fail loud now
+                # rather than block out the timeout on a generation that will
+                # never advance.
+                raise RuntimeError(
+                    "SharedMemoryBackend: the server ended the shared-memory "
+                    "group (region marked dead) while awaiting sync round "
+                    f"{target_gen}; the aggregator is gone."
+                )
             if time.time() > deadline:
                 raise TimeoutError(
                     "SharedMemoryBackend: timed out waiting for sync round "

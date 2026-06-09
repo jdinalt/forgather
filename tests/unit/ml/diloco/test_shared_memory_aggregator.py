@@ -134,47 +134,114 @@ def test_server_owns_cleanup_until_stop(tmp_path):
 
 
 def test_dynamic_barrier_releases_when_a_follower_leaves(tmp_path):
-    """The barrier is dynamic: a follower that leaves (clean shutdown/drain)
-    shrinks the live count so the remaining followers — already parked having
+    """After the group has formed, a follower that leaves (clean shutdown/drain)
+    shrinks the live count so the remaining followers — parked having
     contributed — are released, instead of deadlocking on a contribution that
     will never come. This is the shutdown deadlock a fixed group_size barrier
-    caused.
+    caused. (The group must form first: a round with all 3, then one leaves and
+    the round-2 barrier releases on the surviving 2.)
     """
     group_dir = str(tmp_path / "grp")
     master = _master()
     agg = SharedMemoryAggregator(group_dir)
-    agg.start(master, group_size=3)  # nominal 3, but one leaves without syncing
+    agg.start(master, group_size=3)
 
     out = {}
     g = {"w": torch.ones(4, 3), "b": torch.zeros(5)}
 
-    def contributor(wid):
-        _follower(group_dir, 3, wid, g, out)
-
-    def leaver():
-        # Joins (attach++) then leaves WITHOUT contributing — the drain case
-        # where a worker got save_and_stop between rounds.
+    def follower(wid, rounds):
         be = SharedMemoryBackend(group_dir=group_dir, group_size=3)
-        be.join(worker_id="C")
-        be.leave(worker_id="C")
+        be.join(worker_id=wid)
+        last = None
+        for _ in range(rounds):
+            last = be.synchronize(worker_id=wid, pseudograds=g).params
+        be.leave(worker_id=wid)
+        out[wid] = {k: v.clone() for k, v in last.items()}
 
     def run_agg():
-        assert agg.wait_for_round(timeout=10.0)
-        agg.aggregate(lambda avg: {k: v.clone() for k, v in master.items()})
+        # Round 1 forms + aggregates all 3; round 2 must release on just A+B
+        # (C has left), proving the barrier shrank on the departure.
+        for _ in range(2):
+            assert agg.wait_for_round(timeout=10.0)
+            agg.aggregate(lambda avg: {k: v.clone() for k, v in master.items()})
 
     threads = [
-        threading.Thread(target=contributor, args=("A",)),
-        threading.Thread(target=contributor, args=("B",)),
-        threading.Thread(target=leaver),
+        threading.Thread(target=follower, args=("A", 2)),
+        threading.Thread(target=follower, args=("B", 2)),
+        threading.Thread(target=follower, args=("C", 1)),  # leaves after round 1
         threading.Thread(target=run_agg),
     ]
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout=15)
+        t.join(timeout=20)
 
-    # A and B both released despite only 2 of the nominal 3 contributing.
-    assert "A" in out and "B" in out, "dynamic barrier did not release the rest"
+    # A and B completed round 2 despite only 2 of 3 contributing (C drained).
+    assert {"A", "B", "C"} <= set(out), "dynamic barrier did not release the rest"
+    agg.stop()
+
+
+def test_barrier_waits_for_full_group_at_startup(tmp_path):
+    """At startup the barrier must NOT aggregate a partial group when a worker
+    is slow to arrive: it waits for all group_size contributions until the group
+    has formed (the dynamic shrink only applies to departures afterward). This
+    is the staggered-startup race (a worker scheduled minutes late)."""
+    group_dir = str(tmp_path / "grp")
+    master = _master()
+    agg = SharedMemoryAggregator(group_dir)
+    agg.start(master, group_size=2)
+
+    out = {}
+    g = {"w": torch.ones(4, 3), "b": torch.zeros(5)}
+    t0 = threading.Thread(target=_follower, args=(group_dir, 2, "w0", g, out))
+    t0.start()
+    # Let w0 join + contribute, then assert the barrier is NOT ready (1 of 2,
+    # group not yet formed) and w0 is still parked (not released).
+    time.sleep(0.3)
+    assert agg.wait_for_round(timeout=0.3) is False
+    assert "w0" not in out
+
+    # Second worker arrives -> group forms -> the barrier fires on both.
+    t1 = threading.Thread(target=_follower, args=(group_dir, 2, "w1", g, out))
+    t1.start()
+
+    def run_agg():
+        assert agg.wait_for_round(timeout=10.0)
+        agg.aggregate(lambda avg: {k: v.clone() for k, v in master.items()})
+
+    ta = threading.Thread(target=run_agg)
+    ta.start()
+    for t in (t0, t1, ta):
+        t.join(timeout=15)
+    assert "w0" in out and "w1" in out
+    agg.stop()
+
+
+def test_aborted_group_fails_followers_loud(tmp_path):
+    """If the server aborts the group (its aggregation loop died), a parked
+    follower must fail loud (RuntimeError) rather than block out its timeout."""
+    group_dir = str(tmp_path / "grp")
+    master = _master()
+    agg = SharedMemoryAggregator(group_dir)
+    agg.start(master, group_size=2)  # expects 2; only 1 will contribute
+
+    err = {}
+    g = {"w": torch.ones(4, 3), "b": torch.zeros(5)}
+
+    def lone():
+        be = SharedMemoryBackend(group_dir=group_dir, group_size=2, lock_timeout=30)
+        be.join(worker_id="w0")
+        try:
+            be.synchronize(worker_id="w0", pseudograds=g)
+        except Exception as e:  # noqa: BLE001
+            err["w0"] = e
+
+    th = threading.Thread(target=lone)
+    th.start()
+    time.sleep(0.3)  # w0 is parked in _await_generation
+    agg.abort()  # the server's loop died -> mark the region dead
+    th.join(timeout=10)
+    assert isinstance(err.get("w0"), RuntimeError)
     agg.stop()
 
 
