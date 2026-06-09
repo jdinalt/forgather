@@ -52,6 +52,29 @@ function lineDelta(before: string | null, after: string | null): { added: number
   return { added, removed };
 }
 
+/** Render an ordered list of key/value entries. Object/array values are
+ *  pretty-printed as JSON (a bare ``String(obj)`` yields a useless
+ *  ``[object Object]``); scalars render inline. Shared by the curated
+ *  ``extra`` block and the verbatim ``proposed_args`` block. */
+function KeyValueList({ entries }: { entries: [string, unknown][] }) {
+  return (
+    <dl className="agent-action-extra">
+      {entries.map(([k, v]) => (
+        <div key={k}>
+          <dt>{k}</dt>
+          {v !== null && typeof v === "object" ? (
+            <dd>
+              <pre className="agent-action-extra-json">{JSON.stringify(v, null, 2)}</pre>
+            </dd>
+          ) : (
+            <dd>{String(v)}</dd>
+          )}
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 export function AgentActionCard({
   card,
   status,
@@ -72,6 +95,12 @@ export function AgentActionCard({
   const extraEntries = Object.entries(card.extra ?? {}).filter(
     ([, v]) => v !== null && v !== undefined && v !== "",
   );
+  // The verbatim arguments the agent proposed for this tool call. Shown on
+  // every approval card (diff or not) so the user can audit exactly what
+  // they're approving, independent of the tool's curated ``extra`` summary.
+  const argsEntries = Object.entries(card.proposed_args ?? {}).filter(
+    ([, v]) => v !== null && v !== undefined && v !== "",
+  );
 
   return (
     <div className={"agent-action-card" + (compact ? " compact" : "")} data-status={status}>
@@ -88,16 +117,7 @@ export function AgentActionCard({
         </div>
       )}
 
-      {!hasDiff && extraEntries.length > 0 && (
-        <dl className="agent-action-extra">
-          {extraEntries.map(([k, v]) => (
-            <div key={k}>
-              <dt>{k}</dt>
-              <dd>{String(v)}</dd>
-            </div>
-          ))}
-        </dl>
-      )}
+      {!hasDiff && extraEntries.length > 0 && <KeyValueList entries={extraEntries} />}
 
       {hasDiff && !compact && isPending && (
         <div className="agent-diff-editor">
@@ -121,6 +141,16 @@ export function AgentActionCard({
         <details className="agent-pp-preview">
           <summary>Preprocessor output</summary>
           <pre>{card.pp_preview}</pre>
+        </details>
+      )}
+
+      {argsEntries.length > 0 && (
+        // Open by default for non-diff actions (where args ARE the change the
+        // user is approving); collapsed for diff cards, where the diff already
+        // shows the change and the args would just be noise.
+        <details className="agent-action-args" open={!hasDiff}>
+          <summary>Agent-proposed arguments ({argsEntries.length})</summary>
+          <KeyValueList entries={argsEntries} />
         </details>
       )}
 

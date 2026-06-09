@@ -86,8 +86,23 @@ class Proposal:
     # result string fed back to the model as the tool_result.
     commit: Optional[Callable[[], Union[str, Awaitable[str]]]] = None
 
-    def to_card(self, action_id: str, risk: str) -> Dict[str, Any]:
-        """Serialize for the webui action card (no ``commit`` closure)."""
+    def to_card(
+        self,
+        action_id: str,
+        risk: str,
+        proposed_args: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Serialize for the webui action card (no ``commit`` closure).
+
+        ``proposed_args`` is the verbatim tool-call argument dict the agent
+        supplied, threaded in by the loop's gating layer so EVERY approval
+        card shows exactly what the agent proposed — independent of whatever
+        curated preview the tool chose to put in ``extra``. The two are
+        deliberately separate: ``extra`` is the tool's human-friendly summary
+        (which may omit or reword arguments), while this is the unedited
+        request the user is actually approving. Surfacing it generically here
+        means a new propose/confirm tool can never silently hide its inputs.
+        """
         return {
             "action_id": action_id,
             "risk": risk,
@@ -98,6 +113,7 @@ class Proposal:
             "after": self.after,
             "pp_preview": self.pp_preview,
             "extra": self.extra,
+            "proposed_args": proposed_args or None,
         }
 
 

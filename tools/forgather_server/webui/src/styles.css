@@ -6134,6 +6134,15 @@ li.config.selected button.link:hover {
   overflow: auto;
   font-size: 11px;
 }
+.agent-action-args {
+  margin: 4px 0;
+}
+.agent-action-args > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-muted);
+  user-select: none;
+}
 .agent-action-buttons {
   display: flex;
   gap: 8px;
@@ -6490,4 +6499,15 @@ li.config.selected button.link:hover {
 .agent-action-extra dd {
   margin: 0;
   word-break: break-word;
+}
+.agent-action-extra-json {
+  margin: 0;
+  padding: 4px 6px;
+  background: var(--bg-subtle, rgba(127, 127, 127, 0.1));
+  border-radius: 4px;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
 }

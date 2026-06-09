@@ -138,6 +138,25 @@ def test_propose_pauses_without_side_effect():
     assert provider.calls == 1  # paused; provider not called again
 
 
+def test_action_card_carries_verbatim_proposed_args():
+    # Every approval card must surface the raw tool-call args the agent
+    # proposed, independent of what the tool curated into ``extra`` — so the
+    # user can always audit exactly what they're approving.
+    state = {"read_calls": 0, "commit_calls": 0}
+    reg = _make_registry(state)
+    args = {"path": "f.yaml"}
+    provider = FakeProvider(
+        [[ToolCall(id="t1", name="make_change", arguments=args), Done()]]
+    )
+    loop = AgentLoop(provider, reg)
+    conv = Conversation(session_id="s-args")
+
+    events = _collect(loop.run_user_message(conv, "change f.yaml"))
+
+    card = [e for e in events if e["type"] == "action_card"][0]
+    assert card["proposed_args"] == {"path": "f.yaml"}
+
+
 def test_approve_replays_commit_and_resumes():
     state = {"read_calls": 0, "commit_calls": 0}
     reg = _make_registry(state)
