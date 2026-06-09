@@ -464,7 +464,13 @@ class AgentLoop:
             )
         )
         pending_turn.outstanding.add(tc.id)
-        yield {"type": "action_card", **proposal.to_card(action_id, spec.risk)}
+        # Surface the raw tool-call args on the card so the user always sees
+        # exactly what the agent proposed, regardless of what the tool curated
+        # into ``extra``. ``args`` is the parsed argument dict the handler ran on.
+        yield {
+            "type": "action_card",
+            **proposal.to_card(action_id, spec.risk, proposed_args=args),
+        }
 
     # ---- helpers -------------------------------------------------------
 

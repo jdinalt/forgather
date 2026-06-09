@@ -349,6 +349,7 @@ export function useAgent(): AgentController {
               after: (ev.after as string) ?? null,
               pp_preview: (ev.pp_preview as string) ?? null,
               extra: (ev.extra as Record<string, unknown>) ?? {},
+              proposed_args: (ev.proposed_args as Record<string, unknown>) ?? null,
             },
           });
           break;

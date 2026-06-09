@@ -1594,6 +1594,23 @@ the agent loop, never in the browser:
   the exact previewed content (the model cannot alter it after the fact).
   Reject feeds a rejection back so the model can adapt. After a write,
   the config is re-parsed and any error surfaces back into the chat.
+- **`confirm`** — side-effecting tools without a file diff (enqueue a
+  training job, start/stop a service, delete a path, query a model). They
+  return a structured preview (a curated `extra` summary plus, for jobs, the
+  reconstructed command) and pause for **Approve** the same way.
+
+Every paused action card also shows **the arguments the agent actually passed**
+in the tool call, in an "Agent-proposed arguments" block, regardless of what the
+tool curated into its summary. This is the authoritative view of what you are
+approving: a tool's `extra` summary may omit, reword, or default-fill arguments,
+but this block is the raw tool-call dict. It lists only the keys the agent
+specified — arguments left to defaults are absent, so a tool with a large
+optional-argument surface stays readable — while keeping explicit `null` /
+empty-string values visible (a passed-but-blank arg is still an input). An
+over-long value (e.g. a multi-thousand-char prompt) is clipped with a
+`… (+N more characters)` marker. The loop attaches the block generically at the
+gate (`Proposal.to_card`), so a newly added propose/confirm tool can never
+silently hide an argument it was given.
 
 Because a paused turn owes a tool-result for every tool call it made, the
 loop refuses to call the model again until every pending action is

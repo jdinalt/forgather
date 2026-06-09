@@ -52,6 +52,64 @@ function lineDelta(before: string | null, after: string | null): { added: number
   return { added, removed };
 }
 
+const MAX_ARG_VALUE_CHARS = 800;
+
+/** Render one key's value. Objects/arrays pretty-print as JSON (a bare
+ *  ``String(obj)`` yields a useless ``[object Object]``); an explicit empty
+ *  string shows as ``""`` so a passed-but-blank arg stays visible. When
+ *  ``truncate`` is set (the verbatim proposed-args block), an over-long value —
+ *  e.g. a multi-thousand-char prompt passed to ``query_model`` — is clipped so
+ *  one argument can't blow up the card. The curated ``extra`` block passes
+ *  short, tool-chosen values and renders them in full. */
+function ValueCell({ value, truncate }: { value: unknown; truncate?: boolean }) {
+  const isObj = value !== null && typeof value === "object";
+  const raw = isObj
+    ? JSON.stringify(value, null, 2)
+    : value === ""
+      ? '""'
+      : String(value);
+  if (truncate && raw.length > MAX_ARG_VALUE_CHARS) {
+    const hidden = raw.length - MAX_ARG_VALUE_CHARS;
+    return (
+      <dd>
+        <pre className="agent-action-extra-json">
+          {raw.slice(0, MAX_ARG_VALUE_CHARS)}
+          {`\n… (+${hidden} more characters)`}
+        </pre>
+      </dd>
+    );
+  }
+  return isObj ? (
+    <dd>
+      <pre className="agent-action-extra-json">{raw}</pre>
+    </dd>
+  ) : (
+    <dd>{raw}</dd>
+  );
+}
+
+/** Render an ordered list of key/value entries. Shared by the curated
+ *  ``extra`` block and the verbatim ``proposed_args`` block (pass ``truncate``
+ *  for the latter so a huge single argument is clipped). */
+function KeyValueList({
+  entries,
+  truncate,
+}: {
+  entries: [string, unknown][];
+  truncate?: boolean;
+}) {
+  return (
+    <dl className="agent-action-extra">
+      {entries.map(([k, v]) => (
+        <div key={k}>
+          <dt>{k}</dt>
+          <ValueCell value={v} truncate={truncate} />
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 export function AgentActionCard({
   card,
   status,
@@ -72,6 +130,13 @@ export function AgentActionCard({
   const extraEntries = Object.entries(card.extra ?? {}).filter(
     ([, v]) => v !== null && v !== undefined && v !== "",
   );
+  // The verbatim arguments the agent passed in this tool call. ``proposed_args``
+  // is the raw tool-call dict, so it already contains ONLY the keys the agent
+  // actually specified — keys it omitted (handing off to defaults) are absent,
+  // so a tool with a large optional-arg surface never bloats this list. We do
+  // NOT filter empties here (unlike the curated ``extra`` summary below): an
+  // explicit null / "" the agent passed IS an input the user must see.
+  const argsEntries = Object.entries(card.proposed_args ?? {});
 
   return (
     <div className={"agent-action-card" + (compact ? " compact" : "")} data-status={status}>
@@ -88,16 +153,7 @@ export function AgentActionCard({
         </div>
       )}
 
-      {!hasDiff && extraEntries.length > 0 && (
-        <dl className="agent-action-extra">
-          {extraEntries.map(([k, v]) => (
-            <div key={k}>
-              <dt>{k}</dt>
-              <dd>{String(v)}</dd>
-            </div>
-          ))}
-        </dl>
-      )}
+      {!hasDiff && extraEntries.length > 0 && <KeyValueList entries={extraEntries} />}
 
       {hasDiff && !compact && isPending && (
         <div className="agent-diff-editor">
@@ -121,6 +177,16 @@ export function AgentActionCard({
         <details className="agent-pp-preview">
           <summary>Preprocessor output</summary>
           <pre>{card.pp_preview}</pre>
+        </details>
+      )}
+
+      {argsEntries.length > 0 && (
+        // Open by default for non-diff actions (where args ARE the change the
+        // user is approving); collapsed for diff cards, where the diff already
+        // shows the change and the args would just be noise.
+        <details className="agent-action-args" open={!hasDiff}>
+          <summary>Agent-proposed arguments ({argsEntries.length})</summary>
+          <KeyValueList entries={argsEntries} truncate />
         </details>
       )}
 

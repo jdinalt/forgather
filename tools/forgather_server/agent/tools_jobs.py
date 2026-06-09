@@ -517,7 +517,12 @@ def _run_train(args: Dict[str, Any]) -> Proposal:
     dataset_source = _parse_dataset_source(dataset)
 
     advanced = _is_advanced_submit(args)
-    dyn_flags = _render_dynamic_arg_flags(project_dir, config_name, dynamic_args) if advanced else []
+    # Always render the dynamic-arg flags into the displayed command, not just
+    # for advanced (multi-node / DiLoCo) submits. A basic single-node job
+    # enqueues in-process and its real run vector (launcher.build_command) does
+    # carry --dynamic-args, so the preview must show them too — otherwise the
+    # approver can't see which hyperparameters they're approving.
+    dyn_flags = _render_dynamic_arg_flags(project_dir, config_name, dynamic_args)
     argv = _build_submit_argv(
         project_dir, config_name, requested_gpus=requested_gpus, priority=priority,
         dataset=dataset, args=args, dyn_flags=dyn_flags,

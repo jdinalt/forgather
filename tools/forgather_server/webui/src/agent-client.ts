@@ -79,6 +79,10 @@ export interface ActionCard {
   after: string | null;
   pp_preview: string | null;
   extra: Record<string, unknown>;
+  /** The verbatim tool-call arguments the agent proposed. Shown on every
+   *  approval card so the user can see exactly what they're approving, even
+   *  when the tool's ``extra`` summary omits or rewords them. */
+  proposed_args: Record<string, unknown> | null;
 }
 
 /** One streamed event. ``type`` discriminates; other fields vary by type:
