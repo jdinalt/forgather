@@ -52,8 +52,9 @@ class SharedMemoryAggregator:
       region from the server's master, and count the server itself as an
       attacher (so a follower leaving never unlinks the region while the server
       is alive — the server cleans up on :meth:`stop`).
-    * :meth:`wait_for_round` — block until all ``group_size`` followers have
-      contributed (or ``timeout``).
+    * :meth:`wait_for_round` — block until every currently-attached follower has
+      contributed (a dynamic barrier: a follower that ``leave()``s shrinks the
+      expectation, so the drain on shutdown can't deadlock), or ``timeout``.
     * :meth:`aggregate` — under the region lock, average the accumulator, run the
       server's outer step (``step_fn``), publish the new master, and bump the
       generation so the followers release.
@@ -106,18 +107,30 @@ class SharedMemoryAggregator:
         )
 
     def wait_for_round(self, timeout: float | None = None) -> bool:
-        """Block until every follower has contributed to the current round.
+        """Block until every currently-attached follower has contributed.
 
-        Returns True when all ``group_size`` arrivals are in, False on timeout.
-        Lock-free poll: arrivals is only written under the region lock and an
-        aligned int64 read is atomic on the platforms we target, so an
-        unsynchronized read here at worst costs an extra poll.
+        The barrier is **dynamic**, mirroring the HTTP path's
+        ``_round_expected_workers``: it releases once arrivals reach the number
+        of *live* followers (the region's attach count minus the server's own
+        +1), not a fixed ``group_size``. This is essential for the drain on
+        shutdown — a follower that finishes and ``leave()``s shrinks the
+        expectation, so the remaining followers (parked having already
+        contributed) are released instead of deadlocking on a 4th contribution
+        that will never come. A follower that *crashes* without ``leave()``
+        keeps its slot (shared_memory is ``fault_tolerant=False``).
+
+        Returns True when the round is ready, False on timeout. Lock-free poll:
+        the control words are only written under the region lock and an aligned
+        int64 read is atomic on the platforms we target, so an unsynchronized
+        read here at worst costs an extra poll.
         """
         if not self._started:
             raise RuntimeError("SharedMemoryAggregator.start() not called")
         deadline = time.time() + (self.lock_timeout if timeout is None else timeout)
         while True:
-            if self._region.arrivals() >= self._group_size:
+            arrivals = self._region.arrivals()
+            live_followers = self._region.attach_count() - 1  # exclude the server
+            if arrivals >= 1 and arrivals >= live_followers:
                 return True
             if time.time() > deadline:
                 return False
@@ -126,22 +139,30 @@ class SharedMemoryAggregator:
     def aggregate(self, step_fn: Callable[["StateDict"], "StateDict"]) -> int:
         """Apply one outer step and publish, under the region lock.
 
-        ``step_fn`` receives the averaged pseudo-gradient (accumulator divided by
-        ``group_size``, keyed by param name, reshaped) and returns the new master
-        state dict (the server sets these as grads on its ``_param_list``, steps
-        the outer optimizer, and returns ``get_global_params()``). Holding the
-        lock across the step mirrors the worker-aggregator path and is cheap (a
+        ``step_fn`` receives the averaged pseudo-gradient (the accumulator
+        divided by the number of contributors, keyed by param name, reshaped)
+        and returns the new master state dict (the server sets these as grads on
+        its ``_param_list``, steps the outer optimizer, and returns
+        ``get_global_params()``). Holding the lock across the step is cheap (a
         CPU SGD step); followers contributing the next round are parked on the
         generation bump until we publish, so the accumulator is stable here.
+
+        The divisor is the *actual* arrival count read under the lock, not the
+        nominal ``group_size`` — so a dynamic-barrier round with fewer
+        contributors (a follower left during the drain) is still a correct mean,
+        matching the HTTP path's per-contributor averaging. ``arrivals`` and the
+        accumulator are mutated together under the lock in the follower's
+        contribute step, so they are always consistent here.
 
         Returns the new generation.
         """
         with self._region.locked():
+            n = max(1, self._region.arrivals())
             avg: "StateDict" = {}
             for name in self._region.names:
-                avg[name] = (
-                    self._region.accum_slice(name).clone() / self._group_size
-                ).reshape(self._region.shape(name))
+                avg[name] = (self._region.accum_slice(name).clone() / n).reshape(
+                    self._region.shape(name)
+                )
 
             new_master = step_fn(avg)
 

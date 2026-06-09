@@ -121,6 +121,51 @@ def test_server_owns_cleanup_until_stop(tmp_path):
     assert not os.path.exists(region.region_path), "server stop() did not clean up"
 
 
+def test_dynamic_barrier_releases_when_a_follower_leaves(tmp_path):
+    """The barrier is dynamic: a follower that leaves (clean shutdown/drain)
+    shrinks the live count so the remaining followers — already parked having
+    contributed — are released, instead of deadlocking on a contribution that
+    will never come. This is the shutdown deadlock a fixed group_size barrier
+    caused.
+    """
+    group_dir = str(tmp_path / "grp")
+    master = _master()
+    agg = SharedMemoryAggregator(group_dir)
+    agg.start(master, group_size=3)  # nominal 3, but one leaves without syncing
+
+    out = {}
+    g = {"w": torch.ones(4, 3), "b": torch.zeros(5)}
+
+    def contributor(wid):
+        _follower(group_dir, 3, wid, g, out)
+
+    def leaver():
+        # Joins (attach++) then leaves WITHOUT contributing — the drain case
+        # where a worker got save_and_stop between rounds.
+        be = SharedMemoryBackend(group_dir=group_dir, group_size=3, follower_only=True)
+        be.join(worker_id="C")
+        be.leave(worker_id="C")
+
+    def run_agg():
+        assert agg.wait_for_round(timeout=10.0)
+        agg.aggregate(lambda avg: {k: v.clone() for k, v in master.items()})
+
+    threads = [
+        threading.Thread(target=contributor, args=("A",)),
+        threading.Thread(target=contributor, args=("B",)),
+        threading.Thread(target=leaver),
+        threading.Thread(target=run_agg),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15)
+
+    # A and B both released despite only 2 of the nominal 3 contributing.
+    assert "A" in out and "B" in out, "dynamic barrier did not release the rest"
+    agg.stop()
+
+
 def test_start_fails_loud_if_region_already_owned(tmp_path):
     group_dir = str(tmp_path / "grp")
     master = _master()

@@ -4345,10 +4345,15 @@ class DiLoCoServer:
         outer step and publish, then handle audit + periodic save off the region
         lock. Runs until stop() signals teardown.
 
-        TODO(shm-fault-tolerance): shared-memory is ``fault_tolerant=False`` — a
-        worker that dies mid-round leaves arrivals < group_size and this loop
-        waits indefinitely (the group is effectively dead). Tie into the health
-        monitor to fail the round loud when a registered follower dies.
+        The barrier is dynamic (see ``SharedMemoryAggregator.wait_for_round``):
+        a follower that ``leave()``s — the clean shutdown / drain path — shrinks
+        the live count so the round releases on the survivors. The remaining gap
+        is a follower that *crashes* without leave()ing: its attach slot lingers,
+        the live count never drops, and this loop waits (shared-memory is
+        ``fault_tolerant=False`` — a dead co-located process kills the group).
+        TODO(shm-fault-tolerance): tie the health monitor's worker-death signal
+        to the region so a crashed follower's slot is reclaimed and the round
+        fails loud instead of stalling.
         """
         while not self._shm_stop.is_set() and self._running:
             try:
