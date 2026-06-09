@@ -85,6 +85,17 @@ def test_vector_fallback_warns_on_stderr(repo, capsys):
     assert "ran keyword" in err and "forgather docs index" in err
 
 
+def test_verbose_reports_actual_searched_root(repo, capsys):
+    # Verbose diagnostics must name the root the backend actually searched
+    # (search_roots), not a separately-derived one — so the line can't lie.
+    rc = _run(["search", "--mode", "vector", "-v", "frobnicate"])
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert str(repo) in err
+    assert "vector index: absent" in err
+    assert "requested=vector ran=keyword" in err
+
+
 def test_empty_query_exits_nonzero(repo, capsys):
     rc = _run(["search", "   "])
     assert rc == 2

@@ -65,7 +65,12 @@ def _search_cmd(args) -> int:
 
     # Imported after the sys.path insert; the empty package __init__ keeps this
     # cheap (no FastAPI), so the CLI stays fast for the common keyword path.
-    from forgather_server import docs_search, docs_vector  # noqa: E402
+    from forgather_server import docs_search, docs_vector, search_roots  # noqa: E402
+
+    # The backend derives the corpus root from search_roots, not from our
+    # ``repo_root`` (which only located ``tools/`` for the import). Report THAT
+    # root so the diagnostics can never claim to search a tree they didn't.
+    searched_root = Path(search_roots.forgather_repo_root())
 
     query = " ".join(args.query).strip()
     mode = args.mode
@@ -74,10 +79,10 @@ def _search_cmd(args) -> int:
 
     index_ok = docs_vector.index_available()
     if verbose:
-        print(f"# repo: {repo_root}", file=sys.stderr)
+        print(f"# repo: {searched_root}", file=sys.stderr)
         print(
             f"# vector index: {'available' if index_ok else 'absent'}"
-            + (f" ({_index_summary(repo_root)})" if index_ok else ""),
+            + (f" ({_index_summary(searched_root)})" if index_ok else ""),
             file=sys.stderr,
         )
 
@@ -89,12 +94,21 @@ def _search_cmd(args) -> int:
     except ValueError as e:  # empty query
         print(f"error: {e}", file=sys.stderr)
         return 2
+    except Exception as e:  # noqa: BLE001 — a diagnostic must report, not traceback
+        print(f"error: docs search failed: {e}", file=sys.stderr)
+        if mode in ("vector", "hybrid"):
+            print(
+                "hint: the vector index may be corrupt or incompatible — rebuild "
+                "with `forgather docs index --clean`.",
+                file=sys.stderr,
+            )
+        return 1
     elapsed = time.perf_counter() - t0
     ran_mode = result.get("mode", "keyword")
     fell_back = mode in ("vector", "hybrid") and ran_mode == "keyword"
 
     diagnostics = {
-        "repo_root": str(repo_root),
+        "repo_root": str(searched_root),
         "requested_mode": mode,
         "ran_mode": ran_mode,
         "vector_index_available": index_ok,
