@@ -93,11 +93,15 @@ Tool inventory by area:
 - **Inference / cluster / overrides**: `list_inference_servers`,
   `query_model` (confirm), `cluster_status`, `get_config_overrides`,
   `set_config_overrides` (confirm).
-- **Filesystem** (`stat_path` read; `delete_path` / `move_path` /
-  `copy_path` confirm) — general file management for cleanup /
-  reorganizing; reuses the `/api/fs/*` guards (fs-root, symlink-chain
-  rejection, depth floor, denylist). `delete_path` is recursive for
-  directories and irreversible.
+- **Filesystem** (`stat_path` read; `create_file` / `delete_path` /
+  `move_path` / `copy_path` confirm; `edit_file` propose) — general file
+  management for plain text/markdown/scratch files and cleanup /
+  reorganizing; reuses the `/api/fs/*` and config_ops write guards (fs-root,
+  symlink-chain rejection, depth floor, denylist, no-clobber-on-create,
+  optimistic mtime). `create_file` touches an empty file; `edit_file`
+  overwrites an existing file with a before/after diff (use
+  `propose_edit_config` for Forgather configs instead). `delete_path` is
+  recursive for directories and irreversible.
 - **Meta**: `list_tools`, `tool_help`, `call_tool` (see disclosure
   below); `list_playbook`, `read_playbook` (task procedures — see below).
 

@@ -3,6 +3,12 @@
 You are NOT limited to editing config files. Besides config authoring
 (propose_*), you can manage files directly:
 - stat_path — inspect a path (type/size/mtime/entry count).
+- create_file (CONFIRM) — touch a new empty file (markdown, notes, scratch).
+  Refuses if it already exists or its parent dir is missing.
+- edit_file (PROPOSE) — overwrite an existing plain text file; shown as a
+  before/after diff to approve. For configs/templates use propose_edit_config
+  (it also parse-checks); for everything else (markdown, notes, scripts) use
+  edit_file.
 - delete_path (CONFIRM) — delete a file OR, recursively, a directory (e.g. clear
   a model's output dir). Irreversible.
 - move_path / copy_path (CONFIRM).
