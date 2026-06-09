@@ -5,7 +5,7 @@
  *  a large diff never tries to render inside the narrow sidebar.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { DiffEditor } from "@monaco-editor/react";
 
@@ -122,6 +122,16 @@ export function AgentActionCard({
 }: Props) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
+  // The reject form (reason box + Confirm/Cancel) opens at the bottom of the
+  // card, which on a tall card lands below the thread's clip edge — hidden
+  // behind the composer with no hint to scroll. Pull it into view so the
+  // controls are reachable the instant Reject is clicked.
+  const rejectRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (rejecting) {
+      rejectRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+    }
+  }, [rejecting]);
   const hasDiff = card.before != null || card.after != null;
   const { added, removed } = lineDelta(card.before, card.after);
   const isPending = status === "pending";
@@ -192,7 +202,7 @@ export function AgentActionCard({
 
       {isPending ? (
         rejecting ? (
-          <div className="agent-action-reject">
+          <div className="agent-action-reject" ref={rejectRef}>
             <textarea
               className="agent-reject-reason"
               placeholder="Optional: why? (the agent uses this to adapt — e.g. 'use config Y instead')"

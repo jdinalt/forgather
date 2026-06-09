@@ -120,7 +120,17 @@ function docAbsPath(href: string, repoRoot?: string): string | null {
 }
 
 export function AgentThread({ agent, compact, onOpenFull, onOpenDoc, repoRoot }: Props) {
+  const threadRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
+  // "Stick to bottom" auto-follow (mirrors InferenceChatPanel). While the
+  // user is parked at the bottom, every new chunk pins the view to the tail;
+  // the moment they scroll up to read history mid-stream we stop yanking them
+  // back down. Kept in a ref so the scroll effect reads it synchronously.
+  const stickToBottomRef = useRef(true);
+  // Distance from the bottom (px) at which we still consider the user "at
+  // bottom" — forgives sub-pixel gaps after a programmatic scroll and small
+  // inertial overshoots.
+  const STICK_THRESHOLD_PX = 24;
 
   // Custom link handling so a link the agent emits never tears down the SPA:
   // doc references open in the in-app Docs view; everything else opens in a
@@ -156,13 +166,41 @@ export function AgentThread({ agent, compact, onOpenFull, onOpenDoc, repoRoot }:
     [onOpenDoc, repoRoot],
   );
 
-  // Autoscroll to the latest content as the stream grows.
+  // Autoscroll to the latest content as the stream grows — but only while the
+  // user hasn't scrolled up to read history. ``onThreadScroll`` maintains the
+  // stick flag this effect honors.
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: "end" });
+    if (stickToBottomRef.current) {
+      endRef.current?.scrollIntoView({ block: "end" });
+    }
   }, [agent.items]);
 
+  // When a new turn starts (busy goes high), re-engage auto-follow even if the
+  // user had scrolled up — sending implicitly means "show me the response."
+  const prevBusyRef = useRef(agent.busy);
+  useEffect(() => {
+    if (agent.busy && !prevBusyRef.current) {
+      stickToBottomRef.current = true;
+      endRef.current?.scrollIntoView({ block: "end" });
+    }
+    prevBusyRef.current = agent.busy;
+  }, [agent.busy]);
+
+  // Recompute "is at bottom" on every scroll. Programmatic scrolls land at the
+  // absolute bottom (distance 0) so they still report stuck — no special-case.
+  const onThreadScroll = () => {
+    const el = threadRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distanceFromBottom <= STICK_THRESHOLD_PX;
+  };
+
   return (
-    <div className={"agent-thread" + (compact ? " compact" : "")}>
+    <div
+      className={"agent-thread" + (compact ? " compact" : "")}
+      ref={threadRef}
+      onScroll={onThreadScroll}
+    >
       <div className="agent-thread-inner">
       {agent.items.length === 0 && (
         <div className="agent-empty muted">
