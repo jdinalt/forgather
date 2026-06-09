@@ -5,14 +5,15 @@ General file management — creating and editing plain text files, cleanup
 Read/inspect is already covered by read_file / list_directory / find_files;
 these add the mutating half plus a structured stat.
 
-``create_file`` (touch an empty file) and ``edit_file`` (overwrite an
-existing file, with a before/after diff) are the plain-file counterparts to
-the config/template authoring tools in ``tools_authoring`` — use those for
-Forgather configs (they scaffold and parse-check); use these for markdown,
-notes, and other non-config text. They reuse the same crash-atomic write
-primitives (``config_ops.write_template_file`` / ``write_existing_file``),
-so the fs-root allowlist, no-clobber-on-create, and optimistic mtime guards
-live in one place.
+``edit_file`` (write content to a file, creating it if missing, with a
+before/after diff) and ``create_file`` (touch an explicitly empty file) are
+the plain-file counterparts to the config/template authoring tools in
+``tools_authoring`` — use those for Forgather configs (they scaffold and
+parse-check); use these for markdown, notes, and other non-config text. They
+reuse the same crash-atomic write primitives
+(``config_ops.write_template_file`` / ``write_existing_file``), so the
+fs-root allowlist, no-clobber-on-create, and optimistic mtime guards live in
+one place.
 
 The mutations reuse the existing ``routes/fs.py`` handlers in their commit
 closures (the same cross-module reuse ``tools_jobs`` does with
@@ -254,33 +255,46 @@ def _edit_file(args: Dict[str, Any]) -> Proposal:
     new_content = args["new_content"]
     target = _resolve(raw)
     _require_in_fs_root(target)
-    if not target.exists():
-        raise ValueError(f"path does not exist (use create_file first): {target}")
-    if not target.is_file():
+    exists = target.exists()
+    if exists and not target.is_file():
         raise ValueError(f"not a regular file: {target}")
-    # Read the current content for the diff preview. fs-root is already
+    # Create-if-missing: writing content to a not-yet-existing path is the
+    # natural "write this file" gesture, so don't force a separate create_file
+    # round-trip. We still refuse to materialize a missing directory tree.
+    if not exists and not target.parent.is_dir():
+        raise ValueError(f"parent directory does not exist: {target.parent}")
+    # Read the current content for the diff preview (``None`` for a new file,
+    # which the webui renders as an all-added diff). fs-root is already
     # enforced above; read_raw also validates the file is readable text.
-    before = config_ops.read_raw(str(target))
+    before: Optional[str] = config_ops.read_raw(str(target)) if exists else None
     # Optimistic-concurrency baseline captured server-side at propose time
     # (mirrors propose_edit_config): the commit refuses only if the file
     # actually changed on disk between this read and approval.
     try:
-        expected_mtime: Optional[float] = os.path.getmtime(target)
+        expected_mtime: Optional[float] = os.path.getmtime(target) if exists else None
     except OSError:
         expected_mtime = None
 
     def commit() -> str:
-        info = config_ops.write_existing_file(
-            str(target), new_content, expected_mtime=expected_mtime
-        )
-        return (
-            f"wrote {info['bytes_written']} bytes to {info['path']} "
-            f"(mtime={info['mtime']})."
-        )
+        # Re-resolve existence at commit, not preview, so a file that appeared
+        # in the approval gap is handled correctly: an existing file goes
+        # through the mtime guard; a still-missing one is created (and
+        # write_template_file's no-clobber guard rejects a concurrent create
+        # rather than silently overwriting).
+        if target.exists():
+            info = config_ops.write_existing_file(
+                str(target), new_content, expected_mtime=expected_mtime
+            )
+            return (
+                f"wrote {info['bytes_written']} bytes to {info['path']} "
+                f"(mtime={info['mtime']})."
+            )
+        written = config_ops.write_template_file(str(target), new_content)
+        return f"created {written} ({len(new_content.encode('utf-8'))} bytes)."
 
     return Proposal(
-        title=f"Edit file: {target.name}",
-        summary=f"Overwrite {target}",
+        title=(f"Edit file: {target.name}" if exists else f"Create file: {target.name}"),
+        summary=(f"Overwrite {target}" if exists else f"Create {target} with content"),
         path=str(target),
         before=before,
         after=new_content,
@@ -333,10 +347,11 @@ def register_all(reg: ToolRegistry) -> None:
             description=(
                 "Create a new, empty file (like ``touch``) at an absolute path "
                 "inside the filesystem roots. Approval required. Refuses if the "
-                "path already exists or its parent directory is missing. For a "
-                "plain text / markdown / scratch file; put content in it with "
-                "edit_file. For a Forgather config or template use "
-                "propose_new_config instead (it scaffolds from a meta-template)."
+                "path already exists or its parent directory is missing. Use this "
+                "only when you specifically want an EMPTY file; to create a file "
+                "WITH content in one step, call edit_file (it creates if missing). "
+                "For a Forgather config or template use propose_new_config instead "
+                "(it scaffolds from a meta-template)."
             ),
             json_schema={
                 "type": "object",
@@ -353,13 +368,16 @@ def register_all(reg: ToolRegistry) -> None:
         ToolSpec(
             name="edit_file",
             description=(
-                "Overwrite an existing plain text file with new content, shown as "
-                "a before/after diff for approval. For arbitrary files (markdown, "
-                "notes, scripts) — NOT Forgather configs/templates, which have "
+                "Write content to a plain text file, shown as a before/after diff "
+                "for approval. Creates the file if it does not exist (the parent "
+                "directory must already exist), otherwise overwrites it. This is "
+                "the one-step way to create-with-content; create_file is only for "
+                "an explicitly empty file. For arbitrary files (markdown, notes, "
+                "scripts) — NOT Forgather configs/templates, which have "
                 "propose_edit_config (it additionally runs a post-write parse "
                 "check). Guards: absolute path inside the filesystem roots, and an "
-                "optimistic mtime check that refuses the write if the file changed "
-                "on disk since it was read."
+                "optimistic mtime check that refuses the write if an existing file "
+                "changed on disk since it was read."
             ),
             json_schema={
                 "type": "object",

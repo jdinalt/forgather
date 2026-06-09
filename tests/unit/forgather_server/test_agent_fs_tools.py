@@ -197,9 +197,23 @@ def test_edit_file_preview_diff_then_commit(tmp_path):
     assert f.read_text() == "# new\nbody\n" and "wrote" in msg
 
 
-def test_edit_file_refuses_missing(tmp_path):
+def test_edit_file_creates_when_missing(tmp_path):
+    # create-with-content in one step: edit_file on a non-existent path makes
+    # it (no separate create_file round-trip needed). The diff shows the file
+    # as all-added (before is None).
+    f = tmp_path / "new.md"
+    prop = tools_fs._edit_file({"path": str(f), "new_content": "# hi\n"})
+    assert prop.before is None and prop.after == "# hi\n"
+    assert not f.exists()  # preview did not create
+    msg = prop.commit()
+    assert f.read_text() == "# hi\n" and "created" in msg
+
+
+def test_edit_file_refuses_missing_parent(tmp_path):
+    # ...but still won't materialize a missing directory tree.
+    f = tmp_path / "no_dir" / "child.md"
     with pytest.raises(ValueError):
-        tools_fs._edit_file({"path": str(tmp_path / "ghost.md"), "new_content": "x"})
+        tools_fs._edit_file({"path": str(f), "new_content": "x"})
 
 
 def test_edit_file_stale_mtime_refused(tmp_path):

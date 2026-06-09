@@ -98,10 +98,11 @@ Tool inventory by area:
   management for plain text/markdown/scratch files and cleanup /
   reorganizing; reuses the `/api/fs/*` and config_ops write guards (fs-root,
   symlink-chain rejection, depth floor, denylist, no-clobber-on-create,
-  optimistic mtime). `create_file` touches an empty file; `edit_file`
-  overwrites an existing file with a before/after diff (use
-  `propose_edit_config` for Forgather configs instead). `delete_path` is
-  recursive for directories and irreversible.
+  optimistic mtime). `edit_file` writes content to a file with a before/after
+  diff, creating it if missing (the one-step create-with-content path);
+  `create_file` touches an explicitly empty file (use `propose_edit_config`
+  for Forgather configs instead). `delete_path` is recursive for directories
+  and irreversible.
 - **Meta**: `list_tools`, `tool_help`, `call_tool` (see disclosure
   below); `list_playbook`, `read_playbook` (task procedures — see below).
 

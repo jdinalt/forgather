@@ -1642,13 +1642,13 @@ Grouped by risk (the gate in `agent/registry.py`):
 - **Authoring** (`propose` → preview → commit) — `propose_edit_config`,
   `propose_new_config` (scaffold / copy / inline content),
   `propose_new_project`, `propose_new_workspace`.
-- **Plain-file management** — `create_file` (`confirm`: touch an empty
-  markdown/notes/scratch file) and `edit_file` (`propose`: overwrite an
-  existing file, shown as a before/after diff), plus `stat_path`,
-  `delete_path`, `move_path`, `copy_path` (`confirm`). The authoring tools
-  above are for Forgather configs/templates (they scaffold and parse-check);
-  these are for everything else, reusing the same crash-atomic write
-  primitives and fs-root / no-clobber / mtime guards.
+- **Plain-file management** — `edit_file` (`propose`: write content to a file
+  as a before/after diff, creating it if missing) and `create_file`
+  (`confirm`: touch an explicitly empty markdown/notes/scratch file), plus
+  `stat_path`, `delete_path`, `move_path`, `copy_path` (`confirm`). The
+  authoring tools above are for Forgather configs/templates (they scaffold and
+  parse-check); these are for everything else, reusing the same crash-atomic
+  write primitives and fs-root / no-clobber / mtime guards.
 - **Run-as-job** (`confirm` → approve → enqueue) — submit a config to the
   scheduler: `run_dataset` (build/inspect a dataset split), `run_construct`
   (materialize a named target, e.g. the model or a tokenizer), `run_train`
