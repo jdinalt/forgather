@@ -85,6 +85,36 @@ keyword, and the toggle notes that no index is built. The index lives under
 Prebuilt runtime images build the index (and cache the model) by default; pass
 `--build-arg BUILD_DOCS_INDEX=0` to skip it (e.g. a network-less build).
 
+### Search from the CLI (`forgather docs search`)
+
+The same ranker is exposed on the command line, so you can search the docs
+without a browser — handy for testing the ranker, scripting, and for coding
+agents that would otherwise fall back to `find`/`grep`. It calls the **same**
+`docs_search` backend the webui box and the agent's `search_docs` tool use
+(in-process — the server does **not** need to be running):
+
+```bash
+forgather docs search "resume training from a checkpoint"      # keyword (default)
+forgather docs search --mode vector "how do shards get merged" # semantic
+forgather docs search --mode hybrid --limit 5 "tls mtls certs" # vector+keyword (RRF)
+forgather docs search --json "diloco aggregator"               # machine-readable
+forgather docs search --mode vector -v "lazy model load"       # diagnostics on stderr
+```
+
+- `--mode keyword|vector|hybrid` — keyword runs fully offline; `vector`/`hybrid`
+  need the index above plus sentence-transformers and **fall back to keyword**
+  when either is missing (the reported mode reflects what actually ran, and a
+  `warning:` line explains *why* it fell back).
+- `--limit N` (default 8), `--json` (emits `{query, mode, hits, diagnostics}`),
+  `--no-agent-docs` (exclude `CLAUDE.md` / `CLAUDE.d/`, matching the user-facing
+  webui scope; included by default like the agent tool), `--repo-root PATH`.
+- `-v` / `--verbose` — print diagnostics to stderr: whether a vector index is
+  present (with model + chunk count), the requested-vs-actual mode, and the
+  elapsed time. Because the embedding model loads lazily on first use, a cold
+  `--mode vector` run includes that one-time load in its timing — this is the
+  fastest way to see exactly how long the model takes and whether vector search
+  is actually working (vs. silently falling back).
+
 ## Launch from the webui
 
 Sidebar menu: **Services -> MkDocs…** opens a modal that enqueues an

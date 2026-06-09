@@ -15,6 +15,7 @@ into standalone Python in `output_models/`.
 |---|---|
 | What does this project do, end-to-end? | `README.md`, then `CLAUDE.d/architecture.md` |
 | How do I run the `forgather` CLI? | `CLAUDE.d/cli.md`, or just `forgather <sub> --help` |
+| Searching the docs (prefer over `grep`) | `forgather docs search "..."` — keyword/vector/hybrid, no server needed; `docs/guides/mkdocs.md` |
 | How do templates and config inheritance work? | `CLAUDE.d/templates.md`, then `docs/configuration/syntax-reference.md` |
 | How does checkpointing work? | `CLAUDE.d/checkpointing.md`, then `docs/checkpointing/user_guide.md` |
 | Multi-node training / smoke tests | `CLAUDE.d/multinode.md`, then `docs/operations/tls.md` |
