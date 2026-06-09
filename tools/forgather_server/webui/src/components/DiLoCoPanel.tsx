@@ -1053,6 +1053,27 @@ function DashboardHeader({
           {mode}
         </span>
       )}
+      {/* Sync backend (issue #154), the group's transport topology
+       *  (http / shared_memory / collective). Server-declared and the value
+       *  workers validate against, so surfacing it here lets the operator
+       *  confirm what a server actually came up as — distinct from the mode
+       *  badge and from the grpc/http bulk-transport axis. */}
+      {info && (
+        <span
+          title="Sync backend (server-declared)"
+          style={{
+            display: "inline-block",
+            padding: "2px 8px",
+            borderRadius: 4,
+            fontSize: 11,
+            fontWeight: 600,
+            background: "#2a2440",
+            color: "#bb9af7",
+          }}
+        >
+          {info.expected_client_settings?.backend ?? "—"}
+        </span>
+      )}
       {status && (
         <span className="muted">
           Round <b style={{ color: "var(--text, inherit)" }}>{status.sync_round ?? 0}</b>

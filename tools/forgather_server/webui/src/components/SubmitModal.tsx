@@ -184,14 +184,14 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   const [diHeartbeat, setDiHeartbeat] = useState<string>(
     persistedDiLoCo.heartbeatInterval,
   );
-  // Launch mode (issue #154). The sync backend (http / shared_memory) is NOT
-  // chosen here — it's declared on the param server and derived at launch from
-  // /info. The one operator-visible launch choice is the *topology*: the normal
-  // worker pool, or "collective" (one torchrun job of N replicas). Not
-  // persisted; single-host, so it's ignored on the cluster-fanout path.
-  const [diCollective, setDiCollective] = useState<boolean>(false);
+  // Launch topology (issue #154) is no longer an operator choice. The sync
+  // backend (http / shared_memory / collective) is declared on the param
+  // server and read from /info; ``diCollective`` is derived from it below
+  // (once /info resolves) rather than picked here, so the operator can't
+  // select a topology the scheduler would reject. Single-host only, so it's
+  // ignored on the cluster-fanout path.
   // Collective: the replica count (one torchrun job of N replicas = nproc = GPU
-  // reservation). Only used when diCollective is true.
+  // reservation). Only used when the server declares the collective backend.
   const [diReplicate, setDiReplicate] = useState<number>(2);
   // Multi-node + DiLoCo composition: the bundle becomes one DiLoCo
   // worker group, all ranks sharing this base worker_id (the PP
@@ -298,6 +298,24 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     enabled: !!selectedDiLoCoBase,
     staleTime: 60_000,
   });
+  // The launch topology is the server's declared backend, not an operator
+  // choice: a "collective" server runs one torchrun job of N replicas, while
+  // http/shared_memory servers use the worker pool. Derived from /info so the
+  // submit path and UI stay consistent with what the worker will actually
+  // launch (and validate). False until /info resolves (and for older servers
+  // that don't advertise a backend) — the safe worker-pool default.
+  const diCollective =
+    dilocoInfoQ.data?.expected_client_settings?.backend === "collective";
+  // A collective group's world size IS the server's declared num_workers, so
+  // seed the replica count (= nproc / GPU reservation) from it once /info
+  // resolves. Keyed on the declared count so switching servers re-seeds; the
+  // operator can still override in the input below.
+  useEffect(() => {
+    const declared = dilocoInfoQ.data?.num_workers;
+    if (diCollective && declared && declared >= 2) {
+      setDiReplicate(declared);
+    }
+  }, [diCollective, dilocoInfoQ.data?.num_workers]);
   // Under DiLoCo the worker no longer takes a model path: it fetches the
   // model definition (config + custom code + tokenizer) from the server's
   // /model_def endpoint, builds the model empty on meta, and pulls weights
@@ -901,7 +919,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
             // sections are open, the CSS clamps each to half the
             // available body height and the inner table scrolls
             // independently.
-            <details className="submit-section" open>
+            <details className="submit-section">
               <summary>
                 <h4 className="dyn-heading">
                   Multi-node{" "}
@@ -934,7 +952,6 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
               heartbeatInterval={diHeartbeat}
               setHeartbeatInterval={setDiHeartbeat}
               collective={diCollective}
-              setCollective={setDiCollective}
               replicate={diReplicate}
               setReplicate={setDiReplicate}
               resumableWorkers={resumableWorkers}
@@ -954,7 +971,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
             />
           )}
 
-          <details className="submit-section" open>
+          <details className="submit-section">
             <summary>
               <h4 className="dyn-heading">
                 Dynamic arguments
@@ -1071,10 +1088,10 @@ interface DiLoCoPickerProps {
   onSelectBase: (base: string) => void;
   heartbeatInterval: string;
   setHeartbeatInterval: (v: string) => void;
-  // Launch topology (non-cluster only; single-host). The sync backend itself is
-  // server-declared; the operator only picks worker-pool vs collective here.
+  // Launch topology (non-cluster only; single-host). Derived from the server's
+  // declared backend (collective vs http/shared_memory), not an operator
+  // choice — shown read-only so the operator can see what will launch.
   collective: boolean;
-  setCollective: (v: boolean) => void;
   replicate: number;
   setReplicate: (v: number) => void;
   // Worker pool (batch submit; non-cluster only).
@@ -1110,7 +1127,6 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
     heartbeatInterval,
     setHeartbeatInterval,
     collective,
-    setCollective,
     replicate,
     setReplicate,
     resumableWorkers,
@@ -1208,7 +1224,7 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
   // worker_id, hide the pool.
   if (clusterFanout) {
     return (
-      <details className="submit-section" open>
+      <details className="submit-section">
         <summary>
           <h4 className="dyn-heading">
             DiLoCo{" "}
@@ -1312,7 +1328,7 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
     // selection couldn't be restored — is always visible at a glance.
     // Collapsing it on "None" previously hid the reset (issue #95).
     // Still user-collapsible: this only sets the initial open state.
-    <details className="submit-section" open>
+    <details className="submit-section">
       <summary>
         <h4 className="dyn-heading">
           DiLoCo{" "}
@@ -1395,6 +1411,16 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
             {info && (
               <div className="muted" style={{ marginBottom: 6 }}>
                 Server mode: <strong>{info.mode ?? "—"}</strong>
+                {info.expected_client_settings?.backend && (
+                  <>
+                    {" "}
+                    · backend{" "}
+                    <strong>{info.expected_client_settings.backend}</strong>
+                  </>
+                )}
+                {info.num_workers !== undefined && (
+                  <> · {info.num_workers} workers</>
+                )}
                 {info.num_parameters !== undefined && (
                   <> · {info.num_parameters.toLocaleString()} params</>
                 )}
@@ -1475,6 +1501,36 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
                       })()}
                     </strong>
                   </span>
+                  {/* transport (grpc/http) and wire_format describe the
+                      over-the-wire bulk tensor legs, which only the http
+                      backend uses — for shared_memory / collective they're
+                      inert and showing them (always "http"/"pickle") just
+                      misleads. The backend itself is on the mode line above. */}
+                  {(info.expected_client_settings?.backend ?? "http") ===
+                    "http" && (
+                    <>
+                      <span>
+                        transport:{" "}
+                        <strong>{info.transport ?? "http"}</strong>
+                      </span>
+                      <span>
+                        wire_format:{" "}
+                        <strong>
+                          {info.expected_client_settings?.wire_format ??
+                            "pickle"}
+                        </strong>
+                      </span>
+                    </>
+                  )}
+                  <span>
+                    heartbeat_timeout:{" "}
+                    <strong>
+                      {info.expected_client_settings?.heartbeat_timeout !==
+                      undefined
+                        ? `${info.expected_client_settings.heartbeat_timeout}s`
+                        : "—"}
+                    </strong>
+                  </span>
                 </div>
               </fieldset>
             )}
@@ -1492,31 +1548,28 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
               />
             </label>
 
-            <label style={{ display: "block", maxWidth: "16em" }}>
-              launch topology
-              <select
-                value={collective ? "collective" : "workers"}
-                onChange={(e) => setCollective(e.target.value === "collective")}
-                style={{ width: "100%" }}
-              >
-                <option value="workers">worker pool</option>
-                <option value="collective">collective (single-host)</option>
-              </select>
+            {/* Launch topology is the server's declared backend (shown in the
+                summary above), not an operator choice: a collective server
+                runs one torchrun job of N replicas; http/shared_memory servers
+                use the worker pool. The worker validates its launched backend
+                against the server and fails loud on disagreement, so there's
+                nothing safe to pick here — we just reflect the derived mode. */}
+            <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
               {collective ? (
-                <span className="muted" style={{ fontSize: 11 }}>
-                  N replicas run as one torchrun job that all-reduce
-                  pseudo-gradients (single-host). One job, sized below — the
-                  worker pool doesn't apply. The param server must declare
-                  --backend collective.
-                </span>
+                <>
+                  Launch topology: <strong>collective</strong> — N replicas run
+                  as one torchrun job that all-reduce pseudo-gradients
+                  (single-host). One job, sized below; the worker pool doesn't
+                  apply.
+                </>
               ) : (
-                <span className="muted" style={{ fontSize: 11 }}>
-                  The sync backend (http / shared_memory) is declared on the
-                  param server and applied at launch — there's no per-submit
-                  choice, so workers can't disagree.
-                </span>
+                <>
+                  Launch topology: <strong>worker pool</strong> — the sync
+                  backend (http / shared_memory) is declared on the param server
+                  and applied at launch, so workers can't disagree.
+                </>
               )}
-            </label>
+            </div>
 
             {collective ? (
               <label style={{ display: "block", maxWidth: "16em" }}>
@@ -1533,7 +1586,8 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
                 />
                 <span className="muted" style={{ fontSize: 11 }}>
                   = nproc_per_node and the GPU reservation for the one job.
-                  Minimum 2 (a single replica has no peers to all-reduce).
+                  Seeded from the server's worker count; minimum 2 (a single
+                  replica has no peers to all-reduce).
                 </span>
               </label>
             ) : (
