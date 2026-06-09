@@ -15,18 +15,32 @@ reuse the same crash-atomic write primitives
 fs-root allowlist, no-clobber-on-create, and optimistic mtime guards live in
 one place.
 
-The mutations reuse the existing ``routes/fs.py`` handlers in their commit
-closures (the same cross-module reuse ``tools_jobs`` does with
-``routes.jobs``), so the authoritative guards live in exactly one place:
-fs-root allowlist, symlink-chain rejection, the depth floor (>=4 path
-components), the ``_FORBIDDEN_PATHS`` denylist, and the ``confirmed`` ack.
-Previews are read-only — they validate fs-root + existence for fast
-feedback and gather scope (size / entry count), but never touch disk;
-the route handler re-runs every guard at commit. ``HTTPException`` from a
-guard is translated to ``ValueError`` so the agent gets a clean message.
+Two guard paths, by operation risk — they are deliberately NOT the same:
+
+- ``delete_path`` / ``move_path`` / ``copy_path`` reuse the existing
+  ``routes/fs.py`` handlers in their commit closures (the same cross-module
+  reuse ``tools_jobs`` does with ``routes.jobs``), so their authoritative
+  guards live in one place: fs-root allowlist, symlink-chain rejection, the
+  depth floor (>=4 path components), the ``_FORBIDDEN_PATHS`` denylist, and
+  the ``confirmed`` ack. The route handler re-runs every guard at commit;
+  ``HTTPException`` from a guard is translated to ``ValueError``.
+- ``create_file`` / ``edit_file`` go through ``config_ops`` directly
+  (``write_template_file`` / ``write_existing_file``), the same primitives
+  the ``tools_authoring`` config writers use, so their guards are fs-root
+  allowlist, no-clobber-on-create, and the optimistic mtime check. They do
+  NOT apply the delete-style depth floor or denylist on purpose: the depth
+  floor is calibrated to stop a catastrophic recursive *delete*, and would
+  wrongly reject a legitimate edit near a shallow fs-root; a single
+  approval-gated file write with a visible diff has a different risk profile.
+  ``_resolve`` canonicalizes (follows symlinks) before the fs-root check, so
+  a symlink escaping the roots is still rejected.
+
+Previews are read-only — they validate fs-root + existence/scope for fast
+feedback, but never touch disk; the write is re-checked at commit.
 
 Core-tier (file management is a common operation, so these stay in the tool
-array even in deferred mode). Everything but ``stat_path`` is CONFIRM-gated.
+array even in deferred mode). ``stat_path`` is READ; ``edit_file`` is
+PROPOSE (it carries a diff preview); the rest are CONFIRM-gated.
 """
 
 from __future__ import annotations
@@ -232,9 +246,9 @@ def _create_file(args: Dict[str, Any]) -> Proposal:
         raise ValueError(f"path already exists: {target}")
     # ``touch`` semantics: create the file, not its parents. Refuse a missing
     # parent rather than silently materializing a directory tree (use the
-    # webui / a shell for that). config_ops.write_template_file would makedirs,
-    # so this guard is enforced here at preview *and* the parent is re-checked
-    # implicitly because the dest must still be writable at commit.
+    # webui / a shell for that). This is enforced at preview only —
+    # config_ops.write_template_file would makedirs at commit — which is fine:
+    # the user can't approve a proposal that preview refused to build.
     if not target.parent.is_dir():
         raise ValueError(f"parent directory does not exist: {target.parent}")
 
