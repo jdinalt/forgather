@@ -1411,6 +1411,13 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
             {info && (
               <div className="muted" style={{ marginBottom: 6 }}>
                 Server mode: <strong>{info.mode ?? "—"}</strong>
+                {info.expected_client_settings?.backend && (
+                  <>
+                    {" "}
+                    · backend{" "}
+                    <strong>{info.expected_client_settings.backend}</strong>
+                  </>
+                )}
                 {info.num_workers !== undefined && (
                   <> · {info.num_workers} workers</>
                 )}
@@ -1494,26 +1501,27 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
                       })()}
                     </strong>
                   </span>
-                  {/* Bulk-transport topology (issue #154). Server-declared;
-                      the worker validates its launched backend against this
-                      and fails loud on disagreement, so surfacing the
-                      declared values lets the operator catch a mismatch
-                      before submitting. */}
-                  <span>
-                    backend:{" "}
-                    <strong>
-                      {info.expected_client_settings?.backend ?? "—"}
-                    </strong>
-                  </span>
-                  <span>
-                    transport: <strong>{info.transport ?? "http"}</strong>
-                  </span>
-                  <span>
-                    wire_format:{" "}
-                    <strong>
-                      {info.expected_client_settings?.wire_format ?? "pickle"}
-                    </strong>
-                  </span>
+                  {/* transport (grpc/http) and wire_format describe the
+                      over-the-wire bulk tensor legs, which only the http
+                      backend uses — for shared_memory / collective they're
+                      inert and showing them (always "http"/"pickle") just
+                      misleads. The backend itself is on the mode line above. */}
+                  {(info.expected_client_settings?.backend ?? "http") ===
+                    "http" && (
+                    <>
+                      <span>
+                        transport:{" "}
+                        <strong>{info.transport ?? "http"}</strong>
+                      </span>
+                      <span>
+                        wire_format:{" "}
+                        <strong>
+                          {info.expected_client_settings?.wire_format ??
+                            "pickle"}
+                        </strong>
+                      </span>
+                    </>
+                  )}
                   <span>
                     heartbeat_timeout:{" "}
                     <strong>
