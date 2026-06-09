@@ -5227,6 +5227,44 @@ li.config.selected button.link:hover {
   padding: 6px 8px 8px;
 }
 
+/* DiLoCo server modal — collapsible parameter groups. Mirrors the visual
+   treatment of .submit-section but standalone (no flex / scroll / max-height):
+   a closed group is just its summary bar in a tight box, with no empty
+   interior. The disclosure triangle is a touch larger than .submit-section's
+   for legibility. */
+.collapsible-section {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+}
+.collapsible-section > summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  padding: 5px 8px;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 3px;
+}
+.collapsible-section[open] > summary {
+  border-radius: 3px 3px 0 0;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+}
+.collapsible-section > summary::-webkit-details-marker {
+  display: none;
+}
+.collapsible-section > summary::before {
+  content: "▶";
+  display: inline-block;
+  width: 14px;
+  font-size: 12px;
+  color: var(--muted, #888);
+  margin-right: 6px;
+  transition: transform 0.15s;
+}
+.collapsible-section[open] > summary::before {
+  transform: rotate(90deg);
+}
+
 .cj-empty {
   padding: 6px 10px;
   font-size: 11px;

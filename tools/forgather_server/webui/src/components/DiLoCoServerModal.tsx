@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import { api } from "../api";
 import { persistGet, persistSet } from "../persist";
@@ -11,6 +11,34 @@ import { ModalBackdrop } from "./ModalBackdrop";
 import { PathField } from "./PathField";
 
 const STORAGE_KEY = "forgather-diloco-server-modal";
+
+/** A section whose body collapses behind a clickable header bar. Most runs
+ *  leave the advanced groups at their defaults, so they start collapsed to
+ *  keep the modal from feeling overwhelming; the operator expands what they
+ *  need. Uses a native (uncontrolled) <details> so a closed section renders
+ *  nothing but its summary bar — no empty bordered box — mirroring the
+ *  Submit modal's ``.submit-section`` pattern. These sit as flat siblings in
+ *  the modal grid (no nesting), so there's no toggle-bubbling to guard. */
+function CollapsibleSection({
+  title,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <details
+      className="collapsible-section"
+      open={defaultOpen}
+      style={{ gridColumn: "1 / -1" }}
+    >
+      <summary>{title}</summary>
+      <div style={{ padding: 8 }}>{children}</div>
+    </details>
+  );
+}
 
 interface PersistedAdHoc {
   outputDir: string;
@@ -26,7 +54,13 @@ interface PersistedAdHoc {
   // workers adopt them from /info (no per-worker knob).
   syncEvery: number;
   numFragments: number;
-  bf16Comm: boolean;
+  // Wire precision (issue #130). Four server-authoritative knobs covering
+  // each leg × dtype-vs-stochastic-rounding. ``uploadDtype`` replaces the
+  // legacy ``bf16Comm`` boolean (which was just upload bf16-vs-fp32).
+  uploadDtype: string;
+  uploadSr: boolean;
+  downloadDtype: string;
+  downloadSr: boolean;
   fromCheckpoint: string;
   // Optional label for this run's stats log dir (runs/<timestamp>_<runName>),
   // holding the JSONL stream + TensorBoard events. Honored on a fresh start;
@@ -68,7 +102,10 @@ const DEFAULT_AD_HOC: PersistedAdHoc = {
   dyluBase: 500,
   syncEvery: 500,
   numFragments: 1,
-  bf16Comm: true,
+  uploadDtype: "bf16",
+  uploadSr: false,
+  downloadDtype: "fp32",
+  downloadSr: false,
   fromCheckpoint: "",
   runName: "",
   saveEvery: 10,
@@ -90,8 +127,17 @@ function loadPersisted(): PersistedAdHoc {
   const raw = persistGet(STORAGE_KEY);
   if (!raw) return DEFAULT_AD_HOC;
   try {
-    const parsed = JSON.parse(raw) as Partial<PersistedAdHoc>;
-    return { ...DEFAULT_AD_HOC, ...parsed };
+    const parsed = JSON.parse(raw) as Partial<PersistedAdHoc> & {
+      bf16Comm?: boolean;
+    };
+    const merged = { ...DEFAULT_AD_HOC, ...parsed };
+    // Migrate the legacy ``bf16Comm`` boolean (upload bf16 vs fp32) when a
+    // pre-#130 blob predates the explicit uploadDtype knob, so a saved fp32
+    // upload preference isn't silently flipped back to bf16 on upgrade.
+    if (parsed.uploadDtype === undefined && parsed.bf16Comm === false) {
+      merged.uploadDtype = "fp32";
+    }
+    return merged;
   } catch {
     return DEFAULT_AD_HOC;
   }
@@ -166,7 +212,16 @@ export function DiLoCoServerModal({
         dyluBase: pickNum(editingService.args, "dylu_base_sync_every", 500),
         syncEvery: pickNum(editingService.args, "sync_every", 500),
         numFragments: pickNum(editingService.args, "num_fragments", 1),
-        bf16Comm: pickBool(editingService.args, "bf16_comm", true),
+        // Prefer the explicit #130 keys; fall back to the deprecated
+        // ``bf16_comm`` boolean (upload bf16 vs fp32) for older service args.
+        uploadDtype: pickStr(
+          editingService.args,
+          "upload_dtype",
+          pickBool(editingService.args, "bf16_comm", true) ? "bf16" : "fp32",
+        ),
+        uploadSr: pickBool(editingService.args, "upload_sr", false),
+        downloadDtype: pickStr(editingService.args, "download_dtype", "fp32"),
+        downloadSr: pickBool(editingService.args, "download_sr", false),
         fromCheckpoint: pickStr(editingService.args, "from_checkpoint", ""),
         runName: pickStr(editingService.args, "run_name", ""),
         saveEvery: pickNum(editingService.args, "save_every", 10),
@@ -198,7 +253,10 @@ export function DiLoCoServerModal({
   const [dyluBase, setDyluBase] = useState(seed.dyluBase);
   const [syncEvery, setSyncEvery] = useState(seed.syncEvery);
   const [numFragments, setNumFragments] = useState(seed.numFragments);
-  const [bf16Comm, setBf16Comm] = useState(seed.bf16Comm);
+  const [uploadDtype, setUploadDtype] = useState(seed.uploadDtype);
+  const [uploadSr, setUploadSr] = useState(seed.uploadSr);
+  const [downloadDtype, setDownloadDtype] = useState(seed.downloadDtype);
+  const [downloadSr, setDownloadSr] = useState(seed.downloadSr);
   const [fromCheckpoint, setFromCheckpoint] = useState(seed.fromCheckpoint);
   const [runName, setRunName] = useState(seed.runName);
   const [saveEvery, setSaveEvery] = useState(seed.saveEvery);
@@ -280,8 +338,23 @@ export function DiLoCoServerModal({
       // Group-wide worker settings (adopted from /info; no worker knob).
       sync_every: syncEvery,
       num_fragments: numFragments,
-      bf16_comm: bf16Comm,
     };
+    // Wire precision (issue #130). Emit only on divergence from the CLI
+    // default (bf16 upload, fp32 download), keeping the spawned argv readable.
+    // Stochastic rounding is meaningful only on an fp32 → bf16 cast, so emit
+    // it only when its leg is actually bf16.
+    if (uploadDtype && uploadDtype !== "bf16") {
+      args.upload_dtype = uploadDtype;
+    }
+    if (uploadSr && uploadDtype === "bf16") {
+      args.upload_sr = true;
+    }
+    if (downloadDtype && downloadDtype !== "fp32") {
+      args.download_dtype = downloadDtype;
+    }
+    if (downloadSr && downloadDtype === "bf16") {
+      args.download_sr = true;
+    }
     if (dnBufferSize > 0) args.dn_buffer_size = dnBufferSize;
     if (dylu) args.dylu_base_sync_every = dyluBase;
     if (trimmedFromCheckpoint) args.from_checkpoint = trimmedFromCheckpoint;
@@ -300,19 +373,28 @@ export function DiLoCoServerModal({
     if (!noAuth) {
       args.regen_token = regenToken;
     }
-    if (bulkCleartext) {
-      args.bulk_cleartext = true;
-    }
-    // Bulk transport (issue #154). Emit only on divergence from the CLI
-    // default (pickle / HTTP), keeping the spawned argv readable.
-    if (wireFormat && wireFormat !== "pickle") {
-      args.wire_format = wireFormat;
-    }
+    // Sync backend (issue #154). Emit only on divergence from the CLI default
+    // (http), keeping the spawned argv readable.
     if (backend && backend !== "http") {
       args.backend = backend;
     }
-    if (grpcEnabled) {
-      args.grpc_enabled = true;
+    // Bulk transport (issue #154) only applies to the http backend: the
+    // wire codec, the gRPC fast-path, and the cleartext bulk plane all govern
+    // the over-the-wire tensor legs, which shared_memory (shared CPU region)
+    // and collective (torch.distributed all-reduce) don't use. Emit them only
+    // for http so the argv reflects what's actually in play.
+    if (backend === "http") {
+      if (wireFormat && wireFormat !== "pickle") {
+        args.wire_format = wireFormat;
+      }
+      if (grpcEnabled) {
+        // gRPC is the single bulk fast-path and supersedes the cleartext
+        // plane (the server forces bulk_cleartext off under gRPC), so emit
+        // only one of the two.
+        args.grpc_enabled = true;
+      } else if (bulkCleartext) {
+        args.bulk_cleartext = true;
+      }
     }
     return args;
   };
@@ -330,7 +412,10 @@ export function DiLoCoServerModal({
       dyluBase,
       syncEvery,
       numFragments,
-      bf16Comm,
+      uploadDtype,
+      uploadSr,
+      downloadDtype,
+      downloadSr,
       fromCheckpoint: trimmedFromCheckpoint,
       runName,
       saveEvery,
@@ -573,12 +658,10 @@ export function DiLoCoServerModal({
             </label>
           </div>
 
-          <fieldset style={{ gridColumn: "1 / -1", padding: 8 }}>
-            <legend>Worker settings (group-wide)</legend>
+          <CollapsibleSection title="Synchronization">
             <div className="muted" style={{ fontSize: "smaller", marginBottom: 6 }}>
-              These must match across every worker, so they're set here and
-              adopted by each worker from <code>/info</code> — there are no
-              per-worker flags.
+              Group-wide and server-authoritative: set here and adopted by each
+              worker from <code>/info</code> — there are no per-worker flags.
             </div>
             <div
               style={{
@@ -612,19 +695,10 @@ export function DiLoCoServerModal({
                   style={{ width: "100%" }}
                 />
               </label>
-              <label style={{ gridColumn: "1 / -1" }}>
-                <input
-                  type="checkbox"
-                  checked={bf16Comm}
-                  onChange={(e) => setBf16Comm(e.target.checked)}
-                />{" "}
-                bf16 pseudo-gradient communication
-              </label>
             </div>
-          </fieldset>
+          </CollapsibleSection>
 
-          <fieldset style={{ gridColumn: "1 / -1", padding: 8 }}>
-            <legend>Sync mode</legend>
+          <CollapsibleSection title="Async mode">
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <label>
                 <input
@@ -669,10 +743,81 @@ export function DiLoCoServerModal({
                 </>
               )}
             </div>
-          </fieldset>
+          </CollapsibleSection>
 
-          <fieldset style={{ gridColumn: "1 / -1", padding: 8 }}>
-            <legend>Outer optimizer</legend>
+          <CollapsibleSection title="Precision">
+            <div className="muted" style={{ fontSize: "smaller", marginBottom: 6 }}>
+              Server-authoritative wire precision (issue #130), per leg. Each
+              worker adopts these from <code>/info</code>. Stochastic rounding
+              only applies on an fp32 → bf16 cast.
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 8,
+              }}
+            >
+              <label>
+                upload_dtype{" "}
+                <span className="muted" style={{ fontSize: "smaller" }}>
+                  (worker → server)
+                </span>
+                <select
+                  value={uploadDtype}
+                  onChange={(e) => setUploadDtype(e.target.value)}
+                  style={{ width: "100%" }}
+                >
+                  <option value="bf16">bf16</option>
+                  <option value="fp32">fp32</option>
+                </select>
+              </label>
+              <label>
+                download_dtype{" "}
+                <span className="muted" style={{ fontSize: "smaller" }}>
+                  (server → worker)
+                </span>
+                <select
+                  value={downloadDtype}
+                  onChange={(e) => setDownloadDtype(e.target.value)}
+                  style={{ width: "100%" }}
+                >
+                  <option value="fp32">fp32</option>
+                  <option value="bf16">bf16</option>
+                </select>
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={uploadSr && uploadDtype === "bf16"}
+                  disabled={uploadDtype !== "bf16"}
+                  onChange={(e) => setUploadSr(e.target.checked)}
+                />{" "}
+                upload stochastic rounding
+                {uploadDtype !== "bf16" && (
+                  <div className="muted" style={{ fontSize: "smaller" }}>
+                    Needs upload_dtype = bf16.
+                  </div>
+                )}
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={downloadSr && downloadDtype === "bf16"}
+                  disabled={downloadDtype !== "bf16"}
+                  onChange={(e) => setDownloadSr(e.target.checked)}
+                />{" "}
+                download stochastic rounding
+                {downloadDtype !== "bf16" && (
+                  <div className="muted" style={{ fontSize: "smaller" }}>
+                    Needs download_dtype = bf16.
+                  </div>
+                )}
+              </label>
+            </div>
+          </CollapsibleSection>
+
+          <CollapsibleSection title="Outer optimizer">
             <div
               style={{
                 display: "grid",
@@ -711,10 +856,9 @@ export function DiLoCoServerModal({
                 Disable Nesterov momentum
               </label>
             </div>
-          </fieldset>
+          </CollapsibleSection>
 
-          <fieldset style={{ gridColumn: "1 / -1", padding: 8 }}>
-            <legend>Persistence + monitoring</legend>
+          <CollapsibleSection title="Persistence + monitoring">
             <div
               style={{
                 display: "grid",
@@ -753,10 +897,9 @@ export function DiLoCoServerModal({
                 />
               </label>
             </div>
-          </fieldset>
+          </CollapsibleSection>
 
-          <fieldset style={{ gridColumn: "1 / -1", padding: 8 }}>
-            <legend>Security (auth + bulk plane)</legend>
+          <CollapsibleSection title="Security">
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <label>
                 <input
@@ -783,28 +926,11 @@ export function DiLoCoServerModal({
                   until they re-pull it
                 </span>
               </label>
+            </div>
+          </CollapsibleSection>
 
-              <hr style={{ width: "100%", opacity: 0.2 }} />
-
-              <label>
-                <input
-                  type="checkbox"
-                  checked={bulkCleartext}
-                  onChange={(e) => setBulkCleartext(e.target.checked)}
-                />{" "}
-                <code>--bulk-cleartext</code>{" "}
-                <span className="muted" style={{ fontSize: "smaller" }}>
-                  Bypass TLS for bulk data: serve /submit_pseudograd,
-                  /submit_fragment_pseudograd, and /global_params on a
-                  separate cleartext listener on a server-assigned
-                  ephemeral port (workers learn it over the encrypted
-                  control channel). Trades on-wire confidentiality of the
-                  bulk tensors for throughput — trusted LANs only.
-                </span>
-              </label>
-
-              <hr style={{ width: "100%", opacity: 0.2 }} />
-
+          <CollapsibleSection title="Transport">
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <label>
                 <code>--backend</code>{" "}
                 <select
@@ -822,38 +948,72 @@ export function DiLoCoServerModal({
                   <code>--backend</code> the workers are submitted with.
                 </span>
               </label>
-              <label>
-                <code>--wire-format</code>{" "}
-                <select
-                  value={wireFormat}
-                  onChange={(e) => setWireFormat(e.target.value)}
-                >
-                  <option value="pickle">pickle</option>
-                  <option value="safetensors">safetensors</option>
-                </select>{" "}
-                <span className="muted" style={{ fontSize: "smaller" }}>
-                  Bulk-tensor wire codec. <code>safetensors</code> drops pickle
-                  for an explicit typed, zero-copy frame (no arbitrary-code
-                  deserialization); <code>pickle</code> is the back-compatible
-                  default.
-                </span>
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={grpcEnabled}
-                  onChange={(e) => setGrpcEnabled(e.target.checked)}
-                />{" "}
-                <code>--grpc</code>{" "}
-                <span className="muted" style={{ fontSize: "smaller" }}>
-                  Serve the bulk legs over a streaming gRPC listener (workers
-                  negotiate it via /info; HTTP stays the fallback). Supersedes{" "}
-                  <code>--bulk-cleartext</code>. Cleartext/trusted-LAN today —
-                  TLS parity is a follow-up.
-                </span>
-              </label>
+
+              {backend === "http" ? (
+                <>
+                  <hr style={{ width: "100%", opacity: 0.2 }} />
+                  <label>
+                    <code>--wire-format</code>{" "}
+                    <select
+                      value={wireFormat}
+                      onChange={(e) => setWireFormat(e.target.value)}
+                    >
+                      <option value="pickle">pickle</option>
+                      <option value="safetensors">safetensors</option>
+                    </select>{" "}
+                    <span className="muted" style={{ fontSize: "smaller" }}>
+                      Bulk-tensor wire codec. <code>safetensors</code> drops
+                      pickle for an explicit typed, zero-copy frame (no
+                      arbitrary-code deserialization); <code>pickle</code> is
+                      the back-compatible default.
+                    </span>
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={grpcEnabled}
+                      onChange={(e) => setGrpcEnabled(e.target.checked)}
+                    />{" "}
+                    <code>--grpc</code>{" "}
+                    <span className="muted" style={{ fontSize: "smaller" }}>
+                      Serve the bulk legs over a streaming gRPC listener
+                      (workers negotiate it via /info; HTTP stays the fallback).
+                      Supersedes <code>--bulk-cleartext</code>. Cleartext/
+                      trusted-LAN today — TLS parity is a follow-up.
+                    </span>
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={bulkCleartext && !grpcEnabled}
+                      disabled={grpcEnabled}
+                      onChange={(e) => setBulkCleartext(e.target.checked)}
+                    />{" "}
+                    <code>--bulk-cleartext</code>{" "}
+                    <span className="muted" style={{ fontSize: "smaller" }}>
+                      Bypass TLS for bulk data: serve /submit_pseudograd,
+                      /submit_fragment_pseudograd, and /global_params on a
+                      separate cleartext listener on a server-assigned ephemeral
+                      port (workers learn it over the encrypted control
+                      channel). Trades on-wire confidentiality of the bulk
+                      tensors for throughput — trusted LANs only.
+                      {grpcEnabled && (
+                        <> Superseded by <code>--grpc</code>.</>
+                      )}
+                    </span>
+                  </label>
+                </>
+              ) : (
+                <div className="muted" style={{ fontSize: "smaller" }}>
+                  Wire format, gRPC, and the cleartext bulk plane apply only to
+                  the <code>http</code> backend — the{" "}
+                  <code>{backend}</code> backend moves tensors off the HTTP wire
+                  (shared CPU region / collective all-reduce), so there's
+                  nothing to configure here.
+                </div>
+              )}
             </div>
-          </fieldset>
+          </CollapsibleSection>
         </div>
 
         {!!enqueue.error && (
