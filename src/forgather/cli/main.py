@@ -64,6 +64,34 @@ def parse_global_args(args=None):
     return global_args, remaining_args
 
 
+# Global options that take a value (the following token is the value, not the
+# subcommand). Mirrors parse_global_args.
+_GLOBAL_VALUE_FLAGS = ("-p", "--project-dir", "-t", "--config-template")
+
+
+def _subcommand_token_index(tokens):
+    """Index of the subcommand token (the first positional), skipping leading
+    global options.
+
+    Used to gate the per-command arg carve-outs so a *positional argument* that
+    happens to equal a command name — e.g. the word "server" inside a
+    ``forgather docs search …`` query — does not trigger another command's
+    arg-rewriting. Returns ``None`` if there is no positional token.
+    """
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok.startswith("--") and "=" in tok:
+            i += 1  # --opt=value is a single token
+        elif tok in _GLOBAL_VALUE_FLAGS:
+            i += 2  # value-taking global flag consumes the next token
+        elif tok.startswith("-"):
+            i += 1  # boolean / unknown global flag
+        else:
+            return i
+    return None
+
+
 def get_subcommand_registry():
     """Registry of all available subcommands and their argument parsers."""
     from .agent_args import create_agent_parser
@@ -84,7 +112,7 @@ def get_subcommand_registry():
     from .dataset_args import create_dataset_parser
     from .dataset_server_args import create_dataset_server_parser
     from .diloco_args import create_diloco_parser
-    from .docs_args import create_docs_parser
+    from .docs_args import create_docs_parser, create_search_parser
     from .eval_args import create_eval_parser
     from .gpu_args import create_gpu_parser
     from .job_args import create_job_parser
@@ -142,6 +170,7 @@ def get_subcommand_registry():
         "cluster": create_cluster_parser,
         "mkdocs": create_mkdocs_parser,
         "docs": create_docs_parser,
+        "search": create_search_parser,  # alias for `docs search`
         "tls": create_tls_parser,
         "agent": create_agent_parser,
     }
@@ -227,9 +256,18 @@ def parse_args(args=None):
     dataset_server_original_args = None  # Save original args for dataset-server
     removed_flags = []
 
+    # The subcommand is the first positional token (after any leading global
+    # options). Gate EVERY per-command carve-out below on it, so a positional
+    # argument that happens to equal a command name — e.g. the word
+    # "server"/"convert"/"finalize" inside a `docs search …` query — never
+    # triggers another command's arg-rewriting. (It also means exactly one
+    # carve-out can fire per invocation, instead of any whose name appears.)
+    _sub_idx = _subcommand_token_index(args_list)
+    _sub = args_list[_sub_idx] if _sub_idx is not None else None
+
     # Handle 'inf' command with --interactive/-i
-    if "inf" in args_list:
-        inf_idx = args_list.index("inf")
+    if _sub == "inf":
+        inf_idx = _sub_idx
         remaining_after_inf = args_list[inf_idx + 1 :]
         if "--interactive" in remaining_after_inf or "-i" in remaining_after_inf:
             inf_interactive_workaround = True
@@ -251,8 +289,8 @@ def parse_args(args=None):
 
     # Handle 'convert' command with -t
     # Save original args for convert, then remove -t to prevent global parser from consuming it
-    if "convert" in args_list:
-        convert_idx = args_list.index("convert")
+    if _sub == "convert":
+        convert_idx = _sub_idx
         remaining_after_convert = args_list[convert_idx + 1 :]
         # Save the original args after 'convert' for later use
         convert_original_args = remaining_after_convert.copy()
@@ -274,29 +312,20 @@ def parse_args(args=None):
     # Handle 'server' command — forwards everything; `-p` means --port to the
     # server, not the global --project-dir. Strip anything after `server` from
     # what the global parser sees and preserve the original tokens verbatim.
-    # Only match the top-level `server` subcommand, not the `server` token
-    # inside `inf server ...`.
-    if "server" in args_list:
-        srv_idx = args_list.index("server")
-        # The carve-out is only for the top-level ``forgather server``
-        # subcommand. Other parents that *contain* a ``server`` sub-
-        # subcommand (``inf server``, ``cluster server``) must NOT be
-        # rewritten — their positional args after ``server`` are real
-        # args for the inner subparser, not REMAINDER passthrough.
-        _server_parents = ("inf", "cluster", "diloco")
-        if srv_idx > 0 and args_list[srv_idx - 1] in _server_parents:
-            pass  # leave args_list alone — the inner subparser handles them
-        else:
-            server_original_args = args_list[srv_idx + 1 :]
-            args_list = args_list[: srv_idx + 1]
+    # Applies only when `server` is the actual subcommand — never when the word
+    # "server" appears as a positional (e.g. inside a `docs search …` query, or
+    # as `inf server` / `cluster server`, where the parent owns the subtree).
+    if _sub == "server":
+        server_original_args = args_list[_sub_idx + 1 :]
+        args_list = args_list[: _sub_idx + 1]
 
     # 'dataset-server start' uses REMAINDER passthrough so the
     # underlying script's --port (-p) doesn't conflict with the global
     # -p / --project-dir; --help and other server flags should also
     # reach the script verbatim. The diagnostic actions (status, list,
     # cache, local) are parsed normally — they have no flag conflicts.
-    if "dataset-server" in args_list:
-        ds_idx = args_list.index("dataset-server")
+    if _sub == "dataset-server":
+        ds_idx = _sub_idx
         after_ds = args_list[ds_idx + 1 :]
         if after_ds and after_ds[0] == "start":
             # Capture everything after 'start' as the remainder; keep
@@ -307,8 +336,8 @@ def parse_args(args=None):
 
     # Handle 'finalize' command with -t (same conflict as convert; -t is the
     # finalize chat-template-path flag)
-    if "finalize" in args_list:
-        fin_idx = args_list.index("finalize")
+    if _sub == "finalize":
+        fin_idx = _sub_idx
         remaining_after_fin = args_list[fin_idx + 1 :]
         finalize_original_args = remaining_after_fin.copy()
         if "-t" in remaining_after_fin:
@@ -607,6 +636,14 @@ def main():
 
                 mkdocs_cmd(args)
             case "docs":
+                from .docs import docs_cmd
+
+                rc = docs_cmd(args)
+                if rc:
+                    sys.exit(rc)
+            case "search":
+                # Top-level alias for `forgather docs search` (the parser sets
+                # docs_action="search" so the namespace dispatches correctly).
                 from .docs import docs_cmd
 
                 rc = docs_cmd(args)
