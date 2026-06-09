@@ -1,22 +1,46 @@
-"""Agent filesystem tools: stat / delete / move / copy.
+"""Agent filesystem tools: stat / create / edit / delete / move / copy.
 
-General file management — primarily for cleanup (removing stale runs /
-output dirs / scratch files) and reorganizing. Read/inspect is already
-covered by read_file / list_directory / find_files; these add the
-mutating half plus a structured stat.
+General file management — creating and editing plain text files, cleanup
+(removing stale runs / output dirs / scratch files), and reorganizing.
+Read/inspect is already covered by read_file / list_directory / find_files;
+these add the mutating half plus a structured stat.
 
-The mutations reuse the existing ``routes/fs.py`` handlers in their commit
-closures (the same cross-module reuse ``tools_jobs`` does with
-``routes.jobs``), so the authoritative guards live in exactly one place:
-fs-root allowlist, symlink-chain rejection, the depth floor (>=4 path
-components), the ``_FORBIDDEN_PATHS`` denylist, and the ``confirmed`` ack.
-Previews are read-only — they validate fs-root + existence for fast
-feedback and gather scope (size / entry count), but never touch disk;
-the route handler re-runs every guard at commit. ``HTTPException`` from a
-guard is translated to ``ValueError`` so the agent gets a clean message.
+``edit_file`` (write content to a file, creating it if missing, with a
+before/after diff) and ``create_file`` (touch an explicitly empty file) are
+the plain-file counterparts to the config/template authoring tools in
+``tools_authoring`` — use those for Forgather configs (they scaffold and
+parse-check); use these for markdown, notes, and other non-config text. They
+reuse the same crash-atomic write primitives
+(``config_ops.write_template_file`` / ``write_existing_file``), so the
+fs-root allowlist, no-clobber-on-create, and optimistic mtime guards live in
+one place.
+
+Two guard paths, by operation risk — they are deliberately NOT the same:
+
+- ``delete_path`` / ``move_path`` / ``copy_path`` reuse the existing
+  ``routes/fs.py`` handlers in their commit closures (the same cross-module
+  reuse ``tools_jobs`` does with ``routes.jobs``), so their authoritative
+  guards live in one place: fs-root allowlist, symlink-chain rejection, the
+  depth floor (>=4 path components), the ``_FORBIDDEN_PATHS`` denylist, and
+  the ``confirmed`` ack. The route handler re-runs every guard at commit;
+  ``HTTPException`` from a guard is translated to ``ValueError``.
+- ``create_file`` / ``edit_file`` go through ``config_ops`` directly
+  (``write_template_file`` / ``write_existing_file``), the same primitives
+  the ``tools_authoring`` config writers use, so their guards are fs-root
+  allowlist, no-clobber-on-create, and the optimistic mtime check. They do
+  NOT apply the delete-style depth floor or denylist on purpose: the depth
+  floor is calibrated to stop a catastrophic recursive *delete*, and would
+  wrongly reject a legitimate edit near a shallow fs-root; a single
+  approval-gated file write with a visible diff has a different risk profile.
+  ``_resolve`` canonicalizes (follows symlinks) before the fs-root check, so
+  a symlink escaping the roots is still rejected.
+
+Previews are read-only — they validate fs-root + existence/scope for fast
+feedback, but never touch disk; the write is re-checked at commit.
 
 Core-tier (file management is a common operation, so these stay in the tool
-array even in deferred mode). Everything but ``stat_path`` is CONFIRM-gated.
+array even in deferred mode). ``stat_path`` is READ; ``edit_file`` is
+PROPOSE (it carries a diff preview); the rest are CONFIRM-gated.
 """
 
 from __future__ import annotations
@@ -24,10 +48,11 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
+from .. import config_ops
 from .. import paths as fs_paths
-from .registry import CONFIRM, READ, Proposal, ToolRegistry, ToolSpec
+from .registry import CONFIRM, PROPOSE, READ, Proposal, ToolRegistry, ToolSpec
 
 log = logging.getLogger("forgather_server.agent.tools_fs")
 
@@ -210,6 +235,87 @@ def _copy_path(args: Dict[str, Any]) -> Proposal:
     )
 
 
+# ---- create / edit plain files (CONFIRM / PROPOSE) -------------------------
+
+
+def _create_file(args: Dict[str, Any]) -> Proposal:
+    raw = args["path"]
+    target = _resolve(raw)
+    _require_in_fs_root(target)
+    if target.exists():
+        raise ValueError(f"path already exists: {target}")
+    # ``touch`` semantics: create the file, not its parents. Refuse a missing
+    # parent rather than silently materializing a directory tree (use the
+    # webui / a shell for that). This is enforced at preview only —
+    # config_ops.write_template_file would makedirs at commit — which is fine:
+    # the user can't approve a proposal that preview refused to build.
+    if not target.parent.is_dir():
+        raise ValueError(f"parent directory does not exist: {target.parent}")
+
+    def commit() -> str:
+        written = config_ops.write_template_file(str(target), "")
+        return f"created empty file {written}"
+
+    return Proposal(
+        title=f"Create file: {target.name}",
+        summary=f"Create a new empty file at {target}.",
+        extra={"path": str(target), "kind": "file", "bytes": 0},
+        commit=commit,
+    )
+
+
+def _edit_file(args: Dict[str, Any]) -> Proposal:
+    raw = args["path"]
+    new_content = args["new_content"]
+    target = _resolve(raw)
+    _require_in_fs_root(target)
+    exists = target.exists()
+    if exists and not target.is_file():
+        raise ValueError(f"not a regular file: {target}")
+    # Create-if-missing: writing content to a not-yet-existing path is the
+    # natural "write this file" gesture, so don't force a separate create_file
+    # round-trip. We still refuse to materialize a missing directory tree.
+    if not exists and not target.parent.is_dir():
+        raise ValueError(f"parent directory does not exist: {target.parent}")
+    # Read the current content for the diff preview (``None`` for a new file,
+    # which the webui renders as an all-added diff). fs-root is already
+    # enforced above; read_raw also validates the file is readable text.
+    before: Optional[str] = config_ops.read_raw(str(target)) if exists else None
+    # Optimistic-concurrency baseline captured server-side at propose time
+    # (mirrors propose_edit_config): the commit refuses only if the file
+    # actually changed on disk between this read and approval.
+    try:
+        expected_mtime: Optional[float] = os.path.getmtime(target) if exists else None
+    except OSError:
+        expected_mtime = None
+
+    def commit() -> str:
+        # Re-resolve existence at commit, not preview, so a file that appeared
+        # in the approval gap is handled correctly: an existing file goes
+        # through the mtime guard; a still-missing one is created (and
+        # write_template_file's no-clobber guard rejects a concurrent create
+        # rather than silently overwriting).
+        if target.exists():
+            info = config_ops.write_existing_file(
+                str(target), new_content, expected_mtime=expected_mtime
+            )
+            return (
+                f"wrote {info['bytes_written']} bytes to {info['path']} "
+                f"(mtime={info['mtime']})."
+            )
+        written = config_ops.write_template_file(str(target), new_content)
+        return f"created {written} ({len(new_content.encode('utf-8'))} bytes)."
+
+    return Proposal(
+        title=(f"Edit file: {target.name}" if exists else f"Create file: {target.name}"),
+        summary=(f"Overwrite {target}" if exists else f"Create {target} with content"),
+        path=str(target),
+        before=before,
+        after=new_content,
+        commit=commit,
+    )
+
+
 def register_all(reg: ToolRegistry) -> None:
     reg.register(
         ToolSpec(
@@ -247,6 +353,56 @@ def register_all(reg: ToolRegistry) -> None:
             },
             handler=_delete_path,
             risk=CONFIRM,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="create_file",
+            description=(
+                "Create a new, empty file (like ``touch``) at an absolute path "
+                "inside the filesystem roots. Approval required. Refuses if the "
+                "path already exists or its parent directory is missing. Use this "
+                "only when you specifically want an EMPTY file; to create a file "
+                "WITH content in one step, call edit_file (it creates if missing). "
+                "For a Forgather config or template use propose_new_config instead "
+                "(it scaffolds from a meta-template)."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path of the file to create."},
+                },
+                "required": ["path"],
+            },
+            handler=_create_file,
+            risk=CONFIRM,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="edit_file",
+            description=(
+                "Write content to a plain text file, shown as a before/after diff "
+                "for approval. Creates the file if it does not exist (the parent "
+                "directory must already exist), otherwise overwrites it. This is "
+                "the one-step way to create-with-content; create_file is only for "
+                "an explicitly empty file. For arbitrary files (markdown, notes, "
+                "scripts) — NOT Forgather configs/templates, which have "
+                "propose_edit_config (it additionally runs a post-write parse "
+                "check). Guards: absolute path inside the filesystem roots, and an "
+                "optimistic mtime check that refuses the write if an existing file "
+                "changed on disk since it was read."
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path of the existing file to overwrite."},
+                    "new_content": {"type": "string", "description": "The full new file content."},
+                },
+                "required": ["path", "new_content"],
+            },
+            handler=_edit_file,
+            risk=PROPOSE,
         )
     )
     reg.register(

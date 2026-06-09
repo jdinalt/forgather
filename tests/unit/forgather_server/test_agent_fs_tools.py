@@ -8,9 +8,17 @@ from __future__ import annotations
 
 import pytest
 
+from forgather_server import config_ops
 from forgather_server import paths as fs_paths
 from forgather_server.agent import tools_fs
-from forgather_server.agent.registry import CONFIRM, EXTENDED, READ, Proposal, ToolRegistry
+from forgather_server.agent.registry import (
+    CONFIRM,
+    EXTENDED,
+    PROPOSE,
+    READ,
+    Proposal,
+    ToolRegistry,
+)
 
 
 def _reg():
@@ -23,8 +31,10 @@ def test_registration_risk_and_tier():
     by = {s.name: s for s in _reg().specs()}
     # File management is core (always in the array, incl. deferred mode).
     assert by["stat_path"].risk == READ and by["stat_path"].tier != EXTENDED
-    for name in ("delete_path", "move_path", "copy_path"):
+    for name in ("delete_path", "move_path", "copy_path", "create_file"):
         assert by[name].risk == CONFIRM and by[name].tier != EXTENDED
+    # edit_file produces a diff preview, so it is PROPOSE (not CONFIRM).
+    assert by["edit_file"].risk == PROPOSE and by["edit_file"].tier != EXTENDED
 
 
 def test_playbook_covers_filesystem_tools():
@@ -32,7 +42,14 @@ def test_playbook_covers_filesystem_tools():
     from forgather_server.agent import playbook
 
     fs = playbook.read("filesystem")
-    for token in ("delete_path", "move_path", "copy_path", "stat_path"):
+    for token in (
+        "delete_path",
+        "move_path",
+        "copy_path",
+        "stat_path",
+        "create_file",
+        "edit_file",
+    ):
         assert token in fs
 
 
@@ -130,3 +147,86 @@ def test_copy_then_overwrite_refused_then_auto_rename(tmp_path):
         {"src": str(src), "dest_dir": str(dest), "auto_rename": True}
     ).commit()
     assert "(copy)" in msg
+
+
+# ---- create_file -----------------------------------------------------------
+
+
+def test_create_file_preview_then_commit(tmp_path):
+    f = tmp_path / "notes.md"
+    prop = tools_fs._create_file({"path": str(f)})
+    assert isinstance(prop, Proposal) and prop.extra["bytes"] == 0
+    assert not f.exists()  # preview did not create
+    msg = prop.commit()
+    assert f.exists() and f.read_text() == "" and "created empty file" in msg
+
+
+def test_create_file_refuses_existing(tmp_path):
+    f = tmp_path / "there.md"
+    f.write_text("x")
+    with pytest.raises(ValueError):
+        tools_fs._create_file({"path": str(f)})
+
+
+def test_create_file_refuses_missing_parent(tmp_path):
+    # touch semantics: do not materialize a missing directory tree.
+    f = tmp_path / "no_such_dir" / "child.md"
+    with pytest.raises(ValueError):
+        tools_fs._create_file({"path": str(f)})
+
+
+def test_create_file_fs_root_refusal(tmp_path, monkeypatch):
+    monkeypatch.setattr(fs_paths, "is_path_in_fs_root", lambda p: False)
+    with pytest.raises(ValueError):
+        tools_fs._create_file({"path": str(tmp_path / "a.md")})
+
+
+# ---- edit_file -------------------------------------------------------------
+
+
+def test_edit_file_preview_diff_then_commit(tmp_path):
+    f = tmp_path / "doc.md"
+    f.write_text("# old\n")
+    prop = tools_fs._edit_file({"path": str(f), "new_content": "# new\nbody\n"})
+    assert isinstance(prop, Proposal)
+    # The preview carries the diff fields that drive the webui Monaco editor.
+    assert prop.path == str(f) and prop.before == "# old\n"
+    assert prop.after == "# new\nbody\n"
+    assert f.read_text() == "# old\n"  # preview did not write
+    msg = prop.commit()
+    assert f.read_text() == "# new\nbody\n" and "wrote" in msg
+
+
+def test_edit_file_creates_when_missing(tmp_path):
+    # create-with-content in one step: edit_file on a non-existent path makes
+    # it (no separate create_file round-trip needed). The diff shows the file
+    # as all-added (before is None).
+    f = tmp_path / "new.md"
+    prop = tools_fs._edit_file({"path": str(f), "new_content": "# hi\n"})
+    assert prop.before is None and prop.after == "# hi\n"
+    assert not f.exists()  # preview did not create
+    msg = prop.commit()
+    assert f.read_text() == "# hi\n" and "created" in msg
+
+
+def test_edit_file_refuses_missing_parent(tmp_path):
+    # ...but still won't materialize a missing directory tree.
+    f = tmp_path / "no_dir" / "child.md"
+    with pytest.raises(ValueError):
+        tools_fs._edit_file({"path": str(f), "new_content": "x"})
+
+
+def test_edit_file_stale_mtime_refused(tmp_path):
+    f = tmp_path / "race.md"
+    f.write_text("v1\n")
+    prop = tools_fs._edit_file({"path": str(f), "new_content": "v2\n"})
+    # Someone else writes after the preview captured the baseline mtime.
+    import os
+    import time
+
+    later = os.path.getmtime(f) + 10
+    os.utime(f, (later, later))
+    time.sleep(0)
+    with pytest.raises(config_ops.StaleEditError):
+        prop.commit()
+    assert f.read_text() == "v1\n"  # the clobber was refused

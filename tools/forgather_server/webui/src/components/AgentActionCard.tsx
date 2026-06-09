@@ -185,6 +185,10 @@ export function AgentActionCard({
               minimap: { enabled: false },
               scrollBeyondLastLine: false,
               fontSize: 12,
+              // Reclaim per-side width for the actual text: drop the unused
+              // glyph margin and keep the line-number column tight.
+              glyphMargin: false,
+              lineNumbersMinChars: 3,
               // The card width is now responsive (breaks out of the reading
               // band to fill the thread), so let Monaco re-measure on resize.
               automaticLayout: true,
