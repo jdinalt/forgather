@@ -6089,15 +6089,16 @@ li.config.selected button.link:hover {
 }
 /* A card carrying a file diff breaks out of the 120ch reading band: a
    side-by-side diff needs far more than 60ch per side. It fills the thread's
-   full content width (``cqw`` of .agent-thread), capped at 1600px, and stays
-   centered on the band. The margin math keeps it centered for any thread
-   width: card-left offset from the band = (bandWidth - cardWidth) / 2 =
-   50% - cardWidth/2. Resolves to a no-op when the thread is already
-   narrower than the band (sidebar), where 100cqw == the band width. */
+   FULL content width (``100cqw`` of .agent-thread) — no fixed px cap, so the
+   diff gets every pixel the pane allows — and stays centered on the band. The
+   margin math keeps it centered for any thread width: card-left offset from
+   the band = (bandWidth - cardWidth) / 2 = 50% - cardWidth/2. Resolves to a
+   no-op when the thread is already narrower than the band (sidebar), where
+   100cqw == the band width. */
 .agent-action-card.has-diff {
-  width: min(100cqw, 1600px);
+  width: 100cqw;
   max-width: none;
-  margin-left: calc(50% - min(50cqw, 800px));
+  margin-left: calc(50% - 50cqw);
 }
 .agent-action-card[data-status="approved"] {
   border-color: var(--border);
