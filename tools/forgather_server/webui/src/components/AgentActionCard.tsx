@@ -149,7 +149,14 @@ export function AgentActionCard({
   const argsEntries = Object.entries(card.proposed_args ?? {});
 
   return (
-    <div className={"agent-action-card" + (compact ? " compact" : "")} data-status={status}>
+    <div
+      className={
+        "agent-action-card" +
+        (compact ? " compact" : "") +
+        (hasDiff && !compact ? " has-diff" : "")
+      }
+      data-status={status}
+    >
       <div className="agent-action-head">
         <span className={"agent-risk-chip risk-" + card.risk}>{card.risk}</span>
         <span className="agent-action-title">{card.title}</span>
@@ -178,6 +185,9 @@ export function AgentActionCard({
               minimap: { enabled: false },
               scrollBeyondLastLine: false,
               fontSize: 12,
+              // The card width is now responsive (breaks out of the reading
+              // band to fill the thread), so let Monaco re-measure on resize.
+              automaticLayout: true,
             }}
           />
         </div>

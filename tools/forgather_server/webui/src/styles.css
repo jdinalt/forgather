@@ -5982,6 +5982,10 @@ li.config.selected button.link:hover {
   min-height: 0;
   overflow-y: auto;
   padding: 10px;
+  /* Query container so a file-diff card can break out of the 120ch reading
+     band below and fill the actual thread width (``cqw``). Only the inline
+     axis is contained, so vertical scrolling is unaffected. */
+  container-type: inline-size;
 }
 /* Centered, width-capped column so the conversation stays readable on wide
    monitors (mirrors .info-pane-content in the Docs view). The scroll +
@@ -6082,6 +6086,18 @@ li.config.selected button.link:hover {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+/* A card carrying a file diff breaks out of the 120ch reading band: a
+   side-by-side diff needs far more than 60ch per side. It fills the thread's
+   full content width (``cqw`` of .agent-thread), capped at 1600px, and stays
+   centered on the band. The margin math keeps it centered for any thread
+   width: card-left offset from the band = (bandWidth - cardWidth) / 2 =
+   50% - cardWidth/2. Resolves to a no-op when the thread is already
+   narrower than the band (sidebar), where 100cqw == the band width. */
+.agent-action-card.has-diff {
+  width: min(100cqw, 1600px);
+  max-width: none;
+  margin-left: calc(50% - min(50cqw, 800px));
 }
 .agent-action-card[data-status="approved"] {
   border-color: var(--border);
