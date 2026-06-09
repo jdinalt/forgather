@@ -272,15 +272,13 @@ def test_derived_http_emits_no_backend_env(mock_query):
     assert "DILOCO_REPLICATE" not in env
 
 
-def test_derived_shared_memory_uses_server_identity_and_worker_count(mock_query):
-    # Server declares shared_memory + a worker count; the scheduler derives the
-    # group dir from the SERVER (stable, base_url-derived) and the size from the
-    # server's num_workers — no submit-time group id involved.
-    import os
-    import tempfile
-
-    from forgather_server import cluster_diloco_inventory as cdi
-
+def test_derived_shared_memory_sets_only_backend(mock_query):
+    # Flavor 2 (issue #154): the co-located server IS the aggregator and owns
+    # the region — it advertises shm_group_dir + shm_group_size in /info, and the
+    # worker (a follower) reads them at runtime. So the orchestrated launch path
+    # sets ONLY the backend selector; it does NOT derive a region dir or size,
+    # and in particular must not size the group from the mutable /info
+    # num_workers (the #199 hazard).
     mock_query["info"] = {
         "expected_client_settings": {"backend": "shared_memory"},
         "num_workers": 4,
@@ -288,24 +286,8 @@ def test_derived_shared_memory_uses_server_identity_and_worker_count(mock_query)
     server = "https://param.example:8512"
     env = _diloco_env_from_job_params({"server_addr": server, "worker_id": "w1"}, QID)
     assert env["DILOCO_BACKEND"] == "shared_memory"
-    expected_id = cdi.server_id_for(cdi._normalize(server))
-    assert env["DILOCO_SHM_GROUP_DIR"] == os.path.join(
-        tempfile.gettempdir(), f"diloco_shm_{expected_id}"
-    )
-    assert env["DILOCO_SHM_GROUP_SIZE"] == "4"
-
-
-def test_derived_shared_memory_same_server_yields_same_group_dir(mock_query):
-    # Two co-located workers against the same server compute the SAME region dir
-    # without any shared submit-time id (the server's identity is the group key).
-    mock_query["info"] = {
-        "expected_client_settings": {"backend": "shared_memory"},
-        "num_workers": 2,
-    }
-    server = "https://param.example:8512"
-    a = _diloco_env_from_job_params({"server_addr": server, "worker_id": "a"}, QID)
-    b = _diloco_env_from_job_params({"server_addr": server, "worker_id": "b"}, QID)
-    assert a["DILOCO_SHM_GROUP_DIR"] == b["DILOCO_SHM_GROUP_DIR"]
+    assert "DILOCO_SHM_GROUP_DIR" not in env
+    assert "DILOCO_SHM_GROUP_SIZE" not in env
 
 
 def test_derived_collective_sets_replicate(mock_query):

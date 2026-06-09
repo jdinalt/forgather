@@ -110,9 +110,10 @@ class SharedMemoryBackend(OuterSyncBackend):
         *,
         group_dir: str,
         group_size: int,
-        init_checkpoint: str,
+        init_checkpoint: Optional[str] = None,
         outer_opt_factory: Optional[Callable] = None,
         lock_timeout: float = 300.0,
+        follower_only: bool = False,
     ):
         if group_size < 1:
             raise ValueError(f"group_size must be >= 1, got {group_size}")
@@ -123,6 +124,14 @@ class SharedMemoryBackend(OuterSyncBackend):
         self.init_checkpoint = init_checkpoint
         self.outer_opt_factory = outer_opt_factory or _default_outer_optimizer_factory
         self.lock_timeout = lock_timeout
+        # Flavor 2 (issue #154): when the co-located server is the aggregator,
+        # every worker is a pure follower — it must NEVER take the ownership
+        # lease or create a region (no self-elected aggregator, no silent
+        # fallback to a workerless region), only attach to the region the server
+        # created. ``init_checkpoint`` is unused on this path (the server seeds
+        # the master). The legacy lease-based role election (worker-as-aggregator)
+        # remains for the serverless/test regime when this is False.
+        self.follower_only = bool(follower_only)
 
         self._shm_dir = os.path.join(self.group_dir, _SHM_SUBDIR)
         self._region_path = os.path.join(self._shm_dir, _REGION)
@@ -238,6 +247,12 @@ class SharedMemoryBackend(OuterSyncBackend):
         factory = outer_opt_factory or self.outer_opt_factory
         os.makedirs(self._shm_dir, exist_ok=True)
 
+        # Flavor 2: pure follower — wait for the server's region, attach, never
+        # create or self-elect.
+        if self.follower_only:
+            self._join_follower_only()
+            return self._read_master_snapshot()
+
         with self._locked():
             # Release the lease/fd if the role decision raises (a bad
             # init_checkpoint, OOM building the master, a group_size mismatch on
@@ -268,6 +283,29 @@ class SharedMemoryBackend(OuterSyncBackend):
             self._ctrl[_W_ATTACH] = int(self._ctrl[_W_ATTACH]) + 1
 
         return self._read_master_snapshot()
+
+    def _join_follower_only(self) -> None:
+        """Attach to a region created by the server-side aggregator (Flavor 2).
+
+        Polls for the server's manifest (its presence is the region-ready
+        signal), then attaches under the rendezvous lock and counts itself in
+        the attach total. Never takes the ownership lease and never creates a
+        region: a shared-memory worker must not self-elect — it waits for the
+        server. Fails loud if the server never publishes a region.
+        """
+        deadline = time.time() + self.lock_timeout
+        while not os.path.exists(self._manifest_path):
+            if time.time() > deadline:
+                raise TimeoutError(
+                    "SharedMemoryBackend: timed out waiting for the DiLoCo "
+                    "server to create the shared-memory region under "
+                    f"{self.group_dir}. Is the server running with "
+                    "--backend shared_memory?"
+                )
+            time.sleep(_POLL_INTERVAL)
+        with self._locked():
+            self._attach_as_follower()
+            self._ctrl[_W_ATTACH] = int(self._ctrl[_W_ATTACH]) + 1
 
     def _try_acquire_ownership(self) -> bool:
         """Try to take the aggregator ownership lease.

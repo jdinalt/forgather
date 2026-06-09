@@ -186,19 +186,18 @@ class DiLoCoCallback(TrainerCallback):
                 f"DILOCO_BACKEND must be 'http', 'shared_memory', or "
                 f"'collective', got {self.backend_kind!r}"
             )
+        # Shared-memory rendezvous. Under Flavor 2 (server is the aggregator)
+        # these come from the server's /info (shm_group_dir / shm_group_size),
+        # resolved in _make_sync_backend; the env vars remain an optional
+        # override (e.g. the serverless/test regime). So they are NOT required
+        # here — the dir/size are validated at backend construction, against
+        # /info, with a loud error if neither source supplies them.
         self.shm_group_dir = diloco_shm_group_dir()
         self.shm_group_size = diloco_shm_group_size()
         self.shm_init_checkpoint = diloco_shm_init_checkpoint() or None
         # Collective backend seeds from this (rank 0) when set, else from the
         # coordinator's advertised model_checkpoint_dir.
         self.init_checkpoint = diloco_init_checkpoint() or None
-        if self.backend_kind == "shared_memory" and (
-            not self.shm_group_dir or self.shm_group_size < 1
-        ):
-            raise ValueError(
-                "DILOCO_BACKEND=shared_memory requires DILOCO_SHM_GROUP_DIR and "
-                "DILOCO_SHM_GROUP_SIZE (>= 1)."
-            )
 
         # Worker instance (created in on_load_model_weights)
         self._worker = None
@@ -287,6 +286,13 @@ class DiLoCoCallback(TrainerCallback):
             # The server's outer-optimizer config, so a backend that runs the
             # outer step itself (shared-memory) matches it exactly.
             "outer_optimizer": info.get("outer_optimizer"),
+            # Shared-memory rendezvous (Flavor 2, issue #154). The server owns
+            # the region and is the aggregator; a follower reads the region dir
+            # + group size from /info rather than re-deriving them. Absent ⇒ an
+            # HTTP/collective server (or a pre-Flavor-2 shared-memory server);
+            # the env-var override path (DILOCO_SHM_GROUP_DIR/SIZE) still works.
+            "shm_group_dir": info.get("shm_group_dir"),
+            "shm_group_size": info.get("shm_group_size"),
         }
 
     @staticmethod
@@ -344,23 +350,29 @@ class DiLoCoCallback(TrainerCallback):
                 f"num_fragments={settings.get('num_fragments')}."
             )
 
-        init_checkpoint = self.shm_init_checkpoint or settings.get(
-            "model_checkpoint_dir"
-        )
-        if not init_checkpoint:
+        # Flavor 2: the server owns the region and is the aggregator. The
+        # follower reads the region dir + group size from the server's /info
+        # (the single source of truth — the server's stable configured worker
+        # count, not a mutable live count); the env vars are an optional
+        # override. The follower does not seed weights (no init_checkpoint): the
+        # server seeds the master.
+        group_dir = self.shm_group_dir or settings.get("shm_group_dir")
+        group_size = self.shm_group_size or settings.get("shm_group_size") or 0
+        if not group_dir or int(group_size) < 1:
             raise ValueError(
-                "DILOCO_BACKEND=shared_memory needs an init checkpoint: the "
-                "coordinator did not advertise model_checkpoint_dir in /info "
-                "and DILOCO_SHM_INIT_CHECKPOINT is unset."
+                "DILOCO_BACKEND=shared_memory: the server at "
+                f"{self.server_addr!r} did not advertise shm_group_dir / "
+                "shm_group_size in /info (is it running with "
+                "`--backend shared_memory`?), and DILOCO_SHM_GROUP_DIR / "
+                "DILOCO_SHM_GROUP_SIZE are unset."
             )
 
         from forgather.ml.diloco.shared_memory_backend import SharedMemoryBackend
 
         return SharedMemoryBackend(
-            group_dir=self.shm_group_dir,
-            group_size=self.shm_group_size,
-            init_checkpoint=init_checkpoint,
-            outer_opt_factory=self._outer_opt_factory_from_settings(settings),
+            group_dir=group_dir,
+            group_size=int(group_size),
+            follower_only=True,
         )
 
     def _make_collective_backend(self, settings: Dict[str, Any], model, trainer=None):
