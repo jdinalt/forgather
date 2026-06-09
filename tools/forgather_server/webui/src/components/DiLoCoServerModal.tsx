@@ -47,6 +47,7 @@ interface PersistedAdHoc {
   host: string;
   async: boolean;
   dnBufferSize: number;
+  verboseSync: boolean;
   dylu: boolean;
   dyluBase: number;
   // Group-wide worker settings the server is authoritative for. They
@@ -98,6 +99,7 @@ const DEFAULT_AD_HOC: PersistedAdHoc = {
   host: "127.0.0.1",
   async: false,
   dnBufferSize: 0,
+  verboseSync: false,
   dylu: false,
   dyluBase: 500,
   syncEvery: 500,
@@ -208,6 +210,7 @@ export function DiLoCoServerModal({
         host: pickStr(editingService.args, "host", "127.0.0.1"),
         async: pickBool(editingService.args, "async_mode", false),
         dnBufferSize: pickNum(editingService.args, "dn_buffer_size", 0),
+        verboseSync: pickBool(editingService.args, "verbose_sync", false),
         dylu: pickBool(editingService.args, "dylu", false),
         dyluBase: pickNum(editingService.args, "dylu_base_sync_every", 500),
         syncEvery: pickNum(editingService.args, "sync_every", 500),
@@ -249,6 +252,7 @@ export function DiLoCoServerModal({
   const [host, setHost] = useState(seed.host);
   const [asyncMode, setAsyncMode] = useState(seed.async);
   const [dnBufferSize, setDnBufferSize] = useState(seed.dnBufferSize);
+  const [verboseSync, setVerboseSync] = useState(seed.verboseSync);
   const [dylu, setDylu] = useState(seed.dylu);
   const [dyluBase, setDyluBase] = useState(seed.dyluBase);
   const [syncEvery, setSyncEvery] = useState(seed.syncEvery);
@@ -327,6 +331,7 @@ export function DiLoCoServerModal({
       num_workers: numWorkers,
       host: host.trim() || "127.0.0.1",
       async_mode: asyncMode,
+      verbose_sync: verboseSync,
       dylu,
       save_every: saveEvery,
       save_total_limit: saveTotalLimit,
@@ -408,6 +413,7 @@ export function DiLoCoServerModal({
       host,
       async: asyncMode,
       dnBufferSize,
+      verboseSync,
       dylu,
       dyluBase,
       syncEvery,
@@ -742,6 +748,23 @@ export function DiLoCoServerModal({
                   )}
                 </>
               )}
+            </div>
+          </CollapsibleSection>
+
+          <CollapsibleSection title="Logging">
+            <label>
+              <input
+                type="checkbox"
+                checked={verboseSync}
+                onChange={(e) => setVerboseSync(e.target.checked)}
+              />{" "}
+              Verbose sync logging (log every round at INFO)
+            </label>
+            <div className="muted" style={{ fontSize: "smaller", marginTop: 4 }}>
+              Off by default — routine progress shows in the per-step{" "}
+              <code>sync</code> / <code>up_mb</code> / <code>dn_mb</code> /{" "}
+              <code>sync_s</code> log columns. When on, the server and every
+              worker log a line every sync round; a targeted DiLoCo diagnostic.
             </div>
           </CollapsibleSection>
 

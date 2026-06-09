@@ -146,9 +146,9 @@ def _start_diloco_server(args: Dict[str, Any]) -> Proposal:
     svc_args = _collect(
         args,
         ("output_dir", "num_workers", "port", "host", "sync_every", "async_mode",
-         "save_every", "save_total_limit", "num_fragments", "min_workers",
-         "heartbeat_timeout", "outer_lr", "outer_momentum", "from_checkpoint",
-         "run_name", "no_auth", "backend"),
+         "verbose_sync", "save_every", "save_total_limit", "num_fragments",
+         "min_workers", "heartbeat_timeout", "outer_lr", "outer_momentum",
+         "from_checkpoint", "run_name", "no_auth", "backend"),
     )
     advanced = args.get("advanced")
     if isinstance(advanced, dict):
@@ -287,6 +287,7 @@ def register_all(reg: ToolRegistry) -> None:
                     "host": {"type": "string", "description": "Bind host (default 127.0.0.1)."},
                     "sync_every": {"type": "integer", "description": "Inner steps between syncs (default 500)."},
                     "async_mode": {"type": "boolean", "description": "Asynchronous (delayed-Nesterov) sync."},
+                    "verbose_sync": {"type": "boolean", "description": "Log every sync round at INFO (server + workers). Off by default; a targeted DiLoCo diagnostic. Routine progress is in the per-step sync/up_mb/dn_mb/sync_s log columns."},
                     "save_every": {"type": "integer", "description": "Save a checkpoint every N rounds (default 10)."},
                     "save_total_limit": {"type": "integer", "description": "Keep at most N checkpoints (default 3)."},
                     "num_fragments": {"type": "integer", "description": "Model fragments for staggered sync (default 1)."},

@@ -276,6 +276,10 @@ class DiLoCoCallback(TrainerCallback):
             "grpc_endpoint": grpc_endpoint,
             "bf16_comm": legacy_bf16,
             "dylu": bool(ecs.get("dylu", False)),
+            # Verbose per-round sync logging — server-authoritative (off ⇒ the
+            # worker's per-round sync line logs at DEBUG). Absent on an older
+            # server ⇒ off.
+            "verbose_sync": bool(ecs.get("verbose_sync", False)),
             "num_fragments": int(ecs.get("num_fragments_default", 1)),
             "heartbeat_timeout": ecs.get("heartbeat_timeout"),
             # The coordinator's init reference, for a non-HTTP backend that
@@ -730,6 +734,7 @@ class DiLoCoCallback(TrainerCallback):
             max_sync_retries=self.max_sync_retries,
             backend=self._make_sync_backend(settings, model, trainer),
             report_sync_state=self.report_sync_state,
+            verbose_sync=settings["verbose_sync"],
             param_view=param_view,
             auth_token=self.auth_token,
             verify_tls=self.verify_tls,
@@ -964,6 +969,9 @@ class DiLoCoCallback(TrainerCallback):
             return
         if logs is not None:
             logs.update(self._worker.sync_metrics)
+        # Reset the per-log-window sync accumulators so the next row's mean
+        # rates cover only the syncs since this row (paired with sync_metrics).
+        self._worker.note_logged()
         # Hand the server a normalized snapshot of this worker's metrics to
         # aggregate. Sourced here (the DiLoCo callback) in parallel to the
         # control callback's relay, so server stats don't depend on it.

@@ -103,6 +103,7 @@ def _server_cmd(args):
     dn_buffer_size = getattr(args, "dn_buffer_size", 0)
     dylu = getattr(args, "dylu", False)
     dylu_base = getattr(args, "dylu_base_sync_every", 500)
+    verbose_sync = getattr(args, "verbose_sync", False)
 
     if async_mode:
         mode_str = "async"
@@ -204,6 +205,7 @@ def _server_cmd(args):
         save_total_limit=save_total_limit,
         async_mode=async_mode,
         dn_buffer_size=dn_buffer_size,
+        verbose_sync=verbose_sync,
         dylu_enabled=dylu,
         dylu_base_sync_every=dylu_base,
         sync_every=args.sync_every,

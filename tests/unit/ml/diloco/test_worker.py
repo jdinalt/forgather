@@ -413,11 +413,13 @@ class TestWorkerMetrics:
             metrics = worker.sync_metrics
             assert metrics["diloco/sync_count"] == 1
             assert metrics["diloco/local_step"] == 0
-            assert metrics["diloco/last_sync_time"] > 0
-            # The backend-reported sent_bytes flows into last_send_mb. fp32
+            # Windowed mean over the syncs since the last log step; with one
+            # sync in the window the mean equals that sync's value.
+            assert metrics["diloco/sync_time"] > 0
+            # The backend-reported sent_bytes flows into the mean up-rate. fp32
             # upload -> wire size == raw size (4 bytes/param).
             n_params = sum(p.numel() for p in model.parameters())
-            assert metrics["diloco/last_send_mb"] == pytest.approx(n_params * 4 / 1e6)
+            assert metrics["diloco/sync_send_mb"] == pytest.approx(n_params * 4 / 1e6)
 
     def test_last_send_mb_reflects_bf16_wire_size(self, server_with_model):
         """End-to-end: with bf16 upload, the cast happens in the backend and the
@@ -440,7 +442,7 @@ class TestWorkerMetrics:
                 optimizer.step()
                 optimizer.zero_grad()
 
-            assert worker.sync_metrics["diloco/last_send_mb"] == pytest.approx(
+            assert worker.sync_metrics["diloco/sync_send_mb"] == pytest.approx(
                 n_params * 2 / 1e6
             )
 

@@ -124,11 +124,17 @@ class OuterSyncBackend(ABC):
       ``False`` (a backend whose join is purely a tensor-path op, e.g.
       shared-memory), the worker registers separately for coordinator membership
       so it stays visible in the server's diagnostics.
+    - ``reports_transfer_bytes`` — whether ``synchronize`` moves tensors over a
+      wire whose volume is meaningful to report (the per-sync up/down MB). True
+      for the HTTP star and the collective all-reduce; ``False`` for a
+      shared-memory region (zero serialization), so the worker omits the
+      up/down-rate log columns instead of always showing a misleading ``0.0``.
     """
 
     runs_outer_optimizer: Literal["central", "replicated", "shared-region"] = "central"
     supports_async: bool = False
     fault_tolerant: bool = False
+    reports_transfer_bytes: bool = True
     registers_with_coordinator: bool = True
 
     @abstractmethod
