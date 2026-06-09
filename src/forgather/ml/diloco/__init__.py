@@ -35,7 +35,6 @@ from .env import (
     diloco_server_addr,
     diloco_shm_group_dir,
     diloco_shm_group_size,
-    diloco_shm_init_checkpoint,
 )
 
 # name -> submodule (relative). Most pull in torch; load on first access only.
@@ -76,7 +75,6 @@ __all__ = [
     "diloco_replicate",
     "diloco_shm_group_dir",
     "diloco_shm_group_size",
-    "diloco_shm_init_checkpoint",
     "diloco_report_sync_state",
 ]
 

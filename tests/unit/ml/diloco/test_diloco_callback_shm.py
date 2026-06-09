@@ -8,7 +8,6 @@ the outer-optimizer reproduction from `/info`, and the fail-loud guards.
 import os
 
 import pytest
-import torch
 
 from forgather.ml.diloco.shared_memory_backend import SharedMemoryBackend
 from forgather.ml.trainer.callbacks.diloco_callback import DiLoCoCallback
@@ -32,11 +31,16 @@ def _make_cb(monkeypatch, **env):
 _SGD_INFO = {"name": "SGD", "lr": 0.7, "momentum": 0.9, "nesterov": True}
 
 
-def _settings(num_fragments=1, ckpt="/info/ckpt", outer=_SGD_INFO):
+def _settings(num_fragments=1, shm_group_dir=None, shm_group_size=None):
+    """An /info-derived settings dict. Under Flavor 2 the follower reads the
+    region dir + group size from /info (``shm_group_dir`` / ``shm_group_size``)
+    and does not seed weights or build the outer optimizer (the server does)."""
     return {
         "num_fragments": num_fragments,
-        "model_checkpoint_dir": ckpt,
-        "outer_optimizer": outer,
+        "model_checkpoint_dir": "/info/ckpt",
+        "outer_optimizer": _SGD_INFO,
+        "shm_group_dir": shm_group_dir,
+        "shm_group_size": shm_group_size,
     }
 
 
@@ -46,84 +50,54 @@ class TestMakeSyncBackend:
         assert cb.backend_kind == "http"
         assert cb._make_sync_backend(_settings()) is None
 
-    def test_shared_memory_builds_backend_from_info_checkpoint(
-        self, monkeypatch, tmp_path
-    ):
-        cb = _make_cb(
-            monkeypatch,
-            DILOCO_BACKEND="shared_memory",
-            DILOCO_SHM_GROUP_DIR=str(tmp_path),
-            DILOCO_SHM_GROUP_SIZE="2",
+    def test_shared_memory_follower_from_info(self, monkeypatch, tmp_path):
+        # Flavor 2: dir + size come from the server's /info; the backend is a
+        # pure follower (the server owns the region + outer optimizer), so it
+        # carries no init_checkpoint or outer-optimizer factory.
+        cb = _make_cb(monkeypatch, DILOCO_BACKEND="shared_memory")  # no env dir/size
+        backend = cb._make_sync_backend(
+            _settings(shm_group_dir=str(tmp_path), shm_group_size=3)
         )
-        backend = cb._make_sync_backend(_settings(ckpt="/info/ckpt"))
         assert isinstance(backend, SharedMemoryBackend)
-        assert backend.group_size == 2
+        assert backend.group_size == 3
         assert backend.group_dir == os.path.realpath(str(tmp_path))
-        assert backend.init_checkpoint == "/info/ckpt"  # advertised by /info
-        # The aggregator reproduces the server's outer optimizer (from /info).
-        opt = backend.outer_opt_factory([torch.zeros(1, requires_grad=True)])
-        pg = opt.param_groups[0]
-        assert (pg["lr"], pg["momentum"], pg["nesterov"]) == (0.7, 0.9, True)
+        assert backend.runs_outer_optimizer == "shared-region"  # server runs it
+        assert not hasattr(backend, "init_checkpoint")
 
-    def test_env_init_checkpoint_overrides_info(self, monkeypatch, tmp_path):
+    def test_env_overrides_info_dir_size(self, monkeypatch, tmp_path):
+        # The env vars remain an explicit override over /info.
         cb = _make_cb(
             monkeypatch,
             DILOCO_BACKEND="shared_memory",
             DILOCO_SHM_GROUP_DIR=str(tmp_path),
             DILOCO_SHM_GROUP_SIZE="2",
-            DILOCO_SHM_INIT_CHECKPOINT="/override/ckpt",
         )
-        backend = cb._make_sync_backend(_settings(ckpt="/info/ckpt"))
-        assert backend.init_checkpoint == "/override/ckpt"
+        backend = cb._make_sync_backend(
+            _settings(shm_group_dir="/info/other", shm_group_size=9)
+        )
+        assert backend.group_dir == os.path.realpath(str(tmp_path))
+        assert backend.group_size == 2
 
-    def test_missing_group_env_raises_at_construction(self, monkeypatch):
+    def test_missing_dir_size_raises_at_build(self, monkeypatch):
+        # Construction no longer requires the group env (it comes from /info);
+        # build fails loud only when NEITHER /info nor env supplies dir/size.
+        cb = _make_cb(monkeypatch, DILOCO_BACKEND="shared_memory")
+        assert cb.backend_kind == "shared_memory"
         with pytest.raises(ValueError):
-            _make_cb(monkeypatch, DILOCO_BACKEND="shared_memory")  # no dir/size
+            cb._make_sync_backend(_settings())  # no shm_group_dir / shm_group_size
 
     def test_invalid_backend_raises(self, monkeypatch):
         with pytest.raises(ValueError):
             _make_cb(monkeypatch, DILOCO_BACKEND="bogus")
 
     def test_num_fragments_gt1_raises(self, monkeypatch, tmp_path):
-        cb = _make_cb(
-            monkeypatch,
-            DILOCO_BACKEND="shared_memory",
-            DILOCO_SHM_GROUP_DIR=str(tmp_path),
-            DILOCO_SHM_GROUP_SIZE="2",
-        )
+        cb = _make_cb(monkeypatch, DILOCO_BACKEND="shared_memory")
         with pytest.raises(ValueError):
-            cb._make_sync_backend(_settings(num_fragments=2))
-
-    def test_no_init_checkpoint_raises(self, monkeypatch, tmp_path):
-        cb = _make_cb(
-            monkeypatch,
-            DILOCO_BACKEND="shared_memory",
-            DILOCO_SHM_GROUP_DIR=str(tmp_path),
-            DILOCO_SHM_GROUP_SIZE="2",
-        )
-        with pytest.raises(ValueError):
-            cb._make_sync_backend(_settings(ckpt=None))
-
-    def test_missing_outer_optimizer_raises(self, monkeypatch, tmp_path):
-        # Older server that doesn't advertise its outer-opt config -> fail loud.
-        cb = _make_cb(
-            monkeypatch,
-            DILOCO_BACKEND="shared_memory",
-            DILOCO_SHM_GROUP_DIR=str(tmp_path),
-            DILOCO_SHM_GROUP_SIZE="2",
-        )
-        with pytest.raises(ValueError):
-            cb._make_sync_backend(_settings(outer=None))
-
-    def test_non_sgd_outer_optimizer_raises(self, monkeypatch, tmp_path):
-        cb = _make_cb(
-            monkeypatch,
-            DILOCO_BACKEND="shared_memory",
-            DILOCO_SHM_GROUP_DIR=str(tmp_path),
-            DILOCO_SHM_GROUP_SIZE="2",
-        )
-        with pytest.raises(ValueError):
-            cb._make_sync_backend(_settings(outer={"name": "Adam", "lr": 1e-3}))
+            cb._make_sync_backend(
+                _settings(
+                    num_fragments=2, shm_group_dir=str(tmp_path), shm_group_size=2
+                )
+            )
 
 
 class TestReportSyncStateKnob:

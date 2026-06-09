@@ -97,29 +97,27 @@ def diloco_init_checkpoint() -> str:
     Used by the collective backend (the worker-process replicas seed from this
     dir on rank 0). When unset, the backend seeds from the checkpoint the
     coordinator advertises in ``/info`` (``model_checkpoint_dir``). The
-    shared-memory backend has its own ``DILOCO_SHM_INIT_CHECKPOINT`` for the same
-    role."""
+    shared-memory backend has no worker-side init checkpoint — the server owns
+    the region and seeds its master."""
     return os.environ.get("DILOCO_INIT_CHECKPOINT", "").strip()
 
 
 def diloco_shm_group_dir() -> str:
-    """Shared-memory group directory (the per-host rendezvous), or ``""``."""
+    """Shared-memory group directory (the per-host rendezvous), or ``""``.
+
+    The server advertises this in ``/info`` (``shm_group_dir``); the env var is
+    an optional override."""
     return os.environ.get("DILOCO_SHM_GROUP_DIR", "").strip()
 
 
 def diloco_shm_group_size() -> int:
     """Number of co-located workers in the shared-memory group, or ``0`` if
-    unset. Raises ``ValueError`` if set to a non-integer."""
+    unset. Raises ``ValueError`` if set to a non-integer.
+
+    The server advertises this in ``/info`` (``shm_group_size``); the env var is
+    an optional override."""
     raw = os.environ.get("DILOCO_SHM_GROUP_SIZE", "").strip()
     return int(raw) if raw else 0
-
-
-def diloco_shm_init_checkpoint() -> str:
-    """Optional override for the shared-memory init checkpoint dir, or ``""``.
-
-    When unset, the aggregator seeds the region from the checkpoint the
-    coordinator advertises in ``/info`` (``model_checkpoint_dir``)."""
-    return os.environ.get("DILOCO_SHM_INIT_CHECKPOINT", "").strip()
 
 
 def diloco_report_sync_state() -> bool:

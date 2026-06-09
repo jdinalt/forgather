@@ -1054,9 +1054,18 @@ def _diloco_env_from_job_params(
             )
     if backend_kind == "shared_memory":
         env["DILOCO_BACKEND"] = "shared_memory"
+        # Flavor 2 (issue #154): the co-located server IS the aggregator — it
+        # owns the region and advertises its dir + group size in /info. The
+        # worker (a pure follower) reads them from /info at runtime, so the
+        # orchestrated path sets nothing here beyond the backend selector. This
+        # is also what fixes the group-size hazard (#199): the size is the
+        # server's STABLE configured worker count from /info, never the mutable
+        # /info num_workers a re-derivation here would have used.
         if explicit_backend:
-            # Back-compat path: an older queued job carried the group
-            # coordination inline (one dir per submit, group size = worker count).
+            # Back-compat / serverless override: an older queued job (or a
+            # --local-only dev launch) may carry the region rendezvous inline.
+            # Honor it as an explicit override; the orchestrated path leaves the
+            # dir/size to /info.
             group_id = (str(diloco.get("shm_group_id") or "")).strip()
             if group_id:
                 env["DILOCO_SHM_GROUP_DIR"] = os.path.join(
@@ -1065,24 +1074,6 @@ def _diloco_env_from_job_params(
             size = diloco.get("shm_group_size")
             if size:
                 env["DILOCO_SHM_GROUP_SIZE"] = str(int(size))
-        else:
-            # Server-derived: the group dir is one per *server* (stable,
-            # base_url-derived) so every co-located worker computes the same
-            # region without a submit-time uuid; the group size is the server's
-            # declared worker count (single source of truth, /info num_workers).
-            # The dir being stable per server (vs the old per-submit uuid) is
-            # safe: SharedMemoryBackend decides the aggregator role with an OS
-            # ownership lease, so a region orphaned by a crashed group is
-            # reclaimed and rebuilt by the next launch rather than attached to.
-            from . import cluster_diloco_inventory as cdi
-
-            group_id = cdi.server_id_for(cdi._normalize(str(server)))
-            env["DILOCO_SHM_GROUP_DIR"] = os.path.join(
-                tempfile.gettempdir(), f"diloco_shm_{group_id}"
-            )
-            num_workers = server_info.get("num_workers")
-            if num_workers:
-                env["DILOCO_SHM_GROUP_SIZE"] = str(int(num_workers))
     elif backend_kind == "collective":
         # Collective backend (issue #154): N replicas in one torchrun job
         # all-reduce pseudo-grads. The torchrun world is sized by job_params.nproc

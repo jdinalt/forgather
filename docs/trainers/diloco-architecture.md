@@ -96,7 +96,9 @@ src/forgather/ml/diloco/
   grpc_transport.py  GrpcBytesTransport: the client's gRPC bulk transport
   grpc_bulk.py       Server gRPC servicer + listener + _CapturingHandler (reuses HTTP handlers)
   proto/bulk.proto   gRPC bulk service; generated bulk_pb2*.py (proto/generate.sh)
-  shared_memory_backend.py  SharedMemoryBackend: single-host shared-memory OuterSyncBackend
+  shared_memory_region.py  ShmRegion: shared on-disk region mechanics (layout, flock, header, manifest)
+  shared_memory_aggregator.py  SharedMemoryAggregator: server-side region owner + outer step
+  shared_memory_backend.py  SharedMemoryBackend: worker-side follower (single-host shared-memory OuterSyncBackend)
   collective_backend.py  CollectiveBackend: all-reduce + replicated outer optimizer
   coordinator.py     CoordinatorClient (the coordination surface: heartbeat / info / model-def)
   worker.py          Optimizer hook, pseudo-gradient computation, streaming, reconnection
@@ -115,7 +117,9 @@ tests/unit/ml/diloco/
   test_server.py          Server: outer optimizer correctness, serialization
   test_sync_backend.py    OuterSyncBackend delegation; worker backend-agnosticism
   test_coordinator.py     CoordinatorClient delegation; worker coordinator wiring
-  test_shared_memory_backend.py  SharedMemoryBackend: multi-process outer-step equivalence
+  test_shared_memory_aggregator.py  SharedMemoryAggregator: server-aggregates-followers, dynamic barrier, crash-reclaim
+  test_shared_memory_backend.py  SharedMemoryBackend follower: outer-step equivalence + fail-loud guards
+  test_shared_memory_resume.py  shared-memory checkpoint/resume coherence (#197/#198)
   test_collective_backend.py  CollectiveBackend: multi-process all-reduce outer-step + cross-rank identity
   test_server_client.py   HTTP round-trip: register, submit, status
   test_worker.py          Worker: pseudo-gradients, optimizer hooks, full sync cycle
@@ -450,40 +454,49 @@ instances and are outside this one: work-unit dispatch (`register_dataset` /
 
 ### Shared-memory backend
 
-`SharedMemoryBackend` (`shared_memory_backend.py`) is the first non-HTTP
-`OuterSyncBackend` — the single-host regime, positioning DiLoCo as a DDP
-alternative. Co-located worker processes on one machine share a CPU
-master-weights region (a memory-mapped file under a per-group dir) instead of
-round-tripping a central HTTP parameter server: one shared master region per host
-(the aggregator additionally holds a working param copy + optimizer momentum, like
-the server does), no serialization on the wire. Because the worker hands the
-backend the raw pseudo-gradient, this backend operates in fp32 with no wire cast,
-and reports `sent_bytes`/`recv_bytes` of 0.
+The single-host regime that positions DiLoCo as a DDP alternative. Co-located
+processes on one machine share a CPU master-weights region (a memory-mapped file
+under a per-group dir) instead of round-tripping the HTTP star. Because the region
+is single-host and the param server is co-located, the **server maps the same
+region and *is* the aggregator** — shared-memory is a transport swap of the HTTP
+star, not a second aggregation owner. Three pieces:
 
-The **aggregator** role is decided by an ownership lease: the worker that can
-take an exclusive `flock` on `owner.lock` (held for its whole lifetime) is the
-aggregator — it loads the initial weights, owns the master `ParameterList` + the
-outer optimizer (whose momentum stays in that process, so it is consistent across
-rounds exactly like the server) and each round averages the contributions, steps,
-and publishes the new master into the region; workers that can't take the lease
-are **followers** that attach and read. The lease makes re-launch after a crash
-safe: a region orphaned by a dead group has no live lease holder, so the next
-launch reclaims ownership and rebuilds it rather than every worker attaching to
-an ownerless region (which would deadlock — no aggregator to publish). Each round,
-every worker adds its raw pseudo-gradient (upcast to fp32) into a shared
-accumulator under a persistent-`flock` critical section; a `generation`
-counter gates the barrier so no worker races into the next round, and a worker
-omitting a name fails loud (the average divides by the group size). The averaging
-+ outer step reproduce `DiLoCoServer._apply_outer_optimizer` (per-name mean over
-contributors, fp32, SGD-Nesterov). The HTTP coordinator still handles membership,
-`/info`, heartbeat, and work-unit dispatch — only the tensor legs are
-shared-memory. The backend is constructed directly with its rendezvous parameters
-(`group_dir`, `group_size`, `init_checkpoint`); the trainer reads
-`DILOCO_BACKEND=shared_memory` to select it. That env var is **derived at launch**
-by the scheduler from the param server's `/info` (the server declares
-`--backend shared_memory`) — orchestrated workers are submitted backend-agnostic,
-so `group_dir`/`group_size` come from the server identity + its worker count, not
-a submit-time flag.
+- **`ShmRegion`** (`shared_memory_region.py`) — the on-disk mechanics shared by
+  both sides so they never disagree on the format: the byte layout, the
+  cross-process `flock` (`region.lock`), the int64 control header (magic,
+  generation, arrivals, group size, attach count), the manifest, and the fp32
+  master/accumulator views.
+- **`SharedMemoryAggregator`** (`shared_memory_aggregator.py`, server side) —
+  holds the region's ownership lease (an exclusive `flock` on `owner.lock` for the
+  server's lifetime), creates + seeds the region from the server's master, and
+  each round waits for the followers to contribute, hands the averaged
+  pseudo-gradient to the server's outer step (`step_fn`), and publishes the new
+  master. The server reuses its own master `ParameterList` + outer optimizer +
+  `save_state`/`load_state`, so the optimizer momentum is persisted and
+  `sync_round` advances — which is what makes a shared-memory run checkpoint and
+  resume coherently. The lease makes re-launch after a crash safe: a region
+  orphaned by a dead server has no live lease holder, so the next launch reclaims
+  and rebuilds it.
+- **`SharedMemoryBackend`** (`shared_memory_backend.py`, worker side) — a pure
+  follower built on `ShmRegion`. It never creates a region or self-elects; it
+  waits for the server's region, attaches, contributes its raw pseudo-gradient
+  (upcast to fp32) into the shared accumulator under the `flock`, and reads back
+  the master the server publishes. A worker omitting a name fails loud (the
+  average divides by the contributor count); `sent_bytes`/`recv_bytes` are 0.
+
+The barrier is **dynamic**, mirroring the HTTP path's `_round_expected_workers`:
+the server aggregates once arrivals reach the live-follower count (the region's
+attach count minus the server's own +1), but only *after* the full configured
+group has formed (a high-water mark), so a slow-to-arrive worker can't trigger a
+partial-group step and a follower that `leave()`s during the drain shrinks the
+expectation instead of deadlocking the rest. If the server's aggregation loop
+dies it clears the region magic so parked followers fail loud at once. The HTTP
+coordinator role (membership, `/info`, heartbeat, work-unit dispatch) is
+unchanged. The backend is selected by `DILOCO_BACKEND=shared_memory` (derived at
+launch by the scheduler from the server's `/info`); the region `group_dir` +
+`group_size` are advertised by the server in `/info` (`shm_group_dir` /
+`shm_group_size`, the server's stable configured worker count) and read by the
+follower — not derived from a mutable count or a submit-time flag.
 
 ### Collective backend
 

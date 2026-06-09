@@ -125,10 +125,12 @@ is a contraindication:
 
 ### Honest tradeoffs
 
-- **Extra moving parts.** The HTTP path runs a parameter server alongside the
-  workers (cheap, CPU-only, but another process to operate) plus the sync
-  barrier; the single-host **shared-memory / collective** backends fold the
-  averaging into the workers (no separate server).
+- **Extra moving parts.** All paths run a parameter server alongside the workers
+  (cheap, CPU-only, but another process to operate). The HTTP path also moves the
+  sync tensors over the wire; the single-host **shared-memory / collective**
+  backends keep the tensor traffic on-host — shared-memory through an mmap region
+  the co-located server aggregates in place, collective through an all-reduce
+  among the workers — so only the lightweight coordination stays on HTTP.
 - **Token-budget caveat.** A worker runs the *full* schedule as if standalone —
   it does not know it is one of N — so N workers process N× the intended tokens
   unless you give **each worker `1/N` of the budget**.
