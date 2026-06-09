@@ -88,6 +88,53 @@ def test_check_config_delegates(monkeypatch):
     assert seen["target"] is None
 
 
+def test_read_file_default_returns_whole_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths, "is_path_in_fs_root", lambda p: True)
+    f = tmp_path / "doc.md"
+    f.write_text("abcdefghij")
+    # No offset/limit -> whole file unchanged (the loop budget clips if huge).
+    assert tools_readonly._read_file({"path": str(f)}) == "abcdefghij"
+
+
+def test_read_file_offset_and_limit_window(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths, "is_path_in_fs_root", lambda p: True)
+    f = tmp_path / "doc.md"
+    f.write_text("0123456789")
+
+    # A bounded window that reaches EOF: no continuation footer.
+    out = tools_readonly._read_file({"path": str(f), "offset": 5, "limit": 5})
+    assert out == "56789"
+
+    # A bounded window with more remaining: footer reports the resume offset.
+    out = tools_readonly._read_file({"path": str(f), "offset": 0, "limit": 4})
+    assert out.startswith("0123")
+    assert "offset=4" in out
+    assert "of 10" in out
+
+    # Offset alone reads to EOF.
+    assert tools_readonly._read_file({"path": str(f), "offset": 8}) == "89"
+
+    # Offset past EOF is clamped (empty, no crash).
+    assert tools_readonly._read_file({"path": str(f), "offset": 99}) == ""
+
+
+def test_read_file_rejects_negative_offset(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths, "is_path_in_fs_root", lambda p: True)
+    f = tmp_path / "doc.md"
+    f.write_text("x")
+    with pytest.raises(ValueError, match="offset must be"):
+        tools_readonly._read_file({"path": str(f), "offset": -1})
+
+
+def test_read_file_schema_documents_pagination():
+    reg = ToolRegistry()
+    tools_readonly.register_all(reg)
+    spec = {s.name: s for s in reg.specs()}["read_file"]
+    props = spec.json_schema["properties"]
+    assert "offset" in props and "limit" in props
+    assert spec.json_schema["required"] == ["path"]
+
+
 def test_list_directory_lists_and_starts_from_roots(monkeypatch, tmp_path):
     monkeypatch.setattr(paths, "is_path_in_fs_root", lambda p: True)
     (tmp_path / "sub").mkdir()

@@ -191,7 +191,28 @@ def _read_file(args: Dict[str, Any]) -> Any:
         raise ValueError("path must be absolute")
     if not paths.is_path_in_fs_root(path):
         raise PermissionError(f"path is outside the configured filesystem roots: {path}")
-    return config_ops.read_raw(path)
+    text = config_ops.read_raw(path)
+    offset = int(args.get("offset") or 0)
+    if offset < 0:
+        raise ValueError("offset must be >= 0")
+    limit = args.get("limit")
+    # Default read: hand back the whole file. The loop's per-result budget
+    # clips it (and, for read_file, reports the offset to resume from), so a
+    # large file degrades to a recoverable paginated read rather than a dead
+    # end. Only the explicit-window path below needs in-tool bounds.
+    if offset == 0 and limit is None:
+        return text
+    total = len(text)
+    offset = min(offset, total)
+    end = total if limit is None else min(total, offset + max(0, int(limit)))
+    chunk = text[offset:end]
+    if end < total:
+        chunk += (
+            f"\n\n[read_file: returned chars {offset}-{end} of {total}. More "
+            f"remains — call read_file again with the same path and "
+            f"offset={end} to continue.]"
+        )
+    return chunk
 
 
 # ---- filesystem browse / find ----------------------------------------------
@@ -617,11 +638,25 @@ def register_all(reg: ToolRegistry) -> None:
             name="read_file",
             description=(
                 "Read a file by absolute path (must be within the server's "
-                "configured filesystem roots). Use for template/config source."
+                "configured filesystem roots). Use for template/config source. "
+                "Large files are capped to a per-result budget; if the result "
+                "is truncated it tells you the offset to resume from — call "
+                "again with that `offset` to page through the rest (bound a "
+                "page with `limit` if you want a fixed window)."
             ),
             json_schema={
                 "type": "object",
-                "properties": {"path": {"type": "string", "description": "Absolute path."}},
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path."},
+                    "offset": {
+                        "type": "integer",
+                        "description": "Character offset to start at (default 0). Pass the offset from a truncation notice to continue reading.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max characters to return from offset. Omit to read to the per-result budget.",
+                    },
+                },
                 "required": ["path"],
             },
             handler=_read_file,

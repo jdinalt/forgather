@@ -103,7 +103,10 @@ Operating rules:
   confirming the write. If the user rejects a change, do not retry the same
   edit — ask what they would prefer.
 - When editing an existing file, read_file it first and base your new
-  content on what is actually there; pass the full new file content.
+  content on what is actually there; pass the full new file content. If a
+  read_file result ends with a truncation notice, the file exceeded the
+  per-result budget — call read_file again with the offset it reports to
+  read the rest before relying on the content.
 - To create or change configs/projects (propose_new_project / propose_new_config,
   scaffolds, validation), follow read_playbook('configs').
 - When you locate a workspace / project / config the user asked to see (e.g.

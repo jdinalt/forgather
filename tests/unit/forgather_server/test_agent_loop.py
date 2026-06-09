@@ -471,3 +471,53 @@ def test_unknown_tool_is_error_not_crash():
     errs = [e for e in events if e["type"] == "tool_result" and e["is_error"]]
     assert errs and "unknown tool" in errs[0]["content"]
     assert events[-1]["type"] == "done"
+
+
+def _bare_loop(mode):
+    return AgentLoop(FakeProvider([]), ToolRegistry(), disclosure_mode=mode)
+
+
+def test_clip_budget_is_provider_aware():
+    from forgather_server.agent.loop import (
+        _MAX_RESULT_CHARS_DEFERRED,
+        _MAX_RESULT_CHARS_INLINE,
+    )
+
+    # deferred (small local model) clips far more aggressively than inline.
+    assert _MAX_RESULT_CHARS_DEFERRED < _MAX_RESULT_CHARS_INLINE
+    big = "z" * (_MAX_RESULT_CHARS_INLINE + 1000)
+
+    inline = _bare_loop("inline")
+    deferred = _bare_loop("deferred")
+
+    # A blob that fits the inline budget passes untouched there...
+    fits_inline = "z" * (_MAX_RESULT_CHARS_DEFERRED + 100)
+    assert inline._clip(fits_inline) == fits_inline
+    # ...but is truncated under the deferred budget.
+    out = deferred._clip(fits_inline)
+    assert "truncated" in out
+    assert len(out) < len(fits_inline) + 200
+
+    # The big blob is truncated even inline.
+    assert "truncated" in inline._clip(big)
+
+
+def test_clip_read_file_reports_resume_offset():
+    from forgather_server.agent.loop import _MAX_RESULT_CHARS_DEFERRED
+
+    deferred = _bare_loop("deferred")
+    big = "y" * (_MAX_RESULT_CHARS_DEFERRED + 5000)
+
+    # A clipped read_file result tells the model the offset to resume from.
+    out = deferred._clip(big, tool_name="read_file", args={})
+    assert f"offset={_MAX_RESULT_CHARS_DEFERRED}" in out
+    assert "read_file again" in out
+
+    # A continuation read (offset already set) advances the resume offset.
+    out2 = deferred._clip(big, tool_name="read_file", args={"offset": 1000})
+    assert f"offset={_MAX_RESULT_CHARS_DEFERRED + 1000}" in out2
+
+    # A non-read tool gets the generic message (no offset hint).
+    out3 = deferred._clip(big, tool_name="gpu_status", args={})
+    assert "offset=" not in out3
+    assert "truncated" in out3
