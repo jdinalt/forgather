@@ -233,7 +233,7 @@ replica count is the one launch-shape you pick (the backend itself comes from th
 server):
 
 ```bash
-forgather -t <config>.yaml submit --diloco-replicate 2 --diloco-server <server-id>
+forgather -t <config>.yaml submit --diloco-replicate 2
 ```
 
 The scheduler validates that the chosen server actually declares `collective`

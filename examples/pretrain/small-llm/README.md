@@ -652,64 +652,57 @@ with a min/max band, against the baseline's 1x slice).
 
 #### Running it
 
-The `diloco.yaml` config only describes the *worker* side; a DiLoCo run also
-needs an initialized master model and a parameter server, and the workers are
-wired to it through environment variables rather than the config (so the config
-stays the same whether it runs under the orchestrator or by hand). The
-self-managed single-host recipe actually used for the run above:
+A DiLoCo run needs an initialized master model, a parameter server, and N
+workers. Use the **orchestrated path** — a running `forgather server` schedules
+the server and workers, assigns GPUs (honoring `forgather gpu` exclusions /
+priorities), and wires the auth token / TLS / `DILOCO_*` env automatically. The
+worker `diloco.yaml` config carries no server wiring, so it's the same whether
+the orchestrator or you launch it. Run from this project directory:
 
 ```bash
-# Run from this project directory (examples/pretrain/small-llm).
-
-# 1. Build the initial master model the server will hold (fresh random init).
-#    This is the *model* project (medium.yaml = the 162M Llama), not this
-#    training project.
+# 1. Build the initial master model the server holds (fresh random init). This
+#    is the *model* project (medium.yaml = the 162M Llama), not this project.
 forgather -p ../../models/llama -t medium.yaml \
     model --device cpu --save-checkpoint --safetensors \
     --output-dir output_models/diloco_master \
     construct
 
-# 2. Start the DiLoCo parameter server: shared-memory aggregator (it maps the
-#    region and runs the outer optimizer itself), 4 workers, H=20. --local-only
-#    runs it in the foreground without the orchestrator; it prints an auth token
-#    and writes it to ~/.config/forgather/diloco_server/<port>.token.
-forgather diloco server --local-only --backend shared_memory \
-    -o output_models/diloco_master -n 4 --sync-every 20 \
-    --save-every 50 --port 8513 --run-name diloco_1x
+# 2. Start the DiLoCo parameter server (scheduled by the forgather server):
+#    shared-memory aggregator, 4 workers, H=20. No --local-only, no manual
+#    token/port — the orchestrator manages it.
+forgather diloco server --backend shared_memory \
+    -o output_models/diloco_master -n 4 --sync-every 20 --save-every 200
 
-# 3. Launch 4 single-GPU workers, one per GPU. -d sets CUDA_VISIBLE_DEVICES, so
-#    one index per worker; here GPUs 0-3 (adjust the index to the GPUs you have
-#    free). The shm region, group size, and sync_every are read from the
-#    server's /info — the worker only needs the server address, its token, the
-#    backend selector, and a unique worker id. The aggregate token budget
-#    (diloco.yaml default = 1x Chinchilla) is split across the 4 workers by the
-#    config, so no --total-tokens is needed here.
-TOK=$(cat ~/.config/forgather/diloco_server/8513.token)
-for i in 0 1 2 3; do
-  DILOCO_SERVER=https://127.0.0.1:8513 \
-  FORGATHER_DILOCO_SERVER_TOKEN="$TOK" \
-  DILOCO_BACKEND=shared_memory \
-  DILOCO_WORKER_ID="w$i" \
-  forgather -t diloco.yaml train -d "$i" &
-done
+# 3. Submit the 4 workers as scheduled jobs. The scheduler places them on
+#    eligible GPUs and wires DILOCO_* for you; the backend (shared_memory) and
+#    sync_every are read from the server, and the aggregate budget is split
+#    across workers by the config — no --backend / --total-tokens needed.
+forgather submit --diloco --diloco-worker-count 4 -t diloco.yaml
 ```
 
 Notes:
 
-- `DILOCO_BACKEND=shared_memory` is required on each worker: the worker
-  *validates* its launched backend against the one the server declares (it does
-  not silently adopt it), so a mismatch fails loud rather than running a split
-  group. The `shm_group_dir` / `shm_group_size` come from `/info`.
-- Workers write to `output_models/diloco_<worker_id>/` (the `_w0..w3` suffix is
-  appended automatically); the server's global model and stats live under
-  `output_models/diloco_master/`.
+- Check **`forgather gpu status`** to see the scheduler's GPU pool (which GPUs
+  are excluded / reserved) before submitting; reserve one for another task with
+  `forgather gpu disable N`. The scheduler queues a worker if no eligible GPU is
+  free rather than colliding with an external job — don't infer availability
+  from `nvidia-smi`.
+- Workers write to `output_models/diloco_<worker_id>/`; the server's global
+  model and stats live under `output_models/diloco_master/`. Monitor with
+  `forgather diloco servers` / `forgather diloco status <id>` and `forgather
+  logs`.
 - For the 10x + 1x run, swap step 3's config for `diloco_ten_chinchilla.yaml`
-  (and there is no need to change the server command — the budget is a
-  worker-side concern).
-- This is the by-hand path. The orchestrated path (`forgather diloco server`
-  managed by the `forgather server`, workers via `forgather submit --diloco`)
-  does the token/TLS/GPU wiring for you; see the
-  [DiLoCo guide](../../../docs/trainers/diloco.md).
+  (the server command is unchanged — the budget is a worker-side concern).
+- See the [DiLoCo guide](../../../docs/trainers/diloco.md) and the
+  [DiLoCo example walkthrough](../../tiny_experiments/diloco/README.md) for the
+  full orchestrated flow (server discovery, TLS, multi-host).
+
+> Dev/debug only: `forgather diloco server --local-only` runs the server in the
+> foreground (own token/port, no orchestrator), and workers can be launched by
+> hand with `DILOCO_SERVER` / `FORGATHER_DILOCO_SERVER_TOKEN` /
+> `DILOCO_BACKEND=shared_memory` / `DILOCO_WORKER_ID` set and `forgather -t
+> diloco.yaml train -d <gpu>`. Use this only for local iteration; it forgoes
+> scheduling, GPU-pool awareness, and central logging.
 
 #### Runtime: trading the per-step all-reduce for an occasional sync
 

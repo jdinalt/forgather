@@ -86,20 +86,26 @@ mirroring the dataset server:
 
 ### 2. Start Workers
 
-On each machine, launch a worker that wraps the normal training command.
-Each worker needs a unique `--worker-id` so its output directory doesn't
-collide with the others (the project template appends the worker id to
-`ns.output_dir` — applies to both the implicit project default and any
-explicit `--output-dir` the operator passes, so workers get distinct
-per-worker dirs for free):
+Launch the worker group with a single `forgather submit --diloco`, using
+`--diloco-worker-count N` to say *how many* workers you want. The server
+auto-assigns mutually-unique names, and the project template gives each worker
+its own output directory (it appends the worker id to `ns.output_dir`, so
+workers never collide — this applies to both the implicit project default and
+any explicit `--output-dir`):
 
 ```bash
 forgather submit --diloco \
     --diloco-server 192.168.1.100:8512 \
-    --worker-id w0 \
+    --diloco-worker-count 4 \
     -p my_project -t train.yaml \
     train
 ```
+
+Prefer `--diloco-worker-count` for the common case — you specify a *count*, not
+names. Reach for an explicit `--worker-id` only when you want a predictable name
+for a *single* worker (e.g. to resume one worker from its own checkpoint, below);
+the two are alternatives, and `--diloco-worker-count > 1` needs the forgather
+server (you can't foreground N workers).
 
 Workers launch via `forgather submit --diloco`, which makes DiLoCo an
 opt-in dimension on the regular `submit` verb (mirroring the webui's
@@ -113,11 +119,15 @@ Worker arguments:
 - `--diloco-server`: Server address as `host:port` (optional; pins a
   specific server and implies `--diloco`). Omitted = auto-pick the single
   running server.
-- `--worker-id`: Unique worker identity. Drives the per-worker output-dir
-  suffix the project template appends to `ns.output_dir`, and the
-  uniqueness key the server enforces on `/register`. Auto-generated when
-  omitted but operators typically set it explicitly so logs / output dirs
-  are predictable.
+- `--diloco-worker-count N`: Launch N workers in one submit, auto-named and
+  guaranteed unique — the practical default. `N > 1` needs the forgather
+  server. Mutually exclusive with `--worker-id`.
+- `--worker-id`: Unique identity for a *single* worker. Drives the
+  per-worker output-dir suffix the project template appends to
+  `ns.output_dir`, and the uniqueness key the server enforces on
+  `/register`. Usually unset — `--diloco-worker-count` auto-assigns unique
+  names; set it explicitly only when you want a predictable name (e.g. to
+  resume that worker). Mutually exclusive with `--diloco-worker-count`.
 - `--heartbeat-interval`: Seconds between heartbeats for speed reporting
   (default: 30). Client-local; validated against the server's
   `--heartbeat-timeout` at startup.
@@ -266,17 +276,19 @@ forgather diloco servers --json
 # doesn't know this target.
 forgather diloco status --diloco-server local:<queue_id> --queues
 
-# Dump or follow the captured TTY of any worker/server job. JOB may be a
-# queue_id, a local DiLoCo server id/label, or a worker_id — resolved to
-# the underlying job for you.
-forgather diloco logs spectacular-fox            # dump
-forgather diloco logs spectacular-fox --follow   # live tail
-forgather diloco logs spectacular-fox --path     # print the TTY file path
-tail -f "$(forgather diloco logs spectacular-fox --path)"  # …or tail it yourself
+# Dump or follow the captured TTY of any scheduled job — server or worker —
+# by its job/queue id. These general `forgather job` commands work for any
+# job, not just DiLoCo (ids come from `forgather job list`, or for DiLoCo from
+# `forgather diloco servers` / `diloco status`).
+forgather job dump <job_id>     # full captured TTY to stdout
+forgather job tail <job_id>     # stream live output until the job ends (Ctrl-C)
 ```
 
-`forgather diloco logs <queue_id>` is a convenience wrapper; the generic
-`forgather job tail <queue_id>` / `forgather job dump <queue_id>` work too.
+`forgather diloco logs <id>` is a DiLoCo-only convenience wrapper around the
+same capture: it additionally resolves a DiLoCo server id/label or a worker_id
+to the underlying job, and takes `--follow` (live tail) / `--path` (print the
+TTY file path). Prefer `forgather job dump` / `forgather job tail` — they're the
+general commands and work for every scheduled job.
 
 **Cross-node discovery.** When the forgather server is in cluster mode
 (every server with `--cluster NAME` reachable on the LAN is a peer), a
@@ -318,23 +330,25 @@ itself.
 # Enqueue a parameter server (CPU-only); the scheduler starts it.
 forgather diloco server -o path/to/model -n 2 --bulk-cleartext
 
-# Launch 4 auto-named workers in one command, each a scheduled training
-# job, wired to the cluster's dataset routing. Dynamic/template args work
-# exactly like `forgather train` (built from the config's metadata, shown
-# in `submit --help`).
+# Launch 4 auto-named workers in one command, each a scheduled training job.
+# The single running DiLoCo server is auto-picked and the dataset defaults to
+# cluster routing, so neither needs to be named. Dynamic/template args work
+# exactly like `forgather train` (built from the config's metadata, shown in
+# `submit --help`).
 forgather -p my_project -t train.yaml submit \
-    --diloco --diloco-server local:<queue_id> \
-    --diloco-worker-count 4 --dataset auto --max-steps 5000
+    --diloco --diloco-worker-count 4 --max-steps 5000
 
 # Bring a worker set back after a server shutdown / manual stop: re-launch
 # every stopped worker the server knows, reusing each id (so each resumes
 # from its own checkpoint).
-forgather -p my_project -t train.yaml submit --resume-workers --dataset auto
+forgather -p my_project -t train.yaml submit --resume-workers
 ```
 
-Worker launch options (orchestrator path): `--diloco-worker-count N`
-(auto-named via the server, guaranteed unique),
-`--dataset auto|local|server:<id>`, `--requested-gpus N` (GPUs per
+Worker launch options (orchestrator path): `--diloco-server <id>` (pin a
+specific param-server; **omitted = the single running server is auto-picked**),
+`--diloco-worker-count N` (auto-named via the server, guaranteed unique),
+`--dataset auto|local|server:<id>` (**defaults** to cluster routing in cluster
+mode, else the in-process loader), `--requested-gpus N` (GPUs per
 worker — the same flag single-node submit uses), `--priority`. A single
 explicit `--worker-id` is honored; `--diloco-worker-count > 1` requires
 the server (you can't foreground N). Add `--json` to `server` / `submit`

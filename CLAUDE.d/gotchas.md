@@ -71,3 +71,28 @@ the cheapest way to catch regressions across the whole project.
 
 For diagnosing a specific config's preprocessor output:
 `forgather -t cfg.yaml pp`.
+
+## Judging GPU availability — `forgather gpu status`, not `nvidia-smi`
+
+To see which GPUs a scheduled job can actually land on, run **`forgather
+gpu status`** — never infer it from `nvidia-smi`. `nvidia-smi` shows raw
+hardware; the scheduler places jobs from *its own pool*, which honors
+per-GPU **exclusions** and **min-priority** that `nvidia-smi` can't see:
+
+- A GPU can be **excluded** from the pool (`forgather gpu disable N`),
+  e.g. reserved for vLLM or another user. `forgather gpu status` shows
+  `Disabled: True`; the scheduler will never assign it. So a GPU that
+  looks "busy" in `nvidia-smi` may already be excluded (no contention),
+  and one that looks idle may be reserved.
+- The scheduler deliberately does **not** avoid GPUs merely because an
+  external process is running on them (graphics vs compute PIDs are
+  indistinguishable in practice) — exclusion is the explicit, supported
+  mechanism instead.
+
+Corollary: don't drop to `forgather diloco server --local-only` + manually
+`nohup`-launched workers to dodge a busy/contended GPU. That's a
+dev/debug-only path. Exclude the GPU (`forgather gpu disable N`) and use
+the orchestrated path — `forgather diloco server … -n N` (scheduled) +
+`forgather submit --diloco --diloco-worker-count N`. The scheduler places
+workers on eligible GPUs and wires `DILOCO_*` automatically; it survives
+your terminal session and captures logs centrally.

@@ -86,6 +86,11 @@ Full explanations in `CLAUDE.d/gotchas.md`.
   `!singleton` = lazy, cached; `!factory` = called every access.
   With no args, pass `[]`.
 - **`forgather ls` after every config edit** — catches PARSE ERRORs.
+- **GPU availability = `forgather gpu status`, not `nvidia-smi`** — the
+  scheduler's pool honors exclusions (`forgather gpu disable N`, e.g. a
+  GPU reserved for vLLM) and min-priority that `nvidia-smi` can't see. Use
+  the orchestrated path (`forgather submit --diloco`), not `diloco server
+  --local-only` + manual workers, for real runs.
 - **Cross-project model inheritance with `modelsrc/`** needs the
   baseline config to override `[model_submodule_searchpath]` — else
   `ModuleNotFoundError` at codegen.

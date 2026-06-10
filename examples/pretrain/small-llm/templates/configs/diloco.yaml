@@ -53,6 +53,6 @@
 [variable_listing]
     == super()
 # ns.diloco_workers: {{ ns.diloco_workers }}
-# aggregate total_tokens (M): {{ ns.agg_total_tokens }} (1x Chinchilla = 2270)
+# aggregate total_tokens (M): {{ ns.agg_total_tokens }} (Chinchilla-1x = 2270M for this model)
 # per-worker total_tokens (M): {{ (ns.agg_total_tokens / ns.diloco_workers) | int }}
-# per-worker total_steps: {{ ns.total_steps }} (≈ DDPx4 baseline 36,460)
+# per-worker total_steps: {{ ns.total_steps }} (matches each DDPx4 baseline rank's schedule)
