@@ -797,14 +797,16 @@ that still has the run logs (it reads each run's `trainer_logs.json` under
 python docs/plots/extract_curves.py
 ```
 
-The single-run LR trace can also be produced ad hoc with `forgather logs plot`
-against the raw log, when you still have it:
+`render.py` is the canonical source for `10x_ten_chinchilla_lr.png`. To explore
+a single run interactively from its raw log (when you still have it), use
+`forgather logs plot` — point `--output` at a scratch path so it doesn't clobber
+the committed image:
 
 ```bash
 forgather logs plot \
     output_models/ten_chinchilla/runs/log_2026-04-02T00-02-58/trainer_logs.json \
     --loss-curves --smooth 10 \
-    --output docs/plots/10x_ten_chinchilla_lr.png
+    --output /tmp/ten_chinchilla_lr.png
 ```
 
 Flags worth knowing (full reference in

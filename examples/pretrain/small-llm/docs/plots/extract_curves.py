@@ -65,9 +65,9 @@ def downsample(points, max_points):
 
 
 # The 1x plots use the first 1x-Chinchilla slice of the 10x ``ten_chinchilla``
-# run as the ``default`` baseline. Emit that slice as its own dense series so it
-# keeps full resolution within the slice (a global downsample of the 400K-step
-# run would leave only a handful of points below 37K).
+# run as the ``default`` baseline. Emit that slice as its own series, downsampled
+# *within the slice*, so it stays densely sampled there (~1200 pts) rather than
+# the ~100 a global downsample of the 400K-step run leaves below 37K.
 SLICE_RUN = "ten_chinchilla"
 SLICE_NAME = "default"
 SLICE_MAX_STEP = 37000

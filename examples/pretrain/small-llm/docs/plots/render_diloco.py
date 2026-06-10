@@ -95,8 +95,7 @@ def main():
 
     # summary
     def best_last(run):
-        _, ev = series(data, run, "eval_loss", x_max=X_MAX)
-        steps, _ = series(data, run, "eval_loss", x_max=X_MAX)
+        steps, ev = series(data, run, "eval_loss", x_max=X_MAX)
         return (min(ev), (steps[-1], ev[-1])) if ev else (None, None)
 
     print("\n=== eval-loss summary (1x slice, step <= %d) ===" % X_MAX)
