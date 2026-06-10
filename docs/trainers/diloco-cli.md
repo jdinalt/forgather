@@ -8,15 +8,16 @@
 
 ## Manual / low-level invocation (development & debugging)
 
-This section documents the **lower-level foreground path**: starting the
-parameter server and each worker by hand with explicit `--diloco-server
-host:port` and `--worker-id`. Most users should prefer the
+This section walks through the pieces step by step — starting the parameter
+server and the workers with the underlying `forgather diloco server` /
+`forgather submit --diloco` commands and their full flag set. Most users should
+prefer the
 [server-coordinated Quick Start](diloco.md#quick-start-recommended-through-the-forgather-server)
 (and the canonical
-[example](../../examples/tiny_experiments/diloco/README.md)); reach for these
-commands for development, debugging, single-process foreground runs, or
-environments without a Forgather server. The flag-reference tables here remain
-canonical.
+[example](../../examples/tiny_experiments/diloco/README.md)); reach for the
+detail here for development, debugging, single-process foreground runs
+(`--local-only`), or environments without a Forgather server. The flag-reference
+tables here remain canonical.
 
 ### 1. Start the Server
 
@@ -103,9 +104,10 @@ forgather submit --diloco \
 
 Prefer `--diloco-worker-count` for the common case — you specify a *count*, not
 names. Reach for an explicit `--worker-id` only when you want a predictable name
-for a *single* worker (e.g. to resume one worker from its own checkpoint, below);
-the two are alternatives, and `--diloco-worker-count > 1` needs the forgather
-server (you can't foreground N workers).
+for a *single* worker (e.g. to resume one worker from its own checkpoint, below).
+`--diloco-worker-count > 1` needs the forgather server (you can't foreground N
+workers); combining it with `--worker-id` just seeds that one name and excludes
+it from the auto-generated set.
 
 Workers launch via `forgather submit --diloco`, which makes DiLoCo an
 opt-in dimension on the regular `submit` verb (mirroring the webui's
@@ -121,13 +123,14 @@ Worker arguments:
   running server.
 - `--diloco-worker-count N`: Launch N workers in one submit, auto-named and
   guaranteed unique — the practical default. `N > 1` needs the forgather
-  server. Mutually exclusive with `--worker-id`.
+  server.
 - `--worker-id`: Unique identity for a *single* worker. Drives the
   per-worker output-dir suffix the project template appends to
   `ns.output_dir`, and the uniqueness key the server enforces on
   `/register`. Usually unset — `--diloco-worker-count` auto-assigns unique
   names; set it explicitly only when you want a predictable name (e.g. to
-  resume that worker). Mutually exclusive with `--diloco-worker-count`.
+  resume that worker). With `--diloco-worker-count > 1` it's honored as one
+  seed name, excluded from the auto-generated set.
 - `--heartbeat-interval`: Seconds between heartbeats for speed reporting
   (default: 30). Client-local; validated against the server's
   `--heartbeat-timeout` at startup.

@@ -689,8 +689,9 @@ Notes:
   from `nvidia-smi`.
 - Workers write to `output_models/diloco_<worker_id>/`; the server's global
   model and stats live under `output_models/diloco_master/`. Monitor with
-  `forgather diloco servers` / `forgather diloco status <id>` and `forgather
-  logs`.
+  `forgather diloco servers` / `forgather diloco status`, and follow a job's
+  captured output with `forgather job tail <job_id>` (`forgather job dump` to
+  dump it).
 - For the 10x + 1x run, swap step 3's config for `diloco_ten_chinchilla.yaml`
   (the server command is unchanged — the budget is a worker-side concern).
 - See the [DiLoCo guide](../../../docs/trainers/diloco.md) and the

@@ -169,8 +169,8 @@ The short version, with a `forgather server` already running:
 forgather diloco server --output-dir path/to/model --num-workers 2 -H 0.0.0.0
 
 # 2. Launch N workers in one command — each a scheduled training job. The single
-#    running server is auto-picked and --dataset defaults to cluster routing, so
-#    neither needs to be named.
+#    running server is auto-picked and --dataset defaults to cluster routing in
+#    cluster mode (the in-process loader otherwise), so neither needs naming.
 forgather submit --diloco --diloco-worker-count 2
 
 # 3. Monitor, then stop cleanly (save every worker, checkpoint the server).

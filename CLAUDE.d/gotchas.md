@@ -88,6 +88,9 @@ per-GPU **exclusions** and **min-priority** that `nvidia-smi` can't see:
   external process is running on them (graphics vs compute PIDs are
   indistinguishable in practice) — exclusion is the explicit, supported
   mechanism instead.
+- A GPU can also carry a **min job priority** (`forgather gpu priority N P`):
+  only jobs at priority `>= P` are placed on it — a soft reservation that still
+  lets high-priority work through, where `disable` is a hard exclusion.
 
 Corollary: don't drop to `forgather diloco server --local-only` + manually
 `nohup`-launched workers to dodge a busy/contended GPU. That's a

@@ -366,8 +366,9 @@ connect and start syncing, `Sync round` advances.
 
 #### Check server logs
 
-Get the server's job id from `forgather diloco servers`, then use the general
-job-log commands (they work for any scheduled job):
+Get the server's queue id — the bare `q_…` (e.g. from `forgather job list`;
+`forgather diloco servers` shows it with a `local:` prefix you'd strip) — then
+use the general job-log commands (they work for any scheduled job):
 
 ```bash
 forgather job tail q_1780289993506_f82969f3   # stream live until the job ends
