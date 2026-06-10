@@ -172,6 +172,8 @@ forgather ls
 | `wsd.yaml` | 10x Chinchilla with the WSD-S scheduler from `forgather.ml.optim:WSDScheduler`. |
 | `final.yaml` | 10x Chinchilla combining the most promising knobs: Tiny Stories x SmolLM curriculum, `lr = 3e-4`, WSD-S scheduler. |
 | `pp.yaml` | Pipeline Parallel trainer variant of the baseline. |
+| `diloco.yaml` | 4-worker DiLoCo (distributed local-SGD) at 1x Chinchilla, shared-memory sync backend. Aggregate token budget split across workers to match the DDPx4 per-rank schedule. |
+| `diloco_ten_chinchilla.yaml` | The `diloco.yaml` config extended to the 10x + 1x annealing budget, mirroring `ten_chinchilla.yaml`. |
 
 Unless otherwise noted below, each of the 1x Chinchilla configs uses the
 baseline LR schedule, so their loss curves are directly comparable to the
@@ -576,6 +578,189 @@ not yet run for a full training budget. A useful follow-up would be to add
 a matching DDP config with `dispatch_batches = True`, so the DDP and PP
 runs see exactly the same sequence of examples and can be compared
 head-to-head.
+
+### DiLoCo (distributed local-SGD)
+
+This experiment swaps the *parallelization strategy* rather than an
+optimizer or schedule knob: instead of one DDP job all-reducing gradients
+every step across 4 GPUs, run **4 independent single-GPU workers** that
+train locally and synchronize only every **H = 20** steps via DiLoCo's
+outer optimizer (SGD with Nesterov momentum, `lr = 0.7`). The sync uses the
+**shared-memory** backend - on a single host the parameter server maps the
+same memory region the workers do and runs the outer step in place, so a
+sync round is a local memcpy rather than a network round-trip. See the
+[DiLoCo guide](../../../trainers/diloco.md) for the mechanism.
+
+The point of DiLoCo is bandwidth efficiency over a slow interconnect; this
+single-host run can't show that off (every link here is a fast bus). What
+it *can* check is the **quality cost of synchronizing 1800× less often** -
+and, at this scale, whether 4 averaged replicas match one tightly-coupled
+DDP job at equal data.
+
+**Fair-comparison setup.** A DiLoCo worker is an ordinary trainer that
+computes its step budget as if standalone, so N workers would each run the
+full schedule and process N× the tokens. The `diloco.yaml` config corrects
+for this: it reads `--total-tokens` as the *aggregate* budget and divides it
+by `diloco_workers`, so each worker runs **567M tokens / 36,430 steps** -
+the identical per-rank schedule as each DDPx4 baseline rank - and the four
+workers together consume the same **2.27B-token (1x Chinchilla)** budget as
+the baseline. Same model (`medium.yaml`, 162M), same dataset, same
+inner-optimizer LR schedule. The only inherent difference is LR *scaling*:
+each DiLoCo worker scales its LR for a single-GPU batch while DDPx4 scales
+for the 4-GPU global batch - a property of the strategies, reconciled by the
+outer optimizer (the same caveat the
+[DiLoCo example](../../tiny_experiments/diloco/README.md) documents).
+
+![DiLoCo 4-worker vs DDPx4 baseline - train and eval loss](docs/plots/diloco_1x_comparison.png)
+
+| metric | DDPx4 baseline (`default`) | DiLoCo 4-worker (H=20) |
+|---|---|---|
+| strategy | DDP, all-reduce every step | 4 single-GPU workers, sync every 20 steps |
+| steps / GPU | 36,460 | 36,430 / worker |
+| total tokens | 2.27B | 2.27B (567M × 4) |
+| sync rounds | per-step all-reduce | 1,821 (outer SGD) |
+| per-GPU step time | 364 ms | **316 ms** |
+| wall-clock (training) | 3.68 h | **3.19 h** |
+| aggregate throughput | ~179K tok/s | **~205K tok/s** |
+| **best eval loss** | 2.651 | **2.573** |
+| **best eval perplexity** | 14.18 | **13.11** |
+
+DiLoCo finishes **0.078 eval loss (−1.1 perplexity) below the baseline**,
+and the four workers land within 0.0013 of each other (2.5729-2.5742) - the
+every-20-steps averaging keeps the replicas coherent. The eval curve
+separates below the baseline from about step 5,000 onward and never crosses
+back.
+
+That an averaged-replica run with 1,821 sync rounds *beats* an
+all-reduce-every-step baseline is consistent with the small-batch optimizer
+behaviour already seen in this project (see the `muon.yaml` notes and the
+Marek et al. reference below): each DiLoCo worker optimizes on a 16K-token
+batch versus DDPx4's 64K-token global batch, and at this 162M / 2.27B regime
+the smaller effective batch plus periodic averaging lands in a slightly
+better basin. The result conflates three things at once (sync frequency,
+effective batch, LR scaling), so it is a *quality sanity check*, not an
+attribution - but the headline is clear: at H=20 the shared-memory backend
+costs nothing in quality here, and the implementation is correct and stable
+at 4-worker / 162M scale. The natural follow-up is the longer
+`diloco_ten_chinchilla.yaml` run, where local-SGD's reported late-training
+advantage has more room to show.
+
+The plot is rendered by
+[`docs/plots/render_diloco.py`](docs/plots/render_diloco.py) (4-worker mean
+with a min/max band, against the baseline's 1x slice).
+
+#### Running it
+
+The `diloco.yaml` config only describes the *worker* side; a DiLoCo run also
+needs an initialized master model and a parameter server, and the workers are
+wired to it through environment variables rather than the config (so the config
+stays the same whether it runs under the orchestrator or by hand). The
+self-managed single-host recipe actually used for the run above:
+
+```bash
+# Run from this project directory (examples/pretrain/small-llm).
+
+# 1. Build the initial master model the server will hold (fresh random init).
+#    This is the *model* project (medium.yaml = the 162M Llama), not this
+#    training project.
+forgather -p ../../models/llama -t medium.yaml \
+    model --device cpu --save-checkpoint --safetensors \
+    --output-dir output_models/diloco_master \
+    construct
+
+# 2. Start the DiLoCo parameter server: shared-memory aggregator (it maps the
+#    region and runs the outer optimizer itself), 4 workers, H=20. --local-only
+#    runs it in the foreground without the orchestrator; it prints an auth token
+#    and writes it to ~/.config/forgather/diloco_server/<port>.token.
+forgather diloco server --local-only --backend shared_memory \
+    -o output_models/diloco_master -n 4 --sync-every 20 \
+    --save-every 50 --port 8513 --run-name diloco_1x
+
+# 3. Launch 4 single-GPU workers, one per GPU. The shm region, group size, and
+#    sync_every are all read from the server's /info — the worker only needs the
+#    server address, its token, the backend selector, and a unique worker id.
+#    The aggregate token budget (diloco.yaml default = 1x Chinchilla) is split
+#    across the 4 workers by the config, so no --total-tokens is needed here.
+TOK=$(cat ~/.config/forgather/diloco_server/8513.token)
+for i in 0 1 2 3; do
+  DILOCO_SERVER=https://127.0.0.1:8513 \
+  FORGATHER_DILOCO_SERVER_TOKEN="$TOK" \
+  DILOCO_BACKEND=shared_memory \
+  DILOCO_WORKER_ID="w$i" \
+  forgather -t diloco.yaml train -d $((i + 1)) &
+done
+```
+
+Notes:
+
+- `DILOCO_BACKEND=shared_memory` is required on each worker: the worker
+  *validates* its launched backend against the one the server declares (it does
+  not silently adopt it), so a mismatch fails loud rather than running a split
+  group. The `shm_group_dir` / `shm_group_size` come from `/info`.
+- Workers write to `output_models/diloco_<worker_id>/` (the `_w0..w3` suffix is
+  appended automatically); the server's global model and stats live under
+  `output_models/diloco_master/`.
+- For the 10x + 1x run, swap step 3's config for `diloco_ten_chinchilla.yaml`
+  (and there is no need to change the server command — the budget is a
+  worker-side concern).
+- This is the by-hand path. The orchestrated path (`forgather diloco server`
+  managed by the `forgather server`, workers via `forgather submit --diloco`)
+  does the token/TLS/GPU wiring for you; see the
+  [DiLoCo guide](../../../trainers/diloco.md).
+
+#### Runtime: trading the per-step all-reduce for an occasional sync
+
+The quality result is the headline, but the *runtime* result is the one that
+generalizes - and it turns on the interconnect. This box is **PCIe, no
+NVLink**, which is the regime where conventional DDP starts to hurt: DDP
+all-reduces every parameter's gradient across all ranks **on every step**, and
+on PCIe that reduction is slow. DiLoCo's whole premise is to pay that cost
+rarely instead of constantly.
+
+Both runs do identical per-GPU work (16,384 tokens/step) on the same 4 GPUs
+for the same 2.27B tokens, so the per-step gap is pure synchronization
+overhead:
+
+- **DDPx4: 364 ms/step.** A per-step all-reduce of all 162M gradients across 4
+  ranks over PCIe - call it ~88 ms/step of the total.
+- **DiLoCo: 316 ms/step.** No per-step coordination; the workers run
+  independently and synchronize once every H = 20 steps through the
+  shared-memory region plus a CPU outer step.
+
+DiLoCo finishes **~13% sooner (3.19 h vs 3.68 h)** and pushes ~205K tok/s vs
+~179K.
+
+The DiLoCo sync is **not free**, though - and at H = 20 it is a real fraction
+of the budget. Each round moves the pseudo-gradient GPU→host (bf16, ~324 MB)
+and the refreshed master host→GPU (fp32, ~648 MB) over the same PCIe bus, plus
+the CPU outer-SGD step over 162M parameters. A microbenchmark of those legs on
+this hardware puts the worker-blocking cost on the order of tens of ms/step
+*amortized* at H = 20 (≈13% of wall-clock, ≈20-25 min over the run). It already
+fits inside the 316 ms/step average - i.e. the 3.19 h is the sync-paid number,
+not an idealization.
+
+The lever is **H**, and it asymmetrically favors DiLoCo:
+
+- DiLoCo's sync cost amortizes as roughly `(per-round cost) / H` - so raising
+  H from 20 → 100 → 500 drives it from ~tens of ms/step toward ~1 ms/step,
+  approaching the pure-compute floor (~276 ms/step here).
+- DDP's all-reduce **does not amortize** - it is paid every step regardless.
+
+So the runtime gap *widens* with H (as long as eval quality holds across the
+longer drift between syncs - the thing to watch), and it compounds in exactly
+the directions where DDP is weakest: the all-reduce volume grows with **model
+size**, and **across hosts** the per-step reduction moves from PCIe to the
+network while DiLoCo's per-H sync keeps its shape. A 162M model on single-host
+PCIe is the conservative end of this, and it already points the right way - a
+larger model, a higher H, or a multi-host run would all be expected to widen
+the margin.
+
+Two measurement caveats: the two runs were collected months apart on the same
+machine (possible differing background load), so treat the ~13% as indicative;
+and the sync-cost *decomposition* above is a microbenchmark estimate rather
+than a number read off the run - the per-round sync-time metric the worker
+computes does not currently reach the logs, which is a gap worth closing
+(an H-sweep would then make this table quantitative end-to-end).
 
 ### Reproducing the plots
 

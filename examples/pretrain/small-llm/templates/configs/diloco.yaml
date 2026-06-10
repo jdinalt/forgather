@@ -1,0 +1,57 @@
+-- extends 'project.yaml'
+
+## DiLoCo (Distributed Local-SGD) variant of the baseline, for testing the
+## shared-memory sync backend against the project's DDPx4 reference runs.
+##
+## ``enable_diloco = True`` forces DiLoCo render; the parent
+## (``project.yaml`` -> ``lm_training_project.yaml``) owns the actual wiring
+## (work-unit dataset sharding, the DiLoCoCallback, per-worker output dir
+## suffix). Running it still requires ``DILOCO_SERVER`` in the worker env;
+## ``sync_every`` / backend are declared by the server, not here.
+##
+## Budget convention: the standard ``--total-tokens`` / ``--warmup-tokens`` /
+## ``--min-cooldown-tokens`` / ``--annealing-tokens`` are read as the
+## *aggregate* budget across the whole worker group and divided by
+## ``diloco_workers`` (in [globals], before step counts are computed) to get
+## each worker's budget. Because a DiLoCo worker is DDPx1 (``world_size = 1``,
+## so 1/N the tokens-per-step of the DDPx4 reference), this split makes each
+## worker's step count - and therefore its inner-optimizer LR schedule - match
+## the DDPx4 baseline exactly, while the aggregate distinct-token budget stays
+## at the target Chinchilla multiple. So ``--total-tokens 2270`` here is the
+## same 1x-Chinchilla compute as the DDPx4 ``default`` run, just spread over
+## ``diloco_workers`` cooperating workers.
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DiLoCo 4-worker (shared-memory)"
+    -- set ns.config_description = "DiLoCo local-SGD, aggregate budget split across diloco_workers; matches the DDPx4 baseline LR schedule per worker"
+    -- set ns.model_name = model_name | default("diloco")
+
+    -- set ns.enable_diloco = enable_diloco | default(True)
+
+    ## Number of workers the aggregate budget is split across. Should equal the
+    ## server's ``-n`` at launch so the per-worker LR schedule matches reality.
+    -- set ns.diloco_workers = diloco_workers | default(4)
+
+[globals]
+    ## At the top of [globals], ns.*_tokens still hold the *aggregate* budget
+    ## (set by project.yaml / leaf configs / CLI). Capture it for display, then
+    ## split into per-worker budgets BEFORE the parent converts tokens to step
+    ## counts (lm_training_project [globals]). Integer floor; a few tokens of
+    ## aggregate rounding is negligible.
+    -- set ns.agg_total_tokens = ns.total_tokens
+    -- set ns.agg_warmup_tokens = ns.warmup_tokens
+    -- set ns.agg_min_cooldown_tokens = ns.min_cooldown_tokens
+    -- set ns.agg_annealing_tokens = ns.annealing_tokens
+    -- set ns.total_tokens = (ns.agg_total_tokens / ns.diloco_workers) | int
+    -- set ns.warmup_tokens = (ns.agg_warmup_tokens / ns.diloco_workers) | int
+    -- set ns.min_cooldown_tokens = (ns.agg_min_cooldown_tokens / ns.diloco_workers) | int
+    -- set ns.annealing_tokens = (ns.agg_annealing_tokens / ns.diloco_workers) | int
+    == super()
+
+[variable_listing]
+    == super()
+# ns.diloco_workers: {{ ns.diloco_workers }}
+# aggregate total_tokens (M): {{ ns.agg_total_tokens }} (1x Chinchilla = 2270)
+# per-worker total_tokens (M): {{ (ns.agg_total_tokens / ns.diloco_workers) | int }}
+# per-worker total_steps: {{ ns.total_steps }} (matches DDPx4 baseline)

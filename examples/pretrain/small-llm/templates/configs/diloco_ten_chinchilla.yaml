@@ -1,0 +1,24 @@
+-- extends 'configs/diloco.yaml'
+
+## DiLoCo 4-worker run at the full 10x Chinchilla + 1x annealing budget -
+## the DiLoCo counterpart of ``ten_chinchilla.yaml``, for testing whether the
+## shared-memory backend scales to a longer run with more workers. The
+## aggregate budget set here is split across ``diloco_workers`` by the parent
+## ``diloco.yaml`` [globals], so per-worker step counts match the DDPx4
+## ``ten_chinchilla`` baseline.
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DiLoCo Ten Chinchilla (shared-memory)"
+    -- set ns.config_description = "DiLoCo 10x Chinchilla + 1x annealing, aggregate budget split across diloco_workers"
+    -- set ns.model_name = model_name | default("diloco_ten_chinchilla")
+
+    ## Aggregate budgets (millions of tokens), mirroring ten_chinchilla.yaml.
+    ## Set here (config_metadata) so the parent's [globals] split sees the 10x
+    ## numbers. CLI --total-tokens / --annealing-tokens still override.
+    -- set ns.total_tokens = total_tokens | default(24970)
+    -- set ns.annealing_tokens = annealing_tokens | default(2497)
+
+[lr_scheduler]
+    == super()
+    checkpoint_step: {{ ns.decay_start_step }}
