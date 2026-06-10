@@ -767,32 +767,46 @@ computes does not currently reach the logs, which is a gap worth closing
 
 ### Reproducing the plots
 
-The four comparison plots above (`10x_chinchilla_comparison.png`,
-`10x_eval_perplexity.png`, `1x_chinchilla_comparison.png`,
-`1x_eval_perplexity.png`) are rendered by
-[`docs/plots/render.py`](docs/plots/render.py) - a small matplotlib
-script using the `forgather.ml.analysis.TrainingLog` API. The CLI
-`forgather logs plot` defaults are tuned for one or two runs; with the
-five 10x and seven 1x runs collected here, the default markers and
-linewidths obscure detail, so we render directly with thin lines, no
-markers, and heavier smoothing on the train-loss panel.
+The plots are rendered from a **source-controlled data file**, not from the
+run logs directly. The trained runs live under `output_models/` (gitignored),
+so the curves behind these plots - weeks of GPU time - would otherwise exist
+only on the machine that produced them. Instead the loss / LR / grad-norm
+curves are extracted into a committed
+[`docs/plots/curves.csv`](docs/plots/curves.csv) (long format:
+`run,metric,step,value`), so the plots regenerate from a clean checkout and the
+raw curves are inspectable without re-running anything.
 
 ```bash
-# Re-render all four comparison plots (run from this project directory)
-python docs/plots/render.py
+# Re-render every plot from the committed curves.csv (run from this project dir)
+python docs/plots/render.py          # the 10x / 1x comparison + perplexity + LR plots
+python docs/plots/render_diloco.py   # the DiLoCo-vs-DDPx4 comparison
 ```
 
-The single-run LR trace still uses `forgather logs plot`, since one run
-fits the CLI defaults fine:
+`render.py` reads `curves.csv` via the small
+[`docs/plots/curves_data.py`](docs/plots/curves_data.py) helper and draws thin,
+marker-less lines (the CLI `forgather logs plot` defaults are tuned for one or
+two runs and get noisy with the five 10x and seven 1x runs here). The
+train-smoothing windows are sized for the downsampled CSV resolution; the eval
+series are kept full-resolution.
+
+To fold a **new** run into the committed data, re-run the extractor on a machine
+that still has the run logs (it reads each run's `trainer_logs.json` under
+`output_models/` and rewrites `curves.csv`):
 
 ```bash
-# 10x ten_chinchilla alone, loss + LR on secondary axis.
-# Single-run --loss-curves draws the LR trace; the outlier-aware y-axis
-# default focuses on the tail instead of the warmup peak.
+python docs/plots/extract_curves.py
+```
+
+`render.py` is the canonical source for `10x_ten_chinchilla_lr.png`. To explore
+a single run interactively from its raw log (when you still have it), use
+`forgather logs plot` — point `--output` at a scratch path so it doesn't clobber
+the committed image:
+
+```bash
 forgather logs plot \
     output_models/ten_chinchilla/runs/log_2026-04-02T00-02-58/trainer_logs.json \
     --loss-curves --smooth 10 \
-    --output docs/plots/10x_ten_chinchilla_lr.png
+    --output /tmp/ten_chinchilla_lr.png
 ```
 
 Flags worth knowing (full reference in
