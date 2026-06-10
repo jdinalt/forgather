@@ -366,11 +366,13 @@ connect and start syncing, `Sync round` advances.
 
 #### Check server logs
 
-Pass the job id from `forgather diloco servers`. `--follow` tails the log (omit it to
-dump and exit).
+Get the server's queue id — the bare `q_…` (e.g. from `forgather job list`;
+`forgather diloco servers` shows it with a `local:` prefix you'd strip) — then
+use the general job-log commands (they work for any scheduled job):
 
 ```bash
-forgather diloco logs local:q_1780289993506_f82969f3 --follow
+forgather job tail q_1780289993506_f82969f3   # stream live until the job ends
+forgather job dump q_1780289993506_f82969f3   # write the captured log and exit
 ```
 
 ### 6. Start the Workers
