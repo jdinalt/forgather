@@ -1,10 +1,16 @@
 """Render the README plots for examples/pretrain/small-llm.
 
 Renders thin-line, line-only (no markers) versions of the 10x and 1x
-comparison plots and the matching eval-perplexity plots. The CLI
-`forgather logs plot` defaults are too noisy on the train-loss panel and
-the marker-per-eval-point style obscures detail when several runs are
+comparison plots, the matching eval-perplexity plots, and the single-run LR
+trace. The CLI `forgather logs plot` defaults are too noisy on the train-loss
+panel and the marker-per-eval-point style obscures detail when several runs are
 closely matched, so we render directly with matplotlib here.
+
+Reads the committed ``curves.csv`` (produced by ``extract_curves.py``), so it
+works on a clean checkout with no ``output_models/`` present. The train/LR
+series in ``curves.csv`` are downsampled (~MAX_POINTS/run); the train-smoothing
+windows below are sized for that downsampled resolution rather than the raw
+per-step logs (the eval series are full-resolution).
 
 Run from the project directory:
 
@@ -17,48 +23,19 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from curves_data import load_curves, series
 
-from forgather.ml.analysis import TrainingLog
 from forgather.ml.analysis.plotting import smooth_values
 
-ROOT = Path(__file__).resolve().parents[2]
-OUT = ROOT / "docs" / "plots"
+OUT = Path(__file__).resolve().parent
 
 LINEWIDTH = 1.1
 PALETTE = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2"]
 
-RUNS_10X = [
-    (
-        "ten_chinchilla",
-        "output_models/ten_chinchilla/runs/log_2026-04-02T00-02-58/trainer_logs.json",
-    ),
-    (
-        "long_cooldown",
-        "output_models/long_cooldown/runs/log_2026-04-06T07-14-55/trainer_logs.json",
-    ),
-    (
-        "tiny_x_small_lm",
-        "output_models/tiny_x_small_lm/runs/log_2026-04-19T22-50-21/trainer_logs.json",
-    ),
-    ("wds", "output_models/wds/runs/log_2026-04-22T04-05-02/trainer_logs.json"),
-    ("final", "output_models/final/runs/log_2026-04-26T11-00-31/trainer_logs.json"),
-]
-
-RUNS_1X = [
-    (
-        "default",
-        "output_models/ten_chinchilla/runs/log_2026-04-02T00-02-58/trainer_logs.json",
-    ),
-    ("bf16", "output_models/bf16/runs/log_2026-04-05T00-51-49/trainer_logs.json"),
-    (
-        "bf16_adafactor",
-        "output_models/bf16_adafactor/runs/log_2026-04-04T20-52-11/trainer_logs.json",
-    ),
-    ("high_lr", "output_models/high_lr/runs/log_2026-04-08T14-47-03/trainer_logs.json"),
-    ("canon", "output_models/canon/runs/log_2026-04-05T20-04-51/trainer_logs.json"),
-    ("muon", "output_models/muon/runs/log_2026-04-28T08-22-52/trainer_logs.json"),
-    ("deepone", "output_models/deepone/runs/log_2026-04-24T09-25-27/trainer_logs.json"),
-]
+# Run names as stored in curves.csv (the 1x ``default`` is the dense 1x slice of
+# ten_chinchilla; see extract_curves.py).
+RUNS_10X = ["ten_chinchilla", "long_cooldown", "tiny_x_small_lm", "wds", "final"]
+RUNS_1X = ["default", "bf16", "bf16_adafactor", "high_lr", "canon", "muon", "deepone"]
 
 
 def percentile_ylim(series_list, lo=5, hi=95, pad=0.05):
@@ -71,18 +48,8 @@ def percentile_ylim(series_list, lo=5, hi=95, pad=0.05):
     return (p_lo - span * pad, p_hi + span * pad)
 
 
-def clip_xy(steps, values, x_max):
-    if x_max is None:
-        return list(steps), list(values)
-    out_s, out_v = [], []
-    for s, v in zip(steps, values):
-        if s <= x_max:
-            out_s.append(s)
-            out_v.append(v)
-    return out_s, out_v
-
-
 def render_train_eval(
+    data,
     runs,
     out_path,
     train_smooth,
@@ -94,29 +61,22 @@ def render_train_eval(
     fig, (ax_t, ax_e) = plt.subplots(1, 2, figsize=(16, 6))
     train_series, eval_series = [], []
 
-    for idx, (label, path) in enumerate(runs):
-        log = TrainingLog.from_file(str(ROOT / path))
+    for idx, run in enumerate(runs):
         color = PALETTE[idx % len(PALETTE)]
 
-        train = log.get_training_records()
-        if train:
-            steps = [r["global_step"] for r in train]
-            losses = [r["loss"] for r in train]
-            steps, losses = clip_xy(steps, losses, x_max)
+        steps, losses = series(data, run, "train_loss", x_max=x_max)
+        if steps:
             smooth = smooth_values(losses, train_smooth)
-            ax_t.plot(steps, smooth, label=label, linewidth=LINEWIDTH, color=color)
+            ax_t.plot(steps, smooth, label=run, linewidth=LINEWIDTH, color=color)
             train_series.append(list(smooth))
 
-        evals = log.get_eval_records()
-        if evals:
-            steps = [r["global_step"] for r in evals]
-            losses = [r["eval_loss"] for r in evals]
-            steps, losses = clip_xy(steps, losses, x_max)
+        steps, losses = series(data, run, "eval_loss", x_max=x_max)
+        if steps:
             smooth = smooth_values(losses, eval_smooth)
-            ax_e.plot(steps, smooth, label=label, linewidth=LINEWIDTH, color=color)
+            ax_e.plot(steps, smooth, label=run, linewidth=LINEWIDTH, color=color)
             eval_series.append(list(smooth))
 
-    for ax, title, ylabel, series, override in (
+    for ax, title, ylabel, sl, override in (
         (ax_t, "Train Loss", "Loss", train_series, train_ylim),
         (ax_e, "Eval Loss", "Eval Loss", eval_series, eval_ylim),
     ):
@@ -128,7 +88,7 @@ def render_train_eval(
         if override:
             ax.set_ylim(*override)
         else:
-            ylim = percentile_ylim(series)
+            ylim = percentile_ylim(sl)
             if ylim:
                 ax.set_ylim(*ylim)
 
@@ -137,22 +97,18 @@ def render_train_eval(
     print("wrote", out_path)
 
 
-def render_eval_perplexity(runs, out_path, eval_smooth, x_max=None, ylim=None):
+def render_eval_perplexity(data, runs, out_path, eval_smooth, x_max=None, ylim=None):
     fig, ax = plt.subplots(1, 1, figsize=(11, 6.5))
     eval_series = []
 
-    for idx, (label, path) in enumerate(runs):
-        log = TrainingLog.from_file(str(ROOT / path))
+    for idx, run in enumerate(runs):
         color = PALETTE[idx % len(PALETTE)]
-        evals = log.get_eval_records()
-        if not evals:
+        steps, losses = series(data, run, "eval_loss", x_max=x_max)
+        if not steps:
             continue
-        steps = [r["global_step"] for r in evals]
-        losses = [r["eval_loss"] for r in evals]
-        steps, losses = clip_xy(steps, losses, x_max)
         ppl = [float(np.exp(v)) for v in losses]
         smooth = smooth_values(ppl, eval_smooth)
-        ax.plot(steps, smooth, label=label, linewidth=LINEWIDTH, color=color)
+        ax.plot(steps, smooth, label=run, linewidth=LINEWIDTH, color=color)
         eval_series.append(list(smooth))
 
     ax.set_title("Eval Perplexity vs Global Step")
@@ -172,52 +128,42 @@ def render_eval_perplexity(runs, out_path, eval_smooth, x_max=None, ylim=None):
     print("wrote", out_path)
 
 
-def render_single_lr(label, path, out_path, train_smooth, eval_smooth=1, ylim=None):
-    """Single-run plot: train+eval loss on left axis, LR on right axis.
-
-    Mirrors `forgather logs plot --loss-curves` for one run, but with thin
-    lines and no markers on the eval series.
-    """
-    log = TrainingLog.from_file(str(ROOT / path))
+def render_single_lr(data, run, out_path, train_smooth, eval_smooth=1, ylim=None):
+    """Single-run plot: train+eval loss on left axis, LR on right axis."""
     fig, ax1 = plt.subplots(figsize=(12, 6))
     ax2 = ax1.twinx()
-
     loss_series = []
 
-    train = log.get_training_records()
-    if train:
-        steps = [r["global_step"] for r in train]
-        losses = [r["loss"] for r in train]
+    steps, losses = series(data, run, "train_loss")
+    if steps:
         smooth = smooth_values(losses, train_smooth)
         ax1.plot(
             steps,
             smooth,
-            label=f"{label} Train Loss",
+            label=f"{run} Train Loss",
             linewidth=LINEWIDTH,
             color="tab:blue",
         )
         loss_series.append(list(smooth))
-        lrs = [r.get("learning_rate") for r in train]
-        if any(v is not None for v in lrs):
-            ax2.plot(
-                steps,
-                lrs,
-                label=f"{label} LR",
-                linestyle="--",
-                alpha=0.8,
-                linewidth=1.0,
-                color="tab:orange",
-            )
+    lr_steps, lrs = series(data, run, "learning_rate")
+    if lr_steps:
+        ax2.plot(
+            lr_steps,
+            lrs,
+            label=f"{run} LR",
+            linestyle="--",
+            alpha=0.8,
+            linewidth=1.0,
+            color="tab:orange",
+        )
 
-    evals = log.get_eval_records()
-    if evals:
-        steps = [r["global_step"] for r in evals]
-        losses = [r["eval_loss"] for r in evals]
-        smooth = smooth_values(losses, eval_smooth) if eval_smooth > 1 else losses
+    e_steps, e_losses = series(data, run, "eval_loss")
+    if e_steps:
+        smooth = smooth_values(e_losses, eval_smooth) if eval_smooth > 1 else e_losses
         ax1.plot(
-            steps,
+            e_steps,
             smooth,
-            label=f"{label} Eval Loss",
+            label=f"{run} Eval Loss",
             linewidth=LINEWIDTH,
             color="tab:green",
         )
@@ -235,7 +181,6 @@ def render_single_lr(label, path, out_path, train_smooth, eval_smooth=1, ylim=No
     ax1.tick_params(axis="y", labelcolor="tab:blue")
     ax1.grid(True, alpha=0.3)
     ax1.legend(loc="upper left")
-
     ax2.set_ylabel("Learning Rate", color="tab:orange")
     ax2.tick_params(axis="y", labelcolor="tab:orange")
     ax2.legend(loc="upper right")
@@ -247,24 +192,31 @@ def render_single_lr(label, path, out_path, train_smooth, eval_smooth=1, ylim=No
 
 
 def main():
+    data = load_curves()
+    # Train-smoothing windows are sized for the downsampled curves.csv
+    # resolution: the raw 10x logs (~25k pts) used window 1500, downsampled ~21x
+    # here -> ~72; the 1x logs (~2.3k pts) used 100, downsampled ~2x -> ~52.
     render_train_eval(
+        data,
         RUNS_10X,
         OUT / "10x_chinchilla_comparison.png",
-        train_smooth=1500,
+        train_smooth=72,
         eval_smooth=5,
         eval_ylim=(2.20, 2.85),
     )
     render_eval_perplexity(
-        RUNS_10X, OUT / "10x_eval_perplexity.png", eval_smooth=5, ylim=(9.0, 17.0)
+        data, RUNS_10X, OUT / "10x_eval_perplexity.png", eval_smooth=5, ylim=(9.0, 17.0)
     )
     render_train_eval(
+        data,
         RUNS_1X,
         OUT / "1x_chinchilla_comparison.png",
-        train_smooth=100,
+        train_smooth=52,
         eval_smooth=3,
         x_max=36448,
     )
     render_eval_perplexity(
+        data,
         RUNS_1X,
         OUT / "1x_eval_perplexity.png",
         eval_smooth=3,
@@ -272,10 +224,10 @@ def main():
         ylim=(13.5, 25.0),
     )
     render_single_lr(
+        data,
         "ten_chinchilla",
-        "output_models/ten_chinchilla/runs/log_2026-04-02T00-02-58/trainer_logs.json",
         OUT / "10x_ten_chinchilla_lr.png",
-        train_smooth=1500,
+        train_smooth=72,
         ylim=(2.25, 3.10),
     )
 
