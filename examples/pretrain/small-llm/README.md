@@ -589,7 +589,7 @@ outer optimizer (SGD with Nesterov momentum, `lr = 0.7`). The sync uses the
 **shared-memory** backend - on a single host the parameter server maps the
 same memory region the workers do and runs the outer step in place, so a
 sync round is a local memcpy rather than a network round-trip. See the
-[DiLoCo guide](../../../trainers/diloco.md) for the mechanism.
+[DiLoCo guide](../../../docs/trainers/diloco.md) for the mechanism.
 
 The point of DiLoCo is bandwidth efficiency over a slow interconnect; this
 single-host run can't show that off (every link here is a fast bus). What
@@ -602,7 +602,8 @@ computes its step budget as if standalone, so N workers would each run the
 full schedule and process N× the tokens. The `diloco.yaml` config corrects
 for this: it reads `--total-tokens` as the *aggregate* budget and divides it
 by `diloco_workers`, so each worker runs **567M tokens / 36,430 steps** -
-the identical per-rank schedule as each DDPx4 baseline rank - and the four
+essentially the same per-rank schedule as each DDPx4 baseline rank (36,460
+steps; the ~0.1% / ~1.5% gaps are integer-floor rounding) - and the four
 workers together consume the same **2.27B-token (1x Chinchilla)** budget as
 the baseline. Same model (`medium.yaml`, 162M), same dataset, same
 inner-optimizer LR schedule. The only inherent difference is LR *scaling*:
@@ -676,18 +677,20 @@ forgather diloco server --local-only --backend shared_memory \
     -o output_models/diloco_master -n 4 --sync-every 20 \
     --save-every 50 --port 8513 --run-name diloco_1x
 
-# 3. Launch 4 single-GPU workers, one per GPU. The shm region, group size, and
-#    sync_every are all read from the server's /info — the worker only needs the
-#    server address, its token, the backend selector, and a unique worker id.
-#    The aggregate token budget (diloco.yaml default = 1x Chinchilla) is split
-#    across the 4 workers by the config, so no --total-tokens is needed here.
+# 3. Launch 4 single-GPU workers, one per GPU. -d sets CUDA_VISIBLE_DEVICES, so
+#    one index per worker; here GPUs 0-3 (adjust the index to the GPUs you have
+#    free). The shm region, group size, and sync_every are read from the
+#    server's /info — the worker only needs the server address, its token, the
+#    backend selector, and a unique worker id. The aggregate token budget
+#    (diloco.yaml default = 1x Chinchilla) is split across the 4 workers by the
+#    config, so no --total-tokens is needed here.
 TOK=$(cat ~/.config/forgather/diloco_server/8513.token)
 for i in 0 1 2 3; do
   DILOCO_SERVER=https://127.0.0.1:8513 \
   FORGATHER_DILOCO_SERVER_TOKEN="$TOK" \
   DILOCO_BACKEND=shared_memory \
   DILOCO_WORKER_ID="w$i" \
-  forgather -t diloco.yaml train -d $((i + 1)) &
+  forgather -t diloco.yaml train -d "$i" &
 done
 ```
 
@@ -706,7 +709,7 @@ Notes:
 - This is the by-hand path. The orchestrated path (`forgather diloco server`
   managed by the `forgather server`, workers via `forgather submit --diloco`)
   does the token/TLS/GPU wiring for you; see the
-  [DiLoCo guide](../../../trainers/diloco.md).
+  [DiLoCo guide](../../../docs/trainers/diloco.md).
 
 #### Runtime: trading the per-step all-reduce for an occasional sync
 

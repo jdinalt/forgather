@@ -248,7 +248,7 @@ def default_step_columns() -> dict[str, dict]:
         "tok_per_sec": {"label": "tok/s", "width": 10, "fmt": ",d"},
         "mfu": {"label": "mfu", "width": 6, "fmt": ".1%"},
         "peak_mem": {"label": "peak_mem", "width": 11, "fmt": "gib", "reduce": "max"},
-        # DiLoCo sync metrics, injected by DiLoCoCallback.on_log. Absent (and so
+        # DiLoCo sync metrics, injected by DiLoCoCallback.on_log_step. Absent (and so
         # skipped) for non-DiLoCo runs. The rates are the mean over the syncs in
         # the log window; up/down MB are only published for backends that move
         # tensors over a wire (HTTP / collective), so a shared-memory run shows

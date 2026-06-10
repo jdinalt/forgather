@@ -15,8 +15,9 @@
 ## ``diloco_workers`` (in [globals], before step counts are computed) to get
 ## each worker's budget. Because a DiLoCo worker is DDPx1 (``world_size = 1``,
 ## so 1/N the tokens-per-step of the DDPx4 reference), this split makes each
-## worker's step count - and therefore its inner-optimizer LR schedule - match
-## the DDPx4 baseline exactly, while the aggregate distinct-token budget stays
+## worker's step count - and therefore its inner-optimizer LR schedule -
+## closely match the DDPx4 baseline (within ~1.5%; integer-floor rounding in
+## the budget split and tokens-per-step), while the aggregate distinct-token budget stays
 ## at the target Chinchilla multiple. So ``--total-tokens 2270`` here is the
 ## same 1x-Chinchilla compute as the DDPx4 ``default`` run, just spread over
 ## ``diloco_workers`` cooperating workers.
@@ -54,4 +55,4 @@
 # ns.diloco_workers: {{ ns.diloco_workers }}
 # aggregate total_tokens (M): {{ ns.agg_total_tokens }} (1x Chinchilla = 2270)
 # per-worker total_tokens (M): {{ (ns.agg_total_tokens / ns.diloco_workers) | int }}
-# per-worker total_steps: {{ ns.total_steps }} (matches DDPx4 baseline)
+# per-worker total_steps: {{ ns.total_steps }} (≈ DDPx4 baseline 36,460)
