@@ -631,8 +631,13 @@ class TestMetricsInjection:
 
     @patch(_CLIENT_PATCH)
     @patch(_WORKER_PATCH)
-    def test_metrics_injected_on_log(self, MockWorker, MockClient):
-        """on_log adds sync_metrics to the logs dict."""
+    def test_metrics_injected_on_log_step(self, MockWorker, MockClient):
+        """on_log_step adds sync_metrics to the logs dict.
+
+        Injection must happen in ``on_log_step`` (fired with the mutable logs
+        dict *before* ``trainer.log()`` writes the record), not ``on_log``
+        (fired after the writers have consumed it).
+        """
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {
             "diloco/sync_count": 5,
@@ -649,7 +654,7 @@ class TestMetricsInjection:
         cb.on_load_model_weights(args, state, control, model=model, optimizer=optimizer)
 
         logs = {"loss": 1.5, "lr": 1e-4}
-        cb.on_log(args, state, control, logs=logs)
+        cb.on_log_step(args, state, control, logs=logs)
 
         assert logs["diloco/sync_count"] == 5
         assert logs["diloco/local_step"] == 42
@@ -657,20 +662,22 @@ class TestMetricsInjection:
         # Original logs preserved
         assert logs["loss"] == 1.5
         assert logs["lr"] == 1e-4
+        # The window is reset once per logged row.
+        mock_instance.note_logged.assert_called_once()
 
     def test_no_metrics_when_inactive(self):
-        """on_log does not modify logs when no worker is active."""
+        """on_log_step does not modify logs when no worker is active."""
         cb = DiLoCoCallback()
         args, state, control = _make_args(), _make_state(), _make_control()
         logs = {"loss": 1.5}
 
-        cb.on_log(args, state, control, logs=logs)
+        cb.on_log_step(args, state, control, logs=logs)
         assert logs == {"loss": 1.5}
 
     @patch(_CLIENT_PATCH)
     @patch(_WORKER_PATCH)
     def test_no_crash_when_logs_is_none(self, MockWorker, MockClient):
-        """on_log handles None logs gracefully."""
+        """on_log_step handles None logs gracefully."""
         mock_instance = MockWorker.return_value
         mock_instance.sync_metrics = {"diloco/sync_count": 1}
         _stub_info(MockClient)
@@ -682,7 +689,7 @@ class TestMetricsInjection:
 
         cb.on_load_model_weights(args, state, control, model=model, optimizer=optimizer)
         # Should not raise
-        cb.on_log(args, state, control, logs=None)
+        cb.on_log_step(args, state, control, logs=None)
 
 
 class TestStatefulProtocol:

@@ -125,6 +125,32 @@ def test_rendered_header_gates_on_published_keys():
     assert "up_mb" in hdr2 and "dn_mb" in hdr2
 
 
+def test_callback_injects_sync_metrics_via_on_log_step():
+    """Regression: the trainer fires ``on_log_step`` (with the mutable ``logs``
+    dict) *before* ``trainer.log()`` writes the record and fires ``on_log``.
+    The DiLoCo sync metrics must therefore be injected in ``on_log_step`` -
+    injecting in ``on_log`` (the prior behaviour) ran after the JsonLogger /
+    step-table / TensorBoard writers had already consumed ``logs``, so the
+    metrics were computed but never reached the persisted row or the table.
+    """
+    from forgather.ml.trainer.callbacks.diloco_callback import DiLoCoCallback
+
+    w = _worker()
+    w._win_sync_count = 2
+    w._win_sync_time = 1.0
+
+    cb = DiLoCoCallback(server_addr="localhost:0")
+    cb._worker = w
+
+    assert hasattr(cb, "on_log_step"), "metrics must be injected pre-write"
+    logs = {"loss": 3.0}
+    cb.on_log_step(args=None, state=None, control=None, logs=logs)
+
+    assert logs["diloco/sync_count"] == w._sync_count  # always-on base key
+    assert logs["diloco/sync_time"] == 0.5  # windowed mean (1.0 / 2)
+    assert w._win_sync_count == 0  # note_logged() reset the window
+
+
 def test_server_verbose_sync_default_off():
     # The server carries a verbose_sync flag (advertised via /info), default off.
     import inspect

@@ -955,6 +955,29 @@ class DiLoCoCallback(TrainerCallback):
             control.should_training_stop = True
         logger.info(f"DiLoCoCallback: applied relayed command '{command}'")
 
+    def on_log_step(
+        self,
+        args: MinimalTrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        logs: Optional[dict] = None,
+        **kwargs,
+    ):
+        """Inject DiLoCo sync metrics into the logs dict *before* it is written.
+
+        ``on_log_step`` fires while ``logs`` is still mutable and *before*
+        ``trainer.log()`` hands it to the writers (JsonLogger, step-table,
+        TensorBoard). ``on_log`` fires *after* those writers have already
+        consumed ``logs``, so injecting there (the previous behaviour) computed
+        the metrics but never got them into the persisted record or the
+        rendered step table. Pair the read with :meth:`note_logged` so each
+        row's windowed means cover only the syncs since the previous row.
+        """
+        if self._worker is None or logs is None:
+            return
+        logs.update(self._worker.sync_metrics)
+        self._worker.note_logged()
+
     def on_log(
         self,
         args: MinimalTrainingArguments,
@@ -963,18 +986,12 @@ class DiLoCoCallback(TrainerCallback):
         logs: Optional[dict] = None,
         **kwargs,
     ):
-        """Inject DiLoCo sync metrics into the logs dict, and snapshot the
-        run's training metrics for the server's unified-stats aggregator."""
+        """Snapshot this worker's metrics for the server's unified-stats
+        aggregator. A *consumer* of the now-final ``logs`` (the sync metrics
+        were injected in :meth:`on_log_step`), sourced here in parallel to the
+        control callback's relay so server stats don't depend on it."""
         if self._worker is None:
             return
-        if logs is not None:
-            logs.update(self._worker.sync_metrics)
-        # Reset the per-log-window sync accumulators so the next row's mean
-        # rates cover only the syncs since this row (paired with sync_metrics).
-        self._worker.note_logged()
-        # Hand the server a normalized snapshot of this worker's metrics to
-        # aggregate. Sourced here (the DiLoCo callback) in parallel to the
-        # control callback's relay, so server stats don't depend on it.
         self._worker.set_stats(self._build_stats_snapshot(state, logs))
 
     def on_evaluate(
