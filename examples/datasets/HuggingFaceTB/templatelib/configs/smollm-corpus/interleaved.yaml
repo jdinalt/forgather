@@ -5,6 +5,11 @@
     -- set ns.config_name = "Small LM Interleaved"
     -- set ns.config_description = "Interleave all Small-LM datasets"
     -- set ns.main_feature = "text"
+    ## Component dataset configs. Leaf configs (e.g. the packed variant)
+    ## override these instead of overriding the per-split [fineweb] /
+    ## [cosmopedia] blocks below.
+    -- set ns.fineweb_config = ns.fineweb_config | default("smollm-corpus/fineweb-edu-dedup.yaml")
+    -- set ns.cosmopedia_config = ns.cosmopedia_config | default("smollm-corpus/cosmopedia-v2.yaml")
 
 [main_body]
 .define: &tokenizer !var "tokenizer"
@@ -12,8 +17,20 @@
     [pp_kwargs]
 .define: &pp_kwargs !dict
 
+    ## Each component is split into one single-target sub-project per
+    ## partition (train / eval / test). A single multi-target sub-project
+    ## forces ``forgather:from_project`` to eagerly construct *all* of its
+    ## targets whenever *any* split is consumed — so the train interleave
+    ## (which only getitems ``train_dataset``) would also build the eval /
+    ## test splits, and they would inherit the train's ``shard_dataset``.
+    ## That is harmless for a bool shard, but under DiLoCo the train shard
+    ## is ``method: work_units``, which is invalid for an eval / test
+    ## partition (eval is replicated across workers) and trips
+    ## preprocess_dataset's validity check. Per-split sub-projects build
+    ## only the split each interleave actually consumes, so each partition
+    ## gets a purpose-appropriate shard.
     [fineweb]
-.define: &fineweb !call:forgather:from_project
+.define: &fineweb_train !call:forgather:from_project
     <<: &dataset_args
         preprocess_args: !var "preprocess_args"
         tokenizer: *tokenizer
@@ -23,15 +40,35 @@
         shuffle: !var [ "shuffle", False ]
         seed: !var [ "seed", 42 ]
     project_dir: "{{ project_dir }}"
-    config_template: "smollm-corpus/fineweb-edu-dedup.yaml"
-    targets: [ "train_dataset", "eval_dataset", "test_dataset" ]
-
-    [cosmopedia]
-.define: &cosmopedia !call:forgather:from_project
+    config_template: "{{ ns.fineweb_config }}"
+    targets: [ "train_dataset" ]
+.define: &fineweb_eval !call:forgather:from_project
     <<: *dataset_args
     project_dir: "{{ project_dir }}"
-    config_template: "smollm-corpus/cosmopedia-v2.yaml"
-    targets: [ "train_dataset", "eval_dataset", "test_dataset" ]
+    config_template: "{{ ns.fineweb_config }}"
+    targets: [ "eval_dataset" ]
+.define: &fineweb_test !call:forgather:from_project
+    <<: *dataset_args
+    project_dir: "{{ project_dir }}"
+    config_template: "{{ ns.fineweb_config }}"
+    targets: [ "test_dataset" ]
+
+    [cosmopedia]
+.define: &cosmopedia_train !call:forgather:from_project
+    <<: *dataset_args
+    project_dir: "{{ project_dir }}"
+    config_template: "{{ ns.cosmopedia_config }}"
+    targets: [ "train_dataset" ]
+.define: &cosmopedia_eval !call:forgather:from_project
+    <<: *dataset_args
+    project_dir: "{{ project_dir }}"
+    config_template: "{{ ns.cosmopedia_config }}"
+    targets: [ "eval_dataset" ]
+.define: &cosmopedia_test !call:forgather:from_project
+    <<: *dataset_args
+    project_dir: "{{ project_dir }}"
+    config_template: "{{ ns.cosmopedia_config }}"
+    targets: [ "test_dataset" ]
 
     [train_dataset]
 train_dataset: &train_dataset !singleton:forgather.ml.datasets:interleave_datasets
@@ -41,19 +78,19 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:interleave_datase
         seed: 42
         stopping_strategy: "all_exhausted"
     datasets:
-        - !call:getitem [ *fineweb, 'train_dataset' ]
-        - !call:getitem [ *cosmopedia, 'train_dataset' ]
+        - !call:getitem [ *fineweb_train, 'train_dataset' ]
+        - !call:getitem [ *cosmopedia_train, 'train_dataset' ]
 
     [eval_dataset]
 eval_dataset: !singleton:forgather.ml.datasets:interleave_datasets
     <<: *interleave_args
     datasets:
-        - !call:getitem [ *fineweb, 'eval_dataset' ]
-        - !call:getitem [ *cosmopedia, 'eval_dataset' ]
+        - !call:getitem [ *fineweb_eval, 'eval_dataset' ]
+        - !call:getitem [ *cosmopedia_eval, 'eval_dataset' ]
 
     [test_dataset]
 test_dataset: !singleton:forgather.ml.datasets:interleave_datasets
     <<: *interleave_args
     datasets:
-        - !call:getitem [ *fineweb, 'test_dataset' ]
-        - !call:getitem [ *cosmopedia, 'test_dataset' ]
+        - !call:getitem [ *fineweb_test, 'test_dataset' ]
+        - !call:getitem [ *cosmopedia_test, 'test_dataset' ]
