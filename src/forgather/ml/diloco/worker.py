@@ -1078,7 +1078,7 @@ class DiLoCoWorker:
     @property
     def sync_metrics(self) -> dict:
         """Sync metrics for the trainer's log row (injected by
-        ``DiLoCoCallback.on_log``, which then calls :meth:`note_logged`).
+        ``DiLoCoCallback.on_log_step``, which then calls :meth:`note_logged`).
 
         The step-table renderer shows only keys present here, so this is the
         single control point for which DiLoCo columns appear:
@@ -1121,7 +1121,7 @@ class DiLoCoWorker:
     def note_logged(self) -> None:
         """Reset the per-log-window sync accumulators.
 
-        Called by ``DiLoCoCallback.on_log`` right after it reads
+        Called by ``DiLoCoCallback.on_log_step`` right after it reads
         :attr:`sync_metrics`, so each log row's mean rates cover only the syncs
         since the previous row."""
         self._win_sync_count = 0

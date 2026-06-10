@@ -4,16 +4,12 @@
     == super()
     -- set ns.config_name = "Small LM Interleaved Packed"
     -- set ns.config_description = "Interleave and Pack all Small-LM datasets"
+    ## Swap the component configs for their packed variants. The parent
+    ## builds the per-split sub-projects from these vars.
+    -- set ns.fineweb_config = "smollm-corpus/fineweb-edu-packed.yaml"
+    -- set ns.cosmopedia_config = "smollm-corpus/cosmopedia-v2-packed.yaml"
 
 [pp_kwargs]
     == super()
     stride: {{ stride | default(0)}}
     max_length: {{ max_length | default(512)}}
-
-[fineweb]
-    == super()
-    config_template: "smollm-corpus/fineweb-edu-packed.yaml"
-
-[cosmopedia]
-    == super()
-    config_template: "smollm-corpus/cosmopedia-v2-packed.yaml"
