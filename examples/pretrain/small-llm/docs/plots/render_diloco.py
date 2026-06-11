@@ -9,11 +9,15 @@ steps via outer SGD vs DDP all-reduce every step.
 Reads the committed ``curves.csv`` (produced by ``extract_curves.py``), so it
 works on a clean checkout with no ``output_models/`` present.
 
+Also renders ``diloco_11x_comparison.png``: the 4-worker DiLoCo 11x run (mean
+across workers) against the five DDPx4 10x runs.
+
 Run from the project directory:
 
     python docs/plots/render_diloco.py
 
-Writes docs/plots/diloco_1x_comparison.png and prints a summary table.
+Writes docs/plots/diloco_1x_comparison.png + diloco_11x_comparison.png and
+prints summary tables.
 """
 
 from pathlib import Path
@@ -113,5 +117,51 @@ def main():
     print(f"  delta (DiLoCo best mean - baseline best): {np.mean(bests) - bb:+.4f}")
 
 
+RUNS_10X_DDP = ["ten_chinchilla", "long_cooldown", "tiny_x_small_lm", "wds", "final"]
+PALETTE_10X = ["#1f77b4", "#ff7f0e", "#2ca02c", "#9467bd", "#8c564b"]
+
+
+def render_11x(data):
+    """DiLoCo 11x (4-worker mean) vs the five DDPx4 10x runs — train + eval."""
+    fig, (ax_t, ax_e) = plt.subplots(1, 2, figsize=(16, 6))
+    for metric, ax, smooth_w in (("train_loss", ax_t, 72), ("eval_loss", ax_e, 3)):
+        for i, run in enumerate(RUNS_10X_DDP):
+            steps, vals = series(data, run, metric)
+            if not steps:
+                continue
+            sm = smooth_values(vals, smooth_w) if smooth_w > 1 else vals
+            ax.plot(
+                steps, sm, color=PALETTE_10X[i], linewidth=1.0, alpha=0.85, label=run
+            )
+        steps, vals = series(data, "diloco11x", metric)
+        sm = smooth_values(vals, smooth_w) if smooth_w > 1 else vals
+        ax.plot(
+            steps, sm, color="#d62728", linewidth=2.2, label="DiLoCo 11x (4-worker)"
+        )
+        ax.set_title(
+            f"{'Train' if metric == 'train_loss' else 'Eval'} Loss vs step (10x + 1x anneal)"
+        )
+        ax.set_xlabel("step")
+        ax.set_ylabel("loss")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+    ax_t.set_ylim(2.55, 2.95)
+    ax_e.set_ylim(2.2, 2.6)  # focus on the informative tail
+    fig.tight_layout()
+    out = OUT / "diloco_11x_comparison.png"
+    fig.savefig(out, dpi=110)
+    print(f"wrote {out}")
+
+    def best(run):
+        _, ev = series(data, run, "eval_loss")
+        return min(ev) if ev else None
+
+    print("\n=== 11x best-eval ranking ===")
+    for b, r in sorted((best(r), r) for r in RUNS_10X_DDP + ["diloco11x"]):
+        tag = "  <- DiLoCo" if r == "diloco11x" else ""
+        print(f"  {r:<18} {b:.4f}{tag}")
+
+
 if __name__ == "__main__":
     main()
+    render_11x(load_curves())

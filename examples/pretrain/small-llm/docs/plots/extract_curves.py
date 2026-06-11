@@ -101,6 +101,48 @@ def emit(rows, run, train, evals, step_max=None):
     return n_eval
 
 
+def emit_worker_mean(rows, name, dir_glob):
+    """Per-step mean across N coherent DiLoCo workers (auto-named, so globbed).
+
+    The workers train in lockstep and stay near-identical, so a single mean
+    series represents the run; emitted as one ``name`` run.
+    """
+    from collections import defaultdict
+
+    paths = sorted(p for p in glob(str(ROOT / dir_glob)) if "_master" not in p)
+    by_worker = defaultdict(list)
+    for p in paths:
+        by_worker[Path(p).parents[2].name].append(p)
+    logs = [TrainingLog.from_file(sorted(v)[-1]) for v in by_worker.values()]
+    if not logs:
+        print(f"  {name}: no workers found ({dir_glob})")
+        return 0
+    for metric, key, kind in (
+        ("train_loss", "loss", "train"),
+        ("learning_rate", "learning_rate", "train"),
+        ("grad_norm", "grad_norm", "train"),
+        ("eval_loss", "eval_loss", "eval"),
+    ):
+        by_step = defaultdict(list)
+        for log in logs:
+            recs = (
+                log.get_training_records()
+                if kind == "train"
+                else log.get_eval_records()
+            )
+            for r in recs:
+                s, v = r.get("global_step"), r.get(key)
+                if s is not None and v is not None:
+                    by_step[s].append(v)
+        pts = [(s, sum(vs) / len(vs)) for s, vs in sorted(by_step.items())]
+        pts = pts if metric == "eval_loss" else downsample(pts, MAX_POINTS)
+        for s, v in pts:
+            rows.append((name, metric, s, v))
+    n_eval = sum(1 for r in rows if r[0] == name and r[1] == "eval_loss")
+    print(f"  {name}: {len(logs)} workers averaged, {n_eval} eval")
+    return n_eval
+
+
 def main():
     rows = []  # (run, metric, step, value)
     for run, rel in RUNS.items():
@@ -118,6 +160,13 @@ def main():
             print(
                 f"  {SLICE_NAME}: 1x slice of {SLICE_RUN} (step <= {SLICE_MAX_STEP}), {n} eval"
             )
+
+    # 4-worker DiLoCo 11x run (auto-named workers -> per-step mean).
+    emit_worker_mean(
+        rows,
+        "diloco11x",
+        "output_models/diloco_ten_chinchilla_*/runs/*/trainer_logs.json",
+    )
 
     rows.sort(key=lambda x: (x[0], x[1], x[2]))
     with open(OUT, "w", newline="") as f:
