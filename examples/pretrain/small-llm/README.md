@@ -786,7 +786,7 @@ Two things stand out:
   identical recipe and 24.97B-token budget), DiLoCo lands **−0.067 eval loss** -
   almost exactly the 1x margin (−0.078). It isn't a small-scale artifact; it
   carries to the long run, at ~13% less wall-clock. The four workers finished
-  within 0.0002 eval of each other (2.2620–2.2623) - H=20 keeps the replicas
+  within 0.0003 eval of each other (2.2620–2.2623) - H=20 keeps the replicas
   essentially identical.
 - **As a single change, the parallelization strategy is the *largest* lever.**
   Read DiLoCo as one more single-variable change from `ten_chinchilla` (DDPx4 →
