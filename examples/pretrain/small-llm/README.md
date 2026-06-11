@@ -287,10 +287,13 @@ directly attributable.
 | `final.yaml` | curriculum + WSD-S + `lr` 1.5e-4 → 3e-4 (combined) | **2.244** | **9.43** | **−0.085** |
 
 The single-variable improvements all point in the same direction. Of
-the three knobs we've tested individually, **WSD-S is the largest
+the three *recipe* knobs we've tested individually, **WSD-S is the largest
 single contributor** (−0.055), with the cooldown-shape and
 curriculum-dataset changes coming in roughly equal at about a third of
-that.
+that. A larger single lever turns out to be the *parallelization strategy*:
+swapping DDPx4 for a 4-worker DiLoCo group (`diloco_ten_chinchilla.yaml`) buys
+**−0.067**, beating every recipe knob and landing second only to `final` - see
+[DiLoCo → Scaling to 11x](#scaling-to-11x-the-advantage-holds).
 
 #### `ten_chinchilla.yaml` - `output_models/ten_chinchilla`
 
@@ -754,10 +757,54 @@ the margin.
 
 Two measurement caveats: the two runs were collected months apart on the same
 machine (possible differing background load), so treat the ~13% as indicative;
-and the sync-cost *decomposition* above is a microbenchmark estimate rather
-than a number read off the run - the per-round sync-time metric the worker
-computes does not currently reach the logs, which is a gap worth closing
-(an H-sweep would then make this table quantitative end-to-end).
+and only the upload/outer/download *decomposition* above is a microbenchmark
+estimate - the per-round sync *total* now logs inline as the `sync_s` column
+(the 11x run below measured ≈1.2-1.6 s/round at H=20), so an H-sweep would make
+this table quantitative end-to-end.
+
+#### Scaling to 11x: the advantage holds
+
+Does the 1x edge survive a long run? The 4-worker config was run at the full
+10x + 1x annealing budget (`diloco_ten_chinchilla.yaml`: 24.97B aggregate
+tokens, H=20, ~36h) - the DiLoCo counterpart of `ten_chinchilla`. It does, and
+cleanly:
+
+![DiLoCo 11x vs the DDPx4 10x runs](docs/plots/diloco_11x_comparison.png)
+
+| run | recipe | best eval | perplexity | Δ vs ten_chinchilla |
+|---|---|---|---|---|
+| `final` | DDP, WSD-S + curriculum + lr 3e-4 (three knobs) | **2.244** | 9.43 | −0.085 |
+| **`diloco_ten_chinchilla`** | **4-worker DiLoCo, H=20, plain recipe** | **2.262** | **9.60** | **−0.067** |
+| `wsd` | DDP, WSD-S | 2.274 | 9.72 | −0.055 |
+| `long_cooldown` | DDP, cooldown 0.7 | 2.308 | 10.05 | −0.021 |
+| `tiny_x_small_lm` | DDP, curriculum | 2.309 | 10.06 | −0.020 |
+| `ten_chinchilla` | DDP, plain (DiLoCo's matched baseline) | 2.329 | 10.27 | — |
+
+Two things stand out:
+
+- **The gain holds at 10x.** Against its matched DDP baseline (`ten_chinchilla`,
+  identical recipe and 24.97B-token budget), DiLoCo lands **−0.067 eval loss** -
+  almost exactly the 1x margin (−0.078). It isn't a small-scale artifact; it
+  carries to the long run, at ~13% less wall-clock. The four workers finished
+  within 0.0002 eval of each other (2.2620–2.2623) - H=20 keeps the replicas
+  essentially identical.
+- **As a single change, the parallelization strategy is the *largest* lever.**
+  Read DiLoCo as one more single-variable change from `ten_chinchilla` (DDPx4 →
+  4-worker DiLoCo): its −0.067 beats *every* other single knob in the 10x table,
+  including WSD-S (−0.055), and lands second overall - behind only `final`,
+  which stacks three tuned techniques DiLoCo never used (it ran the plain
+  InfiniteLR recipe, `lr 1.5e-4`, no curriculum).
+
+Same caveat as the 1x: the strategy swap also shifts the effective batch and LR
+scaling, so −0.067 is a *strategy* delta, not a clean attribution. But the
+practical reading is hard to miss - on this 162M / 24.97B setup, swapping DDP
+for 4-worker DiLoCo bought more than any single LR or dataset knob, and that it
+did so on the *plain* recipe is the strongest hint that it **stacks**: a
+`final`-knobs-plus-DiLoCo run is the obvious next experiment.
+
+This run also exercised the orchestrated product path end-to-end at 36h scale
+(scheduled `diloco server` + `submit --diloco --diloco-worker-count 4`, cluster
+dataset routing, GPU-pool exclusion) with no errors over 20,052 sync rounds.
 
 ### Reproducing the plots
 
