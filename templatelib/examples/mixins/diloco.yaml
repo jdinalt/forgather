@@ -1,4 +1,4 @@
-## Mixin: DiLoCo distributed local-SGD training strategy.
+## Mixin: DiLoCo (distributed low-communication) training strategy.
 ##
 ## Provides per-section macros for the DiLoCo augmentations. DiLoCo
 ## is orthogonal to training context (pretrain vs finetune) — compose

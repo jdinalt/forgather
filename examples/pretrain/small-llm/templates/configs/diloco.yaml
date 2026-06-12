@@ -1,6 +1,6 @@
 -- extends 'project.yaml'
 
-## DiLoCo (Distributed Local-SGD) variant of the baseline, for testing the
+## DiLoCo (Distributed Low-Communication) variant of the baseline, for testing the
 ## shared-memory sync backend against the project's DDPx4 reference runs.
 ##
 ## ``enable_diloco = True`` forces DiLoCo render; the parent
@@ -25,7 +25,7 @@
 [config_metadata]
     == super()
     -- set ns.config_name = "DiLoCo 4-worker (shared-memory)"
-    -- set ns.config_description = "DiLoCo local-SGD, aggregate budget split across diloco_workers; matches the DDPx4 baseline LR schedule per worker"
+    -- set ns.config_description = "DiLoCo (distributed low-communication), aggregate budget split across diloco_workers; matches the DDPx4 baseline LR schedule per worker"
     -- set ns.model_name = model_name | default("diloco")
 
     -- set ns.enable_diloco = enable_diloco | default(True)

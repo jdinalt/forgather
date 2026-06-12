@@ -15,7 +15,7 @@ The workspace shares a common template library and base project configuration (`
 - **[ddp_trainer](./ddp_trainer/README.md)** - Integration tests and usage examples for the DDP trainer: distributed checkpointing, dataset distribution strategies, and gradient accumulation across data-parallel ranks.
 - **[fsdp2_trainer](./fsdp2_trainer/README.md)** - Integration test for the FSDP2 (`fully_shard`) trainer. Exercises layer-wise sharding, sharded DTensor checkpoint save/resume, and CPU offload.
 - **[pipeline_parallel](./pipeline_parallel/README.md)** - Test harness for the Pipeline Parallel trainer covering all supported PyTorch pipeline schedules, checkpoint save/resume, and activation checkpointing.
-- **[diloco](./diloco/README.md)** - Demonstrates DiLoCo (Distributed Local-SGD) training via `DiLoCoCallback`: multiple independent workers synchronize outer gradients at configurable intervals over standard network interfaces.
+- **[diloco](./diloco/README.md)** - Demonstrates DiLoCo (Distributed Low-Communication) training via `DiLoCoCallback`: multiple independent workers synchronize outer gradients at configurable intervals over standard network interfaces.
 
 ## Training Techniques
 

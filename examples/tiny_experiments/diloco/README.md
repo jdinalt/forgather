@@ -1,6 +1,6 @@
 # DiLoCo Distributed Training Example
 
-This project demonstrates **DiLoCo** (Distributed Local-SGD) integration with the
+This project demonstrates **DiLoCo** (Distributed Low-Communication) integration with the
 Forgather trainer via `DiLoCoCallback`. It walks through an end-to-end run on a
 single node with at least 2 GPUs, driven entirely from the CLI.
 

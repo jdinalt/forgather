@@ -1,7 +1,7 @@
 -- extends 'callbacks/base_callbacks.yaml'
 
 ## DiLoCo Callback
-## Adds DiLoCoCallback to the trainer callback list for distributed local-SGD
+## Adds DiLoCoCallback to the trainer callback list for distributed low-communication
 ## training. Client-local parameters default to environment variables set by
 ## the `forgather diloco worker` CLI, so this template works with both
 ## explicit configuration and CLI-based env vars.

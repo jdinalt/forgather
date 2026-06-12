@@ -12,7 +12,7 @@ def create_diloco_parser(global_args):
     """Create parser for diloco command."""
     parser = argparse.ArgumentParser(
         prog="forgather diloco",
-        description="DiLoCo distributed training (Local-SGD with outer optimizer)",
+        description="DiLoCo: distributed low-communication training (local-SGD with an outer optimizer)",
         formatter_class=RawTextHelpFormatter,
     )
     subparsers = parser.add_subparsers(

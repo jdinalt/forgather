@@ -93,7 +93,7 @@ schedules (GPipe, 1F1B, ZBV, interleaved), with checkpoint save/resume
 coverage across 2/4-GPU setups.
 
 **[`tiny_experiments/diloco`](./tiny_experiments/diloco/README.md)**
-— DiLoCo (distributed local SGD) on a 4M-parameter model.
+— DiLoCo (distributed low-communication) on a 4M-parameter model.
 Pseudo-gradient compression, streaming-fragment overlap with backward
 pass, sync and async modes. The lowest-communication-bandwidth
 trainer in the library — pair with the pipeline-parallel recipes

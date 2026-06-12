@@ -37,7 +37,7 @@ Current release: **[1.2.0](release-notes/v1.2.0.md)** ([all release notes](relea
 - **[Multi-node Training](guides/multi-node-training.md)** - Practical setup, submit flow, and hang diagnosis for training across multiple machines on a LAN
 - **[Trainer Control](trainers/trainer-control.md)** - External control of running training jobs (save, stop, abort)
 - **[Training Performance Metrics](trainers/training-performance-metrics.md)** - Token throughput, FLOP tracking, and MFU
-- **[DiLoCo](trainers/diloco.md)** - Low-communication distributed training (Local-SGD): syncs infrequently instead of every step, so it scales to slow or intermittent interconnects — and at longer token budgets can match or exceed DDP final quality, with generalization benefits that show up even on a single node
+- **[DiLoCo](trainers/diloco.md)** - Low-communication distributed training (a local-SGD method): syncs infrequently instead of every step, so it scales to slow or intermittent interconnects — and at longer token budgets can match or exceed DDP final quality, with generalization benefits that show up even on a single node
 - **[FP8 Training](trainers/fp8-training.md)** - FP8 training via torchao
 - **[QAT Training](trainers/qat-training.md)** - Quantization-aware training via torchao; pair with `forgather finalize --quantize` (also works alone as post-training quantization)
 - **[Torch Titan Integration](trainers/torchtitan.md)** - Forgather integration with PyTorch's Torch Titan training framework
@@ -120,7 +120,7 @@ Current release: **[1.2.0](release-notes/v1.2.0.md)** ([all release notes](relea
 
 **[tiny_experiments/pipeline_parallel](examples/tiny_experiments/pipeline_parallel/README.md)** — Test harness and reference configs for PyTorch's pipeline-parallel schedules (GPipe, 1F1B, ZBV, interleaved), with checkpoint save/resume coverage across 2/4-GPU setups.
 
-**[tiny_experiments/diloco](examples/tiny_experiments/diloco/README.md)** — DiLoCo (distributed local SGD) on a 4M-parameter model. Pseudo-gradient compression, streaming-fragment overlap with the backward pass, sync and async modes. Forgather's lowest-bandwidth trainer — but the infrequent-sync regime is also a regularizer: it can match or beat DDP final quality at longer budgets and improve generalization even single-node, not just a fallback for slow networks.
+**[tiny_experiments/diloco](examples/tiny_experiments/diloco/README.md)** — DiLoCo (distributed low-communication) on a 4M-parameter model. Pseudo-gradient compression, streaming-fragment overlap with the backward pass, sync and async modes. Forgather's lowest-bandwidth trainer — but the infrequent-sync regime is also a regularizer: it can match or beat DDP final quality at longer budgets and improve generalization even single-node, not just a fallback for slow networks.
 
 ## Example Project Collections
 
