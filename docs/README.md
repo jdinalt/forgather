@@ -120,7 +120,7 @@ Current release: **[1.2.0](release-notes/v1.2.0.md)** ([all release notes](relea
 
 **[tiny_experiments/pipeline_parallel](examples/tiny_experiments/pipeline_parallel/README.md)** — Test harness and reference configs for PyTorch's pipeline-parallel schedules (GPipe, 1F1B, ZBV, interleaved), with checkpoint save/resume coverage across 2/4-GPU setups.
 
-**[tiny_experiments/diloco](examples/tiny_experiments/diloco/README.md)** — DiLoCo (distributed local SGD) on a 4M-parameter model. Pseudo-gradient compression, streaming-fragment overlap with the backward pass, sync and async modes. Forgather's lowest-bandwidth trainer — but the infrequent-sync regime is also a regularizer: it can match or beat DDP final quality at longer budgets and improve generalization even single-node, not just a fallback for slow networks.
+**[tiny_experiments/diloco](examples/tiny_experiments/diloco/README.md)** — DiLoCo (distributed low-communication) on a 4M-parameter model. Pseudo-gradient compression, streaming-fragment overlap with the backward pass, sync and async modes. Forgather's lowest-bandwidth trainer — but the infrequent-sync regime is also a regularizer: it can match or beat DDP final quality at longer budgets and improve generalization even single-node, not just a fallback for slow networks.
 
 ## Example Project Collections
 

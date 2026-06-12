@@ -1,6 +1,6 @@
-# DiLoCo: Distributed Local-SGD Training
+# DiLoCo: Distributed Low-Communication Training
 
-DiLoCo (Distributed Local-SGD) is a **two-level optimization scheme**. An
+DiLoCo (Distributed Low-Communication) is a **two-level optimization scheme**. An
 ordinary *inner* optimizer (e.g. AdamW) trains each worker locally for `H` steps
 (default 500), exactly as in non-distributed training; then, at the sync
 boundary, each worker's net weight change over those H steps — its

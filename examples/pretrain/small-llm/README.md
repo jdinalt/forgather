@@ -172,7 +172,7 @@ forgather ls
 | `wsd.yaml` | 10x Chinchilla with the WSD-S scheduler from `forgather.ml.optim:WSDScheduler`. |
 | `final.yaml` | 10x Chinchilla combining the most promising knobs: Tiny Stories x SmolLM curriculum, `lr = 3e-4`, WSD-S scheduler. |
 | `pp.yaml` | Pipeline Parallel trainer variant of the baseline. |
-| `diloco.yaml` | 4-worker DiLoCo (distributed local-SGD) at 1x Chinchilla, shared-memory sync backend. Aggregate token budget split across workers to match the DDPx4 per-rank schedule. |
+| `diloco.yaml` | 4-worker DiLoCo (distributed low-communication) at 1x Chinchilla, shared-memory sync backend. Aggregate token budget split across workers to match the DDPx4 per-rank schedule. |
 | `diloco_ten_chinchilla.yaml` | The `diloco.yaml` config extended to the 10x + 1x annealing budget, mirroring `ten_chinchilla.yaml`. |
 
 Unless otherwise noted below, each of the 1x Chinchilla configs uses the
@@ -582,7 +582,7 @@ a matching DDP config with `dispatch_batches = True`, so the DDP and PP
 runs see exactly the same sequence of examples and can be compared
 head-to-head.
 
-### DiLoCo (distributed local-SGD)
+### DiLoCo (distributed low-communication)
 
 This experiment swaps the *parallelization strategy* rather than an
 optimizer or schedule knob: instead of one DDP job all-reducing gradients

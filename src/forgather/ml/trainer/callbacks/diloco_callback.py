@@ -61,7 +61,7 @@ def _env_float(name: str, default: float) -> float:
 
 class DiLoCoCallback(TrainerCallback):
     """
-    Trainer callback that manages a DiLoCoWorker for distributed local-SGD training.
+    Trainer callback that manages a DiLoCoWorker for distributed low-communication (DiLoCo) training.
 
     Implements the Stateful protocol for checkpoint persistence. The checkpoint
     manager auto-discovers Stateful callbacks and saves/restores their state.

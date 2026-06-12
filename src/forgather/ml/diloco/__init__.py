@@ -1,5 +1,5 @@
 """
-DiLoCo (Distributed Local SGD with Communication) for Forgather.
+DiLoCo (Distributed Low-Communication) for Forgather.
 
 Enables distributed training across multiple heterogeneous machines on a LAN
 using asynchronous Local-SGD. Each machine runs any existing Forgather trainer

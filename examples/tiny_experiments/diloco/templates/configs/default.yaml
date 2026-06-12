@@ -19,7 +19,7 @@
 [config_metadata]
     == super()
     -- set ns.config_name = "DiLoCo Training (Small)"
-    -- set ns.config_description = "Small Llama with DiLoCo distributed local-SGD"
+    -- set ns.config_description = "Small Llama with DiLoCo (distributed low-communication)"
     -- set ns.log_name = "diloco_small"
 
     -- set ns.enable_diloco = enable_diloco | default(True)
