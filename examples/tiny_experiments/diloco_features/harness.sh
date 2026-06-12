@@ -40,6 +40,10 @@ log()  { printf '\033[1;36m[harness]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[harness]\033[0m %s\n' "$*"; }
 err()  { printf '\033[1;31m[harness]\033[0m %s\n' "$*" >&2; }
 
+# On Ctrl-C / kill, tear the current server (and its save-stopped workers) down
+# so an interrupted run doesn't leave an orphaned server holding port 8512.
+trap 'echo; warn "interrupted — shutting down server + workers"; shutdown_server; exit 130' INT TERM
+
 wait_server_alive() {
   # Two-stage readiness: the registry reports STATE=alive as soon as the server
   # process starts, but its HTTP listener isn't bound until after the model
@@ -62,7 +66,7 @@ wait_jobs_terminal() {
   for ((i=0; i<tries; i++)); do
     local list pending=0; list="$(forgather job list 2>/dev/null)"
     for id in "$@"; do
-      echo "$list" | grep -E "$id" | grep -qiE 'done|failed|error|cancelled' || pending=1
+      echo "$list" | grep -F -- "$id" | grep -qiE 'done|failed|error|cancelled' || pending=1
     done
     [[ $pending -eq 0 ]] && return 0
     sleep 6

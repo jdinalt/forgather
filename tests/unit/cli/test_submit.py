@@ -113,6 +113,25 @@ def test_env_requires_diloco(capsys):
     assert "--env" in err and "--diloco" in err
 
 
+def test_env_rejected_for_collective(capsys):
+    # --env is threaded only on the plain --diloco worker path; the collective
+    # topology builds its own job_params, so --env there must fail loud.
+    rc = submit_mod.submit_cmd(_submit_args(replicate=2, worker_env=["FOO=bar"]))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "--env" in err
+
+
+def test_env_rejected_for_global_compose(capsys):
+    # The --global + --diloco-server compose bundle doesn't carry extra_env.
+    rc = submit_mod.submit_cmd(
+        _submit_args(run_global=True, diloco_server="srv1", worker_env=["FOO=bar"])
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "--env" in err
+
+
 def test_backend_rejected_without_local_only(capsys):
     # --backend is server-authoritative on the orchestrated path: it's only
     # honored with --local-only (issue #154). Passing it otherwise is a misuse.

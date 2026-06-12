@@ -159,6 +159,22 @@ def _check_mode_flags(args, diloco_mode, run_global):
             "'diloco server').",
         )
 
+    # --env is threaded into job_params.extra_env only on the plain DiLoCo-worker
+    # path (launch_workers / launch_resume → _enqueue_worker_jobs). The collective
+    # topology (launch_collective) and the --global + --diloco-server compose
+    # bundle (_submit_global) build their own job_params and don't carry it, so
+    # reject --env there rather than silently dropping it (fail loud).
+    if getattr(args, "worker_env", None):
+        compose = run_global and bool(getattr(args, "diloco_server", None))
+        collective = int(getattr(args, "replicate", 1) or 1) > 1
+        if compose or collective:
+            return _err(
+                ["--env"],
+                "isn't threaded on the collective (--diloco-replicate) or "
+                "--global compose path; it's honored only on plain --diloco "
+                "worker submits.",
+            )
+
     # --local-fallback degrades to a local foreground launch when the server is
     # down — but then there's no server to derive the backend from, and the
     # backend isn't passed (orchestrated). Reject it for DiLoCo submits: run with

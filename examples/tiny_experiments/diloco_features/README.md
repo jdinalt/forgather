@@ -103,7 +103,9 @@ forgather submit --diloco --diloco-worker-count 1 --worker-id feat-fast \
 
 `DILOCO_DEBUG_STEP_DELAY` is debug-only — it throttles real training and is never
 set in production. `submit --env KEY=VALUE` (repeatable) forwards env to the
-scheduled worker process(es); it is honoured on DiLoCo-worker submits only.
+scheduled worker process(es) via `job_params.extra_env`; it is honoured on plain
+`--diloco` worker submits only (not the `--global` compose or collective paths,
+which reject it rather than silently dropping it).
 
 ---
 
