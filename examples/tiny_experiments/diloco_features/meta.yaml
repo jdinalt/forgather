@@ -1,0 +1,7 @@
+-- extends "meta_defaults.yaml"
+
+[configs]
+name: "DiLoCo Features"
+description: "Exercises the less-travelled DiLoCo features (streaming, async, DN-buffer, DyLU) over the HTTP backend"
+config_prefix: "configs"
+default_config: "default.yaml"

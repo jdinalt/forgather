@@ -704,7 +704,7 @@ class DiLoCoCallback(TrainerCallback):
         self._validate_heartbeat(settings["heartbeat_timeout"])
         logger.info(
             "DiLoCoCallback: using server settings sync_every=%s "
-            "up=%s%s down=%s%s dylu=%s num_fragments=%s",
+            "up=%s%s down=%s%s dylu=%s num_fragments=%s transport=%s%s wire=%s",
             self.sync_every,
             self.upload_dtype,
             "+SR" if self.upload_sr else "",
@@ -712,6 +712,9 @@ class DiLoCoCallback(TrainerCallback):
             "+SR" if self.download_sr else "",
             self.dylu,
             self.num_fragments,
+            self.transport,
+            f"({self.grpc_endpoint})" if self.transport == "grpc" else "",
+            self.wire_format,
         )
 
         self._worker = DiLoCoWorker(

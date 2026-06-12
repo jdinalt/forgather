@@ -134,6 +134,8 @@ def _check_mode_flags(args, diloco_mode, run_global):
             misused.append("--heartbeat-interval")
         if (getattr(args, "backend", None) or "http").strip().lower() != "http":
             misused.append("--backend")
+        if getattr(args, "worker_env", None):
+            misused.append("--env")
         if misused:
             return _err(misused, "— DiLoCo-worker flag(s); pass --diloco.")
 

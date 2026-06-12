@@ -31,6 +31,7 @@ Rank 0 gathers/scatters parameters from/to other pipeline ranks.
 """
 
 import logging
+import os
 import platform
 import queue
 import threading
@@ -525,6 +526,26 @@ class DiLoCoWorker:
         self._active = True
         self._local_step = 0
 
+        # DEBUG-ONLY: per-local-step delay (seconds) to simulate a slow worker on
+        # otherwise-identical hardware. Set ``DILOCO_DEBUG_STEP_DELAY`` per worker
+        # (e.g. fast=0, slow=0.05) to create the heterogeneous processing speeds
+        # that async / DyLU respond to (DyLU keys off per-worker steps_per_second,
+        # which is uniform without this). Read once; 0 = disabled. Not for
+        # production — it throttles real training.
+        try:
+            self._debug_step_delay = float(
+                os.environ.get("DILOCO_DEBUG_STEP_DELAY", "0") or 0
+            )
+        except ValueError:
+            self._debug_step_delay = 0.0
+        if self._debug_step_delay > 0:
+            logger.warning(
+                "DiLoCoWorker %s: DILOCO_DEBUG_STEP_DELAY=%.4gs active — debug "
+                "throttle, simulating a slow worker (not for production)",
+                self.worker_id,
+                self._debug_step_delay,
+            )
+
         # Start heartbeat thread (leader only — followers don't have
         # a server connection to heartbeat to)
         if self._is_leader and self.heartbeat_interval > 0:
@@ -703,6 +724,12 @@ class DiLoCoWorker:
         """Optimizer post-step hook. Triggers sync when sync_every steps reached."""
         self._local_step += 1
         self._step_timestamps.append(time.time())
+
+        # DEBUG-ONLY heterogeneous-speed simulation (see __init__). The sleep is
+        # after the timestamp so the next step's interval — and thus the
+        # heartbeat steps_per_second the server uses for DyLU — reflects it.
+        if self._debug_step_delay > 0:
+            time.sleep(self._debug_step_delay)
 
         if self._fragment_manager is None:
             # Standard path: full model sync

@@ -1,0 +1,35 @@
+-- extends "projects/small.yaml"
+
+## Tiny Experiments / DiLoCo Features — the one worker config for the whole
+## project.
+##
+## The features this project exercises (streaming / ``num_fragments``, async,
+## the async DN-buffer, and DyLU) are all SERVER-side knobs: they are set on
+## ``forgather diloco server`` and adopted by every worker through ``/info``
+## (server-authoritative, no worker override). So a single worker config is
+## enough — the feature being tested is selected by the server flags at launch,
+## not by a different config. See this project's README for the run matrix.
+##
+## This is the same small-Llama DiLoCo worker as the sibling ``diloco`` project
+## (small Llama, Fineweb-Edu Packed, DDP-within-host trainer, WSD schedule);
+## ``enable_diloco`` defaults True so it renders as a DiLoCo worker. The parent
+## chain (``small.yaml`` -> ``tinyv2.yaml`` -> ``lm_training_project.yaml``) owns
+## the callback wiring.
+##
+## NB: ``enable_diloco`` is a RENDER-TIME signal. Running still requires
+## ``DILOCO_SERVER`` in the worker env (the scheduler/launcher sets it).
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DiLoCo Features (Small)"
+    -- set ns.config_description = "Small Llama DiLoCo worker for exercising streaming / async / DN-buffer / DyLU (HTTP backend). Feature is selected by the diloco server flags."
+    -- set ns.log_name = "diloco_features"
+
+    -- set ns.enable_diloco = enable_diloco | default(True)
+
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_scheduler
+    warmup_steps: {{ ns.warmup_steps }}
+    min_lr: {{ ns.min_lr | toyaml }}
+    decay_steps: {{ ns.annealing_steps }}
+    decay_start_step: {{ ns.decay_start_step }}
