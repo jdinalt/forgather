@@ -202,6 +202,20 @@ def create_submit_parser(global_args):
         ),
     )
     diloco.add_argument(
+        "--env",
+        dest="worker_env",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Extra environment variable for the worker process(es), repeatable\n"
+            "(KEY=VALUE). Forwarded to each scheduled worker job's env. Intended\n"
+            "for debug/tuning knobs (e.g. DILOCO_DEBUG_STEP_DELAY); submit one\n"
+            "worker per distinct env to build a heterogeneous group. Plain\n"
+            "--diloco worker submits only (not --global compose / collective)."
+        ),
+    )
+    diloco.add_argument(
         "--diloco-replicate",
         dest="replicate",
         type=int,

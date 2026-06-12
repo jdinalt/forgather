@@ -43,6 +43,7 @@ def _submit_args(**over):
         backend=None,
         replicate=1,
         count=1,
+        worker_env=[],
         remainder=[],
     )
     base.update(over)
@@ -101,6 +102,34 @@ def test_backend_requires_diloco(monkeypatch, capsys):
     assert rc == 1
     err = capsys.readouterr().err
     assert "--backend" in err and "--diloco" in err
+
+
+def test_env_requires_diloco(capsys):
+    # --env is a DiLoCo-worker passthrough (job_params.extra_env); without
+    # --diloco it's a misuse and must fail loud, not be silently dropped.
+    rc = submit_mod.submit_cmd(_submit_args(worker_env=["FOO=bar"]))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "--env" in err and "--diloco" in err
+
+
+def test_env_rejected_for_collective(capsys):
+    # --env is threaded only on the plain --diloco worker path; the collective
+    # topology builds its own job_params, so --env there must fail loud.
+    rc = submit_mod.submit_cmd(_submit_args(replicate=2, worker_env=["FOO=bar"]))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "--env" in err
+
+
+def test_env_rejected_for_global_compose(capsys):
+    # The --global + --diloco-server compose bundle doesn't carry extra_env.
+    rc = submit_mod.submit_cmd(
+        _submit_args(run_global=True, diloco_server="srv1", worker_env=["FOO=bar"])
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "--env" in err
 
 
 def test_backend_rejected_without_local_only(capsys):

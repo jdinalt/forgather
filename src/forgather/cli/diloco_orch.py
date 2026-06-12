@@ -907,15 +907,41 @@ def _resolve_config_name(args):
         return None
 
 
+def _parse_env_assignments(items):
+    """Parse repeated ``--env KEY=VALUE`` strings into a dict (fail loud).
+
+    Empty/malformed assignments raise ``ValueError`` so the submit reports the
+    bad input instead of silently dropping it.
+    """
+    env = {}
+    for item in items or []:
+        if "=" not in item:
+            raise ValueError(f"--env expects KEY=VALUE, got {item!r}")
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"--env has an empty key: {item!r}")
+        env[key] = value
+    return env
+
+
 def _enqueue_worker_jobs(client, names, server, args, dynamic_args, dataset_source):
     """Enqueue one training job per worker name (shared by launch + resume).
 
     All jobs share the resolved ``server`` address, the config/project, the
     dynamic args, the dataset source, and the per-worker GPU/priority knobs.
+    ``--env KEY=VALUE`` (if any) rides on every enqueued worker as
+    ``job_params.extra_env`` — the scheduler merges it into the worker process
+    env at launch.
     """
     from .server_client import AuthRequired, ServerUnreachable
 
     config = _resolve_config_name(args)
+    try:
+        extra_env = _parse_env_assignments(getattr(args, "worker_env", None))
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     hb = getattr(args, "heartbeat_interval", None)
     # Per-worker GPUs: --requested-gpus (the unified knob on `submit`) wins;
     # fall back to the deprecated `diloco worker --gpus-per-worker`, else 1.
@@ -941,6 +967,8 @@ def _enqueue_worker_jobs(client, names, server, args, dynamic_args, dataset_sour
             print(f"  {name}")
         if dynamic_args:
             print(f"  dynamic_args={dynamic_args}")
+        if extra_env:
+            print(f"  extra_env={extra_env}")
         return 0
 
     results = []
@@ -948,12 +976,15 @@ def _enqueue_worker_jobs(client, names, server, args, dynamic_args, dataset_sour
         diloco = {"server_addr": server, "worker_id": name}
         if hb is not None:
             diloco["heartbeat_interval"] = hb
+        job_params = {"diloco": diloco}
+        if extra_env:
+            job_params["extra_env"] = dict(extra_env)
         try:
             item = client.enqueue_job(
                 project_dir=project_dir,
                 config=config,
                 job_type="training",
-                job_params={"diloco": diloco},
+                job_params=job_params,
                 requested_gpus=gpus,
                 priority=priority,
                 dynamic_args=dynamic_args or None,

@@ -66,6 +66,7 @@ so this page stays readable in one sitting.
 | [Security Model](../design/diloco-security.md) | Auth, mTLS, the endpoint trust split, audit log |
 | Example — [`tiny_experiments/diloco`](../../examples/tiny_experiments/diloco/README.md) | Canonical end-to-end CLI walkthrough; DiLoCo vs DDP / PostLocalSGD sweep |
 | Example — [`tiny_experiments/diloco_lowprec`](../../examples/tiny_experiments/diloco_lowprec/README.md) | Low-precision wire transport (bf16 ± stochastic rounding) experiment sweep |
+| Example — [`tiny_experiments/diloco_features`](../../examples/tiny_experiments/diloco_features/README.md) | Exercises streaming / async / DN-buffer / DyLU and the transport×wire matrix through the scheduler |
 
 ## When to use DiLoCo
 

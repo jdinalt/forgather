@@ -834,6 +834,7 @@ def _worker_args(**over):
         json=False,
         config_template="cfg",
         project_dir="/p",
+        worker_env=[],
     )
     base.update(over)
     return argparse.Namespace(**base)
@@ -1444,3 +1445,71 @@ class TestLogsCmd:
         )
         assert rc == 1
         assert "no TTY log recorded" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# --env passthrough (job_params.extra_env)
+# ---------------------------------------------------------------------------
+
+
+class TestParseEnvAssignments:
+    def test_parses_pairs(self):
+        assert orch._parse_env_assignments(["A=1", "B=x=y"]) == {"A": "1", "B": "x=y"}
+
+    def test_empty_input(self):
+        assert orch._parse_env_assignments(None) == {}
+        assert orch._parse_env_assignments([]) == {}
+
+    def test_missing_equals_raises(self):
+        with pytest.raises(ValueError):
+            orch._parse_env_assignments(["NOEQUALS"])
+
+    def test_empty_key_raises(self):
+        with pytest.raises(ValueError):
+            orch._parse_env_assignments(["=val"])
+
+
+def test_enqueue_worker_jobs_threads_extra_env():
+    client = FakeClient()
+    rc = orch._enqueue_worker_jobs(
+        client,
+        ["w0", "w1"],
+        "https://127.0.0.1:8512",
+        _worker_args(worker_env=["DILOCO_DEBUG_STEP_DELAY=0.10"]),
+        dynamic_args=None,
+        dataset_source={"kind": "auto"},
+    )
+    assert rc == 0
+    assert len(client.enqueued) == 2
+    for kw in client.enqueued:
+        assert kw["job_params"]["extra_env"] == {"DILOCO_DEBUG_STEP_DELAY": "0.10"}
+        assert kw["job_params"]["diloco"]["server_addr"] == "https://127.0.0.1:8512"
+
+
+def test_enqueue_worker_jobs_no_env_omits_extra_env():
+    client = FakeClient()
+    rc = orch._enqueue_worker_jobs(
+        client,
+        ["w0"],
+        "https://127.0.0.1:8512",
+        _worker_args(),
+        dynamic_args=None,
+        dataset_source=None,
+    )
+    assert rc == 0
+    assert "extra_env" not in client.enqueued[0]["job_params"]
+
+
+def test_enqueue_worker_jobs_bad_env_fails_loud(capsys):
+    client = FakeClient()
+    rc = orch._enqueue_worker_jobs(
+        client,
+        ["w0"],
+        "https://127.0.0.1:8512",
+        _worker_args(worker_env=["NOEQUALS"]),
+        dynamic_args=None,
+        dataset_source=None,
+    )
+    assert rc == 1
+    assert not client.enqueued  # nothing enqueued on a bad --env
+    assert "--env" in capsys.readouterr().err
