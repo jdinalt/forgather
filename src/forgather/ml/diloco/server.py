@@ -2404,7 +2404,12 @@ class DiLoCoServer:
                 finally:
                     self._grace_driver_running = False
 
-            # Driver and non-driver alike: wait for this epoch's result.
+            # Driver and non-driver alike: wait for this epoch's result. This
+            # second-level safety timeout should never elapse — the window is
+            # bounded by the deadline flush above — but guards against a stuck
+            # clock. pending_audit is empty on this path (only the flushing
+            # thread appends, and it never reaches this wait), so the early
+            # return below drops no audit records.
             while my_epoch not in self._grace_results and not self._grace_closing:
                 if not self._grace_cond.wait(timeout=600):
                     _send_json_response(handler, {"error": "Grace timeout"}, 504)
