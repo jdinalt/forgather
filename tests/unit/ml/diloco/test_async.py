@@ -179,29 +179,104 @@ class TestDelayedNesterov:
 
         pg = {"w": torch.ones(dim)}
 
-        # First 2 submissions: intermediate direct GD steps (no momentum)
-        server._apply_async_pseudograd("w0", pg)
-        assert len(server._dn_grad_buffer) == 1
-        # param = 0 - lr * grad = 0 - 1.0 * 1.0 = -1.0
-        assert torch.allclose(server.get_global_params()["w"], torch.full((dim,), -1.0))
+        # Delayed Nesterov, Algorithm 3 (c=0), N=3, eps=1.0, beta=0.9, g=1:
+        # every submission applies the immediate -eps*g/N = -1/3 descent and
+        # accumulates Delta; the N-th additionally applies the delayed momentum.
 
+        # Submission 1 (count 1/3): theta = 0 - 1/3 = -1/3
+        server._apply_async_pseudograd("w0", pg)
+        assert server._dn_count == 1
+        assert torch.allclose(
+            server.get_global_params()["w"], torch.full((dim,), -1.0 / 3.0)
+        )
+
+        # Submission 2 (count 2/3): theta = -1/3 - 1/3 = -2/3
         server._apply_async_pseudograd("w1", pg)
-        assert len(server._dn_grad_buffer) == 2
-        # param = -1.0 - 1.0 * 1.0 = -2.0
-        assert torch.allclose(server.get_global_params()["w"], torch.full((dim,), -2.0))
+        assert server._dn_count == 2
+        assert torch.allclose(
+            server.get_global_params()["w"], torch.full((dim,), -2.0 / 3.0)
+        )
 
-        # Third submission: buffer full -> apply optimizer with momentum
+        # Submission 3 (flush): immediate -1/3 -> theta = -1.0, then momentum
+        # m = 0.9*0 + Delta/N = 3/3 = 1; theta -= eps*beta*m = 0.9 -> -1.9.
         server._apply_async_pseudograd("w0", pg)
-        assert len(server._dn_grad_buffer) == 0  # Buffer cleared
-
-        # The momentum step averages 3 grads (all 1.0 -> avg=1.0) and applies
-        # with Nesterov momentum. The result depends on PyTorch's SGD implementation.
-        # What matters is that the buffer was flushed and momentum was applied.
-        params = server.get_global_params()["w"]
-        # Should have moved further than the simple -2.0 - 1.0 = -3.0 from direct GD
-        # because momentum adds extra movement
-        assert params[0].item() != 0.0  # Params changed
+        assert server._dn_count == 0  # cycle reset
+        assert torch.allclose(server.get_global_params()["w"], torch.full((dim,), -1.9))
         assert server._sync_round == 3
+
+    def test_dn_matches_algorithm3_reference(self, tmp_path):
+        """DN trajectory matches an independent Algorithm 3 reference over cycles."""
+        torch.manual_seed(0)
+        sd = {"w": torch.zeros(4), "b": torch.zeros(3)}
+        n, eps, beta = 3, 0.7, 0.9
+
+        def sgd_momentum(params):
+            return torch.optim.SGD(params, lr=eps, momentum=beta, nesterov=True)
+
+        ckpt = make_initial_checkpoint(sd, tmp_path)
+        server = DiLoCoServer(
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=2,
+            port=0,
+            outer_optimizer_factory=sgd_momentum,
+            async_mode=True,
+            dn_buffer_size=n,
+        )
+
+        # 7 submissions = two full cycles + a partial one.
+        grads = [{k: torch.randn_like(v) for k, v in sd.items()} for _ in range(7)]
+
+        # Reference implementation of Algorithm 3 (c=0).
+        theta = {k: v.clone() for k, v in sd.items()}
+        m = {k: torch.zeros_like(v) for k, v in sd.items()}
+        delta = {k: torch.zeros_like(v) for k, v in sd.items()}
+        count = 0
+        for g in grads:
+            for k in theta:
+                theta[k] = theta[k] - (eps / n) * g[k]
+                delta[k] = delta[k] + g[k]
+            count += 1
+            if count >= n:
+                for k in theta:
+                    m[k] = beta * m[k] + delta[k] / n
+                    theta[k] = theta[k] - eps * beta * m[k]
+                    delta[k] = torch.zeros_like(delta[k])
+                count = 0
+
+        for i, g in enumerate(grads):
+            server._apply_async_pseudograd(f"w{i % 2}", g)
+
+        got = server.get_global_params()
+        for k in sd:
+            assert torch.allclose(got[k], theta[k], atol=1e-5), k
+
+    def test_dn_n1_equals_plain_nesterov(self, tmp_path):
+        """DN with N=1 reduces exactly to the full-momentum (dn-disabled) step."""
+        torch.manual_seed(1)
+        sd = {"w": torch.zeros(5)}
+
+        def sgd_momentum(params):
+            return torch.optim.SGD(params, lr=0.7, momentum=0.9, nesterov=True)
+
+        grads = [{"w": torch.randn(5)} for _ in range(4)]
+
+        def run(dn_size):
+            ckpt = make_initial_checkpoint(sd, tmp_path / f"dn{dn_size}")
+            server = DiLoCoServer(
+                output_dir=str(tmp_path / f"dn{dn_size}"),
+                from_checkpoint=ckpt,
+                num_workers=1,
+                port=0,
+                outer_optimizer_factory=sgd_momentum,
+                async_mode=True,
+                dn_buffer_size=dn_size,
+            )
+            for i, g in enumerate(grads):
+                server._apply_async_pseudograd("w0", g)
+            return server.get_global_params()["w"]
+
+        assert torch.allclose(run(1), run(0), atol=1e-6)
 
     def test_dn_disabled_applies_every_step(self, tmp_path):
         """With dn_buffer_size=0, momentum is applied on every submission."""
