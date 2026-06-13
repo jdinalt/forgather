@@ -45,6 +45,13 @@ EXPERIMENTS = [
         "Async + DN (N=16)",
     ),
     ("dylu", "dylu", "small_llama_feat_dylu", "Async + DN + DyLU"),
+    # DyLU control: same speed spread + N=4 buffer, no --dylu (isolates DyLU).
+    (
+        "dylu_control",
+        "dylu_control",
+        "small_llama_feat_dylu_control",
+        "Async + DN, spread, no DyLU",
+    ),
     (
         "baseline_2w",
         "baseline_2w",

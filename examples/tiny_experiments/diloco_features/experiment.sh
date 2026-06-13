@@ -43,9 +43,10 @@ DYLU_SPREAD=(0 0.05 0.10 0.15)   # per-worker fixed delays (s) for the DyLU run 
 
 MODE="${1:-run}"
 case "$MODE" in
-  validate) MAXSTEPS_ARGS=(--max-steps 120); COMPILE_ARGS=(--compile no) ;;
-  run)      MAXSTEPS_ARGS=();                COMPILE_ARGS=() ;;
-  *) echo "usage: $0 {validate|run}" >&2; exit 2 ;;
+  validate)     MAXSTEPS_ARGS=(--max-steps 120); COMPILE_ARGS=(--compile no) ;;
+  run)          MAXSTEPS_ARGS=();                COMPILE_ARGS=() ;;
+  dylu_control) MAXSTEPS_ARGS=();                COMPILE_ARGS=() ;;
+  *) echo "usage: $0 {validate|run|dylu_control}" >&2; exit 2 ;;
 esac
 
 mkdir -p "$RESULTS"
@@ -159,6 +160,16 @@ do_one() {
 trap 'echo; warn "interrupted — shutting down :8512"; shutdown_on 8512; exit 130' INT TERM
 
 log "MODE=$MODE  NW=$NW  H=$H  jitter=$JITTER  budget=$([[ ${#MAXSTEPS_ARGS[@]} -gt 0 ]] && echo "${MAXSTEPS_ARGS[*]}" || echo 'config default (~16k/worker)')"
+
+# DyLU control: the exact DyLU setting (same per-worker speed SPREAD, async, DN
+# N=4) but WITHOUT --dylu — isolates whether DyLU's adaptive sync_every actually
+# helps under genuinely different worker speeds (here the workers truly run at
+# different speeds, so unlike the jittered async runs this one has a solo tail).
+if [[ "$MODE" == dylu_control ]]; then
+  do_one dylu_control dylu --sync-every "$H" --async --dn-buffer-size 4
+  log "DYLU_CONTROL DONE — re-harvest: python analysis/harvest.py && python analysis/dn_sweep.py"
+  exit 0
+fi
 
 do_one baseline    sync  --sync-every "$H"
 do_one streaming   sync  --sync-every "$H" --num-fragments 2

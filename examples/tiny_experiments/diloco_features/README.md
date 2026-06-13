@@ -178,6 +178,25 @@ they're bit-identical, but it rules out any lossy effect — which would raise l
 or diverge, as the no-DN async run does. **Use gRPC + safetensors for the speed
 and safety; it costs you nothing in quality.**
 
+### More workers cost token efficiency (like DDP)
+
+Adding workers raises DiLoCo's effective global batch — each sync round averages
+pseudo-gradients over more workers — so, as in DDP's large-batch regime, it buys
+*less per token*. The synchronous baseline at 2 vs 4 workers (same 520M
+tokens/worker, same LR), on a total-tokens axis
+([`analysis/worker_scaling.py`](analysis/worker_scaling.py)):
+
+![2 vs 4 worker token efficiency](assets/worker_scaling.png)
+
+At a **matched** total-token budget (1.04B) the 2-worker run wins — eval **2.918**
+vs the 4-worker's **3.071** at that point. The 4-worker run reaches a lower *final*
+loss (2.857) only by spending **2×** the tokens, and even then by just 0.06 —
+sharp diminishing returns. So DiLoCo inherits the data-parallel token-efficiency
+penalty: more workers converge to a better model but cost proportionally more
+total tokens to get there. (We held LR fixed; a large-batch LR boost might recover
+some, as it partly does for DDP — untested here.) Practically: scale workers for
+**wall-clock throughput**, not token efficiency.
+
 ---
 
 ## Reproducing it
@@ -263,7 +282,8 @@ DiLoCoCallback: using server settings sync_every=100 up=bf16 down=fp32 \
   / `validate`).
 - `harness.sh` — the fast functional smoke driver.
 - `analysis/` — `harvest.py`, `plot_experiment.py`, `dn_sweep.py`,
-  `verify_baseline.py`.
+  `verify_baseline.py`, `worker_scaling.py`.
 - `assets/` — `curves.csv` (the committed source of truth) + the plots
-  (`loss_comparison.png`, `eval_tail.png`, `dn_sweep.png`, `baseline_vs_h100.png`).
+  (`loss_comparison.png`, `eval_tail.png`, `dn_sweep.png`,
+  `baseline_vs_h100.png`, `worker_scaling.png`).
 - `runs/` — captured per-run logs (gitignored scratch).
