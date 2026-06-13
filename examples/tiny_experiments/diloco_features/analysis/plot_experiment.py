@@ -29,19 +29,21 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(HERE, "assets")
 
 # Baseline in black; features in a distinct color each.
+# Main comparison series. The DN-buffer headline (async_dn_bN) is set to the
+# sweet spot found by analysis/dn_sweep.py; the other N's live in that sub-study.
 LABELS = {
     "baseline": "Baseline (sync, H=100)",
     "streaming": "Streaming (2 fragments)",
-    "async": "Async (no DN — diverges)",
-    "async_dn": "Async + DN (N=4)",
-    "async_dn_dylu": "Async + DN + DyLU",
+    "async": "Async (no DN)",
+    "async_dn_b16": "Async + DN (N=16)",
+    "dylu": "Async + DN + DyLU",
 }
 COLORS = {
     "baseline": "#000000",
     "streaming": "#1f6fb2",
     "async": "#d9772b",
-    "async_dn": "#2ca25f",
-    "async_dn_dylu": "#c44e52",
+    "async_dn_b16": "#2ca25f",
+    "dylu": "#c44e52",
 }
 
 
@@ -109,7 +111,7 @@ def main():
     panel(axes[1], "eval_loss", "Eval loss", "loss", markers=True)
     panel(axes[2], "grad_norm", "Grad norm (stability)", "||g||", logy=True)
     fig.suptitle(
-        "DiLoCo feature comparison — small Llama (34.4M), ~1B tokens, H=100",
+        "DiLoCo feature comparison — small Llama (34.4M), 4 workers x 520M tokens, H=100",
         fontweight="bold",
     )
     fig.tight_layout()

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Parse the diloco_features comparison sweep into ``assets/curves.csv``.
 
-Each experiment is a 2-worker DiLoCo run at the same token budget and seed,
+Each experiment is a 4-worker DiLoCo run at the same token budget and seed,
 differing only in the feature under test (streaming / async / DN-buffer / DyLU)
 vs the sync baseline. Per-step train loss + grad-norm and periodic eval loss are
 in the workers' TTY logs; throughput / sync counts are in the server's stats
@@ -28,23 +28,29 @@ ASSETS = os.path.join(HERE, "assets")
 MODELS = os.path.join(os.path.dirname(HERE), os.pardir, os.pardir, "models")
 
 # series key -> (runs/<dir>/worker0.log, model dir for server JSONL, human label)
-# The async+DN row uses the well-sized N=4 buffer (the sweet spot found by the
-# DN-buffer sweep, analysis/dn_sweep.py); the N=2 minimum is in that sub-study.
+# 4-worker comparison. Async runs use phase-jitter (DILOCO_DEBUG_STEP_JITTER) for
+# real staleness; DyLU uses a per-worker speed spread. The DN-buffer sweep points
+# (N=4/8/16) feed analysis/dn_sweep.py. `baseline_2w` is the preserved 2-worker
+# baseline that backs the gRPC-vs-h100 transport check (analysis/verify_baseline.py).
 EXPERIMENTS = [
     ("baseline", "baseline", "small_llama_feat_baseline", "Baseline (sync, H=100)"),
     ("streaming", "streaming", "small_llama_feat_streaming", "Streaming (2 fragments)"),
-    ("async", "async", "small_llama_feat_async", "Async (no DN — diverges)"),
-    ("async_dn", "async_dn_b4", "small_llama_feat_async_dn_b4", "Async + DN (N=4)"),
-    (
-        "async_dn_dylu",
-        "async_dn_dylu",
-        "small_llama_feat_async_dn_dylu",
-        "Async + DN + DyLU",
-    ),
-    # DN-buffer-size sweep points (N=4 is `async_dn` above). These feed
-    # analysis/dn_sweep.py; plot_experiment.py ignores them (not in its LABELS).
-    ("async_dn_b2", "async_dn", "small_llama_feat_async_dn", "Async + DN (N=2)"),
+    ("async", "async", "small_llama_feat_async", "Async (no DN)"),
+    ("async_dn_b4", "async_dn_b4", "small_llama_feat_async_dn_b4", "Async + DN (N=4)"),
     ("async_dn_b8", "async_dn_b8", "small_llama_feat_async_dn_b8", "Async + DN (N=8)"),
+    (
+        "async_dn_b16",
+        "async_dn_b16",
+        "small_llama_feat_async_dn_b16",
+        "Async + DN (N=16)",
+    ),
+    ("dylu", "dylu", "small_llama_feat_dylu", "Async + DN + DyLU"),
+    (
+        "baseline_2w",
+        "baseline_2w",
+        "small_llama_feat_baseline",
+        "Baseline 2w (transport ref)",
+    ),
 ]
 
 _NUM = r"[-+]?\d[\d,]*\.?\d*(?:e[-+]?\d+)?"

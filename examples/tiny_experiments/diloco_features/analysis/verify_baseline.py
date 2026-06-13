@@ -43,7 +43,9 @@ def load_mine():
     path = os.path.join(ASSETS, "curves.csv")
     with open(path) as f:
         for row in csv.DictReader(f):
-            if row["series"] != "baseline":
+            # the 2-worker baseline (the feature comparison's `baseline` is now
+            # 4-worker; the h100 reference is 2-worker, so compare like with like)
+            if row["series"] != "baseline_2w":
                 continue
             rows[row["metric"]].append((int(row["step"]), float(row["value"])))
     max_step = max((s for m in rows for s, _ in rows[m]), default=0)

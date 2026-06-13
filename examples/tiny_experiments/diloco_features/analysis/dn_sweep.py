@@ -3,12 +3,13 @@
 
 Async DiLoCo needs the Delayed-Nesterov buffer (`--dn-buffer-size N`) to be
 stable, but the buffer size is also a convergence knob. This sweeps N over
-{2, 4, 8} (= 1x / 2x / 4x the worker count) at the same budget/seed/data and
-shows the eval-loss trajectory and final loss vs N, against the sync baseline.
+{4, 8, 16} (= 1x / 2x / 4x the worker count, 4 workers) at the same budget/seed/
+data and shows the eval-loss trajectory and final loss vs N, against the sync
+baseline.
 
 Reads the committed ``assets/curves.csv`` (produced by analysis/harvest.py),
-using the series ``async_dn_b2`` (N=2), ``async_dn`` (N=4), ``async_dn_b8``
-(N=8), plus ``baseline``.
+using the series ``async_dn_b4`` (N=4), ``async_dn_b8`` (N=8), ``async_dn_b16``
+(N=16), plus ``baseline``.
 
     python analysis/dn_sweep.py
 """
@@ -27,9 +28,9 @@ ASSETS = os.path.join(HERE, "assets")
 
 # (N, curves.csv series key, color)
 SWEEP = [
-    (2, "async_dn_b2", "#2ca25f"),
-    (4, "async_dn", "#d9772b"),
-    (8, "async_dn_b8", "#c44e52"),
+    (4, "async_dn_b4", "#2ca25f"),
+    (8, "async_dn_b8", "#d9772b"),
+    (16, "async_dn_b16", "#c44e52"),
 ]
 
 
@@ -111,14 +112,14 @@ def main():
                 base_fe, color="#000000", lw=1.5, ls="--", label="sync baseline"
             )
         axs.set_title("Final eval loss vs DN buffer size")
-        axs.set_xlabel("DN buffer size N  (worker count = 2)")
+        axs.set_xlabel("DN buffer size N  (worker count = 4)")
         axs.set_ylabel("final eval loss")
         axs.set_xticks(ns)
         axs.legend(fontsize=8)
         axs.grid(alpha=0.25)
 
     fig.suptitle(
-        "Async DN-buffer-size sweep — small Llama (34.4M), ~1B tokens, H=100",
+        "Async DN-buffer-size sweep — small Llama (34.4M), 4 workers x 520M tokens, H=100",
         fontweight="bold",
     )
     fig.tight_layout()
