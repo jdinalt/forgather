@@ -38,7 +38,8 @@ forgather diloco server \
     --async \
     --dn-buffer-size 3 \
     --dylu \
-    --dylu-base-sync-every 500
+    --dylu-base-sync-every 500 \
+    --grace-period 2.0
 ```
 
 Server arguments:
@@ -49,6 +50,7 @@ Server arguments:
 - `--dn-buffer-size N`: Delayed Nesterov buffer size (async only, default: 0 = disabled)
 - `--dylu`: Enable Dynamic Local Updates (async only)
 - `--dylu-base-sync-every N`: Base sync interval for the fastest worker (default: 500)
+- `--grace-period S`: Async grace window in seconds — aggregate workers that submit within `S` of the first arrival into one outer step (async only, default: 0 = disabled)
 - `--from-checkpoint FROM_CHECKPOINT`: Load model from specified checkpoint path. Overrides loading from newest.
 
 Group-wide worker settings (must match across the group, so they live on the

@@ -727,6 +727,31 @@ recommended sync interval proportional to the worker's relative speed and return
 it in the heartbeat response. Workers that opt in (`dylu=True`) adjust their
 `sync_every` accordingly.
 
+### Grace Period
+
+When `grace_period > 0` (async only), `_handle_submit_grace` replaces the
+immediate apply: it is a **soft barrier with a wall-clock timeout** layered on the
+async path, reusing the synchronous barrier's shape (an epoch counter, a
+per-epoch results dict, timed waits, `notify_all`).
+
+- A submission parks in `_grace_pending` and the HTTP handler thread waits. The
+  deadline is `_grace_tau_sync + grace_period`, where `_grace_tau_sync` is the
+  **earliest** arrival — it only ever moves earlier, so a steady trickle of
+  arrivals cannot push the window out forever; it provably closes.
+- Exactly one parked thread (`_grace_driver_running`) owns the deadline wait and
+  triggers `_flush_grace_window`; the window also short-circuits when all live
+  workers have submitted. The flush aggregates the batch into one mean
+  pseudo-gradient, applies **one** outer step (`_apply_async_pseudograd`,
+  `submission_count = len(batch)`), snapshots the post-step params into
+  `_grace_results[epoch]`, bumps the epoch, and releases all waiters.
+- The grace `Condition` shares the `_async_lock` **RLock**, so the flush's
+  periodic `save_state` re-entry is safe (the same property the DN apply relies
+  on). Worker death (`_handle_worker_death`) and `stop()` notify the condition so
+  a parked batch never strands.
+- Layering: the grace period aggregates *within* a round; **one grace batch is
+  one DN tick** (DN delays momentum *across* rounds). Batch-size stats are on
+  `/status`.
+
 ---
 
 ## Streaming DiLoCo (Fragments)

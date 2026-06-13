@@ -125,6 +125,18 @@ def create_diloco_parser(global_args):
         ),
     )
     server_parser.add_argument(
+        "--grace-period",
+        type=float,
+        default=0.0,
+        help=(
+            "Async grace window in seconds (Liu et al. 2024, Sec. 3). When a\n"
+            "worker submits, the server holds the response and aggregates any\n"
+            "other workers that submit within the window into ONE outer step,\n"
+            "so near-simultaneous workers resync against the same model.\n"
+            "0 = disabled (default: 0.0). Only used with --async."
+        ),
+    )
+    server_parser.add_argument(
         "--verbose-sync",
         action="store_true",
         help=(
