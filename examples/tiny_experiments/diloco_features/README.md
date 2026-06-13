@@ -43,7 +43,7 @@ cd examples/tiny_experiments/diloco_features
 
 Five configurations, same everything except the feature under test — small Llama
 (34.4M) on Fineweb-Edu, 2 workers, **H = 100**, **~1B tokens** (2× Chinchilla,
-520M/worker), gRPC + safetensors, `torch.compile` on, identical pristine init and
+520M/worker), gRPC + safetensors, `torch.compile` on (the config default), identical pristine init and
 the same seed and data order. Only the one flag varies, so the loss gap *is* the
 feature's cost. (Driven through the scheduler by
 [`experiment.sh`](experiment.sh); harvested by
@@ -52,9 +52,9 @@ feature's cost. (Driven through the scheduler by
 [`analysis/plot_experiment.py`](analysis/plot_experiment.py).)
 
 Every run shares the same base — `forgather diloco server -o <master> -n 2 --grpc
---wire-format safetensors`, fresh master copy, workers submitted with
-`--compile yes` and the config's default ~16k-step budget — and adds the flag(s)
-that define it:
+--wire-format safetensors`, a fresh master copy, and workers submitted with the
+config's defaults (`torch.compile` on, the ~16k-step budget) — and adds the
+flag(s) that define it:
 
 | Run | `diloco server` flag(s) added |
 |---|---|

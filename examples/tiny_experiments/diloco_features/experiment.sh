@@ -41,11 +41,15 @@ H=100
 
 MODE="${1:-run}"
 case "$MODE" in
-  validate) MAXSTEPS_ARGS=(--max-steps 120); COMPILE=no;  DYLU_DELAY=0.05 ;;
-  run)      MAXSTEPS_ARGS=();                COMPILE=yes; DYLU_DELAY=0.03 ;;
-  dylu)     MAXSTEPS_ARGS=();                COMPILE=yes; DYLU_DELAY=0.03 ;;
-  async_dn) MAXSTEPS_ARGS=();                COMPILE=yes; DYLU_DELAY=0.03 ;;
-  dnsweep)  MAXSTEPS_ARGS=();                COMPILE=yes; DYLU_DELAY=0.03 ;;
+  # COMPILE_ARGS is empty for the real runs — torch.compile is on by the config
+  # default, so there's nothing to pass. The smoke disables it (`--compile no`)
+  # to skip the compile wait; that flag also doubles as a demo of forwarding a
+  # trainer dynamic-arg through `submit` alongside the DiLoCo flags.
+  validate) MAXSTEPS_ARGS=(--max-steps 120); COMPILE_ARGS=(--compile no); DYLU_DELAY=0.05 ;;
+  run)      MAXSTEPS_ARGS=();                COMPILE_ARGS=();             DYLU_DELAY=0.03 ;;
+  dylu)     MAXSTEPS_ARGS=();                COMPILE_ARGS=();             DYLU_DELAY=0.03 ;;
+  async_dn) MAXSTEPS_ARGS=();                COMPILE_ARGS=();             DYLU_DELAY=0.03 ;;
+  dnsweep)  MAXSTEPS_ARGS=();                COMPILE_ARGS=();             DYLU_DELAY=0.03 ;;
   *) echo "usage: $0 {validate|run|dylu|async_dn|dnsweep}" >&2; exit 2 ;;
 esac
 
@@ -102,7 +106,7 @@ start_one() {
 submit_workers() {
   local name="$1" port="$2"
   forgather -t "$CONFIG" submit --diloco --diloco-server "127.0.0.1:$port" \
-    --diloco-worker-count 2 "${MAXSTEPS_ARGS[@]}" --compile "$COMPILE" 2>/dev/null \
+    --diloco-worker-count 2 "${MAXSTEPS_ARGS[@]}" "${COMPILE_ARGS[@]}" 2>/dev/null \
     | grep -oE 'q_[0-9]+_[0-9a-f]+'
 }
 
@@ -111,11 +115,11 @@ submit_workers_dylu() {
   local name="$1" port="$2"
   forgather -t "$CONFIG" submit --diloco --diloco-server "127.0.0.1:$port" \
     --diloco-worker-count 1 --worker-id "${name}-slow" --heartbeat-interval 5 \
-    "${MAXSTEPS_ARGS[@]}" --compile "$COMPILE" \
+    "${MAXSTEPS_ARGS[@]}" "${COMPILE_ARGS[@]}" \
     --env "DILOCO_DEBUG_STEP_DELAY=$DYLU_DELAY" 2>/dev/null | grep -oE 'q_[0-9]+_[0-9a-f]+'
   forgather -t "$CONFIG" submit --diloco --diloco-server "127.0.0.1:$port" \
     --diloco-worker-count 1 --worker-id "${name}-fast" --heartbeat-interval 5 \
-    "${MAXSTEPS_ARGS[@]}" --compile "$COMPILE" 2>/dev/null | grep -oE 'q_[0-9]+_[0-9a-f]+'
+    "${MAXSTEPS_ARGS[@]}" "${COMPILE_ARGS[@]}" 2>/dev/null | grep -oE 'q_[0-9]+_[0-9a-f]+'
 }
 
 capture_one() {  # <name> <port> <worker-id...>
@@ -168,7 +172,7 @@ run_batch() {
 # doesn't strand a param server on 8512/8513 and block the next invocation.
 trap 'echo; warn "interrupted — shutting down servers on 8512/8513"; shutdown_on 8512; shutdown_on 8513; exit 130' INT TERM
 
-log "MODE=$MODE  H=$H  compile=$COMPILE  DN=$DN  budget=$([[ ${#MAXSTEPS_ARGS[@]} -gt 0 ]] && echo "${MAXSTEPS_ARGS[*]}" || echo 'config default (~16k steps/worker)')"
+log "MODE=$MODE  H=$H  compile=$([[ ${#COMPILE_ARGS[@]} -gt 0 ]] && echo "${COMPILE_ARGS[*]}" || echo "default(on)")  DN=$DN  budget=$([[ ${#MAXSTEPS_ARGS[@]} -gt 0 ]] && echo "${MAXSTEPS_ARGS[*]}" || echo 'config default (~16k steps/worker)')"
 
 if [[ "$MODE" == dylu ]]; then
   # The meaningful DyLU run needs a stable (DN-buffered) base — pure async + DyLU
