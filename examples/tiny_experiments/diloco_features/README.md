@@ -92,6 +92,10 @@ on, the ~16k-step/worker budget) — and adds:
 ![Eval loss — full run and the converged-runs endgame zoom](assets/loss_comparison.png)
 ![Training health — train loss and grad norm](assets/training_health.png)
 
+<!-- Figures are kept to two wide panels each so they stay legible at the
+     text-column width; click-to-zoom for embedded docs images is tracked in #223. -->
+
+
 **The trade, in one line.** Two of these knobs are cheap and one is not. Base
 DiLoCo's traffic is bursty — the link sits idle through the local-training window,
 then every worker ships the whole model at once at sync time; harmless on a fat
