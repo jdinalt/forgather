@@ -220,21 +220,26 @@ In standard (synchronous) DiLoCo, the outer optimizer uses SGD with Nesterov
 momentum. In async mode, applying momentum on every single worker submission can
 amplify stale gradients, leading to training instability.
 
-**Delayed Nesterov** addresses this by buffering pseudo-gradient submissions.
-Between buffered steps, the server applies simple gradient descent (no momentum):
+**Delayed Nesterov** addresses this by *delaying* the momentum (Liu et al. 2024,
+arXiv:2401.09135, Algorithm 3, with the default activation `c=0`). With buffer
+size `N` (`--dn-buffer-size N`), every submission takes an immediate, momentum-free
+descent step scaled by `1/N`, while the Nesterov momentum is refreshed and applied
+only once every `N` submissions, on the averaged buffer:
 
 ```
-param -= lr * grad
+every submission:   param -= lr * grad / N ;   Delta += grad
+every N-th:          m <- beta * m + Delta / N
+                     param -= lr * beta * m ;   Delta <- 0
 ```
-
-When the buffer fills (every `dn_buffer_size` submissions), the server averages
-the buffered gradients and applies a full outer optimizer step with momentum.
 
 This prevents momentum from tracking the direction of stale individual worker
-updates while still benefiting from momentum's acceleration over longer windows.
+updates while still benefiting from momentum's acceleration over the `N`-submission
+window. The server keeps only the running sum `Delta` and the momentum `m`, so the
+memory cost is `O(model)`, independent of `N`. For `N=1` this reduces exactly to
+the plain Nesterov outer step.
 
 ```bash
-# Buffer 3 submissions, then apply momentum
+# Delay momentum over 3 submissions
 forgather diloco server -o ./model -n 3 --async --dn-buffer-size 3
 ```
 

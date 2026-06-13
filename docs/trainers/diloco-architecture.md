@@ -187,9 +187,11 @@ _completed_rounds: Dict[int, Dict[str, Tensor]]       # round_number -> result (
 **Async state:**
 
 ```python
-_async_lock: threading.Lock                            # Serializes async submissions
+_async_lock: threading.RLock                           # Serializes async submissions
 _total_submissions: int                                # Total submissions received
-_dn_grad_buffer: List[Dict[str, Tensor]]               # Delayed Nesterov buffer
+_dn_delta: List[Tensor]                                # Delayed Nesterov running sum (per param)
+_dn_momentum: List[Tensor]                             # Delayed Nesterov momentum (per param)
+_dn_count: int                                         # Submissions since the last DN momentum step
 ```
 
 **Fragment state (sync + async):**
@@ -699,14 +701,18 @@ Staleness is logged but not currently used for weighting or rejection.
 
 ### Delayed Nesterov (DN)
 
-A server-side strategy for async mode. When `dn_buffer_size > 0`:
+A server-side strategy for async mode that delays the outer Nesterov momentum
+(Liu et al. 2024, arXiv:2401.09135, Algorithm 3, `c=0`). When `dn_buffer_size = N > 0`:
 
-- **Intermediate submissions** (buffer not full): Apply direct gradient descent
-  `param -= lr * grad` without calling the optimizer (no momentum update)
-- **Buffer-full submissions** (every N-th): Average the buffer, set as `.grad`,
-  call `outer_optimizer.step()` (full momentum update), clear buffer
+- **Every submission**: apply an immediate, momentum-free descent step
+  `param -= lr * grad / N` and accumulate the running sum `Delta += grad`.
+- **Every N-th submission**: refresh the delayed momentum `m <- beta*m + Delta/N`,
+  apply `param -= lr * beta * m`, and reset `Delta`.
 
-This prevents momentum from tracking stale individual worker directions.
+Only the running sum `Delta` and the momentum `m` are kept (O(model), not
+O(N x model)). For `N = 1` this is exactly the plain Nesterov outer step. This
+prevents momentum from tracking the direction of stale individual worker
+submissions while still accelerating over the N-submission window.
 
 ### Dynamic Local Updates (DyLU)
 

@@ -450,11 +450,12 @@ class DiLoCoServer:
             deleted when the limit is exceeded. 0 means keep all.
         async_mode: If True, apply pseudo-gradients immediately without barrier.
         safetensors: Save using saftetensor, else torch.save()
-        dn_buffer_size: Delayed Nesterov buffer size. In async mode, buffer this
-            many pseudo-gradient submissions before applying the outer optimizer
-            with momentum. Between buffered steps, apply simple gradient descent
-            (no momentum). Set to 0 to disable DN (apply momentum every step).
-            Only used in async mode.
+        dn_buffer_size: Delayed Nesterov buffer size N. In async mode, every
+            submission takes an immediate ``lr * grad / N`` descent step and the
+            outer Nesterov momentum is delayed, applied once every N submissions
+            on the averaged buffer (Liu et al. 2024, Algorithm 3, c=0). Set to 0
+            to disable DN (apply full momentum every step). Only used in async
+            mode.
         dylu_enabled: If True, compute per-worker recommended sync_every based
             on relative training speeds (Dynamic Local Updates). Only used in
             async mode.
@@ -777,8 +778,11 @@ class DiLoCoServer:
             self._param_list.parameters()
         )
 
-        # Extract outer LR for use in DN direct gradient steps
+        # Extract outer LR + momentum (beta) for the Delayed-Nesterov direct
+        # path, which implements the outer step by hand rather than through the
+        # optimizer (see _apply_async_pseudograd).
         self._outer_lr = self.outer_optimizer.param_groups[0]["lr"]
+        self._outer_momentum = self.outer_optimizer.param_groups[0].get("momentum", 0.0)
 
         # Worker registry
         self._workers: Dict[str, WorkerInfo] = {}
@@ -815,14 +819,34 @@ class DiLoCoServer:
         self._sync_cond = threading.Condition()
         self._completed_rounds: Dict[int, Dict[str, torch.Tensor]] = {}
 
-        # Async state
-        self._async_lock = threading.Lock()
+        # Async state. Reentrant because the async apply path holds this lock
+        # across _apply_async_pseudograd, whose periodic save_state re-enters it
+        # to snapshot the DN state atomically with the params (mirrors
+        # _sync_cond, which is a reentrant Condition).
+        self._async_lock = threading.RLock()
         self._total_submissions = 0  # Total pseudo-gradient submissions received
 
-        # Delayed Nesterov (DN) state - buffer pseudo-gradients, apply momentum
-        # only every dn_buffer_size submissions to avoid momentum amplification
-        # from stale async gradients.
-        self._dn_grad_buffer: List[Dict[str, torch.Tensor]] = []
+        # Delayed Nesterov (DN) state (Liu et al. 2024, arXiv:2401.09135,
+        # Algorithm 3, with the default momentum-activation c=0). In async mode
+        # the outer Nesterov momentum is *delayed*: every submission takes an
+        # immediate g/N descent step, and once every ``dn_buffer_size``
+        # submissions the momentum is refreshed from the averaged buffer and
+        # applied. We keep a running sum ``Delta`` and the momentum ``m`` per
+        # parameter — O(model), not O(N * model) (issue #222) — plus the
+        # in-cycle submission counter. Allocated only when DN is configured
+        # (the buffers are otherwise unused), so a plain sync server pays
+        # nothing.
+        if self.dn_buffer_size > 0:
+            self._dn_delta: List[torch.Tensor] = [
+                torch.zeros_like(p.data) for p in self._param_list
+            ]
+            self._dn_momentum: List[torch.Tensor] = [
+                torch.zeros_like(p.data) for p in self._param_list
+            ]
+        else:
+            self._dn_delta = []
+            self._dn_momentum = []
+        self._dn_count: int = 0
 
         # Fragment streaming state - for per-fragment sync.
         # Maps param name -> index in _param_list for fast lookup.
@@ -1054,9 +1078,10 @@ class DiLoCoServer:
         If DN is disabled (dn_buffer_size=0), applies the outer optimizer with
         full momentum on every submission.
 
-        If DN is enabled, buffers pseudo-gradients and alternates between:
-        - Direct gradient steps (param -= lr * grad) for intermediate submissions
-        - Full outer optimizer steps (with momentum) every dn_buffer_size submissions
+        If DN is enabled, applies the Delayed Nesterov update (Algorithm 3,
+        c=0): an immediate ``-lr * grad / N`` descent on every submission, plus
+        a delayed Nesterov momentum step on the averaged buffer every N-th
+        submission. See the ``else`` branch below.
         """
         if self.dn_buffer_size <= 0:
             # No DN: apply outer optimizer directly on each submission
@@ -1065,34 +1090,35 @@ class DiLoCoServer:
             self.outer_optimizer.step()
             self.outer_optimizer.zero_grad()
         else:
-            # DN: buffer gradients, alternate between direct and momentum steps
-            self._dn_grad_buffer.append(pseudograds)
-
-            if len(self._dn_grad_buffer) >= self.dn_buffer_size:
-                # Full momentum step: average the buffer, apply outer optimizer
-                n = len(self._dn_grad_buffer)
+            # Delayed Nesterov (Liu et al. 2024, Algorithm 3, c=0). Every
+            # submission takes an immediate descent step of -eps * g / N; the
+            # outer Nesterov momentum is *delayed* and applied once every N
+            # submissions, on the averaged running buffer Delta/N:
+            #
+            #     every submission:   theta -= eps * g / N ;  Delta += g
+            #     every N-th:         m <- beta*m + Delta/N
+            #                         theta -= eps * beta * m ;  Delta <- 0
+            #
+            # Both the immediate g/N term (present on *every* step, incl. the
+            # N-th) and the 1/N scaling are required by the algorithm; for N=1
+            # this reduces exactly to the plain Nesterov step in the branch
+            # above. The momentum m and the sum Delta are O(model) each.
+            n = self.dn_buffer_size
+            eps = self._outer_lr
+            beta = self._outer_momentum
+            with torch.no_grad():
                 for i, name in enumerate(self._param_names):
-                    avg_grad = None
-                    for buffered_pg in self._dn_grad_buffer:
-                        pg = buffered_pg[name].float()
-                        if avg_grad is None:
-                            avg_grad = pg.clone()
-                        else:
-                            avg_grad.add_(pg)
-                    avg_grad.div_(n)
-                    self._param_list[i].grad = avg_grad
-
-                self.outer_optimizer.step()
-                self.outer_optimizer.zero_grad()
-                self._dn_grad_buffer.clear()
-            else:
-                # Intermediate step: direct gradient descent (no momentum)
-                # param -= lr * grad
-                with torch.no_grad():
-                    for i, name in enumerate(self._param_names):
-                        self._param_list[i].data.sub_(
-                            self._outer_lr * pseudograds[name].float()
-                        )
+                    g = pseudograds[name].float()
+                    self._param_list[i].data.add_(g, alpha=-eps / n)
+                    self._dn_delta[i].add_(g)
+                self._dn_count += 1
+                if self._dn_count >= n:
+                    for i in range(len(self._param_list)):
+                        m = self._dn_momentum[i]
+                        m.mul_(beta).add_(self._dn_delta[i], alpha=1.0 / n)
+                        self._param_list[i].data.add_(m, alpha=-eps * beta)
+                        self._dn_delta[i].zero_()
+                    self._dn_count = 0
 
         self._sync_round += 1
         self._total_submissions += 1
@@ -2780,7 +2806,7 @@ class DiLoCoServer:
         if self.async_mode:
             with self._async_lock:
                 pending = []
-                dn_buffered = len(self._dn_grad_buffer)
+                dn_buffered = self._dn_count
         else:
             with self._sync_cond:
                 pending = list(self._pending_pseudograds.keys())
@@ -3808,18 +3834,44 @@ class DiLoCoServer:
             logger.info("State is clean. Skipping save.")
             return
 
-        # Snapshot the model + outer optimizer + round together under the sync
-        # condition so a concurrent outer step (the shared-memory aggregation
-        # thread, or an HTTP sync barrier) can't tear the master across the read
-        # — a control-save racing a step would otherwise persist some params
-        # from before the step and some from after. The outer step mutates these
-        # three under the same condition, so this captures a consistent set; the
-        # disk I/O below runs off the lock on these immutable snapshots.
-        with self._sync_cond:
-            global_params = self.get_global_params()
-            outer_opt_state = self.outer_optimizer.state_dict()
-            sync_round = self._sync_round
-            total_submissions = self._total_submissions
+        # Snapshot the model + outer optimizer + round + DN state together under
+        # the lock the apply path mutates them with, so a concurrent outer step
+        # can't tear the master across the read (some params from before a step,
+        # some from after). The mutating path differs by mode: the synchronous
+        # outer step runs under _sync_cond; the async path (and the hand-rolled
+        # Delayed-Nesterov state, which lives outside the optimizer) runs under
+        # _async_lock. The async periodic save re-enters _async_lock from inside
+        # _apply_async_pseudograd, hence the reentrant lock. The disk I/O below
+        # runs off the lock on these immutable snapshots.
+        def _capture_dn_state():
+            if self.dn_buffer_size <= 0:
+                return None
+            return {
+                "count": self._dn_count,
+                "momentum": {
+                    name: self._dn_momentum[i].clone()
+                    for i, name in enumerate(self._param_names)
+                },
+                "delta": {
+                    name: self._dn_delta[i].clone()
+                    for i, name in enumerate(self._param_names)
+                },
+            }
+
+        if self.async_mode:
+            with self._async_lock:
+                global_params = self.get_global_params()
+                outer_opt_state = self.outer_optimizer.state_dict()
+                sync_round = self._sync_round
+                total_submissions = self._total_submissions
+                dn_state = _capture_dn_state()
+        else:
+            with self._sync_cond:
+                global_params = self.get_global_params()
+                outer_opt_state = self.outer_optimizer.state_dict()
+                sync_round = self._sync_round
+                total_submissions = self._total_submissions
+            dn_state = None
 
         if path is not None:
             checkpoint_path = path
@@ -3881,6 +3933,7 @@ class DiLoCoServer:
             "param_names": self._param_names,
             "async_mode": self.async_mode,
             "total_submissions": total_submissions,
+            "dn_state": dn_state,
             "known_workers": known_workers,
             "work_queues": work_queues,
             "dataset_lengths": dataset_lengths,
@@ -4047,6 +4100,21 @@ class DiLoCoServer:
             self.outer_optimizer.load_state_dict(server_state["outer_optimizer"])
             self._sync_round = server_state["sync_round"]
             self._total_submissions = server_state.get("total_submissions", 0)
+
+            # Restore the Delayed-Nesterov state (delayed momentum + in-cycle
+            # buffer/counter), keyed by param name so it survives a param
+            # reorder. Absent on pre-feature checkpoints or DN-disabled servers
+            # → the zero-initialized state from _initialize stands.
+            dn_state = server_state.get("dn_state")
+            if dn_state and self.dn_buffer_size > 0:
+                mom = dn_state.get("momentum", {})
+                delta = dn_state.get("delta", {})
+                for i, name in enumerate(self._param_names):
+                    if name in mom:
+                        self._dn_momentum[i] = mom[name].float()
+                    if name in delta:
+                        self._dn_delta[i] = delta[name].float()
+                self._dn_count = dn_state.get("count", 0)
             # Restore the known-worker roster so the webui can offer the
             # previous run's workers for checkpoint-resuming relaunch after
             # a server restart (issue #103 follow-up). Absent on pre-feature
