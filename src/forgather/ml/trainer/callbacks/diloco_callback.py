@@ -84,8 +84,9 @@ class DiLoCoCallback(TrainerCallback):
     not five hundred steps later when the first sync fails.
 
     **Server-authoritative settings.** ``sync_every``, ``bf16_comm``,
-    ``dylu`` and ``num_fragments`` must match across the whole group for
-    the sync barrier / outer step / fragment barriers to be coherent, so
+    ``dylu``, ``num_fragments`` and ``fragment_assignment`` must match across
+    the whole group for the sync barrier / outer step / fragment barriers to be
+    coherent, so
     they are owned by the server: the worker reads them verbatim from the
     server's ``/info`` at startup (the leader fetches and broadcasts to
     DDP followers). There is no client override — a divergent value is
@@ -152,6 +153,7 @@ class DiLoCoCallback(TrainerCallback):
         self.bf16_comm: Optional[bool] = None
         self.dylu: Optional[bool] = None
         self.num_fragments: Optional[int] = None
+        self.fragment_assignment: Optional[str] = None
         self.timeout = timeout
         self.max_sync_retries = max_sync_retries
         # Security (issue #90): bearer token + TLS verification. ``None``
@@ -212,9 +214,9 @@ class DiLoCoCallback(TrainerCallback):
     def _resolve_server_settings(self, info: Dict[str, Any]) -> Dict[str, Any]:
         """Extract the server-authoritative settings from an /info payload.
 
-        These four (sync_every, bf16_comm, dylu, num_fragments) must match
-        across the group, so the server is the sole authority — there is no
-        client override. A server that doesn't advertise them (too old, or
+        These (sync_every, bf16_comm, dylu, num_fragments, fragment_assignment)
+        must match across the group, so the server is the sole authority — there
+        is no client override. A server that doesn't advertise them (too old, or
         ``expected_client_settings.sync_every`` is null) is a fatal
         misconfiguration, not something to paper over with a client default
         (no-silent-fallback).
@@ -281,6 +283,7 @@ class DiLoCoCallback(TrainerCallback):
             # server ⇒ off.
             "verbose_sync": bool(ecs.get("verbose_sync", False)),
             "num_fragments": int(ecs.get("num_fragments_default", 1)),
+            "fragment_assignment": ecs.get("fragment_assignment_default", "strided"),
             "heartbeat_timeout": ecs.get("heartbeat_timeout"),
             # The coordinator's init reference, for a non-HTTP backend that
             # seeds from a checkpoint rather than receiving weights over the
@@ -701,6 +704,7 @@ class DiLoCoCallback(TrainerCallback):
         self.bf16_comm = settings["bf16_comm"]
         self.dylu = settings["dylu"]
         self.num_fragments = settings["num_fragments"]
+        self.fragment_assignment = settings.get("fragment_assignment", "strided")
         self._validate_heartbeat(settings["heartbeat_timeout"])
         logger.info(
             "DiLoCoCallback: using server settings sync_every=%s "
@@ -734,6 +738,7 @@ class DiLoCoCallback(TrainerCallback):
             dylu=self.dylu,
             heartbeat_interval=self.heartbeat_interval,
             num_fragments=self.num_fragments,
+            fragment_assignment=self.fragment_assignment,
             max_sync_retries=self.max_sync_retries,
             backend=self._make_sync_backend(settings, model, trainer),
             report_sync_state=self.report_sync_state,

@@ -327,6 +327,7 @@ class TestStatusExtensions:
         assert exp["bf16_comm"] == server.bf16_comm
         assert exp["dylu"] is False
         assert exp["num_fragments_default"] == server.num_fragments
+        assert exp["fragment_assignment_default"] == server.fragment_assignment
         assert exp["heartbeat_timeout"] == server.heartbeat_timeout
 
     def test_info_reflects_configured_group_settings(self, tmp_path):
@@ -342,6 +343,7 @@ class TestStatusExtensions:
             port=0,
             sync_every=250,
             num_fragments=4,
+            fragment_assignment="sequential",
             bf16_comm=False,
             outer_optimizer_factory=_simple_sgd,
         )
@@ -352,6 +354,7 @@ class TestStatusExtensions:
             exp = json.loads(body)["expected_client_settings"]
             assert exp["sync_every"] == 250
             assert exp["num_fragments_default"] == 4
+            assert exp["fragment_assignment_default"] == "sequential"
             assert exp["bf16_comm"] is False
         finally:
             srv.stop()

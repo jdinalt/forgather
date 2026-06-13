@@ -197,13 +197,18 @@ its slice in bf16, not the full model in fp32.
 ## Fragments-within-groups
 
 The same model extends to streaming fragments (`num_fragments > 1`).
-Each rank independently partitions its slice into N fragments
-(`FragmentManager(self.param_view, num_fragments)`). The
-`fragment_id` is a logical index shared across ranks; rank 0's
+Transformer-block boundaries are discovered **globally** from the full
+model (`FragmentManager(self.param_view, num_fragments,
+boundary_source=self.model)`), assigned to fragments (strided or
+sequential), then **filtered to each rank's slice**. The `fragment_id`
+is therefore a logical index shared across ranks: rank 0's
 `fragment_id_k` and rank 1's `fragment_id_k` cover different names
-(each rank's slice intersected with the fragment's index range) but
-fire at the same local step (every rank's pipeline scheduler steps in
-lockstep).
+(each rank's slice intersected with that fragment's blocks) but fire at
+the same local step (every rank's pipeline scheduler steps in
+lockstep). Doing discovery globally-then-filter — rather than
+partitioning each rank's slice independently — is what keeps the
+logical ids consistent so the server's per-`fragment_id` barrier
+composes.
 
 Server-side per-fragment barrier release:
 `_fragment_round_complete(fragment_id)` — every expected worker has
@@ -365,8 +370,9 @@ manually.
 - `src/forgather/ml/diloco/worker.py` — `ParamView` plumbing,
   registration with the `group` block.
 - `src/forgather/ml/diloco/param_view.py` — abstraction definitions.
-- `src/forgather/ml/diloco/fragments.py` — fragment partitioning now
-  duck-types its `model` argument so a `ParamView` is accepted.
+- `src/forgather/ml/diloco/fragments.py` — fragment partitioning
+  duck-types its `model` argument so a `ParamView` is accepted, and discovers
+  transformer-block boundaries from the full model via `boundary_source`.
 - `src/forgather/ml/trainer/callbacks/diloco_callback.py` — pipeline
   detection + worker-id derivation.
 - `src/forgather/ml/trainer/pipeline/pipeline_trainer.py:_prepare_model`

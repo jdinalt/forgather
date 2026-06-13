@@ -17,7 +17,7 @@ Usage:
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -25,30 +25,143 @@ import torch.nn as nn
 logger = logging.getLogger(__name__)
 
 
+class NoBlockPlanError(Exception):
+    """Raised when a model exposes no usable transformer-block structure, so
+    block-faithful fragmentation isn't possible and we fall back to a contiguous
+    split."""
+
+
+def discover_block_boundaries(
+    model,
+) -> Tuple[List[List[str]], List[str], List[str]]:
+    """Derive transformer-block parameter groups from a model's pipeline-parallel
+    metadata, following Streaming DiLoCo (arXiv:2501.18512), which fragments the
+    model on transformer-block boundaries rather than by raw parameter count.
+
+    Blocks are identified by ``_no_split_modules`` (the HF convention for the
+    atomic transformer-block classes that must never be split across a pipeline
+    boundary — the same signal vLLM uses, see docs/inference/vllm_integration.md).
+    Each such submodule's fully-qualified name is an indexed child of a single
+    container (e.g. ``causal_lm.layer_stack.layers.{i}``); its parameters form
+    one atomic group, ordered by the integer index.
+
+    Returns ``(block_param_groups, pre_block_params, post_block_params)`` where
+    ``block_param_groups[i]`` is the ordered list of parameter names in block
+    ``i``, and the pre/post lists hold the non-block parameters (embeddings;
+    final norm + LM head) that appear before / after the blocks in the model's
+    parameter order.
+
+    Raises :class:`NoBlockPlanError` if the model defines no ``_no_split_modules``,
+    has no matching block submodules, or the blocks don't sit under a single
+    integer-indexed container (so the caller can fall back to a contiguous split).
+    """
+    no_split = getattr(model, "_no_split_modules", None) or getattr(
+        type(model), "_no_split_modules", None
+    )
+    if not no_split:
+        raise NoBlockPlanError("model defines no _no_split_modules")
+    no_split = set(no_split)
+
+    named_modules = getattr(model, "named_modules", None)
+    if not callable(named_modules):
+        raise NoBlockPlanError("model has no named_modules() (not an nn.Module)")
+
+    # Block submodules, identified by class name. Dedupe by FQN (a proxy
+    # ModuleList over a ModuleDict can register the same child twice).
+    block_fqns = []
+    seen = set()
+    for name, mod in named_modules():
+        if type(mod).__name__ in no_split and name and name not in seen:
+            seen.add(name)
+            block_fqns.append(name)
+    if not block_fqns:
+        raise NoBlockPlanError(
+            f"no submodules match _no_split_modules classes {sorted(no_split)}"
+        )
+
+    # All blocks must be the integer-indexed children of one container, e.g.
+    # ``<prefix>.0``, ``<prefix>.1``, ... — that ordering is the block order.
+    def _index(fqn: str) -> Optional[int]:
+        tail = fqn.rsplit(".", 1)[-1]
+        return int(tail) if tail.isdigit() else None
+
+    containers = {fqn.rsplit(".", 1)[0] for fqn in block_fqns}
+    if len(containers) != 1 or any(_index(f) is None for f in block_fqns):
+        raise NoBlockPlanError(
+            f"blocks are not the indexed children of a single container "
+            f"(containers={sorted(containers)})"
+        )
+    block_fqns.sort(key=_index)
+
+    all_params = [name for name, _ in model.named_parameters()]
+    block_prefixes = [f"{fqn}." for fqn in block_fqns]
+    block_groups: List[List[str]] = []
+    block_param_set = set()
+    for bp in block_prefixes:
+        names = [n for n in all_params if n.startswith(bp)]
+        block_groups.append(names)
+        block_param_set.update(names)
+    if not block_param_set:
+        raise NoBlockPlanError("block submodules carry no parameters")
+
+    # Non-block params: classify by position relative to the block params in the
+    # model's parameter order — before the first block => pre (embeddings),
+    # otherwise => post (final norm, LM head). This assumes the non-block params
+    # bracket the blocks (true for every transformer in-repo: embeddings first,
+    # norm + head last). A param interleaved *between* blocks would be attached
+    # to the last fragment; the partition stays valid (every name in exactly one
+    # fragment), just slightly less balanced.
+    first_block_idx = min(i for i, n in enumerate(all_params) if n in block_param_set)
+    pre_block_params, post_block_params = [], []
+    for i, n in enumerate(all_params):
+        if n in block_param_set:
+            continue
+        (pre_block_params if i < first_block_idx else post_block_params).append(n)
+
+    return block_groups, pre_block_params, post_block_params
+
+
 class FragmentManager:
     """
     Manages splitting model parameters into fragments for streaming sync.
 
-    Parameters are split into roughly equal contiguous groups. This keeps
-    adjacent layers together, which is a natural fit for pipeline parallelism
-    where each pipeline stage maps to one or more fragments.
+    Following Streaming DiLoCo (arXiv:2501.18512), parameters are split on
+    **transformer-block boundaries**: each fragment is a set of whole blocks
+    (plus the non-block params attached to the first/last fragment), assigned
+    either ``sequential`` (contiguous runs of blocks) or ``strided`` (block
+    ``i`` -> fragment ``i % N``, the paper's mild preference). When the model
+    exposes no block plan (no ``_no_split_modules`` / not a transformer), it
+    falls back to an equal-param-count contiguous split with a warning.
 
     Args:
-        model: The model whose parameters will be fragmented.
-        num_fragments: Number of fragments to split the model into.
-            Must be >= 1 and <= number of parameters.
+        model: The model (or ``ParamView``) whose parameters will be fragmented.
+        num_fragments: Number of fragments. Must be >= 1.
+        assignment: ``"strided"`` (default) or ``"sequential"`` block-to-fragment
+            assignment.
+        boundary_source: The full model to derive block boundaries from (it must
+            expose ``_no_split_modules`` + ``named_modules()``). Defaults to
+            ``model``; under pipeline parallel the worker passes the real model
+            here while ``model`` is the rank's ``ParamView``.
     """
 
-    def __init__(self, model, num_fragments: int):
-        """``model`` may be an ``nn.Module`` (pre-#84 contract) or a
-        ``ParamView`` (post-#84). Duck-typed via ``.named_parameters()``;
-        accepting either lets the worker pass its already-constructed
-        ``ParamView`` straight through without an unwrap step. Under
-        pipeline parallel the view exposes only the rank's slice, so
-        the fragment partitioning operates on the slice — exactly what
-        we want for per-rank fragment streaming."""
+    def __init__(
+        self,
+        model,
+        num_fragments: int,
+        assignment: str = "strided",
+        boundary_source=None,
+    ):
+        """``model`` may be an ``nn.Module`` or a ``ParamView`` (duck-typed via
+        ``.named_parameters()``). Under pipeline parallel the view exposes only
+        the rank's slice; block boundaries are discovered globally from
+        ``boundary_source`` and then filtered to the slice, so the logical
+        fragment ids stay consistent across ranks."""
         if num_fragments < 1:
             raise ValueError(f"num_fragments must be >= 1, got {num_fragments}")
+        if assignment not in ("strided", "sequential"):
+            raise ValueError(
+                f"assignment must be 'strided' or 'sequential', got {assignment!r}"
+            )
 
         param_names = [name for name, _ in model.named_parameters()]
         if num_fragments > len(param_names):
@@ -58,11 +171,22 @@ class FragmentManager:
             )
 
         self.num_fragments = num_fragments
+        self.assignment = assignment
 
-        # Split parameters into contiguous groups of roughly equal size
-        self.fragments: List[List[str]] = self._split_contiguous(
-            param_names, num_fragments
-        )
+        src = boundary_source if boundary_source is not None else model
+        try:
+            self.fragments: List[List[str]] = self._split_blocks(
+                param_names, num_fragments, assignment, src
+            )
+            self.block_faithful = True
+        except NoBlockPlanError as exc:
+            logger.warning(
+                "FragmentManager: %s; falling back to equal-param-count "
+                "contiguous fragments (NOT paper-faithful).",
+                exc,
+            )
+            self.fragments = self._split_contiguous(param_names, num_fragments)
+            self.block_faithful = False
 
         # Build reverse mapping: param_name -> fragment_id
         self.param_to_fragment: Dict[str, int] = {}
@@ -70,13 +194,60 @@ class FragmentManager:
             for name in names:
                 self.param_to_fragment[name] = frag_id
 
+        kind = "block" if self.block_faithful else "contiguous(fallback)"
         logger.info(
             f"FragmentManager: {len(param_names)} parameters split into "
-            f"{num_fragments} fragments: "
+            f"{num_fragments} {assignment} {kind} fragments: "
             + ", ".join(
                 f"frag {i}: {len(f)} params" for i, f in enumerate(self.fragments)
             )
         )
+
+    @staticmethod
+    def _split_blocks(
+        param_names: List[str],
+        num_fragments: int,
+        assignment: str,
+        boundary_source,
+    ) -> List[List[str]]:
+        """Split on transformer-block boundaries. Discovers blocks globally from
+        ``boundary_source``, assigns whole blocks to fragments (sequential runs
+        or strided), attaches the non-block params (embeddings -> first fragment,
+        final norm + LM head -> last fragment), then filters each fragment to the
+        names actually present in ``param_names`` (the rank's slice)."""
+        block_groups, pre_params, post_params = discover_block_boundaries(
+            boundary_source
+        )
+        num_blocks = len(block_groups)
+        if num_fragments > num_blocks:
+            raise NoBlockPlanError(
+                f"num_fragments ({num_fragments}) exceeds transformer blocks "
+                f"({num_blocks}); cannot split faithfully on block boundaries"
+            )
+
+        # Assign global block indices to logical fragments.
+        if assignment == "strided":
+            frag_block_idxs: List[List[int]] = [[] for _ in range(num_fragments)]
+            for i in range(num_blocks):
+                frag_block_idxs[i % num_fragments].append(i)
+        else:  # sequential: contiguous runs, remainder distributed to the front
+            frag_block_idxs = FragmentManager._split_contiguous(
+                list(range(num_blocks)), num_fragments
+            )
+
+        fragments: List[List[str]] = [[] for _ in range(num_fragments)]
+        for frag_id, block_idxs in enumerate(frag_block_idxs):
+            for bi in block_idxs:
+                fragments[frag_id].extend(block_groups[bi])
+
+        # Non-block params: embeddings -> first fragment, final norm + head ->
+        # last fragment (keeps every param in exactly one fragment).
+        fragments[0] = pre_params + fragments[0]
+        fragments[-1] = fragments[-1] + post_params
+
+        # Filter to this rank's slice (a no-op when model == boundary_source).
+        slice_set = set(param_names)
+        return [[n for n in frag if n in slice_set] for frag in fragments]
 
     @staticmethod
     def _split_contiguous(items: List[str], n: int) -> List[List[str]]:

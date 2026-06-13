@@ -64,6 +64,10 @@ server; every worker adopts them from `/info` — there are no worker flags):
   [Sync log columns](#sync-log-columns)).
 - `--num-fragments N`: Streaming-sync fragments every worker splits the model
   into (1 = no streaming). Default: 1.
+- `--fragment-assignment {strided,sequential}`: how transformer blocks map to
+  streaming fragments (Streaming DiLoCo) — `strided` (block `i` → fragment
+  `i % N`, the paper's preference) or `sequential` (contiguous block runs).
+  Server-authoritative. Default: strided.
 - **Wire precision** — `--upload-dtype {fp32,bf16}` / `--upload-sr` /
   `--download-dtype {fp32,bf16}` / `--download-sr` set the dtype and stochastic
   rounding of each transport leg (defaults: bf16 upload, fp32 download).
@@ -170,13 +174,14 @@ worker (its id falls back to the queue id), preserving the simple one-worker
 flow.
 
 **Server-authoritative settings.** `sync_every`, the four wire-precision knobs
-(`upload_dtype`, `upload_sr`, `download_dtype`, `download_sr`), `dylu`, and
-`num_fragments` must match across every worker in the group for the sync
-barrier / outer step / fragment barriers to be coherent. The server is
-their sole authority: the worker fetches them from the server's `/info` at
-startup and logs the values it adopted. There are no worker flags for these —
+(`upload_dtype`, `upload_sr`, `download_dtype`, `download_sr`), `dylu`,
+`num_fragments`, and `fragment_assignment` must match across every worker in the
+group for the sync barrier / outer step / fragment barriers to be coherent. The
+server is their sole authority: the worker fetches them from the server's `/info`
+at startup and logs the values it adopted. There are no worker flags for these —
 set them on the **server** (`--sync-every`, `--upload-dtype` / `--upload-sr` /
-`--download-dtype` / `--download-sr`, `--dylu`, `--num-fragments`).
+`--download-dtype` / `--download-sr`, `--dylu`, `--num-fragments`,
+`--fragment-assignment`).
 
 Dataset partitioning across workers is handled by the server's **work-unit
 dispatch**: each worker registers its train dataset with the DiLoCo server

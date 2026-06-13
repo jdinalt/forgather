@@ -248,10 +248,17 @@ _reconnections: int                   # Cumulative reconnection count
 fragments: List[List[str]]            # fragment_id -> list of param names
 param_to_fragment: Dict[str, int]     # param_name -> fragment_id
 num_fragments: int
+assignment: str                       # "strided" | "sequential"
+block_faithful: bool                  # split on block boundaries vs fallback
 ```
 
-Parameters are split into contiguous groups of roughly equal count (not equal
-tensor size). The first `total % N` fragments get one extra parameter.
+Following Streaming DiLoCo (arXiv:2501.18512), the model is split on
+**transformer-block boundaries** (discovered via `_no_split_modules`): each
+fragment is a set of whole blocks, assigned `strided` (block `i` -> fragment
+`i % N`, default) or `sequential` (contiguous runs), with embeddings attached to
+the first fragment and the final norm + LM head to the last. A model with no
+block plan falls back to a contiguous, roughly-equal-param-count split (the first
+`total % N` fragments get one extra param) with `block_faithful = False`.
 
 ---
 

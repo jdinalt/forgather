@@ -57,9 +57,10 @@ def _info(
     dylu=False,
     bf16_comm=True,
     num_fragments_default=1,
+    fragment_assignment_default="strided",
     heartbeat_timeout=0,
 ):
-    """A minimal /info payload as the server would return it. The four
+    """A minimal /info payload as the server would return it. The
     server-authoritative settings live under expected_client_settings."""
     return {
         "mode": "sync",
@@ -72,6 +73,7 @@ def _info(
             "bf16_comm": bf16_comm,
             "num_fragments_min": 1,
             "num_fragments_default": num_fragments_default,
+            "fragment_assignment_default": fragment_assignment_default,
             "heartbeat_timeout": heartbeat_timeout,
         },
     }
@@ -388,6 +390,7 @@ class TestWorkerLifecycle:
             dylu=False,
             heartbeat_interval=30.0,
             num_fragments=1,
+            fragment_assignment="strided",
             max_sync_retries=3,
             backend=None,
             report_sync_state=True,
@@ -498,6 +501,7 @@ class TestWorkerLifecycle:
             dylu=True,
             bf16_comm=False,
             num_fragments_default=4,
+            fragment_assignment_default="sequential",
         )
 
         cb = DiLoCoCallback(
@@ -532,6 +536,7 @@ class TestWorkerLifecycle:
             dylu=True,  # from /info
             heartbeat_interval=10.0,
             num_fragments=4,  # from /info
+            fragment_assignment="sequential",  # from /info
             max_sync_retries=5,
             backend=None,
             report_sync_state=True,

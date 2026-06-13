@@ -45,6 +45,7 @@ def build_diloco_server_command(
     grpc_enabled: bool = False,
     backend: str = "http",
     num_fragments: int = 1,
+    fragment_assignment: str = "strided",
     from_checkpoint: Optional[str] = None,
     save_every: int = 10,
     save_total_limit: int = 3,
@@ -109,6 +110,10 @@ def build_diloco_server_command(
     cmd.extend(["--sync-every", str(int(sync_every))])
     if num_fragments and int(num_fragments) > 1:
         cmd.extend(["--num-fragments", str(int(num_fragments))])
+        # Only emit a non-default assignment (server defaults to strided), and
+        # only when streaming is on (it's meaningless without fragments).
+        if fragment_assignment and fragment_assignment != "strided":
+            cmd.extend(["--fragment-assignment", str(fragment_assignment)])
     # Wire precision (issue #130). Prefer the four explicit knobs;
     # fall back to the legacy ``--no-bf16`` shortcut when only the
     # deprecated ``bf16_comm`` is set (pre-#130 callers). Surface

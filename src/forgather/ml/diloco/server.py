@@ -509,6 +509,7 @@ class DiLoCoServer:
         backend: str = "http",
         bf16_comm: Optional[bool] = None,
         num_fragments: int = 1,
+        fragment_assignment: str = "strided",
         heartbeat_timeout: float = 120.0,
         min_workers: int = 1,
         auth_token: Optional[str] = None,
@@ -654,6 +655,12 @@ class DiLoCoServer:
         # pre-refactor semantics of the single ``bf16_comm`` flag.
         self.bf16_comm = self.upload_dtype == "bf16"
         self.num_fragments = num_fragments
+        if fragment_assignment not in ("strided", "sequential"):
+            raise ValueError(
+                "fragment_assignment must be 'strided' or 'sequential', got "
+                f"{fragment_assignment!r}"
+            )
+        self.fragment_assignment = fragment_assignment
         self.heartbeat_timeout = heartbeat_timeout
         self.default_work_units = default_work_units
         self.outer_optimizer_factory = (
@@ -3224,6 +3231,7 @@ class DiLoCoServer:
                 "bf16_comm": self.bf16_comm,
                 "num_fragments_min": 1,
                 "num_fragments_default": self.num_fragments,
+                "fragment_assignment_default": self.fragment_assignment,
                 # Exposed so the worker can validate its (client-local)
                 # heartbeat send cadence against the server's death timeout.
                 "heartbeat_timeout": self.heartbeat_timeout,

@@ -405,10 +405,12 @@ One config knob expresses it and drives both behaviors:
    step in the HTTP handler thread. For very large models, this could delay
    response time.
 
-2. **Fragment split by parameter count, not size.** Two fragments may have very
-   different total tensor sizes if parameter dimensions vary (e.g., embedding
-   layer vs attention layers). A size-balanced split would improve streaming
-   overlap.
+2. **Fragments split by whole blocks, not balanced tensor size.** Fragments are
+   groups of whole transformer blocks (Streaming DiLoCo); the non-block params
+   (embeddings on the first fragment, final norm + LM head on the last) make
+   those fragments somewhat heavier. The no-block-plan *fallback* splits by
+   parameter count, which can be even more size-imbalanced. A size-balanced
+   split would improve streaming overlap in either mode.
 
 3. **No gradient compression beyond bf16.** Int8, sparse, or top-k compression
    could further reduce bandwidth for larger models.
