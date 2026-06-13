@@ -34,6 +34,7 @@ import logging
 import os
 import platform
 import queue
+import random
 import threading
 import time
 import uuid
@@ -526,24 +527,37 @@ class DiLoCoWorker:
         self._active = True
         self._local_step = 0
 
-        # DEBUG-ONLY: per-local-step delay (seconds) to simulate a slow worker on
-        # otherwise-identical hardware. Set ``DILOCO_DEBUG_STEP_DELAY`` per worker
-        # (e.g. fast=0, slow=0.05) to create the heterogeneous processing speeds
-        # that async / DyLU respond to (DyLU keys off per-worker steps_per_second,
-        # which is uniform without this). Read once; 0 = disabled. Not for
-        # production — it throttles real training.
-        try:
-            self._debug_step_delay = float(
-                os.environ.get("DILOCO_DEBUG_STEP_DELAY", "0") or 0
-            )
-        except ValueError:
-            self._debug_step_delay = 0.0
-        if self._debug_step_delay > 0:
+        # DEBUG-ONLY per-local-step delays (seconds), read once; 0 = disabled. Not
+        # for production — they throttle real training. Two independent knobs:
+        #   DILOCO_DEBUG_STEP_DELAY  — a *fixed* delay, set per worker (e.g. fast=0,
+        #     slow=0.05) to simulate heterogeneous processing *speeds* that DyLU
+        #     responds to (DyLU keys off per-worker steps_per_second).
+        #   DILOCO_DEBUG_STEP_JITTER — a *random* delay, uniform in [0, J], set the
+        #     SAME on every worker. The randomness decorrelates workers' phase so
+        #     they drift out of lock-step (producing real async staleness) while
+        #     keeping the same *average* speed — so there's no slow-worker solo
+        #     tail. This measures async's impact without faking heterogeneity.
+        def _read_delay(var):
+            try:
+                return float(os.environ.get(var, "0") or 0)
+            except ValueError:
+                return 0.0
+
+        self._debug_step_delay = _read_delay("DILOCO_DEBUG_STEP_DELAY")
+        self._debug_step_jitter = _read_delay("DILOCO_DEBUG_STEP_JITTER")
+        # Dedicated RNG for the jitter, seeded from the (unique) worker id — NOT
+        # the global ``random`` module, which the trainer seeds for reproducibility
+        # (a shared seed would give every worker the *same* jitter sequence, so
+        # they'd stay phase-locked and the jitter would do nothing). Seeding from
+        # worker_id keeps it unique per worker yet reproducible across re-runs.
+        self._jitter_rng = random.Random(f"jitter:{self.worker_id}")
+        if self._debug_step_delay > 0 or self._debug_step_jitter > 0:
             logger.warning(
-                "DiLoCoWorker %s: DILOCO_DEBUG_STEP_DELAY=%.4gs active — debug "
-                "throttle, simulating a slow worker (not for production)",
+                "DiLoCoWorker %s: debug step throttle active — fixed=%.4gs "
+                "jitter=[0,%.4g]s (not for production)",
                 self.worker_id,
                 self._debug_step_delay,
+                self._debug_step_jitter,
             )
 
         # Start heartbeat thread (leader only — followers don't have
@@ -725,11 +739,14 @@ class DiLoCoWorker:
         self._local_step += 1
         self._step_timestamps.append(time.time())
 
-        # DEBUG-ONLY heterogeneous-speed simulation (see __init__). The sleep is
-        # after the timestamp so the next step's interval — and thus the
-        # heartbeat steps_per_second the server uses for DyLU — reflects it.
+        # DEBUG-ONLY step throttle (see __init__). After the timestamp so the next
+        # step's interval — and the heartbeat steps_per_second DyLU keys off —
+        # reflects it. Fixed delay = heterogeneous speed (DyLU); random jitter =
+        # phase decorrelation for async staleness (same average speed).
         if self._debug_step_delay > 0:
             time.sleep(self._debug_step_delay)
+        if self._debug_step_jitter > 0:
+            time.sleep(self._jitter_rng.uniform(0, self._debug_step_jitter))
 
         if self._fragment_manager is None:
             # Standard path: full model sync

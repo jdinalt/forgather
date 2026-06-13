@@ -66,7 +66,7 @@ wait_jobs_terminal() {
   for ((i=0; i<tries; i++)); do
     local list pending=0; list="$(forgather job list 2>/dev/null)"
     for id in "$@"; do
-      echo "$list" | grep -F -- "$id" | grep -qiE 'done|failed|error|cancelled' || pending=1
+      echo "$list" | grep -F -- "$id" | grep -qiE 'done|failed|error|cancelled|aborted' || pending=1
     done
     [[ $pending -eq 0 ]] && return 0
     sleep 6

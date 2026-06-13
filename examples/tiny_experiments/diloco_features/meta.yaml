@@ -2,6 +2,6 @@
 
 [configs]
 name: "DiLoCo Features"
-description: "Exercises the less-travelled DiLoCo features (streaming, async, DN-buffer, DyLU) over the HTTP backend"
+description: "What DiLoCo's communication-reduction knobs (streaming, async, DN-buffer, DyLU) cost in convergence"
 config_prefix: "configs"
 default_config: "default.yaml"

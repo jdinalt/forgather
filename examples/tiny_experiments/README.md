@@ -16,6 +16,8 @@ The workspace shares a common template library and base project configuration (`
 - **[fsdp2_trainer](./fsdp2_trainer/README.md)** - Integration test for the FSDP2 (`fully_shard`) trainer. Exercises layer-wise sharding, sharded DTensor checkpoint save/resume, and CPU offload.
 - **[pipeline_parallel](./pipeline_parallel/README.md)** - Test harness for the Pipeline Parallel trainer covering all supported PyTorch pipeline schedules, checkpoint save/resume, and activation checkpointing.
 - **[diloco](./diloco/README.md)** - Demonstrates DiLoCo (Distributed Low-Communication) training via `DiLoCoCallback`: multiple independent workers synchronize outer gradients at configurable intervals over standard network interfaces.
+- **[diloco_lowprec](./diloco_lowprec/README.md)** - Low-precision wire transport for DiLoCo: bf16 pseudo-gradient / parameter legs with optional stochastic rounding, and true-bf16 weight training — measuring the convergence cost of halving sync bandwidth.
+- **[diloco_features](./diloco_features/README.md)** - Measures what DiLoCo's communication-reduction knobs (streaming, async, DN-buffer, DyLU) cost in convergence, on a controlled ~1B-token run against the synchronous baseline.
 
 ## Training Techniques
 
