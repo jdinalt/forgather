@@ -182,6 +182,11 @@ plain async+DN at N=4 (5.14, equal average speed) — two independent ways of
 inducing staleness agree on the "plain async" floor, and DyLU recovers most of
 the gap above it.
 
+![Eval loss with and without DyLU — same speed spread, same N=4 buffer](assets/dylu_control.png)
+
+The DyLU-on curve tracks a consistent band below DyLU-off for the entire run
+(both still well above the sync baseline, drawn dashed for scale).
+
 But it's only a partial fix: a large buffer (N=16, 3.06) still beats
 DyLU-with-a-small-buffer, so on truly heterogeneous hardware you'd want **both** —
 DyLU to align the workers *and* a generous DN buffer. (DyLU is also for uneven
@@ -249,8 +254,11 @@ init). 4 workers = 4 GPUs/run, so the runs are **serial**:
 ```bash
 ./experiment.sh validate   # short plumbing check (max-steps 120, compile off)
 ./experiment.sh run        # the full 7-config sweep (~8 h on 4 idle 4090s)
+./experiment.sh dylu_control  # the DyLU-off A/B (same spread + N=4 buffer)
 python analysis/harvest.py && python analysis/plot_experiment.py  # main comparison
 python analysis/dn_sweep.py            # the DN-buffer-size sub-study (N=4/8/16)
+python analysis/dylu_control.py        # the DyLU off-vs-on eval overlay
+python analysis/worker_scaling.py      # the 2-vs-4-worker token-efficiency overlay
 python analysis/verify_baseline.py     # the 2-worker wire/transport overlay
 ```
 
@@ -311,8 +319,8 @@ DiLoCoCallback: using server settings sync_every=100 up=bf16 down=fp32 \
   / `validate`).
 - `harness.sh` — the fast functional smoke driver.
 - `analysis/` — `harvest.py`, `plot_experiment.py`, `dn_sweep.py`,
-  `verify_baseline.py`, `worker_scaling.py`.
+  `dylu_control.py`, `verify_baseline.py`, `worker_scaling.py`.
 - `assets/` — `curves.csv` (the committed source of truth) + the plots
   (`loss_comparison.png`, `training_health.png`, `dn_sweep.png`,
-  `baseline_vs_h100.png`, `worker_scaling.png`).
+  `dylu_control.png`, `baseline_vs_h100.png`, `worker_scaling.png`).
 - `runs/` — captured per-run logs (gitignored scratch).
