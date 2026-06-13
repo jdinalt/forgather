@@ -80,14 +80,14 @@ on, the ~16k-step/worker budget) — and adds:
 | **Sync DiLoCo** (baseline) | **2.857** | — | the reference (sync every H steps) | — |
 | **+ Streaming** (2 frag) | **2.990** | **+0.13** | spreads the sync over compute — no all-at-once bandwidth burst | a small, steady convergence cost |
 | **+ Async + DN** (N=16) | **3.062** | **+0.21** | no barrier — fast workers never wait on a straggler | needs a **large** DN buffer (~4× workers); the cost balloons as it shrinks (below) |
-| **+ DyLU** (N=4, uneven HW) | **4.301** | +1.44 † | adapts per-worker sync rate, cutting staleness | for heterogeneous workers; at its small N=4 buffer it still beats plain async (below). † not comparable to the N=16 row |
+| **+ DyLU** (N=4, uneven HW) | **4.301** | +1.44 † | adapts per-worker sync rate, cutting staleness | for heterogeneous workers; a same-spread control with `--dylu` off lands 5.07, so DyLU buys −0.77 here (below). † not comparable to the N=16 row |
 | Async **without** DN | **~11 ✗** | — | — | **catastrophic** — explodes and aborts in ~20 rounds; never (below) |
 
 > One run per config, one seed — **suggestive, not a benchmark**. The async
 > staleness is jitter-induced (~3), a controlled stand-in for real device-timing
 > variance. † The DyLU row used a small N=4 buffer *and* a speed spread, so its
-> raw "+1.44" isn't comparable to the N=16 async row — compare it to plain
-> async+DN at N=4 (below).
+> raw "+1.44" isn't comparable to the N=16 async row — compare it to the
+> same-spread, DyLU-off control (5.07) and to plain async+DN at N=4 (below).
 
 ![Eval loss — full run and the converged-runs endgame zoom](assets/loss_comparison.png)
 ![Training health — train loss and grad norm](assets/training_health.png)
@@ -170,13 +170,23 @@ DyLU attacks the same problem from the other side: instead of buffering stale
 gradients, it **reduces the staleness**. It adapts each worker's `sync_every` to
 its measured throughput so workers return pseudo-gradients closer together — here,
 with a deliberate per-worker speed spread, all four workers re-tuned continuously
-(hundreds of `sync_every` adjustments each, e.g. `100 → 35`). At the **same small
-N=4 buffer** where plain async lands a dismal 5.14, DyLU reaches **4.30** — a clear
-win from staleness reduction alone. But it's only a partial fix: a large buffer
-(N=16, 3.06) still beats DyLU-with-a-small-buffer, so on truly heterogeneous
-hardware you'd want **both** — DyLU to align the workers *and* a generous DN
-buffer. (DyLU is also for uneven hardware specifically; on identical workers it has
-nothing to adapt and is a no-op.)
+(hundreds of `sync_every` adjustments each, e.g. `100 → 35`).
+
+**Does DyLU actually help?** To isolate its effect we ran a **control**: the
+identical setup — same `0 / 0.05 / 0.10 / 0.15` per-worker speed spread, same
+async path, same small **N=4** DN buffer — but with `--dylu` *off*. That control
+lands at **5.07** eval; turning DyLU back on pulls it to **4.30**, a clean
+**−0.77** from staleness reduction alone (everything else held fixed). As a
+sanity check the control (5.07, uneven speeds) sits right next to the jitter-only
+plain async+DN at N=4 (5.14, equal average speed) — two independent ways of
+inducing staleness agree on the "plain async" floor, and DyLU recovers most of
+the gap above it.
+
+But it's only a partial fix: a large buffer (N=16, 3.06) still beats
+DyLU-with-a-small-buffer, so on truly heterogeneous hardware you'd want **both** —
+DyLU to align the workers *and* a generous DN buffer. (DyLU is also for uneven
+hardware specifically; on identical workers it has nothing to adapt and is a
+no-op.)
 
 ### Wire format and transport are free
 
