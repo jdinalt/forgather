@@ -278,6 +278,106 @@ class TestDelayedNesterov:
 
         assert torch.allclose(run(1), run(0), atol=1e-6)
 
+    def test_dn_state_checkpoint_roundtrip(self, tmp_path):
+        """DN momentum/delta/counter survive a save -> load (server restart)."""
+        sd = {"w": torch.zeros(4), "b": torch.zeros(3)}
+
+        def sgd_momentum(params):
+            return torch.optim.SGD(params, lr=0.7, momentum=0.9, nesterov=True)
+
+        ckpt = make_initial_checkpoint(sd, tmp_path / "initial")
+        server = DiLoCoServer(
+            output_dir=str(tmp_path),
+            from_checkpoint=str(ckpt),
+            num_workers=2,
+            port=0,
+            outer_optimizer_factory=sgd_momentum,
+            async_mode=True,
+            dn_buffer_size=3,
+            save_every_n_rounds=0,
+        )
+        server.start()
+        try:
+            torch.manual_seed(7)
+            # 4 submissions, N=3: one full cycle (flush) + one buffered, so the
+            # momentum is non-zero and the in-cycle buffer/counter are non-trivial.
+            for i in range(4):
+                server._apply_async_pseudograd(
+                    f"w{i % 2}", {k: torch.randn_like(v) for k, v in sd.items()}
+                )
+            server.save_state()
+            round_before = server._sync_round
+            params_before = server.get_global_params()
+            mom_before = [m.clone() for m in server._dn_momentum]
+            delta_before = [d.clone() for d in server._dn_delta]
+            count_before = server._dn_count
+        finally:
+            server.stop()
+
+        assert count_before == 1  # 4 submissions, N=3 -> one flush, then 1 buffered
+
+        checkpoint_dir = tmp_path / "checkpoints" / f"checkpoint-{round_before}"
+        server2 = DiLoCoServer(
+            output_dir=str(tmp_path / "server2_output"),
+            from_checkpoint=str(checkpoint_dir),
+            num_workers=2,
+            port=0,
+            outer_optimizer_factory=sgd_momentum,
+            async_mode=True,
+            dn_buffer_size=3,
+        )
+
+        assert server2._dn_count == count_before
+        for i in range(len(mom_before)):
+            assert torch.allclose(server2._dn_momentum[i], mom_before[i])
+            assert torch.allclose(server2._dn_delta[i], delta_before[i])
+        params_after = server2.get_global_params()
+        for k in params_before:
+            assert torch.allclose(params_before[k], params_after[k])
+
+    def test_async_dn_periodic_save_no_deadlock(self, tmp_path):
+        """Async + DN + periodic save must not self-deadlock on _async_lock.
+
+        _handle_submit_async holds _async_lock across _apply_async_pseudograd,
+        whose periodic save_state re-enters the lock to snapshot the DN state;
+        a non-reentrant lock would hang here.
+        """
+        sd = {"w": torch.zeros(4)}
+
+        def sgd_momentum(params):
+            return torch.optim.SGD(params, lr=0.7, momentum=0.9, nesterov=True)
+
+        ckpt = make_initial_checkpoint(sd, tmp_path / "initial")
+        server = DiLoCoServer(
+            output_dir=str(tmp_path),
+            from_checkpoint=str(ckpt),
+            num_workers=2,
+            port=0,
+            outer_optimizer_factory=sgd_momentum,
+            async_mode=True,
+            dn_buffer_size=2,
+            save_every_n_rounds=2,  # periodic save fires on the 2nd submission
+        )
+        server.start()
+        try:
+            pg = {"w": torch.ones(4)}
+            done = threading.Event()
+
+            def drive():
+                # Mimic _handle_submit_async: hold _async_lock across the apply
+                # and its periodic save_state.
+                for _ in range(2):
+                    with server._async_lock:
+                        server._apply_async_pseudograd("w0", pg)
+                done.set()
+
+            t = threading.Thread(target=drive)
+            t.start()
+            t.join(timeout=20)
+            assert done.is_set(), "async DN periodic save deadlocked on _async_lock"
+        finally:
+            server.stop()
+
     def test_dn_disabled_applies_every_step(self, tmp_path):
         """With dn_buffer_size=0, momentum is applied on every submission."""
         dim = 4

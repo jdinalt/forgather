@@ -819,8 +819,11 @@ class DiLoCoServer:
         self._sync_cond = threading.Condition()
         self._completed_rounds: Dict[int, Dict[str, torch.Tensor]] = {}
 
-        # Async state
-        self._async_lock = threading.Lock()
+        # Async state. Reentrant because the async apply path holds this lock
+        # across _apply_async_pseudograd, whose periodic save_state re-enters it
+        # to snapshot the DN state atomically with the params (mirrors
+        # _sync_cond, which is a reentrant Condition).
+        self._async_lock = threading.RLock()
         self._total_submissions = 0  # Total pseudo-gradient submissions received
 
         # Delayed Nesterov (DN) state (Liu et al. 2024, arXiv:2401.09135,
@@ -830,13 +833,19 @@ class DiLoCoServer:
         # submissions the momentum is refreshed from the averaged buffer and
         # applied. We keep a running sum ``Delta`` and the momentum ``m`` per
         # parameter — O(model), not O(N * model) (issue #222) — plus the
-        # in-cycle submission counter.
-        self._dn_delta: List[torch.Tensor] = [
-            torch.zeros_like(p.data) for p in self._param_list
-        ]
-        self._dn_momentum: List[torch.Tensor] = [
-            torch.zeros_like(p.data) for p in self._param_list
-        ]
+        # in-cycle submission counter. Allocated only when DN is configured
+        # (the buffers are otherwise unused), so a plain sync server pays
+        # nothing.
+        if self.dn_buffer_size > 0:
+            self._dn_delta: List[torch.Tensor] = [
+                torch.zeros_like(p.data) for p in self._param_list
+            ]
+            self._dn_momentum: List[torch.Tensor] = [
+                torch.zeros_like(p.data) for p in self._param_list
+            ]
+        else:
+            self._dn_delta = []
+            self._dn_momentum = []
         self._dn_count: int = 0
 
         # Fragment streaming state - for per-fragment sync.
@@ -3825,37 +3834,44 @@ class DiLoCoServer:
             logger.info("State is clean. Skipping save.")
             return
 
-        # Snapshot the model + outer optimizer + round together under the sync
-        # condition so a concurrent outer step (the shared-memory aggregation
-        # thread, or an HTTP sync barrier) can't tear the master across the read
-        # — a control-save racing a step would otherwise persist some params
-        # from before the step and some from after. The outer step mutates these
-        # three under the same condition, so this captures a consistent set; the
-        # disk I/O below runs off the lock on these immutable snapshots.
-        with self._sync_cond:
-            global_params = self.get_global_params()
-            outer_opt_state = self.outer_optimizer.state_dict()
-            sync_round = self._sync_round
-            total_submissions = self._total_submissions
+        # Snapshot the model + outer optimizer + round + DN state together under
+        # the lock the apply path mutates them with, so a concurrent outer step
+        # can't tear the master across the read (some params from before a step,
+        # some from after). The mutating path differs by mode: the synchronous
+        # outer step runs under _sync_cond; the async path (and the hand-rolled
+        # Delayed-Nesterov state, which lives outside the optimizer) runs under
+        # _async_lock. The async periodic save re-enters _async_lock from inside
+        # _apply_async_pseudograd, hence the reentrant lock. The disk I/O below
+        # runs off the lock on these immutable snapshots.
+        def _capture_dn_state():
+            if self.dn_buffer_size <= 0:
+                return None
+            return {
+                "count": self._dn_count,
+                "momentum": {
+                    name: self._dn_momentum[i].clone()
+                    for i, name in enumerate(self._param_names)
+                },
+                "delta": {
+                    name: self._dn_delta[i].clone()
+                    for i, name in enumerate(self._param_names)
+                },
+            }
 
-        # Delayed-Nesterov state lives outside the optimizer (it implements the
-        # outer step by hand), so persist it alongside so a server restart
-        # resumes the delayed momentum + in-cycle buffer rather than dropping
-        # them. Snapshot under the async lock the apply path mutates it with.
-        dn_state = None
-        if self.dn_buffer_size > 0:
+        if self.async_mode:
             with self._async_lock:
-                dn_state = {
-                    "count": self._dn_count,
-                    "momentum": {
-                        name: self._dn_momentum[i].clone()
-                        for i, name in enumerate(self._param_names)
-                    },
-                    "delta": {
-                        name: self._dn_delta[i].clone()
-                        for i, name in enumerate(self._param_names)
-                    },
-                }
+                global_params = self.get_global_params()
+                outer_opt_state = self.outer_optimizer.state_dict()
+                sync_round = self._sync_round
+                total_submissions = self._total_submissions
+                dn_state = _capture_dn_state()
+        else:
+            with self._sync_cond:
+                global_params = self.get_global_params()
+                outer_opt_state = self.outer_optimizer.state_dict()
+                sync_round = self._sync_round
+                total_submissions = self._total_submissions
+            dn_state = None
 
         if path is not None:
             checkpoint_path = path
