@@ -180,6 +180,17 @@ def create_diloco_parser(global_args):
             "set here, not per worker. (default: 1)"
         ),
     )
+    server_parser.add_argument(
+        "--fragment-assignment",
+        choices=["strided", "sequential"],
+        default="strided",
+        help=(
+            "How transformer blocks are assigned to streaming fragments\n"
+            "(Streaming DiLoCo, arXiv:2501.18512): 'strided' (block i ->\n"
+            "fragment i %% N, the paper's mild preference) or 'sequential'\n"
+            "(contiguous runs of blocks). Server-authoritative. (default: strided)"
+        ),
+    )
     # Wire precision (issue #130). Four server-authoritative knobs
     # advertised via /info and adopted by every worker. The legacy
     # ``--no-bf16`` flag is preserved as an alias for

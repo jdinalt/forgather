@@ -228,6 +228,7 @@ def _server_cmd(args):
         grpc_enabled=getattr(args, "grpc_enabled", False),
         bf16_comm=args.bf16_comm,
         num_fragments=args.num_fragments,
+        fragment_assignment=getattr(args, "fragment_assignment", "strided"),
         heartbeat_timeout=heartbeat_timeout,
         min_workers=min_workers,
         default_work_units=default_work_units,

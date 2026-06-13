@@ -751,6 +751,7 @@ def _server_job_params(args):
         "min_workers": args.min_workers,
         "sync_every": args.sync_every,
         "num_fragments": args.num_fragments,
+        "fragment_assignment": getattr(args, "fragment_assignment", "strided"),
         # Wire precision (issue #130). Threaded as the four explicit
         # knobs; the deprecated ``bf16_comm`` is included only when
         # the operator passed ``--no-bf16`` so the spawned argv carries

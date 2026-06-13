@@ -383,18 +383,33 @@ The `FragmentManager` handles parameter-to-fragment assignment:
 ```python
 from forgather.ml.diloco import FragmentManager
 
-fm = FragmentManager(model, num_fragments=4)
+fm = FragmentManager(model, num_fragments=4, assignment="strided")
 
 # Query fragment contents
 print(fm.fragments[0])           # List of param names in fragment 0
 print(fm.param_to_fragment)      # Dict: param_name -> fragment_id
+print(fm.block_faithful)         # True if split on transformer-block boundaries
 
 # Check sync schedule
 frag_id = fm.get_fragment_schedule(local_step=200, sync_every=800)
 ```
 
-Parameters are split into contiguous groups by default, which naturally aligns
-with pipeline stages where adjacent layers are on the same rank.
+Following Streaming DiLoCo (arXiv:2501.18512), the model is split on
+**transformer-block boundaries** — each fragment is a set of whole blocks, never
+a partial block. Blocks are discovered from the model's `_no_split_modules` (the
+HF convention for atomic transformer-block classes, the same signal vLLM uses;
+see [vLLM integration](../inference/vllm_integration.md)). Two assignment modes,
+set server-side with `--fragment-assignment`:
+
+- **`strided`** (default, the paper's mild preference): block `i` goes to
+  fragment `i % N`, so each fragment spans the depth of the model.
+- **`sequential`**: contiguous runs of blocks per fragment.
+
+The non-block parameters are attached deterministically — embeddings to the
+first fragment, the final norm and LM head to the last — so every parameter sits
+in exactly one fragment. A model that exposes no block plan (no
+`_no_split_modules`, e.g. a non-transformer) falls back to an equal-param-count
+contiguous split with a warning (`block_faithful == False`).
 
 ### Design Notes
 

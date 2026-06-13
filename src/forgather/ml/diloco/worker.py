@@ -112,6 +112,7 @@ class DiLoCoWorker:
         dylu: bool = False,
         heartbeat_interval: float = 30.0,
         num_fragments: int = 1,
+        fragment_assignment: str = "strided",
         max_sync_retries: int = 3,
         param_view: Optional[ParamView] = None,
         group_id: Optional[str] = None,
@@ -173,6 +174,7 @@ class DiLoCoWorker:
         self.dylu = dylu
         self.heartbeat_interval = heartbeat_interval
         self.num_fragments = num_fragments
+        self.fragment_assignment = fragment_assignment
         self.max_sync_retries = max_sync_retries
 
         # Pipeline-group registration metadata (issue #84). When
@@ -359,8 +361,15 @@ class DiLoCoWorker:
             # FragmentManager partitions named_parameters of its model
             # argument; under pipeline this needs to be the slice's
             # params, not the meta-device root model. Pass through the
-            # ParamView's view instead.
-            self._fragment_manager = FragmentManager(self.param_view, num_fragments)
+            # ParamView's view instead. boundary_source is the real model, from
+            # which the transformer-block boundaries are discovered globally and
+            # then filtered to this rank's slice.
+            self._fragment_manager = FragmentManager(
+                self.param_view,
+                num_fragments,
+                assignment=fragment_assignment,
+                boundary_source=self.model,
+            )
 
         # State
         self._global_params: Dict[str, torch.Tensor] = {}
@@ -1156,6 +1165,9 @@ class DiLoCoWorker:
         if self._fragment_manager is not None:
             metrics["diloco/num_fragments"] = self.num_fragments
             metrics["diloco/fragment_syncs"] = self._fragment_syncs
+            metrics["diloco/fragments_block_faithful"] = int(
+                self._fragment_manager.block_faithful
+            )
         if self._sync_retries > 0:
             metrics["diloco/sync_retries"] = self._sync_retries
         if self._reconnections > 0:

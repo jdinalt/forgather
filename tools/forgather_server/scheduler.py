@@ -618,6 +618,7 @@ def _build_diloco_server(item, gpu_indices, tty_path):
         # to validate against.
         backend=str(p.get("backend", "http") or "http"),
         num_fragments=int(p.get("num_fragments", 1) or 1),
+        fragment_assignment=str(p.get("fragment_assignment", "strided") or "strided"),
         from_checkpoint=p.get("from_checkpoint") or None,
         save_every=int(p.get("save_every", 10) or 0),
         save_total_limit=int(p.get("save_total_limit", 3) or 0),
