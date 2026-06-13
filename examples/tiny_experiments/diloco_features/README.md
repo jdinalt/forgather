@@ -324,3 +324,19 @@ DiLoCoCallback: using server settings sync_every=100 up=bf16 down=fp32 \
   (`loss_comparison.png`, `training_health.png`, `dn_sweep.png`,
   `dylu_control.png`, `baseline_vs_h100.png`, `worker_scaling.png`).
 - `runs/` — captured per-run logs (gitignored scratch).
+
+---
+
+## References
+
+The features exercised here come from two papers:
+
+- **Streaming** (overlapping the sync with compute, fragment by fragment) —
+  Douillard et al., *"Streaming DiLoCo with overlapping communication: Towards a
+  Distributed Free Lunch"* (2025).
+  [arXiv:2501.18512](https://arxiv.org/abs/2501.18512)
+- **Async + DN buffer + DyLU** (the Delayed Nesterov buffer that stabilizes
+  asynchronous updates, and Dynamic Local Updates that adapt each worker's sync
+  rate to its throughput) — Liu et al., *"Asynchronous Local-SGD Training for
+  Language Modeling"* (2024).
+  [arXiv:2401.09135](https://arxiv.org/abs/2401.09135)
