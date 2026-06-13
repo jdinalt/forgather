@@ -283,6 +283,7 @@ _CONTROL_AUDIT_FIELDS: Dict[str, frozenset] = {
     "kick_worker": frozenset({"worker_id"}),
     "update_optimizer": frozenset({"lr", "momentum", "nesterov"}),
     "update_num_workers": frozenset({"num_workers"}),
+    "update_token_budget": frozenset({"token_budget"}),
     "command": frozenset({"command", "worker_id"}),
     "shutdown": frozenset(),
 }
@@ -462,6 +463,11 @@ class DiLoCoServer:
             first arrival) are aggregated into ONE outer step, so near-
             simultaneous workers resync against the same model. 0 disables it
             (apply each submission immediately). Only used in async mode.
+        token_budget: Global training-token budget (0 = open-ended). When the
+            aggregated cross-worker total_tokens reaches it, the server relays
+            save_and_stop to every worker. This is the controlling stop for
+            open-ended runs — especially async, where uneven worker speeds make a
+            per-worker max_steps a poor proxy for the global budget.
         dylu_enabled: If True, compute per-worker recommended sync_every based
             on relative training speeds (Dynamic Local Updates). Only used in
             async mode.
@@ -497,6 +503,7 @@ class DiLoCoServer:
         safetensors: bool = True,
         dn_buffer_size: int = 0,
         grace_period: float = 0.0,
+        token_budget: int = 0,
         verbose_sync: bool = False,
         dylu_enabled: bool = False,
         dylu_base_sync_every: int = 500,
@@ -604,6 +611,14 @@ class DiLoCoServer:
                 self.grace_period,
             )
             self.grace_period = 0.0
+        # Global token budget (0 = open-ended). When the aggregated cross-worker
+        # total_tokens reaches it, the server relays save_and_stop to every
+        # worker — the controlling stop for open-ended (esp. async) runs where a
+        # per-worker max_steps can't bound the global budget. _budget_stop_sent
+        # guards against re-broadcasting every heartbeat; it is intentionally not
+        # persisted, so a restart still over budget re-sends the stop.
+        self.token_budget = max(0, int(token_budget))
+        self._budget_stop_sent = False
         # Verbose per-round sync logging (off by default). Server-authoritative:
         # advertised in /info so each worker gates its own per-round sync log to
         # match, and the server gates its per-round outer-step log. A targeted
@@ -2766,6 +2781,7 @@ class DiLoCoServer:
         # the EMA math).
         if worker_stats:
             self._stats.update(worker_id, worker_stats)
+            self._maybe_trigger_token_budget()
 
         # Compute DyLU recommendation if enabled
         recommended_sync_every = self._compute_dylu_sync_every(worker_id)
@@ -2796,6 +2812,26 @@ class DiLoCoServer:
         # done after the response so heartbeat latency isn't tied to file IO.
         if worker_stats:
             self._maybe_log_stats()
+
+    def _maybe_trigger_token_budget(self):
+        """When the aggregated global token count reaches ``token_budget``,
+        relay ``save_and_stop`` to every worker (once). The command rides each
+        worker's next heartbeat, so the global budget may overshoot by up to one
+        heartbeat's worth of tokens — fine for a budget bound. Called from the
+        heartbeat path right after the aggregate is updated."""
+        if self.token_budget <= 0 or self._budget_stop_sent:
+            return
+        if self._stats.total_tokens >= self.token_budget:
+            self._budget_stop_sent = True
+            targets = self._relay_command_all("save_and_stop")
+            logger.info(
+                "Token budget reached (%d >= %d tokens); relaying save_and_stop "
+                "to %d worker(s): %s",
+                self._stats.total_tokens,
+                self.token_budget,
+                len(targets),
+                targets,
+            )
 
     def _maybe_log_stats(self):
         """Append one aggregate-stats record to the server's stats log when
@@ -3057,6 +3093,9 @@ class DiLoCoServer:
             "started_at": self._started_at,
             "uptime_seconds": time.time() - self._started_at if self._started_at else 0,
         }
+        if self.token_budget > 0:
+            response["token_budget"] = self.token_budget
+            response["budget_stop_sent"] = self._budget_stop_sent
 
         if self.async_mode:
             response["total_submissions"] = self._total_submissions
@@ -3181,6 +3220,9 @@ class DiLoCoServer:
             # submit is already a blocking request/response), so it is NOT in
             # expected_client_settings — there is nothing for the worker to adopt.
             "grace_period": self.grace_period,
+            # Informational: the global token budget is enforced server-side by
+            # relaying save_and_stop; workers run open-ended and don't adopt it.
+            "token_budget": self.token_budget,
             # Coarse model fingerprint (issue #53). Workers validate a
             # cached model-definition bundle against this and use it as an
             # early compatibility gate before constructing the model.
@@ -3632,6 +3674,8 @@ class DiLoCoServer:
                 self._handle_control_update_optimizer(handler, data)
             elif action == "update_num_workers":
                 self._handle_control_update_num_workers(handler, data)
+            elif action == "update_token_budget":
+                self._handle_control_update_token_budget(handler, data)
             elif action == "command":
                 self._handle_control_command(handler, data)
             elif action == "shutdown":
@@ -3754,6 +3798,36 @@ class DiLoCoServer:
         self.num_workers = num_workers
         logger.info(f"num_workers updated to {num_workers} via control")
         _send_json_response(handler, {"status": "ok", "num_workers": self.num_workers})
+
+    def _handle_control_update_token_budget(self, handler, data):
+        """Set the global token budget on a running server (0 = open-ended).
+
+        Resets the one-shot stop guard so the new threshold is evaluated fresh:
+        lowering it below the current total fires the stop on the next heartbeat;
+        raising it clears a prior stop so a resumed run can run to the new bound.
+        """
+        budget = data.get("token_budget")
+        if budget is None:
+            _send_json_response(handler, {"error": "token_budget required"}, 400)
+            return
+        budget = int(budget)
+        if budget < 0:
+            _send_json_response(handler, {"error": "token_budget must be >= 0"}, 400)
+            return
+        self.token_budget = budget
+        self._budget_stop_sent = False
+        # Evaluate immediately so a lowered budget already past the total stops now.
+        self._maybe_trigger_token_budget()
+        logger.info(f"token_budget updated to {budget:,} via control")
+        _send_json_response(
+            handler,
+            {
+                "status": "ok",
+                "token_budget": self.token_budget,
+                "total_tokens": self._stats.total_tokens,
+                "budget_stop_sent": self._budget_stop_sent,
+            },
+        )
 
     def _handle_control_shutdown(self, handler, data):
         """Gracefully shut down the server (webui "Shutdown server" button /

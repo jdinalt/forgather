@@ -580,12 +580,16 @@ class ServerClient:
             f"&shuffle_seed={int(shuffle_seed)}"
         ).json()
 
-    def diloco_server_control(self, action, base, command=None, worker_id=None):
+    def diloco_server_control(
+        self, action, base, command=None, worker_id=None, token_budget=None
+    ):
         body = {}
         if command is not None:
             body["command"] = command
         if worker_id is not None:
             body["worker_id"] = worker_id
+        if token_budget is not None:
+            body["token_budget"] = token_budget
         return self._post(
             f"/diloco/server-control/{action}?base={quote(base, safe='')}", body
         ).json()

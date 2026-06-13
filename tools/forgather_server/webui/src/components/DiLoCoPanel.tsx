@@ -2330,6 +2330,7 @@ function ControlPanel({
   const [formLr, setFormLr] = useState<string>("");
   const [formMomentum, setFormMomentum] = useState<string>("");
   const [formNumWorkers, setFormNumWorkers] = useState<string>("");
+  const [formTokenBudget, setFormTokenBudget] = useState<string>("");
   const [actionMsg, setActionMsg] = useState<
     { ok: boolean; text: string } | null
   >(null);
@@ -2354,6 +2355,11 @@ function ControlPanel({
       status.num_workers !== undefined ? String(status.num_workers) : "",
     [status.num_workers],
   );
+  const tokenBudgetSeed = useMemo(
+    () =>
+      status.token_budget !== undefined ? String(status.token_budget) : "",
+    [status.token_budget],
+  );
   useEffect(() => {
     if (formLr === "" && lrSeed !== "") setFormLr(lrSeed);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2367,6 +2373,11 @@ function ControlPanel({
       setFormNumWorkers(numWorkersSeed);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [numWorkersSeed]);
+  useEffect(() => {
+    if (formTokenBudget === "" && tokenBudgetSeed !== "")
+      setFormTokenBudget(tokenBudgetSeed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tokenBudgetSeed]);
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["diloco", "status", baseUrl] });
@@ -2600,6 +2611,52 @@ function ControlPanel({
                 min_workers = {status.min_workers}
               </div>
             )}
+          </div>
+
+          <div
+            style={{
+              border: "1px solid var(--border, #3b4261)",
+              borderRadius: 4,
+              padding: 10,
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+            }}
+          >
+            <div style={{ fontWeight: 600 }}>Token budget</div>
+            <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <span className="muted" style={{ minWidth: 64 }}>Tokens</span>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={formTokenBudget}
+                onChange={(e) => setFormTokenBudget(e.target.value)}
+                style={{ flex: 1, minWidth: 0 }}
+              />
+            </label>
+            <button
+              onClick={() => {
+                const n = Number(formTokenBudget);
+                if (!Number.isFinite(n) || n < 0) return;
+                controlMutation.mutate({
+                  action: "update_token_budget",
+                  body: { token_budget: Math.floor(n) },
+                });
+              }}
+              disabled={
+                controlMutation.isPending || formTokenBudget.trim() === ""
+              }
+            >
+              Apply
+            </button>
+            <div className="muted" style={{ fontSize: 11 }}>
+              {status.token_budget
+                ? `current: ${status.token_budget.toLocaleString()}${
+                    status.budget_stop_sent ? " — stop sent" : ""
+                  }`
+                : "0 = open-ended"}
+            </div>
           </div>
         </div>
 

@@ -762,6 +762,18 @@ class DiLoCoClient:
             body["worker_id"] = worker_id
         return self._request_json("POST", "/control/command", body)
 
+    def set_token_budget(self, token_budget: int) -> dict:
+        """Set the server's global token budget at runtime (0 = open-ended).
+
+        Posts to ``/control/update_token_budget``. The server evaluates the new
+        threshold immediately (a budget already below the current total stops the
+        workers now). Returns the ack with ``token_budget`` / ``total_tokens`` /
+        ``budget_stop_sent``.
+        """
+        return self._request_json(
+            "POST", "/control/update_token_budget", {"token_budget": int(token_budget)}
+        )
+
     def save_state(self) -> dict:
         """Ask the server to checkpoint its state to disk now."""
         return self._request_json("POST", "/control/save_state", {})

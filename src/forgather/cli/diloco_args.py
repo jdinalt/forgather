@@ -137,6 +137,18 @@ def create_diloco_parser(global_args):
         ),
     )
     server_parser.add_argument(
+        "--token-budget",
+        type=int,
+        default=0,
+        help=(
+            "Global training-token budget. When the aggregated cross-worker\n"
+            "token count reaches it, the server relays save_and_stop to every\n"
+            "worker — the controlling stop for open-ended runs (esp. async,\n"
+            "where uneven worker speeds make a per-worker step budget a poor\n"
+            "proxy). Workers run open-ended. 0 = no budget (default: 0)."
+        ),
+    )
+    server_parser.add_argument(
         "--verbose-sync",
         action="store_true",
         help=(
@@ -586,6 +598,25 @@ def create_diloco_parser(global_args):
         help="Target a single worker by id. Omitted = all registered workers.",
     )
     _add_client_conn_args(control_parser)
+
+    # token-budget subcommand — show or set the server's global token budget.
+    budget_parser = subparsers.add_parser(
+        "token-budget",
+        help="Show or set the server's global token budget at runtime",
+        formatter_class=RawTextHelpFormatter,
+    )
+    budget_parser.add_argument(
+        "value",
+        type=int,
+        nargs="?",
+        default=None,
+        help=(
+            "New global token budget (0 = open-ended). Omit to show the\n"
+            "current value. Lowering it below the tokens trained so far stops\n"
+            "the workers on their next heartbeat."
+        ),
+    )
+    _add_client_conn_args(budget_parser)
 
     # shutdown subcommand — stop the server (clean by default).
     shutdown_parser = subparsers.add_parser(

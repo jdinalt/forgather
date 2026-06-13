@@ -149,6 +149,33 @@ To resume from a specific checkpoint:
 forgather diloco server -o ./model -n 2 --from-checkpoint ./model/checkpoints/checkpoint-25
 ```
 
+### Global token budget
+
+For open-ended runs — especially async, where uneven worker speeds make a
+per-worker `max_steps` a poor proxy for the global token count — let the
+**server** bound training. `--token-budget N` stops the run when the aggregated
+cross-worker token total reaches `N`: the server relays `save_and_stop` to every
+worker (each applies it on its next heartbeat, so the budget may overshoot by up
+to one heartbeat). Workers run open-ended; the server is the single source of
+truth for "how much training".
+
+```bash
+forgather diloco server -o ./model -n 4 --async --token-budget 2_000_000_000
+```
+
+The budget can also be shown or changed on a **running** server (the present
+value is on `/status` and in the webui DiLoCo panel):
+
+```bash
+forgather diloco token-budget --diloco-server host:8512        # show
+forgather diloco token-budget 3_000_000_000 --diloco-server host:8512   # set
+```
+
+Lowering the budget below the tokens trained so far stops the workers on their
+next heartbeat; raising it past a prior stop lets a resumed run continue to the
+new bound. The one-shot stop isn't persisted, so a server still over budget on
+restart re-sends the stop.
+
 ## Unified statistics
 
 The DiLoCo server has no training loop of its own, so the run-level picture of

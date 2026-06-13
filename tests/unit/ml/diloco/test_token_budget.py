@@ -1,0 +1,120 @@
+"""Tests for the server-managed global token budget (#224).
+
+When the aggregated cross-worker token count reaches ``token_budget``, the server
+relays ``save_and_stop`` to every worker (once). Workers run open-ended; this is
+the controlling stop for async runs where a per-worker step budget can't bound
+the global token count.
+"""
+
+import torch
+
+from forgather.ml.diloco.client import DiLoCoClient
+from forgather.ml.diloco.server import DiLoCoServer
+
+from .conftest import make_initial_checkpoint
+
+
+def _server(tmp_path, **kw):
+    sd = {"w": torch.zeros(4)}
+    ckpt = make_initial_checkpoint(sd, tmp_path / "init")
+    kw.setdefault("num_workers", 2)
+    kw.setdefault("save_every_n_rounds", 0)
+    return DiLoCoServer(output_dir=str(tmp_path), from_checkpoint=ckpt, port=0, **kw)
+
+
+def _register(server, *ids):
+    clients = []
+    for wid in ids:
+        c = DiLoCoClient(f"localhost:{server.port}", timeout=20)
+        c.register(wid)
+        clients.append(c)
+    return clients
+
+
+def _pending(server, *ids):
+    return [server._workers[i].pending_command for i in ids]
+
+
+class TestTokenBudgetTrigger:
+    def test_relays_save_and_stop_once_at_threshold(self, tmp_path):
+        server = _server(tmp_path, token_budget=1000)
+        server.start()
+        try:
+            _register(server, "w0", "w1")
+            server._stats.total_tokens = 999
+            server._maybe_trigger_token_budget()
+            assert _pending(server, "w0", "w1") == [None, None]  # under budget
+
+            server._stats.total_tokens = 1000  # reaches the budget
+            server._maybe_trigger_token_budget()
+            assert _pending(server, "w0", "w1") == ["save_and_stop", "save_and_stop"]
+            assert server._budget_stop_sent
+
+            # Clear and re-evaluate: the one-shot guard prevents a re-broadcast.
+            for w in server._workers.values():
+                w.pending_command = None
+            server._maybe_trigger_token_budget()
+            assert _pending(server, "w0", "w1") == [None, None]
+        finally:
+            server.stop()
+
+    def test_disabled_is_noop(self, tmp_path):
+        server = _server(tmp_path, token_budget=0)
+        server.start()
+        try:
+            _register(server, "w0")
+            server._stats.total_tokens = 10**9
+            server._maybe_trigger_token_budget()
+            assert _pending(server, "w0") == [None]
+        finally:
+            server.stop()
+
+    def test_retriggers_after_restart(self, tmp_path):
+        """The one-shot guard isn't persisted, so a server still over budget on
+        restart re-sends the stop (total_tokens persists in the aggregate)."""
+        server = _server(tmp_path, token_budget=500)
+        server.start()
+        try:
+            _register(server, "w0")
+            server._stats.total_tokens = 500
+            server._maybe_trigger_token_budget()
+            assert _pending(server, "w0") == ["save_and_stop"]
+            # Simulate a restart: guard reset, total_tokens restored from ckpt.
+            server._budget_stop_sent = False
+            server._workers["w0"].pending_command = None
+            server._maybe_trigger_token_budget()
+            assert _pending(server, "w0") == ["save_and_stop"]
+        finally:
+            server.stop()
+
+
+class TestTokenBudgetRuntimeControl:
+    def test_set_below_total_stops_now(self, tmp_path):
+        server = _server(tmp_path, token_budget=0)
+        server.start()
+        try:
+            (c0,) = _register(server, "w0")
+            server._stats.total_tokens = 5000
+            resp = c0.set_token_budget(1000)  # below the total -> stop now
+            assert resp["token_budget"] == 1000
+            assert resp["budget_stop_sent"] is True
+            assert server.token_budget == 1000
+            assert _pending(server, "w0") == ["save_and_stop"]
+        finally:
+            server.stop()
+
+    def test_raise_clears_prior_stop(self, tmp_path):
+        server = _server(tmp_path, token_budget=1000)
+        server.start()
+        try:
+            (c0,) = _register(server, "w0")
+            server._stats.total_tokens = 1000
+            server._maybe_trigger_token_budget()
+            assert server._budget_stop_sent
+            # Raise above the total: the guard resets, no fresh stop yet.
+            server._workers["w0"].pending_command = None
+            resp = c0.set_token_budget(10000)
+            assert resp["budget_stop_sent"] is False
+            assert _pending(server, "w0") == [None]
+        finally:
+            server.stop()

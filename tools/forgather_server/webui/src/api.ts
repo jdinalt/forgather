@@ -1215,6 +1215,8 @@ export interface DiLoCoStatus {
   total_worker_deaths?: number;
   heartbeat_timeout?: number;
   min_workers?: number;
+  token_budget?: number;
+  budget_stop_sent?: boolean;
   outer_lr?: number;
   outer_momentum?: number;
   save_dir?: string;

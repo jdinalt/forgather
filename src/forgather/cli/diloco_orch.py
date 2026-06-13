@@ -381,6 +381,10 @@ def render_status(merged, *, want_queues):
                 f"mean batch {status.get('mean_grace_batch_size', 0)}"
             )
 
+    if status.get("token_budget", 0):
+        stopped = " (stop sent)" if status.get("budget_stop_sent") else ""
+        print(f"  Token budget:  {status['token_budget']:,}{stopped}")
+
     deaths = status.get("total_worker_deaths", 0)
     if deaths:
         print(f"  Worker deaths: {deaths}")
@@ -776,6 +780,8 @@ def _server_job_params(args):
         p["dn_buffer_size"] = args.dn_buffer_size
     if getattr(args, "grace_period", 0.0):
         p["grace_period"] = args.grace_period
+    if getattr(args, "token_budget", 0):
+        p["token_budget"] = args.token_budget
     if p["dylu"]:
         p["dylu_base_sync_every"] = args.dylu_base_sync_every
     if getattr(args, "from_checkpoint", None):
@@ -1268,6 +1274,9 @@ class _DirectOps:
     def get_status(self):
         return self._c.get_status()
 
+    def set_token_budget(self, token_budget):
+        return self._c.set_token_budget(token_budget)
+
     def save_state(self):
         return self._c.save_state()
 
@@ -1290,6 +1299,11 @@ class _OrchestratorOps:
 
     def get_status(self):
         return self._c.diloco_server_status(self._base)
+
+    def set_token_budget(self, token_budget):
+        return self._c.diloco_server_control(
+            "update_token_budget", self._base, token_budget=token_budget
+        )
 
     def save_state(self):
         return self._c.diloco_server_control("save_state", self._base)

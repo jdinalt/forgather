@@ -32,6 +32,7 @@ def build_diloco_server_command(
     async_mode: bool = False,
     dn_buffer_size: int = 0,
     grace_period: float = 0.0,
+    token_budget: int = 0,
     verbose_sync: bool = False,
     dylu: bool = False,
     dylu_base_sync_every: int = 500,
@@ -95,6 +96,8 @@ def build_diloco_server_command(
         cmd.extend(["--dn-buffer-size", str(int(dn_buffer_size))])
     if grace_period and float(grace_period) > 0:
         cmd.extend(["--grace-period", str(float(grace_period))])
+    if token_budget and int(token_budget) > 0:
+        cmd.extend(["--token-budget", str(int(token_budget))])
     if verbose_sync:
         cmd.append("--verbose-sync")
     if dylu:
