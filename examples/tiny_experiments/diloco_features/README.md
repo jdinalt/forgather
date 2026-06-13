@@ -109,6 +109,78 @@ which reject it rather than silently dropping it).
 
 ---
 
+## Results: a real-budget comparison
+
+The functional checks above prove each feature *engages*. To confirm each one
+actually *trains* — and to see how it bends the loss trajectory — the five
+configs were run to a real budget and harvested into loss curves
+([`analysis/harvest.py`](analysis/harvest.py) →
+[`assets/curves.csv`](assets/curves.csv) →
+[`analysis/plot_experiment.py`](analysis/plot_experiment.py)).
+
+**Setup.** Small Llama (34.4M) on Fineweb-Edu, 2 workers, **H = 100**,
+**~1B tokens** (2× Chinchilla; 520M/worker × 2), gRPC + safetensors,
+`torch.compile` on. Identical pristine init and the same seed/data across every
+run — only the feature flag varies. The whole sweep runs through the scheduler
+via [`experiment.sh`](experiment.sh) (`./experiment.sh run`, then
+`./experiment.sh dylu` for the DN-buffered DyLU run).
+
+| Run | final train | final eval | sync rounds | outcome |
+|---|---|---|---|---|
+| **Baseline** (sync, H=100) | 2.903 | **2.918** | 160 | healthy — the reference |
+| **Async + DN buffer** | 2.994 | **2.997** | 320 | healthy — async, stabilized |
+| **Streaming** (2 fragments) | 3.028 | **3.049** | 320 | healthy — small convergence cost |
+| **Async + DN + DyLU** | 3.267 | **3.225** | 347 | healthy — adaptive H, more variance |
+| **Async (no DN buffer)** | 7.786 | **7.169** | 123 | **diverged** — aborted at step 6400 |
+
+![Feature comparison: train loss, eval loss, grad norm](assets/loss_comparison.png)
+![Eval-loss endgame (converged runs)](assets/eval_tail.png)
+
+### Healthy vs. not — the divergence the functional test missed
+
+Four of the five configs descend cleanly (monotonic loss, stable grad norm). The
+fifth, **pure `--async` with no DN buffer, diverges**: the loss never drops below
+~6.9, the `DivergenceDetector` trips (`abs-divergence 1.04 > 1.0`) and aborts the
+run at step 6400. This is the expected failure mode, not a bug — the docs
+prescribe `--dn-buffer-size N` (N = num_workers) for async, because applying each
+worker's pseudo-gradient with full-LR Nesterov momentum and no cross-worker
+averaging is unstable. Adding the DN buffer (`Async + DN`) recovers a healthy
+2.997, right behind the sync baseline. **A functional "it engages" test passes
+this config; only the loss curve catches that it never learns** — which is the
+whole reason the curves exist.
+
+### Feature impact, relative to baseline
+
+The converged ordering (see the endgame zoom) is
+**baseline (2.918) < async+DN (2.997) < streaming (3.049) < async+DN+DyLU (3.225)**:
+
+- **Async + DN** costs only ~0.08 eval loss vs the synchronous baseline — the
+  barrier-free schedule is nearly free here, once stabilized.
+- **Streaming** (2 fragments) costs ~0.13 — fragmenting the sync into staggered
+  partial updates measurably perturbs convergence at H=100.
+- **DyLU** lands highest of the converged runs and noisier — per-worker adaptive
+  `sync_every` on deliberately heterogeneous workers (one throttled) trades some
+  convergence for schedule adaptivity; it stays stable on the DN-buffered base.
+
+### Baseline check: gRPC + safetensors is lossless
+
+The baseline differs from the sibling [`diloco`](../diloco) project's 1B
+`h100` run (DiLoCo 2w, H=100, same model/seed/data/LR, same `torch.optim.AdamW`)
+in exactly two things: the **transport** (gRPC vs the historical HTTP) and the
+**wire codec** (safetensors vs pickle). Both are lossless — safetensors carries
+the identical bf16 bytes, gRPC is pure plumbing — so the trajectories should
+coincide. They do
+([`analysis/verify_baseline.py`](analysis/verify_baseline.py)):
+
+![Baseline vs original h100](assets/baseline_vs_h100.png)
+
+The two curves overlay across the full 1B-token run; final eval **2.918 vs
+2.936** (−0.018, i.e. *better* by a hair). A lossy transport would raise loss or
+diverge (cf. the async run at 7.2); a sub-noise delta on the good side is
+run-to-run / CUDA nondeterminism, confirming the switch is lossless.
+
+---
+
 ## Verification signals
 
 "Runs without crashing" is not enough — each run should show the feature
