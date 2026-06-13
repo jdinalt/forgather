@@ -101,6 +101,7 @@ def _server_cmd(args):
     # Async mode settings
     async_mode = getattr(args, "async_mode", False)
     dn_buffer_size = getattr(args, "dn_buffer_size", 0)
+    grace_period = getattr(args, "grace_period", 0.0)
     dylu = getattr(args, "dylu", False)
     dylu_base = getattr(args, "dylu_base_sync_every", 500)
     verbose_sync = getattr(args, "verbose_sync", False)
@@ -111,6 +112,8 @@ def _server_cmd(args):
             mode_str += f", DN(buffer={dn_buffer_size})"
         if dylu:
             mode_str += f", DyLU(base={dylu_base})"
+        if grace_period > 0:
+            mode_str += f", grace={grace_period}s"
         print(f"Mode: {mode_str}")
     else:
         print("Mode: sync")
@@ -205,6 +208,7 @@ def _server_cmd(args):
         save_total_limit=save_total_limit,
         async_mode=async_mode,
         dn_buffer_size=dn_buffer_size,
+        grace_period=grace_period,
         verbose_sync=verbose_sync,
         dylu_enabled=dylu,
         dylu_base_sync_every=dylu_base,

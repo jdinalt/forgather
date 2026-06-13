@@ -13,7 +13,8 @@
 # async staleness (~N-1), while keeping the same *average* speed — so there is no
 # slow-worker solo tail. This is a controlled way to *measure async's impact*,
 # not a faithful real-deployment async (which would also want real device-timing
-# variance + the server-side grace period, issue #221). DyLU instead uses a fixed
+# variance + the server-side grace period, available via --grace-period but not
+# used here). DyLU instead uses a fixed
 # per-worker speed SPREAD (DILOCO_DEBUG_STEP_DELAY), since DyLU adapts to
 # average-speed differences and co-terminates the workers.
 #

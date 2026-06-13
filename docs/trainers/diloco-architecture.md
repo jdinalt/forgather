@@ -187,11 +187,15 @@ _completed_rounds: Dict[int, Dict[str, Tensor]]       # round_number -> result (
 **Async state:**
 
 ```python
-_async_lock: threading.RLock                           # Serializes async submissions
+_async_lock: threading.RLock                           # Serializes async submissions (reentrant)
 _total_submissions: int                                # Total submissions received
 _dn_delta: List[Tensor]                                # Delayed Nesterov running sum (per param)
 _dn_momentum: List[Tensor]                             # Delayed Nesterov momentum (per param)
 _dn_count: int                                         # Submissions since the last DN momentum step
+_grace_cond: threading.Condition                       # Grace window (bound to _async_lock)
+_grace_pending: Dict[str, Dict[str, Tensor]]           # Workers parked in the current window
+_grace_results: Dict[int, Dict[str, Tensor]]           # epoch -> post-flush params snapshot
+_grace_epoch: int                                      # Bumps once per flushed window
 ```
 
 **Fragment state (sync + async):**
@@ -612,7 +616,7 @@ on one run.
 | Lock | Protects | Used by |
 |------|----------|---------|
 | `_sync_cond` (Condition) | `_pending_pseudograds`, `_completed_rounds`, `_fragment_pending`, `_fragment_rounds`, `_completed_fragment_rounds` | Sync submit, fragment sync submit |
-| `_async_lock` (Lock) | All async state, global param reads/writes in async mode | Async submit, async fragment submit, register (async), get_global_params (async) |
+| `_async_lock` (RLock) | All async state (incl. DN + grace), global param reads/writes in async mode | Async submit, async fragment submit, register (async), get_global_params (async) |
 | `_workers_lock` (Lock) | `_workers` dict | All handlers that read/update worker info |
 
 **Lock ordering** (always acquire in this order to avoid deadlocks):
@@ -620,10 +624,12 @@ on one run.
 1. `_sync_cond` or `_async_lock` (never both at once)
 2. `_workers_lock` (acquired inside the above)
 
-In sync mode, `_sync_cond` is used as a Condition (with `wait`/`notify_all`),
-not just a lock. In async mode, `_async_lock` is a simple `Lock` (no wait
-needed). The two modes are mutually exclusive; the server either uses
-`_sync_cond` or `_async_lock`, never both for the same submission type.
+In sync mode, `_sync_cond` is used as a Condition (with `wait`/`notify_all`).
+In async mode, `_async_lock` is a **reentrant** `RLock`: the grace window's
+`_grace_cond` is bound to it and the apply path's periodic `save_state` re-enters
+it on the same thread, so it must be reentrant. The two modes are mutually
+exclusive; the server either uses `_sync_cond` or `_async_lock`, never both for
+the same submission type.
 
 ### Server health monitor thread
 
@@ -726,6 +732,31 @@ Workers report `steps_per_second` in heartbeats. The server computes the
 recommended sync interval proportional to the worker's relative speed and returns
 it in the heartbeat response. Workers that opt in (`dylu=True`) adjust their
 `sync_every` accordingly.
+
+### Grace Period
+
+When `grace_period > 0` (async only), `_handle_submit_grace` replaces the
+immediate apply: it is a **soft barrier with a wall-clock timeout** layered on the
+async path, reusing the synchronous barrier's shape (an epoch counter, a
+per-epoch results dict, timed waits, `notify_all`).
+
+- A submission parks in `_grace_pending` and the HTTP handler thread waits. The
+  deadline is `_grace_tau_sync + grace_period`, where `_grace_tau_sync` is the
+  **earliest** arrival — it only ever moves earlier, so a steady trickle of
+  arrivals cannot push the window out forever; it provably closes.
+- Exactly one parked thread (`_grace_driver_running`) owns the deadline wait and
+  triggers `_flush_grace_window`; the window also short-circuits when all live
+  workers have submitted. The flush aggregates the batch into one mean
+  pseudo-gradient, applies **one** outer step (`_apply_async_pseudograd`,
+  `submission_count = len(batch)`), snapshots the post-step params into
+  `_grace_results[epoch]`, bumps the epoch, and releases all waiters.
+- The grace `Condition` shares the `_async_lock` **RLock**, so the flush's
+  periodic `save_state` re-entry is safe (the same property the DN apply relies
+  on). Worker death (`_handle_worker_death`) and `stop()` notify the condition so
+  a parked batch never strands.
+- Layering: the grace period aggregates *within* a round; **one grace batch is
+  one DN tick** (DN delays momentum *across* rounds). Batch-size stats are on
+  `/status`.
 
 ---
 

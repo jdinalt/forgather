@@ -59,9 +59,9 @@ randomness decorrelates their phase so they drift out of lock-step and the serve
 sees genuine staleness (~3 = workers − 1), while they keep the same *average*
 speed (no slow-worker tail). This *measures async's impact*; it is **not** a
 faithful real-deployment async — that would also want real device-timing variance
-and the server-side grace period the paper specifies, which Forgather doesn't yet
-implement ([issue #221](https://github.com/jdinalt/forgather/issues/221)). DyLU
-instead uses a per-worker speed *spread*.
+and the server-side grace period the paper specifies (available via `diloco
+server --grace-period`, but not exercised in this run). DyLU instead uses a
+per-worker speed *spread*.
 
 Every run shares the same base — `forgather diloco server -o <master> -n 4 --grpc
 --wire-format safetensors`, a fresh master copy, config defaults (`torch.compile`

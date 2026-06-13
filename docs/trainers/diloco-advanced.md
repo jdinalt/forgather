@@ -281,6 +281,32 @@ forgather diloco server -o ./model -n 3 --async --dylu --dylu-base-sync-every 50
 forgather submit --diloco --diloco-server host:8512 --worker-id w0 -- train
 ```
 
+### Grace Period
+
+DN and DyLU reduce the *impact* of staleness; the **grace period** reduces the
+staleness itself by letting workers that finish close together resync against the
+**same** model (Liu et al. 2024, Section 3, Algorithms 2/5).
+
+With `--grace-period S` (seconds, async only), a submission's response is held and
+any other workers that submit within the window — anchored to the **first**
+arrival, so it always closes — are aggregated into **one** outer step; all of them
+are then released with the same post-step params. The window flushes early if all
+live workers have submitted.
+
+```bash
+forgather diloco server -o ./model -n 4 --async \
+    --dn-buffer-size 4 --dylu --grace-period 2.0
+```
+
+The three async knobs **layer**: the grace period aggregates near-simultaneous
+submissions *within* a round; **DN** delays the outer momentum *across* rounds (a
+grace batch is one DN tick, regardless of how many workers it aggregated); and
+**DyLU** makes workers co-terminate, so more of them land in each window and the
+batches grow. `--grace-period 0` (default) disables it — each submission applies
+immediately. The grace period is server-side only (workers don't adopt it); the
+batch-size distribution is reported on `/status` (`mean_grace_batch_size`,
+`grace_batch_histogram`) so you can see it working.
+
 ### Staleness Tracking
 
 In async mode, the server tracks **staleness** for each worker submission: the

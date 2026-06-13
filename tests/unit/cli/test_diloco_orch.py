@@ -802,6 +802,14 @@ class TestLaunchServer:
         # dylu off → no dylu_base_sync_every; auth on but regen off → no regen_token
         assert "dylu_base_sync_every" not in jp
         assert "regen_token" not in jp
+        # grace_period absent (default) → omitted from job_params
+        assert "grace_period" not in jp
+
+    def test_grace_period_emitted_when_set(self, patch_orchestrator):
+        client = patch_orchestrator(FakeClient())
+        rc = orch.launch_server(_server_args(async_mode=True, grace_period=2.0))
+        assert rc == 0
+        assert client.enqueued[0]["job_params"]["grace_period"] == 2.0
 
     def test_relative_output_dir_is_absolutized(self, patch_orchestrator):
         # The scheduler launches the job from the repo root, so a relative

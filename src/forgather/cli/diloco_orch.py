@@ -374,6 +374,12 @@ def render_status(merged, *, want_queues):
             print(f"  DN buffer:     {status.get('dn_buffered', 0)}/{dn_buf}")
         if status.get("dylu_enabled"):
             print(f"  DyLU base H:   {status.get('dylu_base_sync_every', '?')}")
+        if status.get("grace_period", 0):
+            print(
+                f"  Grace:         {status['grace_period']}s, "
+                f"{status.get('grace_batches', 0)} flush(es), "
+                f"mean batch {status.get('mean_grace_batch_size', 0)}"
+            )
 
     deaths = status.get("total_worker_deaths", 0)
     if deaths:
@@ -767,6 +773,8 @@ def _server_job_params(args):
     }
     if getattr(args, "dn_buffer_size", 0):
         p["dn_buffer_size"] = args.dn_buffer_size
+    if getattr(args, "grace_period", 0.0):
+        p["grace_period"] = args.grace_period
     if p["dylu"]:
         p["dylu_base_sync_every"] = args.dylu_base_sync_every
     if getattr(args, "from_checkpoint", None):

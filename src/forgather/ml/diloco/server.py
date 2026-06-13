@@ -456,6 +456,12 @@ class DiLoCoServer:
             on the averaged buffer (Liu et al. 2024, Algorithm 3, c=0). Set to 0
             to disable DN (apply full momentum every step). Only used in async
             mode.
+        grace_period: Async server-side grace window in seconds (Liu et al. 2024,
+            Section 3, Algorithms 2/5). When > 0, a submission's response is held
+            and any other workers that submit within the window (anchored to the
+            first arrival) are aggregated into ONE outer step, so near-
+            simultaneous workers resync against the same model. 0 disables it
+            (apply each submission immediately). Only used in async mode.
         dylu_enabled: If True, compute per-worker recommended sync_every based
             on relative training speeds (Dynamic Local Updates). Only used in
             async mode.
@@ -490,6 +496,7 @@ class DiLoCoServer:
         async_mode: bool = False,
         safetensors: bool = True,
         dn_buffer_size: int = 0,
+        grace_period: float = 0.0,
         verbose_sync: bool = False,
         dylu_enabled: bool = False,
         dylu_base_sync_every: int = 500,
@@ -589,6 +596,13 @@ class DiLoCoServer:
                 tempfile.gettempdir(), f"diloco_shm_p{self.port}"
             )
         self.dn_buffer_size = dn_buffer_size
+        self.grace_period = max(0.0, float(grace_period))
+        if self.grace_period > 0 and not self.async_mode:
+            logger.warning(
+                "grace_period=%s is only used in async mode; ignoring in sync mode.",
+                self.grace_period,
+            )
+            self.grace_period = 0.0
         # Verbose per-round sync logging (off by default). Server-authoritative:
         # advertised in /info so each worker gates its own per-round sync log to
         # match, and the server gates its per-round outer-step log. A targeted
@@ -848,6 +862,28 @@ class DiLoCoServer:
             self._dn_momentum = []
         self._dn_count: int = 0
 
+        # Grace-period state (async only; Liu et al. 2024 Section 3). A soft
+        # barrier with a wall-clock timeout layered on the async submit path:
+        # near-simultaneous submissions are parked and aggregated into one outer
+        # step. The condition shares _async_lock (the RLock) so the flush's
+        # periodic save_state re-entry stays safe. _now is an injectable clock so
+        # tests drive windows deterministically without real sleeps.
+        self._grace_cond = threading.Condition(self._async_lock)
+        self._grace_pending: Dict[str, Dict[str, torch.Tensor]] = {}
+        self._grace_tau_sync: Optional[float] = (
+            None  # earliest arrival (== inf when None)
+        )
+        self._grace_deadline: Optional[float] = None
+        self._grace_epoch: int = 0  # bumps once per flushed window
+        self._grace_results: Dict[int, Dict[str, torch.Tensor]] = {}
+        self._grace_driver_running: bool = False
+        self._grace_closing: bool = False  # set on stop() to release parked waiters
+        self._now: Callable[[], float] = time.time
+        # Observability: batch-size histogram + counters (the headline metric).
+        self._grace_batches: int = 0
+        self._grace_batched_submissions: int = 0
+        self._grace_batch_hist: Dict[int, int] = {}
+
         # Fragment streaming state - for per-fragment sync.
         # Maps param name -> index in _param_list for fast lookup.
         self._param_name_to_idx: Dict[str, int] = {
@@ -1070,10 +1106,19 @@ class DiLoCoServer:
             self.save_state()
 
     def _apply_async_pseudograd(
-        self, worker_id: str, pseudograds: Dict[str, torch.Tensor]
+        self,
+        worker_id: str,
+        pseudograds: Dict[str, torch.Tensor],
+        submission_count: int = 1,
     ):
         """
-        Apply a single worker's pseudo-gradients in async mode.
+        Apply a pseudo-gradient as one async outer step.
+
+        ``pseudograds`` is one worker's submission, or — under the grace period —
+        the mean of a batch of near-simultaneous submissions (already aggregated
+        by the caller). ``submission_count`` is how many real worker submissions
+        this step represents (for the lifetime ``_total_submissions`` counter); a
+        grace batch is still ONE outer step / one DN tick.
 
         If DN is disabled (dn_buffer_size=0), applies the outer optimizer with
         full momentum on every submission.
@@ -1121,7 +1166,7 @@ class DiLoCoServer:
                     self._dn_count = 0
 
         self._sync_round += 1
-        self._total_submissions += 1
+        self._total_submissions += submission_count
         self._dirty = True
 
         # Periodic save
@@ -1335,6 +1380,13 @@ class DiLoCoServer:
             return len(self._round_expected_workers)
         return self.num_workers
 
+    def _num_live_workers(self) -> int:
+        """Count of currently-registered (live) workers, for the grace-window
+        short-circuit. Falls back to num_workers before anyone registers."""
+        with self._workers_lock:
+            n = len(self._workers)
+        return n if n > 0 else self.num_workers
+
     def _snapshot_round_expected_workers(self):
         """
         Snapshot the current set of registered workers as the expected
@@ -1499,6 +1551,18 @@ class DiLoCoServer:
 
             # Wake all waiting threads so they re-evaluate their conditions
             self._sync_cond.notify_all()
+
+        # --- Grace window (async) ---
+        # A death lowers the live-worker count, so a batch parked in the grace
+        # window may now meet the short-circuit. Wake the driver to re-check (it
+        # still flushes at the deadline regardless, so this only cuts latency).
+        # Done in a separate, non-nested critical section (no _sync_cond ->
+        # _grace_cond ordering). A dead worker that already submitted keeps its
+        # valid pseudo-gradient in the batch; its parked thread is released by
+        # the eventual flush.
+        if self.grace_period > 0:
+            with self._grace_cond:
+                self._grace_cond.notify_all()
 
         # _sync_cond released: now it's safe to do the audit disk I/O.
         self._audit_many(pending_audit)
@@ -2189,33 +2253,179 @@ class DiLoCoServer:
         self._audit_many(pending_audit)
         _send_tensor_response(handler, response_params, fmt=self.wire_format)
 
+    def _note_async_submit(self, worker_id: str) -> int:
+        """Record an async submission's heartbeat + round bookkeeping; return
+        the staleness (server updates since this worker last synced). Caller
+        holds _async_lock."""
+        staleness = 0
+        with self._workers_lock:
+            if worker_id in self._workers:
+                w = self._workers[worker_id]
+                staleness = self._sync_round - w.last_sync_server_round
+                w.last_heartbeat = time.time()
+                w.sync_round += 1
+                w.last_sync_server_round = self._sync_round + 1
+        logger.log(
+            logging.INFO if self.verbose_sync else logging.DEBUG,
+            f"Worker {worker_id} submitted pseudograds (async), "
+            f"staleness={staleness}, server_round={self._sync_round}",
+        )
+        return staleness
+
     def _handle_submit_async(self, handler, worker_id, pseudograds):
-        """Asynchronous pseudo-gradient submission - apply immediately."""
+        """Asynchronous pseudo-gradient submission.
+
+        With ``grace_period == 0`` each submission is applied immediately. With
+        ``grace_period > 0`` the submission is parked and aggregated with any
+        other workers that submit within the window into one outer step (see
+        _handle_submit_grace).
+        """
+        if self.grace_period > 0:
+            return self._handle_submit_grace(handler, worker_id, pseudograds)
+
         with self._async_lock:
-            # Compute staleness: how many server updates since this worker last synced
-            staleness = 0
-            with self._workers_lock:
-                if worker_id in self._workers:
-                    w = self._workers[worker_id]
-                    staleness = self._sync_round - w.last_sync_server_round
-                    w.last_heartbeat = time.time()
-                    w.sync_round += 1
-                    w.last_sync_server_round = self._sync_round + 1
-
-            logger.log(
-                logging.INFO if self.verbose_sync else logging.DEBUG,
-                f"Worker {worker_id} submitted pseudograds (async), "
-                f"staleness={staleness}, server_round={self._sync_round}",
-            )
-
+            self._note_async_submit(worker_id)
             # Apply this worker's pseudo-gradients immediately
             self._apply_async_pseudograd(worker_id, pseudograds)
-
             # Filter to this worker's slice for PP-group members;
             # solo workers get the full state.
             global_params = self._params_for_worker(worker_id)
 
         _send_tensor_response(handler, global_params, fmt=self.wire_format)
+
+    def _aggregate_pseudograds(
+        self, grad_dicts: List[Dict[str, torch.Tensor]]
+    ) -> Dict[str, torch.Tensor]:
+        """Mean of a batch of pseudo-gradients, per parameter name, over the
+        members that carry each name. A batch of one is returned as-is so a
+        single-worker grace window is bit-identical to the immediate path."""
+        if len(grad_dicts) == 1:
+            return grad_dicts[0]
+        agg: Dict[str, torch.Tensor] = {}
+        for name in self._param_names:
+            vals = [d[name] for d in grad_dicts if name in d]
+            if not vals:
+                continue
+            s = vals[0].float().clone()
+            for v in vals[1:]:
+                s.add_(v.float())
+            s.div_(len(vals))
+            agg[name] = s
+        return agg
+
+    def _flush_grace_window(self, pending_audit: List[Tuple[str, Dict[str, Any]]]):
+        """Aggregate the parked batch into ONE outer step, snapshot the result
+        for the parked waiters, and reset the window. Caller holds _grace_cond."""
+        batch = self._grace_pending
+        ids = sorted(batch.keys())
+        k = len(batch)
+        epoch = self._grace_epoch
+        window_s = (
+            (self._now() - self._grace_tau_sync)
+            if self._grace_tau_sync is not None
+            else 0.0
+        )
+
+        if k:
+            agg = self._aggregate_pseudograds([batch[i] for i in ids])
+            self._apply_async_pseudograd(ids[0], agg, submission_count=k)
+
+        # Snapshot the post-step params for every waiter on this epoch, then GC
+        # old epochs (a late waiter still finds its own).
+        self._grace_results[epoch] = self.get_global_params()
+        for e in [e for e in self._grace_results if e < epoch - 1]:
+            del self._grace_results[e]
+
+        # Observability: batch-size histogram + per-flush log/audit.
+        if k:
+            self._grace_batches += 1
+            self._grace_batched_submissions += k
+            self._grace_batch_hist[k] = self._grace_batch_hist.get(k, 0) + 1
+            logger.log(
+                logging.INFO if self.verbose_sync else logging.DEBUG,
+                f"Grace flush: aggregated {k} worker(s) {ids} into one outer "
+                f"step, sync_round={self._sync_round}, window={window_s:.3f}s",
+            )
+            pending_audit.append(
+                (
+                    "grace_flush",
+                    {
+                        "sync_round": self._sync_round,
+                        "batch_size": k,
+                        "contributors": ids,
+                        "window_seconds": round(window_s, 4),
+                    },
+                )
+            )
+
+        # Reset the window and release the parked waiters.
+        self._grace_pending = {}
+        self._grace_tau_sync = None
+        self._grace_deadline = None
+        self._grace_epoch = epoch + 1
+        self._grace_cond.notify_all()
+
+    def _handle_submit_grace(self, handler, worker_id, pseudograds):
+        """Async submission under a grace window: park, aggregate near-
+        simultaneous workers, apply one outer step, release together."""
+        pending_audit: List[Tuple[str, Dict[str, Any]]] = []
+        with self._grace_cond:
+            self._note_async_submit(worker_id)
+
+            # Park into the current window; anchor the deadline to the FIRST
+            # arrival (tau_sync only ever moves earlier), so a steady trickle of
+            # arrivals cannot push the window out forever — it provably closes.
+            self._grace_pending[worker_id] = pseudograds
+            my_epoch = self._grace_epoch
+            now = self._now()
+            if self._grace_tau_sync is None or now < self._grace_tau_sync:
+                self._grace_tau_sync = now
+            self._grace_deadline = self._grace_tau_sync + self.grace_period
+
+            expected = self._num_live_workers()
+            if len(self._grace_pending) >= expected:
+                # All live workers are in — flush now, don't wait out the clock.
+                self._flush_grace_window(pending_audit)
+            elif not self._grace_driver_running:
+                # Exactly one parked thread drives the deadline wait + flush.
+                self._grace_driver_running = True
+                try:
+                    while my_epoch == self._grace_epoch and not self._grace_closing:
+                        timeout = self._grace_deadline - self._now()
+                        if timeout <= 0:
+                            self._flush_grace_window(pending_audit)
+                            break
+                        self._grace_cond.wait(timeout=timeout)
+                        if my_epoch != self._grace_epoch:
+                            break  # someone else (death/short-circuit) flushed
+                        if len(self._grace_pending) >= self._num_live_workers():
+                            self._flush_grace_window(pending_audit)
+                            break
+                finally:
+                    self._grace_driver_running = False
+
+            # Driver and non-driver alike: wait for this epoch's result. This
+            # second-level safety timeout should never elapse — the window is
+            # bounded by the deadline flush above — but guards against a stuck
+            # clock. pending_audit is empty on this path (only the flushing
+            # thread appends, and it never reaches this wait), so the early
+            # return below drops no audit records.
+            while my_epoch not in self._grace_results and not self._grace_closing:
+                if not self._grace_cond.wait(timeout=600):
+                    _send_json_response(handler, {"error": "Grace timeout"}, 504)
+                    return
+            if my_epoch in self._grace_results:
+                response_params = self._params_for_worker(
+                    worker_id, source=self._grace_results[my_epoch]
+                )
+            else:
+                # Server shutting down before this window flushed — release the
+                # worker with the current params so it can exit cleanly.
+                response_params = self._params_for_worker(worker_id)
+
+        # _grace_cond released: flush audit records off the submit path.
+        self._audit_many(pending_audit)
+        _send_tensor_response(handler, response_params, fmt=self.wire_format)
 
     def _handle_submit_fragment_pseudograd(self, handler: BaseHTTPRequestHandler):
         """
@@ -2803,10 +3013,27 @@ class DiLoCoServer:
                 for wid, w in self._workers.items()
             }
 
+        grace_stats = None
         if self.async_mode:
             with self._async_lock:
                 pending = []
                 dn_buffered = self._dn_count
+                if self.grace_period > 0:
+                    mean = (
+                        self._grace_batched_submissions / self._grace_batches
+                        if self._grace_batches
+                        else 0.0
+                    )
+                    grace_stats = {
+                        "grace_period": self.grace_period,
+                        "grace_batches": self._grace_batches,
+                        "mean_grace_batch_size": round(mean, 3),
+                        # JSON coerces int keys to strings; stringify explicitly
+                        # so consumers see stable "batch_size" -> count keys.
+                        "grace_batch_histogram": {
+                            str(k): v for k, v in self._grace_batch_hist.items()
+                        },
+                    }
         else:
             with self._sync_cond:
                 pending = list(self._pending_pseudograds.keys())
@@ -2831,6 +3058,9 @@ class DiLoCoServer:
             response["dylu_enabled"] = self.dylu_enabled
             if self.dylu_enabled:
                 response["dylu_base_sync_every"] = self.dylu_base_sync_every
+            response["grace_period"] = self.grace_period
+            if grace_stats is not None:
+                response.update(grace_stats)
 
         if self._fragment_submissions > 0:
             response["fragment_submissions"] = self._fragment_submissions
@@ -2940,6 +3170,10 @@ class DiLoCoServer:
             "model_size_mb": round(self._model_size_mb, 2),
             "dylu_enabled": self.dylu_enabled,
             "dylu_base_sync_every": self.dylu_base_sync_every,
+            # Informational: the grace window is server-side only (a worker's
+            # submit is already a blocking request/response), so it is NOT in
+            # expected_client_settings — there is nothing for the worker to adopt.
+            "grace_period": self.grace_period,
             # Coarse model fingerprint (issue #53). Workers validate a
             # cached model-definition bundle against this and use it as an
             # early compatibility gate before constructing the model.
@@ -4577,6 +4811,12 @@ class DiLoCoServer:
         # snapshot it, and the region is released/cleaned up.
         if self.backend == "shared_memory":
             self._stop_shm_aggregator()
+        # Release any workers parked in a grace window so they don't block the
+        # HTTP server's thread join during shutdown.
+        if self.grace_period > 0:
+            with self._grace_cond:
+                self._grace_closing = True
+                self._grace_cond.notify_all()
         # Flush state before teardown so a graceful stop doesn't lose the
         # rounds / issued work-units accumulated since the last autosave
         # (#105). save_state no-ops when clean; never let a save failure
