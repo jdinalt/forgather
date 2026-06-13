@@ -29,24 +29,31 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(HERE, "assets")
 REF_CSV = os.path.join(HERE, os.pardir, "diloco", "assets", "sweep_curves.csv")
 
-# This project's baseline ran 2 workers x 16062 steps; TrainOutput reports
-# 520,444,917 tokens/worker, so total tokens = step * (520444917/16062) * 2.
-TOK_PER_STEP_TOTAL = (520_444_917 / 16062) * 2  # ~= 64,804 total tokens / step
+# The baseline TrainOutput reported 520,444,917 tokens over its final step for one
+# worker; with 2 workers that's the per-step total. We derive the per-worker step
+# count from curves.csv itself (rather than hard-coding 16062) so the conversion
+# follows the data if the budget changes.
+BASELINE_TOKENS_PER_WORKER = 520_444_917
+NUM_WORKERS = 2
 
 
 def load_mine():
     """baseline {metric: [(total_tokens, value)]} from this project's curves.csv."""
-    out = defaultdict(list)
+    rows = defaultdict(list)  # metric -> [(step, value)]
     path = os.path.join(ASSETS, "curves.csv")
     with open(path) as f:
         for row in csv.DictReader(f):
             if row["series"] != "baseline":
                 continue
-            out[row["metric"]].append(
-                (int(row["step"]) * TOK_PER_STEP_TOTAL, float(row["value"]))
-            )
-    for m in out:
-        out[m].sort()
+            rows[row["metric"]].append((int(row["step"]), float(row["value"])))
+    max_step = max((s for m in rows for s, _ in rows[m]), default=0)
+    if not max_step:
+        return {}
+    # step -> total tokens across all workers (curves are per-worker step).
+    tok_per_step_total = BASELINE_TOKENS_PER_WORKER / max_step * NUM_WORKERS
+    out = defaultdict(list)
+    for m, pts in rows.items():
+        out[m] = sorted((step * tok_per_step_total, v) for step, v in pts)
     return out
 
 

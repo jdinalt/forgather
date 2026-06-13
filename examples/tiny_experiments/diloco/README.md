@@ -22,6 +22,12 @@ All commands below assume you are in the project directory:
 cd examples/tiny_experiments/diloco
 ```
 
+**Related experiments.** Two sibling projects measure specific DiLoCo tradeoffs
+once you know the basics here:
+[`diloco_features`](../diloco_features/README.md) — what the communication-reduction
+knobs (streaming, async, DN-buffer, DyLU) cost in convergence; and
+[`diloco_lowprec`](../diloco_lowprec/README.md) — the cost of bf16 wire transport.
+
 ---
 
 ## How DiLoCo works (theory of operation)

@@ -33,7 +33,7 @@ LABELS = {
     "baseline": "Baseline (sync, H=100)",
     "streaming": "Streaming (2 fragments)",
     "async": "Async (no DN — diverges)",
-    "async_dn": "Async + DN buffer",
+    "async_dn": "Async + DN (N=4)",
     "async_dn_dylu": "Async + DN + DyLU",
 }
 COLORS = {
@@ -118,11 +118,16 @@ def main():
     # Zoomed eval tail — the feature deltas among the *converged* runs are small;
     # show the endgame. Diverged runs (best eval far above the pack) are excluded
     # so they don't blow out the y-range.
+    CONVERGED_EVAL_MAX = 4.0  # best-eval above this == didn't converge here
     converged = [
         s
         for s in present
-        if min((v for _, v in data[s].get("eval_loss", [])), default=1e9) < 4.0
+        if min((v for _, v in data[s].get("eval_loss", [])), default=1e9)
+        < CONVERGED_EVAL_MAX
     ]
+    for s in present:
+        if s not in converged:
+            print(f"  eval_tail: excluding non-converged series '{s}'")
     fig, ax = plt.subplots(figsize=(7.5, 4.6))
     tails = []
     for s in converged:

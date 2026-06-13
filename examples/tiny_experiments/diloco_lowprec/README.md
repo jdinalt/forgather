@@ -7,10 +7,12 @@ narrowing cast — and, separately, training the workers in **true bf16 weights*
 with Forgather's SR-capable AdamW.
 
 It is a sibling of [`../diloco`](../diloco), which is the end-to-end DiLoCo
-walkthrough and the place to start if you have never run DiLoCo here. This README
-assumes that mechanics (server / worker / Forgather-server roles, work-unit
-dispatch, the inner/outer optimizer split) and focuses on the **precision**
-dimension. For the authoritative reference see
+walkthrough and the place to start if you have never run DiLoCo here (see also
+[`../diloco_features`](../diloco_features/README.md), which measures the
+convergence cost of the streaming / async / DyLU knobs). This README assumes that
+mechanics (server / worker / Forgather-server roles, work-unit dispatch, the
+inner/outer optimizer split) and focuses on the **precision** dimension. For the
+authoritative reference see
 [`docs/trainers/diloco.md`](../../../docs/trainers/diloco.md).
 
 All commands assume you are in this project directory:

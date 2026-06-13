@@ -44,8 +44,14 @@ case "$MODE" in
   validate) MAXSTEPS_ARGS=(--max-steps 120); COMPILE=no;  DYLU_DELAY=0.05 ;;
   run)      MAXSTEPS_ARGS=();                COMPILE=yes; DYLU_DELAY=0.03 ;;
   dylu)     MAXSTEPS_ARGS=();                COMPILE=yes; DYLU_DELAY=0.03 ;;
-  *) echo "usage: $0 {validate|run|dylu}" >&2; exit 2 ;;
+  async_dn) MAXSTEPS_ARGS=();                COMPILE=yes; DYLU_DELAY=0.03 ;;
+  dnsweep)  MAXSTEPS_ARGS=();                COMPILE=yes; DYLU_DELAY=0.03 ;;
+  *) echo "usage: $0 {validate|run|dylu|async_dn|dnsweep}" >&2; exit 2 ;;
 esac
+
+# DN buffer size for async = num_workers (2), per the docs
+# (diloco-architecture-reference.md). Used by the async_dn and async_dn_dylu runs.
+DN=2
 
 mkdir -p "$RESULTS"
 
@@ -135,6 +141,12 @@ run_batch() {
     local ids
     if [[ "$kind" == dylu ]]; then ids="$(submit_workers_dylu "$name" "$port")";
     else ids="$(submit_workers "$name" "$port")"; fi
+    # Both worker jobs must enqueue, or the 2-worker server stalls at its first
+    # sync barrier waiting on a never-placed worker — skip + tear down instead.
+    if [[ "$(echo "$ids" | grep -c .)" -ne 2 ]]; then
+      err "exp '$name': expected 2 worker ids, got: $(echo "$ids" | tr '\n' ' ')"
+      shutdown_on "$port"; unset 'PORTS[$name]'; continue
+    fi
     WIDS[$name]="$ids"
     log "submitted workers for '$name': $(echo "$ids" | tr '\n' ' ')"
   done
@@ -152,14 +164,29 @@ run_batch() {
   sleep 8
 }
 
-log "MODE=$MODE  H=$H  compile=$COMPILE  budget=$([[ ${#MAXSTEPS_ARGS[@]} -gt 0 ]] && echo "${MAXSTEPS_ARGS[*]}" || echo 'config default (~16k steps/worker)')"
+# Tear any servers started this run down on interrupt, so a Ctrl-C / kill mid-batch
+# doesn't strand a param server on 8512/8513 and block the next invocation.
+trap 'echo; warn "interrupted — shutting down servers on 8512/8513"; shutdown_on 8512; shutdown_on 8513; exit 130' INT TERM
 
-# The meaningful DyLU run needs a stable (DN-buffered) base — pure async + DyLU
-# diverges like pure async. DN buffer size = num_workers (2), per the docs.
+log "MODE=$MODE  H=$H  compile=$COMPILE  DN=$DN  budget=$([[ ${#MAXSTEPS_ARGS[@]} -gt 0 ]] && echo "${MAXSTEPS_ARGS[*]}" || echo 'config default (~16k steps/worker)')"
+
 if [[ "$MODE" == dylu ]]; then
+  # The meaningful DyLU run needs a stable (DN-buffered) base — pure async + DyLU
+  # diverges like pure async. Differs from async_dn only by --dylu.
   run_batch \
-    "async_dn_dylu|8512|dylu|--async --dylu --dylu-base-sync-every $H --dn-buffer-size 2"
+    "async_dn_dylu|8512|dylu|--async --dylu --dylu-base-sync-every $H --dn-buffer-size $DN"
   log "DYLU RUN DONE — re-harvest with: python analysis/harvest.py && python analysis/plot_experiment.py"
+elif [[ "$MODE" == async_dn ]]; then
+  run_batch \
+    "async_dn|8512|std|--sync-every $H --async --dn-buffer-size $DN"
+  log "ASYNC_DN RUN DONE — re-harvest with: python analysis/harvest.py && python analysis/plot_experiment.py"
+elif [[ "$MODE" == dnsweep ]]; then
+  # DN-buffer-size sweep: how async convergence depends on the buffer. N=2
+  # (=num_workers) is the existing `async_dn` run; this adds N=4 and N=8.
+  run_batch \
+    "async_dn_b4|8512|std|--sync-every $H --async --dn-buffer-size 4" \
+    "async_dn_b8|8513|std|--sync-every $H --async --dn-buffer-size 8"
+  log "DNSWEEP RUN DONE — analyse with: python analysis/dn_sweep.py"
 else
   run_batch \
     "baseline|8512|std|--sync-every $H" \
@@ -167,7 +194,7 @@ else
 
   run_batch \
     "async|8512|std|--sync-every $H --async" \
-    "async_dn|8513|std|--sync-every $H --async --dn-buffer-size 4"
+    "async_dn|8513|std|--sync-every $H --async --dn-buffer-size $DN"
 
   # Pure async + DyLU (no DN) — diverges like pure async; kept as a cautionary
   # point. The stable, meaningful DyLU run is `./experiment.sh dylu` (DN-buffered).

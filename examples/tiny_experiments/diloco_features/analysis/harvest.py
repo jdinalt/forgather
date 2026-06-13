@@ -27,13 +27,24 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(HERE, "assets")
 MODELS = os.path.join(os.path.dirname(HERE), os.pardir, os.pardir, "models")
 
-# experiment -> (per-experiment model dir for the server JSONL, human label)
+# series key -> (runs/<dir>/worker0.log, model dir for server JSONL, human label)
+# The async+DN row uses the well-sized N=4 buffer (the sweet spot found by the
+# DN-buffer sweep, analysis/dn_sweep.py); the N=2 minimum is in that sub-study.
 EXPERIMENTS = [
-    ("baseline", "small_llama_feat_baseline", "Baseline (sync, H=100)"),
-    ("streaming", "small_llama_feat_streaming", "Streaming (2 fragments)"),
-    ("async", "small_llama_feat_async", "Async (no DN — diverges)"),
-    ("async_dn", "small_llama_feat_async_dn", "Async + DN buffer"),
-    ("async_dn_dylu", "small_llama_feat_async_dn_dylu", "Async + DN + DyLU"),
+    ("baseline", "baseline", "small_llama_feat_baseline", "Baseline (sync, H=100)"),
+    ("streaming", "streaming", "small_llama_feat_streaming", "Streaming (2 fragments)"),
+    ("async", "async", "small_llama_feat_async", "Async (no DN — diverges)"),
+    ("async_dn", "async_dn_b4", "small_llama_feat_async_dn_b4", "Async + DN (N=4)"),
+    (
+        "async_dn_dylu",
+        "async_dn_dylu",
+        "small_llama_feat_async_dn_dylu",
+        "Async + DN + DyLU",
+    ),
+    # DN-buffer-size sweep points (N=4 is `async_dn` above). These feed
+    # analysis/dn_sweep.py; plot_experiment.py ignores them (not in its LABELS).
+    ("async_dn_b2", "async_dn", "small_llama_feat_async_dn", "Async + DN (N=2)"),
+    ("async_dn_b8", "async_dn_b8", "small_llama_feat_async_dn_b8", "Async + DN (N=8)"),
 ]
 
 _NUM = r"[-+]?\d[\d,]*\.?\d*(?:e[-+]?\d+)?"
@@ -101,8 +112,8 @@ def main():
 
     os.makedirs(ASSETS, exist_ok=True)
     rows, summary = [], []
-    for exp, model_dir, label in EXPERIMENTS:
-        log = os.path.join(args.runs_dir, exp, "worker0.log")
+    for exp, runs_subdir, model_dir, label in EXPERIMENTS:
+        log = os.path.join(args.runs_dir, runs_subdir, "worker0.log")
         train, eval_, grad = parse_worker_log(log)
         if not train and not eval_:
             print(f"  skip {exp}: no data at {log}")
