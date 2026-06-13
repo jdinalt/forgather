@@ -89,8 +89,8 @@ on, the ~16k-step/worker budget) — and adds:
 > raw "+1.44" isn't comparable to the N=16 async row — compare it to plain
 > async+DN at N=4 (below).
 
-![Train loss, eval loss, grad norm](assets/loss_comparison.png)
-![Eval-loss endgame (converged runs)](assets/eval_tail.png)
+![Eval loss — full run and the converged-runs endgame zoom](assets/loss_comparison.png)
+![Training health — train loss and grad norm](assets/training_health.png)
 
 **The trade, in one line.** Two of these knobs are cheap and one is not. Base
 DiLoCo's traffic is bursty — the link sits idle through the local-training window,
@@ -299,6 +299,6 @@ DiLoCoCallback: using server settings sync_every=100 up=bf16 down=fp32 \
 - `analysis/` — `harvest.py`, `plot_experiment.py`, `dn_sweep.py`,
   `verify_baseline.py`, `worker_scaling.py`.
 - `assets/` — `curves.csv` (the committed source of truth) + the plots
-  (`loss_comparison.png`, `eval_tail.png`, `dn_sweep.png`,
+  (`loss_comparison.png`, `training_health.png`, `dn_sweep.png`,
   `baseline_vs_h100.png`, `worker_scaling.png`).
 - `runs/` — captured per-run logs (gitignored scratch).

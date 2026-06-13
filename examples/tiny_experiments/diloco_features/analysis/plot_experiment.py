@@ -8,12 +8,11 @@ project directory:
 
     python analysis/plot_experiment.py
 
-Two figures:
-  * ``loss_comparison.png`` — train loss, eval loss, and grad-norm panels. The
-    grad-norm panel is the "is training healthy?" check (decreasing/stable, not
-    flat or exploding).
-  * ``eval_tail.png`` — eval loss over the second half (the feature deltas are
-    small; this shows the endgame separation vs the baseline).
+Two figures, two panels each (so each panel stays readable when the docs compress
+a figure to the text-column width):
+  * ``loss_comparison.png`` — eval loss (full) + the converged-runs endgame zoom.
+  * ``training_health.png`` — train loss + grad norm (the "is training healthy?"
+    check: decreasing/stable, not flat or exploding).
 """
 
 import csv
@@ -80,8 +79,12 @@ def main():
 
     plt.rcParams.update({"figure.dpi": 120, "font.size": 10})
 
-    def panel(ax, metric, title, ylabel, markers=False, ylim=None, logy=False):
-        for s in present:
+    # Two panels per figure (not three) so each renders wide enough to read when
+    # the docs compress a figure to the text-column width.
+    def panel(
+        ax, metric, title, ylabel, series_list, markers=False, ylim=None, logy=False
+    ):
+        for s in series_list:
             d = data[s].get(metric, [])
             if not d:
                 continue
@@ -105,21 +108,11 @@ def main():
         ax.legend(fontsize=8)
         ax.grid(alpha=0.25)
 
-    # Main comparison: train loss, eval loss, grad norm.
-    fig, axes = plt.subplots(1, 3, figsize=(17, 4.6))
-    panel(axes[0], "train_loss", "Train loss", "loss")
-    panel(axes[1], "eval_loss", "Eval loss", "loss", markers=True)
-    panel(axes[2], "grad_norm", "Grad norm (stability)", "||g||", logy=True)
-    fig.suptitle(
-        "DiLoCo feature comparison — small Llama (34.4M), 4 workers x 520M tokens, H=100",
-        fontweight="bold",
-    )
-    fig.tight_layout()
-    fig.savefig(os.path.join(ASSETS, "loss_comparison.png"), bbox_inches="tight")
+    suptitle = "small Llama (34.4M), 4 workers × 520M tokens, H=100"
 
-    # Zoomed eval tail — the feature deltas among the *converged* runs are small;
-    # show the endgame. Diverged runs (best eval far above the pack) are excluded
-    # so they don't blow out the y-range.
+    # Endgame (converged runs only): the deltas among the converged runs are
+    # small, so a zoom shows the separation; diverged runs would blow out the
+    # y-range, so exclude them.
     CONVERGED_EVAL_MAX = 4.0  # best-eval above this == didn't converge here
     converged = [
         s
@@ -129,29 +122,50 @@ def main():
     ]
     for s in present:
         if s not in converged:
-            print(f"  eval_tail: excluding non-converged series '{s}'")
-    fig, ax = plt.subplots(figsize=(7.5, 4.6))
-    tails = []
-    for s in converged:
-        ev = data[s].get("eval_loss", [])
-        if len(ev) > 5:
-            tails += [v for _, v in ev[len(ev) // 2 :]]
-    present = converged
+            print(f"  endgame panel: excluding non-converged series '{s}'")
+
+    # Figure 1 (headline): eval loss — full, and the converged-runs endgame zoom.
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
+    panel(axes[0], "eval_loss", "Eval loss", "loss", present, markers=True)
+    tails = [
+        v
+        for s in converged
+        for _, v in data[s].get("eval_loss", [])[
+            len(data[s].get("eval_loss", [])) // 2 :
+        ]
+    ]
     if tails:
         lo, hi = min(tails), max(tails)
         pad = (hi - lo) * 0.1 or 0.01
+        # restrict the endgame x-range to the second half too
+        for s in converged:
+            ev = data[s].get("eval_loss", [])
+            if ev:
+                axes[1].set_xlim(ev[len(ev) // 2][0], ev[-1][0])
         panel(
-            ax,
+            axes[1],
             "eval_loss",
-            "Eval loss (second half — endgame)",
+            "Eval loss (endgame — converged)",
             "loss",
+            converged,
             markers=True,
             ylim=(lo - pad, hi + pad),
         )
-        fig.tight_layout()
-        fig.savefig(os.path.join(ASSETS, "eval_tail.png"), bbox_inches="tight")
+    fig.suptitle(f"DiLoCo feature comparison — {suptitle}", fontweight="bold")
+    fig.tight_layout()
+    fig.savefig(os.path.join(ASSETS, "loss_comparison.png"), bbox_inches="tight")
 
-    print("\nwrote loss_comparison.png + eval_tail.png to", ASSETS)
+    # Figure 2 (training health): train loss + grad norm.
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
+    panel(axes[0], "train_loss", "Train loss", "loss", present)
+    panel(axes[1], "grad_norm", "Grad norm (stability)", "||g||", present, logy=True)
+    fig.suptitle(
+        f"DiLoCo feature comparison — training health — {suptitle}", fontweight="bold"
+    )
+    fig.tight_layout()
+    fig.savefig(os.path.join(ASSETS, "training_health.png"), bbox_inches="tight")
+
+    print("\nwrote loss_comparison.png + training_health.png to", ASSETS)
 
 
 if __name__ == "__main__":
