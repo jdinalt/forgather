@@ -145,6 +145,21 @@ submissions). Practical guidance under genuine staleness: size the DN buffer to
 no-barrier schedule — not the near-free knob a low-staleness (near-synchronous)
 test would suggest.
 
+**What a large buffer costs: server memory, not compute.** The buffer lives
+entirely on the parameter server (workers are unaffected by N), and it holds **N
+full pseudo-gradients** — `server.py` accumulates a `List` of N model-sized
+tensors at the upload dtype (bf16) before averaging them into one outer step. So
+its memory is **O(N × model size)**: at N=16 for this 34.4M model that's already
+~1.1 GB — several × the model itself (131 MB) and its momentum buffer — and on a
+multi-billion-parameter model it is N × the gradient footprint, the param
+server's dominant cost. Compute, by contrast, is **negligible**: the momentum
+step fires only every N submissions, so the averaging is amortized to O(model)
+per submission, and throughput was flat across the sweep (760 / 744 / 749 K
+tok/s at N = 4 / 8 / 16). So the practical ceiling on "just use a bigger buffer"
+is **server RAM**. (Mathematically the buffer only needs a running *sum* +
+counter — O(1) memory, as in the paper's Δ accumulator — so this O(N) list is a
+straightforward but memory-heavy implementation, [issue #222](https://github.com/jdinalt/forgather/issues/222).)
+
 ### DyLU: cut the staleness instead of buffering it away
 
 DyLU attacks the same problem from the other side: instead of buffering stale
