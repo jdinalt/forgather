@@ -31,11 +31,11 @@ def _server(tmp_path, sd, **kw):
     ckpt = make_initial_checkpoint(sd, tmp_path / "init")
     kw.setdefault("num_workers", 2)
     kw.setdefault("save_every_n_rounds", 0)
+    kw.setdefault("async_mode", True)
     return DiLoCoServer(
         output_dir=str(tmp_path),
         from_checkpoint=ckpt,
         port=0,
-        async_mode=True,
         **kw,
     )
 
@@ -117,6 +117,19 @@ def _client(server):
 
 def _pg(sd, val=0.1):
     return {k: torch.full_like(v, val) for k, v in sd.items()}
+
+
+class TestGraceConfig:
+    def test_sync_mode_warns_and_zeroes_grace(self, tmp_path):
+        """grace_period is async-only: a sync server warns and zeroes it."""
+        server = _server(
+            tmp_path,
+            {"w": torch.zeros(4)},
+            num_workers=1,
+            grace_period=2.0,
+            async_mode=False,
+        )
+        assert server.grace_period == 0.0
 
 
 class TestGraceWindowThreaded:
@@ -210,6 +223,29 @@ class TestGraceWindowThreaded:
 
             assert len(results) == 1  # released rather than hanging on the dead peer
             assert server._sync_round == 1
+        finally:
+            server.stop()
+
+    def test_status_reports_grace_batches(self, tmp_path):
+        """/status surfaces the grace batch-size histogram + mean (async only)."""
+        sd = {"w": torch.zeros(4)}
+        server = _server(
+            tmp_path,
+            sd,
+            num_workers=1,
+            grace_period=1.0,
+            outer_optimizer_factory=_sgd(1.0),
+        )
+        server.start()
+        try:
+            c0 = _client(server)
+            c0.register("w0")
+            c0.submit_pseudogradients("w0", _pg(sd))  # 1 live worker -> flush of 1
+            status = c0.get_status()
+            assert status["grace_period"] == 1.0
+            assert status["grace_batches"] == 1
+            assert status["mean_grace_batch_size"] == 1.0
+            assert status["grace_batch_histogram"] == {"1": 1}  # JSON str keys
         finally:
             server.stop()
 

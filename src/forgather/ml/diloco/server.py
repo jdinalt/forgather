@@ -3023,7 +3023,11 @@ class DiLoCoServer:
                         "grace_period": self.grace_period,
                         "grace_batches": self._grace_batches,
                         "mean_grace_batch_size": round(mean, 3),
-                        "grace_batch_histogram": dict(self._grace_batch_hist),
+                        # JSON coerces int keys to strings; stringify explicitly
+                        # so consumers see stable "batch_size" -> count keys.
+                        "grace_batch_histogram": {
+                            str(k): v for k, v in self._grace_batch_hist.items()
+                        },
                     }
         else:
             with self._sync_cond:
