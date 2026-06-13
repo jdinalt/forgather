@@ -331,12 +331,12 @@ webui DiLoCo panel.
 **DiLoCo and direct lineage**
 
 - Douillard et al., "DiLoCo: Distributed Low-Communication Training of Language Models" ([arXiv:2311.08105](https://arxiv.org/abs/2311.08105))
-- Douillard et al., "DiPaCo: Distributed Path Composition" (2024)
-- Liu et al., "Asynchronous Local-SGD Training for Language Modeling" (2024) — Async DiLoCo, Delayed Nesterov, DyLU
+- Douillard et al., "DiPaCo: Distributed Path Composition" (2024) ([arXiv:2403.10616](https://arxiv.org/abs/2403.10616))
+- Liu et al., "Asynchronous Local-SGD Training for Language Modeling" (2024) — Async DiLoCo, Delayed Nesterov, DyLU ([arXiv:2401.09135](https://arxiv.org/abs/2401.09135))
 - Jaghouar, Ong & Hagemann, "OpenDiLoCo: An Open-Source Framework for Globally Distributed Low-Communication Training" (2024, [arXiv:2407.07852](https://arxiv.org/abs/2407.07852)) — first FP16 all-reduce of the pseudo-gradient (the origin of low-precision *upload* communication in the DiLoCo family)
 - Douillard et al., "Streaming DiLoCo with Overlapping Communication" (2025, [arXiv:2501.18512](https://arxiv.org/abs/2501.18512)) — fragment-based staggered sync; §2.4 sweeps the outer-gradient (upload) communication precision through bf16/fp8/fp4 with no observed regression. (Neither paper compresses the server→worker *download* of averaged weights — that is what `download_dtype=bf16` adds.)
 - Charles et al., "Communication-Efficient Language Model Training Scales Reliably and Robustly: Scaling Laws for DiLoCo" ([arXiv:2503.09799](https://arxiv.org/abs/2503.09799))
-- TorchFt (Meta) — fault-tolerant distributed training library
+- [TorchFt (Meta)](https://github.com/meta-pytorch/torchft) — fault-tolerant distributed training library
 
 **Local SGD, slow momentum, and the outer optimizer**
 
