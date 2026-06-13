@@ -804,12 +804,22 @@ class TestLaunchServer:
         assert "regen_token" not in jp
         # grace_period absent (default) → omitted from job_params
         assert "grace_period" not in jp
+        # fragment_assignment defaults to strided and is always emitted
+        assert jp["fragment_assignment"] == "strided"
 
     def test_grace_period_emitted_when_set(self, patch_orchestrator):
         client = patch_orchestrator(FakeClient())
         rc = orch.launch_server(_server_args(async_mode=True, grace_period=2.0))
         assert rc == 0
         assert client.enqueued[0]["job_params"]["grace_period"] == 2.0
+
+    def test_fragment_assignment_emitted(self, patch_orchestrator):
+        client = patch_orchestrator(FakeClient())
+        rc = orch.launch_server(
+            _server_args(num_fragments=2, fragment_assignment="sequential")
+        )
+        assert rc == 0
+        assert client.enqueued[0]["job_params"]["fragment_assignment"] == "sequential"
 
     def test_relative_output_dir_is_absolutized(self, patch_orchestrator):
         # The scheduler launches the job from the repo root, so a relative

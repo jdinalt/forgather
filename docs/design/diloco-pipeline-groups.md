@@ -370,8 +370,9 @@ manually.
 - `src/forgather/ml/diloco/worker.py` — `ParamView` plumbing,
   registration with the `group` block.
 - `src/forgather/ml/diloco/param_view.py` — abstraction definitions.
-- `src/forgather/ml/diloco/fragments.py` — fragment partitioning now
-  duck-types its `model` argument so a `ParamView` is accepted.
+- `src/forgather/ml/diloco/fragments.py` — fragment partitioning
+  duck-types its `model` argument so a `ParamView` is accepted, and discovers
+  transformer-block boundaries from the full model via `boundary_source`.
 - `src/forgather/ml/trainer/callbacks/diloco_callback.py` — pipeline
   detection + worker-id derivation.
 - `src/forgather/ml/trainer/pipeline/pipeline_trainer.py:_prepare_model`

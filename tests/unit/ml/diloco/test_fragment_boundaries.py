@@ -132,6 +132,43 @@ class TestPerRankFilter:
         assert fm.param_to_fragment["lm_head.weight"] == 1
 
 
+class TestTiedWeights:
+    def test_tied_head_synced_once(self):
+        """A tied lm_head/embedding (shared storage) appears once under the
+        default dedup, so the shared tensor lands in exactly one fragment."""
+        m = FakeTransformer(n_layers=4)
+        m.lm_head.weight = m.embedding.weight  # tie (shared storage)
+        groups, pre, post = discover_block_boundaries(m)
+        covered = pre + post + [n for g in groups for n in g]
+        # dedup: only one of the tied names is present, and exactly once.
+        assert len(covered) == len(set(covered))
+        assert "embedding.weight" in covered
+        assert "lm_head.weight" not in covered  # deduped away
+        fm = FragmentManager(m, num_fragments=2)
+        flat = [n for frag in fm.fragments for n in frag]
+        assert flat.count("embedding.weight") == 1
+
+
+class TestPerRankEmptyFragment:
+    def test_disjoint_slice_yields_empty_fragment(self):
+        """A rank whose slice misses a whole fragment's blocks gets an empty
+        fragment (tolerated downstream)."""
+        m = FakeTransformer(n_layers=4)
+
+        class View:  # only layers 0-1 (fragment 1's blocks 2,3 are absent)
+            def named_parameters(self):
+                for n, p in m.named_parameters():
+                    if n.startswith("layers.0.") or n.startswith("layers.1."):
+                        yield n, p
+
+        fm = FragmentManager(
+            View(), num_fragments=2, assignment="sequential", boundary_source=m
+        )
+        # sequential: frag0={blocks 0,1}+embeddings(absent), frag1={blocks 2,3}+head(absent)
+        assert len(fm.fragments[1]) == 0  # disjoint from this slice -> empty
+        assert len(fm.fragments[0]) > 0
+
+
 class TestFallback:
     def test_plain_module_contiguous_fallback(self):
         m = nn.Sequential(nn.Linear(4, 4, bias=False), nn.Linear(4, 4, bias=False))

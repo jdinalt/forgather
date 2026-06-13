@@ -106,7 +106,11 @@ def discover_block_boundaries(
 
     # Non-block params: classify by position relative to the block params in the
     # model's parameter order — before the first block => pre (embeddings),
-    # otherwise => post (final norm, LM head).
+    # otherwise => post (final norm, LM head). This assumes the non-block params
+    # bracket the blocks (true for every transformer in-repo: embeddings first,
+    # norm + head last). A param interleaved *between* blocks would be attached
+    # to the last fragment; the partition stays valid (every name in exactly one
+    # fragment), just slightly less balanced.
     first_block_idx = min(i for i, n in enumerate(all_params) if n in block_param_set)
     pre_block_params, post_block_params = [], []
     for i, n in enumerate(all_params):

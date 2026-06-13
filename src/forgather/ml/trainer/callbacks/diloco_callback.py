@@ -84,8 +84,9 @@ class DiLoCoCallback(TrainerCallback):
     not five hundred steps later when the first sync fails.
 
     **Server-authoritative settings.** ``sync_every``, ``bf16_comm``,
-    ``dylu`` and ``num_fragments`` must match across the whole group for
-    the sync barrier / outer step / fragment barriers to be coherent, so
+    ``dylu``, ``num_fragments`` and ``fragment_assignment`` must match across
+    the whole group for the sync barrier / outer step / fragment barriers to be
+    coherent, so
     they are owned by the server: the worker reads them verbatim from the
     server's ``/info`` at startup (the leader fetches and broadcasts to
     DDP followers). There is no client override — a divergent value is
