@@ -27,13 +27,12 @@
 #
 # Usage:
 #   ./experiment.sh validate         # short plumbing check — each feature FIRES
-#   ./experiment.sh run              # the full 10-arm matrix (~9-12 h, 4x4090)
+#   ./experiment.sh run              # the full 8-arm matrix (~7-9 h, 4x4090)
 #   ./experiment.sh run <arm-name>   # re-run a single arm by name
 #
 # Then: python analysis/harvest.py && python analysis/plot_experiment.py
 #       python analysis/staleness.py && python analysis/streaming.py
-#       python analysis/dylu_control.py && python analysis/worker_scaling.py
-#       python analysis/verify_baseline.py
+#       python analysis/dylu_control.py
 #       (python analysis/grace_batches.py is a VALIDATE-only mechanism check)
 #
 # Before any long batch: run `./experiment.sh validate` (each feature fires, incl.
@@ -59,11 +58,12 @@ GRACE_S="${GRACE_S:-0.5}"      # grace window (s) — VALIDATE ONLY (v_grace mec
 # ~2x the fastest (a realistic 4090+3090 mix). e.g. base~0.10s -> 0/.03/.06/.10.
 DYLU_SPREAD=(0 0.03 0.06 0.10)
 
-# Token budgets (global stop). 4w = 520M tok/worker x4; the 2w arms run to the
-# matched-total half-budget so the 2w-vs-4w scaling compares like total tokens.
-# --token-budget accepts K/M/B suffixes (a bare number is raw tokens).
-BUDGET_4W=2.08B
-BUDGET_2W=1.04B
+# Token budget (global stop): aggregate cross-worker tokens at which the server
+# relays save_and_stop. 1B total ~ 2x Chinchilla (the model's Chinchilla-optimal is
+# 525M tokens = 20 x 26.2M non-embedding params) and matches the sibling `diloco`
+# project's long reference run; at 4 workers that's ~250M tok/worker, ~76 sync
+# rounds at H=100 — ample. --token-budget accepts K/M/B suffixes (bare = raw tokens).
+BUDGET=1B
 
 MODE="${1:-run}"
 ONLY="${2:-}"                  # optional: run a single arm by name
@@ -242,7 +242,7 @@ do_one() {
 trap 'echo; warn "interrupted — shutting down :8512"; shutdown_on 8512; exit 130' INT TERM
 
 log "MODE=$MODE  H=$H  seed=$SEED  jitter=$JITTER  grace_s=$GRACE_S  ${ONLY:+arm=$ONLY}"
-log "budgets: 4w=$BUDGET_4W  2w=$BUDGET_2W  dylu_spread=(${DYLU_SPREAD[*]})"
+log "budget=$BUDGET (4 workers)  dylu_spread=(${DYLU_SPREAD[*]})"
 
 # ---------------------------------------------------------------------------
 # validate — short plumbing check (max-steps 120, compile off). Confirms each
@@ -263,21 +263,24 @@ if [[ "$MODE" == validate ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# run — the 10-arm matrix (single run per arm, from scratch, token-budget stop)
+# run — the 8-arm matrix (single run per arm, from scratch, token-budget stop).
+# All arms: 4 workers, budget $BUDGET, H=100, gRPC+safetensors, from a fresh
+# pristine master + --seed $SEED. Only the server flags (+ the async jitter /
+# DyLU spread worker env) differ between arms.
 # ---------------------------------------------------------------------------
-# 1  Sync baseline (4w) — reference.
-do_one baseline        sync  4 "$BUDGET_4W" -- --sync-every "$H"
+# 1  Sync baseline — reference.
+do_one baseline        sync  4 "$BUDGET" -- --sync-every "$H"
 
 # 2-4  Streaming: block-boundary fragments, assignment A/B at two grains.
-do_one stream_str2     sync  4 "$BUDGET_4W" -- --sync-every "$H" --num-fragments 2 --fragment-assignment strided
-do_one stream_seq2     sync  4 "$BUDGET_4W" -- --sync-every "$H" --num-fragments 2 --fragment-assignment sequential
-do_one stream_str5     sync  4 "$BUDGET_4W" -- --sync-every "$H" --num-fragments 5 --fragment-assignment strided
+do_one stream_str2     sync  4 "$BUDGET" -- --sync-every "$H" --num-fragments 2 --fragment-assignment strided
+do_one stream_seq2     sync  4 "$BUDGET" -- --sync-every "$H" --num-fragments 2 --fragment-assignment sequential
+do_one stream_str5     sync  4 "$BUDGET" -- --sync-every "$H" --num-fragments 5 --fragment-assignment strided
 
 # 5  Async no-DN control (jitter) — expect divergence (DN off).
-do_one async_nodn      async 4 "$BUDGET_4W" -- --sync-every "$H" --async
+do_one async_nodn      async 4 "$BUDGET" -- --sync-every "$H" --async
 
 # 6  Async + DN N=k=4 (jitter) — the headline: async+DN ~ sync (per token)?
-do_one async_dn4       async 4 "$BUDGET_4W" -- --sync-every "$H" --async --dn-buffer-size 4
+do_one async_dn4       async 4 "$BUDGET" -- --sync-every "$H" --async --dn-buffer-size 4
 
 # NOTE: grace is NOT a study arm — its payoff is wall-clock tail-reduction in a
 # heterogeneous/large-N pool, which this homogeneous rig doesn't have and loopback
@@ -285,18 +288,10 @@ do_one async_dn4       async 4 "$BUDGET_4W" -- --sync-every "$H" --async --dn-bu
 # demonstration is the two-population/WAN future work. See README §3.5.
 
 # 7  Async + DN, speed spread, DyLU OFF (control) — average-speed heterogeneity.
-do_one dylu_off        dylu  4 "$BUDGET_4W" -- --sync-every "$H" --async --dn-buffer-size 4
+do_one dylu_off        dylu  4 "$BUDGET" -- --sync-every "$H" --async --dn-buffer-size 4
 
 # 8  Async + DN + DyLU, same speed spread — DyLU cuts staleness (A/B vs #7).
-do_one dylu_on         dylu  4 "$BUDGET_4W" -- --async --dylu --dylu-base-sync-every "$H" --dn-buffer-size 4
-
-# 9  Sync 2 workers — token-efficiency scaling vs 4w sync (half-budget total).
-#    Also serves as the gRPC+safetensors side of the transport check (#10).
-do_one baseline_2w     sync  2 "$BUDGET_2W" -- --sync-every "$H"
-
-# 10 Wire/transport check (2w): HTTP+pickle vs the gRPC+safetensors baseline_2w.
-#    Internal lossless-transport check (UNRELATED to the paper's fp4 claim).
-do_one wire_http_pk    sync  2 "$BUDGET_2W" -- --sync-every "$H" --wire-format pickle
+do_one dylu_on         dylu  4 "$BUDGET" -- --async --dylu --dylu-base-sync-every "$H" --dn-buffer-size 4
 
 log "MATRIX DONE — harvest: python analysis/harvest.py && python analysis/plot_experiment.py"
-log "  then: grace_batches.py, staleness.py, streaming.py, dylu_control.py, worker_scaling.py, verify_baseline.py"
+log "  then: grace_batches.py (validate), staleness.py, streaming.py, dylu_control.py"

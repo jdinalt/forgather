@@ -31,11 +31,9 @@ ASSETS = os.path.join(HERE, "assets")
 MODELS = os.path.join(os.path.dirname(HERE), os.pardir, os.pardir, "models")
 
 # series key -> (runs/<dir>/, model dir for server JSONL fallback, human label).
-# The 10-arm matrix (experiment.sh). Async arms (async_*) use phase-jitter
-# (DILOCO_DEBUG_STEP_JITTER) for real staleness; DyLU arms use a per-worker speed
-# spread. `baseline_2w` is the 2-worker sync run backing both the worker-scaling
-# study (analysis/worker_scaling.py) and the gRPC-vs-HTTP transport check
-# (analysis/verify_baseline.py); `wire_http_pk` is its HTTP+pickle counterpart.
+# The 8-arm matrix (experiment.sh), all 4-worker. Async arms (async_*) use
+# phase-jitter (DILOCO_DEBUG_STEP_JITTER) for real staleness; DyLU arms use a
+# per-worker speed spread.
 EXPERIMENTS = [
     ("baseline", "baseline", "small_llama_feat_baseline", "Baseline (sync, H=100)"),
     (
@@ -65,18 +63,6 @@ EXPERIMENTS = [
         "Async + DN, spread, no DyLU",
     ),
     ("dylu_on", "dylu_on", "small_llama_feat_dylu_on", "Async + DN + DyLU"),
-    (
-        "baseline_2w",
-        "baseline_2w",
-        "small_llama_feat_baseline_2w",
-        "Baseline 2w (scaling/transport ref)",
-    ),
-    (
-        "wire_http_pk",
-        "wire_http_pk",
-        "small_llama_feat_wire_http_pk",
-        "2w HTTP+pickle (transport)",
-    ),
 ]
 
 # Async arms for which staleness is harvested as a column. The staleness *gate*

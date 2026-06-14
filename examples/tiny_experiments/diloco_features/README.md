@@ -63,7 +63,6 @@ hypotheses from the source papers + our post-fix implementation):
 | **Async + DN** | `--async --dn-buffer-size N` | drops the barrier — fast workers don't wait on stragglers | needs the DN buffer (required with `--async`); some convergence cost under staleness | **≈ sync at N = k = 4** workers |
 | **Grace period** | `--grace-period S` | a brief, opportunistic wait so a finished worker can coalesce with a near-simultaneous finisher — cuts the slow-worker *tail* in a heterogeneous / large-N pool | only pays off when the tail is real (large N, mixed speeds); its benefit is **wall-clock**, not convergence | **not a study arm** — the rig has no tail to cut; validated functional only, real benefit → Future Directions |
 | **DyLU** | `--dylu` | matches each worker's sync rate to its throughput, cutting staleness | only helps heterogeneous / unevenly-loaded workers | cuts staleness vs a DyLU-off control under a 2× speed spread |
-| **Wire + transport** | `--wire-format`, `--grpc` | faster/safer pipe (safetensors vs pickle; gRPC vs HTTP) | none — lossless | overlays the reference within run-to-run noise |
 
 These are all **server-authoritative**: you select them with flags on `forgather
 diloco server`, and every worker adopts them from the server's `/info`. The same
@@ -228,20 +227,33 @@ pretrain-budget sweep is in Future Directions).
 
 ### 3.1 Fixed setup (all arms, from scratch)
 
-- **Model:** small Llama, 34.4M params, **10 transformer blocks** (⇒ faithful
-  fragment `N ∈ {2, 5}`).
-- **Data:** Fineweb-Edu, a fixed base seed (`--seed 42`); a pristine master is
-  copied per run so every arm starts from identical init.
-- **DiLoCo:** `H = 100`; outer optimizer SGD-Nesterov (LR 0.7, momentum 0.9);
-  gRPC + safetensors; `torch.compile` on.
-- **Workers:** 4 (2 only for the scaling and transport arms). 4 workers = 4
-  GPUs/run, so arms run **serially** on one param server (`:8512`).
-- **Global stop:** the server's `--token-budget` for **every** arm (not a
-  per-worker `--max-steps`). Equal total tokens makes arms comparable on the
-  total-tokens axis even under a per-worker speed spread. 4-worker budget = **2.08
-  B** (520 M/worker × 4); the 2-worker scaling/transport arms run the matched-total
-  half-budget = **1.04 B**. The heartbeat-driven one-shot stop may slightly
-  overshoot, so analysis aligns the axis to the **actual** harvested `total_tokens`.
+All 8 arms use **4 workers** (= 4 GPUs/run, so arms run **serially** on one param
+server, `:8512`), from a fresh pristine master copy and a fixed seed; only the
+server flags (+ the async jitter / DyLU spread worker env) differ. Training stops
+on the server's **`--token-budget`** for every arm (not a per-worker `--max-steps`),
+so all arms train to equal total tokens — the basis of the total-tokens axis. The
+heartbeat-driven one-shot stop may slightly overshoot, so analysis aligns the axis
+to the **actual** harvested `total_tokens`.
+
+**Hyperparameters, and why these values** (every number has a reason; cross-check
+against [`experiment.sh`](experiment.sh)):
+
+| Quantity | Value | Why this value |
+|---|---|---|
+| Model | small Llama, **34.4M** (26.2M non-embedding), **10 blocks** | small enough for a 4-GPU study; 10 blocks ⇒ block-divisible fragment counts `N ∈ {2,5}`. Chinchilla-optimal ≈ **525M tokens** (20 × 26.2M non-embedding; reported by `forgather -t small.yaml model construct`) |
+| Workers `k` | **4** | the async paper's main worker count (`k = 4`); enough to produce staleness ≈ `k−1` ≈ 3 |
+| Sync interval `H` | **100** | matches the sibling [`../diloco`](../diloco) project's `h100` reference; DiLoCo's regime (sync every ~100 local steps) |
+| Outer optimizer | SGD-Nesterov, **LR 0.7, mom 0.9** | DiLoCo's outer-optimizer settings (the `diloco server` defaults) |
+| Inner optimizer | AdamW, **lr 2.07e-4** (peak) | per-worker local optimizer. The lr is `base_lr` 1.5e-4 scaled for the 32,768-tok batch by the **sqrt rule** (`lr_alpha 0.5`, ref batch 16384) → 2.07e-4; WSD schedule, `min_lr` 2.07e-5 |
+| Batch × seq | **8 × 4096** = 32,768 tok/step/worker | config default (shared with the sibling project) |
+| Token budget | **1B total** | **~2× Chinchilla** (the model's Chinchilla-optimal is 525M tokens, from its 26.2M non-embedding params); matches the sibling project's long reference run. At 4 workers ≈ 250M tok/worker ≈ 76 sync rounds — ample for the outer optimizer |
+| DN buffer `N` | **4** (= `k`) | the async paper's main config; tests the derived `N = k ≈ sync` prediction (§2.2) |
+| Fragments `N` | **{2, 5}** | the only block-divisible counts ≤ 10 blocks (5 / 2 layers per fragment); N=5 is the fine grain where striding should show |
+| Seed | **42** | fixed; one run/arm; varies data-order/dropout, not init (§3.5) |
+| Jitter `J` | **0.15 s** | tuned so the *measured* staleness lands ≈ `k−1` — the staleness **gate** (§3.3) is the check, not the exact value |
+| DyLU spread | **0 / .03 / .06 / .10 s** | calibrated to a **~2×** slowest/fastest ratio (RTX 4090 + 3090-style) from the measured base step time |
+| Transport | gRPC + safetensors | the fast/safe path; lossless (already validated against HTTP+pickle in the sibling project — not re-tested here) |
+| `torch.compile` | on | real-run default (`--compile no` is smoke-only) |
 
 ### 3.2 The primary axis: total tokens = "Total Local Updates"
 
@@ -296,15 +308,31 @@ grace-batch histogram with mass at 2+) **and** *proceeds immediately* when none
 arrive within `S` (mass at 1). That is the whole grace check here; the real
 demonstration is Future Directions.
 
-### 3.4 Run matrix (10 arms, single run each)
+### 3.4 Run matrix (8 arms, single run each)
 
-Each arm is tagged **[trend]** (a measurable convergence-trend reproduction) or
-**[mech]** (a mechanism-validation under a synthetic-but-measurable condition).
-Grace is *not* an arm (§3.5).
+**Every arm shares one reference command** — a 4-worker sync DiLoCo run to the
+token budget — and differs *only* in the `diloco server` flags (and, for the async
+arms, a worker `--env` throttle). The reference:
 
-| # | Arm | Kind | `diloco server` flag(s) | worker `--env` | Tests |
+```bash
+# Server (one per arm), started fresh from a pristine master copy:
+forgather diloco server -o <fresh master> -n 4 --save-every 0 \
+    --grpc --wire-format safetensors --sync-every 100 --token-budget 1B \
+    --run-name <arm>  [+ the arm's server flag(s)]
+
+# 4 workers against it (the same default.yaml worker, max_steps=-1 so the
+# server's budget is the sole stop):
+forgather -t default.yaml submit --diloco --diloco-server 127.0.0.1:8512 \
+    --diloco-worker-count 4 --seed 42  [+ the arm's --env, for async/DyLU]
+```
+
+The matrix is the deltas on that base. Each arm is tagged **[trend]** (a measurable
+convergence-trend reproduction) or **[mech]** (a mechanism-validation under a
+synthetic-but-measurable condition).
+
+| # | Arm | Kind | `diloco server` delta | worker `--env` | Tests |
 |---|---|---|---|---|---|
-| 1 | `baseline` (sync, 4w) | — | `--sync-every 100` | — | reference |
+| 1 | `baseline` | — | *(none — the reference)* | — | reference |
 | 2 | `stream_str2` | trend | `--num-fragments 2 --fragment-assignment strided` | — | streaming, coarse |
 | 3 | `stream_seq2` | trend | `--num-fragments 2 --fragment-assignment sequential` | — | assignment A/B vs #2 |
 | 4 | `stream_str5` | trend | `--num-fragments 5 --fragment-assignment strided` | — | finer grain (strided edge) |
@@ -312,18 +340,20 @@ Grace is *not* an arm (§3.5).
 | 6 | `async_dn4` | trend | `--async --dn-buffer-size 4` | jitter 0.15 | **headline:** async + DN ≈ sync (per token)? |
 | 7 | `dylu_off` | mech | `--async --dn-buffer-size 4` | delay spread (~2×) | DyLU-off control |
 | 8 | `dylu_on` | mech | `--async --dylu --dylu-base-sync-every 100 --dn-buffer-size 4` | delay spread (~2×) | DyLU cuts staleness (A/B vs #7) |
-| 9 | `baseline_2w` (sync, 2w) | trend | `--sync-every 100` (budget 1.04 B) | — | 2-vs-4-worker token efficiency |
-| 10 | `wire_http_pk` (2w) | — | `--sync-every 100 --wire-format pickle` | — | lossless transport (vs `baseline_2w` gRPC+safetensors) |
 
 Async arms (5–8) all run to the token budget. Staleness arms (5–6) use **jitter**
 (equal average speed, staleness ≈ 3, no speed-spread confound); DyLU arms (7–8)
 use the **synthetic delay spread** (average-speed heterogeneity is the point). The
 DN buffer is fixed at **N = k = 4** (the paper's main config); an N-buffer sweep is
-a Future Directions follow-up, not part of this matrix. Arm 10 is an internal
-wire/transport lossless-ness check — **unrelated** to the paper's fp4
-quantization-lossless claim (we do not implement an fp4 codec; see §3.6).
-**Cut:** `async_dn4_grace` → grace is validated functional in `validate` only and
-deferred to Future Directions (§3.5, Abstract scope note).
+a Future Directions follow-up, not part of this matrix.
+
+**Deliberately not in the matrix** (kept the study focused on the two papers'
+communication mechanisms): grace (validate-only — §3.5); a 2-vs-4-worker
+token-efficiency scaling arm (DiLoCo's own batch-scaling penalty is covered in the
+sibling [`../diloco`](../diloco) / [`../../pretrain/small-llm`](../../pretrain/small-llm)
+projects, not here); and a wire/transport lossless check (gRPC+safetensors was
+already validated against HTTP+pickle in the sibling project — it was never an
+experiment, just a transport-correctness validation).
 
 ### 3.5 Metrics, controls, statistics
 
@@ -333,7 +363,7 @@ deferred to Future Directions (§3.5, Abstract scope note).
   a `validate`-only mechanism check, §3.3 — not a study metric.)
 - **Controls (each isolates one knob, everything else fixed).** DN on/off (5 vs 6);
   DyLU on/off (7 vs 8, same spread + N=4); streaming assignment (2 vs 3); grain
-  (2 vs 4); transport (9 vs 10); worker count (1 vs 9).
+  (2 vs 4).
 - **Statistics.** **One run per arm, no multi-seed.** Re-running is a poor use of
   GPU time: seed noise is typically small and the effects we want are larger than
   it. An effect visible only by averaging seeds is, by construction, a *small-effect
@@ -346,10 +376,9 @@ deferred to Future Directions (§3.5, Abstract scope note).
 **Can** (relative *convergence* trends, single small scale): async + DN ≈ sync at
 N = k *per token* (with the regime caveat in §2.6 — a from-scratch *failure* is
 inconclusive); streaming's small steady cost and strided ≥ sequential; DyLU's
-staleness reduction under a synthetic spread (A/B, mechanism-validation); the
-worker-count token-efficiency penalty (vs sync DiLoCo; the DDP anchor lives in the
-sibling project); lossless transport; and, suggestively, that a from-scratch
-async≈sync result would extend DiLoCo's random-init robustness to async.
+staleness reduction under a synthetic spread (A/B, mechanism-validation); and,
+suggestively, that a from-scratch async≈sync result would extend DiLoCo's
+random-init robustness to async.
 
 **Cannot** (stated plainly): **any wall-clock / scheduling *benefit*** — grace's
 tail-reduction, async's no-barrier win, streaming's peak-smoothing — because the rig
@@ -375,7 +404,6 @@ each of the following into `assets/`:
 | Async + DN (N=4) | _TBD_ | _TBD_ | _TBD_ | _TBD_ | **headline** |
 | Async + DN, spread, DyLU off | _TBD_ | _TBD_ | _TBD_ | _TBD_ | control |
 | Async + DN + DyLU, spread | _TBD_ | _TBD_ | _TBD_ | _TBD_ | A/B vs control |
-| Sync, 2 workers | _TBD_ | _TBD_ | _TBD_ | — | scaling |
 
 Figures (regenerated by the named scripts):
 
@@ -390,10 +418,6 @@ Figures (regenerated by the named scripts):
   ([`analysis/grace_batches.py`](analysis/grace_batches.py)).
 - **`dylu_control.png`** — DyLU off vs on at a fixed speed spread
   ([`analysis/dylu_control.py`](analysis/dylu_control.py)).
-- **`worker_scaling.png`** — 2-vs-4-worker token efficiency
-  ([`analysis/worker_scaling.py`](analysis/worker_scaling.py)).
-- **`baseline_vs_h100.png`** — the lossless-transport overlay vs the sibling
-  `diloco` project's reference ([`analysis/verify_baseline.py`](analysis/verify_baseline.py)).
 
 ---
 
@@ -435,9 +459,7 @@ pre-registered hypotheses, each with a fixed control:
    at the finer N=5 grain (arms 2–4 vs 1).
 3. **DyLU cuts staleness under a synthetic speed spread** (arm 8 vs the DyLU-off
    control arm 7) — a mechanism-validation; the real mixed-GPU benefit is future work.
-4. **Transport is lossless** (arm 10 vs `baseline_2w`); **more workers cost token
-   efficiency** (arm 9 vs 1), as in DDP's large-batch regime.
-5. **Suggestively:** a from-scratch async≈sync result would extend DiLoCo's
+4. **Suggestively:** a from-scratch async≈sync result would extend DiLoCo's
    random-init robustness to async (the whole study trains from scratch).
 
 Any headline result ambiguous within plausible seed noise is reported as a
@@ -508,14 +530,12 @@ runs are **serial**:
 
 ```bash
 ./experiment.sh validate          # short plumbing check (each feature FIRES)
-./experiment.sh run               # the full 10-arm matrix (~9-12 h on 4x4090s)
+./experiment.sh run               # the full 8-arm matrix (~7-9 h on 4x4090s)
 ./experiment.sh run <arm-name>    # re-run a single arm by name
 python analysis/harvest.py && python analysis/plot_experiment.py  # main comparison
 python analysis/staleness.py           # the async staleness gate (should-be-stale vs reducer)
 python analysis/streaming.py           # fragment count + assignment (strided vs sequential)
 python analysis/dylu_control.py        # the DyLU off-vs-on eval overlay
-python analysis/worker_scaling.py      # the 2-vs-4-worker token-efficiency overlay
-python analysis/verify_baseline.py     # the 2-worker wire/transport overlay
 python analysis/grace_batches.py       # VALIDATE-only: grace mechanism check (on v_grace)
 ```
 
@@ -583,11 +603,10 @@ DiLoCoCallback: using server settings sync_every=100 up=bf16 down=fp32 \
   server flags, not here.
 - `experiment.sh` — the run-matrix driver (`validate` / `run` / `run <arm>`),
   token-budget global stop, `GRACE_S` env knob for the grace window.
-- `harness.sh` — the fast functional smoke driver.
-- `analysis/` — `harvest.py`, `plot_experiment.py`, `grace_batches.py`,
-  `staleness.py`, `streaming.py`, `dylu_control.py`, `verify_baseline.py`,
-  `worker_scaling.py`.
-- `assets/` — `curves.csv` + `grace_hist.csv` (the committed source of truth) + the
-  plots (`loss_comparison.png`, `training_health.png`, `grace_hist.png`,
-  `streaming.png`, `dylu_control.png`, `baseline_vs_h100.png`, `worker_scaling.png`).
+- `harness.sh` — the fast functional smoke driver (incl. a `token-budget` recipe).
+- `analysis/` — `harvest.py`, `plot_experiment.py`, `streaming.py`,
+  `dylu_control.py`, `staleness.py` (the gate), `grace_batches.py` (validate-only).
+- `assets/` — `curves.csv` (the committed source of truth) + the plots
+  (`loss_comparison.png`, `training_health.png`, `streaming.png`,
+  `dylu_control.png`); `grace_hist.png`/`grace_hist.csv` are `validate`-only.
 - `runs/` — captured per-run logs + `status.json` (gitignored scratch).
