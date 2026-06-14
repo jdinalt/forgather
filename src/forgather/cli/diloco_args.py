@@ -7,6 +7,35 @@ from argparse import RawTextHelpFormatter
 from forgather.ml.diloco.auth import add_auth_args
 from forgather.tls.runtime import add_server_tls_args
 
+_TOKEN_SCALE = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000, "g": 1_000_000_000}
+
+
+def _parse_token_count(s):
+    """Parse a token count that may carry a K/M/B suffix.
+
+    A bare number is raw tokens — back-compatible with scripts and the
+    webui/orchestrator, which emit raw counts. A case-insensitive K/M/B (or G)
+    suffix scales it, decimals allowed: ``2.08B`` = 2_080_000_000, ``2080M`` =
+    same, ``500K`` = 500_000, ``8000000`` = 8_000_000. Returns an int.
+    """
+    s = str(s).strip()
+    if not s:
+        raise argparse.ArgumentTypeError("empty token count")
+    mult = 1
+    if s[-1].lower() in _TOKEN_SCALE:
+        mult = _TOKEN_SCALE[s[-1].lower()]
+        s = s[:-1].strip()
+    try:
+        val = float(s) * mult
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid token count {s!r} — use a number, optionally with a "
+            "K/M/B suffix (e.g. 2.08B, 2080M, 8000000)"
+        )
+    if val < 0:
+        raise argparse.ArgumentTypeError("token count must be >= 0")
+    return int(val)
+
 
 def create_diloco_parser(global_args):
     """Create parser for diloco command."""
@@ -138,14 +167,16 @@ def create_diloco_parser(global_args):
     )
     server_parser.add_argument(
         "--token-budget",
-        type=int,
+        type=_parse_token_count,
         default=0,
+        metavar="TOKENS",
         help=(
             "Global training-token budget. When the aggregated cross-worker\n"
             "token count reaches it, the server relays save_and_stop to every\n"
             "worker — the controlling stop for open-ended runs (esp. async,\n"
             "where uneven worker speeds make a per-worker step budget a poor\n"
-            "proxy). Workers run open-ended. 0 = no budget (default: 0)."
+            "proxy). Workers run open-ended. Accepts a K/M/B suffix\n"
+            "(e.g. 2.08B, 2080M) or a bare token count. 0 = no budget (default: 0)."
         ),
     )
     server_parser.add_argument(
@@ -607,13 +638,15 @@ def create_diloco_parser(global_args):
     )
     budget_parser.add_argument(
         "value",
-        type=int,
+        type=_parse_token_count,
         nargs="?",
         default=None,
+        metavar="TOKENS",
         help=(
-            "New global token budget (0 = open-ended). Omit to show the\n"
-            "current value. Lowering it below the tokens trained so far stops\n"
-            "the workers on their next heartbeat."
+            "New global token budget (0 = open-ended). Accepts a K/M/B suffix\n"
+            "(e.g. 2.08B, 2080M) or a bare token count. Omit to show the current\n"
+            "value. Lowering it below the tokens trained so far stops the\n"
+            "workers on their next heartbeat."
         ),
     )
     _add_client_conn_args(budget_parser)

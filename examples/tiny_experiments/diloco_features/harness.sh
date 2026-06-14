@@ -163,6 +163,26 @@ run_async_dylu() {
   shutdown_server
 }
 
+# Token budget: the server's --token-budget is the sole stop authority. Workers
+# submit with NO --max-steps (the config defaults max_steps=-1), so a small budget
+# (2M tokens) is what stops them — confirm via the server log
+# ("Token budget reached … relaying save_and_stop") and the worker's clean
+# TrainOutput well before any step cap. --token-budget takes a K/M/B suffix.
+run_token_budget() {
+  local name=token_budget
+  start_server "$name" 2 --grpc --wire-format safetensors --sync-every 20 \
+    --token-budget 2M --heartbeat-timeout 120 || return 1
+  local sid; sid="$(server_id)"
+  log "submit 2 workers (compile off, NO --max-steps; budget 2M stops them) -> $sid"
+  local out; out="$(forgather -t "$CONFIG" submit --diloco \
+      --diloco-worker-count 2 --compile no 2>&1)"; echo "$out"
+  local wids=($(echo "$out" | grep -oE 'q_[0-9]+_[0-9a-f]+'))
+  [[ ${#wids[@]} -ge 2 ]] || { err "expected 2 worker jobs"; shutdown_server; return 1; }
+  wait_jobs_terminal 90 "${wids[@]}" || warn "workers not terminal in time"
+  capture "$name" "$sid" "${wids[@]}"
+  shutdown_server
+}
+
 case "${1:-}" in
   # transport x wire matrix — quick functional smokes, baseline sync, compile off.
   # --sync-every 20 so 60 steps yield ~3 real sync rounds (each round exercises
@@ -179,9 +199,10 @@ case "${1:-}" in
   async)     do_run async     120 yes -- --grpc --wire-format safetensors --sync-every 20 --async --verbose-sync ;;
   async-dn)  do_run async_dn  160 yes -- --grpc --wire-format safetensors --sync-every 20 --async --dn-buffer-size 4 --verbose-sync ;;
   async-dylu) run_async_dylu ;;
+  token-budget) run_token_budget ;;
 
   all)
-    for r in http-pickle http-st grpc-pickle grpc-st baseline streaming async async-dn async-dylu; do
+    for r in http-pickle http-st grpc-pickle grpc-st baseline streaming async async-dn async-dylu token-budget; do
       log "==================== RECIPE: $r ===================="; "$0" "$r"
     done ;;
   *) err "unknown recipe '${1:-}'"; exit 2 ;;

@@ -61,8 +61,9 @@ DYLU_SPREAD=(0 0.03 0.06 0.10)
 
 # Token budgets (global stop). 4w = 520M tok/worker x4; the 2w arms run to the
 # matched-total half-budget so the 2w-vs-4w scaling compares like total tokens.
-BUDGET_4W=2080000000
-BUDGET_2W=1040000000
+# --token-budget accepts K/M/B suffixes (a bare number is raw tokens).
+BUDGET_4W=2.08B
+BUDGET_2W=1.04B
 
 MODE="${1:-run}"
 ONLY="${2:-}"                  # optional: run a single arm by name
@@ -112,7 +113,7 @@ start_one() {
   [[ "${1:-}" == "--" ]] && shift
   local out="$REPO/models/small_llama_feat_$name"
   rm -rf "$out"; cp -r "$PRISTINE" "$out"
-  local budget_args=(); [[ "$budget" -gt 0 ]] && budget_args=(--token-budget "$budget")
+  local budget_args=(); [[ -n "$budget" && "$budget" != "0" ]] && budget_args=(--token-budget "$budget")
   # Default transport unless the arm specifies its own wire format.
   local have_transport=0 a
   for a in "$@"; do [[ "$a" == "--wire-format" ]] && have_transport=1; done
@@ -256,7 +257,7 @@ if [[ "$MODE" == validate ]]; then
   # Small budget + a generous step cap so the budget (not max-steps) stops it,
   # exercising the save_and_stop relay. Lower the budget if it doesn't fire.
   MAXSTEPS_ARGS=(--max-steps 5000)
-  do_one v_budget  sync  4 3000000    -- --sync-every "$H"
+  do_one v_budget  sync  4 3M         -- --sync-every "$H"
   log "VALIDATE DONE — grep runs/v_*/ : fragments engaged, grace flush, budget relay."
   exit 0
 fi
