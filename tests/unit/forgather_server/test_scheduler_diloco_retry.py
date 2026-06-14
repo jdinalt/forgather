@@ -105,6 +105,15 @@ def test_unreachable_fails_after_budget(spy_storage, monkeypatch):
     assert "q-retry-1" not in sched._diloco_derive_first_seen
 
 
+def test_cancel_queued_clears_retry_bookkeeping(monkeypatch):
+    """Cancelling a worker mid-retry must not leak its dict entry."""
+    monkeypatch.setattr(sched.queue_store, "remove_item", lambda q: True)
+    sched._diloco_derive_first_seen.clear()
+    sched._diloco_derive_first_seen["q-retry-1"] = time.monotonic()
+    assert sched.cancel_queued("q-retry-1") is True
+    assert "q-retry-1" not in sched._diloco_derive_first_seen
+
+
 def test_success_clears_retry_bookkeeping(spy_storage, monkeypatch):
     class _Res:
         proc = object()

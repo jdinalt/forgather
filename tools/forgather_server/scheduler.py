@@ -1551,6 +1551,9 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
         return
     except Exception as e:
         log.exception("launch failed for %s", item.queue_id)
+        # Clear any derivation-retry bookkeeping (#218) in case this job
+        # requeued earlier and is now failing via a different error.
+        _diloco_derive_first_seen.pop(item.queue_id, None)
         job_records.update_record(
             item.queue_id,
             status="failed",
@@ -1743,6 +1746,9 @@ def cancel_queued(queue_id: str) -> bool:
     Returns ``False`` if the queue_id isn't in the queue (it may already
     be a JobRecord — caller should fall through to ``abort_record``).
     """
+    # Drop any in-flight backend-derivation retry bookkeeping (#218) so a
+    # worker cancelled mid-requeue doesn't leak its dict entry.
+    _diloco_derive_first_seen.pop(queue_id, None)
     return queue_store.remove_item(queue_id)
 
 
