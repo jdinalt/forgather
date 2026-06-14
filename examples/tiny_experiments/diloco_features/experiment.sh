@@ -223,6 +223,7 @@ do_one() {
   local kind="$2" nw="$3" budget="$4"; shift 4
   [[ "${1:-}" == "--" ]] && shift
   local port=8512
+  rm -rf "$RESULTS/$name"   # fresh per-arm capture dir (named path, internal — no glob)
   wait_no_servers || { err "a prior server won't clear; skipping '$name'"; return 1; }
   start_one "$name" "$port" "$nw" "$budget" -- "$@" || return 1
   local ids
