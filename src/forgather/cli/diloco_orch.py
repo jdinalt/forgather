@@ -422,7 +422,9 @@ def render_status(merged, *, want_queues):
             frac = prog.get("fraction") or 0.0
             rate = prog.get("tokens_per_second")
             eta = prog.get("eta_seconds")
-            rate_s = f"{_fmt_tokens(rate)}/s" if rate else "—/s"
+            # A real stall reports rate 0.0 (not None) — show "0/s" (reads as
+            # "stalled") rather than "—/s" (reads as "unknown / not yet known").
+            rate_s = f"{_fmt_tokens(rate)}/s" if rate is not None else "—/s"
             eta_s = "done" if status.get("budget_stop_sent") else _fmt_duration(eta)
             print(f"  Token budget:  {_ascii_bar(frac)} {frac * 100:5.1f}%{stopped}")
             print(

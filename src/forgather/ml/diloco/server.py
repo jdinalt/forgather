@@ -2884,8 +2884,12 @@ class DiLoCoServer:
         """Append a (monotonic ts, total_tokens) sample for the rolling rate.
 
         No-op without a token budget (the rate/ETA is only surfaced for budgeted
-        runs). Cheap and lock-free — the deque append is atomic, and a slightly
-        stale read in the status handler is fine for a progress gauge.
+        runs). Lock-free on purpose: ``deque.append`` and the ``total_tokens``
+        int read are each atomic under the GIL, and different workers' heartbeats
+        race here (this is NOT serial-per-worker like ``pending_command``). A
+        cross-worker read could append two samples a hair out of order; the
+        ``dt<=0`` / ``dtok<0`` guards in ``_rolling_token_rate`` absorb that, and
+        a momentarily stale gauge is fine.
         """
         if self.token_budget <= 0:
             return
@@ -2909,6 +2913,12 @@ class DiLoCoServer:
             if t >= cutoff:
                 base_t, base_tok = t, tok
                 break
+        # After a long stall the only in-window sample can be the tail itself
+        # (base collapses onto ``now``). Fall back to the previous sample so we
+        # still produce a rate — a stall then reads as ~0 tok/s (the slowdown we
+        # most want visible), not a blank gauge. len>=2 guaranteed above.
+        if base_t >= now_t:
+            base_t, base_tok = samples[-2]
         dt = now_t - base_t
         dtok = now_tok - base_tok
         if dt <= 0 or dtok < 0:

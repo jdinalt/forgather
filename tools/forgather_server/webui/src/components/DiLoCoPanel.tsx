@@ -1183,7 +1183,7 @@ function TokenBudgetBar({ status }: { status: DiLoCoStatus }) {
         className="muted"
         style={{ fontSize: 11, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}
       >
-        {rate ? `${fmtTokens(rate)}/s` : "—/s"} · ETA{" "}
+        {rate != null ? `${fmtTokens(rate)}/s` : "—/s"} · ETA{" "}
         {stopped ? "done" : fmtDuration(eta)}
       </span>
     </div>
