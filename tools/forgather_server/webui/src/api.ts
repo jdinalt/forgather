@@ -1196,6 +1196,20 @@ export interface DiLoCoWorkerStatus {
 }
 
 /** Upstream ``/status`` response. Field set tracks DiLoCoServer._handle_status. */
+/** Token-budget progress for the dashboard bar / CLI status line. */
+export interface DiLoCoTokenProgress {
+  tokens_completed: number;
+  token_budget: number;
+  /** 0..1, clamped. */
+  fraction: number;
+  /** Rolling tokens/sec over the recent window; null until estimable. */
+  tokens_per_second: number | null;
+  /** Seconds remaining at the rolling rate; null when rate unknown/zero. */
+  eta_seconds: number | null;
+  rate_window_seconds: number;
+  budget_stop_sent: boolean;
+}
+
 export interface DiLoCoStatus {
   status?: string;
   mode?: "sync" | "async";
@@ -1217,6 +1231,8 @@ export interface DiLoCoStatus {
   min_workers?: number;
   token_budget?: number;
   budget_stop_sent?: boolean;
+  /** Token-budget progress + rolling-rate ETA (present when token_budget>0). */
+  token_progress?: DiLoCoTokenProgress;
   outer_lr?: number;
   outer_momentum?: number;
   save_dir?: string;

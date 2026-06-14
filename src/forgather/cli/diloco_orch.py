@@ -321,6 +321,38 @@ def _render_aggregate_stats(agg):
             print(line)
 
 
+def _fmt_tokens(n):
+    """Compact K/M/B token count, e.g. 1_500_000 -> '1.50M'."""
+    if n is None:
+        return "—"
+    n = float(n)
+    for unit, div in (("B", 1e9), ("M", 1e6), ("K", 1e3)):
+        if abs(n) >= div:
+            return f"{n / div:.2f}{unit}"
+    return f"{n:.0f}"
+
+
+def _fmt_duration(secs):
+    """Human ETA, e.g. 3725 -> '1h02m'; None/negative -> '—'."""
+    if secs is None or secs < 0:
+        return "—"
+    secs = int(secs)
+    h, rem = divmod(secs, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h{m:02d}m"
+    if m:
+        return f"{m}m{s:02d}s"
+    return f"{s}s"
+
+
+def _ascii_bar(frac, width=24):
+    """A TQDM-ish ASCII bar: '[######------------------]'."""
+    frac = max(0.0, min(1.0, float(frac)))
+    filled = int(round(frac * width))
+    return "[" + "#" * filled + "-" * (width - filled) + "]"
+
+
 def render_status(merged, *, want_queues):
     """Human-readable rendering of an :func:`assemble_status` result."""
     import datetime
@@ -383,7 +415,25 @@ def render_status(merged, *, want_queues):
 
     if status.get("token_budget", 0):
         stopped = " (stop sent)" if status.get("budget_stop_sent") else ""
-        print(f"  Token budget:  {status['token_budget']:,}{stopped}")
+        prog = status.get("token_progress") or {}
+        done = prog.get("tokens_completed")
+        budget = status["token_budget"]
+        if done is not None:
+            frac = prog.get("fraction") or 0.0
+            rate = prog.get("tokens_per_second")
+            eta = prog.get("eta_seconds")
+            # A real stall reports rate 0.0 (not None) — show "0/s" (reads as
+            # "stalled") rather than "—/s" (reads as "unknown / not yet known").
+            rate_s = f"{_fmt_tokens(rate)}/s" if rate is not None else "—/s"
+            eta_s = "done" if status.get("budget_stop_sent") else _fmt_duration(eta)
+            print(f"  Token budget:  {_ascii_bar(frac)} {frac * 100:5.1f}%{stopped}")
+            print(
+                f"                 {_fmt_tokens(done)} / {_fmt_tokens(budget)}"
+                f"  ·  {rate_s}  ·  ETA {eta_s}"
+            )
+        else:
+            # Older server without token_progress.
+            print(f"  Token budget:  {budget:,}{stopped}")
 
     deaths = status.get("total_worker_deaths", 0)
     if deaths:

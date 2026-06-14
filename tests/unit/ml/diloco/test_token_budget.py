@@ -150,3 +150,74 @@ class TestTokenBudgetRuntimeControl:
             assert _pending(server, "w0") == [None]
         finally:
             server.stop()
+
+
+class TestTokenProgress:
+    """The progress/ETA gauge the webui bar and CLI status line consume."""
+
+    def test_none_without_budget(self, tmp_path):
+        server = _server(tmp_path, token_budget=0)
+        assert server._token_progress() is None
+        # No samples are recorded when there's no budget.
+        server._stats.total_tokens = 5
+        server._record_token_sample()
+        assert len(server._token_samples) == 0
+
+    def test_progress_fields_and_fraction(self, tmp_path):
+        server = _server(tmp_path, token_budget=1000)
+        server._stats.total_tokens = 250
+        prog = server._token_progress()
+        assert prog["tokens_completed"] == 250
+        assert prog["token_budget"] == 1000
+        assert prog["fraction"] == 0.25
+        assert prog["rate_window_seconds"] == server._token_rate_window_s
+        # No rate from a single sample => no ETA.
+        assert prog["tokens_per_second"] is None
+        assert prog["eta_seconds"] is None
+
+    def test_fraction_clamps_at_one(self, tmp_path):
+        server = _server(tmp_path, token_budget=1000)
+        server._stats.total_tokens = 1500  # overshoot past the budget
+        assert server._token_progress()["fraction"] == 1.0
+
+    def test_rolling_rate_and_eta(self, tmp_path):
+        server = _server(tmp_path, token_budget=2000)
+        # Seed (monotonic ts, total_tokens) samples directly: 100 tokens/10s.
+        server._token_samples.extend((1000.0 + i * 10.0, i * 100) for i in range(6))
+        server._stats.total_tokens = 500  # = last sample
+        rate = server._rolling_token_rate()
+        assert abs(rate - 10.0) < 1e-9  # 100 tokens / 10 s
+        prog = server._token_progress()
+        assert abs(prog["tokens_per_second"] - 10.0) < 1e-9
+        # remaining 1500 tokens / 10 tok/s = 150 s
+        assert abs(prog["eta_seconds"] - 150.0) < 1e-6
+
+    def test_rate_window_uses_recent_baseline(self, tmp_path):
+        server = _server(tmp_path, token_budget=10_000)
+        server._token_rate_window_s = 50.0
+        # Old slow segment then a recent fast one; only the last 50s counts.
+        samples = [(0.0, 0), (10.0, 10), (100.0, 100), (110.0, 200), (120.0, 300)]
+        server._token_samples.extend(samples)
+        server._stats.total_tokens = 300
+        # window [70,120]: baseline (100.0,100) -> (300-100)/(120-100)=10 tok/s
+        assert abs(server._rolling_token_rate() - 10.0) < 1e-9
+
+    def test_stall_reports_zero_rate_not_none(self, tmp_path):
+        """After a long stall the only in-window sample is the tail; fall back to
+        the previous sample so the gauge reads ~0 tok/s (visible slowdown), not a
+        blank None."""
+        server = _server(tmp_path, token_budget=10_000)
+        server._token_rate_window_s = 50.0
+        # All progress is old; the last two samples are flat (a stall) and only
+        # the tail falls inside the 50s window.
+        server._token_samples.extend(
+            [(0.0, 1000), (10.0, 1000), (200.0, 1000), (260.0, 1000)]
+        )
+        server._stats.total_tokens = 1000
+        rate = server._rolling_token_rate()
+        assert rate is not None
+        assert rate == 0.0  # baseline = samples[-2]=(200,1000), now=(260,1000)
+        # A 0 rate yields no ETA (can't divide), but progress still renders.
+        prog = server._token_progress()
+        assert prog["tokens_per_second"] == 0.0
+        assert prog["eta_seconds"] is None
