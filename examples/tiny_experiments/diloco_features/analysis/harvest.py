@@ -66,8 +66,9 @@ EXPERIMENTS = [
 ]
 
 # Async arms for which staleness is harvested as a column. The staleness *gate*
-# (analysis/staleness.py) splits these into should-be-stale (async_nodn, async_dn4,
-# dylu_off, gated ~ workers-1) vs reducer (dylu_on, judged below its control).
+# (analysis/staleness.py) treats the equal-speed jitter arms (async_nodn, async_dn4)
+# as round-robin (snapshot mean ~ (k-1)/2; per-submission max ~ k-1) and the
+# delay-spread dylu pair as a reducer (dylu_on mean below its dylu_off control).
 ASYNC_ARMS = {"async_nodn", "async_dn4", "dylu_off", "dylu_on"}
 
 _NUM = r"[-+]?\d[\d,]*\.?\d*(?:e[-+]?\d+)?"

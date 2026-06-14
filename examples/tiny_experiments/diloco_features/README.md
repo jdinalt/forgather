@@ -287,16 +287,23 @@ respectively target, using debug-only per-step worker throttles (delivered via
   *synthetic* — it validates DyLU's mechanism, it is not the real heterogeneity
   payoff (that's Future Directions).
 
-**Staleness is a pass/fail gate (with corrected semantics).** The async conclusions
-*depend on* the workers actually running stale, so we verify it:
-[`analysis/staleness.py`](analysis/staleness.py) derives each worker's staleness
-from the captured `/status` snapshot (`server sync_round −
-worker.last_sync_server_round`). The arms that are *supposed* to be stale —
-`async_nodn`, `async_dn4`, and the DyLU-off control `dylu_off` — are gated against
-mean ≈ `k − 1` *before* the headline tier (if the jitter isn't producing staleness,
-they aren't testing what we claim). The *staleness-reducer* arm `dylu_on` is the
-exception: its success criterion is staleness **below its `dylu_off` control**, so
-it is **not** failed for landing below `k − 1` — a working DyLU arm *should*.
+**Staleness is a pass/fail gate.** The async conclusions *depend on* the workers
+actually running out of lock-step, so we verify it from the captured `/status`
+snapshot (`server sync_round − worker.last_sync_server_round`,
+[`analysis/staleness.py`](analysis/staleness.py)) — with a round-robin subtlety
+worth stating precisely. For `k` **equal-average-speed** workers (the jitter arms),
+at any instant the workers occupy staleness `{0, 1, …, k−1}`, one per phase of the
+`k`-step sync cycle. So the **snapshot mean is `(k−1)/2`** (= 1.5 at k=4) — the
+signature of *full* decorrelation (a synchronized run collapses it toward 0) —
+while the async paper's "staleness ≈ `k−1`" is the **per-submission** staleness, i.e.
+how stale a gradient is *when applied*, which is the **max** of the cycle (= 3 at
+k=4). We therefore gate the jitter arms (`async_nodn`, `async_dn4`) on **snapshot
+mean ≈ (k−1)/2** *before* the headline tier and report the per-submission **max ≈
+k−1**. (More jitter can't raise the snapshot mean above `(k−1)/2` at equal average
+speed — the workers stay round-robin — so a *low* mean means weak jitter, not a low
+cap.) The DyLU arms use a *delay spread* (not jitter), so they're **not**
+round-robin; `dylu_off` isn't gated at a fixed value — it's the control, and the
+reducer `dylu_on` succeeds by landing at **lower** mean staleness than `dylu_off`.
 
 **Grace is validated, not measured.** Grace is **not a study arm** (see §3.5 and
 the scope note in the Abstract) — its payoff is wall-clock tail-reduction in a

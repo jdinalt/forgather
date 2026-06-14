@@ -1,32 +1,34 @@
 #!/usr/bin/env python3
-"""Staleness gate — with reducer-vs-should-be-stale semantics.
+"""Staleness gate — snapshot-mean ≈ (k-1)/2 for decorrelation; per-submission max ≈ k-1.
 
-The async conclusions assume the workers run genuinely out of lock-step, so a
-submission's pseudo-gradient is stale by ~workers-1 server rounds by the time it
-lands. For each async arm this reads the live /status snapshot
-(``runs/<arm>/status.json``) and derives each worker's staleness as
+The async conclusions assume the jittered workers run genuinely out of lock-step.
+We verify it from the captured /status snapshot, where each worker's staleness is
 
-    staleness = server sync_round  -  worker.last_sync_server_round
+    staleness = server sync_round  −  worker.last_sync_server_round
 
-But not every async arm should be stale. Two classes (see README §3.3):
+The round-robin subtlety: for k EQUAL-average-speed workers (the jitter arms), at
+any instant the workers sit at staleness {0, 1, …, k-1} — one at each phase of the
+k-step sync cycle. So two different numbers, both meaningful:
+  * the SNAPSHOT MEAN is (k-1)/2  (= 1.5 for k=4) — the signature of *full*
+    decorrelation. A synchronized (un-jittered) run collapses this toward ~0.
+  * the PER-SUBMISSION staleness — the async paper's "~k-1" — is how stale a
+    gradient is at the instant it is applied = the MAX of the cycle (= 3 for k=4).
+So we gate the jitter arms on snapshot mean ≈ (k-1)/2 and report max ≈ k-1.
+(More jitter cannot push the snapshot mean above (k-1)/2 at equal average speed —
+the workers stay round-robin — so a low mean here means weak jitter, not a low cap.)
 
-  * SHOULD-BE-STALE — ``async_nodn`` / ``async_dn4`` / ``dylu_off``: the jitter (or
-    the spread, for the DyLU-off control) is *supposed* to produce staleness
-    ~ k-1. These are GATED: PASS iff mean ≈ k-1 within tolerance. If they aren't
-    stale, the async arms aren't testing what we claim — so this runs BEFORE the
-    headline tier.
-  * REDUCER — ``dylu_on``: DyLU's whole job is to *cut* staleness. Its success
-    criterion is staleness **below its control** (``dylu_off``), NOT ≈ k-1. It is
-    reported as reduced/not-reduced vs the control and is never failed for landing
-    below k-1.
+Two arm classes (README §3.3):
+  * JITTER-GATED — async_nodn / async_dn4: equal-speed jitter ⇒ round-robin.
+    PASS iff snapshot mean ≈ (k-1)/2 (if the jitter weren't decorrelating, the
+    workers cluster near staleness 0 and the mean collapses).
+  * REDUCER — dylu_on vs its dylu_off control: a *delay spread* (not jitter), so
+    NOT round-robin (slow workers run staler). Not gated at a fixed value; success
+    is dylu_on's mean staleness BELOW dylu_off's (DyLU re-paces to cut it).
 
-(Grace is not a study arm — its staleness-reduction is validate-only; see §3.5.)
-
-    python analysis/staleness.py            # all async arms
+    python analysis/staleness.py            # the jitter gate + the dylu reducer
     python analysis/staleness.py <arm> ...  # specific arm(s)
 
-Reads runs/<arm>/status.json directly (ephemeral). Tolerance is generous (the
-induced staleness is stochastic and budget-bounded).
+Reads runs/<arm>/status.json directly (ephemeral).
 """
 
 import json
@@ -36,80 +38,82 @@ import sys
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUNS = os.path.join(HERE, "runs")
 
-SHOULD_BE_STALE = ["async_nodn", "async_dn4", "dylu_off"]
-REDUCERS = {"dylu_on": "dylu_off"}  # arm -> its staleness control
-TOLERANCE = 1.0  # |mean staleness - (workers-1)| within this => PASS (should-be-stale)
+JITTER_GATED = ["async_nodn", "async_dn4"]  # equal-speed jitter -> round-robin
+REDUCERS = {"dylu_on": "dylu_off"}  # delay-spread; dylu_on should be LESS stale
+TOLERANCE = 0.75  # |snapshot mean - (k-1)/2| within this => decorrelated (PASS)
 
 
 def load_staleness(arm):
-    """Return (mean_staleness, num_workers, per_worker [(id, staleness)])."""
+    """Return (mean, max, num_workers, per_worker [(id, staleness)])."""
     path = os.path.join(RUNS, arm, "status.json")
     if not os.path.isfile(path):
-        return None, None, []
+        return None, None, None, []
     try:
         with open(path, errors="replace") as f:
             d = json.load(f)
     except (json.JSONDecodeError, OSError):
-        return None, None, []
-    # orchestrator-routed `status --json` wraps the snapshot under "status".
-    if isinstance(d.get("status"), dict):
+        return None, None, None, []
+    if isinstance(d.get("status"), dict):  # orchestrator wraps the snapshot
         d = d["status"]
     server_round = d.get("sync_round")
     workers = d.get("workers") or {}
     nw = d.get("num_workers") or len(workers)
     if server_round is None or not workers:
-        return None, nw, []
+        return None, None, nw, []
     per = [
         (wid, server_round - w.get("last_sync_server_round", 0))
         for wid, w in sorted(workers.items())
         if w.get("last_sync_server_round", 0) > 0
     ]
-    mean = sum(s for _, s in per) / len(per) if per else None
-    return mean, nw, per
+    if not per:
+        return None, None, nw, []
+    vals = [s for _, s in per]
+    return sum(vals) / len(vals), max(vals), nw, per
 
 
 def main():
     arms = sys.argv[1:]
     if arms:
-        # An explicit arg is a reducer iff named in REDUCERS, else gated as stale.
-        do_stale = [a for a in arms if a not in REDUCERS]
+        do_gate = [a for a in arms if a not in REDUCERS]
         do_reduce = [a for a in arms if a in REDUCERS]
     else:
-        do_stale, do_reduce = SHOULD_BE_STALE, list(REDUCERS)
+        do_gate, do_reduce = JITTER_GATED, list(REDUCERS)
 
     any_data = False
 
-    print("== should-be-stale (gate: mean ~ workers-1) ==")
-    print(f"{'arm':<18}{'workers':>9}{'expected':>10}{'mean stale':>12}{'gate':>8}")
-    for arm in do_stale:
-        mean, nw, per = load_staleness(arm)
+    print("== jitter arms (gate: snapshot mean ~ (k-1)/2; per-submission max ~ k-1) ==")
+    print(f"{'arm':<14}{'workers':>9}{'mean':>8}{'exp':>7}{'max':>6}{'gate':>8}")
+    for arm in do_gate:
+        mean, mx, nw, per = load_staleness(arm)
         if mean is None:
-            print(f"{arm:<18}{'(no status.json / no synced workers)':>49}")
+            print(f"{arm:<14}{'(no status.json / no synced workers)':>49}")
             continue
         any_data = True
-        expected = (nw - 1) if nw else float("nan")
-        gate = "PASS" if abs(mean - expected) <= TOLERANCE else "FAIL"
-        print(f"{arm:<18}{nw:>9}{expected:>10.1f}{mean:>12.2f}{gate:>8}")
+        exp = (nw - 1) / 2 if nw else float("nan")
+        gate = "PASS" if abs(mean - exp) <= TOLERANCE else "FAIL"
+        print(f"{arm:<14}{nw:>9}{mean:>8.2f}{exp:>7.2f}{mx:>6}{gate:>8}")
         print(f"  per-worker: {'  '.join(f'{w}:{s}' for w, s in per)}")
 
     if do_reduce:
-        print("\n== reducers (success: staleness BELOW control, not ~ k-1) ==")
         print(
-            f"{'arm':<14}{'control':<12}{'arm stale':>11}{'ctrl stale':>12}{'verdict':>11}"
+            "\n== reducer (success: dylu_on mean staleness BELOW its dylu_off control) =="
+        )
+        print(
+            f"{'arm':<10}{'control':<11}{'arm mean':>9}{'ctrl mean':>11}{'verdict':>13}"
         )
         for arm in do_reduce:
             ctrl = REDUCERS.get(arm)
-            mean, nw, _ = load_staleness(arm)
-            cmean, _, _ = load_staleness(ctrl) if ctrl else (None, None, [])
+            mean, _, _, _ = load_staleness(arm)
+            cmean = load_staleness(ctrl)[0] if ctrl else None
             if mean is None:
-                print(f"{arm:<14}{ctrl or '-':<12}{'(no status.json)':>34}")
+                print(f"{arm:<10}{ctrl or '-':<11}{'(no status.json)':>33}")
                 continue
             any_data = True
             if cmean is None:
-                print(f"{arm:<14}{ctrl or '-':<12}{mean:>11.2f}{'(no control)':>23}")
+                print(f"{arm:<10}{ctrl or '-':<11}{mean:>9.2f}{'(no control)':>24}")
                 continue
             verdict = "reduced" if mean < cmean else "NOT reduced"
-            print(f"{arm:<14}{ctrl:<12}{mean:>11.2f}{cmean:>12.2f}{verdict:>11}")
+            print(f"{arm:<10}{ctrl:<11}{mean:>9.2f}{cmean:>11.2f}{verdict:>13}")
 
     if not any_data:
         print("\nNo staleness data — run an async arm first (experiment.sh).")
