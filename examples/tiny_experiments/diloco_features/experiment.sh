@@ -50,7 +50,9 @@ CONFIG="default.yaml"
 
 H=100                          # inner sync interval (steps between outer steps)
 SEED=42                        # fixed; matches the config default (single run/arm)
-JITTER=0.15                    # per-step jitter (s) for async phase-decorrelation (-> staleness ~3)
+JITTER="${JITTER:-0.15}"       # per-step jitter (s) for async phase-decorrelation (-> staleness ~3).
+                               # env-overridable for the staleness-gate calibration loop (double it
+                               # if measured staleness < ~3, per the design's gate).
 GRACE_S="${GRACE_S:-0.5}"      # grace window (s) — VALIDATE ONLY (v_grace mechanism check; grace is not a study arm)
 
 # Per-worker fixed delays (s) for the DyLU speed-spread arms. Calibrate from the
@@ -63,7 +65,8 @@ DYLU_SPREAD=(0 0.03 0.06 0.10)
 # 525M tokens = 20 x 26.2M non-embedding params) and matches the sibling `diloco`
 # project's long reference run; at 4 workers that's ~250M tok/worker, ~76 sync
 # rounds at H=100 — ample. --token-budget accepts K/M/B suffixes (bare = raw tokens).
-BUDGET=1B
+# env-overridable for short calibration probes, e.g. BUDGET=80M for a ~5-min run.
+BUDGET="${BUDGET:-1B}"
 
 MODE="${1:-run}"
 ONLY="${2:-}"                  # optional: run a single arm by name
