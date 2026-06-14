@@ -102,6 +102,7 @@ def _server_cmd(args):
     async_mode = getattr(args, "async_mode", False)
     dn_buffer_size = getattr(args, "dn_buffer_size", 0)
     grace_period = getattr(args, "grace_period", 0.0)
+    token_budget = getattr(args, "token_budget", 0)
     dylu = getattr(args, "dylu", False)
     dylu_base = getattr(args, "dylu_base_sync_every", 500)
     verbose_sync = getattr(args, "verbose_sync", False)
@@ -117,6 +118,8 @@ def _server_cmd(args):
         print(f"Mode: {mode_str}")
     else:
         print("Mode: sync")
+    if token_budget > 0:
+        print(f"Token budget: {token_budget:,}")
 
     # Fault tolerance settings
     heartbeat_timeout = getattr(args, "heartbeat_timeout", 120.0)
@@ -209,6 +212,7 @@ def _server_cmd(args):
         async_mode=async_mode,
         dn_buffer_size=dn_buffer_size,
         grace_period=grace_period,
+        token_budget=token_budget,
         verbose_sync=verbose_sync,
         dylu_enabled=dylu,
         dylu_base_sync_every=dylu_base,
@@ -473,6 +477,41 @@ def _control_cmd(args):
         return 0
     print(f"Queued '{command}' for {len(workers)} worker(s): {', '.join(workers)}")
     print("Each worker applies it on its next heartbeat.")
+    return 0
+
+
+def _token_budget_cmd(args):
+    """Show (no value) or set the server's global token budget at runtime."""
+    from . import diloco_orch as orch
+    from .server_client import ServerUnreachable
+
+    try:
+        ops, label = orch.make_control_ops(args)
+    except ServerUnreachable as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    try:
+        if args.value is None:
+            st = ops.get_status()
+            budget = st.get("token_budget", 0)
+            if budget:
+                sent = " — stop already relayed" if st.get("budget_stop_sent") else ""
+                print(f"Token budget: {budget:,}{sent}")
+            else:
+                print("Token budget: open-ended (0)")
+        else:
+            resp = ops.set_token_budget(args.value)
+            budget = resp.get("token_budget", args.value)
+            total = resp.get("total_tokens", 0)
+            if budget:
+                print(f"Token budget set to {budget:,} (trained so far: {total:,}).")
+            else:
+                print("Token budget cleared (open-ended).")
+            if resp.get("budget_stop_sent"):
+                print("Budget already reached — relayed save_and_stop to workers.")
+    except Exception as e:
+        print(f"Error contacting server at {label}: {e}")
+        return 1
     return 0
 
 
@@ -850,6 +889,8 @@ def diloco_cmd(args):
         return _status_cmd(args)
     elif subcmd == "control":
         return _control_cmd(args)
+    elif subcmd == "token-budget":
+        return _token_budget_cmd(args)
     elif subcmd == "shutdown":
         return _shutdown_cmd(args)
     elif subcmd == "servers":

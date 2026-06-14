@@ -47,6 +47,7 @@ interface PersistedAdHoc {
   host: string;
   async: boolean;
   dnBufferSize: number;
+  tokenBudget: number;
   verboseSync: boolean;
   dylu: boolean;
   dyluBase: number;
@@ -99,6 +100,7 @@ const DEFAULT_AD_HOC: PersistedAdHoc = {
   host: "127.0.0.1",
   async: false,
   dnBufferSize: 0,
+  tokenBudget: 0,
   verboseSync: false,
   dylu: false,
   dyluBase: 500,
@@ -210,6 +212,8 @@ export function DiLoCoServerModal({
         host: pickStr(editingService.args, "host", "127.0.0.1"),
         async: pickBool(editingService.args, "async_mode", false),
         dnBufferSize: pickNum(editingService.args, "dn_buffer_size", 0),
+        // Stored in raw tokens on the args; the field is in millions.
+        tokenBudget: pickNum(editingService.args, "token_budget", 0) / 1_000_000,
         verboseSync: pickBool(editingService.args, "verbose_sync", false),
         dylu: pickBool(editingService.args, "dylu", false),
         dyluBase: pickNum(editingService.args, "dylu_base_sync_every", 500),
@@ -252,6 +256,7 @@ export function DiLoCoServerModal({
   const [host, setHost] = useState(seed.host);
   const [asyncMode, setAsyncMode] = useState(seed.async);
   const [dnBufferSize, setDnBufferSize] = useState(seed.dnBufferSize);
+  const [tokenBudget, setTokenBudget] = useState(seed.tokenBudget);
   const [verboseSync, setVerboseSync] = useState(seed.verboseSync);
   const [dylu, setDylu] = useState(seed.dylu);
   const [dyluBase, setDyluBase] = useState(seed.dyluBase);
@@ -361,6 +366,8 @@ export function DiLoCoServerModal({
       args.download_sr = true;
     }
     if (dnBufferSize > 0) args.dn_buffer_size = dnBufferSize;
+    // Field is in millions of tokens; the server flag is raw tokens.
+    if (tokenBudget > 0) args.token_budget = Math.round(tokenBudget * 1_000_000);
     if (dylu) args.dylu_base_sync_every = dyluBase;
     if (trimmedFromCheckpoint) args.from_checkpoint = trimmedFromCheckpoint;
     if (runName.trim()) args.run_name = runName.trim();
@@ -413,6 +420,7 @@ export function DiLoCoServerModal({
       host,
       async: asyncMode,
       dnBufferSize,
+      tokenBudget,
       verboseSync,
       dylu,
       dyluBase,
@@ -601,6 +609,17 @@ export function DiLoCoServerModal({
               min={1}
               value={numWorkers}
               onChange={(e) => setNumWorkers(Number(e.target.value))}
+              style={{ width: "100%" }}
+            />
+          </label>
+
+          <label>
+            Token budget — millions of tokens (0 = open-ended)
+            <input
+              type="number"
+              min={0}
+              value={tokenBudget}
+              onChange={(e) => setTokenBudget(Number(e.target.value))}
               style={{ width: "100%" }}
             />
           </label>

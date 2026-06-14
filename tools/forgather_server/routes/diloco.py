@@ -749,6 +749,7 @@ _CONTROL_ACTIONS = frozenset(
         "kick_worker",
         "update_optimizer",
         "update_num_workers",
+        "update_token_budget",
         "command",
         "shutdown",
     }
