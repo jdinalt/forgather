@@ -100,7 +100,7 @@ def main():
                 label=LABELS[s],
             )
         ax.set_title(title)
-        ax.set_xlabel("step")
+        ax.set_xlabel("local step (∝ total tokens)")
         ax.set_ylabel(ylabel)
         if logy:
             ax.set_yscale("log")
@@ -109,7 +109,7 @@ def main():
         ax.legend(fontsize=8)
         ax.grid(alpha=0.25)
 
-    suptitle = "small Llama (34.4M), 4 workers × 520M tokens, H=100"
+    suptitle = "small Llama (34.4M), 4 workers, 1B total tokens, H=100"
 
     # Endgame (converged runs only): the deltas among the converged runs are
     # small, so a zoom shows the separation; diverged runs would blow out the

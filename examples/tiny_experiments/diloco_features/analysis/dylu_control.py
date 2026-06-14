@@ -90,7 +90,7 @@ def main():
         "Does DyLU help? Same speed spread + N=4 buffer, DyLU off vs on",
         fontweight="bold",
     )
-    ax.set_xlabel("step")
+    ax.set_xlabel("local step (∝ total tokens)")
     ax.set_ylabel("eval loss")
     ax.legend(fontsize=8)
     ax.grid(alpha=0.25)

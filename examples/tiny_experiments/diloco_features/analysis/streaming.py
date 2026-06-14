@@ -96,7 +96,7 @@ def main():
             label=lbl,
         )
     axc.set_title("Eval loss — streaming fragmentation")
-    axc.set_xlabel("step")
+    axc.set_xlabel("local step (∝ total tokens)")
     axc.set_ylabel("eval loss")
     axc.legend(fontsize=8)
     axc.grid(alpha=0.25)

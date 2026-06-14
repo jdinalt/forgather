@@ -127,10 +127,13 @@ start_one() {
   log "server '$name' ready on :$port"
 }
 
-# submit_sync <port> <nw> -> nw workers in one submit, no throttle
+# submit_sync <port> <nw> -> nw workers in one submit, no throttle.
+# --heartbeat-interval 5 matches the async/dylu submits so token accounting (and
+# thus the budget stop) ticks at the same cadence on every arm — tighter
+# equal-total-tokens alignment across the matrix (the budget is heartbeat-driven).
 submit_sync() {
   forgather -t "$CONFIG" submit --diloco --diloco-server "127.0.0.1:$1" \
-    --diloco-worker-count "$2" --seed "$SEED" \
+    --diloco-worker-count "$2" --seed "$SEED" --heartbeat-interval 5 \
     "${MAXSTEPS_ARGS[@]}" "${COMPILE_ARGS[@]}" 2>/dev/null \
     | grep -oE 'q_[0-9]+_[0-9a-f]+'
 }
@@ -254,8 +257,8 @@ log "budget=$BUDGET (4 workers)  dylu_spread=(${DYLU_SPREAD[*]})"
 if [[ "$MODE" == validate ]]; then
   do_one v_stream  sync  4 0          -- --num-fragments 5 --fragment-assignment strided
   do_one v_grace   async 4 0          -- --async --dn-buffer-size 4 --grace-period "$GRACE_S"
-  # Small budget + a generous step cap so the budget (not max-steps) stops it,
-  # exercising the save_and_stop relay. Lower the budget if it doesn't fire.
+  # Small budget (3M, reached in ~20 steps) + a generous step cap so the BUDGET
+  # (not max-steps) is what stops it — exercises the save_and_stop relay fast.
   MAXSTEPS_ARGS=(--max-steps 5000)
   do_one v_budget  sync  4 3M         -- --sync-every "$H"
   log "VALIDATE DONE — grep runs/v_*/ : fragments engaged, grace flush, budget relay."
@@ -293,5 +296,6 @@ do_one dylu_off        dylu  4 "$BUDGET" -- --sync-every "$H" --async --dn-buffe
 # 8  Async + DN + DyLU, same speed spread — DyLU cuts staleness (A/B vs #7).
 do_one dylu_on         dylu  4 "$BUDGET" -- --async --dylu --dylu-base-sync-every "$H" --dn-buffer-size 4
 
+wait_no_servers || warn "final server cleanup: :8512 may still be up"
 log "MATRIX DONE — harvest: python analysis/harvest.py && python analysis/plot_experiment.py"
-log "  then: grace_batches.py (validate), staleness.py, streaming.py, dylu_control.py"
+log "  then: staleness.py, streaming.py, dylu_control.py  (grace_batches.py is validate-only)"
