@@ -206,6 +206,21 @@ status, and DyLU configuration. The known-worker line expands into a
 **resumable roster** — the not-running worker_ids (with last-seen times) you can
 relaunch under to resume from their checkpoints.
 
+When a `--token-budget` is set, the status renders a **progress line** —
+completed/total tokens, percent, the rolling token rate, and an ETA:
+
+```
+  Token budget:  [##########--------------]  41.0%
+                 820.00M / 2.00B  ·  1.20M/s  ·  ETA 16m23s
+```
+
+The rate is averaged over a recent window (~5 min — wide on purpose, since
+heartbeats are ~30 s apart), so a sustained slowdown shows up as a falling rate
+and a climbing ETA, a quick at-a-glance health check for an open-ended run. The
+webui's DiLoCo server view shows the same as a fill bar under the header. (Both
+fall back to the plain budget count against an older server that predates the
+progress field.)
+
 Add `--queues` to also show **work-unit dispatch** per `(dataset_id,
 shuffle_seed)` queue: a human-readable dataset label (from the worker's
 load-args hint, e.g. `wikitext@train`) with the raw `dataset_id` hash kept as a

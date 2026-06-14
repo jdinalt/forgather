@@ -1024,18 +1024,24 @@ function DashboardHeader({
       ? { bg: "#3a2a1a", fg: "#ff9e64" }
       : { bg: "#1a3a5c", fg: "#7aa2f7" };
   return (
-    <header
+    <div
       style={{
         display: "flex",
-        alignItems: "center",
-        gap: 12,
-        flexWrap: "wrap",
-        padding: "10px 14px",
+        flexDirection: "column",
         background: "var(--bg-surface, #24283b)",
         border: "1px solid var(--border, #3b4261)",
         borderRadius: 6,
       }}
     >
+      <header
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          flexWrap: "wrap",
+          padding: "10px 14px",
+        }}
+      >
       <strong style={{ fontSize: 16 }}>{server.label}</strong>
       {status && (
         <span
@@ -1091,8 +1097,116 @@ function DashboardHeader({
       <span className="muted" style={{ marginLeft: "auto", fontSize: 11 }}>
         {server.base_url}
       </span>
-    </header>
+      </header>
+      {status?.token_budget ? (
+        <TokenBudgetBar status={status} />
+      ) : null}
+    </div>
   );
+}
+
+/** TQDM-like token-budget progress row shown under the dashboard header when a
+ *  budget is set: a fill bar with completed/total, percent, rolling rate, and
+ *  an ETA from the recent-window rate (so a sudden slowdown shows at a glance).
+ *  Falls back gracefully on an older server that reports token_budget but no
+ *  token_progress block. */
+function TokenBudgetBar({ status }: { status: DiLoCoStatus }) {
+  const prog = status.token_progress;
+  const budget = prog?.token_budget ?? status.token_budget ?? 0;
+  const done = prog?.tokens_completed ?? 0;
+  const frac = Math.max(0, Math.min(1, prog?.fraction ?? (budget ? done / budget : 0)));
+  const stopped = status.budget_stop_sent ?? prog?.budget_stop_sent ?? false;
+  const rate = prog?.tokens_per_second ?? null;
+  const eta = prog?.eta_seconds ?? null;
+  const pct = (frac * 100).toFixed(1);
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "8px 14px",
+        borderTop: "1px solid var(--border, #3b4261)",
+      }}
+      title={
+        prog?.rate_window_seconds
+          ? `Rate averaged over the last ${Math.round(prog.rate_window_seconds)}s`
+          : undefined
+      }
+    >
+      <span className="muted" style={{ fontSize: 11, whiteSpace: "nowrap" }}>
+        Token budget
+      </span>
+      {/* Fill bar */}
+      <div
+        style={{
+          position: "relative",
+          flex: 1,
+          height: 14,
+          minWidth: 120,
+          background: "var(--bg, #1a1b26)",
+          border: "1px solid var(--border, #3b4261)",
+          borderRadius: 4,
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            width: `${frac * 100}%`,
+            height: "100%",
+            background: stopped ? "#9ece6a" : "#7aa2f7",
+            transition: "width 0.4s ease",
+          }}
+        />
+        <span
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 10,
+            fontWeight: 600,
+            color: "var(--text, #c0caf5)",
+          }}
+        >
+          {pct}%
+        </span>
+      </div>
+      {/* Numerical stats to the right */}
+      <span
+        style={{ fontSize: 11, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}
+      >
+        {fmtTokens(done)} / {fmtTokens(budget)}
+      </span>
+      <span
+        className="muted"
+        style={{ fontSize: 11, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}
+      >
+        {rate ? `${fmtTokens(rate)}/s` : "—/s"} · ETA{" "}
+        {stopped ? "done" : fmtDuration(eta)}
+      </span>
+    </div>
+  );
+}
+
+function fmtTokens(n: number | null | undefined): string {
+  if (n == null) return "—";
+  if (Math.abs(n) >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (Math.abs(n) >= 1e3) return `${(n / 1e3).toFixed(2)}K`;
+  return `${Math.round(n)}`;
+}
+
+function fmtDuration(secs: number | null | undefined): string {
+  if (secs == null || secs < 0) return "—";
+  const s = Math.floor(secs);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h) return `${h}h${String(m).padStart(2, "0")}m`;
+  if (m) return `${m}m${String(sec).padStart(2, "0")}s`;
+  return `${sec}s`;
 }
 
 function formatParams(n: number): string {

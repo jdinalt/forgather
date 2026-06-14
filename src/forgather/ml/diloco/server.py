@@ -37,7 +37,7 @@ import ssl
 import struct
 import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -619,6 +619,16 @@ class DiLoCoServer:
         # persisted, so a restart still over budget re-sends the stop.
         self.token_budget = max(0, int(token_budget))
         self._budget_stop_sent = False
+        # Rolling-rate samples for the token-budget progress / ETA — (monotonic
+        # ts, total_tokens) appended whenever a heartbeat advances the aggregate.
+        # In-memory only (a live gauge; resets on restart). The window is wide on
+        # purpose: heartbeats are ~30 s apart, so a short window would see only a
+        # sample or two and give a jittery rate. 300 s spans 6+ heartbeats per
+        # worker for a stable estimate while still reflecting a sustained
+        # slowdown within a few minutes. Not a CLI knob — tune here if ever
+        # needed. maxlen bounds memory if heartbeats are unusually dense.
+        self._token_samples: deque = deque(maxlen=512)
+        self._token_rate_window_s: float = 300.0
         # Verbose per-round sync logging (off by default). Server-authoritative:
         # advertised in /info so each worker gates its own per-round sync log to
         # match, and the server gates its per-round outer-step log. A targeted
@@ -2837,6 +2847,7 @@ class DiLoCoServer:
         # the EMA math).
         if worker_stats:
             self._stats.update(worker_id, worker_stats)
+            self._record_token_sample()
             self._maybe_trigger_token_budget()
 
         # Compute DyLU recommendation if enabled
@@ -2868,6 +2879,66 @@ class DiLoCoServer:
         # done after the response so heartbeat latency isn't tied to file IO.
         if worker_stats:
             self._maybe_log_stats()
+
+    def _record_token_sample(self):
+        """Append a (monotonic ts, total_tokens) sample for the rolling rate.
+
+        No-op without a token budget (the rate/ETA is only surfaced for budgeted
+        runs). Cheap and lock-free — the deque append is atomic, and a slightly
+        stale read in the status handler is fine for a progress gauge.
+        """
+        if self.token_budget <= 0:
+            return
+        self._token_samples.append((time.monotonic(), self._stats.total_tokens))
+
+    def _rolling_token_rate(self) -> Optional[float]:
+        """Tokens/second over the recent window, or None if not yet estimable.
+
+        Uses the oldest sample within ``_token_rate_window_s`` as the baseline
+        (or the oldest available if the buffer is younger than the window), so a
+        rate appears after the second heartbeat rather than waiting a full
+        window. Returns None until there are two spanning samples.
+        """
+        samples = list(self._token_samples)
+        if len(samples) < 2:
+            return None
+        now_t, now_tok = samples[-1]
+        cutoff = now_t - self._token_rate_window_s
+        base_t, base_tok = samples[0]
+        for t, tok in samples:
+            if t >= cutoff:
+                base_t, base_tok = t, tok
+                break
+        dt = now_t - base_t
+        dtok = now_tok - base_tok
+        if dt <= 0 or dtok < 0:
+            return None
+        return dtok / dt
+
+    def _token_progress(self) -> Optional[Dict[str, Any]]:
+        """Token-budget progress + rolling-rate ETA, or None when no budget.
+
+        Shape (all keys present when a budget is set):
+          tokens_completed, token_budget, fraction (0..1, clamped),
+          tokens_per_second (None until estimable), eta_seconds (None when the
+          rate is unknown or zero), rate_window_seconds, budget_stop_sent.
+        """
+        if self.token_budget <= 0:
+            return None
+        done = int(self._stats.total_tokens)
+        budget = int(self.token_budget)
+        rate = self._rolling_token_rate()
+        remaining = max(0, budget - done)
+        eta = remaining / rate if (rate and rate > 0) else None
+        return {
+            "tokens_completed": done,
+            "token_budget": budget,
+            "fraction": min(1.0, done / budget) if budget > 0 else 0.0,
+            "tokens_per_second": rate,
+            "eta_seconds": eta,
+            "rate_window_seconds": self._token_rate_window_s,
+            "budget_stop_sent": self._budget_stop_sent,
+        }
 
     def _maybe_trigger_token_budget(self):
         """When the aggregated global token count reaches ``token_budget``,
@@ -3176,6 +3247,10 @@ class DiLoCoServer:
         if self.token_budget > 0:
             response["token_budget"] = self.token_budget
             response["budget_stop_sent"] = self._budget_stop_sent
+            # Progress + rolling-rate ETA (tokens_completed, fraction,
+            # tokens_per_second, eta_seconds, rate_window_seconds) for the
+            # webui progress bar and the CLI status line.
+            response["token_progress"] = self._token_progress()
 
         if self.async_mode:
             response["total_submissions"] = self._total_submissions

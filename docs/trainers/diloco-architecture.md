@@ -627,6 +627,14 @@ can race the workers: if the process exits before they finish stopping and
 deregistering, they are orphaned — and a reused port (the next arm's server) then
 404s their heartbeats, the failure mode the worker orphan self-exit also guards.
 
+Each heartbeat that advances the aggregate appends a `(monotonic, total_tokens)`
+sample to an in-memory ring (`_record_token_sample`, only when a budget is set).
+`_token_progress()` reports completed/budget, the clamped fraction, a rolling
+tokens/sec over a recent window (`_rolling_token_rate`, ~5 min — wide because
+heartbeats are ~30 s apart) and an ETA, surfaced in `/status` as `token_progress`
+for the webui progress bar and the `forgather diloco status` line. It's a live
+gauge (in-memory, resets on restart), not persisted state.
+
 **Critical locking:**
 
 | Lock | Protects | Used by |
