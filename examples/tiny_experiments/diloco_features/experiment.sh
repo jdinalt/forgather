@@ -125,7 +125,13 @@ start_one() {
   local transport_args=(--grpc --wire-format safetensors)
   [[ $have_transport -eq 1 ]] && transport_args=()
   log "server '$name' on :$port (-n $nw, budget=$budget) — $*"
+  # --min-workers $nw: if workers die below the launch count the run is no
+  # longer valid (sync stalls at the barrier; async limps with too few
+  # contributors), so have the server abort rather than limp. --heartbeat-timeout
+  # 600: the long compile/eval phase can starve the worker's heartbeat thread
+  # well past the 120s default, which would falsely evict a healthy worker.
   forgather diloco server -o "$out" --port "$port" -n "$nw" --save-every 0 \
+    --min-workers "$nw" --heartbeat-timeout 600 \
     "${transport_args[@]}" --sync-every "$H" --run-name "$name" \
     "${budget_args[@]}" "$@" >/dev/null 2>&1
   wait_server_ready "$port" || { err "server '$name' (:$port) never ready"; return 1; }
