@@ -325,14 +325,28 @@ When a process refuses to die — wedged trainer, leaked CUDA context,
 zombie torchrun — and the card stays at 100% util with stale memory:
 
 ```bash
-forgather gpu kill --yes 0
-# gpu 0: killed=[12345, 12346], failed=[]
+forgather gpu kill --yes 3
+# gpu 3: killed=[4134593], failed=[670129]  (failed = out-of-container PIDs, not reachable from here)
 ```
 
-This SIGKILLs **every** compute process on the card, including ones
-the server didn't launch. The `--yes` is mandatory because of that
-blast radius. The webui shows the same "Kill all processes on this
-GPU…" button with a confirm dialog.
+This reaps the card by finding the **in-container** processes assigned to it
+and SIGKILLing them by their real container PIDs. The match is each process's
+`CUDA_VISIBLE_DEVICES` (read from `/proc/<pid>/environ` — the env the scheduler
+sets per job), because NVML reports *host-namespace* PIDs that a direct `kill`
+inside a container can't touch and can't translate. Wedged workers and their
+inductor compile-worker children (which inherit the env) are reaped together.
+
+`killed` is the container PIDs actually reaped. `failed` is NVML-reported PIDs a
+direct `os.kill` couldn't signal — inside a container those are **out-of-
+container** holders (host-namespace PIDs); they're not reachable from here and
+that's expected, not a failure of the in-container reap. On a `--pid=host` /
+bare-metal deployment the same direct `os.kill` reaps the card as a backstop.
+
+Blast radius: a job is matched if its `CUDA_VISIBLE_DEVICES` *contains* the
+index, so killing one card also stops a **multi-GPU job that spans other cards**
+(it was assigned this one — you can't free this card without stopping it).
+`--yes` is mandatory because of that. The webui shows the same "Force-free GPU…"
+button with a confirm dialog that lists the blast radius.
 
 ## Recipes
 

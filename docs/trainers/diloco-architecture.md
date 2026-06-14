@@ -214,7 +214,7 @@ _round_expected_workers: Optional[set]          # Worker IDs expected for curren
 _health_monitor: Optional[HealthMonitor]        # Background health checker (None if heartbeat_timeout=0)
 _total_worker_deaths: int                       # Cumulative dead worker count
 heartbeat_timeout: float                        # Seconds before a worker is considered dead (0 = disabled)
-min_workers: int                                # Floor for num_workers during death handling
+min_workers: int                                # Floor for num_workers; falling below it aborts the run (see below)
 ```
 
 `_round_expected_workers` is the key data structure for fault-tolerant barriers.
@@ -608,15 +608,24 @@ worker requests block concurrently waiting at the barrier.
 
 `run()` serves on a background thread and blocks the main thread on an event;
 SIGTERM/SIGINT just set that event. All stop paths — the signal handlers,
-`/control/shutdown`, and `forgather diloco shutdown` — converge on
-`graceful_shutdown()`, which relays `save_and_stop` to every worker, then keeps
-serving while they finish (including any in-flight sync round), checkpoint, and
-deregister. Serving during the drain is essential: a worker parked on the sync
-barrier would deadlock if submissions stopped being accepted; as each worker
-leaves, the barrier's expected set shrinks via the normal worker-death path.
-Once the roster is empty (or a timeout elapses) it saves state and stops. A
-re-entrancy guard makes it idempotent so the signal and endpoint paths converge
-on one run.
+`/control/shutdown`, `forgather diloco shutdown`, **and a token-budget stop**
+(see below) — converge on `graceful_shutdown()`, which relays `save_and_stop`
+to every worker, then keeps serving while they finish (including any in-flight
+sync round), checkpoint, and deregister. Serving during the drain is essential:
+a worker parked on the sync barrier would deadlock if submissions stopped being
+accepted; as each worker leaves, the barrier's expected set shrinks via the
+normal worker-death path. Once the roster is empty (or a timeout elapses) it
+saves state and stops. A re-entrancy guard makes it idempotent so the signal and
+endpoint paths converge on one run.
+
+When the token budget is reached, `_maybe_trigger_token_budget` relays
+`save_and_stop` and (under the real server lifecycle, `_auto_shutdown_on_budget`
+set by `run()`) kicks off `graceful_shutdown()` on a background thread so the
+**server owns its own drain-then-exit**. Without this the server would keep
+serving until an *external* SIGTERM from the scheduler/harness, and that teardown
+can race the workers: if the process exits before they finish stopping and
+deregistering, they are orphaned — and a reused port (the next arm's server) then
+404s their heartbeats, the failure mode the worker orphan self-exit also guards.
 
 **Critical locking:**
 
@@ -648,6 +657,16 @@ the current time, and calls `_handle_worker_death()` for any worker that
 exceeds the timeout. The health monitor is started in `start()` / `run()` and
 stopped in `stop()`.
 
+When a death (or eviction) drops the live worker count **below `min_workers`**,
+the run can no longer be valid — a sync run would stall forever at a barrier the
+floored `num_workers` can never meet, and an async run would limp on with too
+few contributors. So the server **aborts the run**: it relays `save_and_stop` to
+the survivors (one-shot, guarded by `_min_workers_aborted`) so they checkpoint
+and exit cleanly. It does *not* SIGKILL them. The abort decision is made under
+`_sync_cond`/`_workers_lock` (so the live count is consistent) but the relay runs
+*after* releasing those locks, since `_relay_command_all` re-enters the worker
+lock that the heartbeat/deregister path needs.
+
 ### Worker threads
 
 The worker has up to two background threads:
@@ -657,6 +676,16 @@ The worker has up to two background threads:
    (default: 30s). Stopped via `_heartbeat_stop` Event. When DyLU is enabled,
    the worker also reads back `recommended_sync_every` from the heartbeat
    response and adjusts its `sync_every`.
+
+   **Orphan self-exit.** If the server replies `HTTP 404 ... not registered`,
+   this worker was dropped (e.g. a token-budget stop tore the server down and a
+   new arm's server reused the port). After `_orphan_strike_threshold` (3)
+   *consecutive* such replies — transient failures like a connection refusal
+   reset the count, tolerating a brief server restart — the worker hard-exits
+   (`os._exit`) to free its GPU rather than spin forever re-registering into a
+   possibly-foreign server. The discriminator (`_is_orphan_heartbeat_error`)
+   matches only `HTTP 404` *and* the "not registered" phrase, so an unrelated
+   404 or a 5xx never trips the exit.
 
 2. **Fragment inflight thread** (streaming mode only): submits one fragment's
    pseudo-gradients to the server in the background. At most one inflight thread

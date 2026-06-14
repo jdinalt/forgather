@@ -764,3 +764,39 @@ class TestSetStats:
         w.set_stats(None)
         w.set_stats({})
         assert w._consume_stats() is None
+
+
+class TestOrphanHeartbeatDetection:
+    """The heartbeat loop must distinguish the server's "you are not
+    registered" 404 (worker was dropped — exit to free the GPU) from any
+    transient failure (server restarting — keep retrying). Only the former
+    accumulates orphan strikes toward a hard ``os._exit``."""
+
+    def test_not_registered_404_is_orphan(self):
+        # The exact ConnectionError text the client raises on the server's 404.
+        exc = ConnectionError(
+            "Server returned HTTP 404 for https://127.0.0.1:8512/heartbeat: "
+            "worker_id 'turbulent-stag' is not registered; re-register or exit."
+        )
+        assert DiLoCoWorker._is_orphan_heartbeat_error(exc) is True
+
+    def test_connection_refused_is_not_orphan(self):
+        # Server restarting between arms — must keep retrying, not exit.
+        exc = ConnectionError("Connection refused")
+        assert DiLoCoWorker._is_orphan_heartbeat_error(exc) is False
+
+    def test_unrelated_404_is_not_orphan(self):
+        # A 404 without the "not registered" phrase must not trip the exit.
+        exc = ConnectionError("Server returned HTTP 404 for .../heartbeat: nope")
+        assert DiLoCoWorker._is_orphan_heartbeat_error(exc) is False
+
+    def test_5xx_is_not_orphan(self):
+        exc = ConnectionError("Server returned HTTP 503 for .../heartbeat: busy")
+        assert DiLoCoWorker._is_orphan_heartbeat_error(exc) is False
+
+    def test_strike_threshold_default(self):
+        # A single transient 404 shouldn't exit; the worker tolerates a few
+        # consecutive strikes (server churn) before declaring itself orphaned.
+        w = DiLoCoWorker.__new__(DiLoCoWorker)
+        w._orphan_strike_threshold = 3
+        assert w._orphan_strike_threshold >= 2

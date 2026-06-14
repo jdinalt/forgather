@@ -995,6 +995,17 @@ class DiLoCoServer:
         self._shutting_down = False
         self._shutdown_event = threading.Event()  # "shutdown requested"
         self._shutdown_done = threading.Event()  # "drain + stop finished"
+        # When True, a token-budget stop also initiates the coordinated
+        # graceful_shutdown so the *server* owns its drain-then-exit instead of
+        # waiting for an external SIGTERM that can race the workers (orphaning
+        # them on a reused port). Enabled by run() — the real server lifecycle.
+        # Left off by default so unit tests that poke _maybe_trigger_token_budget
+        # directly don't trigger a surprise full-drain teardown.
+        self._auto_shutdown_on_budget = False
+        # One-shot guard: when worker deaths drop the live count below
+        # min_workers the run can no longer be valid, so we relay save_and_stop
+        # once and let the survivors checkpoint + exit. Fires at most once.
+        self._min_workers_aborted = False
 
     @staticmethod
     def _find_available_port() -> int:
@@ -1482,6 +1493,34 @@ class DiLoCoServer:
             # Update num_workers (but respect min_workers floor)
             self.num_workers = max(self.min_workers, remaining)
 
+            # When live workers fall below min_workers the run can no longer be
+            # valid: a sync run would stall at the barrier (the floored
+            # num_workers can never be met), and an async run would limp along
+            # with too few contributors producing garbage. Either way, abort —
+            # relay save_and_stop to the survivors so they checkpoint and exit.
+            # Decide here (under the lock, so the live count is consistent), but
+            # do the relay AFTER releasing _sync_cond/_workers_lock: the relay
+            # touches the worker pending_command state and we must not re-enter a
+            # lock the heartbeat/deregister path needs (the known deadlock class).
+            # One-shot via _min_workers_aborted so repeated deaths fire it once.
+            #
+            # Suppress during a deliberate shutdown: a clean drain (SIGTERM /
+            # /control/shutdown / token-budget stop) deregisters every worker
+            # one-by-one, and the LAST deregistration crosses below the default
+            # min_workers=1 floor. That's a normal exit, not a fault — firing the
+            # abort there would log a spurious "aborting run" on every clean stop.
+            # _shutting_down covers graceful_shutdown; _budget_stop_sent covers
+            # the brief window before its background drain sets _shutting_down.
+            abort_below_min = False
+            if (
+                remaining < self.min_workers
+                and not self._min_workers_aborted
+                and not self._shutting_down
+                and not self._budget_stop_sent
+            ):
+                self._min_workers_aborted = True
+                abort_below_min = True
+
             if len(evict) > 1:
                 logger.warning(
                     f"Worker {worker_id} died; evicting whole group "
@@ -1586,6 +1625,25 @@ class DiLoCoServer:
 
         # _sync_cond released: now it's safe to do the audit disk I/O.
         self._audit_many(pending_audit)
+
+        # Below-min-workers abort, done OUTSIDE all the locks above (the relay
+        # re-enters the workers lock, which would deadlock if held here). The
+        # one-shot guard was set under the lock so concurrent death handlers
+        # don't double-fire.
+        if abort_below_min:
+            logger.error(
+                "Live workers %d < min_workers %d after worker death; aborting "
+                "run (relaying save_and_stop to the survivors).",
+                remaining,
+                self.min_workers,
+            )
+            targets = self._relay_command_all("save_and_stop")
+            self._audit(
+                "min_workers_abort",
+                remaining=remaining,
+                min_workers=self.min_workers,
+                relayed_to=list(targets),
+            )
 
     def _compute_dylu_sync_every(self, worker_id: str) -> Optional[int]:
         """
@@ -2834,6 +2892,26 @@ class DiLoCoServer:
                 len(targets),
                 targets,
             )
+            # Under the real server lifecycle (run() set the flag), the server
+            # now owns its own drain-and-exit. Without this the server would
+            # keep serving until an *external* SIGTERM (from the scheduler /
+            # harness), and that teardown can race the workers: if the process
+            # exits before the workers finish stopping and deregistering, they
+            # are orphaned — and a reused port (the next experiment arm's
+            # server) then 404s their heartbeats. Initiating the coordinated
+            # graceful_shutdown here makes the server keep serving the final
+            # syncs and wait (bounded) for every worker to deregister before it
+            # exits. Run on a background thread so the in-progress heartbeat
+            # response still goes out promptly, and so the drain (which calls
+            # back into the worker-lock paths) is never holding a heartbeat-path
+            # lock. graceful_shutdown is idempotent, so an external
+            # SIGTERM/shutdown that also arrives is a no-op.
+            if self._auto_shutdown_on_budget:
+                threading.Thread(
+                    target=self.graceful_shutdown,
+                    name="diloco-budget-shutdown",
+                    daemon=True,
+                ).start()
 
     def _maybe_log_stats(self):
         """Append one aggregate-stats record to the server's stats log when
@@ -4688,6 +4766,11 @@ class DiLoCoServer:
         """
         if self._running:
             raise RuntimeError("Run cannot be called, if already running.")
+        # This is the real server lifecycle: let a token-budget stop own its own
+        # coordinated drain-and-exit (so workers aren't orphaned by a teardown
+        # that races them). Tests that drive start()/_maybe_trigger_token_budget
+        # directly leave this off and keep the old relay-only behavior.
+        self._auto_shutdown_on_budget = True
         # Serve in a background thread (start() also logs the banner + brings
         # up the health monitor and bulk listener). The main thread then
         # blocks until shutdown so the coordinated drain can keep serving.

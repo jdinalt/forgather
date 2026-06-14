@@ -51,7 +51,7 @@ Server arguments:
 - `--dylu`: Enable Dynamic Local Updates (async only)
 - `--dylu-base-sync-every N`: Base sync interval for the fastest worker (default: 500)
 - `--grace-period S`: Async grace window in seconds — aggregate workers that submit within `S` of the first arrival into one outer step (async only, default: 0 = disabled)
-- `--token-budget N`: Global training-token budget. When the aggregated cross-worker token count reaches `N`, the server relays `save_and_stop` to every worker. Workers run open-ended. 0 = no budget (default). Changeable at runtime (`forgather diloco token-budget`).
+- `--token-budget N`: Global training-token budget. When the aggregated cross-worker token count reaches `N`, the server relays `save_and_stop` to every worker and then drains them and exits itself (a coordinated shutdown — it keeps serving until every worker checkpoints and deregisters, so none is orphaned). Workers run open-ended; the budget is the controlling stop. 0 = no budget (default). Changeable at runtime (`forgather diloco token-budget`).
 - `--from-checkpoint FROM_CHECKPOINT`: Load model from specified checkpoint path. Overrides loading from newest.
 
 Group-wide worker settings (must match across the group, so they live on the
