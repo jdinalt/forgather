@@ -55,10 +55,11 @@ JITTER="${JITTER:-0.15}"       # per-step jitter (s) for async phase-decorrelati
                                # if measured staleness < ~3, per the design's gate).
 GRACE_S="${GRACE_S:-0.5}"      # grace window (s) — VALIDATE ONLY (v_grace mechanism check; grace is not a study arm)
 
-# Per-worker fixed delays (s) for the DyLU speed-spread arms. Calibrate from the
-# MEASURED base step time (from validate) so the slowest worker's step time is
-# ~2x the fastest (a realistic 4090+3090 mix). e.g. base~0.10s -> 0/.03/.06/.10.
-DYLU_SPREAD=(0 0.03 0.06 0.10)
+# Per-worker fixed delays (s) for the DyLU speed-spread arms, so the slowest
+# worker's step time is ~2x the fastest (a realistic 4090+3090 mix). Calibrated to
+# the MEASURED steady-state step time: a baseline timing probe gave ~0.18-0.20 s/step
+# (compile on), so D_max ~ 0.18 makes the slowest (0.18+0.18) ~ 2x the fastest (0.18).
+DYLU_SPREAD=(0 0.06 0.12 0.18)
 
 # Token budget (global stop): aggregate cross-worker tokens at which the server
 # relays save_and_stop. 2B total (~4x Chinchilla; the model's Chinchilla-optimal is

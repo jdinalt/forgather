@@ -251,7 +251,7 @@ against [`experiment.sh`](experiment.sh)):
 | Fragments `N` | **{2, 5}** | the only block-divisible counts ≤ 10 blocks (5 / 2 layers per fragment); N=5 is the fine grain where striding should show |
 | Seed | **42** | fixed; one run/arm; varies data-order/dropout, not init (§3.5) |
 | Jitter `J` | **0.15 s** | tuned so the *measured* staleness lands ≈ `k−1` — the staleness **gate** (§3.3) is the check, not the exact value |
-| DyLU spread | **0 / .03 / .06 / .10 s** | calibrated to a **~2×** slowest/fastest ratio (RTX 4090 + 3090-style) from the measured base step time |
+| DyLU spread | **0 / .06 / .12 / .18 s** | calibrated to a **~2×** slowest/fastest ratio (RTX 4090 + 3090-style): max delay ≈ the measured ~0.18s steady-state step time, so the slowest worker (0.18+0.18) ≈ 2× the fastest |
 | Transport | gRPC + safetensors | the fast/safe path; lossless (already validated against HTTP+pickle in the sibling project — not re-tested here) |
 | `torch.compile` | on | real-run default (`--compile no` is smoke-only) |
 
