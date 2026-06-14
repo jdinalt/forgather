@@ -263,34 +263,41 @@ function GpuContextMenuItems({
         </button>
       )}
 
-      {procCount === 0 ? (
-        <div className="context-menu-empty muted">
-          No processes to kill on this GPU.
-        </div>
-      ) : (
-        <button
-          className="context-menu-destructive"
-          onClick={() => {
-            const summary = gpu.processes
-              .map((p) => {
-                const job = jobByPid.get(p.pid);
-                return `  pid ${p.pid}` + (job ? ` (${job.config ?? job.id})` : "");
-              })
-              .join("\n");
-            if (
-              confirm(
-                `Kill ALL ${procCount} process(es) on GPU ${gpu.index}?\n\n` +
-                  `${summary}\n\nSends SIGKILL — no chance to clean up. ` +
-                  `Hits processes the server didn't launch too.`,
-              )
-            ) {
-              onKill();
-            }
-          }}
-        >
-          ☠ Kill all {procCount} process{procCount === 1 ? "" : "es"} (SIGKILL)
-        </button>
-      )}
+      {/* Always offer the kill, even when the driver reports 0 processes.
+          Inside a container NVML lists host-namespace PIDs that don't appear
+          as a usable count, yet a wedged in-container job can still be pinning
+          the card; the server reaps it by CUDA_VISIBLE_DEVICES regardless. */}
+      <button
+        className="context-menu-destructive"
+        onClick={() => {
+          const summary =
+            procCount > 0
+              ? gpu.processes
+                  .map((p) => {
+                    const job = jobByPid.get(p.pid);
+                    return (
+                      `  pid ${p.pid}` + (job ? ` (${job.config ?? job.id})` : "")
+                    );
+                  })
+                  .join("\n") + "\n\n"
+              : "(driver reports no enumerable PIDs — likely an in-container " +
+                "orphan; reaped by CUDA_VISIBLE_DEVICES)\n\n";
+          if (
+            confirm(
+              `Force-free GPU ${gpu.index} (SIGKILL)?\n\n` +
+                summary +
+                `Kills every in-container job assigned this GPU — including a ` +
+                `multi-GPU job that also spans other cards. No chance to ` +
+                `clean up. Hits processes the server didn't launch too.`,
+            )
+          ) {
+            onKill();
+          }
+        }}
+      >
+        ☠ {procCount > 0 ? `Kill all ${procCount} process${procCount === 1 ? "" : "es"}` : "Force-free GPU"}{" "}
+        (SIGKILL)
+      </button>
     </>
   );
 }

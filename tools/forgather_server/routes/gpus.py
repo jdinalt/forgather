@@ -225,6 +225,11 @@ def _in_container_pids_for_gpu(gpu_index: int) -> List[int]:
                 break
         if not cvd:
             continue
+        # The scheduler always writes integer physical indices (launcher.py),
+        # so we only match integer tokens. A deployment that set CVD to GPU
+        # UUIDs or MIG IDs would parse to no indices here and silently fall
+        # through to the os.kill backstop (a no-op inside a container) — an
+        # under-match, never an over-match onto the wrong card.
         indices = {int(t) for t in (s.strip() for s in cvd.split(",")) if t.isdigit()}
         if gpu_index in indices:
             matches.append(pid)
@@ -252,6 +257,12 @@ def kill_gpu_processes(gpu_index: int, req: GpuKillRequest):
     The endpoint kills *every* matching process, including ones the server
     didn't directly launch, so ``confirmed`` is required to make accidental
     hits hard. The UI also surfaces a confirm() dialog on top.
+
+    Blast radius: a job is matched if its ``CUDA_VISIBLE_DEVICES`` *contains*
+    ``gpu_index``, so killing one card also reaps a multi-GPU job that spans
+    other cards (it was assigned this one — there's no way to free this card
+    without stopping it). That's intended for "free this GPU", but it's a wider
+    hit than the single card implies; the confirm dialog spells it out.
     """
     if not req.confirmed:
         raise HTTPException(status_code=400, detail="kill requires confirmed=true")

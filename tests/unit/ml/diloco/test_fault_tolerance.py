@@ -224,6 +224,54 @@ class TestWorkerDeath(_ServerTestBase):
         finally:
             server.stop()
 
+    def test_clean_shutdown_does_not_trip_min_workers_abort(self):
+        """A deliberate drain must NOT fire the min_workers abort. With the
+        default min_workers=1, the last worker deregistering during a clean
+        shutdown crosses below the floor — that's a normal exit, not a fault, so
+        the abort stays silent (guarded by _shutting_down / _budget_stop_sent)."""
+        sd = _make_state_dict()
+        server = self._make_server(
+            sd, num_workers=2, min_workers=1, heartbeat_timeout=0
+        )
+        server.start()
+        try:
+            client = DiLoCoClient(f"localhost:{server.port}")
+            client.register("w1", {})
+            client.register("w2", {})
+
+            # Simulate a coordinated shutdown in progress.
+            server._shutting_down = True
+
+            # Workers drain one-by-one; the last one drops live count to 0 < 1.
+            server._handle_worker_death("w1")
+            server._handle_worker_death("w2")
+
+            # No spurious abort on a clean drain.
+            self.assertFalse(server._min_workers_aborted)
+        finally:
+            server.stop()
+
+    def test_budget_stop_does_not_trip_min_workers_abort(self):
+        """Same guard via the token-budget flag: a budget-driven drain that
+        empties the roster doesn't misreport a min_workers abort."""
+        sd = _make_state_dict()
+        server = self._make_server(
+            sd, num_workers=2, min_workers=1, heartbeat_timeout=0
+        )
+        server.start()
+        try:
+            client = DiLoCoClient(f"localhost:{server.port}")
+            client.register("w1", {})
+            client.register("w2", {})
+
+            server._budget_stop_sent = True  # budget reached, drain underway
+            server._handle_worker_death("w1")
+            server._handle_worker_death("w2")
+
+            self.assertFalse(server._min_workers_aborted)
+        finally:
+            server.stop()
+
     def test_death_tracks_total_deaths(self):
         """Server tracks total worker deaths for status reporting."""
         sd = _make_state_dict()

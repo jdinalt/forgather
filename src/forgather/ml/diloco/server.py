@@ -1503,8 +1503,21 @@ class DiLoCoServer:
             # touches the worker pending_command state and we must not re-enter a
             # lock the heartbeat/deregister path needs (the known deadlock class).
             # One-shot via _min_workers_aborted so repeated deaths fire it once.
+            #
+            # Suppress during a deliberate shutdown: a clean drain (SIGTERM /
+            # /control/shutdown / token-budget stop) deregisters every worker
+            # one-by-one, and the LAST deregistration crosses below the default
+            # min_workers=1 floor. That's a normal exit, not a fault — firing the
+            # abort there would log a spurious "aborting run" on every clean stop.
+            # _shutting_down covers graceful_shutdown; _budget_stop_sent covers
+            # the brief window before its background drain sets _shutting_down.
             abort_below_min = False
-            if remaining < self.min_workers and not self._min_workers_aborted:
+            if (
+                remaining < self.min_workers
+                and not self._min_workers_aborted
+                and not self._shutting_down
+                and not self._budget_stop_sent
+            ):
                 self._min_workers_aborted = True
                 abort_below_min = True
 

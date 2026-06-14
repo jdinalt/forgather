@@ -1701,7 +1701,19 @@ def _kill_record(queue_id: str, sig: int) -> bool:
     # holding a GPU. ``force-kill`` ("do whatever it takes", SIGKILL) must still
     # reap a live process behind a terminal record; soft ``kill`` (SIGTERM)
     # keeps the terminal guard and does nothing once the record is terminal.
-    if terminal and not (force and record.pid and _pid_is_alive(record.pid)):
+    #
+    # A terminal record can be arbitrarily old, so guard against PID reuse:
+    # ``is_endpoint_pid_alive`` checks both liveness AND that the live process's
+    # create_time still matches ``started_at`` (the kernel hasn't recycled the
+    # pid onto an unrelated process). Bare existence is not enough here — we're
+    # about to SIGKILL a whole process *group*, so signalling a recycled pid
+    # would be a mis-kill. The non-terminal path skips this (the record was live
+    # moments ago; no reuse window).
+    if terminal and not (
+        force
+        and record.pid
+        and trainer_control.is_endpoint_pid_alive(record.pid, record.started_at)
+    ):
         return False
     # For a non-terminal record, move it to "aborted" (CAS variant so a reap
     # that lands between the check above and this write can't be clobbered; the

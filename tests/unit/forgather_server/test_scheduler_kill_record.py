@@ -5,7 +5,8 @@ JobRecord — the record is marked terminal (done/failed/aborted) and dropped
 from the UI while the PID lingers, holding a GPU. Soft ``kill`` (SIGTERM) keeps
 the terminal guard (a terminal record means "already gone, nothing to do"), but
 ``force-kill`` (SIGKILL, "do whatever it takes") must still reap a live process
-behind a terminal record.
+behind a terminal record — guarded against PID reuse (a terminal record can be
+old; the kernel may have recycled its pid onto an unrelated process).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ def _rec(status: str, pid: int = 4321, **extra) -> JobRecord:
         job_type="training",
         status=status,
         pid=pid,
+        started_at=1000.0,
         **extra,
     )
 
@@ -32,7 +34,9 @@ def test_force_kill_reaps_live_process_behind_terminal_record():
     rec = _rec("failed", pid=4321)
     with (
         patch.object(scheduler.job_records, "get_record", return_value=rec),
-        patch.object(scheduler, "_pid_is_alive", return_value=True),
+        patch.object(
+            scheduler.trainer_control, "is_endpoint_pid_alive", return_value=True
+        ),
         patch.object(scheduler, "_wait_for_pid_exit", return_value=True) as wait,
         patch.object(scheduler.launcher, "kill_process_group") as kpg,
     ):
@@ -48,7 +52,9 @@ def test_force_kill_terminal_record_with_dead_pid_is_noop():
     rec = _rec("aborted", pid=4321)
     with (
         patch.object(scheduler.job_records, "get_record", return_value=rec),
-        patch.object(scheduler, "_pid_is_alive", return_value=False),
+        patch.object(
+            scheduler.trainer_control, "is_endpoint_pid_alive", return_value=False
+        ),
         patch.object(scheduler.launcher, "kill_process_group") as kpg,
     ):
         ok = scheduler.force_kill_record("q-test")
@@ -57,12 +63,34 @@ def test_force_kill_terminal_record_with_dead_pid_is_noop():
     kpg.assert_not_called()
 
 
+def test_force_kill_terminal_record_pid_recycled_is_noop():
+    """PID-reuse guard: a live-but-recycled pid behind a terminal record is not
+    signalled. is_endpoint_pid_alive returns False when create_time no longer
+    matches started_at, so we never SIGKILL the unrelated process group."""
+    rec = _rec("done", pid=4321)
+    with (
+        patch.object(scheduler.job_records, "get_record", return_value=rec),
+        patch.object(
+            scheduler.trainer_control, "is_endpoint_pid_alive", return_value=False
+        ) as alive,
+        patch.object(scheduler.launcher, "kill_process_group") as kpg,
+    ):
+        ok = scheduler.force_kill_record("q-test")
+
+    assert ok is False
+    kpg.assert_not_called()
+    # Identity-checked against the record's started_at, not bare liveness.
+    alive.assert_called_once_with(4321, 1000.0)
+
+
 def test_soft_kill_terminal_record_is_noop_even_if_pid_alive():
     """SIGTERM keeps the terminal guard: a soft kill never reaps an orphan."""
     rec = _rec("done", pid=4321)
     with (
         patch.object(scheduler.job_records, "get_record", return_value=rec),
-        patch.object(scheduler, "_pid_is_alive", return_value=True),
+        patch.object(
+            scheduler.trainer_control, "is_endpoint_pid_alive", return_value=True
+        ),
         patch.object(scheduler.launcher, "kill_process_group") as kpg,
     ):
         ok = scheduler.abort_record("q-test")
