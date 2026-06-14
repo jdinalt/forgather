@@ -107,8 +107,13 @@ export function GpuPanel() {
   const killGpu = useMutation({
     mutationFn: (gpuIndex: number) => api.killGpuProcesses(gpuIndex),
     onSuccess: (resp) => {
+      // `failed` is the count of NVML-reported PIDs we couldn't signal — inside
+      // a container those are out-of-container holders (host-namespace PIDs),
+      // which is expected and not a failure of the in-container reap.
       const failedNote =
-        resp.failed.length > 0 ? ` (${resp.failed.length} failed)` : "";
+        resp.failed.length > 0
+          ? ` (${resp.failed.length} out-of-container PID(s) not reachable)`
+          : "";
       // Cheap visual confirmation so the operator sees it landed; the GPU
       // stream will refresh independently within a couple of seconds.
       alert(

@@ -1693,15 +1693,35 @@ def _kill_record(queue_id: str, sig: int) -> bool:
     record = job_records.get_record(queue_id)
     if record is None:
         return False
-    if record.status in TERMINAL_STATUSES:
+    force = sig == signal.SIGKILL
+    terminal = record.status in TERMINAL_STATUSES
+    # A terminal record normally means the process is already gone. But a stuck
+    # or orphaned process can OUTLIVE its record — the job was marked
+    # done/failed/aborted (and dropped from the UI) while its PID lingered,
+    # holding a GPU. ``force-kill`` ("do whatever it takes", SIGKILL) must still
+    # reap a live process behind a terminal record; soft ``kill`` (SIGTERM)
+    # keeps the terminal guard and does nothing once the record is terminal.
+    if terminal and not (force and record.pid and _pid_is_alive(record.pid)):
         return False
-    # Use the CAS variant so a reap that lands between our status check
-    # above and this write can't be clobbered. The kill path losing the
-    # race is benign: both ends are terminal and the process is gone.
-    updated = job_records.update_if_not_terminal(
-        queue_id, status="aborted", finished_at=time.time()
-    )
+    # For a non-terminal record, move it to "aborted" (CAS variant so a reap
+    # that lands between the check above and this write can't be clobbered; the
+    # kill path losing that race is benign — both ends are terminal and the
+    # process is gone). A terminal record stays as-is: we're only reaping its
+    # leaked process, not rewriting how it ended.
+    updated = None
+    if not terminal:
+        updated = job_records.update_if_not_terminal(
+            queue_id, status="aborted", finished_at=time.time()
+        )
     if record.pid:
+        if terminal:
+            log.warning(
+                "force-kill reaping orphaned process pid=%d behind terminal job "
+                "%s (status=%s) — it outlived its record and was holding GPU.",
+                record.pid,
+                queue_id,
+                record.status,
+            )
         launcher.kill_process_group(record.pid, sig)
         # Verify the process actually died before declaring success.
         # Without this we silently leave orphan processes consuming
@@ -1748,6 +1768,10 @@ def _kill_record(queue_id: str, sig: int) -> bool:
                     f"container can't see the PID."
                 ),
             )
+    if terminal:
+        # We only reaped a leaked process; the record's terminal status and its
+        # earlier cleanup stay intact. Success == we delivered the kill.
+        return True
     with _state._lock:
         _state.running.pop(queue_id, None)
     # Same TTY relocation as the reap path so an aborted run still ends

@@ -130,7 +130,13 @@ def gpu_cmd(args):
             result = client.kill_gpu_processes(args.idx)
             killed = result.get("killed", [])
             failed = result.get("failed", [])
-            print(f"gpu {args.idx}: killed={killed}, failed={failed}")
+            line = f"gpu {args.idx}: killed={killed}, failed={failed}"
+            if failed:
+                # `failed` = NVML PIDs we couldn't signal; inside a container
+                # those are out-of-container holders (host-namespace PIDs), not
+                # a failure of the in-container reap.
+                line += "  (failed = out-of-container PIDs, not reachable from here)"
+            print(line)
 
         else:
             print(f"error: unknown subcommand: {sub}", file=sys.stderr)

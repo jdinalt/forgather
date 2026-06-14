@@ -326,13 +326,23 @@ zombie torchrun — and the card stays at 100% util with stale memory:
 
 ```bash
 forgather gpu kill --yes 0
-# gpu 0: killed=[12345, 12346], failed=[]
+# gpu 0: killed=[12345, 12346], failed=[], force-killed jobs=['q-7f3a']
 ```
 
-This SIGKILLs **every** compute process on the card, including ones
-the server didn't launch. The `--yes` is mandatory because of that
-blast radius. The webui shows the same "Kill all processes on this
-GPU…" button with a confirm dialog.
+This reaps the card two ways. First, any running job that **reserved**
+the GPU is force-killed through the scheduler (`force-killed jobs=…`) —
+the scheduler signals its own process groups, so this works even inside a
+container where the snapshot PIDs are host-namespace PIDs that a direct
+`kill` can't touch. Second, every remaining compute PID gets a direct
+SIGKILL (`killed`/`failed`) — covering processes no job owns. A non-empty
+`failed` alongside a non-empty `force-killed jobs` is the normal in-container
+case (the host PID couldn't be signalled directly, but the owning job was
+still reaped by group); it does **not** mean nothing happened.
+
+It targets **every** compute process on the card, including ones the
+server didn't launch, so `--yes` is mandatory because of that blast
+radius. The webui shows the same "Kill all processes on this GPU…"
+button with a confirm dialog.
 
 ## Recipes
 

@@ -443,6 +443,16 @@ creation calls so the world-collective stays balanced.
   — the record stays visible in the UI instead of silently
   disappearing while the GPU is still pinned.
 
+- **``force-kill`` reaps orphans behind terminal records.** A stuck
+  process can outlive its JobRecord: the job is marked terminal
+  (``done``/``failed``/``aborted``) and drops out of the UI while the PID
+  lingers, holding a GPU. Soft ``kill`` (SIGTERM) keeps the terminal guard
+  (terminal == "already gone"), but ``force-kill`` (SIGKILL, "do whatever it
+  takes") still signals the process group when the record's PID is alive — so
+  the operator can reap a leaked worker without a stale-but-live record getting
+  in the way. The terminal record's status is left intact (we only reap its
+  leaked process).
+
 - **External-trainer promotion.** A trainer the server did not launch
   (e.g. a foreground ``forgather train`` with ``TrainerControlCallback``)
   writes a control endpoint but has no JobRecord. The scheduler tick
