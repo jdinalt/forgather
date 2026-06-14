@@ -109,7 +109,7 @@ def main():
         ax.legend(fontsize=8)
         ax.grid(alpha=0.25)
 
-    suptitle = "small Llama (34.4M), 4 workers, 1B total tokens, H=100"
+    suptitle = "small Llama (34.4M), 4 workers, 2B total tokens, H=100"
 
     # Endgame (converged runs only): the deltas among the converged runs are
     # small, so a zoom shows the separation; diverged runs would blow out the

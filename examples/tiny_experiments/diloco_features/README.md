@@ -246,7 +246,7 @@ against [`experiment.sh`](experiment.sh)):
 | Outer optimizer | SGD-Nesterov, **LR 0.7, mom 0.9** | DiLoCo's outer-optimizer settings (the `diloco server` defaults) |
 | Inner optimizer | AdamW, **lr 2.07e-4** (peak) | per-worker local optimizer. The lr is `base_lr` 1.5e-4 scaled for the 32,768-tok batch by the **sqrt rule** (`lr_alpha 0.5`, ref batch 16,384) → 2.07e-4; **WSD** schedule (warmup **1606** steps, `min_lr` 2.07e-5) |
 | Batch × seq | **8 × 4096** = 32,768 tok/step/worker | `per_device_train_batch_size = 8` (set in `small.yaml`), packed 4096-token sequences; note this is **2× the 16,384-token LR reference**, which is what upscales the inner lr by √2 (next row) |
-| Token budget | **1B total** | **~2× Chinchilla** (the model's Chinchilla-optimal is 525M tokens, from its 26.2M non-embedding params); matches the sibling project's long reference run. At 4 workers ≈ 250M tok/worker ≈ 76 sync rounds — ample for the outer optimizer |
+| Token budget | **2B total** | **~4× Chinchilla** (the model's Chinchilla-optimal is 525M tokens, from its 26.2M non-embedding params) — chosen to capture async's **longer-term dynamics** (DiLoCo-family benefits emerge over a longer budget), which the measured runtime makes affordable. At 4 workers ≈ 500M tok/worker ≈ 150 sync rounds |
 | DN buffer `N` | **4** (= `k`) | the async paper's main config; tests the derived `N = k ≈ sync` prediction (§2.2) |
 | Fragments `N` | **{2, 5}** | the only block-divisible counts ≤ 10 blocks (5 / 2 layers per fragment); N=5 is the fine grain where striding should show |
 | Seed | **42** | fixed; one run/arm; varies data-order/dropout, not init (§3.5) |

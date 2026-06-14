@@ -61,12 +61,13 @@ GRACE_S="${GRACE_S:-0.5}"      # grace window (s) — VALIDATE ONLY (v_grace mec
 DYLU_SPREAD=(0 0.03 0.06 0.10)
 
 # Token budget (global stop): aggregate cross-worker tokens at which the server
-# relays save_and_stop. 1B total ~ 2x Chinchilla (the model's Chinchilla-optimal is
-# 525M tokens = 20 x 26.2M non-embedding params) and matches the sibling `diloco`
-# project's long reference run; at 4 workers that's ~250M tok/worker, ~76 sync
-# rounds at H=100 — ample. --token-budget accepts K/M/B suffixes (bare = raw tokens).
+# relays save_and_stop. 2B total (~4x Chinchilla; the model's Chinchilla-optimal is
+# 525M tokens = 20 x 26.2M non-embedding params) — chosen to capture async's
+# LONGER-TERM dynamics (DiLoCo-family benefits emerge over a longer budget), which
+# the measured runtime makes affordable. At 4 workers ~500M tok/worker, ~150 sync
+# rounds at H=100. --token-budget accepts K/M/B suffixes (bare = raw tokens).
 # env-overridable for short calibration probes, e.g. BUDGET=80M for a ~5-min run.
-BUDGET="${BUDGET:-1B}"
+BUDGET="${BUDGET:-2B}"
 
 MODE="${1:-run}"
 ONLY="${2:-}"                  # optional: run a single arm by name
