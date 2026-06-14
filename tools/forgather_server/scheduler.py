@@ -888,14 +888,45 @@ def _diloco_server_verify_tls(server_addr: str) -> bool:
     return True
 
 
+class _DilocoServerUnreachable(RuntimeError):
+    """The param server's ``/info`` couldn't be reached for backend derivation.
+
+    Distinct from a permanent config error (e.g. a backend/topology mismatch)
+    so ``_launch`` can treat it as *transient* and requeue the worker for a
+    later tick instead of failing it — see issue #218: a worker dispatched in
+    the brief window where the server is still finishing startup (or momentarily
+    busy under concurrent first-contact) shouldn't be killed by a single
+    timed-out probe.
+    """
+
+
+#: Per-attempt timeout for the launch-time ``/info`` backend-derivation probe.
+#: Deliberately short: the probe runs inside the (serial) dispatch tick, so a
+#: long timeout would stall every other dispatch. A not-yet-ready server is
+#: retried on the next tick rather than waited out here.
+_DILOCO_DERIVE_TIMEOUT_S = 5.0
+
+#: Total wall-clock window a worker may spend being requeued for backend
+#: derivation before it's failed permanently. Covers a slow server startup
+#: (model load + region seed) without hanging a worker forever on a server that
+#: never comes up.
+_DILOCO_DERIVE_RETRY_BUDGET_S = 180.0
+
+#: queue_id -> monotonic timestamp of the first failed derivation attempt, so
+#: the retry budget is measured across ticks. Cleared on success / permanent
+#: failure.
+_diloco_derive_first_seen: Dict[str, float] = {}
+
+
 def _diloco_query_info(server_addr: str, queue_id: str) -> Dict[str, Any]:
     """Fetch ``<server>/info`` to derive the launch backend.
 
     The sync backend is server-authoritative (issue #154): an orchestrated
     worker is enqueued *without* one, and the value is read here — at the moment
     we're about to spawn ``torchrun`` — from the server's ``/info``. There is no
-    safe default, so an unreachable server **raises**; ``_launch`` wraps the
-    builder in ``try/except`` and marks the job ``failed`` with this message.
+    safe default, so an unreachable server raises :class:`_DilocoServerUnreachable`;
+    ``_launch`` catches that and requeues the worker for a later tick (issue
+    #218), failing it only after ``_DILOCO_DERIVE_RETRY_BUDGET_S``.
 
     Implemented as a minimal ``urllib`` GET (not ``DiLoCoClient``) to keep torch
     off the long-lived server's import path. Auth/TLS reuse the same primitives
@@ -924,10 +955,12 @@ def _diloco_query_info(server_addr: str, queue_id: str) -> Dict[str, Any]:
         ctx = urllib_ssl_context(verify=_diloco_server_verify_tls(server_addr))
     try:
         req = urllib.request.Request(url, headers=headers, method="GET")
-        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+        with urllib.request.urlopen(
+            req, timeout=_DILOCO_DERIVE_TIMEOUT_S, context=ctx
+        ) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except Exception as e:
-        raise RuntimeError(
+        raise _DilocoServerUnreachable(
             f"DiLoCo backend could not be derived for job {queue_id}: the param "
             f"server at {base} is unreachable ({e}). Start it, or launch the "
             f"worker directly with 'submit --local-only --backend <kind>'."
@@ -1479,6 +1512,43 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
     build = _LAUNCHERS.get(item.job_type, _build_training)
     try:
         result = build(item, gpu_indices, tty_path)
+    except _DilocoServerUnreachable as e:
+        # Issue #218: the param server wasn't reachable for backend derivation
+        # at this instant (still starting, or momentarily busy under concurrent
+        # first-contact). Don't fail the worker on a single timed-out probe —
+        # requeue it (non-blocking: undo this tick's commit, retry on a later
+        # tick) until the retry budget is spent. The probe itself is short
+        # (_DILOCO_DERIVE_TIMEOUT_S) so it never stalls the serial dispatch loop.
+        first = _diloco_derive_first_seen.setdefault(item.queue_id, time.monotonic())
+        elapsed = time.monotonic() - first
+        if elapsed < _DILOCO_DERIVE_RETRY_BUDGET_S:
+            # Undo the commit: drop the record (frees the reserved GPU) and put
+            # the item back. Same submitted_at, so its FIFO position is kept and
+            # the next tick re-dispatches it.
+            job_records.remove_record(item.queue_id)
+            queue_store.add_item(item)
+            log.info(
+                "diloco job %s: server not reachable for backend derivation yet "
+                "(%.0fs/%ds elapsed); requeuing for retry — %s",
+                item.queue_id,
+                elapsed,
+                int(_DILOCO_DERIVE_RETRY_BUDGET_S),
+                e,
+            )
+            return
+        _diloco_derive_first_seen.pop(item.queue_id, None)
+        log.warning(
+            "diloco job %s: backend not derivable after %ds of retries; failing",
+            item.queue_id,
+            int(_DILOCO_DERIVE_RETRY_BUDGET_S),
+        )
+        job_records.update_record(
+            item.queue_id,
+            status="failed",
+            error=str(e),
+            finished_at=time.time(),
+        )
+        return
     except Exception as e:
         log.exception("launch failed for %s", item.queue_id)
         job_records.update_record(
@@ -1489,6 +1559,8 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
         )
         return
 
+    # Launched: clear any prior derivation-retry bookkeeping for this item.
+    _diloco_derive_first_seen.pop(item.queue_id, None)
     with _state._lock:
         _state.running[item.queue_id] = result.proc
     job_records.update_record(item.queue_id, status="running", pid=result.pid)
