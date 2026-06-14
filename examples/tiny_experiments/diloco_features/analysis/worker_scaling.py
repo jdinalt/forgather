@@ -12,6 +12,7 @@ sync round. Does the same penalty hold? This overlays the synchronous baseline a
 """
 
 import csv
+import json
 import os
 from collections import defaultdict
 
@@ -22,16 +23,31 @@ import matplotlib.pyplot as plt
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(HERE, "assets")
+RUNS_DIR = os.path.join(HERE, "runs")
 
-# tokens/step for one worker (from the baseline TrainOutput: 520,444,917 tok over
-# its 16062-step run). Total tokens = step * this * num_workers.
-TOK_PER_STEP_WORKER = 520_444_917 / 16062
+# Fallback tokens/step for one worker (from the historical baseline TrainOutput:
+# 520,444,917 tok over its 16062-step run) — used only if status.json is absent.
+FALLBACK_TOK_PER_STEP_WORKER = 520_444_917 / 16062
 
-# (curves.csv series, num_workers, label, color)
+# (curves.csv series / run dir, num_workers, label, color)
 RUNS = [
     ("baseline_2w", 2, "2 workers (sync)", "#1f6fb2"),
     ("baseline", 4, "4 workers (sync)", "#c44e52"),
 ]
+
+
+def actual_total_tokens(arm):
+    """Authoritative total tokens for an arm from its captured /status snapshot
+    (aggregate_stats.total_tokens), or None if unavailable."""
+    path = os.path.join(RUNS_DIR, arm, "status.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, errors="replace") as f:
+            d = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+    return (d.get("aggregate_stats") or {}).get("total_tokens")
 
 
 def load():
@@ -64,10 +80,16 @@ def main():
         if s not in data:
             print(f"  missing series '{s}' in curves.csv")
             continue
-        series[s] = {
-            m: [(step * TOK_PER_STEP_WORKER * nw, v) for step, v in data[s][m]]
-            for m in data[s]
-        }
+        # Map per-worker step -> total tokens. Prefer the captured actual
+        # total_tokens (token-budget runs don't match a fixed tok/step);
+        # factor = total_tokens / max_step. Fall back to the historical constant.
+        max_step = max((st for m in data[s] for st, _ in data[s][m]), default=0)
+        tot = actual_total_tokens(s)
+        if tot and max_step:
+            factor = tot / max_step
+        else:
+            factor = FALLBACK_TOK_PER_STEP_WORKER * nw
+        series[s] = {m: [(step * factor, v) for step, v in data[s][m]] for m in data[s]}
 
     if "baseline_2w" in series and "baseline" in series:
         ev2 = series["baseline_2w"].get("eval_loss", [])

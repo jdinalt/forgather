@@ -17,6 +17,7 @@ puts both on a TOTAL-tokens axis, overlays them, and prints the final-metric gap
 """
 
 import csv
+import json
 import os
 from collections import defaultdict
 
@@ -27,14 +28,27 @@ import matplotlib.pyplot as plt
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(HERE, "assets")
+RUNS_DIR = os.path.join(HERE, "runs")
 REF_CSV = os.path.join(HERE, os.pardir, "diloco", "assets", "sweep_curves.csv")
 
-# The baseline TrainOutput reported 520,444,917 tokens over its final step for one
-# worker; with 2 workers that's the per-step total. We derive the per-worker step
-# count from curves.csv itself (rather than hard-coding 16062) so the conversion
-# follows the data if the budget changes.
-BASELINE_TOKENS_PER_WORKER = 520_444_917
+# Fallback only (status.json absent): the historical baseline TrainOutput
+# reported 520,444,917 tokens/worker; with 2 workers that's the per-step total.
+FALLBACK_TOKENS_PER_WORKER = 520_444_917
 NUM_WORKERS = 2
+
+
+def actual_total_tokens(arm):
+    """Authoritative total tokens (all workers) from the captured /status
+    snapshot (aggregate_stats.total_tokens), or None."""
+    path = os.path.join(RUNS_DIR, arm, "status.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, errors="replace") as f:
+            d = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+    return (d.get("aggregate_stats") or {}).get("total_tokens")
 
 
 def load_mine():
@@ -52,7 +66,13 @@ def load_mine():
     if not max_step:
         return {}
     # step -> total tokens across all workers (curves are per-worker step).
-    tok_per_step_total = BASELINE_TOKENS_PER_WORKER / max_step * NUM_WORKERS
+    # Prefer the captured actual total_tokens (token-budget runs don't match a
+    # fixed tok/step); fall back to the historical constant.
+    tot = actual_total_tokens("baseline_2w")
+    if tot:
+        tok_per_step_total = tot / max_step
+    else:
+        tok_per_step_total = FALLBACK_TOKENS_PER_WORKER / max_step * NUM_WORKERS
     out = defaultdict(list)
     for m, pts in rows.items():
         out[m] = sorted((step * tok_per_step_total, v) for step, v in pts)

@@ -2,14 +2,15 @@
 """Does DyLU actually help? Eval loss with and without DyLU, everything else fixed.
 
 Isolates DyLU's effect with a controlled A/B: both runs use the **same**
-per-worker speed spread (0 / 0.05 / 0.10 / 0.15 s), the same async path, and the
-same small N=4 DN buffer — they differ only in whether ``--dylu`` is on. With
-DyLU off (the control) eval lands ~5.07; with DyLU on it reaches ~4.30, so the
-adaptive per-worker ``sync_every`` buys the gap under genuinely uneven workers.
-The sync baseline is drawn for reference.
+per-worker speed spread (calibrated to ~2x slowest/fastest, a 4090+3090-style
+mix), the same async path, and the same small N=4 DN buffer — they differ only
+in whether ``--dylu`` is on. With DyLU off (the control) the slower workers sync
+stale; with DyLU on the adaptive per-worker ``sync_every`` co-terminates them, so
+the gap measures what DyLU buys under genuinely uneven workers. The sync baseline
+is drawn for reference.
 
 Reads the committed ``assets/curves.csv`` (produced by analysis/harvest.py),
-using the series ``dylu`` and ``dylu_control`` (plus ``baseline``).
+using the series ``dylu_on`` and ``dylu_off`` (plus ``baseline``).
 
     python analysis/dylu_control.py
 """
@@ -28,8 +29,8 @@ ASSETS = os.path.join(HERE, "assets")
 
 # (curves.csv series key, label, color)
 RUNS = [
-    ("dylu_control", "Async + DN (N=4), spread, no DyLU", "#d9772b"),
-    ("dylu", "Async + DN (N=4), spread, + DyLU", "#c44e52"),
+    ("dylu_off", "Async + DN (N=4), spread, no DyLU", "#d9772b"),
+    ("dylu_on", "Async + DN (N=4), spread, + DyLU", "#c44e52"),
 ]
 
 
@@ -52,7 +53,7 @@ def main():
 
     present = [(s, lbl, c) for s, lbl, c in RUNS if data.get(s, {}).get("eval_loss")]
     if len(present) < 2:
-        print("Need both 'dylu' and 'dylu_control' in curves.csv — run harvest.py")
+        print("Need both 'dylu_on' and 'dylu_off' in curves.csv — run harvest.py")
         return
 
     print(f"{'run':<38}{'final eval':>12}")
@@ -60,8 +61,8 @@ def main():
         ev = data[s]["eval_loss"]
         print(f"{lbl:<38}{ev[-1][1]:>12.4f}")
     fe = {s: data[s]["eval_loss"][-1][1] for s, _, _ in present}
-    if "dylu" in fe and "dylu_control" in fe:
-        print(f"\nDyLU effect (control - dylu): {fe['dylu_control'] - fe['dylu']:+.4f}")
+    if "dylu_on" in fe and "dylu_off" in fe:
+        print(f"\nDyLU effect (off - on): {fe['dylu_off'] - fe['dylu_on']:+.4f}")
 
     plt.rcParams.update({"figure.dpi": 120, "font.size": 10})
     fig, ax = plt.subplots(figsize=(7.2, 4.4))

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Parse the diloco_features comparison sweep into ``assets/curves.csv``.
+"""Parse the diloco_features run matrix into ``assets/curves.csv`` + a summary.
 
-Each experiment is a 4-worker DiLoCo run at the same token budget and seed,
-differing only in the feature under test (streaming / async / DN-buffer / DyLU)
-vs the sync baseline. Per-step train loss + grad-norm and periodic eval loss are
-in the workers' TTY logs; throughput / sync counts are in the server's stats
-JSONL. This reads one rank-0 worker log per experiment (``runs/<exp>/worker0.log``,
-captured by ``experiment.sh``) plus the server JSONL, writes the tidy
-``assets/curves.csv`` the plot script consumes, and prints a Markdown summary.
+Each arm is a from-scratch DiLoCo run trained to the same total-token budget and
+seed, differing only in the feature under test (streaming / async / DN / grace /
+DyLU) vs the sync baseline. Per-step train loss + grad-norm and periodic eval
+loss are in the workers' TTY logs; the actual total_tokens, the grace-batch
+histogram and the per-worker staleness are in the live ``/status`` snapshot
+``experiment.sh`` captures to ``runs/<arm>/status.json``. This reads one rank-0
+worker log per arm (``runs/<arm>/worker0.log``) plus the status snapshot, writes
+the tidy ``assets/curves.csv`` the plot scripts consume (with a derived
+``perplexity`` series), and prints a Markdown summary.
 
 Usage (from the project directory, after experiment.sh):
     python analysis/harvest.py
@@ -20,6 +22,7 @@ import argparse
 import csv
 import glob
 import json
+import math
 import os
 import re
 
@@ -27,38 +30,59 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(HERE, "assets")
 MODELS = os.path.join(os.path.dirname(HERE), os.pardir, os.pardir, "models")
 
-# series key -> (runs/<dir>/worker0.log, model dir for server JSONL, human label)
-# 4-worker comparison. Async runs use phase-jitter (DILOCO_DEBUG_STEP_JITTER) for
-# real staleness; DyLU uses a per-worker speed spread. The DN-buffer sweep points
-# (N=4/8/16) feed analysis/dn_sweep.py. `baseline_2w` is the preserved 2-worker
-# baseline that backs the gRPC-vs-h100 transport check (analysis/verify_baseline.py).
+# series key -> (runs/<dir>/, model dir for server JSONL fallback, human label).
+# The 10-arm matrix (experiment.sh). Async arms (async_*) use phase-jitter
+# (DILOCO_DEBUG_STEP_JITTER) for real staleness; DyLU arms use a per-worker speed
+# spread. `baseline_2w` is the 2-worker sync run backing both the worker-scaling
+# study (analysis/worker_scaling.py) and the gRPC-vs-HTTP transport check
+# (analysis/verify_baseline.py); `wire_http_pk` is its HTTP+pickle counterpart.
 EXPERIMENTS = [
     ("baseline", "baseline", "small_llama_feat_baseline", "Baseline (sync, H=100)"),
-    ("streaming", "streaming", "small_llama_feat_streaming", "Streaming (2 fragments)"),
-    ("async", "async", "small_llama_feat_async", "Async (no DN)"),
-    ("async_dn_b4", "async_dn_b4", "small_llama_feat_async_dn_b4", "Async + DN (N=4)"),
-    ("async_dn_b8", "async_dn_b8", "small_llama_feat_async_dn_b8", "Async + DN (N=8)"),
     (
-        "async_dn_b16",
-        "async_dn_b16",
-        "small_llama_feat_async_dn_b16",
-        "Async + DN (N=16)",
+        "stream_str2",
+        "stream_str2",
+        "small_llama_feat_stream_str2",
+        "Streaming strided N=2",
     ),
-    ("dylu", "dylu", "small_llama_feat_dylu", "Async + DN + DyLU"),
-    # DyLU control: same speed spread + N=4 buffer, no --dylu (isolates DyLU).
     (
-        "dylu_control",
-        "dylu_control",
-        "small_llama_feat_dylu_control",
+        "stream_seq2",
+        "stream_seq2",
+        "small_llama_feat_stream_seq2",
+        "Streaming sequential N=2",
+    ),
+    (
+        "stream_str5",
+        "stream_str5",
+        "small_llama_feat_stream_str5",
+        "Streaming strided N=5",
+    ),
+    ("async_nodn", "async_nodn", "small_llama_feat_async_nodn", "Async (no DN)"),
+    ("async_dn4", "async_dn4", "small_llama_feat_async_dn4", "Async + DN (N=4)"),
+    (
+        "dylu_off",
+        "dylu_off",
+        "small_llama_feat_dylu_off",
         "Async + DN, spread, no DyLU",
     ),
+    ("dylu_on", "dylu_on", "small_llama_feat_dylu_on", "Async + DN + DyLU"),
     (
         "baseline_2w",
         "baseline_2w",
-        "small_llama_feat_baseline",
-        "Baseline 2w (transport ref)",
+        "small_llama_feat_baseline_2w",
+        "Baseline 2w (scaling/transport ref)",
+    ),
+    (
+        "wire_http_pk",
+        "wire_http_pk",
+        "small_llama_feat_wire_http_pk",
+        "2w HTTP+pickle (transport)",
     ),
 ]
+
+# Async arms for which staleness is harvested as a column. The staleness *gate*
+# (analysis/staleness.py) splits these into should-be-stale (async_nodn, async_dn4,
+# dylu_off, gated ~ workers-1) vs reducer (dylu_on, judged below its control).
+ASYNC_ARMS = {"async_nodn", "async_dn4", "dylu_off", "dylu_on"}
 
 _NUM = r"[-+]?\d[\d,]*\.?\d*(?:e[-+]?\d+)?"
 
@@ -95,7 +119,10 @@ def parse_worker_log(path):
 
 
 def parse_server_jsonl(model_dir):
-    """Return (avg_tok_s, final_tokens, sync_rounds) from the server stats."""
+    """Return (avg_tok_s, final_tokens, sync_rounds) from the server stats JSONL.
+
+    Fallback source for total_tokens / throughput when status.json is absent.
+    """
     pat = os.path.join(MODELS, model_dir, "runs", "*", "diloco_server_stats.jsonl")
     files = sorted(glob.glob(pat))
     if not files:
@@ -114,34 +141,101 @@ def parse_server_jsonl(model_dir):
     return avg, last.get("total_tokens", 0), last.get("sync_round", 0)
 
 
+def parse_status_json(path):
+    """Harvest the live /status snapshot captured by experiment.sh.
+
+    Returns a dict with: total_tokens (authoritative, nested under
+    aggregate_stats), sync_round, mean_staleness (server sync_round minus each
+    worker's last_sync_server_round, averaged over workers that have synced),
+    and grace fields (grace_batches, mean_grace_batch_size, grace_histogram,
+    all_k_fraction). Missing keys -> None / {} so callers can degrade.
+    """
+    out = {
+        "total_tokens": None,
+        "sync_round": None,
+        "mean_staleness": None,
+        "grace_batches": None,
+        "mean_grace_batch_size": None,
+        "grace_histogram": {},
+        "all_k_fraction": None,
+    }
+    if not os.path.isfile(path):
+        return out
+    try:
+        with open(path, errors="replace") as f:
+            d = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return out
+    # `forgather diloco status --json` via the orchestrator wraps the snapshot
+    # under a top-level "status" dict; the direct path returns it unwrapped (with
+    # "status" as the plain "running" string). Descend when wrapped.
+    if isinstance(d.get("status"), dict):
+        d = d["status"]
+    if "error" in d and "aggregate_stats" not in d:
+        return out
+
+    agg = d.get("aggregate_stats") or {}
+    out["total_tokens"] = agg.get("total_tokens")
+    server_round = d.get("sync_round")
+    out["sync_round"] = server_round
+
+    workers = d.get("workers") or {}
+    if server_round is not None and workers:
+        stales = [
+            server_round - w.get("last_sync_server_round", 0)
+            for w in workers.values()
+            if w.get("last_sync_server_round", 0) > 0
+        ]
+        if stales:
+            out["mean_staleness"] = sum(stales) / len(stales)
+
+    hist = {int(k): v for k, v in (d.get("grace_batch_histogram") or {}).items()}
+    out["grace_histogram"] = hist
+    out["grace_batches"] = d.get("grace_batches")
+    out["mean_grace_batch_size"] = d.get("mean_grace_batch_size")
+    nw = d.get("num_workers")
+    total = sum(hist.values())
+    if hist and nw and total:
+        out["all_k_fraction"] = hist.get(nw, 0) / total
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--runs-dir",
         default=os.path.join(HERE, "runs"),
-        help="dir holding <exp>/worker0.log (default: ./runs)",
+        help="dir holding <arm>/worker0.log + <arm>/status.json (default: ./runs)",
     )
     args = ap.parse_args()
 
     os.makedirs(ASSETS, exist_ok=True)
     rows, summary = [], []
     for exp, runs_subdir, model_dir, label in EXPERIMENTS:
-        log = os.path.join(args.runs_dir, runs_subdir, "worker0.log")
-        train, eval_, grad = parse_worker_log(log)
+        rundir = os.path.join(args.runs_dir, runs_subdir)
+        train, eval_, grad = parse_worker_log(os.path.join(rundir, "worker0.log"))
         if not train and not eval_:
-            print(f"  skip {exp}: no data at {log}")
+            print(f"  skip {exp}: no data at {rundir}/worker0.log")
             continue
         for step, v in sorted(train.items()):
             rows.append([exp, "train_loss", step, f"{v:.6f}"])
         for step, v in sorted(eval_.items()):
             rows.append([exp, "eval_loss", step, f"{v:.6f}"])
+            rows.append([exp, "perplexity", step, f"{math.exp(v):.6f}"])
         for step, v in sorted(grad.items()):
             rows.append([exp, "grad_norm", step, f"{v:.6f}"])
-        avg_tok_s, total_tok, syncs = parse_server_jsonl(model_dir)
+
+        st = parse_status_json(os.path.join(rundir, "status.json"))
+        avg_tok_s, jsonl_tok, syncs = parse_server_jsonl(model_dir)
+        total_tok = st["total_tokens"] if st["total_tokens"] else jsonl_tok
         ft = train[max(train)] if train else float("nan")
         fe = eval_[max(eval_)] if eval_ else float("nan")
         be = min(eval_.values()) if eval_ else float("nan")
-        summary.append((exp, label, ft, fe, be, avg_tok_s, total_tok, syncs))
+        ppl = math.exp(be) if be == be else float("nan")  # exp(best eval loss)
+        stale = st["mean_staleness"] if exp in ASYNC_ARMS else None
+        summary.append(
+            (exp, label, ft, fe, be, ppl, avg_tok_s, total_tok, syncs, stale)
+        )
 
     with open(os.path.join(ASSETS, "curves.csv"), "w", newline="") as f:
         w = csv.writer(f)
@@ -149,12 +243,16 @@ def main():
         w.writerows(rows)
 
     print(f"\nwrote {len(rows)} rows to assets/curves.csv\n")
-    print("| Exp | final train | final eval | best eval | avg tok/s | tokens | syncs |")
-    print("|---|---|---|---|---|---|---|")
-    for exp, label, ft, fe, be, ts, tok, syncs in summary:
+    print(
+        "| Arm | final train | final eval | best eval | best ppl | "
+        "avg tok/s | tokens | syncs | mean stale |"
+    )
+    print("|---|---|---|---|---|---|---|---|---|")
+    for exp, label, ft, fe, be, ppl, ts, tok, syncs, stale in summary:
+        stale_s = f"{stale:.2f}" if stale is not None else "—"
         print(
-            f"| {label} | {ft:.4f} | {fe:.4f} | {be:.4f} | "
-            f"{ts/1e3:.0f}K | {tok/1e6:.0f}M | {syncs} |"
+            f"| {label} | {ft:.4f} | {fe:.4f} | {be:.4f} | {ppl:.2f} | "
+            f"{ts/1e3:.0f}K | {tok/1e6:.0f}M | {syncs} | {stale_s} |"
         )
 
 

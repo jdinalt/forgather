@@ -33,3 +33,18 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_schedule
     min_lr: {{ ns.min_lr | toyaml }}
     decay_steps: {{ ns.annealing_steps }}
     decay_start_step: {{ ns.decay_start_step }}
+
+## ===== Trainer: server-managed token budget ================================
+## These runs stop on the DiLoCo server's ``--token-budget``: once the aggregated
+## cross-worker ``total_tokens`` crosses the budget, the server relays
+## ``save_and_stop`` to every worker. For that to be the *sole* stop authority,
+## the worker must not self-stop first. The parent chain pins ``max_steps`` to
+## ``ns.total_steps`` (a fixed ~16k-step cap that would stop the worker before the
+## budget is reached); we override that default to -1 (run one full epoch — far
+## longer than any budget on Fineweb-Edu) with ``num_train_epochs: 1``.
+## ``max_steps`` stays overridable via the ``--max-steps`` dynamic arg, which the
+## ``validate`` smoke uses for a short plumbing run.
+[trainer_args]
+    == super()
+    max_steps: {{ max_steps | toyaml(-1) }}
+    num_train_epochs: {{ epochs | default(1) }}

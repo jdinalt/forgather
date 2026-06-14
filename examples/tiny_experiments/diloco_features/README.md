@@ -1,37 +1,21 @@
-# DiLoCo Features
+# Validating Async and Streaming DiLoCo at Small Scale
 
-DiLoCo already cuts communication by syncing only every `H` steps instead of
-every step. On top of that it offers several knobs that reduce or *restructure*
-communication further — each buying you something (smoother bandwidth use, no
-straggler waits, tolerance for uneven hardware) at some cost in convergence.
-**This project measures that cost**, on a controlled 4-worker run, so you can
-decide which to turn on for your network and cluster.
+A controlled reproduction study of two communication-efficient extensions to
+DiLoCo — **asynchronous local-SGD** (Delayed Nesterov + Dynamic Local Updates +
+a server-side grace period; [arXiv:2401.09135](https://arxiv.org/abs/2401.09135))
+and **Streaming DiLoCo** (block-boundary fragment sync;
+[arXiv:2501.18512](https://arxiv.org/abs/2501.18512)) — measured against
+synchronous DiLoCo as the reference, on a single small Llama (34.4M) trained from
+scratch on Fineweb-Edu across 4 workers.
 
-| Knob | Flag (on `diloco server`) | What it buys you |
-|---|---|---|
-| **Streaming sync** | `--num-fragments N` | spreads the sync over N fragments sent in the background across the local-training window, instead of transferring the whole model in one burst at sync time — smooths bandwidth use on a slow link |
-| **Async** | `--async` | drops the cross-worker barrier — fast workers don't wait on stragglers (requires the DN buffer, and the convergence cost is real — see below) |
-| **DN buffer** | `--dn-buffer-size N` | the Delayed-Nesterov buffer that makes async usable — **required** with `--async`. Its *size* is the dial that trades async-responsiveness for convergence; under real staleness N must be **several × the worker count**, not N = workers (see below) |
-| **DyLU** | `--dylu` | adapts each worker's sync interval to its own throughput, reducing staleness — for heterogeneous / unevenly-loaded workers |
-| **Wire + transport** | `--wire-format`, `--grpc` | how the bulk tensors move (pickle vs safetensors; HTTP vs gRPC) — a speed/safety choice that's **free** (see below) |
+> **Status.** The experimental *design* below is final and the harness is built
+> ([`experiment.sh`](experiment.sh), [`analysis/`](analysis)). The **Results**
+> tables and figures are placeholders pending the run matrix — this document is
+> the study's pre-registration: methodology, controls, and the pass/fail gates
+> are fixed *before* the GPU time is spent. One run per arm at a single small
+> scale: **suggestive, not a benchmark.**
 
-These are all server-authoritative: you select them with flags on
-`forgather diloco server`, and every worker adopts them from the server's
-`/info`. The same worker config (`default.yaml`) runs all of them. They are
-features of the **HTTP sync backend** — streaming in particular is only
-implemented there (the shared-memory and collective backends raise
-`NotImplementedError` on fragment sync).
-
-Like the other [Tiny Experiments](..), this does double duty: every run below
-drives the full orchestrated path (scheduler → param server → workers) for one
-feature, so the same sweep that *measures* what each knob costs also serves as an
-end-to-end exercise of it.
-
-New to DiLoCo here? Start with the sibling [`../diloco`](../diloco) walkthrough
-(server / worker / forgather-server roles, the inner/outer optimizer split,
-work-unit dispatch); the authoritative reference is
-[`docs/trainers/diloco.md`](../../../docs/trainers/diloco.md). All commands below
-assume you are in this project directory:
+All commands assume you are in this project directory:
 
 ```bash
 cd examples/tiny_experiments/diloco_features
@@ -39,205 +23,475 @@ cd examples/tiny_experiments/diloco_features
 
 ---
 
-## What each feature buys — and what it costs
+## Abstract
 
-Seven configurations, same everything except the feature under test — small Llama
-(34.4M) on Fineweb-Edu, **4 workers**, **H = 100**, **520M tokens/worker** (~2B
-total), gRPC + safetensors, `torch.compile` on (the config default), identical
-pristine init and the same seed/data. Only the one flag varies, so the loss gap
-*is* the feature's cost. (Driven through the scheduler by
-[`experiment.sh`](experiment.sh); harvested by
-[`analysis/harvest.py`](analysis/harvest.py) →
-[`assets/curves.csv`](assets/curves.csv) →
-[`analysis/plot_experiment.py`](analysis/plot_experiment.py).)
+DiLoCo cuts inter-worker communication by synchronizing only every `H` local
+steps instead of every step. Three further extensions reduce or *restructure*
+that communication: **streaming** spreads each sync across the local-training
+window as block-boundary fragments instead of one all-at-once burst; **async**
+drops the cross-worker barrier (so fast workers never wait on a straggler), made
+stable by a **Delayed-Nesterov (DN)** outer-optimizer buffer, optionally tightened
+by a **grace period** (a soft barrier that coalesces near-simultaneous
+submissions) and **Dynamic Local Updates (DyLU)** (per-worker sync rate matched to
+throughput). Each buys something — smoother bandwidth, no straggler waits,
+tolerance for uneven hardware — at some cost in convergence. This study measures
+those costs at small scale, reproducing the two source papers' qualitative
+*convergence* trends under a real worker count and synthetically-induced staleness,
+from a random initialization.
 
-**Async is exercised under *real* staleness.** With identical GPUs, async workers
-finish their `H` steps in lock-step and submit near-simultaneously — staleness ≈
-1, barely async at all. So the async runs add a small per-step **jitter** (`--env
-DILOCO_DEBUG_STEP_JITTER`, the same on every worker, seeded per-worker): the
-randomness decorrelates their phase so they drift out of lock-step and the server
-sees genuine staleness (~3 = workers − 1), while they keep the same *average*
-speed (no slow-worker tail). This *measures async's impact*; it is **not** a
-faithful real-deployment async — that would also want real device-timing variance
-and the server-side grace period the paper specifies (available via `diloco
-server --grace-period`, but not exercised in this run). DyLU instead uses a
-per-worker speed *spread*.
+**Scope, stated plainly.** On 4 identical 4090s, synchronous DiLoCo is genuinely
+fine — there is no straggler tail, no mixed-speed GPU pool, no bandwidth wall. The
+hardware is a test rig, not a deployment. Async, grace, and DyLU exist to solve
+problems this rig *does not have* (heterogeneous "slow + fast" GPU populations,
+large worker counts, constrained WAN links). So this study **validates that the
+mechanisms function and reproduce the papers' convergence trends** — it does **not**
+demonstrate their real-world *payoff*, which lives on the **wall-clock** axis under
+conditions absent here (the async paper's own headline, Fig 2: "matches sync per
+update step, **significantly surpasses it in wall-clock time**"). We do not
+manufacture synthetic stragglers to fake a benefit we can't measure; that
+demonstration is deferred to a two-population (e.g. RTX 4090 + 3090) / WAN setup
+(Future Directions). Every arm below is tagged a convergence-trend reproduction or
+a mechanism-validation under a synthetic-but-measurable condition.
 
-Every run shares the same base — `forgather diloco server -o <master> -n 4 --grpc
---wire-format safetensors`, a fresh master copy, config defaults (`torch.compile`
-on, the ~16k-step/worker budget) — and adds:
+**Practitioner TL;DR.** What each knob buys, what it costs, and what we expect to
+measure (every result column is filled from the run matrix; directions are
+hypotheses from the source papers + our post-fix implementation):
 
-| Run | `diloco server` flag(s) | worker `--env` |
-|---|---|---|
-| Sync DiLoCo (baseline) | `--sync-every 100` | — |
-| Streaming | `--sync-every 100 --num-fragments 2` | — |
-| Async (no DN buffer) | `--sync-every 100 --async` | jitter 0.15 |
-| Async + DN (N=4/8/16) | `--sync-every 100 --async --dn-buffer-size N` | jitter 0.15 |
-| Async + DN + DyLU | `--async --dylu --dylu-base-sync-every 100 --dn-buffer-size 4` | per-worker delay spread |
-
-| Configuration | eval loss | vs sync | what you buy | the catch |
+| Knob | Flag (on `diloco server`) | Buys you | Costs | Expected here |
 |---|---|---|---|---|
-| **Sync DiLoCo** (baseline) | **2.857** | — | the reference (sync every H steps) | — |
-| **+ Streaming** (2 frag) | **2.990** | **+0.13** | spreads the sync over compute — no all-at-once bandwidth burst | a small, steady convergence cost |
-| **+ Async + DN** (N=16) | **3.062** | **+0.21** | no barrier — fast workers never wait on a straggler | needs a **large** DN buffer (~4× workers); the cost balloons as it shrinks (below) |
-| **+ DyLU** (N=4, uneven HW) | **4.301** | +1.44 † | adapts per-worker sync rate, cutting staleness | for heterogeneous workers; a same-spread control with `--dylu` off lands 5.07, so DyLU buys −0.77 here (below). † not comparable to the N=16 row |
-| Async **without** DN | **~11 ✗** | — | — | **catastrophic** — explodes and aborts in ~20 rounds; never (below) |
+| **Streaming** | `--num-fragments N` `--fragment-assignment {strided,sequential}` | smooths bandwidth — fragments sent across the compute window, no all-at-once burst | a small, steady convergence cost; strided ≥ sequential, gap grows at finer grain | small gap vs sync; strided's edge visible at N=5 (2 blocks/fragment) |
+| **Async + DN** | `--async --dn-buffer-size N` | drops the barrier — fast workers don't wait on stragglers | needs the DN buffer (required with `--async`); some convergence cost under staleness | **≈ sync at N = k = 4** workers |
+| **Grace period** | `--grace-period S` | a brief, opportunistic wait so a finished worker can coalesce with a near-simultaneous finisher — cuts the slow-worker *tail* in a heterogeneous / large-N pool | only pays off when the tail is real (large N, mixed speeds); its benefit is **wall-clock**, not convergence | **not a study arm** — the rig has no tail to cut; validated functional only, real benefit → Future Directions |
+| **DyLU** | `--dylu` | matches each worker's sync rate to its throughput, cutting staleness | only helps heterogeneous / unevenly-loaded workers | cuts staleness vs a DyLU-off control under a 2× speed spread |
+| **Wire + transport** | `--wire-format`, `--grpc` | faster/safer pipe (safetensors vs pickle; gRPC vs HTTP) | none — lossless | overlays the reference within run-to-run noise |
 
-> One run per config, one seed — **suggestive, not a benchmark**. The async
-> staleness is jitter-induced (~3), a controlled stand-in for real device-timing
-> variance. † The DyLU row used a small N=4 buffer *and* a speed spread, so its
-> raw "+1.44" isn't comparable to the N=16 async row — compare it to the
-> same-spread, DyLU-off control (5.07) and to plain async+DN at N=4 (below).
-
-![Eval loss — full run and the converged-runs endgame zoom](assets/loss_comparison.png)
-![Training health — train loss and grad norm](assets/training_health.png)
-
-<!-- Figures are kept to two wide panels each so they stay legible at the
-     text-column width; click-to-zoom for embedded docs images is tracked in #223. -->
-
-
-**The trade, in one line.** Two of these knobs are cheap and one is not. Base
-DiLoCo's traffic is bursty — the link sits idle through the local-training window,
-then every worker ships the whole model at once at sync time; harmless on a fat
-interconnect, the bottleneck on a slow one. **Streaming** spreads that transfer
-across the window so the link is used steadily instead of slammed — **~0.13** eval
-loss, genuinely cheap. **Async** drops the barrier so no one waits on a straggler,
-but under real staleness that is **not** cheap: the best we got (a large DN
-buffer) still cost **+0.21**, and a poorly-sized buffer costs *much* more or
-diverges outright (next section). So async is a real trade — worth it only when
-straggler waits or barrier latency actually dominate your step time, and only if
-you size the buffer generously. (The sibling [`../diloco`](../diloco) project shows
-the other half: at a longer budget DiLoCo's infrequent sync becomes a
-*regularizer* and can overtake an all-reduce baseline outright.)
-
-### Async needs a DN buffer — and under real staleness it must be large
-
-This is the headline finding, and it's the part with little in the literature for
-async DiLoCo at a real worker count. Two things go wrong without enough buffering:
-
-**Without the DN buffer, async is catastrophic.** Each worker's pseudo-gradient is
-applied with full-LR Nesterov momentum the instant it arrives, with no
-cross-worker averaging. At 4 workers and staleness ~3 the run doesn't merely
-stagnate — it **explodes**: eval loss climbs *above* its starting value (~11.5)
-and the trainer's divergence detector aborts it after ~20 rounds. (The paper shows
-even *homogeneous* async lags sync because pseudo-grads are applied sequentially
-rather than aggregated; under real staleness the effect is violent.) Never run
-`--async` without `--dn-buffer-size`.
-
-**With the buffer, the *size* is a strong convergence dial — and N = worker count
-is nowhere near enough.** The DN buffer accumulates N submissions before firing one
-momentum outer step (simple GD in between); the larger N is, the more it behaves
-like a synchronous "aggregate, then one step." Sweeping N at 4 workers, staleness
-~3 (same budget/seed/jitter, only N varies):
-
-| DN buffer N | eval loss | vs sync |
-|---|---|---|
-| N=4 (= workers) | 5.135 | **+2.28** |
-| N=8 (2× workers) | 3.366 | +0.51 |
-| N=16 (4× workers) | 3.062 | **+0.21** |
-
-![Async DN-buffer-size sweep](assets/dn_sweep.png)
-
-The relationship is **monotonic and far from saturated**: N = workers is nearly
-useless (+2.28 — stable, but it never catches up), and convergence improves
-steadily as the buffer grows, approaching sync only as N → ∞ (at which point the
-buffer *is* a synchronous round). Even N = 4× workers still leaves a real **+0.21**
-residual. This is the async tradeoff in one curve: **a bigger DN buffer recovers
-convergence but makes async more sync-like** (each outer step waits on more
-submissions). Practical guidance under genuine staleness: size the DN buffer to
-**several × the worker count** and treat its convergence cost as the price of the
-no-barrier schedule — not the near-free knob a low-staleness (near-synchronous)
-test would suggest.
-
-**What a large buffer costs: server memory, not compute.** The buffer lives
-entirely on the parameter server (workers are unaffected by N), and it holds **N
-full pseudo-gradients** — `server.py` accumulates a `List` of N model-sized
-tensors at the upload dtype (bf16) before averaging them into one outer step. So
-its memory is **O(N × model size)**: at N=16 for this 34.4M model that's already
-~1.1 GB — several × the model itself (131 MB) and its momentum buffer — and on a
-multi-billion-parameter model it is N × the gradient footprint, the param
-server's dominant cost. Compute, by contrast, is **negligible**: the momentum
-step fires only every N submissions, so the averaging is amortized to O(model)
-per submission, and throughput was flat across the sweep (760 / 744 / 749 K
-tok/s at N = 4 / 8 / 16). So the practical ceiling on "just use a bigger buffer"
-is **server RAM**. (Mathematically the buffer only needs a running *sum* +
-counter — O(1) memory, as in the paper's Δ accumulator — so this O(N) list is a
-straightforward but memory-heavy implementation, [issue #222](https://github.com/jdinalt/forgather/issues/222).)
-
-### DyLU: cut the staleness instead of buffering it away
-
-DyLU attacks the same problem from the other side: instead of buffering stale
-gradients, it **reduces the staleness**. It adapts each worker's `sync_every` to
-its measured throughput so workers return pseudo-gradients closer together — here,
-with a deliberate per-worker speed spread, all four workers re-tuned continuously
-(hundreds of `sync_every` adjustments each, e.g. `100 → 35`).
-
-**Does DyLU actually help?** To isolate its effect we ran a **control**: the
-identical setup — same `0 / 0.05 / 0.10 / 0.15` per-worker speed spread, same
-async path, same small **N=4** DN buffer — but with `--dylu` *off*. That control
-lands at **5.07** eval; turning DyLU back on pulls it to **4.30**, a clean
-**−0.77** from staleness reduction alone (everything else held fixed). As a
-sanity check the control (5.07, uneven speeds) sits right next to the jitter-only
-plain async+DN at N=4 (5.14, equal average speed) — two independent ways of
-inducing staleness agree on the "plain async" floor, and DyLU recovers most of
-the gap above it.
-
-![Eval loss with and without DyLU — same speed spread, same N=4 buffer](assets/dylu_control.png)
-
-The DyLU-on curve tracks a consistent band below DyLU-off for the entire run
-(both still well above the sync baseline, drawn dashed for scale).
-
-But it's only a partial fix: a large buffer (N=16, 3.06) still beats
-DyLU-with-a-small-buffer, so on truly heterogeneous hardware you'd want **both** —
-DyLU to align the workers *and* a generous DN buffer. (DyLU is also for uneven
-hardware specifically; on identical workers it has nothing to adapt and is a
-no-op.)
-
-### Wire format and transport are free
-
-The bulk tensors can move as pickle or **safetensors**, over HTTP or **gRPC**.
-This is a pure speed/safety choice with **no convergence cost**: safetensors
-carries the identical bf16 bytes (no arbitrary-code deserialization), and gRPC is
-just a faster pipe. A dedicated **2-worker** sync run on gRPC + safetensors
-(matching the sibling `diloco` project's 2-worker `h100` reference, which used the
-historical **HTTP + pickle**) overlays it across the entire 1B-token run
-([`analysis/verify_baseline.py`](analysis/verify_baseline.py)):
-
-![gRPC+safetensors vs HTTP+pickle](assets/baseline_vs_h100.png)
-
-Final eval **2.918 vs 2.936** — a −0.018 gap, on the good side and within the
-run-to-run variance these toy runs show elsewhere (e.g. ~0.007 from a torch- vs
-Forgather-AdamW swap between the same two references). One run can't *prove*
-they're bit-identical, but it rules out any lossy effect — which would raise loss
-or diverge, as the no-DN async run does. **Use gRPC + safetensors for the speed
-and safety; it costs you nothing in quality.**
-
-### More workers cost token efficiency (like DDP)
-
-Adding workers raises DiLoCo's effective global batch — each sync round averages
-pseudo-gradients over more workers — so, as in DDP's large-batch regime, it buys
-*less per token*. The synchronous baseline at 2 vs 4 workers (same 520M
-tokens/worker, same LR), on a total-tokens axis
-([`analysis/worker_scaling.py`](analysis/worker_scaling.py)):
-
-![2 vs 4 worker token efficiency](assets/worker_scaling.png)
-
-At a **matched** total-token budget (1.04B) the 2-worker run wins — eval **2.918**
-vs the 4-worker's **3.071** at that point. The 4-worker run reaches a lower *final*
-loss (2.857) only by spending **2×** the tokens, and even then by just 0.06 —
-sharp diminishing returns. So DiLoCo inherits the data-parallel token-efficiency
-penalty: more workers converge to a better model but cost proportionally more
-total tokens to get there. (We held LR fixed; a large-batch LR boost might recover
-some, as it partly does for DDP — untested here.) Practically: scale workers for
-**wall-clock throughput**, not token efficiency.
+These are all **server-authoritative**: you select them with flags on `forgather
+diloco server`, and every worker adopts them from the server's `/info`. The same
+worker config (`default.yaml`) runs all of them. They are features of the **HTTP
+sync backend** — streaming in particular is only implemented there (the
+shared-memory and collective backends raise `NotImplementedError` on fragment
+sync).
 
 ---
 
-## Reproducing it
+## 1. Introduction
+
+DiLoCo (Distributed Low-Communication training) replaces the per-step all-reduce
+of data-parallel training with an inner/outer optimization: each worker trains a
+local replica with AdamW for `H` steps, then the workers' *pseudo-gradients*
+(local drift, `global − local`) are averaged and applied by an outer
+SGD-with-Nesterov-momentum step. Communication drops by a factor of `H`. The
+sibling [`../diloco`](../diloco) project walks through the mechanism and shows the
+headline result at a longer budget — DiLoCo's infrequent sync acts as a
+*regularizer* and can match or beat an all-reduce baseline outright.
+
+That baseline is **synchronous**: every worker waits at a barrier each sync round.
+Two lines of follow-up work attack the two remaining costs:
+
+1. **The barrier.** On heterogeneous hardware or a busy cluster, a synchronous
+   round runs at the speed of the slowest worker. *Asynchronous* local-SGD
+   ([arXiv:2401.09135](https://arxiv.org/abs/2401.09135)) drops the barrier:
+   each worker submits its pseudo-gradient when ready and immediately pulls the
+   latest global weights. The hazard is *staleness* — a submission computed
+   against weights that have since moved — which a naive outer step handles
+   badly. The paper's fixes are the **Delayed-Nesterov** outer optimizer, a
+   **grace period**, and **Dynamic Local Updates**.
+
+2. **The burst.** A synchronous round transfers the whole model at once; the link
+   sits idle through the `H`-step window, then is slammed at sync time.
+   *Streaming DiLoCo* ([arXiv:2501.18512](https://arxiv.org/abs/2501.18512))
+   partitions the model into block-boundary **fragments** and overlaps each
+   fragment's transfer with ongoing compute, so the link is used steadily.
+
+Both papers validate at scale and (for async) largely in a *finetuning* regime
+warm-started from a pretrained checkpoint. **This study asks the narrower
+question:** do the qualitative findings hold at small scale, at a real worker
+count, under real staleness, **trained from scratch**? It is deliberately scoped
+to *synchronous DiLoCo as the reference* versus *async + streaming*; the
+DiLoCo-vs-DDP token-efficiency comparison is out of scope here (covered at larger
+scale in [`../../pretrain/small-llm`](../../pretrain/small-llm): 4×DDP vs 4-worker
+sync DiLoCo, 150M, ~11× Chinchilla — cross-referenced in §3).
+
+Like the other [Tiny Experiments](..), this does double duty: every arm drives
+the full orchestrated path (scheduler → param server → workers), so the same
+matrix that *measures* what each knob costs also serves as an end-to-end exercise
+of it.
+
+---
+
+## 2. Background
+
+### 2.1 Synchronous DiLoCo
+
+Each of `k` workers holds a replica. For `H` inner steps it trains locally
+(AdamW). At the sync round, worker *i* computes its pseudo-gradient `Δᵢ = θ_global
+− θ_local,i`; the server averages them, `Δ̄ = (1/k) Σ Δᵢ`, and applies one outer
+step with SGD + Nesterov momentum (here outer LR 0.7, momentum 0.9). Workers then
+pull the updated `θ_global` and continue. The barrier makes every outer step an
+average over *exactly* `k` fresh pseudo-gradients.
+
+### 2.2 Asynchronous local-SGD and the Delayed-Nesterov buffer
+
+Drop the barrier and each pseudo-gradient arrives *alone* and possibly *stale*
+(computed against an older `θ_global`). Applying full-LR Nesterov momentum to each
+lone submission the instant it arrives is unstable — pseudo-gradients are applied
+sequentially rather than aggregated, and under real staleness the run can diverge.
+
+The **Delayed-Nesterov (DN)** outer optimizer (paper Algorithm 3, with `c = 0`)
+decouples the momentum update from the per-submission update. Maintaining a
+running accumulator `Δ` and a momentum buffer `m`, for each submission `g`:
+
+- apply a small immediate gradient step: `θ ← θ − ε·g/N`, and accumulate `Δ ← Δ + g`;
+- every `N`-th submission, fold the accumulator into momentum and apply it:
+  `m ← β·m + Δ/N`, `θ ← θ − ε·β·m`, then reset `Δ ← 0`.
+
+`N` is the **DN buffer size**. At `N = 1` this reduces to plain Nesterov; as `N`
+grows, each momentum step aggregates more submissions, behaving more like a
+synchronous "aggregate, then one step." Crucially the buffer is **O(model)
+memory** — a single running `Δ` and `m`, not `N` retained pseudo-gradients — so
+its memory cost is independent of `N` (this corrects an earlier implementation
+that retained an `N`-deep list; the faithful Algorithm-3 form holds only the
+accumulator). With the memory penalty removed, the expectation under real
+staleness at `N = k` is **async + DN ≈ sync**, not the "N must be several×
+workers" behavior an O(N·model) list-based buffer exhibited.
+
+### 2.3 Grace period (soft barrier)
+
+A pure async server applies one outer step per submission. The **grace period**
+is a wall-clock soft barrier: when a submission arrives, the server waits up to
+`S` seconds and *coalesces* any other submissions that land in the window into a
+**single** outer step (one DN tick over their average). The window is anchored to
+the *first* arrival. This reduces the number of stale, lonely outer steps without
+reintroducing a hard barrier — provided `S` is tuned so it coalesces a *few* near-
+simultaneous stragglers (2–3 of `k`), **not** all `k` every round (which would be
+synchronous DiLoCo in disguise — see the methodology in §3.3).
+
+### 2.4 Dynamic Local Updates (DyLU)
+
+Under heterogeneous worker speeds, a fast worker completes many more `H`-step
+cycles than a slow one between the slow worker's submissions, so the slow worker's
+pseudo-gradient is very stale. **DyLU** sets each worker's `sync_every` inversely
+to its measured throughput, so all workers return pseudo-gradients at roughly the
+same wall-clock cadence — reducing staleness at the source instead of buffering it
+away. It only helps when worker speeds genuinely differ; on identical workers it
+has nothing to adapt.
+
+### 2.5 Streaming fragments
+
+Streaming partitions the model into `N` fragments **at transformer-block
+boundaries** (derived from the model's `_no_split_modules`, so a fragment is a
+whole number of blocks — never a split inside attention/MLP) and syncs one
+fragment per portion of the window, overlapping transfer with compute. Blocks are
+assigned to fragments either **strided** (round-robin: fragment *f* gets blocks
+*f, f+N, f+2N, …*) or **sequentially** (contiguous slabs). The paper reports
+strided slightly better, with the gap growing at finer grain / smaller fragments.
+Our 34.4M model has **10 transformer blocks**, giving faithful (block-divisible)
+fragment counts `N ∈ {2, 5}` (5 blocks/fragment and 2 blocks/fragment
+respectively); embeddings attach to the first fragment and the LM head to the
+last.
+
+### 2.6 Why from scratch
+
+The source papers mostly study a *finetuning* regime warm-started from a
+pretrained checkpoint, and the async paper inherits the original DiLoCo's caution
+of pretraining ~24K steps before the local-SGD phase. We train **everything from a
+random initialization**, for three reasons:
+
+1. **The original DiLoCo sweep favors it.** DiLoCo swept the pretrain budget
+   `{0, 12K, 24K, 48K}` steps and found performance grew *monotonically worse*
+   with more pretraining — `0` (from scratch) was best, and "from scratch" not
+   only matched but led the other curves.
+2. **The 24K figure is inherited caution, not optimization.** Post-local-SGD
+   (PyTorch) defaults to a 500-step warmup; the async paper's 24K is in that
+   lineage. At 150M with seq 256 / batch 512 it is ~1× Chinchilla — not the
+   4×/12.5-billion-token checkpoint a seq-1024 reading would imply.
+3. **From scratch *is* the test.** Plain local-SGD is known to struggle from a
+   cold start; DiLoCo does not. Whether async preserves that random-init
+   robustness is itself a small contribution — and the cleaner, more reproducible
+   protocol.
+
+**Pre-registration (regime confound).** For *streaming* the from-scratch choice is
+clean — the Streaming paper is itself from-scratch, Chinchilla-optimal. For *async*
+it is a genuine hazard: the async paper's tiny ≈sync gaps are measured *late in
+finetuning from a 24K-step checkpoint*, where pseudo-gradients are small and
+well-aligned. From scratch, early pseudo-gradients are large and poorly-aligned —
+exactly where sequentially-applied stale gradients do the most damage. So a
+from-scratch async **≈sync *failure* on the DN arm is INCONCLUSIVE** (a regime
+confound), **not** a refutation of DN. We pre-register that reading now, and a
+reactive fallback: if the from-scratch async headline shows a surprising gap, add a
+warm-start diagnostic for the DN arm and report it (a dedicated async warm-start /
+pretrain-budget sweep is in Future Directions).
+
+---
+
+## 3. Experiments
+
+### 3.1 Fixed setup (all arms, from scratch)
+
+- **Model:** small Llama, 34.4M params, **10 transformer blocks** (⇒ faithful
+  fragment `N ∈ {2, 5}`).
+- **Data:** Fineweb-Edu, a fixed base seed (`--seed 42`); a pristine master is
+  copied per run so every arm starts from identical init.
+- **DiLoCo:** `H = 100`; outer optimizer SGD-Nesterov (LR 0.7, momentum 0.9);
+  gRPC + safetensors; `torch.compile` on.
+- **Workers:** 4 (2 only for the scaling and transport arms). 4 workers = 4
+  GPUs/run, so arms run **serially** on one param server (`:8512`).
+- **Global stop:** the server's `--token-budget` for **every** arm (not a
+  per-worker `--max-steps`). Equal total tokens makes arms comparable on the
+  total-tokens axis even under a per-worker speed spread. 4-worker budget = **2.08
+  B** (520 M/worker × 4); the 2-worker scaling/transport arms run the matched-total
+  half-budget = **1.04 B**. The heartbeat-driven one-shot stop may slightly
+  overshoot, so analysis aligns the axis to the **actual** harvested `total_tokens`.
+
+### 3.2 The primary axis: total tokens = "Total Local Updates"
+
+The async paper plots convergence against **Total Local Updates** — local
+optimizer steps, which (at fixed batch/sequence) are directly proportional to
+tokens consumed. The token-budget global stop trains every arm to equal total
+tokens, so **eval loss vs total tokens** is the faithful primary axis. The
+outer/global-step count appears only as an optional secondary diagnostic (how much
+each arm coalesces), never as a competing axis.
+
+### 3.3 Methodology: inducing staleness vs inducing heterogeneity
+
+The GPUs here are identical, so we synthesize the two conditions async and DyLU
+respectively target, using debug-only per-step worker throttles (delivered via
+`submit --env`; see Appendix B):
+
+- **Phase jitter** (`DILOCO_DEBUG_STEP_JITTER`, the *same* value on every worker,
+  seeded *per worker* so they differ): a random `uniform(0, J)` s sleep per step.
+  The randomness decorrelates the workers' phase so they drift out of lock-step
+  and the server sees genuine **staleness ≈ k − 1**, while every worker keeps the
+  same *average* speed — so there is no slow-worker solo tail confounding the
+  result. This is how the async staleness arms (5–6) are run (`J = 0.15`). It
+  *measures async's impact*; it is not a faithful real deployment (which would also
+  have real device-timing variance).
+
+- **Speed spread** (`DILOCO_DEBUG_STEP_DELAY`, a *fixed* per-worker delay): creates
+  genuine *average-speed* differences. The DyLU arms (7–8) use a spread calibrated
+  from the measured base step time to a **~2× slowest/fastest ratio** — a realistic
+  mixed-GPU cluster (e.g. RTX 4090 + RTX 3090), which is DyLU's real target. (Jitter,
+  equal average speed, would give DyLU nothing to adapt to.) This spread is
+  *synthetic* — it validates DyLU's mechanism, it is not the real heterogeneity
+  payoff (that's Future Directions).
+
+**Staleness is a pass/fail gate (with corrected semantics).** The async conclusions
+*depend on* the workers actually running stale, so we verify it:
+[`analysis/staleness.py`](analysis/staleness.py) derives each worker's staleness
+from the captured `/status` snapshot (`server sync_round −
+worker.last_sync_server_round`). The arms that are *supposed* to be stale —
+`async_nodn`, `async_dn4`, and the DyLU-off control `dylu_off` — are gated against
+mean ≈ `k − 1` *before* the headline tier (if the jitter isn't producing staleness,
+they aren't testing what we claim). The *staleness-reducer* arm `dylu_on` is the
+exception: its success criterion is staleness **below its `dylu_off` control**, so
+it is **not** failed for landing below `k − 1` — a working DyLU arm *should*.
+
+**Grace is validated, not measured.** Grace is **not a study arm** (see §3.5 and
+the scope note in the Abstract) — its payoff is wall-clock tail-reduction in a
+heterogeneous / large-N pool, which 4×4090 doesn't have and loopback can't measure.
+The `validate` run includes a short async+grace probe, and
+[`analysis/grace_batches.py`](analysis/grace_batches.py) confirms the **mechanism
+works to the paper's spec** — it *coalesces* near-simultaneous finishers (a
+grace-batch histogram with mass at 2+) **and** *proceeds immediately* when none
+arrive within `S` (mass at 1). That is the whole grace check here; the real
+demonstration is Future Directions.
+
+### 3.4 Run matrix (10 arms, single run each)
+
+Each arm is tagged **[trend]** (a measurable convergence-trend reproduction) or
+**[mech]** (a mechanism-validation under a synthetic-but-measurable condition).
+Grace is *not* an arm (§3.5).
+
+| # | Arm | Kind | `diloco server` flag(s) | worker `--env` | Tests |
+|---|---|---|---|---|---|
+| 1 | `baseline` (sync, 4w) | — | `--sync-every 100` | — | reference |
+| 2 | `stream_str2` | trend | `--num-fragments 2 --fragment-assignment strided` | — | streaming, coarse |
+| 3 | `stream_seq2` | trend | `--num-fragments 2 --fragment-assignment sequential` | — | assignment A/B vs #2 |
+| 4 | `stream_str5` | trend | `--num-fragments 5 --fragment-assignment strided` | — | finer grain (strided edge) |
+| 5 | `async_nodn` | trend | `--async` | jitter 0.15 | no-DN control (expect divergence) |
+| 6 | `async_dn4` | trend | `--async --dn-buffer-size 4` | jitter 0.15 | **headline:** async + DN ≈ sync (per token)? |
+| 7 | `dylu_off` | mech | `--async --dn-buffer-size 4` | delay spread (~2×) | DyLU-off control |
+| 8 | `dylu_on` | mech | `--async --dylu --dylu-base-sync-every 100 --dn-buffer-size 4` | delay spread (~2×) | DyLU cuts staleness (A/B vs #7) |
+| 9 | `baseline_2w` (sync, 2w) | trend | `--sync-every 100` (budget 1.04 B) | — | 2-vs-4-worker token efficiency |
+| 10 | `wire_http_pk` (2w) | — | `--sync-every 100 --wire-format pickle` | — | lossless transport (vs `baseline_2w` gRPC+safetensors) |
+
+Async arms (5–8) all run to the token budget. Staleness arms (5–6) use **jitter**
+(equal average speed, staleness ≈ 3, no speed-spread confound); DyLU arms (7–8)
+use the **synthetic delay spread** (average-speed heterogeneity is the point). The
+DN buffer is fixed at **N = k = 4** (the paper's main config); an N-buffer sweep is
+a Future Directions follow-up, not part of this matrix. Arm 10 is an internal
+wire/transport lossless-ness check — **unrelated** to the paper's fp4
+quantization-lossless claim (we do not implement an fp4 codec; see §3.6).
+**Cut:** `async_dn4_grace` → grace is validated functional in `validate` only and
+deferred to Future Directions (§3.5, Abstract scope note).
+
+### 3.5 Metrics, controls, statistics
+
+- **Metrics.** Eval loss and **perplexity** = `exp(loss)`; eval loss vs total
+  tokens (primary). Per-arm mean **staleness** (the gate; reducer semantics per
+  §3.3). Throughput / wall-clock from the server JSONL. (Grace's batch histogram is
+  a `validate`-only mechanism check, §3.3 — not a study metric.)
+- **Controls (each isolates one knob, everything else fixed).** DN on/off (5 vs 6);
+  DyLU on/off (7 vs 8, same spread + N=4); streaming assignment (2 vs 3); grain
+  (2 vs 4); transport (9 vs 10); worker count (1 vs 9).
+- **Statistics.** **One run per arm, no multi-seed.** Re-running is a poor use of
+  GPU time: seed noise is typically small and the effects we want are larger than
+  it. An effect visible only by averaging seeds is, by construction, a *small-effect
+  finding* (flag and understand it), not a re-run trigger; a large effect won't
+  change with more seeds. Reported framing throughout: **"suggestive at small
+  scale."**
+
+### 3.6 What this can and cannot validate
+
+**Can** (relative *convergence* trends, single small scale): async + DN ≈ sync at
+N = k *per token* (with the regime caveat in §2.6 — a from-scratch *failure* is
+inconclusive); streaming's small steady cost and strided ≥ sequential; DyLU's
+staleness reduction under a synthetic spread (A/B, mechanism-validation); the
+worker-count token-efficiency penalty (vs sync DiLoCo; the DDP anchor lives in the
+sibling project); lossless transport; and, suggestively, that a from-scratch
+async≈sync result would extend DiLoCo's random-init robustness to async.
+
+**Cannot** (stated plainly): **any wall-clock / scheduling *benefit*** — grace's
+tail-reduction, async's no-barrier win, streaming's peak-smoothing — because the rig
+is homogeneous and loopback (the async paper's win is *per wall-clock*, Fig 2; we
+can only show the convergence *tie*, not the wall-clock win); the fp4 / "400× bits"
+claim (no fp4 codec; wire dtypes fp32/bf16 only); exact peak-bandwidth absolute
+numbers (structural ~1/N argument only); the papers' finetuning regime (we train
+from scratch, §2.6); deterministic device-trace heterogeneity levels (synthetic
+jitter/delay model); and large scale. These benefits are Future Directions.
+
+### 3.7 Results
+
+*Placeholders — filled from the run matrix.* The harvest + plot scripts regenerate
+each of the following into `assets/`:
+
+| Configuration | eval loss | perplexity | vs sync | mean staleness | notes |
+|---|---|---|---|---|---|
+| Sync DiLoCo (baseline) | _TBD_ | _TBD_ | — | — | reference |
+| + Streaming (strided N=2) | _TBD_ | _TBD_ | _TBD_ | — | |
+| + Streaming (sequential N=2) | _TBD_ | _TBD_ | _TBD_ | — | assignment A/B |
+| + Streaming (strided N=5) | _TBD_ | _TBD_ | _TBD_ | — | finer grain |
+| Async without DN | _TBD_ | _TBD_ | _TBD_ | _TBD_ | expect divergence/abort |
+| Async + DN (N=4) | _TBD_ | _TBD_ | _TBD_ | _TBD_ | **headline** |
+| Async + DN, spread, DyLU off | _TBD_ | _TBD_ | _TBD_ | _TBD_ | control |
+| Async + DN + DyLU, spread | _TBD_ | _TBD_ | _TBD_ | _TBD_ | A/B vs control |
+| Sync, 2 workers | _TBD_ | _TBD_ | _TBD_ | — | scaling |
+
+Figures (regenerated by the named scripts):
+
+- **`loss_comparison.png`** / **`training_health.png`** — the headline eval-loss
+  comparison and the train-loss/grad-norm health check
+  ([`analysis/plot_experiment.py`](analysis/plot_experiment.py)).
+- **`streaming.png`** — fragment count + assignment, strided vs sequential
+  ([`analysis/streaming.py`](analysis/streaming.py)).
+- **`grace_hist.png`** — *`validate`-only*: the grace coalescing histogram, used
+  to confirm the mechanism works to spec (coalesces near-simultaneous finishers,
+  proceeds immediately when alone). Not a results figure
+  ([`analysis/grace_batches.py`](analysis/grace_batches.py)).
+- **`dylu_control.png`** — DyLU off vs on at a fixed speed spread
+  ([`analysis/dylu_control.py`](analysis/dylu_control.py)).
+- **`worker_scaling.png`** — 2-vs-4-worker token efficiency
+  ([`analysis/worker_scaling.py`](analysis/worker_scaling.py)).
+- **`baseline_vs_h100.png`** — the lossless-transport overlay vs the sibling
+  `diloco` project's reference ([`analysis/verify_baseline.py`](analysis/verify_baseline.py)).
+
+---
+
+## 4. Related Work
+
+**DiLoCo** (Douillard et al., 2023) introduced the inner-AdamW / outer-SGD-Nesterov
+split with periodic pseudo-gradient averaging; the sibling [`../diloco`](../diloco)
+project reproduces its regularization-at-longer-budget result. **Asynchronous
+Local-SGD** (Liu et al., 2024;
+[arXiv:2401.09135](https://arxiv.org/abs/2401.09135)) identifies staleness as the
+core obstacle to dropping the barrier and contributes the Delayed-Nesterov outer
+optimizer, DyLU, and the grace period. We evaluate DN (arms 5–6) and DyLU (arms
+7–8); the grace period — an Algorithm-2 input the paper never ablates, whose payoff
+is wall-clock tail-reduction — is validated functional only and deferred (§3.5).
+**Streaming DiLoCo** (Douillard et al., 2025;
+[arXiv:2501.18512](https://arxiv.org/abs/2501.18512)) overlaps fragment
+communication with compute and additionally quantizes the wire transfer (fp4/E3M0);
+we evaluate the fragmentation (arms 2–4) but not the quantization codec. The
+DiLoCo-vs-DDP token-efficiency question — orthogonal to the communication-schedule
+knobs studied here — is covered at larger scale in
+[`../../pretrain/small-llm`](../../pretrain/small-llm).
+
+---
+
+## 5. Conclusions
+
+*Filled after the run matrix.* **Scope boundary (restated):** these are *convergence*
+conclusions on a homogeneous test rig — they validate that the mechanisms function
+and reproduce the papers' per-token trends; the wall-clock *benefits* (grace's tail,
+async's no-barrier, streaming's peak-smoothing) are out of reach here and are
+Future Directions. The study is structured to support (or refute) a small set of
+pre-registered hypotheses, each with a fixed control:
+
+1. **Async + DN matches sync at N = k = 4** *per token* under induced staleness
+   (arm 6 vs 1), with the no-DN control (arm 5) diverging — i.e. the DN buffer is
+   necessary and, at the faithful Algorithm-3 form, sufficient at the worker count.
+   (Regime caveat, §2.6: a from-scratch *failure* is inconclusive, not a refutation.)
+2. **Streaming costs little and strided ≥ sequential**, the assignment gap visible
+   at the finer N=5 grain (arms 2–4 vs 1).
+3. **DyLU cuts staleness under a synthetic speed spread** (arm 8 vs the DyLU-off
+   control arm 7) — a mechanism-validation; the real mixed-GPU benefit is future work.
+4. **Transport is lossless** (arm 10 vs `baseline_2w`); **more workers cost token
+   efficiency** (arm 9 vs 1), as in DDP's large-batch regime.
+5. **Suggestively:** a from-scratch async≈sync result would extend DiLoCo's
+   random-init robustness to async (the whole study trains from scratch).
+
+Any headline result ambiguous within plausible seed noise is reported as a
+documented small-effect finding, not re-run.
+
+---
+
+## 6. Future Directions
+
+- **Real WAN, two-population run (headline) — and grace's true home.** The
+  synthetic knobs here become real at once on a genuinely distributed, heterogeneous
+  cluster: the author has RTX 3090 machines at a separate physical site (the "slow"
+  population to the local 4090s' "fast"). Running this matrix over a WAN turns the
+  synthetic conditions real simultaneously — real 3090-vs-4090 heterogeneity (DyLU's
+  actual target), a real bandwidth-constrained link (streaming's peak-smoothing),
+  real device-timing staleness, and a real slow-worker **tail** — and the tail is
+  exactly what the **grace period** cuts (a finished worker briefly coalesces with a
+  near-simultaneous finisher, else proceeds immediately). On this setup the payoff is
+  measurable where it isn't on loopback: **eval loss / perplexity vs wall-clock
+  time** (the async paper's Fig-2 axis), where sync pays the tail and async+grace
+  do not. This is DiLoCo's actual deployment scenario.
+- **DN-buffer sweep** (N vs k): is N = workers genuinely sufficient post-fix, and
+  how does convergence move as N → ∞ (toward synchronous)?
+- **Async warm-start / pretrain-budget sweep:** test the from-scratch premise (§2.6)
+  directly for the async path.
+- **Heterogeneity-level sweep:** beyond the single ~2× spread, map DyLU's benefit
+  across spreads.
+- **Bandwidth-constrained link simulation:** measure real token throughput / time
+  saved (not just the structural ~1/N peak argument) under a throttled link.
+- **fp4 / E3M0 streaming codec** and **larger scale.**
+
+---
+
+## 7. References
+
+- Douillard et al., *"DiLoCo: Distributed Low-Communication Training of Language
+  Models"* (2023). [arXiv:2311.08105](https://arxiv.org/abs/2311.08105)
+- Liu et al., *"Asynchronous Local-SGD Training for Language Modeling"* (2024).
+  [arXiv:2401.09135](https://arxiv.org/abs/2401.09135) — async, the
+  Delayed-Nesterov buffer, the grace period, and DyLU.
+- Douillard et al., *"Streaming DiLoCo with overlapping communication: Towards a
+  Distributed Free Lunch"* (2025).
+  [arXiv:2501.18512](https://arxiv.org/abs/2501.18512) — fragmented overlapped sync.
+
+The authoritative Forgather reference for the trainer is
+[`docs/trainers/diloco.md`](../../../docs/trainers/diloco.md).
+
+---
+
+## Appendix A — Reproducing it
 
 Prerequisites: a running **forgather server** + **dataset server** (the standard
-cluster setup the `../diloco` walkthrough establishes), and a **master model**
-the param server initialises from, built once:
+cluster setup the `../diloco` walkthrough establishes), and a **master model** the
+param server initialises from, built once:
 
 ```bash
 forgather -p ../../models/llama -t small.yaml \
@@ -246,51 +500,63 @@ forgather -p ../../models/llama -t small.yaml \
     construct
 ```
 
-Then run the sweep through the scheduler — [`experiment.sh`](experiment.sh) starts
-each param server with the right flags, submits 4 workers, waits, captures logs
-under `runs/<name>/`, and tears down, copying the master fresh per run (identical
-init). 4 workers = 4 GPUs/run, so the runs are **serial**:
+Then run the matrix through the scheduler — [`experiment.sh`](experiment.sh) starts
+each param server with the right flags, submits the workers, waits, captures the
+worker + server logs and a live `/status` snapshot under `runs/<arm>/`, and tears
+down, copying the master fresh per run (identical init). 4 workers = 4 GPUs/run, so
+runs are **serial**:
 
 ```bash
-./experiment.sh validate   # short plumbing check (max-steps 120, compile off)
-./experiment.sh run        # the full 7-config sweep (~8 h on 4 idle 4090s)
-./experiment.sh dylu_control  # the DyLU-off A/B (same spread + N=4 buffer)
+./experiment.sh validate          # short plumbing check (each feature FIRES)
+./experiment.sh run               # the full 10-arm matrix (~9-12 h on 4x4090s)
+./experiment.sh run <arm-name>    # re-run a single arm by name
 python analysis/harvest.py && python analysis/plot_experiment.py  # main comparison
-python analysis/dn_sweep.py            # the DN-buffer-size sub-study (N=4/8/16)
+python analysis/staleness.py           # the async staleness gate (should-be-stale vs reducer)
+python analysis/streaming.py           # fragment count + assignment (strided vs sequential)
 python analysis/dylu_control.py        # the DyLU off-vs-on eval overlay
 python analysis/worker_scaling.py      # the 2-vs-4-worker token-efficiency overlay
 python analysis/verify_baseline.py     # the 2-worker wire/transport overlay
+python analysis/grace_batches.py       # VALIDATE-only: grace mechanism check (on v_grace)
 ```
+
+**Order of execution (do not skip the gates).** `validate` (each feature fires:
+fragments engaged with no `NoBlockPlanError` fallback; the token-budget
+`save_and_stop` relay; and the **grace mechanism check** on the `v_grace` run —
+`grace_batches.py` confirms it coalesces near-simultaneous finishers *and* proceeds
+immediately when alone, all-k fraction below the guardrail) → **staleness gate**
+(`staleness.py`: should-be-stale arms mean ≈ workers − 1; the reducer `dylu_on`
+below its control) → then the headline tier. **No long GPU runs until validate +
+the staleness gate pass.** (Grace is validated here only — not a study arm; its
+real demonstration is the two-population / WAN future work.)
 
 For a fast smoke (does each feature engage, in minutes rather than hours) without
 the convergence study, [`harness.sh`](harness.sh) runs short versions:
 `./harness.sh all` or `./harness.sh streaming`.
 
-### Inducing async timing and heterogeneity (debug knobs)
+## Appendix B — Inducing async timing and heterogeneity (debug knobs)
 
-The GPUs here are identical, but the async runs need workers to submit at
+The GPUs here are identical, but the async arms need workers to submit at
 *different times* (real staleness) and DyLU needs workers at different *speeds*.
 Two debug-only worker env knobs provide this, delivered via `submit --env`:
 
-- **`DILOCO_DEBUG_STEP_JITTER=J`** — sleep a random `uniform(0, J)` s per step,
-  from a *per-worker-seeded* RNG. Set the **same** `J` on every worker (the async
-  runs use `0.15`): the randomness decorrelates the workers' phase so they drift
-  out of lock-step (staleness ~ workers − 1) while keeping the same *average*
-  speed — so there's no slow-worker solo tail. This is what makes the async runs
-  actually async.
-- **`DILOCO_DEBUG_STEP_DELAY=D`** — a *fixed* per-step delay, set **differently
-  per worker** (the DyLU run uses a `0 / 0.05 / 0.10 / 0.15` spread) to create the
-  average-speed differences DyLU adapts to.
+- **`DILOCO_DEBUG_STEP_JITTER=J`** — sleep a random `uniform(0, J)` s per step, from
+  a *per-worker-seeded* RNG. Set the **same** `J` on every worker (the async arms
+  use `0.15`): the randomness decorrelates the workers' phase so they drift out of
+  lock-step (staleness ~ workers − 1) while keeping the same *average* speed — no
+  slow-worker solo tail. This is what makes the async arms actually async.
+- **`DILOCO_DEBUG_STEP_DELAY=D`** — a *fixed* per-step delay, set **differently per
+  worker** (the DyLU arms use a spread calibrated to ~2× slowest/fastest) to create
+  the average-speed differences DyLU adapts to.
 
 Both are debug-only — they throttle real training and are never set in production.
-`submit --env KEY=VALUE` (repeatable) forwards env to the scheduled worker
-process via `job_params.extra_env`; honoured on plain `--diloco` worker submits
-only (the `--global` compose and collective paths reject it rather than silently
-dropping it). The per-worker RNG seed matters: a *shared* seed would give every
-worker the identical jitter sequence — they'd stay phase-locked and the jitter
-would do nothing.
+`submit --env KEY=VALUE` (repeatable) forwards env to the scheduled worker process
+via `job_params.extra_env`; honoured on plain `--diloco` worker submits only (the
+`--global` compose and collective paths reject it rather than silently dropping it).
+The per-worker RNG seed matters: a *shared* seed would give every worker the
+identical jitter sequence — they'd stay phase-locked and the jitter would do
+nothing.
 
-### Confirming a feature is active
+## Appendix C — Confirming a feature is active
 
 Each feature is selected at the server, so the worker echoes the settings it
 adopted from `/info` once at startup — a quick way to confirm your config took:
@@ -303,40 +569,25 @@ DiLoCoCallback: using server settings sync_every=100 up=bf16 down=fp32 \
 | Feature | Where to see it |
 |---|---|
 | wire / transport | the `transport=…(…) wire=…` echo matches your flags; server log: `grpc_enabled`, `wire_format`, `gRPC bulk listener on …` |
-| streaming | `num_fragments=N` in the echo; the server (`--verbose-sync`) advances per-fragment rounds |
-| async | server log shows async mode; sync round advances as submissions arrive, so the two workers can reach **different** rounds |
+| streaming | `num_fragments=N` in the echo; the server (`--verbose-sync`) advances per-fragment rounds; **no** `NoBlockPlanError` fallback in the server log (= block-faithful fragmentation engaged) |
+| async | server log shows async mode; sync round advances as submissions arrive, so workers can reach **different** rounds |
 | DN buffer | the server applies the momentum outer step only every `dn-buffer-size` submissions (visible with `--verbose-sync`) |
+| grace | the server logs a grace flush coalescing *k* submissions into one outer step; the `/status` snapshot carries `grace_batch_histogram` |
+| token budget | the server relays `save_and_stop` once the aggregated `total_tokens` crosses `--token-budget` |
 | DyLU | the server emits a per-worker `recommended_sync_every`; the slow worker logs a `DyLU adjusted sync_every …` line below the fast worker's |
 
----
-
-## Files
+## Appendix D — Files
 
 - `templates/configs/default.yaml` — the single small-Llama DiLoCo worker config
-  (extends `projects/small.yaml`, `enable_diloco=True`); every feature is chosen
-  by server flags, not here.
-- `experiment.sh` — the real-budget comparison driver (`run` / `dnsweep` / `dylu`
-  / `validate`).
+  (extends `projects/small.yaml`, `enable_diloco=True`); every feature is chosen by
+  server flags, not here.
+- `experiment.sh` — the run-matrix driver (`validate` / `run` / `run <arm>`),
+  token-budget global stop, `GRACE_S` env knob for the grace window.
 - `harness.sh` — the fast functional smoke driver.
-- `analysis/` — `harvest.py`, `plot_experiment.py`, `dn_sweep.py`,
-  `dylu_control.py`, `verify_baseline.py`, `worker_scaling.py`.
-- `assets/` — `curves.csv` (the committed source of truth) + the plots
-  (`loss_comparison.png`, `training_health.png`, `dn_sweep.png`,
-  `dylu_control.png`, `baseline_vs_h100.png`, `worker_scaling.png`).
-- `runs/` — captured per-run logs (gitignored scratch).
-
----
-
-## References
-
-The features exercised here come from two papers:
-
-- **Streaming** (overlapping the sync with compute, fragment by fragment) —
-  Douillard et al., *"Streaming DiLoCo with overlapping communication: Towards a
-  Distributed Free Lunch"* (2025).
-  [arXiv:2501.18512](https://arxiv.org/abs/2501.18512)
-- **Async + DN buffer + DyLU** (the Delayed Nesterov buffer that stabilizes
-  asynchronous updates, and Dynamic Local Updates that adapt each worker's sync
-  rate to its throughput) — Liu et al., *"Asynchronous Local-SGD Training for
-  Language Modeling"* (2024).
-  [arXiv:2401.09135](https://arxiv.org/abs/2401.09135)
+- `analysis/` — `harvest.py`, `plot_experiment.py`, `grace_batches.py`,
+  `staleness.py`, `streaming.py`, `dylu_control.py`, `verify_baseline.py`,
+  `worker_scaling.py`.
+- `assets/` — `curves.csv` + `grace_hist.csv` (the committed source of truth) + the
+  plots (`loss_comparison.png`, `training_health.png`, `grace_hist.png`,
+  `streaming.png`, `dylu_control.png`, `baseline_vs_h100.png`, `worker_scaling.png`).
+- `runs/` — captured per-run logs + `status.json` (gitignored scratch).

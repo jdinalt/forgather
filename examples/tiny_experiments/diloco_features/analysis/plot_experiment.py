@@ -27,22 +27,23 @@ import matplotlib.pyplot as plt
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(HERE, "assets")
 
-# Baseline in black; features in a distinct color each.
-# Main comparison series. The DN-buffer headline (async_dn_bN) is set to the
-# sweet spot found by analysis/dn_sweep.py; the other N's live in that sub-study.
+# Baseline in black; features in a distinct color each. The headline comparison:
+# sync baseline vs streaming (strided N=2 as the representative) vs async no-DN
+# vs async+DN (N=k=4) vs async+DN+DyLU. The streaming assignment/grain A/B lives
+# in analysis/streaming.py; the DyLU on/off A/B in analysis/dylu_control.py.
 LABELS = {
     "baseline": "Baseline (sync, H=100)",
-    "streaming": "Streaming (2 fragments)",
-    "async": "Async (no DN)",
-    "async_dn_b16": "Async + DN (N=16)",
-    "dylu": "Async + DN + DyLU",
+    "stream_str2": "Streaming (strided, 2 frag)",
+    "async_nodn": "Async (no DN)",
+    "async_dn4": "Async + DN (N=4)",
+    "dylu_on": "Async + DN + DyLU",
 }
 COLORS = {
     "baseline": "#000000",
-    "streaming": "#1f6fb2",
-    "async": "#d9772b",
-    "async_dn_b16": "#2ca25f",
-    "dylu": "#c44e52",
+    "stream_str2": "#1f6fb2",
+    "async_nodn": "#d9772b",
+    "async_dn4": "#2ca25f",
+    "dylu_on": "#c44e52",
 }
 
 
