@@ -202,6 +202,32 @@ class TestTokenProgress:
         # window [70,120]: baseline (100.0,100) -> (300-100)/(120-100)=10 tok/s
         assert abs(server._rolling_token_rate() - 10.0) < 1e-9
 
+    def test_steady_tokens_excludes_first_report_catchup(self, tmp_path):
+        """A worker's first heartbeat dumps its whole cumulative (catch-up).
+        steady_tokens must count only true per-heartbeat increments, so the rate
+        derived from it isn't inflated by that one-time burst."""
+        agg = _server(tmp_path, token_budget=10_000)._stats
+        # First reports from 4 workers (catch-up): total jumps, steady stays 0.
+        for wid in ("w0", "w1", "w2", "w3"):
+            agg.update(wid, {"tokens_total": 1000})
+        assert agg.total_tokens == 4000
+        assert agg.steady_tokens == 0
+        # Second heartbeats (+100 each): only these count toward steady.
+        for wid in ("w0", "w1", "w2", "w3"):
+            agg.update(wid, {"tokens_total": 1100})
+        assert agg.total_tokens == 4400
+        assert agg.steady_tokens == 400
+
+    def test_rate_warmup_none_until_steady_tokens(self, tmp_path):
+        """During warm-up (only catch-up samples, steady_tokens still 0) the rate
+        reads 'unknown' (None), not a misleading 0 or an inflated burst."""
+        server = _server(tmp_path, token_budget=10_000)
+        server._token_samples.extend([(1000.0, 0), (1010.0, 0)])
+        assert server._rolling_token_rate() is None
+        # First steady increment lands -> a real rate appears.
+        server._token_samples.append((1020.0, 200))
+        assert abs(server._rolling_token_rate() - 10.0) < 1e-9  # 200 / 20s
+
     def test_stall_reports_zero_rate_not_none(self, tmp_path):
         """After a long stall the only in-window sample is the tail; fall back to
         the previous sample so the gauge reads ~0 tok/s (visible slowdown), not a
