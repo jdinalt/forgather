@@ -1148,7 +1148,10 @@ function DiLoCoPicker(props: DiLoCoPickerProps) {
   // Local UI state for the pool's add/generate controls. Hooks must run
   // unconditionally, so they precede the cluster-fanout early return.
   const [addName, setAddName] = useState<string>("");
-  const [genCount, setGenCount] = useState<string>("4");
+  // Default 1: for the common small-worker-count case it's quicker to leave it
+  // at 1 and click Generate N times than to edit the number first (which is
+  // usually not the value you want anyway).
+  const [genCount, setGenCount] = useState<string>("1");
   const [generating, setGenerating] = useState<boolean>(false);
   const [poolError, setPoolError] = useState<string | null>(null);
 

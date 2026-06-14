@@ -198,6 +198,15 @@ class StatsAggregator:
         self.total_flos: float = 0.0
         self.total_steps: int = 0
 
+        # Like total_tokens but EXCLUDING each worker's first-report catch-up
+        # (the full cumulative a worker dumps on its first heartbeat). Used only
+        # for the rolling throughput rate: that initial burst lands across all
+        # workers within ~1-2s of wall-clock, so counting it would divide a huge
+        # token jump by a tiny interval and grossly overstate the rate. Same
+        # reasoning as the FLOPs `flos_window` below. Not persisted — it's a
+        # live rate signal that resets cleanly on restart.
+        self.steady_tokens: int = 0
+
         # Per-worker last-seen cumulative counters, for delta accumulation
         # (persisted — must survive a restart so a resumed worker_id doesn't
         # re-add its history).
@@ -257,6 +266,10 @@ class StatsAggregator:
                         live["flos_window"] = float(delta)
                 elif attr == "total_tokens":
                     self.total_tokens += int(delta)
+                    # Exclude the first-report catch-up from the rate counter
+                    # (only true per-heartbeat increments), mirroring flos_window.
+                    if prev is not None:
+                        self.steady_tokens += int(delta)
                 else:  # total_steps
                     self.total_steps += int(delta)
 

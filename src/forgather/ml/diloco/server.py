@@ -2881,19 +2881,22 @@ class DiLoCoServer:
             self._maybe_log_stats()
 
     def _record_token_sample(self):
-        """Append a (monotonic ts, total_tokens) sample for the rolling rate.
+        """Append a (monotonic ts, steady_tokens) sample for the rolling rate.
 
         No-op without a token budget (the rate/ETA is only surfaced for budgeted
-        runs). Lock-free on purpose: ``deque.append`` and the ``total_tokens``
-        int read are each atomic under the GIL, and different workers' heartbeats
-        race here (this is NOT serial-per-worker like ``pending_command``). A
-        cross-worker read could append two samples a hair out of order; the
-        ``dt<=0`` / ``dtok<0`` guards in ``_rolling_token_rate`` absorb that, and
-        a momentarily stale gauge is fine.
+        runs). Samples ``steady_tokens`` (NOT ``total_tokens``) so the rate
+        excludes each worker's first-report cumulative catch-up — that burst
+        lands across all workers within ~1-2s and would otherwise grossly
+        overstate the rate on the first heartbeats. Lock-free on purpose:
+        ``deque.append`` and the int read are each atomic under the GIL, and
+        different workers' heartbeats race here (this is NOT serial-per-worker
+        like ``pending_command``). A cross-worker read could append two samples a
+        hair out of order; the ``dt<=0`` / ``dtok<0`` guards in
+        ``_rolling_token_rate`` absorb that, and a momentarily stale gauge is fine.
         """
         if self.token_budget <= 0:
             return
-        self._token_samples.append((time.monotonic(), self._stats.total_tokens))
+        self._token_samples.append((time.monotonic(), self._stats.steady_tokens))
 
     def _rolling_token_rate(self) -> Optional[float]:
         """Tokens/second over the recent window, or None if not yet estimable.
@@ -2901,12 +2904,19 @@ class DiLoCoServer:
         Uses the oldest sample within ``_token_rate_window_s`` as the baseline
         (or the oldest available if the buffer is younger than the window), so a
         rate appears after the second heartbeat rather than waiting a full
-        window. Returns None until there are two spanning samples.
+        window. Returns None until there are two spanning samples, or while no
+        steady (non-catch-up) tokens have been counted yet — during that warm-up
+        the gauge reads "unknown" rather than a misleading 0 or an inflated burst.
         """
         samples = list(self._token_samples)
         if len(samples) < 2:
             return None
         now_t, now_tok = samples[-1]
+        if now_tok <= 0:
+            # No steady increment yet (only first-report catch-ups so far) —
+            # nothing real to rate. Distinct from a genuine stall, where
+            # steady_tokens is already > 0 and stays flat (reads as ~0 tok/s).
+            return None
         cutoff = now_t - self._token_rate_window_s
         base_t, base_tok = samples[0]
         for t, tok in samples:
