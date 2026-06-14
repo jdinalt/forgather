@@ -58,6 +58,24 @@ class TestTokenBudgetTrigger:
         finally:
             server.stop()
 
+    def test_heartbeat_drives_trigger(self, tmp_path):
+        """End-to-end: a heartbeat whose stats push total_tokens to the budget
+        triggers the stop, delivered on the worker's next heartbeat."""
+        server = _server(tmp_path, token_budget=1000)
+        server.start()
+        try:
+            (c0,) = _register(server, "w0")
+            # First report establishes the cumulative; 500 < budget.
+            c0.heartbeat("w0", stats={"tokens_total": 500})
+            assert server._workers["w0"].pending_command is None
+            # Crosses the budget (delta 500 -> total 1000); trigger queues the stop.
+            c0.heartbeat("w0", stats={"tokens_total": 1000})
+            # The command rides the NEXT heartbeat (it was read before the trigger).
+            resp = c0.heartbeat("w0", stats={"tokens_total": 1000})
+            assert resp.get("command") == "save_and_stop"
+        finally:
+            server.stop()
+
     def test_disabled_is_noop(self, tmp_path):
         server = _server(tmp_path, token_budget=0)
         server.start()
@@ -100,6 +118,20 @@ class TestTokenBudgetRuntimeControl:
             assert resp["budget_stop_sent"] is True
             assert server.token_budget == 1000
             assert _pending(server, "w0") == ["save_and_stop"]
+        finally:
+            server.stop()
+
+    def test_set_zero_disables(self, tmp_path):
+        """Setting the budget to 0 at runtime disables it (no further stops)."""
+        server = _server(tmp_path, token_budget=1000)
+        server.start()
+        try:
+            (c0,) = _register(server, "w0")
+            server._stats.total_tokens = 10**9  # way over the old budget
+            resp = c0.set_token_budget(0)
+            assert resp["token_budget"] == 0
+            assert resp["budget_stop_sent"] is False
+            assert _pending(server, "w0") == [None]  # disabled -> no stop
         finally:
             server.stop()
 

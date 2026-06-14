@@ -212,7 +212,8 @@ export function DiLoCoServerModal({
         host: pickStr(editingService.args, "host", "127.0.0.1"),
         async: pickBool(editingService.args, "async_mode", false),
         dnBufferSize: pickNum(editingService.args, "dn_buffer_size", 0),
-        tokenBudget: pickNum(editingService.args, "token_budget", 0),
+        // Stored in raw tokens on the args; the field is in millions.
+        tokenBudget: pickNum(editingService.args, "token_budget", 0) / 1_000_000,
         verboseSync: pickBool(editingService.args, "verbose_sync", false),
         dylu: pickBool(editingService.args, "dylu", false),
         dyluBase: pickNum(editingService.args, "dylu_base_sync_every", 500),
@@ -365,7 +366,8 @@ export function DiLoCoServerModal({
       args.download_sr = true;
     }
     if (dnBufferSize > 0) args.dn_buffer_size = dnBufferSize;
-    if (tokenBudget > 0) args.token_budget = tokenBudget;
+    // Field is in millions of tokens; the server flag is raw tokens.
+    if (tokenBudget > 0) args.token_budget = Math.round(tokenBudget * 1_000_000);
     if (dylu) args.dylu_base_sync_every = dyluBase;
     if (trimmedFromCheckpoint) args.from_checkpoint = trimmedFromCheckpoint;
     if (runName.trim()) args.run_name = runName.trim();
@@ -612,7 +614,7 @@ export function DiLoCoServerModal({
           </label>
 
           <label>
-            Token budget (0 = open-ended)
+            Token budget — millions of tokens (0 = open-ended)
             <input
               type="number"
               min={0}

@@ -806,6 +806,14 @@ class TestLaunchServer:
         assert "grace_period" not in jp
         # fragment_assignment defaults to strided and is always emitted
         assert jp["fragment_assignment"] == "strided"
+        # token_budget absent (default) → omitted from job_params
+        assert "token_budget" not in jp
+
+    def test_token_budget_emitted_when_set(self, patch_orchestrator):
+        client = patch_orchestrator(FakeClient())
+        rc = orch.launch_server(_server_args(token_budget=1_000_000))
+        assert rc == 0
+        assert client.enqueued[0]["job_params"]["token_budget"] == 1_000_000
 
     def test_grace_period_emitted_when_set(self, patch_orchestrator):
         client = patch_orchestrator(FakeClient())

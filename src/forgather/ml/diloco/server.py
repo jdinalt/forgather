@@ -2819,6 +2819,10 @@ class DiLoCoServer:
         worker's next heartbeat, so the global budget may overshoot by up to one
         heartbeat's worth of tokens — fine for a budget bound. Called from the
         heartbeat path right after the aggregate is updated."""
+        # The read-test-set on _budget_stop_sent isn't atomic across concurrent
+        # heartbeat threads, but a double-relay is benign: _relay_command_all
+        # just re-assigns the same "save_and_stop" to each worker's
+        # pending_command (idempotent), so a lost race only re-queues the stop.
         if self.token_budget <= 0 or self._budget_stop_sent:
             return
         if self._stats.total_tokens >= self.token_budget:

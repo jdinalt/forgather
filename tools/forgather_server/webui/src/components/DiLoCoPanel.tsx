@@ -2355,9 +2355,12 @@ function ControlPanel({
       status.num_workers !== undefined ? String(status.num_workers) : "",
     [status.num_workers],
   );
+  // The control is in millions of tokens; status.token_budget is raw tokens.
   const tokenBudgetSeed = useMemo(
     () =>
-      status.token_budget !== undefined ? String(status.token_budget) : "",
+      status.token_budget !== undefined
+        ? String(status.token_budget / 1_000_000)
+        : "",
     [status.token_budget],
   );
   useEffect(() => {
@@ -2625,11 +2628,11 @@ function ControlPanel({
           >
             <div style={{ fontWeight: 600 }}>Token budget</div>
             <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <span className="muted" style={{ minWidth: 64 }}>Tokens</span>
+              <span className="muted" style={{ minWidth: 64 }}>M tokens</span>
               <input
                 type="number"
                 min={0}
-                step={1}
+                step="any"
                 value={formTokenBudget}
                 onChange={(e) => setFormTokenBudget(e.target.value)}
                 style={{ flex: 1, minWidth: 0 }}
@@ -2639,9 +2642,10 @@ function ControlPanel({
               onClick={() => {
                 const n = Number(formTokenBudget);
                 if (!Number.isFinite(n) || n < 0) return;
+                // Field is millions of tokens; the server wants raw tokens.
                 controlMutation.mutate({
                   action: "update_token_budget",
-                  body: { token_budget: Math.floor(n) },
+                  body: { token_budget: Math.round(n * 1_000_000) },
                 });
               }}
               disabled={
@@ -2652,7 +2656,7 @@ function ControlPanel({
             </button>
             <div className="muted" style={{ fontSize: 11 }}>
               {status.token_budget
-                ? `current: ${status.token_budget.toLocaleString()}${
+                ? `current: ${(status.token_budget / 1_000_000).toLocaleString()} M tokens${
                     status.budget_stop_sent ? " — stop sent" : ""
                   }`
                 : "0 = open-ended"}
