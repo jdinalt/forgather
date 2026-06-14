@@ -193,6 +193,37 @@ class TestWorkerDeath(_ServerTestBase):
         finally:
             server.stop()
 
+    def test_death_below_min_workers_relays_save_and_stop(self):
+        """Falling below min_workers aborts the run: relay save_and_stop to the
+        survivors (so they checkpoint + exit) rather than limp on with too few
+        contributors. One-shot, and the surviving worker carries the command."""
+        sd = _make_state_dict()
+        server = self._make_server(
+            sd, num_workers=3, min_workers=3, heartbeat_timeout=0
+        )
+        server.start()
+        try:
+            client = DiLoCoClient(f"localhost:{server.port}")
+            client.register("w1", {})
+            client.register("w2", {})
+            client.register("w3", {})
+
+            self.assertFalse(server._min_workers_aborted)
+
+            # One death drops live count to 2 < min_workers=3 -> abort fires.
+            server._handle_worker_death("w1")
+            self.assertTrue(server._min_workers_aborted)
+
+            # Survivors carry the relayed stop command (picked up next HB).
+            self.assertEqual(server._workers["w2"].pending_command, "save_and_stop")
+            self.assertEqual(server._workers["w3"].pending_command, "save_and_stop")
+
+            # One-shot: a second death below-min doesn't error or re-fire.
+            server._handle_worker_death("w2")
+            self.assertTrue(server._min_workers_aborted)
+        finally:
+            server.stop()
+
     def test_death_tracks_total_deaths(self):
         """Server tracks total worker deaths for status reporting."""
         sd = _make_state_dict()

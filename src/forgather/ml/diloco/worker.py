@@ -405,6 +405,15 @@ class DiLoCoWorker:
         # delivered on the heartbeat response and drained by the callback.
         self._pending_command: Optional[str] = None
         self._pending_command_lock = threading.Lock()
+        # Orphan detection: a server that has dropped this worker answers
+        # heartbeats with HTTP 404 "...is not registered...". We count
+        # *consecutive* such responses; a different/transient failure resets
+        # the count. After the threshold we conclude the server has dropped us
+        # (e.g. a token-budget stop followed by a port reuse for a different
+        # experiment arm) and exit the process to free the GPU rather than
+        # spin forever or re-register into a foreign server.
+        self._orphan_strikes: int = 0
+        self._orphan_strike_threshold: int = 3
         # Latest unified-stats snapshot, set by the DiLoCo callback from the
         # trainer's log dict and shipped on the next heartbeat (consume-once,
         # so the server's loss EMA isn't re-fed the same sample if a log
@@ -1063,8 +1072,66 @@ class DiLoCoWorker:
                         f"DiLoCoWorker {self.worker_id}: received control "
                         f"command '{cmd}' from server"
                     )
+
+                # A successful heartbeat clears any orphan suspicion.
+                self._orphan_strikes = 0
             except Exception as e:
-                logger.warning(f"Heartbeat failed: {e}")
+                if self._is_orphan_heartbeat_error(e):
+                    self._orphan_strikes += 1
+                    logger.warning(
+                        f"DiLoCoWorker {self.worker_id}: heartbeat rejected as "
+                        f"unregistered (orphan strike "
+                        f"{self._orphan_strikes}/{self._orphan_strike_threshold}): {e}"
+                    )
+                    if self._orphan_strikes >= self._orphan_strike_threshold:
+                        self._orphan_exit()
+                        # _orphan_exit() calls os._exit and never returns; the
+                        # return below is defensive only.
+                        return
+                else:
+                    # Different/transient failure (connection refused, timeout,
+                    # 5xx, ...). The server may simply be restarting; keep
+                    # retrying and reset the orphan strike count.
+                    self._orphan_strikes = 0
+                    logger.warning(f"Heartbeat failed: {e}")
+
+    @staticmethod
+    def _is_orphan_heartbeat_error(exc: BaseException) -> bool:
+        """Return True if ``exc`` is the server's "worker not registered" reply.
+
+        The client raises ``ConnectionError("Server returned HTTP 404 for ...:
+        worker_id '...' is not registered; re-register or exit")`` when the
+        server no longer knows this worker. We match on HTTP 404 *and* the
+        "not registered" phrase so an unrelated 404 doesn't trip the orphan
+        path. Factored out as a static helper so the strike decision is unit
+        testable without driving a real heartbeat.
+        """
+        msg = str(exc)
+        return "HTTP 404" in msg and "not registered" in msg
+
+    def _orphan_exit(self) -> None:
+        """Tear down hard after the server has dropped this worker.
+
+        The training thread may be wedged (it was, in the incident that
+        motivated this), so a cooperative stop is insufficient. We signal stop
+        (pending "abort", clear ``_active``, set the heartbeat stop event) for
+        any thread that *is* responsive, then ``os._exit`` to guarantee the
+        process dies and the CUDA context / GPU memory is reclaimed. We do NOT
+        re-register: the reused port may now belong to a different experiment
+        arm's server, and joining it would contaminate that run.
+        """
+        logger.error(
+            f"DiLoCoWorker {self.worker_id}: server reports this worker is no "
+            f"longer registered after {self._orphan_strikes} consecutive "
+            f"heartbeats; the server has dropped us (likely a token-budget stop "
+            f"followed by port reuse). Exiting to free the GPU rather than "
+            f"re-register into a possibly-foreign server."
+        )
+        with self._pending_command_lock:
+            self._pending_command = "abort"
+        self._active = False
+        self._heartbeat_stop.set()
+        os._exit(1)
 
     def consume_pending_command(self) -> Optional[str]:
         """Return and clear any relayed trainer-control command.
