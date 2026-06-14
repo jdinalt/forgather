@@ -22,10 +22,13 @@ So the backend is **set in exactly one place — the server**
 `forgather submit` enqueues them backend-agnostic, and the scheduler queries the
 server's `/info` *just before it invokes `torchrun`*, derives the backend, and
 shapes the launch (the env, the `shared_memory` region, the `collective` world)
-from it. If the server is unreachable at that moment the launch **fails loud** —
-there is no default to fall back to. This makes a disagreeing worker
-unrepresentable: nobody can launch one with the wrong backend, because nobody
-launches one with a chosen backend at all.
+from it. There is no default to fall back to — but a server that's unreachable
+*at that instant* (still finishing startup, or momentarily busy as several
+workers make first contact at once) doesn't kill the worker: the probe is short
+and the worker is **requeued and retried on a later dispatch tick**, failing
+loud only if the server stays unreachable past the retry budget (~3 min). This
+makes a disagreeing worker unrepresentable: nobody can launch one with the wrong
+backend, because nobody launches one with a chosen backend at all.
 
 A worker can't *adopt* the backend the way it adopts `sync_every`: the backend
 fixes the launch topology — GPU count, torchrun world, co-location — which is

@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 
 import { api } from "../api";
-import { persistGet, persistSet } from "../persist";
+import { persistGet, persistRemove, persistSet } from "../persist";
 import {
   promptAndCreateService,
   saveServiceArgsAndMaybeRestart,
@@ -284,6 +284,45 @@ export function DiLoCoServerModal({
   const [grpcEnabled, setGrpcEnabled] = useState(seed.grpcEnabled);
   const [backend, setBackend] = useState(seed.backend);
   const [saving, setSaving] = useState(false);
+
+  // Clear persisted ad-hoc overrides and restore every field to its default,
+  // so an operator starting something different can definitively reset rather
+  // than hunt for stale overrides. Mirrors the other service modals (e.g.
+  // DatasetServerModal). Create-mode only — edit mode reflects a saved service.
+  const resetDefaults = () => {
+    persistRemove(STORAGE_KEY);
+    setOutputDir(DEFAULT_AD_HOC.outputDir);
+    setPort(DEFAULT_AD_HOC.port);
+    setNumWorkers(DEFAULT_AD_HOC.numWorkers);
+    setHost(DEFAULT_AD_HOC.host);
+    setAsyncMode(DEFAULT_AD_HOC.async);
+    setDnBufferSize(DEFAULT_AD_HOC.dnBufferSize);
+    setTokenBudget(DEFAULT_AD_HOC.tokenBudget);
+    setVerboseSync(DEFAULT_AD_HOC.verboseSync);
+    setDylu(DEFAULT_AD_HOC.dylu);
+    setDyluBase(DEFAULT_AD_HOC.dyluBase);
+    setSyncEvery(DEFAULT_AD_HOC.syncEvery);
+    setNumFragments(DEFAULT_AD_HOC.numFragments);
+    setUploadDtype(DEFAULT_AD_HOC.uploadDtype);
+    setUploadSr(DEFAULT_AD_HOC.uploadSr);
+    setDownloadDtype(DEFAULT_AD_HOC.downloadDtype);
+    setDownloadSr(DEFAULT_AD_HOC.downloadSr);
+    setFromCheckpoint(DEFAULT_AD_HOC.fromCheckpoint);
+    setRunName(DEFAULT_AD_HOC.runName);
+    setSaveEvery(DEFAULT_AD_HOC.saveEvery);
+    setSaveTotalLimit(DEFAULT_AD_HOC.saveTotalLimit);
+    setOuterLr(DEFAULT_AD_HOC.outerLr);
+    setOuterMomentum(DEFAULT_AD_HOC.outerMomentum);
+    setNoNesterov(DEFAULT_AD_HOC.noNesterov);
+    setHeartbeatTimeout(DEFAULT_AD_HOC.heartbeatTimeout);
+    setMinWorkers(DEFAULT_AD_HOC.minWorkers);
+    setNoAuth(DEFAULT_AD_HOC.noAuth);
+    setRegenToken(DEFAULT_AD_HOC.regenToken);
+    setBulkCleartext(DEFAULT_AD_HOC.bulkCleartext);
+    setWireFormat(DEFAULT_AD_HOC.wireFormat);
+    setGrpcEnabled(DEFAULT_AD_HOC.grpcEnabled);
+    setBackend(DEFAULT_AD_HOC.backend);
+  };
 
   // Light validation — the backend re-checks but flagging in-UI is friendlier.
   const trimmedOutputDir = output_dir.trim();
@@ -1076,6 +1115,15 @@ export function DiLoCoServerModal({
             justifyContent: "flex-end",
           }}
         >
+          {!editingService && (
+            <button
+              className="secondary"
+              onClick={resetDefaults}
+              title="Clear persisted settings and restore defaults"
+            >
+              Reset to defaults
+            </button>
+          )}
           <button onClick={close}>Cancel</button>
           {editingService ? (
             <button
