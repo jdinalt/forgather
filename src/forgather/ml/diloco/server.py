@@ -997,25 +997,23 @@ class DiLoCoServer:
         self._shutdown_done = threading.Event()  # "drain + stop finished"
 
     @staticmethod
-    def _find_available_port(start_port: int = 8512, max_attempts: int = 100) -> int:
-        """Find an available port.
+    def _find_available_port() -> int:
+        """Resolve a free TCP port for the server to bind.
 
-        Static so callers (e.g. the CLI) can resolve the concrete port
-        an ephemeral ``--port 0`` will land on *before* constructing the
-        server — the per-port token file must be keyed on the real port,
-        not on 0.
+        Asks the OS for a free ephemeral port (``bind(("", 0))`` then read it
+        back) rather than scanning upward from a fixed base. The old fixed-base
+        scan made concurrent servers — notably back-to-back tests — converge on
+        the same low ports and collide with ``Errno 98 Address already in use``
+        (the bind-probe-then-rebind also left a TOCTOU window). The OS rotates
+        the ephemeral range, so near-simultaneous resolutions get distinct ports.
+
+        Kept static so callers (e.g. the CLI) can resolve the concrete port a
+        ``port=0`` server will use *before* constructing it, to key the per-port
+        token file on the real port.
         """
-        for i in range(max_attempts):
-            port = start_port + i
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.bind(("", port))
-                    return port
-            except OSError:
-                continue
-        raise RuntimeError(
-            f"No available port in range {start_port}-{start_port + max_attempts}"
-        )
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("", 0))
+            return s.getsockname()[1]
 
     @staticmethod
     def _compute_model_hash(model_state_dict: Dict[str, torch.Tensor]) -> str:

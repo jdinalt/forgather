@@ -49,6 +49,19 @@ class TestSerialization:
         assert restored == {}
 
 
+class TestFindAvailablePort:
+    """``_find_available_port`` resolves an OS-assigned ephemeral port, so
+    concurrent servers (notably back-to-back tests) don't converge on a fixed
+    base and collide (#229)."""
+
+    def test_returns_valid_distinct_ports(self):
+        ports = [DiLoCoServer._find_available_port() for _ in range(20)]
+        assert all(1024 <= p <= 65535 for p in ports)
+        # OS-ephemeral spreads across the range; the old fixed-base scan would
+        # have returned the same port every time (here: > 1 distinct value).
+        assert len(set(ports)) > 1
+
+
 class TestDiLoCoServer:
     """Test server outer optimizer logic."""
 
