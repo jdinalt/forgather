@@ -8,12 +8,16 @@ checkpoint. This script tests that directly: the same async arms, started from a
 500M-token DDP checkpoint instead of scratch, judged against a *warm* sync
 baseline (same start point — the fair comparison).
 
-Two panels:
-  * Left — eval-loss trajectories: the warm arms (baseline + async) hug each
-    other near the warm baseline, while the scratch async arm visibly trails the
-    scratch baseline. (Warm curves start mid-descent, from the checkpoint.)
+Two panels (the warm and scratch runs are deliberately NOT overlaid on one loss
+axis — their y-ranges differ vastly, scratch ~9->2.85 vs warm ~3.2->2.83, which
+would squash the warm detail; the cross-comparison is the *gap* panel, which
+normalizes each group to its own baseline):
+  * Left — the warm arms only, eval loss: baseline + async (+ DyLU) all hug each
+    other near the warm baseline. (Warm curves start mid-descent, from the
+    checkpoint.) Own y-range.
   * Right — the async gap to its *matched* sync baseline, scratch vs warm, per
-    arm: the collapse from +0.25..+0.80 (scratch) to ~+0.03..+0.06 (warm).
+    arm (deltas, so comparable): the collapse from +0.25..+0.80 (scratch) to
+    ~+0.03..+0.06 (warm).
 
 Reads the committed ``assets/curves.csv`` (analysis/harvest.py).
 
@@ -78,13 +82,13 @@ def main():
     plt.rcParams.update({"figure.dpi": 120, "font.size": 10})
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
 
-    # Left: trajectories — warm family hugs the warm baseline; scratch async
-    # (dn8, the best scratch async) trails the scratch baseline.
+    # Left: WARM arms only (own y-range — never overlaid with the scratch runs,
+    # whose ~9->2.85 range would squash this). They all converge onto the warm
+    # baseline.
     ax = axes[0]
     traj = [
-        (SCRATCH_BASE, "Scratch baseline (sync)", "#000000", "--"),
-        ("async_dn8", "Scratch async DN N=8", "#74c476", "--"),
         (WARM_BASE, "Warm baseline (sync)", "#000000", "-"),
+        ("warm_async_dn4", "Warm async DN N=4", "#74c476", "-"),
         ("warm_async_dn8", "Warm async DN N=8", "#2ca25f", "-"),
         ("warm_dylu_on", "Warm async + DyLU", "#7b3294", "-"),
     ]
@@ -102,7 +106,7 @@ def main():
             ms=2.5,
             label=lbl,
         )
-    ax.set_title("Warm vs scratch — eval-loss trajectories")
+    ax.set_title("Warm-started arms — all reach the warm baseline")
     ax.set_xlabel("local step (∝ total tokens)")
     ax.set_ylabel("eval loss")
     ax.legend(fontsize=8)

@@ -12,11 +12,11 @@ scratch on Fineweb-Edu across 4 workers.
 > ([`experiment.sh`](experiment.sh), [`analysis/`](analysis)), and the run matrix
 > has been executed — the **Results** tables and figures are filled: the
 > from-scratch matrix (§3.7, including the DN-buffer depth sweep) and the
-> warm-start follow-up (§3.8). The design was fixed as a pre-registration *before*
+> warm-start follow-up (§3.7.1). The design was fixed as a pre-registration *before*
 > the GPU time was spent: methodology, controls, and the pass/fail gates predate
 > the numbers. One run per arm at a single small scale: **suggestive, not a
 > benchmark.** Headline: async DiLoCo trails sync from scratch but ≈ sync once
-> warm-started (§3.8) — the from-scratch *regime*, not async, was the obstacle.
+> warm-started (§3.7.1) — the from-scratch *regime*, not async, was the obstacle.
 
 All commands assume you are in this project directory:
 
@@ -63,7 +63,7 @@ init at this small scale — suggestive, single seed):
 | Knob | Flag (on `diloco server`) | Buys you | Costs | Measured here |
 |---|---|---|---|---|
 | **Streaming** | `--num-fragments N` `--fragment-assignment {strided,sequential}` | smooths bandwidth — fragments sent across the compute window, no all-at-once burst | a small, steady convergence cost; strided ≥ sequential, gap grows at finer grain | small per-token gap (+0.06–0.14 eval); **faster wall-clock**; strided N=5 closest + fastest |
-| **Async + DN** | `--async --dn-buffer-size N` | drops the barrier — fast workers don't wait on stragglers | needs the DN buffer (required with `--async`); some convergence cost under staleness | from scratch trails sync (depth a non-monotonic lever, **N=8 optimum** +0.25); **warm-started ≈ sync** (+0.03–0.06), and depth stops mattering (§3.8) |
+| **Async + DN** | `--async --dn-buffer-size N` | drops the barrier — fast workers don't wait on stragglers | needs the DN buffer (required with `--async`); some convergence cost under staleness | from scratch trails sync (depth a non-monotonic lever, **N=8 optimum** +0.25); **warm-started ≈ sync** (+0.03–0.06), and depth stops mattering (§3.7.1) |
 | **Grace period** | `--grace-period S` | a brief, opportunistic wait so a finished worker can coalesce with a near-simultaneous finisher — cuts the slow-worker *tail* in a heterogeneous / large-N pool | only pays off when the tail is real (large N, mixed speeds); its benefit is **wall-clock**, not convergence | **not a study arm** — the rig has no tail to cut; validated functional only, real benefit → Future Directions |
 | **DyLU** | `--dylu` | matches each worker's sync rate to its throughput, cutting staleness | only helps heterogeneous / unevenly-loaded workers | **neutral here** (Δ +0.02, within noise) — the rig's induced spread is too mild; mechanism functional, payoff → Future Directions |
 
@@ -419,7 +419,9 @@ reference — *not* a single ranking, and deliberately not one combined table:
   comparable to the equal-speed arms; it is an A/B between DyLU *off* and *on* at
   the same spread.
 
-Each is reported in its own subsection below, and the warm-start follow-up in §3.8.
+Each is reported in its own subsection below; the warm-start runs are folded in
+alongside their from-scratch counterparts (async in §3.7.1, DyLU in §3.7.3) rather
+than split off into a separate section.
 Single run per arm (4 workers, 2B tokens, H=100, from scratch); eval loss is the
 final eval, perplexity the best eval perplexity. The harvest + plot scripts
 regenerate every table and figure from `assets/curves.csv`
@@ -462,19 +464,51 @@ improvement is large.)
 *DN-buffer depth sweep — non-monotonic optimum at N=8
 ([`analysis/dn_sweep.py`](analysis/dn_sweep.py)).*
 
-**Async from scratch does not reach the sync baseline — but warm-started it does
-(§3.8).** Even the best async arm (N=8, +0.249) trails the baseline. This is
-consistent with the from-scratch premise being the hard part for async specifically
-(§2.6): sync DiLoCo reaches the baseline from scratch, but async — even
-DN-stabilized and depth-tuned — does not, in this budget. The source papers
-warm-start their async runs from a pretrained checkpoint; **§3.8 shows that doing
-so closes the gap** (every warm async arm within +0.03–0.06 of a warm sync
-baseline), confirming the regime — not async — was the obstacle.
+**Async from scratch does not reach the sync baseline.** Even the best async arm
+(N=8, +0.249) trails the baseline. This is consistent with the from-scratch premise
+being the hard part for async specifically (§2.6): sync DiLoCo reaches the baseline
+from scratch, but async — even DN-stabilized and depth-tuned — does not, in this
+budget. Whether that is *async* or the *from-scratch regime* is tested with a warm
+start just below.
 
 ![Training health for the async arms: train-loss trajectory and grad-norm (log scale)](assets/training_health.png)
 
 *Training health (async arms) — train loss + grad norm; the no-DN control's
 grad-norm blow-up is the divergence ([`analysis/plot_experiment.py`](analysis/plot_experiment.py)).*
+
+**Warm-started: the from-scratch gap closes.** To separate *async* from the
+*from-scratch regime* (§2.6), we pretrained the **same architecture** with plain
+4×DDP to ~500M tokens (≈1× Chinchilla,
+[`templates/configs/warm_pretrain.yaml`](templates/configs/warm_pretrain.yaml)),
+then re-ran the async arms **and a warm sync baseline** from that checkpoint (2B
+further tokens; the checkpoint is assembled into a server master by
+[`make_warm_master.py`](make_warm_master.py) and selected via `experiment.sh`'s
+`WARM_MASTER` knob). Each warm arm is judged against the *warm* baseline — the same
+start point, the fair comparison. The two groups are juxtaposed below but **never
+on one loss axis** — their y-ranges differ vastly (scratch ~9→2.85, warm ~3.2→2.83),
+so the cross-comparison is the *gap* to each group's own baseline.
+
+| Configuration | scratch eval (vs scratch base) | warm eval (vs warm base) |
+|---|---|---|
+| Sync baseline | 2.859 (—) | 2.831 (—) |
+| Async + DN (N=4) | 3.661 (+0.802) | 2.895 (+0.064) |
+| Async + DN (N=8) | 3.107 (+0.249) | 2.893 (+0.062) |
+
+![Warm-start: left, the warm arms' eval-loss trajectories on their own scale all converging onto the warm baseline; right, the async gap to the matched sync baseline collapsing from +0.25..+0.80 (scratch) to +0.03..+0.06 (warm)](assets/warm_compare.png)
+
+*Warm-started arms on their own scale (left) + the gap collapse vs scratch, as
+deltas (right) — [`analysis/warm_compare.py`](analysis/warm_compare.py).*
+
+Every warm async arm lands within **+0.03–0.06** of the warm sync baseline — versus
+**+0.25–0.80** from scratch. So **async DiLoCo ≈ sync once warm-started**: the large
+from-scratch gap was the *regime*, not async itself — exactly the pre-registered
+§2.6 reading, and why the source papers warm-start their async runs. And the
+DN-buffer depth that was a strong lever from scratch (N=4 → N=8 gained 0.55 eval)
+**collapses** warm — warm_dn4 (+0.064) and warm_dn8 (+0.062) differ by 0.002. A warm
+start means small, well-aligned pseudo-gradients, so sequentially-applied staleness
+does little damage and the buffer that absorbs it is barely needed. (Single seed,
+~1× Chinchilla of pretraining; a pretrain-budget sweep — *how warm is warm enough?*
+— is the natural follow-up, §6.)
 
 #### 3.7.2 Streaming (orthogonal axis: synchronous DiLoCo, fragmented comm)
 
@@ -565,55 +599,19 @@ homogeneous 4×4090 loopback rig with a ~1.6× injected spread barely exercises.
 We report the mechanism as *functional* (adaptive per-worker `sync_every`; dylu_on
 takes more sync rounds, 760 vs 616) but its quality benefit is not measurable here.
 
+**Warm-started DyLU.** Repeating the A/B from the 500M-token warm checkpoint (the
+same warm-start as §3.7.1) gives the same verdict, and confirms the from-scratch
+gap closes for the heterogeneous arms too: both reach the warm baseline (2.831), and
+DyLU stays neutral (off vs on differ by 0.006, within noise).
+
+| Configuration | eval loss | vs warm baseline (2.831) | mean staleness |
+|---|---|---|---|
+| Warm async + DN, spread, DyLU off | 2.863 | +0.032 | 1.5 |
+| Warm async + DN, spread, DyLU on | 2.857 | +0.026 | 1.5 |
+
 (One more figure, `grace_hist.png`, is **`validate`-only** — the grace coalescing
 histogram, a mechanism check, not a results figure:
 [`analysis/grace_batches.py`](analysis/grace_batches.py).)
-
----
-
-### 3.8 Warm-start: closing the from-scratch async gap
-
-The async-from-scratch result (§3.7.1) leaves the study's central question open:
-async trails the sync baseline even at the DN optimum — is that *async*, or is it
-the *from-scratch regime* (§2.6)? To test the pre-registered regime hypothesis
-directly, we pretrained the **same architecture** with plain 4×DDP to ~500M tokens
-(≈1× Chinchilla; [`templates/configs/warm_pretrain.yaml`](templates/configs/warm_pretrain.yaml)),
-then re-ran the async arms **and a warm sync baseline** from that checkpoint — all
-2B further tokens. The warm arms are judged against the *warm* baseline (same start
-point — the fair comparison), assembled into a server master by
-[`make_warm_master.py`](make_warm_master.py) and selected via `experiment.sh`'s
-`WARM_MASTER` knob.
-
-| Configuration | eval loss | perplexity | vs *warm* baseline | vs *scratch* counterpart |
-|---|---|---|---|---|
-| Warm baseline (sync) | 2.831 | 17.0 | — | −0.028 |
-| Warm async + DN (N=4) | 2.895 | 17.8 | +0.064 | **−0.766** |
-| Warm async + DN (N=8) | 2.893 | 18.1 | +0.062 | −0.214 |
-| Warm async + DN, DyLU off | 2.863 | 17.5 | +0.032 | −0.696 |
-| Warm async + DN + DyLU | 2.857 | 17.4 | +0.026 | −0.726 |
-
-![Warm-start vs from-scratch: left, eval-loss trajectories where warm arms hug the warm baseline while scratch async trails the scratch baseline; right, the async gap to the matched sync baseline collapsing from +0.25..+0.80 (scratch) to +0.03..+0.06 (warm)](assets/warm_compare.png)
-
-*Warm-start closes the from-scratch async gap —
-[`analysis/warm_compare.py`](analysis/warm_compare.py).*
-
-**The warm start closes the gap.** Every warm async arm lands within **+0.03 to
-+0.06** eval loss of the warm sync baseline — versus **+0.25 to +0.80** from
-scratch (figure above). This is the study's headline result: **async DiLoCo
-≈ sync once warm-started**, and the large from-scratch gap was the *regime*, not
-async itself — exactly the pre-registered §2.6 reading, and the reason the source
-papers warm-start their async runs.
-
-**Buffer depth stops mattering when warm.** From scratch, the DN-buffer depth was
-a strong lever (N=4 → N=8 gained 0.55 eval; §3.7). Warm-started, warm_async_dn4
-(+0.064) and warm_async_dn8 (+0.062) are **within 0.002** — the depth dependence
-collapses. This is the mechanism made visible: a warm start means small,
-well-aligned pseudo-gradients, so sequentially-applied staleness does little
-damage and the buffer that absorbs it is barely needed. (DyLU remains neutral:
-warm_dylu_on +0.026 vs warm_dylu_off +0.032, within noise.)
-
-Caveat unchanged: single seed, single small scale, ~1× Chinchilla of pretraining —
-a pretrain-budget sweep (how warm is warm enough?) is the natural follow-up (§6).
 
 ---
 
@@ -625,8 +623,8 @@ project reproduces its regularization-at-longer-budget result. **Asynchronous
 Local-SGD** (Liu et al., 2024;
 [arXiv:2401.09135](https://arxiv.org/abs/2401.09135)) identifies staleness as the
 core obstacle to dropping the barrier and contributes the Delayed-Nesterov outer
-optimizer, DyLU, and the grace period. We evaluate DN (arms 5–6) and DyLU (arms
-7–8); the grace period — an Algorithm-2 input the paper never ablates, whose payoff
+optimizer, DyLU, and the grace period. We evaluate DN (arms 5–8) and DyLU (arms
+9–10); the grace period — an Algorithm-2 input the paper never ablates, whose payoff
 is wall-clock tail-reduction — is validated functional only and deferred (§3.5).
 **Streaming DiLoCo** (Douillard et al., 2025;
 [arXiv:2501.18512](https://arxiv.org/abs/2501.18512)) overlaps fragment
@@ -655,7 +653,7 @@ pre-registered hypotheses, each with a fixed control:
    non-monotonic lever (the §3.4 sweep): **N=8 is the optimum** (+0.25, ~half the
    gap closed), N=16 regresses. Per the §2.6 regime caveat, the from-scratch gap is
    not a refutation of the paper (which warm-starts): **warm-started, N = k = 4 ≈
-   sync** (+0.064) and the depth dependence collapses (§3.8) — so the paper's
+   sync** (+0.064) and the depth dependence collapses (§3.7.1) — so the paper's
    default is right *in its own warm regime*, and only under-buffered from scratch.
 2. **Streaming costs little and strided ≥ sequential**, the assignment gap visible
    at the finer N=5 grain (arms 2–4 vs 1).
@@ -672,7 +670,7 @@ pre-registered hypotheses, each with a fixed control:
    random-init robustness to async (the whole study trains from scratch).
    *Result: refuted from scratch, recovered warm.* Async≈sync does **not** hold
    from random init (§3.7); but warm-started from a ~500M-token checkpoint it does
-   (§3.8) — every warm async arm within +0.03–0.06 of a warm sync baseline. So
+   (§3.7.1) — every warm async arm within +0.03–0.06 of a warm sync baseline. So
    async's robustness is regime-dependent: the from-scratch phase is the obstacle,
    not async per se, which is exactly why the source papers warm-start.
 
@@ -699,7 +697,7 @@ documented small-effect finding, not re-run.
   non-monotonic optimum at N=8; open follow-ups are multi-seed confirmation of the
   N=8 < N=16 ordering and the N → ∞ limit (toward synchronous), plus whether the
   optimal N tracks the mean staleness across staleness levels.
-- **Async pretrain-budget sweep.** §3.8 already answers the from-scratch premise
+- **Async pretrain-budget sweep.** §3.7.1 already answers the from-scratch premise
   (§2.6): a ~500M-token (≈1× Chinchilla) warm start closes the async gap to
   +0.03–0.06 of a warm sync baseline. The open follow-up is the *budget* axis —
   how warm is warm enough? Sweep the pretrain budget (e.g. 0 / 100M / 500M / 1B)
@@ -825,7 +823,7 @@ DiLoCoCallback: using server settings sync_every=100 up=bf16 down=fp32 \
   (extends `projects/small.yaml`, `enable_diloco=True`); every feature is chosen by
   server flags, not here.
 - `templates/configs/warm_pretrain.yaml` — plain 4×DDP pretrain of the same arch
-  (`enable_diloco=False`) that emits the warm-start checkpoint (§3.8).
+  (`enable_diloco=False`) that emits the warm-start checkpoint (§3.7.1).
 - `make_warm_master.py` — assemble a trained checkpoint into a warm DiLoCo server
   master (root safetensors); used with `experiment.sh`'s `WARM_MASTER` knob.
 - `experiment.sh` — the run-matrix driver (`validate` / `run` / `run <arm>`),
