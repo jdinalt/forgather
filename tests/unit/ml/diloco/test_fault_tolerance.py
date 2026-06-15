@@ -193,10 +193,9 @@ class TestWorkerDeath(_ServerTestBase):
         finally:
             server.stop()
 
-    def test_death_below_min_workers_relays_save_and_stop(self):
-        """Falling below min_workers aborts the run: relay save_and_stop to the
-        survivors (so they checkpoint + exit) rather than limp on with too few
-        contributors. One-shot, and the surviving worker carries the command."""
+    def test_death_below_min_workers_does_not_abort(self):
+        """A drop below min_workers PAUSES (quorum gate), it does NOT abort: no
+        save_and_stop is relayed to the survivors, and there's no abort flag."""
         sd = _make_state_dict()
         server = self._make_server(
             sd, num_workers=3, min_workers=3, heartbeat_timeout=0
@@ -208,67 +207,34 @@ class TestWorkerDeath(_ServerTestBase):
             client.register("w2", {})
             client.register("w3", {})
 
-            self.assertFalse(server._min_workers_aborted)
-
-            # One death drops live count to 2 < min_workers=3 -> abort fires.
+            # One death drops live count to 2 < min_workers=3.
             server._handle_worker_death("w1")
-            self.assertTrue(server._min_workers_aborted)
 
-            # Survivors carry the relayed stop command (picked up next HB).
-            self.assertEqual(server._workers["w2"].pending_command, "save_and_stop")
-            self.assertEqual(server._workers["w3"].pending_command, "save_and_stop")
-
-            # One-shot: a second death below-min doesn't error or re-fire.
-            server._handle_worker_death("w2")
-            self.assertTrue(server._min_workers_aborted)
+            # No abort: survivors carry NO stop command, and the run isn't
+            # marked stopped — it's a recoverable pause.
+            assert not hasattr(server, "_min_workers_aborted")
+            self.assertIsNone(server._workers["w2"].pending_command)
+            self.assertIsNone(server._workers["w3"].pending_command)
+            # And the server now reports it's below quorum (the worker gate reads
+            # this off the heartbeat to idle).
+            self.assertTrue(server._below_min_workers())
         finally:
             server.stop()
 
-    def test_clean_shutdown_does_not_trip_min_workers_abort(self):
-        """A deliberate drain must NOT fire the min_workers abort. With the
-        default min_workers=1, the last worker deregistering during a clean
-        shutdown crosses below the floor — that's a normal exit, not a fault, so
-        the abort stays silent (guarded by _shutting_down / _budget_stop_sent)."""
+    def test_below_min_workers_helper(self):
+        """_below_min_workers reflects registered-vs-min_workers."""
         sd = _make_state_dict()
         server = self._make_server(
-            sd, num_workers=2, min_workers=1, heartbeat_timeout=0
+            sd, num_workers=2, min_workers=2, heartbeat_timeout=0
         )
         server.start()
         try:
+            self.assertTrue(server._below_min_workers())  # 0 registered
             client = DiLoCoClient(f"localhost:{server.port}")
             client.register("w1", {})
+            self.assertTrue(server._below_min_workers())  # 1 < 2
             client.register("w2", {})
-
-            # Simulate a coordinated shutdown in progress.
-            server._shutting_down = True
-
-            # Workers drain one-by-one; the last one drops live count to 0 < 1.
-            server._handle_worker_death("w1")
-            server._handle_worker_death("w2")
-
-            # No spurious abort on a clean drain.
-            self.assertFalse(server._min_workers_aborted)
-        finally:
-            server.stop()
-
-    def test_budget_stop_does_not_trip_min_workers_abort(self):
-        """Same guard via the token-budget flag: a budget-driven drain that
-        empties the roster doesn't misreport a min_workers abort."""
-        sd = _make_state_dict()
-        server = self._make_server(
-            sd, num_workers=2, min_workers=1, heartbeat_timeout=0
-        )
-        server.start()
-        try:
-            client = DiLoCoClient(f"localhost:{server.port}")
-            client.register("w1", {})
-            client.register("w2", {})
-
-            server._budget_stop_sent = True  # budget reached, drain underway
-            server._handle_worker_death("w1")
-            server._handle_worker_death("w2")
-
-            self.assertFalse(server._min_workers_aborted)
+            self.assertFalse(server._below_min_workers())  # 2 >= 2
         finally:
             server.stop()
 
@@ -351,6 +317,54 @@ class TestBarrierRelease(_ServerTestBase):
                 "e", error, f"Worker A submission failed: {error.get('e')}"
             )
             self.assertIn("params", result)
+        finally:
+            server.stop()
+
+    def test_death_below_min_workers_does_not_release_partial(self):
+        """Quorum gate on the death path: min_workers=2, A submits, B dies ->
+        the barrier must NOT release (1 < 2 contributors). No partial outer step;
+        A stays parked (paused) until quorum returns or shutdown."""
+        sd = _make_state_dict()
+        server = self._make_server(
+            sd, num_workers=2, min_workers=2, heartbeat_timeout=0
+        )
+        server.start()
+        try:
+            client_a = DiLoCoClient(f"localhost:{server.port}", timeout=10)
+            client_b = DiLoCoClient(f"localhost:{server.port}", timeout=10)
+            client_a.register("worker_a", {})
+            client_b.register("worker_b", {})
+
+            result = {}
+            error = {}
+
+            def submit_a():
+                try:
+                    pg = {name: torch.zeros_like(p) for name, p in sd.items()}
+                    result["params"] = client_a.submit_pseudogradients("worker_a", pg)
+                except Exception as e:
+                    error["e"] = e
+
+            t = threading.Thread(target=submit_a)
+            t.start()
+            time.sleep(0.5)  # let A's submission reach the barrier
+
+            round_before = server._sync_round
+            server._handle_worker_death("worker_b")  # drops to 1 < min_workers=2
+
+            # A must NOT be released with a partial (1-contributor) step.
+            t.join(timeout=2)
+            self.assertTrue(
+                t.is_alive(), "A should stay parked below quorum (no partial step)"
+            )
+            self.assertNotIn("params", result)
+            self.assertEqual(server._sync_round, round_before)  # no outer step
+
+            # Teardown: the shutdown-break releases the parked worker cleanly.
+            server._shutting_down = True
+            with server._sync_cond:
+                server._sync_cond.notify_all()
+            t.join(timeout=5)
         finally:
             server.stop()
 

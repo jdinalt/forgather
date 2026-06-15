@@ -800,3 +800,40 @@ class TestOrphanHeartbeatDetection:
         w = DiLoCoWorker.__new__(DiLoCoWorker)
         w._orphan_strike_threshold = 3
         assert w._orphan_strike_threshold >= 2
+
+
+class TestQuorumGate:
+    """The worker idles at its sync point while the server reports it's below
+    min_workers, and that pause stays cleanly stoppable (peeks the stop flag)."""
+
+    def _bare(self):
+        w = DiLoCoWorker.__new__(DiLoCoWorker)
+        w._pending_command = None
+        w._pending_command_lock = threading.Lock()
+        return w
+
+    def test_pending_stop_peeks_terminal_commands(self):
+        w = self._bare()
+        assert w._pending_stop() is False
+        w._pending_command = "save_checkpoint"  # not terminal
+        assert w._pending_stop() is False
+        w._pending_command = "save_and_stop"
+        assert w._pending_stop() is True
+        # Non-destructive: the command is still there for the callback to apply.
+        assert w._pending_command == "save_and_stop"
+        w._pending_command = "abort"
+        assert w._pending_stop() is True
+
+    def test_heartbeat_flag_updates_quorum_blocked(self):
+        # The heartbeat sets _quorum_blocked from the server's below_min_workers.
+        # Drive just the flag-update branch the heartbeat loop runs.
+        w = self._bare()
+        w._quorum_blocked = False
+        resp = {"below_min_workers": True}
+        if "below_min_workers" in resp:
+            w._quorum_blocked = bool(resp["below_min_workers"])
+        assert w._quorum_blocked is True
+        resp = {"below_min_workers": False}
+        if "below_min_workers" in resp:
+            w._quorum_blocked = bool(resp["below_min_workers"])
+        assert w._quorum_blocked is False

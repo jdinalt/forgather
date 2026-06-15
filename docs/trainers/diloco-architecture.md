@@ -214,7 +214,7 @@ _round_expected_workers: Optional[set]          # Worker IDs expected for curren
 _health_monitor: Optional[HealthMonitor]        # Background health checker (None if heartbeat_timeout=0)
 _total_worker_deaths: int                       # Cumulative dead worker count
 heartbeat_timeout: float                        # Seconds before a worker is considered dead (0 = disabled)
-min_workers: int                                # Floor for num_workers; falling below it aborts the run (see below)
+min_workers: int                                # Quorum: below it the run pauses (no outer step) until restored (see below)
 ```
 
 `_round_expected_workers` is the key data structure for fault-tolerant barriers.
@@ -665,15 +665,28 @@ the current time, and calls `_handle_worker_death()` for any worker that
 exceeds the timeout. The health monitor is started in `start()` / `run()` and
 stopped in `stop()`.
 
-When a death (or eviction) drops the live worker count **below `min_workers`**,
-the run can no longer be valid — a sync run would stall forever at a barrier the
-floored `num_workers` can never meet, and an async run would limp on with too
-few contributors. So the server **aborts the run**: it relays `save_and_stop` to
-the survivors (one-shot, guarded by `_min_workers_aborted`) so they checkpoint
-and exit cleanly. It does *not* SIGKILL them. The abort decision is made under
-`_sync_cond`/`_workers_lock` (so the live count is consistent) but the relay runs
-*after* releasing those locks, since `_relay_command_all` re-enters the worker
-lock that the heartbeat/deregister path needs.
+**Quorum gate (`min_workers`).** The group never takes an outer step with fewer
+than `min_workers` contributors — at startup before everyone has joined, or after
+a drop. Falling below quorum **pauses** the run; it does **not** abort it. The
+mechanism:
+
+- The heartbeat response carries `below_min_workers` (`num_registered <
+  min_workers`). The worker reads it and, at its next sync point, **idles**
+  (`_quorum_blocked`) instead of syncing or training ahead — GPU parked, no
+  garbage gradients. It keeps heartbeating and polls its stop flag, so a
+  `save_and_stop`/`abort` breaks the idle immediately: the pause is never a hard,
+  unkillable block.
+- Server-side belt: the sync barrier only applies a round when the contributor
+  count is `>= min_workers` (`_handle_submit_sync` / `_handle_submit_fragment_sync`),
+  so a worker that submitted just before a drop can't drive a partial outer step
+  — it parks on the barrier instead, and the barrier wait breaks on
+  `_shutting_down` (woken by `graceful_shutdown`) so it stays cleanly stoppable.
+  Async permits an extra step to slip through as a worker drops; sync does not.
+
+The pause is **recoverable**: a replacement worker (or lowering `min_workers`)
+restores quorum, `below_min_workers` clears on the next heartbeat, and the idling
+workers resume. `_handle_worker_death` keeps the `num_workers = max(min_workers,
+remaining)` floor but takes no other action — no `save_and_stop`, no kill.
 
 ### Worker threads
 

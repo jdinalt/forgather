@@ -1012,10 +1012,17 @@ class DiLoCoServer:
         # Left off by default so unit tests that poke _maybe_trigger_token_budget
         # directly don't trigger a surprise full-drain teardown.
         self._auto_shutdown_on_budget = False
-        # One-shot guard: when worker deaths drop the live count below
-        # min_workers the run can no longer be valid, so we relay save_and_stop
-        # once and let the survivors checkpoint + exit. Fires at most once.
-        self._min_workers_aborted = False
+
+    def _below_min_workers(self) -> bool:
+        """True when fewer than ``min_workers`` are registered — the quorum gate.
+
+        While below quorum (at startup before everyone has joined, or after a
+        drop) the server takes no outer step and workers idle at their sync
+        point. Read under ``_workers_lock`` by callers that don't already hold a
+        consistent count.
+        """
+        with self._workers_lock:
+            return len(self._workers) < self.min_workers
 
     @staticmethod
     def _find_available_port() -> int:
@@ -1503,33 +1510,19 @@ class DiLoCoServer:
             # Update num_workers (but respect min_workers floor)
             self.num_workers = max(self.min_workers, remaining)
 
-            # When live workers fall below min_workers the run can no longer be
-            # valid: a sync run would stall at the barrier (the floored
-            # num_workers can never be met), and an async run would limp along
-            # with too few contributors producing garbage. Either way, abort —
-            # relay save_and_stop to the survivors so they checkpoint and exit.
-            # Decide here (under the lock, so the live count is consistent), but
-            # do the relay AFTER releasing _sync_cond/_workers_lock: the relay
-            # touches the worker pending_command state and we must not re-enter a
-            # lock the heartbeat/deregister path needs (the known deadlock class).
-            # One-shot via _min_workers_aborted so repeated deaths fire it once.
-            #
-            # Suppress during a deliberate shutdown: a clean drain (SIGTERM /
-            # /control/shutdown / token-budget stop) deregisters every worker
-            # one-by-one, and the LAST deregistration crosses below the default
-            # min_workers=1 floor. That's a normal exit, not a fault — firing the
-            # abort there would log a spurious "aborting run" on every clean stop.
-            # _shutting_down covers graceful_shutdown; _budget_stop_sent covers
-            # the brief window before its background drain sets _shutting_down.
-            abort_below_min = False
-            if (
-                remaining < self.min_workers
-                and not self._min_workers_aborted
-                and not self._shutting_down
-                and not self._budget_stop_sent
-            ):
-                self._min_workers_aborted = True
-                abort_below_min = True
+            # When live workers fall below min_workers the run can't validly take
+            # an outer step. We do NOT abort: the quorum gate pauses training
+            # (workers idle at their sync point; the sync barrier won't apply a
+            # round with fewer than min_workers contributors) until a replacement
+            # restores quorum — a recoverable pause, not a forced stop.
+            if remaining < self.min_workers:
+                logger.warning(
+                    "Live workers %d < min_workers %d after worker death; "
+                    "pausing outer steps until quorum is restored "
+                    "(no abort — recoverable).",
+                    remaining,
+                    self.min_workers,
+                )
 
             if len(evict) > 1:
                 logger.warning(
@@ -1571,7 +1564,18 @@ class DiLoCoServer:
             # ``_completed_rounds`` entry that future waiters could
             # block on. Gate on non-empty pending so the eviction path
             # cleanly defers to the next live submission.
-            if expected > 0 and self._pending_pseudograds and self._round_complete():
+            #
+            # Quorum gate: a death that shrinks _round_expected_workers can flip
+            # _round_complete() True for the survivors. Apply only if those
+            # survivors still meet min_workers — otherwise leave them parked on
+            # the barrier (the pause), to be released by a later submit once
+            # quorum is restored, or by _shutting_down. Mirrors the submit path.
+            if (
+                expected > 0
+                and self._pending_pseudograds
+                and self._round_complete()
+                and len(self._pending_pseudograds) >= self.min_workers
+            ):
                 # Enough workers have submitted - release the barrier
                 my_round = self._sync_round
                 self._apply_outer_optimizer(pending_audit)
@@ -1585,7 +1589,14 @@ class DiLoCoServer:
                 for wid in evict:
                     self._fragment_pending[frag_id].pop(wid, None)
 
-                if expected > 0 and self._fragment_round_complete(frag_id):
+                # Quorum gate (same as the full-model release above): don't take
+                # a fragment outer step below min_workers contributors after a
+                # death — leave the survivors parked until quorum is restored.
+                if (
+                    expected > 0
+                    and self._fragment_round_complete(frag_id)
+                    and len(self._fragment_pending[frag_id]) >= self.min_workers
+                ):
                     my_frag_round = self._fragment_rounds[frag_id]
                     pending = self._fragment_pending[frag_id]
                     pg_list = list(pending.values())
@@ -1636,24 +1647,11 @@ class DiLoCoServer:
         # _sync_cond released: now it's safe to do the audit disk I/O.
         self._audit_many(pending_audit)
 
-        # Below-min-workers abort, done OUTSIDE all the locks above (the relay
-        # re-enters the workers lock, which would deadlock if held here). The
-        # one-shot guard was set under the lock so concurrent death handlers
-        # don't double-fire.
-        if abort_below_min:
-            logger.error(
-                "Live workers %d < min_workers %d after worker death; aborting "
-                "run (relaying save_and_stop to the survivors).",
-                remaining,
-                self.min_workers,
-            )
-            targets = self._relay_command_all("save_and_stop")
-            self._audit(
-                "min_workers_abort",
-                remaining=remaining,
-                min_workers=self.min_workers,
-                relayed_to=list(targets),
-            )
+        # NOTE: a drop below min_workers does NOT abort the run. The quorum gate
+        # (outer steps only happen while registered >= min_workers; workers idle
+        # at their sync point otherwise) pauses training instead — recoverable by
+        # a replacement worker (or lowering min_workers), never a forced stop.
+        # See _below_min_workers / _handle_submit_sync / the worker's _sync gate.
 
     def _compute_dylu_sync_every(self, worker_id: str) -> Optional[int]:
         """
@@ -2308,7 +2306,14 @@ class DiLoCoServer:
                 f"({submitted}/{expected}) for round {my_round}",
             )
 
-            if self._round_complete():
+            # Quorum gate: never take an outer step with fewer than min_workers
+            # contributors. If the round's expected set shrank below min_workers
+            # (a death), the round simply doesn't complete — the submitters park
+            # on the barrier below (paused) until quorum is restored. Workers
+            # normally idle at their sync point via the heartbeat below_min_workers
+            # flag, so this is the belt for a worker that submitted just before a
+            # drop. (Async permits an extra step to slip through; sync does not.)
+            if self._round_complete() and submitted >= self.min_workers:
                 self._apply_outer_optimizer(pending_audit)
                 self._completed_rounds[my_round] = self.get_global_params()
 
@@ -2322,6 +2327,12 @@ class DiLoCoServer:
                 self._sync_cond.notify_all()
 
             while my_round not in self._completed_rounds:
+                # Break on shutdown so a worker parked here (below quorum, or a
+                # slow round) is released promptly and can pick up save_and_stop
+                # — no hard, unkillable block.
+                if self._shutting_down:
+                    _send_json_response(handler, {"error": "server stopping"}, 503)
+                    return
                 if not self._sync_cond.wait(timeout=600):
                     _send_json_response(handler, {"error": "Sync timeout"}, 504)
                     return
@@ -2653,8 +2664,12 @@ class DiLoCoServer:
                 f"({submitted}/{expected}) for fragment round {my_round}",
             )
 
-            if self._fragment_round_complete(fragment_id):
-                # All expected workers submitted for this fragment.
+            if (
+                self._fragment_round_complete(fragment_id)
+                and submitted >= self.min_workers
+            ):
+                # All expected workers submitted for this fragment (and quorum is
+                # met — no fragment outer step below min_workers contributors).
                 # Aggregate using contributors-only per-name; then build
                 # the per-worker response (each worker receives only the
                 # names it submitted — important under pipeline groups
@@ -2701,6 +2716,10 @@ class DiLoCoServer:
             # Wait for this fragment round's result.
             key = (fragment_id, my_round)
             while key not in self._completed_fragment_rounds:
+                # Break on shutdown so a parked worker is released promptly.
+                if self._shutting_down:
+                    _send_json_response(handler, {"error": "server stopping"}, 503)
+                    return
                 if not self._sync_cond.wait(timeout=600):
                     _send_json_response(
                         handler, {"error": "Fragment sync timeout"}, 504
@@ -2853,11 +2872,18 @@ class DiLoCoServer:
         # Compute DyLU recommendation if enabled
         recommended_sync_every = self._compute_dylu_sync_every(worker_id)
 
+        with self._workers_lock:
+            num_registered = len(self._workers)
         response = {
             "status": "ok",
             "sync_round": self._sync_round,
             "num_workers": self.num_workers,
-            "num_registered": len(self._workers),
+            "num_registered": num_registered,
+            # Quorum gate (issue #154 follow-up): the worker idles at its sync
+            # point while this is True so the group never takes an outer step
+            # with fewer than min_workers contributors — a recoverable pause, not
+            # an abort.
+            "below_min_workers": num_registered < self.min_workers,
         }
         if recommended_sync_every is not None:
             response["recommended_sync_every"] = recommended_sync_every
@@ -5143,6 +5169,12 @@ class DiLoCoServer:
             # exit and kill the in-flight drain before save_state completes.
             self._shutdown_done.wait(timeout + 30.0)
             return
+        # Wake any worker parked on the sync barrier (e.g. paused below quorum)
+        # so it sees _shutting_down, returns, and can act on save_and_stop —
+        # otherwise it would hang on the barrier until its 600s timeout and the
+        # drain below would time out waiting for it.
+        with self._sync_cond:
+            self._sync_cond.notify_all()
         try:
             if self._running:
                 targets = self._relay_command_all("save_and_stop")
