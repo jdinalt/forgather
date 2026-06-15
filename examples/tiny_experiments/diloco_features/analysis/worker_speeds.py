@@ -33,8 +33,8 @@ ASSETS = os.path.join(HERE, "assets")
 RUNS = os.path.join(HERE, "runs")
 
 # Must match experiment.sh's DYLU_SPREAD (seconds of fixed per-step delay).
-DYLU_SPREAD = [0.0, 0.06, 0.12, 0.18]
-ARMS = ["dylu_off", "dylu_on"]
+DYLU_SPREAD = [0.0, 0.24, 0.40, 0.56]
+ARMS = ["warm_dylu_off", "warm_dylu_on"]
 
 _TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 _TR = re.compile(r"^\d{4}-\d{2}-\d{2}\s+[\d:]+\s+(\d[\d,]*)\s")
@@ -102,7 +102,7 @@ def main():
     n = len(DYLU_SPREAD)
     x = range(n)
     w = 0.38
-    colors = {"dylu_off": "#d9772b", "dylu_on": "#7b3294"}
+    colors = {"warm_dylu_off": "#d9772b", "warm_dylu_on": "#7b3294"}
     for i, (arm, rows) in enumerate(results.items()):
         ms = [r[1] for r in rows]
         ax.bar(

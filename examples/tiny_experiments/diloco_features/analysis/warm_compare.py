@@ -36,12 +36,11 @@ import matplotlib.pyplot as plt
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(HERE, "assets")
 
-# async arm key -> (scratch series, warm series, label)
+# async arm key -> (scratch series, warm series, label). Only arms run in BOTH
+# regimes appear in the gap comparison; the DyLU arms are warm-only (§3.7.3).
 PAIRS = [
     ("async_dn4", "warm_async_dn4", "Async DN N=4"),
     ("async_dn8", "warm_async_dn8", "Async DN N=8"),
-    ("dylu_off", "warm_dylu_off", "Async DN, DyLU off"),
-    ("dylu_on", "warm_dylu_on", "Async DN + DyLU"),
 ]
 SCRATCH_BASE = "baseline"
 WARM_BASE = "warm_baseline"
@@ -90,7 +89,6 @@ def main():
         (WARM_BASE, "Warm baseline (sync)", "#000000", "-"),
         ("warm_async_dn4", "Warm async DN N=4", "#74c476", "-"),
         ("warm_async_dn8", "Warm async DN N=8", "#2ca25f", "-"),
-        ("warm_dylu_on", "Warm async + DyLU", "#7b3294", "-"),
     ]
     for s, lbl, c, ls in traj:
         ev = data.get(s, {}).get("eval_loss", [])

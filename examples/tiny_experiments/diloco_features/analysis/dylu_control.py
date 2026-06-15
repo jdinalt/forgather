@@ -27,10 +27,11 @@ import matplotlib.pyplot as plt
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(HERE, "assets")
 
-# (curves.csv series key, label, color)
+# (curves.csv series key, label, color). Warm-started arms under a ~4:1 speed
+# spread (DyLU is run warm-only; see README §3.7.3).
 RUNS = [
-    ("dylu_off", "Async + DN (N=4), spread, no DyLU", "#d9772b"),
-    ("dylu_on", "Async + DN (N=4), spread, + DyLU", "#c44e52"),
+    ("warm_dylu_off", "Warm async + DN (N=4), ~4:1 spread, no DyLU", "#d9772b"),
+    ("warm_dylu_on", "Warm async + DN (N=4), ~4:1 spread, + DyLU", "#c44e52"),
 ]
 
 
@@ -49,20 +50,23 @@ def load():
 
 def main():
     data = load()
-    base_ev = data.get("baseline", {}).get("eval_loss", [])
+    base_ev = data.get("warm_baseline", {}).get("eval_loss", [])
 
     present = [(s, lbl, c) for s, lbl, c in RUNS if data.get(s, {}).get("eval_loss")]
     if len(present) < 2:
-        print("Need both 'dylu_on' and 'dylu_off' in curves.csv — run harvest.py")
+        print("Need warm_dylu_on + warm_dylu_off in curves.csv — run harvest.py")
         return
 
-    print(f"{'run':<38}{'final eval':>12}")
+    print(f"{'run':<44}{'final eval':>12}")
     for s, lbl, _ in present:
         ev = data[s]["eval_loss"]
-        print(f"{lbl:<38}{ev[-1][1]:>12.4f}")
+        print(f"{lbl:<44}{ev[-1][1]:>12.4f}")
     fe = {s: data[s]["eval_loss"][-1][1] for s, _, _ in present}
-    if "dylu_on" in fe and "dylu_off" in fe:
-        print(f"\nDyLU effect (off - on): {fe['dylu_off'] - fe['dylu_on']:+.4f}")
+    if "warm_dylu_on" in fe and "warm_dylu_off" in fe:
+        print(
+            f"\nDyLU effect (off - on): "
+            f"{fe['warm_dylu_off'] - fe['warm_dylu_on']:+.4f}"
+        )
 
     plt.rcParams.update({"figure.dpi": 120, "font.size": 10})
     fig, ax = plt.subplots(figsize=(7.2, 4.4))
@@ -73,7 +77,7 @@ def main():
             color="#000000",
             lw=1.6,
             ls="--",
-            label="Sync baseline (reference)",
+            label="Warm sync baseline (reference)",
         )
     for s, lbl, color in present:
         ev = data[s]["eval_loss"]
@@ -87,7 +91,7 @@ def main():
             label=lbl,
         )
     ax.set_title(
-        "Does DyLU help? Same speed spread + N=4 buffer, DyLU off vs on",
+        "Does DyLU help? Warm-started, ~4:1 speed spread + N=4 buffer, off vs on",
         fontweight="bold",
     )
     ax.set_xlabel("local step (∝ total tokens)")

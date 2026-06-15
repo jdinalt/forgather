@@ -21,9 +21,10 @@ Two arm classes (README §3.3):
   * JITTER-GATED — async_nodn / async_dn4: equal-speed jitter ⇒ round-robin.
     PASS iff snapshot mean ≈ (k-1)/2 (if the jitter weren't decorrelating, the
     workers cluster near staleness 0 and the mean collapses).
-  * REDUCER — dylu_on vs its dylu_off control: a *delay spread* (not jitter), so
-    NOT round-robin (slow workers run staler). Not gated at a fixed value; success
-    is dylu_on's mean staleness BELOW dylu_off's (DyLU re-paces to cut it).
+  * REDUCER — warm_dylu_on vs its warm_dylu_off control: a *delay spread* (not
+    jitter, ~4:1), so NOT round-robin (slow workers run staler). Not gated at a
+    fixed value; success is warm_dylu_on's mean staleness BELOW warm_dylu_off's
+    (DyLU re-paces to cut it). DyLU is run warm-only (README §3.7.3).
 
     python analysis/staleness.py            # the jitter gate + the dylu reducer
     python analysis/staleness.py <arm> ...  # specific arm(s)
@@ -39,7 +40,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUNS = os.path.join(HERE, "runs")
 
 JITTER_GATED = ["async_nodn", "async_dn4"]  # equal-speed jitter -> round-robin
-REDUCERS = {"dylu_on": "dylu_off"}  # delay-spread; dylu_on should be LESS stale
+REDUCERS = {"warm_dylu_on": "warm_dylu_off"}  # ~4:1 spread; on should be LESS stale
 TOLERANCE = 0.75  # |snapshot mean - (k-1)/2| within this => decorrelated (PASS)
 
 
@@ -96,24 +97,25 @@ def main():
 
     if do_reduce:
         print(
-            "\n== reducer (success: dylu_on mean staleness BELOW its dylu_off control) =="
+            "\n== reducer (success: the DyLU-on arm's mean staleness BELOW its"
+            " off control) =="
         )
         print(
-            f"{'arm':<10}{'control':<11}{'arm mean':>9}{'ctrl mean':>11}{'verdict':>13}"
+            f"{'arm':<16}{'control':<17}{'arm mean':>9}{'ctrl mean':>11}{'verdict':>13}"
         )
         for arm in do_reduce:
             ctrl = REDUCERS.get(arm)
             mean, _, _, _ = load_staleness(arm)
             cmean = load_staleness(ctrl)[0] if ctrl else None
             if mean is None:
-                print(f"{arm:<10}{ctrl or '-':<11}{'(no status.json)':>33}")
+                print(f"{arm:<16}{ctrl or '-':<17}{'(no status.json)':>33}")
                 continue
             any_data = True
             if cmean is None:
-                print(f"{arm:<10}{ctrl or '-':<11}{mean:>9.2f}{'(no control)':>24}")
+                print(f"{arm:<16}{ctrl or '-':<17}{mean:>9.2f}{'(no control)':>24}")
                 continue
             verdict = "reduced" if mean < cmean else "NOT reduced"
-            print(f"{arm:<10}{ctrl:<11}{mean:>9.2f}{cmean:>11.2f}{verdict:>13}")
+            print(f"{arm:<16}{ctrl:<17}{mean:>9.2f}{cmean:>11.2f}{verdict:>13}")
 
     if not any_data:
         print("\nNo staleness data — run an async arm first (experiment.sh).")

@@ -55,13 +55,16 @@ JITTER="${JITTER:-0.15}"       # per-step jitter (s) for async phase-decorrelati
                                # if measured staleness < ~3, per the design's gate).
 GRACE_S="${GRACE_S:-0.5}"      # grace window (s) — VALIDATE ONLY (v_grace mechanism check; grace is not a study arm)
 
-# Per-worker fixed delays (s) for the DyLU speed-spread arms (a realistic
-# 4090+3090 mix). Calibrated to the MEASURED steady-state step time: a baseline
-# timing probe gave ~0.18-0.20 s/step (compile on), so D_max ~ 0.18 was chosen
-# TARGETING a ~2x slowest/fastest ratio. NB: the realized spread is ~1.6x, not 2x
-# (analysis/worker_speeds.py verifies it from the run data): the per-step CPU sleep
-# partially overlaps async GPU compute, so the nominal delay only partly lands.
-DYLU_SPREAD=(0 0.06 0.12 0.18)
+# Per-worker fixed delays (s) for the DyLU speed-spread arms, TARGETING a ~4:1
+# slowest/fastest ratio (an aggressive heterogeneous pool — the earlier ~1.6x
+# spread was too mild for DyLU to show any signal). Calibration accounts for the
+# per-step CPU sleep partially overlapping async GPU compute: empirically the
+# landed wall-clock per step is ~(delay - 0.088s) for delays past ~0.09s, on a
+# ~0.156s base step. So 0/0.24/0.40/0.56 targets ~1x/2x/3x/4x step time. ALWAYS
+# smoke-verify the realized ratio before the long runs: a short-budget run, e.g.
+#   WARM_MASTER=<master> BUDGET=80M ./experiment.sh run warm_dylu_off
+# then `python analysis/worker_speeds.py` (it reads the warm_dylu_* arms).
+DYLU_SPREAD=(0 0.24 0.40 0.56)
 
 # Token budget (global stop): aggregate cross-worker tokens at which the server
 # relays save_and_stop. 2B total (~4x Chinchilla; the model's Chinchilla-optimal is
@@ -324,11 +327,11 @@ do_one async_dn16      async 4 "$BUDGET" -- --sync-every "$H" --async --dn-buffe
 # can't measure. It is validated functional in `validate` (v_grace) only; the real
 # demonstration is the two-population/WAN future work. See README §3.5.
 
-# 7  Async + DN, speed spread, DyLU OFF (control) — average-speed heterogeneity.
-do_one dylu_off        dylu  4 "$BUDGET" -- --sync-every "$H" --async --dn-buffer-size 4
-
-# 8  Async + DN + DyLU, same speed spread — DyLU cuts staleness (A/B vs #7).
-do_one dylu_on         dylu  4 "$BUDGET" -- --async --dylu --dylu-base-sync-every "$H" --dn-buffer-size 4
+# NOTE: DyLU is run WARM-ONLY (see the warm-start block below). The from-scratch
+# scratch-vs-warm story is already established by the async arms above; running
+# DyLU only warm halves the DyLU runs and isolates the heterogeneity question. The
+# DyLU arms use a ~4:1 speed spread (DYLU_SPREAD), aggressive enough to actually
+# exercise DyLU (the earlier ~1.6x spread was too mild to show a signal).
 
 # ---- Warm-start arms ------------------------------------------------------
 # Only run when WARM_MASTER points at a PRETRAINED master (the 500M DDP

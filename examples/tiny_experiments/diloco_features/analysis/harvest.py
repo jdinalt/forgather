@@ -64,13 +64,9 @@ EXPERIMENTS = [
         "small_llama_feat_async_dn16",
         "Async + DN (N=16)",
     ),
-    (
-        "dylu_off",
-        "dylu_off",
-        "small_llama_feat_dylu_off",
-        "Async + DN, spread, no DyLU",
-    ),
-    ("dylu_on", "dylu_on", "small_llama_feat_dylu_on", "Async + DN + DyLU"),
+    # NB: the from-scratch DyLU arms (dylu_off/dylu_on) were dropped — DyLU is run
+    # warm-only (the scratch-vs-warm story is covered by the async arms), and the
+    # spread was widened to ~4:1. See the warm_dylu_* arms below.
     # Warm-start arms (started from the 500M DDP checkpoint, not random init).
     # Same flags as their scratch counterparts; the only difference is the
     # server's starting master. Judge warm-async vs warm_baseline (fair, same
@@ -116,8 +112,6 @@ ASYNC_ARMS = {
     "async_dn4",
     "async_dn8",
     "async_dn16",
-    "dylu_off",
-    "dylu_on",
     "warm_async_dn4",
     "warm_async_dn8",
     "warm_dylu_off",
