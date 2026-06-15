@@ -320,6 +320,54 @@ class TestBarrierRelease(_ServerTestBase):
         finally:
             server.stop()
 
+    def test_death_below_min_workers_does_not_release_partial(self):
+        """Quorum gate on the death path: min_workers=2, A submits, B dies ->
+        the barrier must NOT release (1 < 2 contributors). No partial outer step;
+        A stays parked (paused) until quorum returns or shutdown."""
+        sd = _make_state_dict()
+        server = self._make_server(
+            sd, num_workers=2, min_workers=2, heartbeat_timeout=0
+        )
+        server.start()
+        try:
+            client_a = DiLoCoClient(f"localhost:{server.port}", timeout=10)
+            client_b = DiLoCoClient(f"localhost:{server.port}", timeout=10)
+            client_a.register("worker_a", {})
+            client_b.register("worker_b", {})
+
+            result = {}
+            error = {}
+
+            def submit_a():
+                try:
+                    pg = {name: torch.zeros_like(p) for name, p in sd.items()}
+                    result["params"] = client_a.submit_pseudogradients("worker_a", pg)
+                except Exception as e:
+                    error["e"] = e
+
+            t = threading.Thread(target=submit_a)
+            t.start()
+            time.sleep(0.5)  # let A's submission reach the barrier
+
+            round_before = server._sync_round
+            server._handle_worker_death("worker_b")  # drops to 1 < min_workers=2
+
+            # A must NOT be released with a partial (1-contributor) step.
+            t.join(timeout=2)
+            self.assertTrue(
+                t.is_alive(), "A should stay parked below quorum (no partial step)"
+            )
+            self.assertNotIn("params", result)
+            self.assertEqual(server._sync_round, round_before)  # no outer step
+
+            # Teardown: the shutdown-break releases the parked worker cleanly.
+            server._shutting_down = True
+            with server._sync_cond:
+                server._sync_cond.notify_all()
+            t.join(timeout=5)
+        finally:
+            server.stop()
+
     def test_deregister_releases_barrier(self):
         """Deregistration uses _handle_worker_death and releases barrier."""
         sd = _make_state_dict()

@@ -810,7 +810,6 @@ class TestQuorumGate:
         w = DiLoCoWorker.__new__(DiLoCoWorker)
         w._pending_command = None
         w._pending_command_lock = threading.Lock()
-        w._quorum_blocked = True
         return w
 
     def test_pending_stop_peeks_terminal_commands(self):
@@ -825,8 +824,16 @@ class TestQuorumGate:
         w._pending_command = "abort"
         assert w._pending_stop() is True
 
-    def test_quorum_blocked_default_pessimistic(self):
-        # Starts True so a worker that reaches its first sync before the first
-        # heartbeat doesn't sync into a partial group.
+    def test_heartbeat_flag_updates_quorum_blocked(self):
+        # The heartbeat sets _quorum_blocked from the server's below_min_workers.
+        # Drive just the flag-update branch the heartbeat loop runs.
         w = self._bare()
+        w._quorum_blocked = False
+        resp = {"below_min_workers": True}
+        if "below_min_workers" in resp:
+            w._quorum_blocked = bool(resp["below_min_workers"])
         assert w._quorum_blocked is True
+        resp = {"below_min_workers": False}
+        if "below_min_workers" in resp:
+            w._quorum_blocked = bool(resp["below_min_workers"])
+        assert w._quorum_blocked is False

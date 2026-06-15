@@ -1564,7 +1564,18 @@ class DiLoCoServer:
             # ``_completed_rounds`` entry that future waiters could
             # block on. Gate on non-empty pending so the eviction path
             # cleanly defers to the next live submission.
-            if expected > 0 and self._pending_pseudograds and self._round_complete():
+            #
+            # Quorum gate: a death that shrinks _round_expected_workers can flip
+            # _round_complete() True for the survivors. Apply only if those
+            # survivors still meet min_workers — otherwise leave them parked on
+            # the barrier (the pause), to be released by a later submit once
+            # quorum is restored, or by _shutting_down. Mirrors the submit path.
+            if (
+                expected > 0
+                and self._pending_pseudograds
+                and self._round_complete()
+                and len(self._pending_pseudograds) >= self.min_workers
+            ):
                 # Enough workers have submitted - release the barrier
                 my_round = self._sync_round
                 self._apply_outer_optimizer(pending_audit)
@@ -1578,7 +1589,14 @@ class DiLoCoServer:
                 for wid in evict:
                     self._fragment_pending[frag_id].pop(wid, None)
 
-                if expected > 0 and self._fragment_round_complete(frag_id):
+                # Quorum gate (same as the full-model release above): don't take
+                # a fragment outer step below min_workers contributors after a
+                # death — leave the survivors parked until quorum is restored.
+                if (
+                    expected > 0
+                    and self._fragment_round_complete(frag_id)
+                    and len(self._fragment_pending[frag_id]) >= self.min_workers
+                ):
                     my_frag_round = self._fragment_rounds[frag_id]
                     pending = self._fragment_pending[frag_id]
                     pg_list = list(pending.values())
