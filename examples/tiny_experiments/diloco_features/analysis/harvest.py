@@ -31,7 +31,8 @@ ASSETS = os.path.join(HERE, "assets")
 MODELS = os.path.join(os.path.dirname(HERE), os.pardir, os.pardir, "models")
 
 # series key -> (runs/<dir>/, model dir for server JSONL fallback, human label).
-# The 8-arm matrix (experiment.sh), all 4-worker. Async arms (async_*) use
+# The run matrix (experiment.sh), all 4-worker; async_dn4/8/16 are the DN-buffer
+# depth sweep. Async arms (async_*) use
 # phase-jitter (DILOCO_DEBUG_STEP_JITTER) for real staleness; DyLU arms use a
 # per-worker speed spread.
 EXPERIMENTS = [
@@ -56,6 +57,13 @@ EXPERIMENTS = [
     ),
     ("async_nodn", "async_nodn", "small_llama_feat_async_nodn", "Async (no DN)"),
     ("async_dn4", "async_dn4", "small_llama_feat_async_dn4", "Async + DN (N=4)"),
+    ("async_dn8", "async_dn8", "small_llama_feat_async_dn8", "Async + DN (N=8)"),
+    (
+        "async_dn16",
+        "async_dn16",
+        "small_llama_feat_async_dn16",
+        "Async + DN (N=16)",
+    ),
     (
         "dylu_off",
         "dylu_off",
@@ -69,7 +77,14 @@ EXPERIMENTS = [
 # (analysis/staleness.py) treats the equal-speed jitter arms (async_nodn, async_dn4)
 # as round-robin (snapshot mean ~ (k-1)/2; per-submission max ~ k-1) and the
 # delay-spread dylu pair as a reducer (dylu_on mean below its dylu_off control).
-ASYNC_ARMS = {"async_nodn", "async_dn4", "dylu_off", "dylu_on"}
+ASYNC_ARMS = {
+    "async_nodn",
+    "async_dn4",
+    "async_dn8",
+    "async_dn16",
+    "dylu_off",
+    "dylu_on",
+}
 
 _NUM = r"[-+]?\d[\d,]*\.?\d*(?:e[-+]?\d+)?"
 

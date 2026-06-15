@@ -8,12 +8,14 @@ and **Streaming DiLoCo** (block-boundary fragment sync;
 synchronous DiLoCo as the reference, on a single small Llama (34.4M) trained from
 scratch on Fineweb-Edu across 4 workers.
 
-> **Status.** The experimental *design* below is final and the harness is built
-> ([`experiment.sh`](experiment.sh), [`analysis/`](analysis)). The **Results**
-> tables and figures are placeholders pending the run matrix — this document is
-> the study's pre-registration: methodology, controls, and the pass/fail gates
-> are fixed *before* the GPU time is spent. One run per arm at a single small
-> scale: **suggestive, not a benchmark.**
+> **Status.** The experimental *design* below is final, the harness is built
+> ([`experiment.sh`](experiment.sh), [`analysis/`](analysis)), and the
+> from-scratch run matrix (§3.7, including the DN-buffer depth sweep) has been
+> run — the **Results** tables and figures are filled. The design was fixed as a
+> pre-registration *before* the GPU time was spent: methodology, controls, and the
+> pass/fail gates predate the numbers. One run per arm at a single small scale:
+> **suggestive, not a benchmark.** A warm-start / pretrain-budget sweep (§6), to
+> test whether a pretrained start closes the from-scratch async gap, is pending.
 
 All commands assume you are in this project directory:
 
@@ -53,16 +55,16 @@ demonstration is deferred to a two-population (e.g. RTX 4090 + 3090) / WAN setup
 (Future Directions). Every arm below is tagged a convergence-trend reproduction or
 a mechanism-validation under a synthetic-but-measurable condition.
 
-**Practitioner TL;DR.** What each knob buys, what it costs, and what we expect to
-measure (every result column is filled from the run matrix; directions are
-hypotheses from the source papers + our post-fix implementation):
+**Practitioner TL;DR.** What each knob buys, what it costs, and what we measured
+(the "Measured here" column is the from-scratch run matrix, §3.7; from a random
+init at this small scale — suggestive, single seed):
 
-| Knob | Flag (on `diloco server`) | Buys you | Costs | Expected here |
+| Knob | Flag (on `diloco server`) | Buys you | Costs | Measured here |
 |---|---|---|---|---|
-| **Streaming** | `--num-fragments N` `--fragment-assignment {strided,sequential}` | smooths bandwidth — fragments sent across the compute window, no all-at-once burst | a small, steady convergence cost; strided ≥ sequential, gap grows at finer grain | small gap vs sync; strided's edge visible at N=5 (2 blocks/fragment) |
-| **Async + DN** | `--async --dn-buffer-size N` | drops the barrier — fast workers don't wait on stragglers | needs the DN buffer (required with `--async`); some convergence cost under staleness | **≈ sync at N = k = 4** workers |
+| **Streaming** | `--num-fragments N` `--fragment-assignment {strided,sequential}` | smooths bandwidth — fragments sent across the compute window, no all-at-once burst | a small, steady convergence cost; strided ≥ sequential, gap grows at finer grain | small per-token gap (+0.06–0.14 eval); **faster wall-clock**; strided N=5 closest + fastest |
+| **Async + DN** | `--async --dn-buffer-size N` | drops the barrier — fast workers don't wait on stragglers | needs the DN buffer (required with `--async`); some convergence cost under staleness | **does not reach sync from scratch**; depth is a non-monotonic lever — **N=8 optimum** (+0.25), N=4 (+0.80) under-buffered, N=16 (+0.51) over |
 | **Grace period** | `--grace-period S` | a brief, opportunistic wait so a finished worker can coalesce with a near-simultaneous finisher — cuts the slow-worker *tail* in a heterogeneous / large-N pool | only pays off when the tail is real (large N, mixed speeds); its benefit is **wall-clock**, not convergence | **not a study arm** — the rig has no tail to cut; validated functional only, real benefit → Future Directions |
-| **DyLU** | `--dylu` | matches each worker's sync rate to its throughput, cutting staleness | only helps heterogeneous / unevenly-loaded workers | cuts staleness vs a DyLU-off control under a 2× speed spread |
+| **DyLU** | `--dylu` | matches each worker's sync rate to its throughput, cutting staleness | only helps heterogeneous / unevenly-loaded workers | **neutral here** (Δ +0.02, within noise) — the rig's induced spread is too mild; mechanism functional, payoff → Future Directions |
 
 These are all **server-authoritative**: you select them with flags on `forgather
 diloco server`, and every worker adopts them from the server's `/info`. The same
@@ -227,7 +229,7 @@ pretrain-budget sweep is in Future Directions).
 
 ### 3.1 Fixed setup (all arms, from scratch)
 
-All 8 arms use **4 workers** (= 4 GPUs/run, so arms run **serially** on one param
+All 10 arms use **4 workers** (= 4 GPUs/run, so arms run **serially** on one param
 server, `:8512`), from a fresh pristine master copy and a fixed seed; only the
 server flags (+ the async jitter / DyLU spread worker env) differ. Training stops
 on the server's **`--token-budget`** for every arm (not a per-worker `--max-steps`),
@@ -315,7 +317,7 @@ grace-batch histogram with mass at 2+) **and** *proceeds immediately* when none
 arrive within `S` (mass at 1). That is the whole grace check here; the real
 demonstration is Future Directions.
 
-### 3.4 Run matrix (8 arms, single run each)
+### 3.4 Run matrix (10 arms, single run each)
 
 **Every arm shares one reference command** — a 4-worker sync DiLoCo run to the
 token budget — and differs *only* in the `diloco server` flags (and, for the async
@@ -344,15 +346,19 @@ synthetic-but-measurable condition).
 | 3 | `stream_seq2` | trend | `--num-fragments 2 --fragment-assignment sequential` | — | assignment A/B vs #2 |
 | 4 | `stream_str5` | trend | `--num-fragments 5 --fragment-assignment strided` | — | finer grain (strided edge) |
 | 5 | `async_nodn` | trend | `--async` | jitter 0.15 | no-DN control (expect divergence) |
-| 6 | `async_dn4` | trend | `--async --dn-buffer-size 4` | jitter 0.15 | **headline:** async + DN ≈ sync (per token)? |
-| 7 | `dylu_off` | mech | `--async --dn-buffer-size 4` | delay spread (~2×) | DyLU-off control |
-| 8 | `dylu_on` | mech | `--async --dylu --dylu-base-sync-every 100 --dn-buffer-size 4` | delay spread (~2×) | DyLU cuts staleness (A/B vs #7) |
+| 6 | `async_dn4` | trend | `--async --dn-buffer-size 4` | jitter 0.15 | async + DN, paper default N=k=4 |
+| 7 | `async_dn8` | trend | `--async --dn-buffer-size 8` | jitter 0.15 | **DN-depth sweep** (optimum) |
+| 8 | `async_dn16` | trend | `--async --dn-buffer-size 16` | jitter 0.15 | DN-depth sweep (over-buffered) |
+| 9 | `dylu_off` | mech | `--async --dn-buffer-size 4` | delay spread (~2×) | DyLU-off control |
+| 10 | `dylu_on` | mech | `--async --dylu --dylu-base-sync-every 100 --dn-buffer-size 4` | delay spread (~2×) | DyLU cuts staleness (A/B vs #9) |
 
-Async arms (5–8) all run to the token budget. Staleness arms (5–6) use **jitter**
-(equal average speed, staleness ≈ 3, no speed-spread confound); DyLU arms (7–8)
-use the **synthetic delay spread** (average-speed heterogeneity is the point). The
-DN buffer is fixed at **N = k = 4** (the paper's main config); an N-buffer sweep is
-a Future Directions follow-up, not part of this matrix.
+Async arms (5–10) all run to the token budget. Staleness arms (5–8) use **jitter**
+(equal average speed, staleness ≈ 3, no speed-spread confound); DyLU arms (9–10)
+use the **synthetic delay spread** (average-speed heterogeneity is the point).
+Arms 6–8 form a **DN-buffer depth sweep** at fixed staleness (N ∈ {4, 8, 16}),
+isolating buffer depth from every other knob — the paper's main config is N = k =
+4, and the sweep tests whether that default is well-tuned for the from-scratch +
+staleness regime (§3.7 finding 2: it is not — N=8 is the empirical optimum).
 
 **Deliberately not in the matrix** (kept the study focused on the two papers'
 communication mechanisms): grace (validate-only — §3.5); a 2-vs-4-worker
@@ -380,12 +386,13 @@ experiment, just a transport-correctness validation).
 
 ### 3.6 What this can and cannot validate
 
-**Can** (relative *convergence* trends, single small scale): async + DN ≈ sync at
-N = k *per token* (with the regime caveat in §2.6 — a from-scratch *failure* is
-inconclusive); streaming's small steady cost and strided ≥ sequential; DyLU's
-staleness reduction under a synthetic spread (A/B, mechanism-validation); and,
-suggestively, that a from-scratch async≈sync result would extend DiLoCo's
-random-init robustness to async.
+**Can** (relative *convergence* trends, single small scale): *whether* async + DN
+reaches sync at N = k *per token*, and how it moves with buffer depth (with the
+regime caveat in §2.6 — a from-scratch *failure* is inconclusive); streaming's
+small steady cost and strided ≥ sequential; *whether* DyLU reduces staleness under
+a synthetic spread (A/B, mechanism-validation); and, suggestively, whether a
+from-scratch async≈sync result would extend DiLoCo's random-init robustness to
+async. (Answers: §3.7.)
 
 **Cannot** (stated plainly): **any wall-clock / scheduling *benefit*** — grace's
 tail-reduction, async's no-barrier win, streaming's peak-smoothing — because the rig
@@ -398,19 +405,68 @@ jitter/delay model); and large scale. These benefits are Future Directions.
 
 ### 3.7 Results
 
-*Placeholders — filled from the run matrix.* The harvest + plot scripts regenerate
-each of the following into `assets/`:
+Single run per arm (4 workers, 2B tokens, H=100, from scratch). Eval loss is the
+final eval; perplexity is the best (lowest) eval perplexity; "vs sync" is the
+final-eval delta from the sync baseline. The harvest + plot scripts regenerate
+the table and figures into `assets/` ([`analysis/harvest.py`](analysis/harvest.py)).
 
 | Configuration | eval loss | perplexity | vs sync | mean staleness | notes |
 |---|---|---|---|---|---|
-| Sync DiLoCo (baseline) | _TBD_ | _TBD_ | — | — | reference |
-| + Streaming (strided N=2) | _TBD_ | _TBD_ | _TBD_ | — | |
-| + Streaming (sequential N=2) | _TBD_ | _TBD_ | _TBD_ | — | assignment A/B |
-| + Streaming (strided N=5) | _TBD_ | _TBD_ | _TBD_ | — | finer grain |
-| Async without DN | _TBD_ | _TBD_ | _TBD_ | _TBD_ | expect divergence/abort |
-| Async + DN (N=4) | _TBD_ | _TBD_ | _TBD_ | _TBD_ | **headline** |
-| Async + DN, spread, DyLU off | _TBD_ | _TBD_ | _TBD_ | _TBD_ | control |
-| Async + DN + DyLU, spread | _TBD_ | _TBD_ | _TBD_ | _TBD_ | A/B vs control |
+| Sync DiLoCo (baseline) | 2.859 | 17.4 | — | — | reference |
+| + Streaming (strided N=2) | 2.992 | 19.9 | +0.134 | — | |
+| + Streaming (sequential N=2) | 3.001 | 20.1 | +0.142 | — | assignment A/B |
+| + Streaming (strided N=5) | 2.919 | 18.5 | +0.060 | — | finer grain |
+| Async without DN | 8.323 | 4118 | +5.46 | 3.0 | diverged (control) |
+| Async + DN (N=4) | 3.661 | 38.9 | +0.802 | 1.5 | paper default (N=k) |
+| Async + DN (N=8) | **3.107** | **22.4** | **+0.249** | 1.5 | **DN-sweep optimum** |
+| Async + DN (N=16) | 3.373 | 29.2 | +0.514 | 1.3 | over-buffered |
+| Async + DN, spread, DyLU off | 3.559 | 35.1 | +0.700 | 1.5 | control |
+| Async + DN + DyLU, spread | 3.583 | 36.0 | +0.724 | 2.5 | A/B vs control |
+
+Three findings:
+
+**1. Streaming trades per-token quality for wall-clock — and at fine grain nearly
+erases the trade.** All streaming arms are slightly worse *per token* than the
+sync baseline (+0.06 to +0.14 eval loss), as expected: fragment-wise outer steps
+mean each parameter is updated against a slightly staler global view. But they all
+finish *faster in wall-clock* (44.5–45.1 min vs the baseline's 50.5) because the
+per-fragment barriers overlap communication with compute. On the fair
+loss-vs-wall-clock axis (`walltime_comparison.png`) the finest grain, strided
+N=5, both lands closest per token (+0.060) *and* finishes first — it essentially
+matches the baseline's loss trajectory in real time. The strided-vs-sequential
+assignment A/B is a wash at N=2 (+0.009 in favor of strided), so fragment *grain*
+matters more than assignment here.
+
+**2. The DN buffer stabilizes async, and its depth is a real, non-monotonic
+lever.** Without the Delayed-Nesterov buffer, async with induced staleness ~3
+diverges (eval 8.32, the run trips the divergence detector ~3% in) — the control
+that motivates DN. With DN the run is stable, but depth matters more than the
+paper's `N = k` default suggests: sweeping N ∈ {4, 8, 16} (`dn_sweep.png`) is
+**non-monotonic**, with **N=8 the optimum** — it closes roughly half the
+from-scratch gap to the baseline (+0.249 vs N=4's +0.802), while N=16 *regresses*
+(+0.514). The sweet spot sits near ~2× the mean staleness: too shallow
+under-absorbs stale pseudo-gradients, too deep over-delays the Nesterov momentum.
+The paper's `N = k = 4` is thus *under*-buffered for the from-scratch + staleness
+regime, but "deeper is always better" is false. (Single seed; the N=8 < N=16
+ordering carries a noise caveat, but the N=4 → N=8 improvement is large.)
+
+**3. Async from scratch does not reach the sync baseline — the central open
+question.** Even the best async arm (N=8, +0.249) trails the sync baseline, and
+the heterogeneity arms (DyLU off/on) sit at +0.70–0.72. This is consistent with
+the from-scratch premise being the hard part for async specifically (§2.6): sync
+DiLoCo reaches the baseline from scratch, but async — even DN-stabilized and
+depth-tuned — does not, in this budget. The source papers warm-start their async
+runs from a pretrained checkpoint; whether that closes the gap is the natural next
+experiment (a warm-start / pretrain-budget sweep, §6).
+
+**On DyLU:** at this induced speed spread DyLU was **neutral** — dylu_on (+0.724)
+vs its dylu_off control (+0.700) differ by 0.024, within single-seed noise, and
+the snapshot staleness ordering even inverts. This matches the design's own caveat
+(§3.5–3.6): DyLU's payoff is tail-latency reduction under genuine, large-scale
+worker heterogeneity, which a homogeneous 4×4090 loopback rig with a small
+injected delay spread barely exercises. We report the mechanism as *functional*
+(adaptive per-worker `sync_every`; dylu_on takes more sync rounds, 760 vs 616) but
+its quality benefit is not measurable here.
 
 Figures (regenerated by the named scripts):
 
@@ -419,6 +475,12 @@ Figures (regenerated by the named scripts):
   ([`analysis/plot_experiment.py`](analysis/plot_experiment.py)).
 - **`streaming.png`** — fragment count + assignment, strided vs sequential
   ([`analysis/streaming.py`](analysis/streaming.py)).
+- **`dn_sweep.png`** — DN-buffer depth sweep (N=4/8/16 vs baseline), showing the
+  non-monotonic optimum at N=8
+  ([`analysis/dn_sweep.py`](analysis/dn_sweep.py)).
+- **`walltime_comparison.png`** — eval loss vs *relative wall-clock time*, the
+  fair axis for the streaming comm/compute-overlap trade
+  ([`analysis/plot_walltime.py`](analysis/plot_walltime.py)).
 - **`grace_hist.png`** — *`validate`-only*: the grace coalescing histogram, used
   to confirm the mechanism works to spec (coalesces near-simultaneous finishers,
   proceeds immediately when alone). Not a results figure
@@ -459,15 +521,29 @@ Future Directions. The study is structured to support (or refute) a small set of
 pre-registered hypotheses, each with a fixed control:
 
 1. **Async + DN matches sync at N = k = 4** *per token* under induced staleness
-   (arm 6 vs 1), with the no-DN control (arm 5) diverging — i.e. the DN buffer is
-   necessary and, at the faithful Algorithm-3 form, sufficient at the worker count.
-   (Regime caveat, §2.6: a from-scratch *failure* is inconclusive, not a refutation.)
+   (arm 6 vs 1), with the no-DN control (arm 5) diverging.
+   *Result: partially refuted.* The no-DN control diverges as predicted (DN is
+   necessary), but the Algorithm-3 N = k = 4 form is **not** sufficient from
+   scratch — it trails sync by +0.80 eval. Buffer depth turned out to be a
+   non-monotonic lever (the §3.4 sweep): **N=8 is the optimum** (+0.25, ~half the
+   gap closed), N=16 regresses. Per the §2.6 regime caveat, the from-scratch gap
+   is inconclusive as a refutation of the paper (which warm-starts), and motivates
+   the warm-start sweep (§6).
 2. **Streaming costs little and strided ≥ sequential**, the assignment gap visible
    at the finer N=5 grain (arms 2–4 vs 1).
-3. **DyLU cuts staleness under a synthetic speed spread** (arm 8 vs the DyLU-off
-   control arm 7) — a mechanism-validation; the real mixed-GPU benefit is future work.
+   *Result: supported.* Small per-token cost (+0.06–0.14 eval), strided N=5
+   closest (+0.060); on the wall-clock axis streaming finishes faster and N=5
+   nearly matches the baseline trajectory. The N=2 assignment A/B is a wash
+   (+0.009), so grain dominates assignment at this scale.
+3. **DyLU cuts staleness under a synthetic speed spread** (arm 10 vs the DyLU-off
+   control arm 9) — a mechanism-validation; the real mixed-GPU benefit is future work.
+   *Result: not measurable here.* DyLU was neutral (Δ +0.02, within seed noise);
+   the rig's mild induced spread doesn't create enough heterogeneity for the
+   adaptive `sync_every` to pay off. Mechanism functional, benefit → §6.
 4. **Suggestively:** a from-scratch async≈sync result would extend DiLoCo's
    random-init robustness to async (the whole study trains from scratch).
+   *Result: open.* We did **not** see async≈sync from scratch; whether a
+   pretrained warm start recovers it is the headline open question (§6).
 
 Any headline result ambiguous within plausible seed noise is reported as a
 documented small-effect finding, not re-run.
@@ -537,7 +613,8 @@ runs are **serial**:
 
 ```bash
 ./experiment.sh validate          # short plumbing check (each feature FIRES)
-./experiment.sh run               # the full 8-arm matrix (~7-9 h on 4x4090s)
+./experiment.sh run               # the full 10-arm matrix (~9-11 h on 4x4090s)
+./experiment.sh run async_dn8     # or a single arm by name
 ./experiment.sh run <arm-name>    # re-run a single arm by name
 python analysis/harvest.py && python analysis/plot_experiment.py  # main comparison
 python analysis/staleness.py           # the async staleness gate (should-be-stale vs reducer)

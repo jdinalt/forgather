@@ -235,6 +235,14 @@ do_one() {
   [[ "${1:-}" == "--" ]] && shift
   local port=8512
   rm -rf "$RESULTS/$name"   # fresh per-arm capture dir (named path, internal — no glob)
+  # Fresh worker output tree per arm. CRITICAL: the async/dylu arms use FIXED
+  # worker ids (w0..wN / <name>-wK) to hold the jitter seed constant across arms,
+  # so their output dirs (output_models/small_<wid>) would otherwise be REUSED —
+  # a worker resumes a prior arm's (or a prior run's) checkpoint, reports its
+  # cumulative tokens (pre-filling the budget), and exits as "already done". Wipe
+  # the whole worker tree so every arm starts from the pristine master. Named
+  # path, in-script — safe. (The server's master is copied fresh in start_one.)
+  rm -rf "$HERE/output_models"
   wait_no_servers || { err "a prior server won't clear; skipping '$name'"; return 1; }
   start_one "$name" "$port" "$nw" "$budget" -- "$@" || return 1
   local ids
@@ -296,6 +304,12 @@ do_one async_nodn      async 4 "$BUDGET" -- --sync-every "$H" --async
 
 # 6  Async + DN N=k=4 (jitter) — the headline: async+DN ~ sync (per token)?
 do_one async_dn4       async 4 "$BUDGET" -- --sync-every "$H" --async --dn-buffer-size 4
+
+# 6b  Async + DN N=8/16 (jitter) — DN-buffer sweep: does a deeper buffer close the
+#     from-scratch async gap left by dn4? (post-#225, corrected averaging.) Live:
+#     dn8 lands ~halfway between baseline and dn4; dn16 probes diminishing returns.
+do_one async_dn8       async 4 "$BUDGET" -- --sync-every "$H" --async --dn-buffer-size 8
+do_one async_dn16      async 4 "$BUDGET" -- --sync-every "$H" --async --dn-buffer-size 16
 
 # NOTE: grace is NOT a study arm — its payoff is wall-clock tail-reduction in a
 # heterogeneous/large-N pool, which this homogeneous rig doesn't have and loopback
