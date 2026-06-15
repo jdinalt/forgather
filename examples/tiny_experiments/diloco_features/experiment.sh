@@ -55,10 +55,12 @@ JITTER="${JITTER:-0.15}"       # per-step jitter (s) for async phase-decorrelati
                                # if measured staleness < ~3, per the design's gate).
 GRACE_S="${GRACE_S:-0.5}"      # grace window (s) — VALIDATE ONLY (v_grace mechanism check; grace is not a study arm)
 
-# Per-worker fixed delays (s) for the DyLU speed-spread arms, so the slowest
-# worker's step time is ~2x the fastest (a realistic 4090+3090 mix). Calibrated to
-# the MEASURED steady-state step time: a baseline timing probe gave ~0.18-0.20 s/step
-# (compile on), so D_max ~ 0.18 makes the slowest (0.18+0.18) ~ 2x the fastest (0.18).
+# Per-worker fixed delays (s) for the DyLU speed-spread arms (a realistic
+# 4090+3090 mix). Calibrated to the MEASURED steady-state step time: a baseline
+# timing probe gave ~0.18-0.20 s/step (compile on), so D_max ~ 0.18 was chosen
+# TARGETING a ~2x slowest/fastest ratio. NB: the realized spread is ~1.6x, not 2x
+# (analysis/worker_speeds.py verifies it from the run data): the per-step CPU sleep
+# partially overlaps async GPU compute, so the nominal delay only partly lands.
 DYLU_SPREAD=(0 0.06 0.12 0.18)
 
 # Token budget (global stop): aggregate cross-worker tokens at which the server

@@ -254,7 +254,7 @@ against [`experiment.sh`](experiment.sh)):
 | Fragments `N` | **{2, 5}** | the only block-divisible counts ≤ 10 blocks (5 / 2 layers per fragment); N=5 is the fine grain where striding should show |
 | Seed | **42** | fixed; one run/arm; varies data-order/dropout, not init (§3.5) |
 | Jitter `J` | **0.15 s** | tuned so the *measured* staleness lands ≈ `k−1` — the staleness **gate** (§3.3) is the check, not the exact value |
-| DyLU spread | **0 / .06 / .12 / .18 s** | calibrated to a **~2×** slowest/fastest ratio (RTX 4090 + 3090-style): max delay ≈ the measured ~0.18s steady-state step time, so the slowest worker (0.18+0.18) ≈ 2× the fastest |
+| DyLU spread | **0 / .06 / .12 / .18 s** | calibrated *targeting* a ~2× slowest/fastest ratio (RTX 4090 + 3090-style); the **measured effective spread was ~1.6×** (§3.7.3 — the per-step CPU sleep partially overlaps async GPU compute, so the nominal delay only partly lands) |
 | Transport | gRPC + safetensors | the fast/safe path; lossless (already validated against HTTP+pickle in the sibling project — not re-tested here) |
 | `torch.compile` | on | real-run default (`--compile no` is smoke-only) |
 
@@ -283,12 +283,13 @@ respectively target, using debug-only per-step worker throttles (delivered via
   have real device-timing variance).
 
 - **Speed spread** (`DILOCO_DEBUG_STEP_DELAY`, a *fixed* per-worker delay): creates
-  genuine *average-speed* differences. The DyLU arms (7–8) use a spread calibrated
-  from the measured base step time to a **~2× slowest/fastest ratio** — a realistic
-  mixed-GPU cluster (e.g. RTX 4090 + RTX 3090), which is DyLU's real target. (Jitter,
-  equal average speed, would give DyLU nothing to adapt to.) This spread is
-  *synthetic* — it validates DyLU's mechanism, it is not the real heterogeneity
-  payoff (that's Future Directions).
+  genuine *average-speed* differences. The DyLU arms (9–10) use a spread calibrated
+  from the measured base step time *targeting* a ~2× slowest/fastest ratio — a
+  realistic mixed-GPU cluster (e.g. RTX 4090 + RTX 3090), which is DyLU's real
+  target. (The measured effective spread came out ~1.6×; see §3.7.3, where the
+  spread is verified from the run data.) (Jitter, equal average speed, would give
+  DyLU nothing to adapt to.) This spread is *synthetic* — it validates DyLU's
+  mechanism, it is not the real heterogeneity payoff (that's Future Directions).
 
 **Staleness is a pass/fail gate.** The async conclusions *depend on* the workers
 actually running out of lock-step, so we verify it from the captured `/status`
@@ -350,8 +351,8 @@ synthetic-but-measurable condition).
 | 6 | `async_dn4` | trend | `--async --dn-buffer-size 4` | jitter 0.15 | async + DN, paper default N=k=4 |
 | 7 | `async_dn8` | trend | `--async --dn-buffer-size 8` | jitter 0.15 | **DN-depth sweep** (optimum) |
 | 8 | `async_dn16` | trend | `--async --dn-buffer-size 16` | jitter 0.15 | DN-depth sweep (over-buffered) |
-| 9 | `dylu_off` | mech | `--async --dn-buffer-size 4` | delay spread (~2×) | DyLU-off control |
-| 10 | `dylu_on` | mech | `--async --dylu --dylu-base-sync-every 100 --dn-buffer-size 4` | delay spread (~2×) | DyLU cuts staleness (A/B vs #9) |
+| 9 | `dylu_off` | mech | `--async --dn-buffer-size 4` | delay spread (~1.6×) | DyLU-off control |
+| 10 | `dylu_on` | mech | `--async --dylu --dylu-base-sync-every 100 --dn-buffer-size 4` | delay spread (~1.6×) | DyLU cuts staleness (A/B vs #9) |
 
 Async arms (5–10) all run to the token budget. Staleness arms (5–8) use **jitter**
 (equal average speed, staleness ≈ 3, no speed-spread confound); DyLU arms (9–10)
@@ -414,7 +415,7 @@ reference — *not* a single ranking, and deliberately not one combined table:
   async arms.
 - **Async + DN** drops the barrier under **equal-speed** workers with injected
   staleness — comparable to the equal-speed sync baseline.
-- **DyLU** runs under **unequal** worker speeds (a fixed ~2× spread), so it is not
+- **DyLU** runs under **unequal** worker speeds (a measured ~1.6× spread, §3.7.3), so it is not
   comparable to the equal-speed arms; it is an A/B between DyLU *off* and *on* at
   the same spread.
 
@@ -512,26 +513,55 @@ overlap ([`analysis/plot_walltime.py`](analysis/plot_walltime.py)).*
 
 #### 3.7.3 DyLU (A/B under heterogeneous worker speeds)
 
-Unlike every arm above (equal average speed), the DyLU arms run under a **fixed ~2×
-speed spread** (a 4090+3090-style mix). They are therefore **not** comparable to the
-equal-speed baseline or the jitter async arms — this is a controlled A/B between
-DyLU **off** and **on** at the *same* spread, with `dylu_off` as the control.
+Unlike every arm above (equal average speed), the DyLU arms run under an injected
+per-worker speed spread (a 4090+3090-style mix). They are therefore **not**
+comparable to the equal-speed baseline or the jitter async arms — this is a
+controlled A/B between DyLU **off** and **on** at the *same* spread, with
+`dylu_off` as the control.
+
+**The speed spread, verified.** Before trusting the A/B, we confirm the workers
+actually ran at different speeds. Each worker logs a timestamped row every
+`logging_steps` steps; the median wall-clock time per step
+([`analysis/worker_speeds.py`](analysis/worker_speeds.py)) recovers the injected
+order exactly — step time rises monotonically with the fixed delay
+`DILOCO_DEBUG_STEP_DELAY` ∈ {0, .06, .12, .18}s, and the fastest worker completes
+~1.5× more steps than the slowest over the run. The same spread is present in both
+the off and on arms (DyLU changes sync *cadence*, not compute speed), so the A/B is
+on equal footing.
+
+| Worker (injected delay) | median ms/step | steps/s | steps completed |
+|---|---|---|---|
+| w0 (+0.00 s) | 156 | 6.40 | 17,664 |
+| w1 (+0.06 s) | 175 | 5.71 | 16,576 |
+| w2 (+0.12 s) | 188 | 5.33 | 15,680 |
+| w3 (+0.18 s) | 250 | 4.00 | 11,872 |
+
+![Measured per-worker step time for the DyLU arms: median ms/step rising monotonically w0->w3 with the injected delay, consistent across dylu_off and dylu_on](assets/worker_speeds.png)
+
+*Measured per-worker step time confirms the fast→slow spread, consistent across
+the off/on A/B ([`analysis/worker_speeds.py`](analysis/worker_speeds.py)).*
+
+The **effective** spread is **~1.6×** (slowest/fastest step time), milder than the
+~2× the delays were *calibrated* to target (§3.3): the per-step CPU `sleep`
+partially overlaps asynchronous GPU compute, so a 0.18 s nominal delay adds only
+~0.09 s of wall-clock. The heterogeneity DyLU had to work with was therefore even
+smaller than intended.
 
 | Configuration | eval loss | perplexity | vs DyLU-off control | mean staleness |
 |---|---|---|---|---|
 | Async + DN, spread, DyLU off | 3.559 | 35.1 | — (control) | 1.5 |
 | Async + DN, spread, DyLU on | 3.583 | 36.0 | +0.024 | 2.5 |
 
-![DyLU off vs on at a fixed ~2x speed spread: eval-loss trajectories, with the sync baseline as a faint reference](assets/dylu_control.png)
+![DyLU off vs on at the same speed spread: eval-loss trajectories, with the sync baseline as a faint reference](assets/dylu_control.png)
 
-*DyLU off vs on at a fixed ~2× speed spread (A/B) —
+*DyLU off vs on at the same ~1.6× speed spread (A/B) —
 [`analysis/dylu_control.py`](analysis/dylu_control.py).*
 
 **DyLU was neutral here.** dylu_on (3.583) vs its dylu_off control (3.559) differ by
 0.024 — within single-seed noise — and the snapshot staleness ordering even
 inverts. This matches the design's own caveat (§3.5–3.6): DyLU's payoff is
 tail-latency reduction under genuine, large-scale worker heterogeneity, which a
-homogeneous 4×4090 loopback rig with a small injected delay spread barely exercises.
+homogeneous 4×4090 loopback rig with a ~1.6× injected spread barely exercises.
 We report the mechanism as *functional* (adaptive per-worker `sync_every`; dylu_on
 takes more sync rounds, 760 vs 616) but its quality benefit is not measurable here.
 
@@ -677,7 +707,7 @@ documented small-effect finding, not re-run.
   [`templates/configs/warm_pretrain.yaml`](templates/configs/warm_pretrain.yaml)
   (plain 4×DDP pretrain) + [`make_warm_master.py`](make_warm_master.py) (assemble a
   warm server master) + `experiment.sh`'s `WARM_MASTER` arm set.
-- **Heterogeneity-level sweep:** beyond the single ~2× spread, map DyLU's benefit
+- **Heterogeneity-level sweep:** beyond the single ~1.6× spread, map DyLU's benefit
   across spreads.
 - **Bandwidth-constrained link simulation:** measure real token throughput / time
   saved (not just the structural ~1/N peak argument) under a throttled link.
@@ -758,7 +788,7 @@ Two debug-only worker env knobs provide this, delivered via `submit --env`:
   lock-step (staleness ~ workers − 1) while keeping the same *average* speed — no
   slow-worker solo tail. This is what makes the async arms actually async.
 - **`DILOCO_DEBUG_STEP_DELAY=D`** — a *fixed* per-step delay, set **differently per
-  worker** (the DyLU arms use a spread calibrated to ~2× slowest/fastest) to create
+  worker** (the DyLU arms target a ~2× spread, measured ~1.6× — §3.7.3) to create
   the average-speed differences DyLU adapts to.
 
 Both are debug-only — they throttle real training and are never set in production.
@@ -802,11 +832,12 @@ DiLoCoCallback: using server settings sync_every=100 up=bf16 down=fp32 \
   token-budget global stop, `GRACE_S` env knob, `WARM_MASTER` for the warm arms.
 - `harness.sh` — the fast functional smoke driver (incl. a `token-budget` recipe).
 - `analysis/` — `harvest.py`, `plot_experiment.py`, `streaming.py`, `dn_sweep.py`,
-  `plot_walltime.py`, `warm_compare.py`, `dylu_control.py`, `staleness.py` (the
-  gate), `grace_batches.py` (validate-only), `regen_tb.py` (rebuild per-worker TB
-  from captured logs).
+  `plot_walltime.py`, `warm_compare.py`, `dylu_control.py`, `worker_speeds.py`
+  (verify the DyLU speed spread from the data), `staleness.py` (the gate),
+  `grace_batches.py` (validate-only), `regen_tb.py` (rebuild per-worker TB from
+  captured logs).
 - `assets/` — `curves.csv` (the committed source of truth) + the plots
   (`loss_comparison.png`, `training_health.png`, `streaming.png`, `dn_sweep.png`,
-  `walltime_comparison.png`, `dylu_control.png`, `warm_compare.png`);
-  `grace_hist.png`/`grace_hist.csv` are `validate`-only.
+  `walltime_comparison.png`, `dylu_control.png`, `worker_speeds.png`,
+  `warm_compare.png`); `grace_hist.png`/`grace_hist.csv` are `validate`-only.
 - `runs/` — captured per-run logs + `status.json` (gitignored scratch).
