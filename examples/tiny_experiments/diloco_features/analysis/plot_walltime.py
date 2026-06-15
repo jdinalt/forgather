@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""Plot eval loss vs *relative wall-clock time* per arm — the fair comparison for
-features that trade per-token quality for throughput.
+"""Streaming on the wall-clock axis: eval loss vs *relative wall-clock time*.
 
-``plot_experiment.py`` plots loss vs local step (∝ tokens), which is the right
-axis for "how good is the model per unit of data". But Streaming DiLoCo's whole
-point is overlapping communication with compute: it can be worse per token yet
-*faster in wall-clock*, so on a loss-vs-time axis a streaming arm can cross over
-and match (or beat) the sync baseline. This script renders that axis.
+``plot_experiment.py`` plots loss vs local step (∝ tokens), the right axis for
+"how good per unit of data". But Streaming DiLoCo's whole point is overlapping
+communication with compute: it can be worse per token yet *faster in wall-clock*,
+so on a loss-vs-time axis a streaming arm crosses over and matches (or beats) the
+sync baseline. This is **streaming-only** — only the synchronous arms (baseline +
+the streaming fragmentations) appear, because that is the axis where the trade is
+real. The async arms' wall-clock win lives off-rig (a heterogeneous/WAN pool,
+§6) and is deliberately not plotted here.
 
 Source: the captured per-worker TTY logs under ``runs/<arm>/worker0.log`` (rank 0
 runs eval), the same logs ``harvest.py`` and ``regen_tb.py`` read. Wall-clock is
-the row timestamp; per arm we plot elapsed seconds from that arm's first training
-row (so arms are compared on equal "time since start", independent of when they
-ran). Run from the project directory:
+the row timestamp; per arm we plot elapsed minutes from that arm's first training
+row (so arms are compared on equal "time since start"). Run from the project dir:
 
     python analysis/plot_walltime.py
 
-Writes ``assets/walltime_comparison.png`` (two panels: the headline feature set,
-and a streaming-focused view).
+Writes ``assets/walltime_comparison.png`` (full trajectory + endgame zoom).
 """
 
 import datetime
@@ -38,35 +38,20 @@ _NUM = r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?"
 _TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 _EVAL = re.compile(r"\s(\d[\d,]*)\s+" + _NUM + r"\s+eval-loss:\s*(" + _NUM + r")")
 
-# Superset of arms (a subset is present in any given run). Baseline black; the
-# streaming arms in blues (the wall-clock story); the async/DN family in
-# greens/reds (the DN-buffer sweep dn4 -> dn8 -> dn16 deepens green).
+# Synchronous arms only — baseline (black) + the streaming fragmentations (blues).
+# The async/DyLU arms are a different axis and are NOT plotted here.
 LABELS = {
     "baseline": "Baseline (sync, H=100)",
     "stream_str2": "Streaming (strided, 2 frag)",
     "stream_seq2": "Streaming (sequential, 2 frag)",
     "stream_str5": "Streaming (strided, 5 frag)",
-    "async_nodn": "Async (no DN)",
-    "async_dn4": "Async + DN (N=4)",
-    "async_dn8": "Async + DN (N=8)",
-    "async_dn16": "Async + DN (N=16)",
-    "dylu_off": "Async + DN, DyLU off",
-    "dylu_on": "Async + DN + DyLU",
 }
 COLORS = {
     "baseline": "#000000",
     "stream_str2": "#1f6fb2",
     "stream_seq2": "#6baed6",
     "stream_str5": "#08306b",
-    "async_nodn": "#d9772b",
-    "async_dn4": "#74c476",
-    "async_dn8": "#2ca25f",
-    "async_dn16": "#006d2c",
-    "dylu_off": "#c44e52",
-    "dylu_on": "#7b3294",
 }
-
-STREAMING_SET = ["baseline", "stream_str2", "stream_seq2", "stream_str5"]
 
 
 def _walltime(line):
@@ -141,16 +126,24 @@ def main():
     plt.rcParams.update({"figure.dpi": 120, "font.size": 10})
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
 
-    # Left: the full headline feature set on a wall-clock axis.
-    panel(axes[0], present, data, "Eval loss vs wall-clock — all arms")
+    # Left: the full streaming-vs-baseline trajectory on a wall-clock axis.
+    panel(axes[0], present, data, "Eval loss vs wall-clock")
 
-    # Right: streaming-focused — the comm/compute-overlap crossover. Only the
-    # streaming arms + baseline, where the wall-clock story is the point.
-    stream_present = [s for s in STREAMING_SET if data.get(s)]
-    panel(axes[1], stream_present, data, "Streaming — comm/compute overlap")
+    # Right: endgame zoom — where the streaming curves catch (and N=5 crosses) the
+    # baseline. Restrict to the second half of the baseline's wall-clock range.
+    base = data.get("baseline", [])
+    panel(axes[1], present, data, "Endgame (comm/compute-overlap crossover)")
+    if base:
+        half_t = base[len(base) // 2][0] / 60.0
+        axes[1].set_xlim(half_t, base[-1][0] / 60.0)
+        tails = [v for s in present for x, v in data[s] if x / 60.0 >= half_t]
+        if tails:
+            lo, hi = min(tails), max(tails)
+            pad = (hi - lo) * 0.1 or 0.01
+            axes[1].set_ylim(lo - pad, hi + pad)
 
     fig.suptitle(
-        "DiLoCo feature comparison — wall-clock — small Llama (34.4M), 4 workers, H=100",
+        "Streaming on the wall-clock axis — small Llama (34.4M), 4 workers, H=100",
         fontweight="bold",
     )
     fig.tight_layout()

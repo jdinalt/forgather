@@ -27,23 +27,25 @@ import matplotlib.pyplot as plt
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(HERE, "assets")
 
-# Baseline in black; features in a distinct color each. The headline comparison:
-# sync baseline vs streaming (strided N=2 as the representative) vs async no-DN
-# vs async+DN (N=k=4) vs async+DN+DyLU. The streaming assignment/grain A/B lives
-# in analysis/streaming.py; the DyLU on/off A/B in analysis/dylu_control.py.
+# The ASYNC + DN cluster only (equal-speed workers + injected jitter): sync
+# baseline vs async-no-DN (diverges) vs the DN-buffer depth sweep N=4/8/16. The
+# other axes are reported separately — they are NOT directly comparable to these:
+# streaming (synchronous, fragmented comm) lives in analysis/streaming.py +
+# plot_walltime.py; the DyLU on/off A/B (run under a speed spread, not equal speed)
+# in analysis/dylu_control.py; the warm-start follow-up in analysis/warm_compare.py.
 LABELS = {
     "baseline": "Baseline (sync, H=100)",
-    "stream_str2": "Streaming (strided, 2 frag)",
     "async_nodn": "Async (no DN)",
     "async_dn4": "Async + DN (N=4)",
-    "dylu_on": "Async + DN + DyLU",
+    "async_dn8": "Async + DN (N=8)",
+    "async_dn16": "Async + DN (N=16)",
 }
 COLORS = {
     "baseline": "#000000",
-    "stream_str2": "#1f6fb2",
     "async_nodn": "#d9772b",
-    "async_dn4": "#2ca25f",
-    "dylu_on": "#c44e52",
+    "async_dn4": "#74c476",
+    "async_dn8": "#2ca25f",
+    "async_dn16": "#006d2c",
 }
 
 
@@ -152,7 +154,7 @@ def main():
             markers=True,
             ylim=(lo - pad, hi + pad),
         )
-    fig.suptitle(f"DiLoCo feature comparison — {suptitle}", fontweight="bold")
+    fig.suptitle(f"Async + DN — {suptitle}", fontweight="bold")
     fig.tight_layout()
     fig.savefig(os.path.join(ASSETS, "loss_comparison.png"), bbox_inches="tight")
 
@@ -160,9 +162,7 @@ def main():
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
     panel(axes[0], "train_loss", "Train loss", "loss", present)
     panel(axes[1], "grad_norm", "Grad norm (stability)", "||g||", present, logy=True)
-    fig.suptitle(
-        f"DiLoCo feature comparison — training health — {suptitle}", fontweight="bold"
-    )
+    fig.suptitle(f"Async + DN — training health — {suptitle}", fontweight="bold")
     fig.tight_layout()
     fig.savefig(os.path.join(ASSETS, "training_health.png"), bbox_inches="tight")
 
