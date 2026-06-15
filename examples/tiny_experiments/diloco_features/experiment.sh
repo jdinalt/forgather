@@ -117,7 +117,13 @@ start_one() {
   local name="$1" port="$2" nw="$3" budget="$4"; shift 4
   [[ "${1:-}" == "--" ]] && shift
   local out="$REPO/models/small_llama_feat_$name"
-  rm -rf "$out"; cp -r "$PRISTINE" "$out"
+  # Warm-start: when PRISTINE_WARM is set (the warm arms set it per-call), copy a
+  # PRETRAINED master as the server's starting weights instead of the fresh
+  # pristine master. Same layout (config + safetensors + .py + tokenizer), so the
+  # server -o flow is unchanged; only the initial weights differ.
+  local src="${PRISTINE_WARM:-$PRISTINE}"
+  rm -rf "$out"; cp -r "$src" "$out"
+  [[ -n "${PRISTINE_WARM:-}" ]] && log "  warm-start master: $src"
   local budget_args=(); [[ -n "$budget" && "$budget" != "0" ]] && budget_args=(--token-budget "$budget")
   # Default transport unless the arm specifies its own wire format.
   local have_transport=0 a
@@ -321,6 +327,26 @@ do_one dylu_off        dylu  4 "$BUDGET" -- --sync-every "$H" --async --dn-buffe
 
 # 8  Async + DN + DyLU, same speed spread — DyLU cuts staleness (A/B vs #7).
 do_one dylu_on         dylu  4 "$BUDGET" -- --async --dylu --dylu-base-sync-every "$H" --dn-buffer-size 4
+
+# ---- Warm-start arms ------------------------------------------------------
+# Only run when WARM_MASTER points at a PRETRAINED master (the 500M DDP
+# checkpoint, assembled by make_warm_master.sh). These mirror the scratch arms
+# but start the server from the pretrained weights, to test whether a warm start
+# closes the from-scratch async gap (README §3.7 finding 3 / §6). PRISTINE_WARM is
+# set PER-CALL so it applies only to these arms; the scratch arms above stay on
+# the fresh pristine master. Select one with the arm-name filter, e.g.
+#   WARM_MASTER=models/small_llama_features_warm_master ./experiment.sh run warm_baseline
+if [[ -n "${WARM_MASTER:-}" ]]; then
+  [[ -d "$WARM_MASTER" ]] || { err "WARM_MASTER '$WARM_MASTER' not found"; exit 1; }
+  log "WARM-START arms from master: $WARM_MASTER"
+  # warm_baseline is the SYNC reference for the warm arms (judge warm-async vs a
+  # warm-sync baseline, not the from-scratch baseline — same start point).
+  PRISTINE_WARM="$WARM_MASTER" do_one warm_baseline  sync  4 "$BUDGET" -- --sync-every "$H"
+  PRISTINE_WARM="$WARM_MASTER" do_one warm_async_dn4 async 4 "$BUDGET" -- --sync-every "$H" --async --dn-buffer-size 4
+  PRISTINE_WARM="$WARM_MASTER" do_one warm_async_dn8 async 4 "$BUDGET" -- --sync-every "$H" --async --dn-buffer-size 8
+  PRISTINE_WARM="$WARM_MASTER" do_one warm_dylu_off  dylu  4 "$BUDGET" -- --sync-every "$H" --async --dn-buffer-size 4
+  PRISTINE_WARM="$WARM_MASTER" do_one warm_dylu_on   dylu  4 "$BUDGET" -- --async --dylu --dylu-base-sync-every "$H" --dn-buffer-size 4
+fi
 
 wait_no_servers || warn "final server cleanup: :8512 may still be up"
 log "MATRIX DONE — harvest: python analysis/harvest.py && python analysis/plot_experiment.py"

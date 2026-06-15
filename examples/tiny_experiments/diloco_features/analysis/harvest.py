@@ -71,6 +71,40 @@ EXPERIMENTS = [
         "Async + DN, spread, no DyLU",
     ),
     ("dylu_on", "dylu_on", "small_llama_feat_dylu_on", "Async + DN + DyLU"),
+    # Warm-start arms (started from the 500M DDP checkpoint, not random init).
+    # Same flags as their scratch counterparts; the only difference is the
+    # server's starting master. Judge warm-async vs warm_baseline (fair, same
+    # start) and warm vs scratch (does pretraining close the async gap?).
+    (
+        "warm_baseline",
+        "warm_baseline",
+        "small_llama_feat_warm_baseline",
+        "Warm Baseline (sync)",
+    ),
+    (
+        "warm_async_dn4",
+        "warm_async_dn4",
+        "small_llama_feat_warm_async_dn4",
+        "Warm Async + DN (N=4)",
+    ),
+    (
+        "warm_async_dn8",
+        "warm_async_dn8",
+        "small_llama_feat_warm_async_dn8",
+        "Warm Async + DN (N=8)",
+    ),
+    (
+        "warm_dylu_off",
+        "warm_dylu_off",
+        "small_llama_feat_warm_dylu_off",
+        "Warm Async + DN, no DyLU",
+    ),
+    (
+        "warm_dylu_on",
+        "warm_dylu_on",
+        "small_llama_feat_warm_dylu_on",
+        "Warm Async + DN + DyLU",
+    ),
 ]
 
 # Async arms for which staleness is harvested as a column. The staleness *gate*
@@ -84,6 +118,10 @@ ASYNC_ARMS = {
     "async_dn16",
     "dylu_off",
     "dylu_on",
+    "warm_async_dn4",
+    "warm_async_dn8",
+    "warm_dylu_off",
+    "warm_dylu_on",
 }
 
 _NUM = r"[-+]?\d[\d,]*\.?\d*(?:e[-+]?\d+)?"

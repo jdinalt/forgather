@@ -1,0 +1,37 @@
+-- extends "projects/small.yaml"
+
+## Warm-start pretrain — plain 4xDDP, NOT a DiLoCo worker.
+##
+## Produces a pretrained checkpoint of the SAME small-Llama arch as the project's
+## pristine master (examples/models/llama small.yaml: hidden 512, 10 blocks, vocab
+## 8000), so it can be dropped in as a *warm* DiLoCo server master (start_one's
+## PRISTINE_WARM knob). The async-from-scratch gap (README §3.7, finding 3) is the
+## open question; this is the checkpoint for the warm-start sweep (§6).
+##
+## ``enable_diloco = False`` makes ``diloco_is_enabled`` false (no DILOCO_SERVER in
+## the env, no --diloco-server), so the parent chain renders a STANDARD DDP trainer
+## that builds the model from the model project and saves it to ``output_dir`` —
+## exactly the master layout (config.json + safetensors + model .py + tokenizer).
+## Budget is small.yaml's default 500M tokens; override with ``--total-tokens`` for
+## a smoke run. trainer_type is ``ddp`` (small.yaml default) -> torchrun, 4 GPUs.
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Warm-start pretrain (Small Llama, 4xDDP)"
+    -- set ns.config_description = "Plain 4xDDP pretrain of the diloco_features small Llama to 500M tokens; emits a checkpoint loadable as a warm DiLoCo server master."
+    -- set ns.log_name = "warm_pretrain"
+
+    ## Standard DDP, not a DiLoCo worker (the whole point of this config).
+    -- set ns.enable_diloco = False
+
+[trainer_args]
+    == super()
+    ## tinyv2 defaults save_strategy to 'no'; we need the final model written to
+    ## output_dir so it can serve as the warm master. 'steps' + small.yaml's
+    ## base_save_tokens lands a save at/near the end of the 500M budget.
+    save_strategy: {{ save_strategy | toyaml('steps') }}
+    save_total_limit: {{ save_total_limit | toyaml(1) }}
+    ## Save weights as safetensors (not .bin), so the checkpoint matches the
+    ## pristine master's format and assembles into a warm DiLoCo server master
+    ## without a conversion step.
+    save_safetensors: {{ save_safetensors | toyaml(True) }}
