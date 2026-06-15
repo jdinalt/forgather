@@ -405,6 +405,17 @@ class DiLoCoWorker:
         # delivered on the heartbeat response and drained by the callback.
         self._pending_command: Optional[str] = None
         self._pending_command_lock = threading.Lock()
+        # Quorum gate (min_workers): the server reports ``below_min_workers`` on
+        # the heartbeat. While True the worker idles at its sync point instead of
+        # syncing/training ahead. This is an OPTIMIZATION layered on the
+        # authoritative server-side barrier gate (which won't apply a round with
+        # fewer than min_workers contributors): the idle just avoids parking on
+        # the barrier once a heartbeat has reported below-quorum. Start False
+        # (optimistic) so a worker with no heartbeat loop running — e.g. unit
+        # tests that drive _sync directly — never idles forever; correctness
+        # (no partial outer step) is enforced server-side regardless.
+        self._quorum_blocked: bool = False
+        self._quorum_poll_s: float = 3.0
         # Orphan detection: a server that has dropped this worker answers
         # heartbeats with HTTP 404 "...is not registered...". We count
         # *consecutive* such responses; a different/transient failure resets
@@ -803,6 +814,30 @@ class DiLoCoWorker:
         t0 = time.time()
 
         if self._is_leader:
+            # Quorum gate (min_workers): while the server is below quorum — at
+            # startup before everyone has joined, or after a drop — idle here
+            # instead of syncing/training ahead, so the group never takes an
+            # outer step below quorum. The wait is a poll that keeps checking the
+            # stop flag, so a save_and_stop/abort breaks it immediately and the
+            # worker shuts down cleanly (never a hard, unkillable block).
+            # NOTE: assumes single rank per worker (the in-scope case). Under
+            # DDP-per-worker the pause would need to be broadcast to followers so
+            # they don't block on the post-sync collective — a follow-up.
+            if self._quorum_blocked and not self._pending_stop():
+                logger.warning(
+                    "DiLoCoWorker %s: paused at sync point — server is below "
+                    "min_workers; waiting for quorum (round %d).",
+                    self.worker_id,
+                    self._sync_count + 1,
+                )
+                while self._quorum_blocked and not self._pending_stop():
+                    time.sleep(self._quorum_poll_s)
+                if not self._pending_stop():
+                    logger.info(
+                        "DiLoCoWorker %s: quorum restored — resuming sync.",
+                        self.worker_id,
+                    )
+
             logger.log(
                 logging.INFO if self.verbose_sync else logging.DEBUG,
                 "DiLoCoWorker %s: starting sync (round %d, after %d local steps)",
@@ -1060,6 +1095,13 @@ class DiLoCoWorker:
                             f"sync_every {old} -> {new_sync_every}"
                         )
 
+                # Quorum gate: the server reports whether it's below min_workers.
+                # The sync loop reads this to idle at the sync point rather than
+                # take an outer step below quorum. Default to the last known value
+                # if an older server omits the field (it then never pauses).
+                if "below_min_workers" in response:
+                    self._quorum_blocked = bool(response["below_min_workers"])
+
                 # Capture any relayed trainer-control command (save /
                 # save-and-stop / abort) for the callback to apply on its
                 # next step. Last-one-wins if several arrive before pickup
@@ -1144,6 +1186,17 @@ class DiLoCoWorker:
             cmd = self._pending_command
             self._pending_command = None
             return cmd
+
+    def _pending_stop(self) -> bool:
+        """Peek (non-destructive) whether a terminal command is queued.
+
+        Used by the quorum-pause loop to break out and let the callback consume
+        and apply the stop on its next step, so a paused worker still shuts down
+        cleanly. Non-destructive so the command isn't lost before the callback
+        picks it up.
+        """
+        with self._pending_command_lock:
+            return self._pending_command in ("save_and_stop", "abort")
 
     def set_stats(self, snap: Optional[dict]) -> None:
         """Merge a unified-stats snapshot into the pending heartbeat payload.

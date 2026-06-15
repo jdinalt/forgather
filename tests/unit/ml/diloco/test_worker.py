@@ -800,3 +800,33 @@ class TestOrphanHeartbeatDetection:
         w = DiLoCoWorker.__new__(DiLoCoWorker)
         w._orphan_strike_threshold = 3
         assert w._orphan_strike_threshold >= 2
+
+
+class TestQuorumGate:
+    """The worker idles at its sync point while the server reports it's below
+    min_workers, and that pause stays cleanly stoppable (peeks the stop flag)."""
+
+    def _bare(self):
+        w = DiLoCoWorker.__new__(DiLoCoWorker)
+        w._pending_command = None
+        w._pending_command_lock = threading.Lock()
+        w._quorum_blocked = True
+        return w
+
+    def test_pending_stop_peeks_terminal_commands(self):
+        w = self._bare()
+        assert w._pending_stop() is False
+        w._pending_command = "save_checkpoint"  # not terminal
+        assert w._pending_stop() is False
+        w._pending_command = "save_and_stop"
+        assert w._pending_stop() is True
+        # Non-destructive: the command is still there for the callback to apply.
+        assert w._pending_command == "save_and_stop"
+        w._pending_command = "abort"
+        assert w._pending_stop() is True
+
+    def test_quorum_blocked_default_pessimistic(self):
+        # Starts True so a worker that reaches its first sync before the first
+        # heartbeat doesn't sync into a partial group.
+        w = self._bare()
+        assert w._quorum_blocked is True
