@@ -54,7 +54,7 @@ def load():
     with open(os.path.join(ASSETS, "curves.csv")) as f:
         for row in csv.DictReader(f):
             data[row["series"]][row["metric"]].append(
-                (int(row["step"]), float(row["value"]))
+                (float(row["mtokens"]), float(row["value"]))
             )
     for s in data:
         for m in data[s]:
@@ -107,7 +107,7 @@ def main():
             continue
         ax.plot(
             [x for x, _ in ev],
-            [v for _, v in ev],
+            [math.exp(v) for _, v in ev],
             color=c,
             ls=ls,
             lw=1.7,
@@ -116,8 +116,9 @@ def main():
             label=lbl,
         )
     ax.set_title("Warm-started arms — all reach the warm baseline")
-    ax.set_xlabel("local step (∝ total tokens)")
-    ax.set_ylabel("eval loss")
+    ax.set_xlabel("total tokens (M, all workers)")
+    # Warm range is small, so linear perplexity keeps the most tail contrast.
+    ax.set_ylabel("perplexity")
     ax.legend(fontsize=8)
     ax.grid(alpha=0.25)
 

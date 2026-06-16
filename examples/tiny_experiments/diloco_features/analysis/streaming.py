@@ -18,6 +18,7 @@ Reads the committed ``assets/curves.csv`` (from analysis/harvest.py), series
 """
 
 import csv
+import math
 import os
 from collections import defaultdict
 
@@ -42,7 +43,7 @@ def _curves():
     with open(os.path.join(ASSETS, "curves.csv")) as f:
         for row in csv.DictReader(f):
             data[row["series"]][row["metric"]].append(
-                (int(row["step"]), float(row["value"]))
+                (float(row["mtokens"]), float(row["value"]))
             )
     for s in data:
         for m in data[s]:
@@ -75,11 +76,12 @@ def main():
     plt.rcParams.update({"figure.dpi": 120, "font.size": 10})
     fig, (axc, axb) = plt.subplots(1, 2, figsize=(12, 4.4))
 
-    # Left: eval-loss trajectories vs the sync baseline.
+    # Left: eval-perplexity trajectories vs the sync baseline (log — from-scratch
+    # range starts at ppl ~1000s).
     if base_ev:
         axc.plot(
             [s for s, _ in base_ev],
-            [v for _, v in base_ev],
+            [math.exp(v) for _, v in base_ev],
             color="#000000",
             lw=2.0,
             label="sync baseline",
@@ -88,34 +90,37 @@ def main():
         ev = data[s]["eval_loss"]
         axc.plot(
             [x for x, _ in ev],
-            [v for _, v in ev],
+            [math.exp(v) for _, v in ev],
             color=color,
             lw=1.4,
             marker="o",
             ms=3,
             label=lbl,
         )
-    axc.set_title("Eval loss — streaming fragmentation")
-    axc.set_xlabel("local step (∝ total tokens)")
-    axc.set_ylabel("eval loss")
+    axc.set_title("Eval perplexity — streaming fragmentation")
+    axc.set_xlabel("total tokens (M, all workers)")
+    axc.set_ylabel("perplexity")
+    axc.set_yscale("log")
     axc.legend(fontsize=8)
     axc.grid(alpha=0.25)
 
-    # Right: final eval bar (the small steady cost + the assignment gap).
+    # Right: final perplexity bar (the small steady cost + the assignment gap);
+    # tight linear zoom for contrast.
     labels = [lbl for _, lbl, _ in present]
-    fes = [data[s]["eval_loss"][-1][1] for s, _, _ in present]
+    base_ppl = math.exp(base_fe) if base_ev else float("nan")
+    fes = [math.exp(data[s]["eval_loss"][-1][1]) for s, _, _ in present]
     colors = [c for _, _, c in present]
     axb.bar(range(len(labels)), fes, color=colors)
     if base_ev:
-        axb.axhline(base_fe, color="#000000", lw=1.5, ls="--", label="sync baseline")
+        axb.axhline(base_ppl, color="#000000", lw=1.5, ls="--", label="sync baseline")
         axb.legend(fontsize=8)
     axb.set_xticks(range(len(labels)))
     axb.set_xticklabels(labels, rotation=15, ha="right")
-    axb.set_title("Final eval loss")
-    axb.set_ylabel("final eval loss")
+    axb.set_title("Final perplexity")
+    axb.set_ylabel("final perplexity")
     axb.grid(alpha=0.25, axis="y")
-    lo = min(fes + ([base_fe] if base_ev else []))
-    hi = max(fes + ([base_fe] if base_ev else []))
+    lo = min(fes + ([base_ppl] if base_ev else []))
+    hi = max(fes + ([base_ppl] if base_ev else []))
     pad = (hi - lo) * 0.2 or 0.01
     axb.set_ylim(lo - pad, hi + pad)
 

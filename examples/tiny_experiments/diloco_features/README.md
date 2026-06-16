@@ -62,7 +62,7 @@ init at this small scale — suggestive, single seed):
 
 | Knob | Flag (on `diloco server`) | Buys you | Costs | Measured here |
 |---|---|---|---|---|
-| **Streaming** | `--num-fragments N` `--fragment-assignment {strided,sequential}` | smooths bandwidth — fragments sent across the compute window, no all-at-once burst | a small, steady convergence cost; strided ≥ sequential, gap grows at finer grain | small per-token gap (+0.06–0.14 eval); **faster wall-clock**; strided N=5 closest + fastest |
+| **Streaming** | `--num-fragments N` `--fragment-assignment {strided,sequential}` | smooths bandwidth — fragments sent across the compute window, no all-at-once burst | a small, steady convergence cost; strided ≥ sequential, gap grows at finer grain | small per-token gap (+6–15% ppl); **faster wall-clock**; strided N=5 closest + fastest |
 | **Async + DN** | `--async --dn-buffer-size N` | drops the barrier — fast workers don't wait on stragglers | needs the DN buffer (required with `--async`); some convergence cost under staleness | from scratch trails sync (depth a non-monotonic lever, **N=8 optimum** +28% ppl vs +123% for N=4); **warm-started ≈ sync** (~+7% ppl), and depth stops mattering (§3.7.1) |
 | **Grace period** | `--grace-period S` | a brief, opportunistic wait so a finished worker can coalesce with a near-simultaneous finisher — cuts the slow-worker *tail* in a heterogeneous / large-N pool | only pays off when the tail is real (large N, mixed speeds); its benefit is **wall-clock**, not convergence | **not a study arm** — the rig has no tail to cut; validated functional only, real benefit → Future Directions |
 | **DyLU** | `--dylu` | matches each worker's sync rate to its throughput, cutting staleness | only helps heterogeneous / unevenly-loaded workers | **mechanism fires, convergence-neutral**: at a verified 4:1 spread DyLU cuts mean staleness 2.33→1.50 (and ~2× the sync rounds), but eval is unmoved (Δ 0.004); per-token payoff unmeasurable here, real benefit is wall-clock → Future Directions |
@@ -264,7 +264,10 @@ against [`experiment.sh`](experiment.sh)):
 The async paper plots convergence against **Total Local Updates** — local
 optimizer steps, which (at fixed batch/sequence) are directly proportional to
 tokens consumed. The token-budget global stop trains every arm to equal total
-tokens, so **eval loss vs total tokens** is the faithful primary axis. The
+tokens, so **perplexity vs total tokens** is the faithful primary axis (the plots
+report perplexity = exp(eval loss), the DiLoCo papers' y-axis; from-scratch curves
+use a log y-scale for their large dynamic range, the warm curves and the
+tight endgame-zoom panels linear). The
 outer/global-step count appears only as an optional secondary diagnostic (how much
 each arm coalesces), never as a competing axis.
 
@@ -448,9 +451,9 @@ delta.
 | Async + DN (N=8) | **3.107** | **22.4** | **+28%** | 1.5 | **DN-sweep optimum** |
 | Async + DN (N=16) | 3.373 | 29.2 | +67% | 1.3 | over-buffered |
 
-![Async eval-loss comparison: sync baseline vs async no-DN (diverges) and the DN-buffer depth sweep N=4/8/16 — full trajectory and converged-runs endgame zoom](assets/loss_comparison.png)
+![Async eval-perplexity comparison: sync baseline vs async no-DN (diverges) and the DN-buffer depth sweep N=4/8/16 — full trajectory and converged-runs endgame zoom](assets/loss_comparison.png)
 
-*Async + DN eval-loss comparison (full + converged endgame zoom) —
+*Async + DN eval-perplexity comparison (full panel log; converged endgame zoom linear) —
 [`analysis/plot_experiment.py`](analysis/plot_experiment.py).*
 
 **The DN buffer stabilizes async, and its depth is a real, non-monotonic lever.**
@@ -467,7 +470,7 @@ for the from-scratch + staleness regime, but "deeper is always better" is false.
 (Single seed; the N=8 < N=16 ordering carries a noise caveat, but the N=4 → N=8
 improvement is large.)
 
-![DN-buffer depth sweep: eval-loss trajectories for N=4/8/16 vs the sync baseline, showing the non-monotonic optimum at N=8](assets/dn_sweep.png)
+![DN-buffer depth sweep: eval-perplexity trajectories (log) for N=4/8/16 vs the sync baseline, showing the non-monotonic optimum at N=8](assets/dn_sweep.png)
 
 *DN-buffer depth sweep — non-monotonic optimum at N=8
 ([`analysis/dn_sweep.py`](analysis/dn_sweep.py)).*
@@ -479,7 +482,7 @@ from scratch, but async — even DN-stabilized and depth-tuned — does not, in 
 budget. Whether that is *async* or the *from-scratch regime* is tested with a warm
 start just below.
 
-![Training health for the async arms: train-loss trajectory and grad-norm (log scale)](assets/training_health.png)
+![Training health for the async arms: train-perplexity trajectory and grad-norm (both log scale)](assets/training_health.png)
 
 *Training health (async arms) — train loss + grad norm; the no-DN control's
 grad-norm blow-up is the divergence ([`analysis/plot_experiment.py`](analysis/plot_experiment.py)).*
@@ -503,7 +506,7 @@ different starting points (and perplexity is the DiLoCo paper's reporting unit):
 | Async + DN (N=4) | 2.895 | 18.1 | **+6.6%** | +123% |
 | Async + DN (N=8) | 2.893 | 18.0 | **+6.4%** | +28% |
 
-![Warm-start: left, the warm arms' eval-loss trajectories on their own scale all converging onto the warm baseline; right, relative perplexity vs each group's matched sync baseline (% worse) — +123%/+28% from scratch collapsing to ~+7% warm](assets/warm_compare.png)
+![Warm-start: left, the warm arms' eval-perplexity trajectories (linear) on their own scale all converging onto the warm baseline; right, relative perplexity vs each group's matched sync baseline (% worse) — +123%/+28% from scratch collapsing to ~+7% warm](assets/warm_compare.png)
 
 *Warm-started arms on their own scale (left); the perplexity gap to each group's
 own baseline, scratch vs warm (right, % worse — the comparable cross-regime metric)
@@ -548,10 +551,10 @@ than assignment here.
 
 ![Streaming on the wall-clock axis: streaming arms finish faster than the sync baseline; strided N=5 crosses to match its trajectory in real time (full + endgame zoom)](assets/walltime_comparison.png)
 
-*Streaming eval loss vs relative wall-clock — the fair axis for the comm/compute
+*Streaming eval perplexity vs relative wall-clock (full panel log, endgame zoom linear) — the fair axis for the comm/compute
 overlap ([`analysis/plot_walltime.py`](analysis/plot_walltime.py)).*
 
-![Streaming fragment count and assignment A/B: eval-loss trajectories and final-loss bars for strided N=2, sequential N=2, strided N=5 vs baseline](assets/streaming.png)
+![Streaming fragment count and assignment A/B: eval-perplexity trajectories and final-perplexity bars for strided N=2, sequential N=2, strided N=5 vs baseline](assets/streaming.png)
 
 *Streaming fragment count + assignment (strided vs sequential), per token —
 [`analysis/streaming.py`](analysis/streaming.py).*
@@ -597,7 +600,7 @@ the re-run at 4:1.)
 | Warm async + DN, ~4:1 spread, DyLU off | 2.855 | 17.4 | +2.4% | 2.33 | 615 |
 | Warm async + DN, ~4:1 spread, DyLU on | 2.851 | 17.3 | +2.0% | **1.50** | **1220** |
 
-![DyLU off vs on at a ~4:1 speed spread (warm-started): eval-loss trajectories essentially overlapping, both tracking toward the warm sync baseline](assets/dylu_control.png)
+![DyLU off vs on at a ~4:1 speed spread (warm-started): eval-perplexity trajectories essentially overlapping, both tracking toward the warm sync baseline](assets/dylu_control.png)
 
 *DyLU off vs on at a ~4:1 spread, warm-started (A/B) —
 [`analysis/dylu_control.py`](analysis/dylu_control.py).*

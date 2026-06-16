@@ -119,6 +119,7 @@ ASYNC_ARMS = {
 }
 
 _NUM = r"[-+]?\d[\d,]*\.?\d*(?:e[-+]?\d+)?"
+TOKENS_PER_STEP = 32768  # per worker (batch 8 x seq 4096); fallback x-scale only
 
 
 def parse_worker_log(path):
@@ -251,17 +252,35 @@ def main():
         if not train and not eval_:
             print(f"  skip {exp}: no data at {rundir}/worker0.log")
             continue
-        for step, v in sorted(train.items()):
-            rows.append([exp, "train_loss", step, f"{v:.6f}"])
-        for step, v in sorted(eval_.items()):
-            rows.append([exp, "eval_loss", step, f"{v:.6f}"])
-            rows.append([exp, "perplexity", step, f"{math.exp(v):.6f}"])
-        for step, v in sorted(grad.items()):
-            rows.append([exp, "grad_norm", step, f"{v:.6f}"])
 
         st = parse_status_json(os.path.join(rundir, "status.json"))
         avg_tok_s, jsonl_tok, syncs = parse_server_jsonl(model_dir)
         total_tok = st["total_tokens"] if st["total_tokens"] else jsonl_tok
+
+        # X-AXIS = AGGREGATE tokens (all workers, in millions), NOT worker0's local
+        # step. worker0 is a 1/k-share worker on the equal-speed arms but the
+        # FASTEST worker on the DyLU speed-spread arms, so its step count is not
+        # comparable across arms (the fast worker logs far more steps for the same
+        # global progress). Worker speeds are constant, so worker0's step maps
+        # linearly to the group's aggregate tokens:
+        #   aggregate(step) = step * (aggregate_total / worker0_final_step).
+        # This puts every arm on the same 0..budget axis (the DiLoCo paper's axis).
+        w0_final = max([*train, *eval_, *grad], default=0)
+        if total_tok and w0_final:
+            mtok_per_step = (total_tok / w0_final) / 1e6
+        else:
+            mtok_per_step = TOKENS_PER_STEP / 1e6  # fallback: worker0's own tokens
+            print(f"  {exp}: no aggregate total_tokens — x is worker0 tokens only")
+
+        for step, v in sorted(train.items()):
+            rows.append([exp, "train_loss", f"{step * mtok_per_step:.4f}", f"{v:.6f}"])
+        for step, v in sorted(eval_.items()):
+            x = f"{step * mtok_per_step:.4f}"
+            rows.append([exp, "eval_loss", x, f"{v:.6f}"])
+            rows.append([exp, "perplexity", x, f"{math.exp(v):.6f}"])
+        for step, v in sorted(grad.items()):
+            rows.append([exp, "grad_norm", f"{step * mtok_per_step:.4f}", f"{v:.6f}"])
+
         ft = train[max(train)] if train else float("nan")
         fe = eval_[max(eval_)] if eval_ else float("nan")
         be = min(eval_.values()) if eval_ else float("nan")
@@ -273,7 +292,7 @@ def main():
 
     with open(os.path.join(ASSETS, "curves.csv"), "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["series", "metric", "step", "value"])
+        w.writerow(["series", "metric", "mtokens", "value"])
         w.writerows(rows)
 
     print(f"\nwrote {len(rows)} rows to assets/curves.csv\n")

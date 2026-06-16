@@ -21,6 +21,7 @@ Writes ``assets/walltime_comparison.png`` (full trajectory + endgame zoom).
 """
 
 import datetime
+import math
 import os
 import re
 
@@ -95,7 +96,7 @@ def panel(ax, arms, data, title):
         lw = 2.0 if s == "baseline" else 1.3
         ax.plot(
             [x / 60.0 for x, _ in d],  # minutes
-            [v for _, v in d],
+            [math.exp(v) for _, v in d],  # perplexity
             color=COLORS[s],
             lw=lw,
             marker="o",
@@ -104,7 +105,8 @@ def panel(ax, arms, data, title):
         )
     ax.set_title(title)
     ax.set_xlabel("relative wall-clock time (minutes since start)")
-    ax.set_ylabel("eval loss")
+    ax.set_ylabel("perplexity")
+    ax.set_yscale("log")  # from-scratch range (early ppl ~1000s) needs log
     ax.legend(fontsize=8)
     ax.grid(alpha=0.25)
 
@@ -127,16 +129,18 @@ def main():
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
 
     # Left: the full streaming-vs-baseline trajectory on a wall-clock axis.
-    panel(axes[0], present, data, "Eval loss vs wall-clock")
+    panel(axes[0], present, data, "Eval perplexity vs wall-clock")
 
     # Right: endgame zoom — where the streaming curves catch (and N=5 crosses) the
     # baseline. Restrict to the second half of the baseline's wall-clock range.
     base = data.get("baseline", [])
     panel(axes[1], present, data, "Endgame (comm/compute-overlap crossover)")
+    # Endgame zoom is a tight range — linear perplexity (plain ticks) over log.
+    axes[1].set_yscale("linear")
     if base:
         half_t = base[len(base) // 2][0] / 60.0
         axes[1].set_xlim(half_t, base[-1][0] / 60.0)
-        tails = [v for s in present for x, v in data[s] if x / 60.0 >= half_t]
+        tails = [math.exp(v) for s in present for x, v in data[s] if x / 60.0 >= half_t]
         if tails:
             lo, hi = min(tails), max(tails)
             pad = (hi - lo) * 0.1 or 0.01

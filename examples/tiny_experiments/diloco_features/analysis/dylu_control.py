@@ -16,6 +16,7 @@ using the series ``dylu_on`` and ``dylu_off`` (plus ``baseline``).
 """
 
 import csv
+import math
 import os
 from collections import defaultdict
 
@@ -40,7 +41,7 @@ def load():
     with open(os.path.join(ASSETS, "curves.csv")) as f:
         for row in csv.DictReader(f):
             data[row["series"]][row["metric"]].append(
-                (int(row["step"]), float(row["value"]))
+                (float(row["mtokens"]), float(row["value"]))
             )
     for s in data:
         for m in data[s]:
@@ -73,7 +74,7 @@ def main():
     if base_ev:
         ax.plot(
             [s for s, _ in base_ev],
-            [v for _, v in base_ev],
+            [math.exp(v) for _, v in base_ev],
             color="#000000",
             lw=1.6,
             ls="--",
@@ -83,7 +84,7 @@ def main():
         ev = data[s]["eval_loss"]
         ax.plot(
             [x for x, _ in ev],
-            [v for _, v in ev],
+            [math.exp(v) for _, v in ev],
             color=color,
             lw=1.5,
             marker="o",
@@ -94,8 +95,10 @@ def main():
         "Does DyLU help? Warm-started, ~4:1 speed spread + N=4 buffer, off vs on",
         fontweight="bold",
     )
-    ax.set_xlabel("local step (∝ total tokens)")
-    ax.set_ylabel("eval loss")
+    ax.set_xlabel("total tokens (M, all workers)")
+    # Warm-started: small dynamic range, so linear perplexity keeps the most tail
+    # contrast (off vs on are ~identical — the neutral result).
+    ax.set_ylabel("perplexity")
     ax.legend(fontsize=8)
     ax.grid(alpha=0.25)
     fig.tight_layout()
