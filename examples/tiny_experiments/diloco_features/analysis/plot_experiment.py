@@ -9,13 +9,16 @@ project directory:
     python analysis/plot_experiment.py
 
 Two figures, two panels each (so each panel stays readable when the docs compress
-a figure to the text-column width):
-  * ``loss_comparison.png`` — eval loss (full) + the converged-runs endgame zoom.
-  * ``training_health.png`` — train loss + grad norm (the "is training healthy?"
-    check: decreasing/stable, not flat or exploding).
+a figure to the text-column width). Y-axis is perplexity (= exp(loss), the DiLoCo
+papers' axis) on a log scale — the from-scratch arms span a huge range, so log
+keeps the converged tail legible:
+  * ``loss_comparison.png`` — eval perplexity (full) + the converged-runs endgame.
+  * ``training_health.png`` — train perplexity + grad norm (the "is training
+    healthy?" check: decreasing/stable, not flat or exploding).
 """
 
 import csv
+import math
 import os
 from collections import defaultdict
 
@@ -27,22 +30,25 @@ import matplotlib.pyplot as plt
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(HERE, "assets")
 
-# Baseline in black; features in a distinct color each.
-# Main comparison series. The DN-buffer headline (async_dn_bN) is set to the
-# sweet spot found by analysis/dn_sweep.py; the other N's live in that sub-study.
+# The ASYNC + DN cluster only (equal-speed workers + injected jitter): sync
+# baseline vs async-no-DN (diverges) vs the DN-buffer depth sweep N=4/8/16. The
+# other axes are reported separately — they are NOT directly comparable to these:
+# streaming (synchronous, fragmented comm) lives in analysis/streaming.py +
+# plot_walltime.py; the DyLU on/off A/B (run under a speed spread, not equal speed)
+# in analysis/dylu_control.py; the warm-start follow-up in analysis/warm_compare.py.
 LABELS = {
     "baseline": "Baseline (sync, H=100)",
-    "streaming": "Streaming (2 fragments)",
-    "async": "Async (no DN)",
-    "async_dn_b16": "Async + DN (N=16)",
-    "dylu": "Async + DN + DyLU",
+    "async_nodn": "Async (no DN)",
+    "async_dn4": "Async + DN (N=4)",
+    "async_dn8": "Async + DN (N=8)",
+    "async_dn16": "Async + DN (N=16)",
 }
 COLORS = {
     "baseline": "#000000",
-    "streaming": "#1f6fb2",
-    "async": "#d9772b",
-    "async_dn_b16": "#2ca25f",
-    "dylu": "#c44e52",
+    "async_nodn": "#d9772b",
+    "async_dn4": "#74c476",
+    "async_dn8": "#2ca25f",
+    "async_dn16": "#006d2c",
 }
 
 
@@ -52,7 +58,7 @@ def load():
     with open(path) as f:
         for row in csv.DictReader(f):
             data[row["series"]][row["metric"]].append(
-                (int(row["step"]), float(row["value"]))
+                (float(row["mtokens"]), float(row["value"]))
             )
     for s in data:
         for m in data[s]:
@@ -81,8 +87,19 @@ def main():
 
     # Two panels per figure (not three) so each renders wide enough to read when
     # the docs compress a figure to the text-column width.
+    # ppl=True plots perplexity (exp of the loss) — the DiLoCo papers' y-axis. The
+    # from-scratch arms span a huge range (early ppl ~1000s, late ~17-40), so these
+    # panels use log-scale (logy) to keep the converged tail legible.
     def panel(
-        ax, metric, title, ylabel, series_list, markers=False, ylim=None, logy=False
+        ax,
+        metric,
+        title,
+        ylabel,
+        series_list,
+        markers=False,
+        ylim=None,
+        logy=False,
+        ppl=False,
     ):
         for s in series_list:
             d = data[s].get(metric, [])
@@ -91,7 +108,7 @@ def main():
             lw = 2.0 if s == "baseline" else 1.3
             ax.plot(
                 [x for x, _ in d],
-                [v for _, v in d],
+                [math.exp(v) if ppl else v for _, v in d],
                 color=COLORS[s],
                 lw=lw,
                 marker=("o" if markers else None),
@@ -99,7 +116,7 @@ def main():
                 label=LABELS[s],
             )
         ax.set_title(title)
-        ax.set_xlabel("step")
+        ax.set_xlabel("total tokens (M, all workers)")
         ax.set_ylabel(ylabel)
         if logy:
             ax.set_yscale("log")
@@ -108,7 +125,7 @@ def main():
         ax.legend(fontsize=8)
         ax.grid(alpha=0.25)
 
-    suptitle = "small Llama (34.4M), 4 workers × 520M tokens, H=100"
+    suptitle = "small Llama (34.4M), 4 workers, 2B total tokens, H=100"
 
     # Endgame (converged runs only): the deltas among the converged runs are
     # small, so a zoom shows the separation; diverged runs would blow out the
@@ -124,11 +141,20 @@ def main():
         if s not in converged:
             print(f"  endgame panel: excluding non-converged series '{s}'")
 
-    # Figure 1 (headline): eval loss — full, and the converged-runs endgame zoom.
+    # Figure 1 (headline): eval perplexity (log) — full, and the converged endgame.
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
-    panel(axes[0], "eval_loss", "Eval loss", "loss", present, markers=True)
+    panel(
+        axes[0],
+        "eval_loss",
+        "Eval perplexity",
+        "perplexity",
+        present,
+        markers=True,
+        ppl=True,
+        logy=True,
+    )
     tails = [
-        v
+        math.exp(v)
         for s in converged
         for _, v in data[s].get("eval_loss", [])[
             len(data[s].get("eval_loss", [])) // 2 :
@@ -142,26 +168,36 @@ def main():
             ev = data[s].get("eval_loss", [])
             if ev:
                 axes[1].set_xlim(ev[len(ev) // 2][0], ev[-1][0])
+        # Endgame zoom is a tight range, so linear perplexity (plain ticks) reads
+        # cleaner than log's exponent notation.
         panel(
             axes[1],
             "eval_loss",
-            "Eval loss (endgame — converged)",
-            "loss",
+            "Eval perplexity (endgame — converged)",
+            "perplexity",
             converged,
             markers=True,
+            ppl=True,
+            logy=False,
             ylim=(lo - pad, hi + pad),
         )
-    fig.suptitle(f"DiLoCo feature comparison — {suptitle}", fontweight="bold")
+    fig.suptitle(f"Async + DN — {suptitle}", fontweight="bold")
     fig.tight_layout()
     fig.savefig(os.path.join(ASSETS, "loss_comparison.png"), bbox_inches="tight")
 
-    # Figure 2 (training health): train loss + grad norm.
+    # Figure 2 (training health): train perplexity (log) + grad norm (log).
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
-    panel(axes[0], "train_loss", "Train loss", "loss", present)
-    panel(axes[1], "grad_norm", "Grad norm (stability)", "||g||", present, logy=True)
-    fig.suptitle(
-        f"DiLoCo feature comparison — training health — {suptitle}", fontweight="bold"
+    panel(
+        axes[0],
+        "train_loss",
+        "Train perplexity",
+        "perplexity",
+        present,
+        ppl=True,
+        logy=True,
     )
+    panel(axes[1], "grad_norm", "Grad norm (stability)", "||g||", present, logy=True)
+    fig.suptitle(f"Async + DN — training health — {suptitle}", fontweight="bold")
     fig.tight_layout()
     fig.savefig(os.path.join(ASSETS, "training_health.png"), bbox_inches="tight")
 

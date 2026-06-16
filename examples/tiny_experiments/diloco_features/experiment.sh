@@ -1,34 +1,44 @@
 #!/usr/bin/env bash
 #
-# experiment.sh — real-budget feature-comparison sweep for diloco_features.
+# experiment.sh — the reproduction-study run matrix for diloco_features.
 #
-# Runs each feature config to a REAL token budget at a realistic sync interval
-# (H=100) and keeps every run's logs so the loss trajectory can be harvested and
-# compared against the synchronous baseline. **4 workers** — async stress scales
-# with worker count, and 2 workers can't produce meaningful staleness.
+# Each arm is a from-scratch DiLoCo run trained to the SAME total-token budget
+# (the server's --token-budget global stop, not a per-worker --max-steps) at a
+# realistic sync interval (H=100). Equal total tokens across arms makes them
+# comparable on the total-tokens axis (= the async paper's "Total Local
+# Updates") even under a per-worker speed spread. Every arm keeps its worker +
+# server logs and a /status snapshot under runs/<arm>/ so analysis/ can harvest
+# the loss trajectory, the actual total_tokens, the grace-batch histogram and
+# the staleness distribution.
 #
-# Async is exercised by adding a small per-step JITTER (DILOCO_DEBUG_STEP_JITTER,
-# the SAME on every worker, seeded per-worker so they differ): the randomness
-# decorrelates the workers' phase so they drift out of lock-step and produce real
-# async staleness (~N-1), while keeping the same *average* speed — so there is no
-# slow-worker solo tail. This is a controlled way to *measure async's impact*,
-# not a faithful real-deployment async (which would also want real device-timing
-# variance + the server-side grace period, available via --grace-period but not
-# used here). DyLU instead uses a fixed
-# per-worker speed SPREAD (DILOCO_DEBUG_STEP_DELAY), since DyLU adapts to
-# average-speed differences and co-terminates the workers.
+# Async staleness is induced with a small per-step JITTER
+# (DILOCO_DEBUG_STEP_JITTER, the same value on every worker, seeded per-worker
+# so they differ): the randomness decorrelates the workers' phase so they drift
+# out of lock-step and produce real async staleness (~workers-1) while keeping
+# the same *average* speed (no slow-worker solo tail). DyLU instead uses a fixed
+# per-worker speed SPREAD (DILOCO_DEBUG_STEP_DELAY) calibrated to a realistic
+# mixed-GPU cluster (~2x slowest/fastest, 4090+3090-style) — DyLU adapts to
+# average-speed differences, which jitter (equal average speed) wouldn't show.
 #
-# Budget: config default (~16k steps/worker). gRPC + safetensors, torch.compile
-# on by the config default. Every run starts from an identical pristine master
-# copy and the config's fixed seed; only the feature flag (+ the jitter/spread
-# debug throttle) varies. 4 workers = 4 GPUs/run, so runs are SERIAL.
+# gRPC + safetensors, torch.compile on by the config default. Every run starts
+# from an identical pristine master copy and a fixed seed (--seed); only the
+# feature flag (+ the jitter/spread debug throttle) varies. 4 workers = 4
+# GPUs/run, so arms run SERIALLY on one server (:8512).
 #
 # Usage:
-#   ./experiment.sh validate   # short (max-steps 120, compile off) — plumbing check
-#   ./experiment.sh run        # the real sweep (~8 h on 4 idle 4090s)
+#   ./experiment.sh validate         # short plumbing check — each feature FIRES
+#   ./experiment.sh run              # the full 8-arm matrix (~7-9 h, 4x4090)
+#   ./experiment.sh run <arm-name>   # re-run a single arm by name
 #
 # Then: python analysis/harvest.py && python analysis/plot_experiment.py
-#       python analysis/dn_sweep.py && python analysis/verify_baseline.py
+#       python analysis/staleness.py && python analysis/streaming.py
+#       python analysis/dylu_control.py
+#       (python analysis/grace_batches.py is a VALIDATE-only mechanism check)
+#
+# Before any long batch: run `./experiment.sh validate` (each feature fires, incl.
+# the grace MECHANISM check via analysis/grace_batches.py — grace is validate-only,
+# NOT a study arm), then confirm mean staleness ~= workers-1 on the async arms
+# (analysis/staleness.py). Do NOT start the headline tier until both pass.
 
 set -uo pipefail
 
@@ -37,17 +47,41 @@ REPO="$(cd "$HERE/../../.." && pwd)"
 PRISTINE="$REPO/models/small_llama_features_master"
 RESULTS="$HERE/runs"
 CONFIG="default.yaml"
-H=100
-NW=4                 # workers per run (= GPUs/run)
-JITTER=0.15          # per-step jitter (s) for async phase-decorrelation (-> staleness ~3)
-DYLU_SPREAD=(0 0.05 0.10 0.15)   # per-worker fixed delays (s) for the DyLU run (speed spread)
+
+H=100                          # inner sync interval (steps between outer steps)
+SEED=42                        # fixed; matches the config default (single run/arm)
+JITTER="${JITTER:-0.15}"       # per-step jitter (s) for async phase-decorrelation (-> staleness ~3).
+                               # env-overridable for the staleness-gate calibration loop (double it
+                               # if measured staleness < ~3, per the design's gate).
+GRACE_S="${GRACE_S:-0.5}"      # grace window (s) — VALIDATE ONLY (v_grace mechanism check; grace is not a study arm)
+
+# Per-worker fixed delays (s) for the DyLU speed-spread arms, TARGETING a ~4:1
+# slowest/fastest ratio (an aggressive heterogeneous pool — the earlier ~1.6x
+# spread was too mild for DyLU to show any signal). Calibration accounts for the
+# per-step CPU sleep partially overlapping async GPU compute: empirically the
+# landed wall-clock per step is ~(delay - 0.088s) for delays past ~0.09s, on a
+# ~0.156s base step. So 0/0.24/0.40/0.56 targets ~1x/2x/3x/4x step time. ALWAYS
+# smoke-verify the realized ratio before the long runs: a short-budget run, e.g.
+#   WARM_MASTER=<master> BUDGET=80M ./experiment.sh run warm_dylu_off
+# then `python analysis/worker_speeds.py` (it reads the warm_dylu_* arms).
+DYLU_SPREAD=(0 0.24 0.40 0.56)
+
+# Token budget (global stop): aggregate cross-worker tokens at which the server
+# relays save_and_stop. 2B total (~4x Chinchilla; the model's Chinchilla-optimal is
+# 525M tokens = 20 x 26.2M non-embedding params) — chosen to capture async's
+# LONGER-TERM dynamics (DiLoCo-family benefits emerge over a longer budget), which
+# the measured runtime makes affordable. At 4 workers ~500M tok/worker, ~150 sync
+# rounds at H=100. --token-budget accepts K/M/B suffixes (bare = raw tokens).
+# env-overridable for short calibration probes, e.g. BUDGET=80M for a ~5-min run.
+BUDGET="${BUDGET:-2B}"
 
 MODE="${1:-run}"
+ONLY="${2:-}"                  # optional: run a single arm by name
+
 case "$MODE" in
-  validate)     MAXSTEPS_ARGS=(--max-steps 120); COMPILE_ARGS=(--compile no) ;;
-  run)          MAXSTEPS_ARGS=();                COMPILE_ARGS=() ;;
-  dylu_control) MAXSTEPS_ARGS=();                COMPILE_ARGS=() ;;
-  *) echo "usage: $0 {validate|run|dylu_control}" >&2; exit 2 ;;
+  validate) MAXSTEPS_ARGS=(--max-steps 120); COMPILE_ARGS=(--compile no) ;;
+  run)      MAXSTEPS_ARGS=();                COMPILE_ARGS=() ;;
+  *) echo "usage: $0 {validate|run} [arm-name]" >&2; exit 2 ;;
 esac
 
 mkdir -p "$RESULTS"
@@ -80,104 +114,245 @@ wait_jobs_terminal() {
   done; return 1
 }
 
-# start_one <name> <port> <server-flags...> -> fresh-master server with -n NW
+# start_one <name> <port> <nw> <budget> -- <server-flags...>
+# Fresh pristine master per run; --token-budget is the global stop (budget 0 =>
+# open-ended, used by validate). gRPC+safetensors is the default transport; an
+# arm that passes its own --wire-format (the transport check) overrides it.
 start_one() {
-  local name="$1" port="$2"; shift 2
+  local name="$1" port="$2" nw="$3" budget="$4"; shift 4
+  [[ "${1:-}" == "--" ]] && shift
   local out="$REPO/models/small_llama_feat_$name"
-  rm -rf "$out"; cp -r "$PRISTINE" "$out"
-  log "server '$name' on :$port (-n $NW) — $*"
-  forgather diloco server -o "$out" --port "$port" -n "$NW" --save-every 0 \
-    --grpc --wire-format safetensors --sync-every "$H" --run-name "$name" "$@" >/dev/null 2>&1
+  # Warm-start: when PRISTINE_WARM is set (the warm arms set it per-call), copy a
+  # PRETRAINED master as the server's starting weights instead of the fresh
+  # pristine master. Same layout (config + safetensors + .py + tokenizer), so the
+  # server -o flow is unchanged; only the initial weights differ.
+  local src="${PRISTINE_WARM:-$PRISTINE}"
+  rm -rf "$out"; cp -r "$src" "$out"
+  [[ -n "${PRISTINE_WARM:-}" ]] && log "  warm-start master: $src"
+  local budget_args=(); [[ -n "$budget" && "$budget" != "0" ]] && budget_args=(--token-budget "$budget")
+  # Default transport unless the arm specifies its own wire format.
+  local have_transport=0 a
+  for a in "$@"; do [[ "$a" == "--wire-format" ]] && have_transport=1; done
+  local transport_args=(--grpc --wire-format safetensors)
+  [[ $have_transport -eq 1 ]] && transport_args=()
+  log "server '$name' on :$port (-n $nw, budget=$budget) — $*"
+  # --min-workers $nw: if workers die below the launch count the run is no
+  # longer valid (sync stalls at the barrier; async limps with too few
+  # contributors), so have the server abort rather than limp. --heartbeat-timeout
+  # 600: the long compile/eval phase can starve the worker's heartbeat thread
+  # well past the 120s default, which would falsely evict a healthy worker.
+  forgather diloco server -o "$out" --port "$port" -n "$nw" --save-every 0 \
+    --min-workers "$nw" --heartbeat-timeout 600 \
+    "${transport_args[@]}" --sync-every "$H" --run-name "$name" \
+    "${budget_args[@]}" "$@" >/dev/null 2>&1
   wait_server_ready "$port" || { err "server '$name' (:$port) never ready"; return 1; }
   log "server '$name' ready on :$port"
 }
 
-# submit_sync <port> -> NW workers, no throttle
+# submit_sync <port> <nw> -> nw workers in one submit, no throttle.
+# --heartbeat-interval 5 matches the async/dylu submits so token accounting (and
+# thus the budget stop) ticks at the same cadence on every arm — tighter
+# equal-total-tokens alignment across the matrix (the budget is heartbeat-driven).
 submit_sync() {
   forgather -t "$CONFIG" submit --diloco --diloco-server "127.0.0.1:$1" \
-    --diloco-worker-count "$NW" "${MAXSTEPS_ARGS[@]}" "${COMPILE_ARGS[@]}" 2>/dev/null \
+    --diloco-worker-count "$2" --seed "$SEED" --heartbeat-interval 5 \
+    "${MAXSTEPS_ARGS[@]}" "${COMPILE_ARGS[@]}" 2>/dev/null \
     | grep -oE 'q_[0-9]+_[0-9a-f]+'
 }
 
-# submit_async <port> -> NW workers with fixed ids w0..w(N-1) + the same jitter.
-# Fixed ids make the per-worker jitter seed (hence the phase-decorrelation
-# pattern) identical across the async/DN-sweep runs, so they differ only in the
-# DN buffer size — a clean comparison. The jitter is seeded *per worker id*, so
-# the four workers within a run still decorrelate from each other.
+# submit_async <port> <nw> -> nw single-worker submits (fixed ids w0..) + jitter.
+# Fixed ids keep the per-worker jitter seed (hence the phase-decorrelation
+# pattern) identical across async arms, so they differ only in the feature under
+# test. The jitter is seeded per worker id, so the workers still decorrelate.
 submit_async() {
-  local port="$1" k
-  for ((k=0; k<NW; k++)); do
+  local port="$1" nw="$2" k
+  for ((k=0; k<nw; k++)); do
     forgather -t "$CONFIG" submit --diloco --diloco-server "127.0.0.1:$port" \
-      --diloco-worker-count 1 --worker-id "w$k" --heartbeat-interval 5 \
+      --diloco-worker-count 1 --worker-id "w$k" --heartbeat-interval 5 --seed "$SEED" \
       "${MAXSTEPS_ARGS[@]}" "${COMPILE_ARGS[@]}" \
       --env "DILOCO_DEBUG_STEP_JITTER=$JITTER" 2>/dev/null | grep -oE 'q_[0-9]+_[0-9a-f]+'
   done
 }
 
-# submit_dylu <name> <port> -> NW workers individually with a fixed speed spread
+# submit_dylu <name> <port> <nw> -> nw single-worker submits with a fixed speed spread
 submit_dylu() {
-  local name="$1" port="$2" k
-  for k in "${!DYLU_SPREAD[@]}"; do
+  local name="$1" port="$2" nw="$3" k
+  for ((k=0; k<nw; k++)); do
     forgather -t "$CONFIG" submit --diloco --diloco-server "127.0.0.1:$port" \
-      --diloco-worker-count 1 --worker-id "${name}-w${k}" --heartbeat-interval 5 \
+      --diloco-worker-count 1 --worker-id "${name}-w${k}" --heartbeat-interval 5 --seed "$SEED" \
       "${MAXSTEPS_ARGS[@]}" "${COMPILE_ARGS[@]}" \
       --env "DILOCO_DEBUG_STEP_DELAY=${DYLU_SPREAD[$k]}" 2>/dev/null | grep -oE 'q_[0-9]+_[0-9a-f]+'
   done
 }
 
-capture_one() {  # <name> <port> <worker-id...>
+# sample_status_live <out_dir> <port> — write <out_dir>/status.json IFF the
+# snapshot has registered (live) workers. Per-worker staleness + the grace
+# histogram only exist while workers are running; once the token budget stops them
+# they deregister (workers:{}), so a post-terminal capture loses them. We keep the
+# LAST live sample (steady-state staleness, which is what we want).
+sample_status_live() {
+  local out="$1" port="$2" s
+  s="$(forgather diloco status --diloco-server "127.0.0.1:$port" --json 2>/dev/null)"
+  [[ -n "$s" ]] || return 1
+  printf '%s' "$s" | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(1)
+st = d["status"] if isinstance(d.get("status"), dict) else d  # orchestrator wraps under "status"
+sys.exit(0 if (st.get("workers") or {}) else 1)
+' 2>/dev/null || return 1
+  printf '%s' "$s" > "$out/status.json"
+}
+
+# wait_terminal_sampling <name> <port> <tries> <wid...> — poll jobs to terminal
+# while sampling /status, so runs/<name>/status.json ends up holding the last LIVE
+# snapshot (workers still registered) rather than a post-terminal empty one.
+wait_terminal_sampling() {
+  local name="$1" port="$2" tries="$3"; shift 3
+  local out="$RESULTS/$name"; mkdir -p "$out"
+  local i
+  for ((i=0; i<tries; i++)); do
+    sample_status_live "$out" "$port"
+    local list pending=0; list="$(forgather job list 2>/dev/null)"
+    for id in "$@"; do
+      echo "$list" | grep -F -- "$id" | grep -qiE 'done|failed|error|cancelled|aborted' || pending=1
+    done
+    [[ $pending -eq 0 ]] && return 0
+    sleep 12
+  done; return 1
+}
+
+# capture_one <name> <port> <worker-id...> — logs + (fallback) status snapshot.
+# status.json is normally the last LIVE sample wait_terminal_sampling already
+# wrote; we only take a post-terminal snapshot if no live sample was captured
+# (total_tokens + grace histogram still survive there; per-worker staleness won't).
+capture_one() {
   local name="$1" port="$2"; shift 2
   local out="$RESULTS/$name" n=0
   mkdir -p "$out"
+  [[ -f "$out/status.json" ]] || forgather diloco status --diloco-server "127.0.0.1:$port" --json > "$out/status.json" 2>/dev/null \
+    || warn "status snapshot for '$name' failed (no live sample, server may have stopped)"
   local sid; sid="$(forgather diloco servers 2>/dev/null | grep -F ":$port" | grep -oE 'q_[0-9]+_[0-9a-f]+' | head -1)"
   [[ -n "$sid" ]] && forgather diloco logs "$sid" > "$out/server.log" 2>&1
   for wid in "$@"; do forgather job dump "$wid" > "$out/worker$n.log" 2>&1; n=$((n+1)); done
-  log "captured runs/$name/ ($# worker log(s))"
+  log "captured runs/$name/ ($# worker log(s) + status.json)"
 }
 
-# do_one <name> <kind> <server-flags...>   kind: sync|async|dylu  (all on port 8512, serial)
+# do_one <name> <kind> <nw> <budget> -- <server-flags...>   kind: sync|async|dylu
 do_one() {
-  local name="$1" kind="$2"; shift 2
+  local name="$1"
+  if [[ -n "$ONLY" && "$ONLY" != "$name" ]]; then return 0; fi
+  local kind="$2" nw="$3" budget="$4"; shift 4
+  [[ "${1:-}" == "--" ]] && shift
   local port=8512
+  rm -rf "$RESULTS/$name"   # fresh per-arm capture dir (named path, internal — no glob)
+  # Fresh worker output tree per arm. CRITICAL: the async/dylu arms use FIXED
+  # worker ids (w0..wN / <name>-wK) to hold the jitter seed constant across arms,
+  # so their output dirs (output_models/small_<wid>) would otherwise be REUSED —
+  # a worker resumes a prior arm's (or a prior run's) checkpoint, reports its
+  # cumulative tokens (pre-filling the budget), and exits as "already done". Wipe
+  # the whole worker tree so every arm starts from the pristine master. Named
+  # path, in-script — safe. (The server's master is copied fresh in start_one.)
+  rm -rf "$HERE/output_models"
   wait_no_servers || { err "a prior server won't clear; skipping '$name'"; return 1; }
-  start_one "$name" "$port" "$@" || return 1
+  start_one "$name" "$port" "$nw" "$budget" -- "$@" || return 1
   local ids
   case "$kind" in
-    sync)  ids="$(submit_sync "$port")" ;;
-    async) ids="$(submit_async "$port")" ;;
-    dylu)  ids="$(submit_dylu "$name" "$port")" ;;
+    sync)  ids="$(submit_sync "$port" "$nw")" ;;
+    async) ids="$(submit_async "$port" "$nw")" ;;
+    dylu)  ids="$(submit_dylu "$name" "$port" "$nw")" ;;
   esac
   local wids=($ids)
-  if [[ ${#wids[@]} -ne $NW ]]; then
-    err "exp '$name': expected $NW worker ids, got ${#wids[@]}: ${wids[*]}"
+  if [[ ${#wids[@]} -ne $nw ]]; then
+    err "exp '$name': expected $nw worker ids, got ${#wids[@]}: ${wids[*]}"
     shutdown_on "$port"; return 1
   fi
-  log "submitted $NW workers for '$name'"
-  wait_jobs_terminal 2000 "${wids[@]}" || warn "exp '$name' not all terminal in time"
+  log "submitted $nw workers for '$name'"
+  wait_terminal_sampling "$name" "$port" 2000 "${wids[@]}" || warn "exp '$name' not all terminal in time"
   capture_one "$name" "$port" "${wids[@]}"
   shutdown_on "$port"; sleep 6
 }
 
 trap 'echo; warn "interrupted — shutting down :8512"; shutdown_on 8512; exit 130' INT TERM
 
-log "MODE=$MODE  NW=$NW  H=$H  jitter=$JITTER  budget=$([[ ${#MAXSTEPS_ARGS[@]} -gt 0 ]] && echo "${MAXSTEPS_ARGS[*]}" || echo 'config default (~16k/worker)')"
+log "MODE=$MODE  H=$H  seed=$SEED  jitter=$JITTER  grace_s=$GRACE_S  ${ONLY:+arm=$ONLY}"
+log "budget=$BUDGET (4 workers)  dylu_spread=(${DYLU_SPREAD[*]})"
 
-# DyLU control: the exact DyLU setting (same per-worker speed SPREAD, async, DN
-# N=4) but WITHOUT --dylu — isolates whether DyLU's adaptive sync_every actually
-# helps under genuinely different worker speeds (here the workers truly run at
-# different speeds, so unlike the jittered async runs this one has a solo tail).
-if [[ "$MODE" == dylu_control ]]; then
-  do_one dylu_control dylu --sync-every "$H" --async --dn-buffer-size 4
-  log "DYLU_CONTROL DONE — re-harvest: python analysis/harvest.py && python analysis/dn_sweep.py"
+# ---------------------------------------------------------------------------
+# validate — short plumbing check (max-steps 120, compile off). Confirms each
+# feature FIRES (not "no crash"): block-faithful streaming fragmentation, the
+# grace flush, and the token-budget save_and_stop relay. Grep the captured logs
+# per README.md (e.g. NoBlockPlanError must NOT appear; "grace" flush lines must;
+# the budget arm must show the save_and_stop relay before step 120).
+# ---------------------------------------------------------------------------
+if [[ "$MODE" == validate ]]; then
+  do_one v_stream  sync  4 0          -- --num-fragments 5 --fragment-assignment strided
+  do_one v_grace   async 4 0          -- --async --dn-buffer-size 4 --grace-period "$GRACE_S"
+  # Small budget (3M, reached in ~20 steps) + a generous step cap so the BUDGET
+  # (not max-steps) is what stops it — exercises the save_and_stop relay fast.
+  MAXSTEPS_ARGS=(--max-steps 5000)
+  do_one v_budget  sync  4 3M         -- --sync-every "$H"
+  log "VALIDATE DONE — grep runs/v_*/ : fragments engaged, grace flush, budget relay."
   exit 0
 fi
 
-do_one baseline    sync  --sync-every "$H"
-do_one streaming   sync  --sync-every "$H" --num-fragments 2
-do_one async       async --sync-every "$H" --async
-do_one async_dn_b4 async --sync-every "$H" --async --dn-buffer-size 4
-do_one async_dn_b8 async --sync-every "$H" --async --dn-buffer-size 8
-do_one async_dn_b16 async --sync-every "$H" --async --dn-buffer-size 16
-do_one dylu        dylu  --async --dylu --dylu-base-sync-every "$H" --dn-buffer-size 4
+# ---------------------------------------------------------------------------
+# run — the 8-arm matrix (single run per arm, from scratch, token-budget stop).
+# All arms: 4 workers, budget $BUDGET, H=100, gRPC+safetensors, from a fresh
+# pristine master + --seed $SEED. Only the server flags (+ the async jitter /
+# DyLU spread worker env) differ between arms.
+# ---------------------------------------------------------------------------
+# 1  Sync baseline — reference.
+do_one baseline        sync  4 "$BUDGET" -- --sync-every "$H"
 
-log "SWEEP DONE — harvest: python analysis/harvest.py && python analysis/plot_experiment.py && python analysis/dn_sweep.py"
+# 2-4  Streaming: block-boundary fragments, assignment A/B at two grains.
+do_one stream_str2     sync  4 "$BUDGET" -- --sync-every "$H" --num-fragments 2 --fragment-assignment strided
+do_one stream_seq2     sync  4 "$BUDGET" -- --sync-every "$H" --num-fragments 2 --fragment-assignment sequential
+do_one stream_str5     sync  4 "$BUDGET" -- --sync-every "$H" --num-fragments 5 --fragment-assignment strided
+
+# 5  Async no-DN control (jitter) — expect divergence (DN off).
+do_one async_nodn      async 4 "$BUDGET" -- --sync-every "$H" --async
+
+# 6  Async + DN N=k=4 (jitter) — the headline: async+DN ~ sync (per token)?
+do_one async_dn4       async 4 "$BUDGET" -- --sync-every "$H" --async --dn-buffer-size 4
+
+# 6b  Async + DN N=8/16 (jitter) — DN-buffer sweep: does a deeper buffer close the
+#     from-scratch async gap left by dn4? (post-#225, corrected averaging.) Live:
+#     dn8 lands ~halfway between baseline and dn4; dn16 probes diminishing returns.
+do_one async_dn8       async 4 "$BUDGET" -- --sync-every "$H" --async --dn-buffer-size 8
+do_one async_dn16      async 4 "$BUDGET" -- --sync-every "$H" --async --dn-buffer-size 16
+
+# NOTE: grace is NOT a study arm — its payoff is wall-clock tail-reduction in a
+# heterogeneous/large-N pool, which this homogeneous rig doesn't have and loopback
+# can't measure. It is validated functional in `validate` (v_grace) only; the real
+# demonstration is the two-population/WAN future work. See README §3.5.
+
+# NOTE: DyLU is run WARM-ONLY (see the warm-start block below). The from-scratch
+# scratch-vs-warm story is already established by the async arms above; running
+# DyLU only warm halves the DyLU runs and isolates the heterogeneity question. The
+# DyLU arms use a ~4:1 speed spread (DYLU_SPREAD), aggressive enough to actually
+# exercise DyLU (the earlier ~1.6x spread was too mild to show a signal).
+
+# ---- Warm-start arms ------------------------------------------------------
+# Only run when WARM_MASTER points at a PRETRAINED master (the 500M DDP
+# checkpoint, assembled by make_warm_master.sh). These mirror the scratch arms
+# but start the server from the pretrained weights, to test whether a warm start
+# closes the from-scratch async gap (README §3.7 finding 3 / §6). PRISTINE_WARM is
+# set PER-CALL so it applies only to these arms; the scratch arms above stay on
+# the fresh pristine master. Select one with the arm-name filter, e.g.
+#   WARM_MASTER=models/small_llama_features_warm_master ./experiment.sh run warm_baseline
+if [[ -n "${WARM_MASTER:-}" ]]; then
+  [[ -d "$WARM_MASTER" ]] || { err "WARM_MASTER '$WARM_MASTER' not found"; exit 1; }
+  log "WARM-START arms from master: $WARM_MASTER"
+  # warm_baseline is the SYNC reference for the warm arms (judge warm-async vs a
+  # warm-sync baseline, not the from-scratch baseline — same start point).
+  PRISTINE_WARM="$WARM_MASTER" do_one warm_baseline  sync  4 "$BUDGET" -- --sync-every "$H"
+  PRISTINE_WARM="$WARM_MASTER" do_one warm_async_dn4 async 4 "$BUDGET" -- --sync-every "$H" --async --dn-buffer-size 4
+  PRISTINE_WARM="$WARM_MASTER" do_one warm_async_dn8 async 4 "$BUDGET" -- --sync-every "$H" --async --dn-buffer-size 8
+  PRISTINE_WARM="$WARM_MASTER" do_one warm_dylu_off  dylu  4 "$BUDGET" -- --sync-every "$H" --async --dn-buffer-size 4
+  PRISTINE_WARM="$WARM_MASTER" do_one warm_dylu_on   dylu  4 "$BUDGET" -- --async --dylu --dylu-base-sync-every "$H" --dn-buffer-size 4
+fi
+
+wait_no_servers || warn "final server cleanup: :8512 may still be up"
+log "MATRIX DONE — harvest: python analysis/harvest.py && python analysis/plot_experiment.py"
+log "  then: staleness.py, streaming.py, dylu_control.py  (grace_batches.py is validate-only)"
