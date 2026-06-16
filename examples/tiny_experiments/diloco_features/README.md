@@ -63,7 +63,7 @@ init at this small scale — suggestive, single seed):
 | Knob | Flag (on `diloco server`) | Buys you | Costs | Measured here |
 |---|---|---|---|---|
 | **Streaming** | `--num-fragments N` `--fragment-assignment {strided,sequential}` | smooths bandwidth — fragments sent across the compute window, no all-at-once burst | a small, steady convergence cost; strided ≥ sequential, gap grows at finer grain | small per-token gap (+0.06–0.14 eval); **faster wall-clock**; strided N=5 closest + fastest |
-| **Async + DN** | `--async --dn-buffer-size N` | drops the barrier — fast workers don't wait on stragglers | needs the DN buffer (required with `--async`); some convergence cost under staleness | from scratch trails sync (depth a non-monotonic lever, **N=8 optimum** +0.25); **warm-started ≈ sync** (+0.03–0.06), and depth stops mattering (§3.7.1) |
+| **Async + DN** | `--async --dn-buffer-size N` | drops the barrier — fast workers don't wait on stragglers | needs the DN buffer (required with `--async`); some convergence cost under staleness | from scratch trails sync (depth a non-monotonic lever, **N=8 optimum** +28% ppl vs +123% for N=4); **warm-started ≈ sync** (~+7% ppl), and depth stops mattering (§3.7.1) |
 | **Grace period** | `--grace-period S` | a brief, opportunistic wait so a finished worker can coalesce with a near-simultaneous finisher — cuts the slow-worker *tail* in a heterogeneous / large-N pool | only pays off when the tail is real (large N, mixed speeds); its benefit is **wall-clock**, not convergence | **not a study arm** — the rig has no tail to cut; validated functional only, real benefit → Future Directions |
 | **DyLU** | `--dylu` | matches each worker's sync rate to its throughput, cutting staleness | only helps heterogeneous / unevenly-loaded workers | **mechanism fires, convergence-neutral**: at a verified 4:1 spread DyLU cuts mean staleness 2.33→1.50 (and ~2× the sync rounds), but eval is unmoved (Δ 0.004); per-token payoff unmeasurable here, real benefit is wall-clock → Future Directions |
 
@@ -440,13 +440,13 @@ Equal-speed workers with injected per-step jitter (staleness ≈ 3); the sync
 baseline is the reference (same equal-speed condition). "vs sync" is the final-eval
 delta.
 
-| Configuration | eval loss | perplexity | vs sync | mean staleness | notes |
+| Configuration | eval loss | perplexity | ppl vs sync | mean staleness | notes |
 |---|---|---|---|---|---|
 | Sync DiLoCo (baseline) | 2.859 | 17.4 | — | — | reference |
-| Async without DN | 8.323 | 4118 | +5.46 | 3.0 | diverged (control) |
-| Async + DN (N=4) | 3.661 | 38.9 | +0.802 | 1.5 | paper default (N=k) |
-| Async + DN (N=8) | **3.107** | **22.4** | **+0.249** | 1.5 | **DN-sweep optimum** |
-| Async + DN (N=16) | 3.373 | 29.2 | +0.514 | 1.3 | over-buffered |
+| Async without DN | 8.323 | 4118 | diverged | 3.0 | diverged (control) |
+| Async + DN (N=4) | 3.661 | 38.9 | +123% | 1.5 | paper default (N=k) |
+| Async + DN (N=8) | **3.107** | **22.4** | **+28%** | 1.5 | **DN-sweep optimum** |
+| Async + DN (N=16) | 3.373 | 29.2 | +67% | 1.3 | over-buffered |
 
 ![Async eval-loss comparison: sync baseline vs async no-DN (diverges) and the DN-buffer depth sweep N=4/8/16 — full trajectory and converged-runs endgame zoom](assets/loss_comparison.png)
 
@@ -458,9 +458,10 @@ Without the Delayed-Nesterov buffer, async with induced staleness ~3 diverges (e
 8.32, the run trips the divergence detector ~3% in) — the control that motivates
 DN. With DN the run is stable, but depth matters more than the paper's `N = k`
 default suggests: sweeping N ∈ {4, 8, 16} (figure below) is **non-monotonic**, with
-**N=8 the optimum** — it closes roughly half the from-scratch gap to the baseline
-(+0.249 vs N=4's +0.802), while N=16 *regresses* (+0.514). The sweet spot sits near
-~2× the mean staleness: too shallow under-absorbs stale pseudo-gradients, too deep
+**N=8 the optimum** — it roughly halves the from-scratch perplexity gap to the
+baseline (**+28%** worse ppl vs N=4's **+123%**), while N=16 *regresses* (+67%). The
+sweet spot sits near ~2× the mean staleness: too shallow under-absorbs stale
+pseudo-gradients, too deep
 over-delays the Nesterov momentum. The paper's `N = k = 4` is thus *under*-buffered
 for the from-scratch + staleness regime, but "deeper is always better" is false.
 (Single seed; the N=8 < N=16 ordering carries a noise caveat, but the N=4 → N=8
@@ -472,7 +473,7 @@ improvement is large.)
 ([`analysis/dn_sweep.py`](analysis/dn_sweep.py)).*
 
 **Async from scratch does not reach the sync baseline.** Even the best async arm
-(N=8, +0.249) trails the baseline. This is consistent with the from-scratch premise
+(N=8, +28% perplexity) trails the baseline. This is consistent with the from-scratch premise
 being the hard part for async specifically (§2.6): sync DiLoCo reaches the baseline
 from scratch, but async — even DN-stabilized and depth-tuned — does not, in this
 budget. Whether that is *async* or the *from-scratch regime* is tested with a warm
@@ -490,32 +491,35 @@ grad-norm blow-up is the divergence ([`analysis/plot_experiment.py`](analysis/pl
 then re-ran the async arms **and a warm sync baseline** from that checkpoint (2B
 further tokens; the checkpoint is assembled into a server master by
 [`make_warm_master.py`](make_warm_master.py) and selected via `experiment.sh`'s
-`WARM_MASTER` knob). Each warm arm is judged against the *warm* baseline — the same
-start point, the fair comparison. The two groups are juxtaposed below but **never
-on one loss axis** — their y-ranges differ vastly (scratch ~9→2.85, warm ~3.2→2.83),
-so the cross-comparison is the *gap* to each group's own baseline.
+`WARM_MASTER` knob). **The two regimes' raw losses are not directly comparable** —
+the warm group trained ~500M tokens *more* (the checkpoint) than the scratch group.
+The fair, log-aware metric is **relative perplexity vs each group's own sync
+baseline** — "how much worse than the matched baseline" — which normalizes out the
+different starting points (and perplexity is the DiLoCo paper's reporting unit):
 
-| Configuration | scratch eval (vs scratch base) | warm eval (vs warm base) |
-|---|---|---|
-| Sync baseline | 2.859 (—) | 2.831 (—) |
-| Async + DN (N=4) | 3.661 (+0.802) | 2.895 (+0.064) |
-| Async + DN (N=8) | 3.107 (+0.249) | 2.893 (+0.062) |
+| Arm | warm eval loss | warm perplexity | warm: % worse ppl vs base | from scratch: % worse ppl vs base |
+|---|---|---|---|---|
+| Sync baseline | 2.831 | 17.0 | — | — |
+| Async + DN (N=4) | 2.895 | 18.1 | **+6.6%** | +123% |
+| Async + DN (N=8) | 2.893 | 18.0 | **+6.4%** | +28% |
 
-![Warm-start: left, the warm arms' eval-loss trajectories on their own scale all converging onto the warm baseline; right, the async gap to the matched sync baseline collapsing from +0.25..+0.80 (scratch) to +0.03..+0.06 (warm)](assets/warm_compare.png)
+![Warm-start: left, the warm arms' eval-loss trajectories on their own scale all converging onto the warm baseline; right, relative perplexity vs each group's matched sync baseline (% worse) — +123%/+28% from scratch collapsing to ~+7% warm](assets/warm_compare.png)
 
-*Warm-started arms on their own scale (left) + the gap collapse vs scratch, as
-deltas (right) — [`analysis/warm_compare.py`](analysis/warm_compare.py).*
+*Warm-started arms on their own scale (left); the perplexity gap to each group's
+own baseline, scratch vs warm (right, % worse — the comparable cross-regime metric)
+— [`analysis/warm_compare.py`](analysis/warm_compare.py).*
 
-Every warm async arm lands within **+0.03–0.06** of the warm sync baseline — versus
-**+0.25–0.80** from scratch. So **async DiLoCo ≈ sync once warm-started**: the large
-from-scratch gap was the *regime*, not async itself — exactly the pre-registered
-§2.6 reading, and why the source papers warm-start their async runs. And the
-DN-buffer depth that was a strong lever from scratch (N=4 → N=8 gained 0.55 eval)
-**collapses** warm — warm_dn4 (+0.064) and warm_dn8 (+0.062) differ by 0.002. A warm
-start means small, well-aligned pseudo-gradients, so sequentially-applied staleness
-does little damage and the buffer that absorbs it is barely needed. (Single seed,
-~1× Chinchilla of pretraining; a pretrain-budget sweep — *how warm is warm enough?*
-— is the natural follow-up, §6.)
+Warm-started, every async arm is within **~+7% perplexity** of the warm sync
+baseline — versus **+123%** (N=4) and **+28%** (N=8) from scratch. So **async DiLoCo
+≈ sync once warm-started**: the large from-scratch gap was the *regime*, not async
+itself — exactly the pre-registered §2.6 reading, and why the source papers
+warm-start their async runs. And the DN-buffer depth that was a strong lever from
+scratch (N=4's +123% vs N=8's +28%) **collapses** warm — warm dn4 (+6.6%) and dn8
+(+6.4%) are within 0.2 points. A warm start means small, well-aligned
+pseudo-gradients, so sequentially-applied staleness does little damage and the
+buffer that absorbs it is barely needed. (Single seed, ~1× Chinchilla of
+pretraining; a pretrain-budget sweep — *how warm is warm enough?* — is the natural
+follow-up, §6.)
 
 #### 3.7.2 Streaming (orthogonal axis: synchronous DiLoCo, fragmented comm)
 
@@ -524,22 +528,22 @@ splits each sync into block-boundary fragments sent across the compute window. I
 is a separate axis, compared to the sync baseline on its own terms (equal speed, no
 jitter); it does not belong in the async table above.
 
-| Configuration | eval loss | perplexity | vs sync | wall-clock | notes |
+| Configuration | eval loss | perplexity | ppl vs sync | wall-clock | notes |
 |---|---|---|---|---|---|
 | Sync DiLoCo (baseline) | 2.859 | 17.4 | — | 50.5 min | reference |
-| Streaming (strided N=2) | 2.992 | 19.9 | +0.134 | 45.1 min | |
-| Streaming (sequential N=2) | 3.001 | 20.1 | +0.142 | 45.1 min | assignment A/B |
-| Streaming (strided N=5) | 2.919 | 18.5 | +0.060 | 44.5 min | finer grain |
+| Streaming (strided N=2) | 2.992 | 19.9 | +14% | 45.1 min | |
+| Streaming (sequential N=2) | 3.001 | 20.1 | +15% | 45.1 min | assignment A/B |
+| Streaming (strided N=5) | 2.919 | 18.5 | +6% | 44.5 min | finer grain |
 
 **Streaming trades per-token quality for wall-clock — and at fine grain nearly
-erases the trade.** All streaming arms are slightly worse *per token* (+0.06 to
-+0.14 eval), as expected: fragment-wise outer steps update each parameter against a
+erases the trade.** All streaming arms are slightly worse *per token* (+6% to +15%
+perplexity), as expected: fragment-wise outer steps update each parameter against a
 slightly staler global view. But they all finish *faster in wall-clock* (44.5–45.1
 min vs 50.5) because the per-fragment barriers overlap communication with compute.
 On the fair loss-vs-wall-clock axis (figure below) the finest grain, strided N=5,
-lands closest per token (+0.060) *and* finishes first — it essentially matches the
+lands closest per token (+6% ppl) *and* finishes first — it essentially matches the
 baseline's loss trajectory in real time. The strided-vs-sequential assignment A/B
-is a wash at N=2 (+0.009 in favor of strided), so fragment *grain* matters more
+is a wash at N=2 (~1% ppl in favor of strided), so fragment *grain* matters more
 than assignment here.
 
 ![Streaming on the wall-clock axis: streaming arms finish faster than the sync baseline; strided N=5 crosses to match its trajectory in real time (full + endgame zoom)](assets/walltime_comparison.png)
@@ -588,10 +592,10 @@ the per-step CPU `sleep` partially overlaps async GPU compute — landed wall-cl
 land ~1×/2×/3×/4×. An earlier ~1.6× spread was too mild to exercise DyLU; this is
 the re-run at 4:1.)
 
-| Configuration | eval loss | vs warm baseline (2.831) | mean staleness | sync rounds |
-|---|---|---|---|---|
-| Warm async + DN, ~4:1 spread, DyLU off | 2.855 | +0.023 | 2.33 | 615 |
-| Warm async + DN, ~4:1 spread, DyLU on | 2.851 | +0.019 | **1.50** | **1220** |
+| Configuration | eval loss | perplexity | % worse ppl vs warm base | mean staleness | sync rounds |
+|---|---|---|---|---|---|
+| Warm async + DN, ~4:1 spread, DyLU off | 2.855 | 17.4 | +2.4% | 2.33 | 615 |
+| Warm async + DN, ~4:1 spread, DyLU on | 2.851 | 17.3 | +2.0% | **1.50** | **1220** |
 
 ![DyLU off vs on at a ~4:1 speed spread (warm-started): eval-loss trajectories essentially overlapping, both tracking toward the warm sync baseline](assets/dylu_control.png)
 
@@ -603,9 +607,10 @@ the re-run at 4:1.)
 2.33 to 1.50** and roughly **doubles the sync rounds** (1220 vs 615) — the adaptive
 per-worker `sync_every` raising the fast workers' sync rate to stay aligned with the
 stragglers. (This is a cleaner signal than the discarded ~1.6× run, where the
-spread was too mild and the snapshot staleness was noise.) **Yet the eval loss is
-unmoved**: dylu_on (2.851) vs dylu_off (2.855) differ by 0.004, within seed noise,
-and both reach the warm baseline. The DN buffer already absorbs the staleness well
+spread was too mild and the snapshot staleness was noise.) **Yet the loss is
+unmoved**: dylu_on and dylu_off land at +2.0% and +2.4% perplexity vs the warm
+baseline — a 0.4-point difference (0.004 eval), within seed noise — and both reach
+the warm baseline. The DN buffer already absorbs the staleness well
 enough that reducing it further does not change per-token convergence — consistent
 with the design's caveat (§3.5–3.6) that DyLU's payoff is wall-clock tail reduction
 under genuine large-scale heterogeneity (off-rig), not a per-token win. The cost it
@@ -654,18 +659,18 @@ pre-registered hypotheses, each with a fixed control:
    (arm 6 vs 1), with the no-DN control (arm 5) diverging.
    *Result: partially refuted.* The no-DN control diverges as predicted (DN is
    necessary), but the Algorithm-3 N = k = 4 form is **not** sufficient from
-   scratch — it trails sync by +0.80 eval. Buffer depth turned out to be a
-   non-monotonic lever (the §3.4 sweep): **N=8 is the optimum** (+0.25, ~half the
-   gap closed), N=16 regresses. Per the §2.6 regime caveat, the from-scratch gap is
-   not a refutation of the paper (which warm-starts): **warm-started, N = k = 4 ≈
-   sync** (+0.064) and the depth dependence collapses (§3.7.1) — so the paper's
-   default is right *in its own warm regime*, and only under-buffered from scratch.
+   scratch — it trails sync by +123% perplexity. Buffer depth turned out to be a
+   non-monotonic lever (the §3.4 sweep): **N=8 is the optimum** (+28%, ~half the
+   gap closed), N=16 regresses (+67%). Per the §2.6 regime caveat, the from-scratch
+   gap is not a refutation of the paper (which warm-starts): **warm-started, N = k =
+   4 ≈ sync** (+6.6% ppl) and the depth dependence collapses (§3.7.1) — so the
+   paper's default is right *in its own warm regime*, only under-buffered from scratch.
 2. **Streaming costs little and strided ≥ sequential**, the assignment gap visible
    at the finer N=5 grain (arms 2–4 vs 1).
-   *Result: supported.* Small per-token cost (+0.06–0.14 eval), strided N=5
-   closest (+0.060); on the wall-clock axis streaming finishes faster and N=5
+   *Result: supported.* Small per-token cost (+6–15% perplexity), strided N=5
+   closest (+6%); on the wall-clock axis streaming finishes faster and N=5
    nearly matches the baseline trajectory. The N=2 assignment A/B is a wash
-   (+0.009), so grain dominates assignment at this scale.
+   (~1% ppl), so grain dominates assignment at this scale.
 3. **DyLU cuts staleness under a synthetic speed spread** (warm-only off-vs-on A/B,
    §3.7.3) — a mechanism-validation; the real mixed-GPU benefit is future work.
    *Result: mechanism confirmed, convergence-neutral.* At a verified 4:1 spread DyLU
@@ -677,8 +682,9 @@ pre-registered hypotheses, each with a fixed control:
    random-init robustness to async (the whole study trains from scratch).
    *Result: refuted from scratch, recovered warm.* Async≈sync does **not** hold
    from random init (§3.7); but warm-started from a ~500M-token checkpoint it does
-   (§3.7.1) — every warm async arm within +0.03–0.06 of a warm sync baseline. So
-   async's robustness is regime-dependent: the from-scratch phase is the obstacle,
+   (§3.7.1) — every warm async arm within ~+7% perplexity of a warm sync baseline
+   (vs +123%/+28% from scratch). So async's robustness is regime-dependent: the
+   from-scratch phase is the obstacle,
    not async per se, which is exactly why the source papers warm-start.
 
 Any headline result ambiguous within plausible seed noise is reported as a
@@ -705,8 +711,9 @@ documented small-effect finding, not re-run.
   N=8 < N=16 ordering and the N → ∞ limit (toward synchronous), plus whether the
   optimal N tracks the mean staleness across staleness levels.
 - **Async pretrain-budget sweep.** §3.7.1 already answers the from-scratch premise
-  (§2.6): a ~500M-token (≈1× Chinchilla) warm start closes the async gap to
-  +0.03–0.06 of a warm sync baseline. The open follow-up is the *budget* axis —
+  (§2.6): a ~500M-token (≈1× Chinchilla) warm start closes the async gap to ~+7%
+  perplexity of a warm sync baseline (from +123%/+28% scratch). The open follow-up
+  is the *budget* axis —
   how warm is warm enough? Sweep the pretrain budget (e.g. 0 / 100M / 500M / 1B)
   and map where async≈sync emerges. The tooling is in place:
   [`templates/configs/warm_pretrain.yaml`](templates/configs/warm_pretrain.yaml)

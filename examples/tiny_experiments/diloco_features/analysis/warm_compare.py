@@ -15,9 +15,11 @@ normalizes each group to its own baseline):
   * Left — the warm arms only, eval loss: baseline + async (+ DyLU) all hug each
     other near the warm baseline. (Warm curves start mid-descent, from the
     checkpoint.) Own y-range.
-  * Right — the async gap to its *matched* sync baseline, scratch vs warm, per
-    arm (deltas, so comparable): the collapse from +0.25..+0.80 (scratch) to
-    ~+0.03..+0.06 (warm).
+  * Right — RELATIVE PERPLEXITY vs each group's *own* matched sync baseline
+    (% worse, = (exp(eval - base) - 1)·100), scratch vs warm, per arm. This is the
+    comparable cross-regime metric — raw losses are NOT comparable (the warm group
+    trained 500M more tokens), but "% worse perplexity than your own baseline" is.
+    The collapse: ~+123%/+28% (scratch) to ~+7% (warm).
 
 Reads the committed ``assets/curves.csv`` (analysis/harvest.py).
 
@@ -25,6 +27,7 @@ Reads the committed ``assets/curves.csv`` (analysis/harvest.py).
 """
 
 import csv
+import math
 import os
 from collections import defaultdict
 
@@ -69,14 +72,22 @@ def main():
     sb = final_eval(data, SCRATCH_BASE)
     wb = final_eval(data, WARM_BASE)
 
+    # The comparable quantity across regimes is RELATIVE PERPLEXITY vs each group's
+    # OWN baseline: % worse perplexity = (exp(eval - base_eval) - 1) * 100. Raw
+    # losses are not comparable (the warm group has 500M more tokens), but "how much
+    # worse than your own sync baseline" is — and perplexity (the DiLoCo paper's
+    # axis) is the natural unit for a log-scale loss.
+    def rel_ppl_pct(arm, base_eval):
+        return (math.exp(final_eval(data, arm) - base_eval) - 1.0) * 100.0
+
     print(f"scratch baseline {sb:.4f} | warm baseline {wb:.4f}\n")
-    print(f"{'arm':<22}{'scratch gap':>12}{'warm gap':>12}")
+    print(f"{'arm':<22}{'scratch %ppl':>14}{'warm %ppl':>12}")
     rows = []
     for sk, wk, lbl in PAIRS:
-        sg = final_eval(data, sk) - sb
-        wg = final_eval(data, wk) - wb
+        sg = rel_ppl_pct(sk, sb)
+        wg = rel_ppl_pct(wk, wb)
         rows.append((lbl, sg, wg))
-        print(f"{lbl:<22}{sg:>+12.4f}{wg:>+12.4f}")
+        print(f"{lbl:<22}{sg:>+13.1f}%{wg:>+11.1f}%")
 
     plt.rcParams.update({"figure.dpi": 120, "font.size": 10})
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
@@ -110,30 +121,41 @@ def main():
     ax.legend(fontsize=8)
     ax.grid(alpha=0.25)
 
-    # Right: gap-to-matched-baseline, scratch vs warm.
+    # Right: RELATIVE PERPLEXITY vs each group's matched sync baseline (% worse),
+    # scratch vs warm — the comparable cross-regime metric (raw losses aren't,
+    # since the warm group trained 500M more tokens).
     ax = axes[1]
     labels = [r[0] for r in rows]
     x = range(len(rows))
     w = 0.38
-    ax.bar(
+    bars_s = ax.bar(
         [i - w / 2 for i in x],
         [r[1] for r in rows],
         w,
         label="from scratch",
         color="#d9772b",
     )
-    ax.bar(
+    bars_w = ax.bar(
         [i + w / 2 for i in x],
         [r[2] for r in rows],
         w,
         label="warm-started",
         color="#2ca25f",
     )
+    for bars in (bars_s, bars_w):
+        for b in bars:
+            ax.annotate(
+                f"+{b.get_height():.0f}%",
+                (b.get_x() + b.get_width() / 2, b.get_height()),
+                ha="center",
+                va="bottom",
+                fontsize=8,
+            )
     ax.axhline(0, color="#000000", lw=0.8)
     ax.set_xticks(list(x))
     ax.set_xticklabels(labels, rotation=20, ha="right", fontsize=8)
-    ax.set_ylabel("eval-loss gap to matched sync baseline")
-    ax.set_title("Async gap collapses with a warm start")
+    ax.set_ylabel("perplexity vs matched sync baseline (% worse)")
+    ax.set_title("Async perplexity gap collapses with a warm start")
     ax.legend(fontsize=9)
     ax.grid(alpha=0.25, axis="y")
 
